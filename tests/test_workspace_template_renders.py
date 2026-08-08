@@ -352,21 +352,20 @@ def test_ringlog_rotates_on_threshold(tmp_path):
 
 def _harness_script(rendered: str, tmp_path, final_exec: str) -> Path:
     """Rewrite the rendered run script (id already substituted to _PROBE_ID)
-    for a NON-BLOCKING local run: real ws tmp dir, stdin </dev/null (not the
-    FIFO), the ringlog path pointed at the REPO copy (the /opt/casa host path
-    doesn't exist — r3-B6), and the final `exec claude …` replaced."""
+    for a NON-BLOCKING local run: real ws tmp dir, real control dir (Task 4:
+    .spawn_epoch/.stderr.*/stdin.fifo all live there now, not the workspace),
+    stdin </dev/null (not the FIFO), the ringlog path pointed at the REPO
+    copy (the /opt/casa host path doesn't exist — r3-B6), and the final
+    `exec claude …` replaced."""
     ws = tmp_path / "ws"; (ws / ".home").mkdir(parents=True, exist_ok=True)  # r6-B2: repeated calls
+    ctl = tmp_path / "ctl"; ctl.mkdir(parents=True, exist_ok=True)          # r6-B2: repeated calls
     s = rendered.replace(f"/data/engagements/{_PROBE_ID}", str(ws))
+    # Re-root the control dir by substituting the CTL="..." assignment's
+    # literal value — every subsequent `$CTL/...` reference in the script
+    # (spawn epoch, stderr ring, stdin fifo) re-roots for free.
+    s = s.replace(f'CTL="/data/engagement-ctl/{_PROBE_ID}"', f'CTL="{ctl}"')
     s = s.replace("/opt/casa/scripts/ringlog.sh", _RINGLOG)
-    # Make STDERR_LOG absolute (the live script leaves it as a relative
-    # ".stderr.$EPOCH.log" filename, resolved via cwd at runtime) so ringlog's
-    # argv actually contains this test's tmp_path — otherwise
-    # `pgrep -f "ringlog.sh.*{marker}"` in _wait_ringlogs_exit never matches
-    # and the writer-exit barrier is a silent no-op. The files still land in
-    # `ws` either way, so `ws.glob(".stderr.*.log")` assertions are unaffected.
-    s = s.replace('STDERR_LOG=".stderr.$EPOCH.log"',
-                  f'STDERR_LOG="{ws}/.stderr.$EPOCH.log"')
-    s = re.sub(r"exec <\S*stdin\.fifo", "exec </dev/null", s)
+    s = s.replace('exec <"$CTL/stdin.fifo"', "exec </dev/null")
     s = re.sub(r"exec claude .*?(?=\n[A-Z#]|\Z)", final_exec, s, flags=re.S)
     p = tmp_path / "run"; p.write_text(s); return p
 
@@ -401,10 +400,10 @@ def test_run_script_epoch_unique_files_and_sweep_prunes(
     for expect in range(1, 8):
         r = subprocess.run([BASH, str(p)], capture_output=True, text=True)
         assert f'{{"casa_control": "spawn", "epoch": {expect}}}' in r.stdout
-    ws = tmp_path / "ws"
-    assert (ws / ".spawn_epoch").read_text().strip() == "7"
+    ctl = tmp_path / "ctl"                              # Task 4: control dir
+    assert (ctl / ".spawn_epoch").read_text().strip() == "7"
     _wait_ringlogs_exit(str(tmp_path))                  # r9-B4: writer barrier here too
-    logs = sorted(f.name for f in ws.glob(".stderr.*.log"))
+    logs = sorted(f.name for f in ctl.glob(".stderr.*.log"))
     assert logs == [".stderr.4.log", ".stderr.5.log",
                     ".stderr.6.log", ".stderr.7.log"]   # <=E-4 all swept, bounded
 
@@ -495,15 +494,15 @@ def test_sweep_removes_slipped_stale_file_next_spawn(tmp_path, rendered_probe_sc
     # the slipped file directly, run one template spawn, assert it is gone.
     p = _harness_script(rendered_probe_script, tmp_path,
                         "exec bash -c 'true'")
-    ws = tmp_path / "ws"
+    ctl = tmp_path / "ctl"                                    # Task 4: control dir
     subprocess.run([BASH, str(p)], capture_output=True)      # epoch 1
-    (ws / ".stderr.0.log").write_text("slipped stale file")   # simulate the window
+    (ctl / ".stderr.0.log").write_text("slipped stale file")  # simulate the window
     subprocess.run([BASH, str(p)], capture_output=True)      # epoch 2 → sweeps <= -2…
     # advance until the sweep window covers it (epochs 3,4 → E-4 >= 0)
     subprocess.run([BASH, str(p)], capture_output=True)
     subprocess.run([BASH, str(p)], capture_output=True)
     _wait_ringlogs_exit(str(tmp_path))                        # real writer barrier
-    assert not (ws / ".stderr.0.log").exists()               # swept by a later spawn
+    assert not (ctl / ".stderr.0.log").exists()              # swept by a later spawn
 
 
 def _wait_ringlogs_exit(marker: str, timeout: float = 5.0) -> None:
@@ -532,9 +531,9 @@ def test_run_script_lingering_writer_no_resurrection(
     for _ in range(7):
         subprocess.run([BASH, str(p)], capture_output=True, text=True)
     _wait_ringlogs_exit(str(tmp_path))               # r8-B4: real writer barrier
-    ws = tmp_path / "ws"
-    assert not (ws / ".stderr.1.log").exists()       # swept, not resurrected
-    assert len(list(ws.glob(".stderr.*.log"))) <= 4  # bounded total
+    ctl = tmp_path / "ctl"                           # Task 4: control dir
+    assert not (ctl / ".stderr.1.log").exists()      # swept, not resurrected
+    assert len(list(ctl.glob(".stderr.*.log"))) <= 4  # bounded total
 
 
 def test_render_run_script_refuses_to_shadow_its_own_exports():

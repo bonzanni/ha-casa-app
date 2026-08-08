@@ -299,7 +299,7 @@ async def replay_undergoing_engagements(
     """
     from drivers import s6_rc
     from drivers.workspace import (
-        refresh_claude_md, render_log_run_script, render_run_script,
+        fifo_path, refresh_claude_md, render_log_run_script, render_run_script,
         workspace_mcp_token, workspace_mcp_url, write_workspace_mcp_json,
     )
 
@@ -391,14 +391,21 @@ async def replay_undergoing_engagements(
         intact pair + undergoing record for this boot's fast path).
         True = present/created; False = resume refused via the
         checked-teardown ladder (retryable next boot when containment is
-        confirmed, terminal-marked when it is not)."""
-        fifo = os.path.join(engagements_root, rec.id, "stdin.fifo")
-        # Sol r5-1: never run the destructive repair below THROUGH a
-        # symlinked workspace dir — isdir/lstat would examine (and rmtree
-        # could delete) entries under the symlink's target. Workspaces
-        # are always created as real directories, so a symlink here is
-        # corruption: refuse the resume.
-        if os.path.islink(os.path.dirname(fifo)):
+        confirmed, terminal-marked when it is not).
+
+        Task 4 (containment stage 2): the FIFO itself lives in the root-only
+        control dir now, not the workspace — moved so the workspace-symlink
+        primitive this whole stage removes could never again retarget IT.
+        The workspace-symlink guard below is kept regardless: other boot-
+        replay touches (CLAUDE.md refresh, .mcp.json rewrite) still reach
+        INTO the workspace and are not yet made symlink-safe (Task 5), so a
+        symlinked workspace is still refused here as general corruption —
+        this is the one boot-replay step that already runs for every record
+        early enough to catch it. The control dir gets its OWN symlink guard
+        (a real one is never created there, but a repair must never trust
+        that blindly)."""
+        ws_dir = os.path.join(engagements_root, rec.id)
+        if os.path.islink(ws_dir):
             await _refuse_brief_resume(
                 rec,
                 "workspace directory is a symlink; refusing FIFO "
@@ -406,27 +413,49 @@ async def replay_undergoing_engagements(
                 kind="fifo_recreate_failed",
             )
             return False
+        fifo = fifo_path(rec.id)
+        ctl_dir = os.path.dirname(fifo)
+        # Sol r5-1: never run the destructive repair below THROUGH a
+        # symlinked control dir — isdir/lstat would examine (and rmtree
+        # could delete) entries under the symlink's target. Control dirs
+        # are always created as real directories, so a symlink here is
+        # corruption: refuse the resume.
+        if os.path.islink(ctl_dir):
+            await _refuse_brief_resume(
+                rec,
+                "control directory is a symlink; refusing FIFO "
+                "verification/repair through it",
+                kind="fifo_recreate_failed",
+            )
+            return False
         try:
-            if os.path.isdir(os.path.dirname(fifo)):
-                st = os.lstat(fifo) if os.path.lexists(fifo) else None
-                if st is not None and not stat.S_ISFIFO(st.st_mode):
-                    # Terra r4-1: a NON-fifo at the FIFO path (regular
-                    # file, dir, or symlink left by corruption/partial
-                    # recovery) reads as instant EOF or fails outright —
-                    # the same crash-loop as a missing FIFO. Repair by
-                    # replacing it; a repair failure takes the refusal
-                    # ladder below.
-                    logger.warning(
-                        "boot replay: %s exists but is not a FIFO — "
-                        "replacing it", fifo,
-                    )
-                    if stat.S_ISDIR(st.st_mode):
-                        shutil.rmtree(fifo)
-                    else:
-                        os.remove(fifo)
-                    st = None
-                if st is None:
-                    os.mkfifo(fifo, 0o600)
+            # Task 4: the control dir may not exist yet for an engagement
+            # provisioned before this release (or lost to a prior partial
+            # failure) — repair it here too, idempotently, rather than
+            # silently skipping FIFO creation the way the pre-Task-4 code
+            # skipped it for a missing WORKSPACE (M7 already refused those
+            # earlier in this same boot pass).
+            if not os.path.isdir(ctl_dir):
+                os.makedirs(ctl_dir, mode=0o700, exist_ok=True)
+            st = os.lstat(fifo) if os.path.lexists(fifo) else None
+            if st is not None and not stat.S_ISFIFO(st.st_mode):
+                # Terra r4-1: a NON-fifo at the FIFO path (regular
+                # file, dir, or symlink left by corruption/partial
+                # recovery) reads as instant EOF or fails outright —
+                # the same crash-loop as a missing FIFO. Repair by
+                # replacing it; a repair failure takes the refusal
+                # ladder below.
+                logger.warning(
+                    "boot replay: %s exists but is not a FIFO — "
+                    "replacing it", fifo,
+                )
+                if stat.S_ISDIR(st.st_mode):
+                    shutil.rmtree(fifo)
+                else:
+                    os.remove(fifo)
+                st = None
+            if st is None:
+                os.mkfifo(fifo, 0o600)
             return True
         except OSError as exc:
             await _refuse_brief_resume(

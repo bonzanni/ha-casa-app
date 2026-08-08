@@ -22,8 +22,9 @@ from drivers import s6_rc
 from drivers.brief import brief_task_for
 from drivers.driver_protocol import DriverProtocol
 from drivers.workspace import (
-    engagement_log_dir, provision_workspace, render_log_run_script,
-    render_run_script, write_casa_meta,
+    control_dir, engagement_log_dir, fifo_path, inbound_spool_path,
+    provision_workspace, render_log_run_script, render_run_script,
+    session_id_path, stderr_path, stream_cursor_path, write_casa_meta,
 )
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
 from settle_gate import confirmed_settle_edit
@@ -1167,6 +1168,17 @@ class ClaudeCodeDriver(DriverProtocol):
                     logger.warning(
                         "rollback rmtree(%s) failed: %s", ws_path, rb_exc,
                     )
+                # Task 4: the control dir is provisioned alongside the
+                # workspace (provision_control_dir, called from within
+                # provision_workspace) — remove it on the same rollback so a
+                # failed launch never leaves an orphaned root-only directory.
+                ctl_path = control_dir(engagement.id)
+                try:
+                    shutil.rmtree(ctl_path, ignore_errors=True)
+                except Exception as rb_exc:  # noqa: BLE001
+                    logger.warning(
+                        "rollback rmtree(%s) failed: %s", ctl_path, rb_exc,
+                    )
                 raise
 
         # 4. Kick off the background tasks (outside lock): respawn poller,
@@ -1393,7 +1405,9 @@ class ClaudeCodeDriver(DriverProtocol):
         # asyncio.to_thread threads are uncancellable, so a handful of stuck
         # writes starve all subprocess orchestration app-wide. Open + write
         # non-blocking with a bounded deadline instead — no thread at all.
-        fifo = (Path(self._engagements_root) / engagement.id / "stdin.fifo")
+        # Task 4 (containment stage 2): the FIFO lives in the root-only
+        # control dir, not the uid-owned workspace.
+        fifo = Path(fifo_path(engagement.id))
         if not fifo.exists():
             logger.warning("FIFO missing for engagement %s", engagement.id[:8])
             return False
@@ -1482,7 +1496,6 @@ class ClaudeCodeDriver(DriverProtocol):
         # Sol r2-B6: boot replay calls this DIRECTLY (not start), so the inbound
         # spool, reply-text set, epoch tracker AND the spool recovery all live
         # here — a resumed engagement gets the same wiring as a fresh one.
-        ws = Path(self._engagements_root) / engagement.id
         self._reply_texts.setdefault(engagement.id, set())
         self._epoch_pending.setdefault(engagement.id, None)
         self._turn_running.setdefault(engagement.id, False)
@@ -1502,7 +1515,7 @@ class ClaudeCodeDriver(DriverProtocol):
         # retry (recovery scheduled below).
         self._inbound[engagement.id] = _InboundSpool(
             engagement_id=engagement.id,
-            spool_path=str(ws / _SPOOL_FILENAME),
+            spool_path=inbound_spool_path(engagement.id),
             # #322: the spool RETAINS on a False return (auto-redelivery on
             # the next spawn) — its no-reader notice promises the retry.
             write_fifo=lambda text: self._write_to_fifo(
@@ -1530,7 +1543,7 @@ class ClaudeCodeDriver(DriverProtocol):
                 name=f"seq_watcher:{engagement.id[:8]}"),
             # P31 (v0.37.10): capture the SDK session_id by watching the
             # claude CLI's own session-storage directory. Persists the
-            # UUID to ``<workspace>/.session_id`` so the run script's
+            # UUID to the control dir's ``.session_id`` (Task 4) so the run script's
             # resume plumbing (UUID-validated single ``--resume=<uuid>``
             # token since v0.131.0) picks up after a Casa restart.
             asyncio.create_task(self._capture_session_id(engagement)),
@@ -1567,7 +1580,7 @@ class ClaudeCodeDriver(DriverProtocol):
         # Scheduled only when a spool file survives (a fresh engagement has
         # nothing to recover), mirroring the old conditional marker reconcile.
         spool = self._inbound.get(engagement.id)
-        if spool is not None and (ws / _SPOOL_FILENAME).exists():
+        if spool is not None and Path(inbound_spool_path(engagement.id)).exists():
             tasks.append(asyncio.create_task(spool.recover()))
 
         # v0.79.0 (§4): boot reconciliation of open questions. The broker /
@@ -1806,8 +1819,7 @@ class ClaudeCodeDriver(DriverProtocol):
         file still holds pending receipts/notices (a drain that crashed / a
         send that failed pre-terminal) is drained here — posting to the topic
         if it still exists, else WARN-dropping (the topic is gone)."""
-        ws = Path(self._engagements_root) / engagement.id
-        spool_path = ws / _SPOOL_FILENAME
+        spool_path = Path(inbound_spool_path(engagement.id))
         if not spool_path.exists():
             return
         spool = _InboundSpool(
@@ -2700,7 +2712,10 @@ class ClaudeCodeDriver(DriverProtocol):
         task = asyncio.create_task(
             self._force_turn_boundary(
                 engagement_id=eng_id,
-                workspace_dir=str(Path(self._engagements_root) / eng_id),
+                # Task 4: ``.spawn_epoch`` moved to the control dir — this
+                # kwarg is s6_rc's read-target for the epoch guard, not
+                # literally "the workspace" anymore.
+                workspace_dir=control_dir(eng_id),
                 expected_epoch=epoch,
                 track_task=(lambda t, eid=eng_id:
                             self._register_force_cleanup(eid, t)),
@@ -2949,7 +2964,8 @@ class ClaudeCodeDriver(DriverProtocol):
         try:
             ok = await self._force_turn_boundary(
                 engagement_id=engagement_id,
-                workspace_dir=str(Path(self._engagements_root) / engagement_id),
+                # Task 4: see the twin call site's comment above.
+                workspace_dir=control_dir(engagement_id),
                 expected_epoch=self._forced_suspend_epochs.get(engagement_id),
                 track_task=(
                     lambda t, eid=engagement_id:
@@ -4032,8 +4048,9 @@ class ClaudeCodeDriver(DriverProtocol):
         The relay reads the engagement's NDJSON s6-log to the live end then
         returns; each claude_code turn is a fresh CLI spawn that appends a
         burst then exits, so we re-run on a short poll — the crash-safe cursor
-        (``<ws>/.stream_cursor.json``) resumes exactly where the last run left
-        off, and REPLAY-mode side-effect suppression keeps re-runs idempotent.
+        (control-dir ``.stream_cursor.json``, Task 4) resumes exactly where
+        the last run left off, and REPLAY-mode side-effect suppression keeps
+        re-runs idempotent.
         """
         from drivers.topic_stream import TopicStreamRelay
 
@@ -4051,12 +4068,12 @@ class ClaudeCodeDriver(DriverProtocol):
                 return None
             return (entry["n"], entry["tg_message_id"], entry.get("source_hash"))
 
-        ws = Path(self._engagements_root) / engagement.id
         relay = TopicStreamRelay(
             engagement_id=engagement.id,
             topic_id=engagement.topic_id,
             log_dir=engagement_log_dir(engagement.id),
-            cursor_path=str(ws / ".stream_cursor.json"),
+            # Task 4: crash-safe cursor moved to the control dir.
+            cursor_path=stream_cursor_path(engagement.id),
             send_message=self._relay_send_message,
             edit_message=self._relay_edit_message,
             delete_message=self._relay_delete_message,
@@ -4355,12 +4372,13 @@ class ClaudeCodeDriver(DriverProtocol):
         never misattributed to a reused slot)."""
         if epoch is None:
             return None
-        ws = Path(self._engagements_root) / engagement.id
+        # Task 4: the ring lives in the control dir now.
+        base = Path(stderr_path(engagement.id, epoch))
         chunks: list[str] = []
-        for name in (f".stderr.{epoch}.log.1", f".stderr.{epoch}.log"):
+        for p in (base.with_name(base.name + ".1"), base):
             try:
                 chunks.append(
-                    (ws / name).read_text(encoding="utf-8", errors="replace"))
+                    p.read_text(encoding="utf-8", errors="replace"))
             except OSError:
                 continue
         if not chunks:
@@ -4408,8 +4426,8 @@ class ClaudeCodeDriver(DriverProtocol):
     ) -> None:
         """P31 (v0.37.10): watch the claude CLI's own session-storage
         directory for the first ``<uuid>.jsonl`` file. The filename
-        (minus extension) IS the SDK session UUID. Persist to
-        ``<workspace>/.session_id`` so a boot-replay resumes the
+        (minus extension) IS the SDK session UUID. Persist to the control
+        dir's ``.session_id`` (Task 4) so a boot-replay resumes the
         conversation (the run script validates the file's content as an
         exact UUID and passes a single ``--resume=<uuid>`` argv token —
         v0.131.0 hardening).
@@ -4439,8 +4457,12 @@ class ClaudeCodeDriver(DriverProtocol):
         """
         short = engagement.id[:8]
         ws = Path(self._engagements_root) / engagement.id
-        target = ws / ".session_id"
-        tmp = ws / ".session_id.tmp"
+        # Task 4: the WRITE target moves to the control dir. The scan below
+        # still reads the CLI's own session-storage directory under the
+        # workspace's .home — that scan is not yet made symlink-safe (Task 5
+        # owns it); this task is path relocation only.
+        target = Path(session_id_path(engagement.id))
+        tmp = target.with_name(target.name + ".tmp")
         projects_dir = (
             ws / ".home" / ".claude" / "projects"
             / f"-data-engagements-{engagement.id}"

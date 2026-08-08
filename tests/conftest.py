@@ -366,6 +366,35 @@ async def engagement_fixture(tmp_path):
 # another file. Clear both maps around every test (production-inert — nothing
 # imports this fixture; it only resets in-memory test state).
 @pytest.fixture(autouse=True)
+def _isolate_engagement_control_root(tmp_path_factory, monkeypatch):
+    """Containment stage 2, Task 4: ``drivers.workspace.CONTROL_ROOT``
+    defaults to the real ``/data/engagement-ctl`` in production. Without
+    this, any test that provisions a workspace (or exercises the
+    session-id/spool/stream-cursor/stderr-ring/casa-meta control-dir paths)
+    would try to mkdir/write under that real path — unwritable in CI,
+    cross-test-polluting locally, and liable to silently create a real
+    ``/data`` tree on a dev machine that happens to be running as root.
+    Redirected to a per-test tmp dir; a test that specifically needs to
+    assert the real production default (e.g. the control_dir() shape test)
+    restores it via its own ``monkeypatch.setattr`` — the fixture instance is
+    shared within one test, so that composes cleanly.
+
+    Deliberately a SIBLING of (not nested inside) the test's own ``tmp_path``:
+    several existing tests point ``engagements_root``/``_ENGAGEMENTS_ROOT`` at
+    ``tmp_path`` itself and then ``os.scandir`` its direct children as "every
+    workspace" — nesting the control root inside ``tmp_path`` would show up
+    as a spurious extra entry in exactly those scans."""
+    try:
+        import drivers.workspace as _ws
+    except Exception:  # pragma: no cover — module import is universal in tests
+        yield
+        return
+    ctl_root = tmp_path_factory.mktemp("engagement-ctl")
+    monkeypatch.setattr(_ws, "CONTROL_ROOT", str(ctl_root))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_resident_bindings(tmp_path, monkeypatch):
     """Personality Phase A, Task 8: point the resident instance-tuple root
     (``CASA_BINDINGS_DIR``, consumed by agent_loader's boot-time binding

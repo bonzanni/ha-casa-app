@@ -116,9 +116,11 @@ class TestRenderRunScript:
         # The shell idiom (hardened v0.131.0): if .session_id exists AND its
         # content is an exact UUID, pass it as a single =-joined argv token.
         # The old unquoted `--resume $(cat ...)` word-split arbitrary file
-        # content into extra CLI flags — .session_id lives inside the
-        # engagement workspace, which the engagement's own CLI can write.
-        assert f"/data/engagements/{eid}/.session_id" in script
+        # content into extra CLI flags. Task 4 (containment stage 2):
+        # .session_id lives in the root-only control dir, never the
+        # engagement's own workspace.
+        assert f'CTL="/data/engagement-ctl/{eid}"' in script
+        assert '$CTL/.session_id' in script
         assert '=~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' in script
         assert 'RESUME_ARGS=("--resume=$SID")' in script
         assert '"${RESUME_ARGS[@]}"' in script
@@ -154,13 +156,19 @@ class TestRunScriptResumeArgvBehavior:
         )
         ws = tmp_path / "ws"
         (ws / ".home").mkdir(parents=True)
-        # Re-root the workspace path and neutralize the two infra excs that
-        # need container facilities (the stdin FIFO and the ringlog stderr
-        # pipeline) — the contract under test is the resume argv, not I/O
-        # plumbing. The exec'd `claude` resolves via PATH to our stub.
+        ctl = tmp_path / "ctl"
+        ctl.mkdir(parents=True)
+        # Re-root the workspace AND control-dir paths, and neutralize the two
+        # infra excs that need container facilities (the stdin FIFO and the
+        # ringlog stderr pipeline) — the contract under test is the resume
+        # argv, not I/O plumbing. The exec'd `claude` resolves via PATH to our
+        # stub. Task 4: .session_id/.spawn_epoch/stdin.fifo/stderr now live
+        # under $CTL — substituting the CTL="..." assignment's literal value
+        # re-roots every `$CTL/...` reference for free.
         script = script.replace(f"/data/engagements/{self.EID}", str(ws))
+        script = script.replace(f'CTL="/data/engagement-ctl/{self.EID}"', f'CTL="{ctl}"')
         script = script.replace(
-            f'exec <{ws}/stdin.fifo', "exec </dev/null"
+            'exec <"$CTL/stdin.fifo"', "exec </dev/null"
         )
         script = script.replace(
             'exec 2> >(/opt/casa/scripts/ringlog.sh "$STDERR_LOG" 65536 "$EPOCH")',
@@ -170,7 +178,7 @@ class TestRunScriptResumeArgvBehavior:
             "ringlog substitution missed — template line changed?"
         )
         if session_id_content is not None:
-            (ws / ".session_id").write_text(session_id_content)
+            (ctl / ".session_id").write_text(session_id_content)
 
         stub_dir = tmp_path / "bin"
         stub_dir.mkdir()
@@ -416,10 +424,13 @@ class TestProvisionWorkspace:
         # Plugin symlinks removed in v0.14.x (Plan 4b §16.2); HOME dir still created.
         assert (p / ".home" / ".claude" / "plugins").is_dir()
 
-        # FIFO
-        assert os.path.exists(p / "stdin.fifo")
+        # FIFO — Task 4: lives in the control dir, not the workspace.
+        from drivers.workspace import fifo_path
+        fifo = fifo_path("eng1")
+        assert not os.path.exists(p / "stdin.fifo")
+        assert os.path.exists(fifo)
         import stat as _stat
-        mode = os.stat(p / "stdin.fifo").st_mode
+        mode = os.stat(fifo).st_mode
         assert _stat.S_ISFIFO(mode)
 
 
@@ -632,10 +643,19 @@ class TestProvisionWorkspace:
 
 class TestCasaMeta:
     def test_write_and_load_roundtrip(self, tmp_path):
-        from drivers.workspace import write_casa_meta, load_casa_meta
+        from drivers.workspace import (
+            write_casa_meta, load_casa_meta, provision_control_dir,
+        )
 
-        ws = tmp_path / "w"
+        # load_casa_meta derives the engagement id from the workspace dir's
+        # BASENAME (provision_workspace always names it that way) — name the
+        # dir "e1" to match, rather than widen load_casa_meta's contract.
+        ws = tmp_path / "e1"
         ws.mkdir()
+        # Task 4: .casa-meta.json lives in the control dir now — provisioned
+        # separately from the workspace (provision_workspace does this for a
+        # real engagement; this unit test does it explicitly).
+        provision_control_dir("e1")
         write_casa_meta(
             workspace_path=str(ws),
             engagement_id="e1", executor_type="hello-driver",
@@ -1041,8 +1061,9 @@ class TestRefreshClaudeMd:
             casa_framework_mcp_url="http://x",
         )
         ws_dir = Path(path)
-        # Memory was cached for a later boot refresh.
-        assert (ws_dir / ".executor_memory").read_text() == "mem-marker"
+        # Memory was cached for a later boot refresh — Task 4: control dir.
+        from drivers.workspace import executor_memory_path
+        assert Path(executor_memory_path(rec.id)).read_text() == "mem-marker"
 
         # Blank CLAUDE.md (simulate a wiped workspace file), then refresh.
         (ws_dir / "CLAUDE.md").write_text("")

@@ -118,7 +118,10 @@ class TestStart:
         assert (tmp_path / "svc-root" / f"engagement-{rec.id}" / "run").is_file()
         # Workspace provisioned
         assert (tmp_path / "engagements" / rec.id / "CLAUDE.md").exists()
-        assert (tmp_path / "engagements" / rec.id / "stdin.fifo").exists()
+        # Task 4 (containment stage 2): the FIFO lives in the control dir.
+        from drivers.workspace import fifo_path
+        assert os.path.exists(fifo_path(rec.id))
+        assert not (tmp_path / "engagements" / rec.id / "stdin.fifo").exists()
 
 
     @pytest.mark.skipif(
@@ -458,11 +461,14 @@ class TestSessionIdCapture:
         ``<uuid>.jsonl`` file. Watcher persists the UUID to
         ``<ws>/.session_id`` and invokes ``persist_session_id`` callback.
         """
+        from pathlib import Path
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         projects.mkdir(parents=True)
         sid = "8ab67de0-1234-5678-9abc-def012345678"
@@ -491,10 +497,12 @@ class TestSessionIdCapture:
         except asyncio.CancelledError:
             pass
 
-        session_file = ws / ".session_id"
+        # Task 4 (containment stage 2): .session_id lives in the control dir.
+        session_file = Path(session_id_path(rec.id))
         assert session_file.exists(), (
-            f".session_id file must be written to workspace dir "
-            f"({ws}); contents of dir: {list(ws.iterdir())}"
+            f".session_id file must be written to the control dir "
+            f"({session_file.parent}); contents: "
+            f"{list(session_file.parent.iterdir())}"
         )
         assert session_file.read_text(encoding="utf-8").strip() == sid
         assert persisted == [(rec.id, sid)], (
@@ -509,10 +517,12 @@ class TestSessionIdCapture:
         until the directory + file appear.
         """
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         # Don't create projects yet — let the watcher poll.
 
@@ -544,7 +554,9 @@ class TestSessionIdCapture:
         except asyncio.CancelledError:
             pass
 
-        assert (ws / ".session_id").read_text(encoding="utf-8").strip() == sid
+        import pathlib as _pathlib
+        assert _pathlib.Path(session_id_path(rec.id)).read_text(
+            encoding="utf-8").strip() == sid
         assert persisted == [(rec.id, sid)]
 
     async def test_ignores_non_uuid_filenames(self, tmp_path):
@@ -552,10 +564,12 @@ class TestSessionIdCapture:
         session files). Other files in the projects dir (logs, locks,
         partial writes) must NOT be persisted as session_ids."""
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         projects.mkdir(parents=True)
         # Decoy files that look superficially like jsonl but are NOT
@@ -589,7 +603,9 @@ class TestSessionIdCapture:
             pass
 
         # The decoy files were ignored; the UUID-named file was captured.
-        assert (ws / ".session_id").read_text(encoding="utf-8").strip() == sid
+        import pathlib as _pathlib
+        assert _pathlib.Path(session_id_path(rec.id)).read_text(
+            encoding="utf-8").strip() == sid
         assert persisted == [(rec.id, sid)]
 
     async def test_atomic_write_via_temp_rename(self, tmp_path):
@@ -598,10 +614,12 @@ class TestSessionIdCapture:
         ``claude --resume <truncated>``. Verify temp+rename atomicity
         (no leftover ``.session_id.tmp`` in workspace)."""
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import control_dir, provision_control_dir
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         projects.mkdir(parents=True)
         sid = "deadbeef-0000-0000-0000-000000000000"
@@ -622,11 +640,14 @@ class TestSessionIdCapture:
         except asyncio.CancelledError:
             pass
 
-        leftovers = [p.name for p in ws.iterdir() if p.name.startswith(".session_id")]
+        # Task 4: .session_id (and its .tmp) live in the control dir.
+        import pathlib as _pathlib
+        ctl = _pathlib.Path(control_dir(rec.id))
+        leftovers = [p.name for p in ctl.iterdir() if p.name.startswith(".session_id")]
         assert ".session_id" in leftovers
         tmp_leftovers = [n for n in leftovers if n != ".session_id"]
         assert tmp_leftovers == [], (
-            f"atomic-write temp file leaked into workspace: {tmp_leftovers!r}"
+            f"atomic-write temp file leaked into the control dir: {tmp_leftovers!r}"
         )
 
 
@@ -859,7 +880,9 @@ class TestWriteToFifoBounded:
 
         ws = tmp_path / "eng-no-reader"
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir("eng-no-reader")
+        os.mkfifo(fifo_path("eng-no-reader"))
         sent = []
         driver = self._driver(tmp_path, sent)
         rec = SimpleNamespace(id="eng-no-reader", topic_id=42)
@@ -882,7 +905,9 @@ class TestWriteToFifoBounded:
 
         ws = tmp_path / "eng-retained"
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir("eng-retained")
+        os.mkfifo(fifo_path("eng-retained"))
         sent = []
         driver = self._driver(tmp_path, sent)
         rec = SimpleNamespace(id="eng-retained", topic_id=42)
@@ -905,7 +930,9 @@ class TestWriteToFifoBounded:
 
         ws = tmp_path / "eng-legacy"
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir("eng-legacy")
+        os.mkfifo(fifo_path("eng-legacy"))
         sent = []
         driver = self._driver(tmp_path, sent)
         rec = SimpleNamespace(id="eng-legacy", topic_id=42)
@@ -951,9 +978,12 @@ class TestWriteToFifoBounded:
         import threading
         from types import SimpleNamespace
 
+        from drivers.workspace import fifo_path, provision_control_dir
+
         ws = tmp_path / "eng-reader"
         ws.mkdir()
-        fifo = str(ws / "stdin.fifo")
+        provision_control_dir("eng-reader")
+        fifo = fifo_path("eng-reader")
         os.mkfifo(fifo)
         got = []
         t = threading.Thread(
@@ -1350,11 +1380,14 @@ class TestSpawnBackgroundTasksInbound:
             engagements_root=str(tmp_path),
             send_to_topic=sender, casa_framework_mcp_url="x",
         )
+        from drivers.workspace import inbound_spool_path, provision_control_dir
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         # A surviving spool with one queued envelope + one consumed envelope
-        # still owing a receipt (pending).
+        # still owing a receipt (pending). Task 4: lives in the control dir.
         import json
         lines = [
             json.dumps({
@@ -1370,7 +1403,8 @@ class TestSpawnBackgroundTasksInbound:
                 "seq": 1, "is_initial": False,
             }),
         ]
-        (ws / ".inbound_spool.jsonl").write_text(
+        import pathlib as _pathlib
+        _pathlib.Path(inbound_spool_path(rec.id)).write_text(
             "\n".join(lines) + "\n", encoding="utf-8")
         try:
             drv._spawn_background_tasks(rec)
@@ -1407,10 +1441,14 @@ class TestAbnormalExitCorrelation:
             engagements_root=str(tmp_path),
             send_to_topic=AsyncMock(), casa_framework_mcp_url="x",
         )
+        from drivers.workspace import provision_control_dir, stderr_path
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
-        (ws / ".stderr.1.log").write_text(
+        provision_control_dir(rec.id)
+        # Task 4: the per-epoch stderr ring lives in the control dir.
+        __import__("pathlib").Path(stderr_path(rec.id, 1)).write_text(
             "traceback: boom on epoch 1\n", encoding="utf-8")
 
         with caplog.at_level(logging.WARNING):
@@ -1704,12 +1742,15 @@ class TestCancelBypassesQueue:
             s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc"))
         (tmp_path / "svc").mkdir()
 
+        from drivers.workspace import provision_control_dir
+
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path),
             send_to_topic=AsyncMock(), casa_framework_mcp_url="x",
         )
         rec = _make_record()
         (tmp_path / rec.id).mkdir()
+        provision_control_dir(rec.id)  # Task 4: spool persist needs the control dir
 
         # Wire the spool; enqueue while unarmed (busy — no spawn yet).
         drv._spawn_background_tasks(rec)
@@ -1761,16 +1802,22 @@ class TestSpoolThreadingAndSeam:
 
 
 class TestTerminalSpoolDrainAndReconcile:
-    def _write_spool(self, ws, *, receipt="pending", notice="none", tg=12):
+    def _write_spool(self, engagement_id, *, receipt="pending", notice="none", tg=12):
+        """Task 4: the spool lives in the control dir, keyed by engagement id
+        (not the workspace path callers used to pass)."""
         import json
-        ws.mkdir(parents=True, exist_ok=True)
+        import pathlib as _pathlib
+        from drivers.workspace import inbound_spool_path, provision_control_dir
+
+        provision_control_dir(engagement_id)
         line = json.dumps({
             "text": "owes a receipt", "tg_message_id": tg,
             "priority": False, "receipt": receipt, "notice": notice,
             "enqueued_at": 1.0, "delivery_epoch": 5, "state": "consumed",
             "seq": 0, "is_initial": False,
         })
-        (ws / ".inbound_spool.jsonl").write_text(line + "\n", encoding="utf-8")
+        _pathlib.Path(inbound_spool_path(engagement_id)).write_text(
+            line + "\n", encoding="utf-8")
 
     async def test_drain_inbound_spool_flushes_pending_receipt(self, tmp_path):
         from drivers.claude_code_driver import ClaudeCodeDriver, _RECEIPT_COPY
@@ -1782,7 +1829,8 @@ class TestTerminalSpoolDrainAndReconcile:
         )
         rec = _make_record()
         ws = tmp_path / rec.id
-        self._write_spool(ws)
+        ws.mkdir(parents=True, exist_ok=True)
+        self._write_spool(rec.id)
         drv._spawn_background_tasks(rec)
         # Cancel the recover task so it doesn't also drain (isolate the drain).
         for t in drv._tasks.get(rec.id, []):
@@ -1799,7 +1847,9 @@ class TestTerminalSpoolDrainAndReconcile:
     async def test_reconcile_terminal_spool_posts_when_topic_exists(self, tmp_path):
         """terminal-commit→kill→boot-drain: a terminal spool with a pending
         receipt is drained to the (existing) topic on boot reconciliation."""
+        import pathlib as _pathlib
         from drivers.claude_code_driver import ClaudeCodeDriver, _RECEIPT_COPY
+        from drivers.workspace import inbound_spool_path
 
         sender = AsyncMock(return_value=1)
         drv = ClaudeCodeDriver(
@@ -1807,18 +1857,20 @@ class TestTerminalSpoolDrainAndReconcile:
             send_to_topic=sender, casa_framework_mcp_url="x",
         )
         rec = _make_record()                          # topic_id = 999
-        self._write_spool(tmp_path / rec.id)
+        self._write_spool(rec.id)
         await drv.reconcile_terminal_spool(rec)
         posts = [c for c in sender.await_args_list if _RECEIPT_COPY in c.args]
         assert posts and posts[0].args[0] == rec.topic_id
         # Settled + pruned on disk (no pending left).
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' not in remaining
 
     async def test_reconcile_terminal_spool_warn_drops_when_topic_gone(
         self, tmp_path,
     ):
+        import pathlib as _pathlib
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import inbound_spool_path
         from engagement_registry import EngagementRecord
 
         sender = AsyncMock()
@@ -1833,17 +1885,20 @@ class TestTerminalSpoolDrainAndReconcile:
             completed_at=1.0, sdk_session_id=None,
             origin={"channel": "telegram"}, task="t",
         )
-        self._write_spool(tmp_path / rec.id)
+        self._write_spool(rec.id)
         await drv.reconcile_terminal_spool(rec)
         # Topic gone → WARN-drop, nothing sent, pending settled so it won't retry.
         assert sender.await_count == 0
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' not in remaining
 
     async def test_drain_failure_then_restart_retries(self, tmp_path):
         """drain-failure→restart→retry: a send that fails at drain leaves the
         receipt pending; a later reconcile (restart) retries and succeeds."""
         from drivers.claude_code_driver import ClaudeCodeDriver, _RECEIPT_COPY
+
+        import pathlib as _pathlib
+        from drivers.workspace import inbound_spool_path
 
         # First send raises (drain fails), later sends succeed.
         sender = AsyncMock(side_effect=[RuntimeError("telegram down"), 1, 1])
@@ -1852,13 +1907,13 @@ class TestTerminalSpoolDrainAndReconcile:
             send_to_topic=sender, casa_framework_mcp_url="x",
         )
         rec = _make_record()
-        self._write_spool(tmp_path / rec.id)
+        self._write_spool(rec.id)
         await drv.reconcile_terminal_spool(rec)       # send fails → still pending
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' in remaining
         await drv.reconcile_terminal_spool(rec)       # restart → retry, succeeds
         assert any(_RECEIPT_COPY in c.args for c in sender.await_args_list)
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' not in remaining
 
 
@@ -2624,10 +2679,13 @@ class TestNoReaderNoticeThroughSequencer:
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path), send_to_topic=sent_direct,
             casa_framework_mcp_url="x")
+        from drivers.workspace import fifo_path, provision_control_dir
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))  # exists, but NO reader ⇒ deadline hit
+        provision_control_dir(rec.id)
+        os.mkfifo(fifo_path(rec.id))  # exists, but NO reader ⇒ deadline hit
 
         posts: list = []
 
@@ -2668,10 +2726,13 @@ class TestNoReaderNoticeThroughSequencer:
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path), send_to_topic=sent_direct,
             casa_framework_mcp_url="x")
+        from drivers.workspace import fifo_path, provision_control_dir
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        provision_control_dir(rec.id)
+        os.mkfifo(fifo_path(rec.id))
 
         ok = await asyncio.wait_for(
             drv._write_to_fifo(rec, "hello", timeout_s=0.3, poll_s=0.05),

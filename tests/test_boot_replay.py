@@ -193,7 +193,8 @@ async def test_replay_heals_missing_service_dir_with_known_executor(
     assert len(write_calls) == 1
     assert write_calls[0]["engagement_id"] == "keep1"
     # FIFO created in the workspace alongside the planted service.
-    assert (ws_root / "keep1" / "stdin.fifo").exists()
+    from drivers.workspace import fifo_path
+    assert os.path.exists(fifo_path("keep1"))
 
 
 async def test_replay_rerenders_stale_prev75_run_script(monkeypatch, tmp_path):
@@ -1557,6 +1558,7 @@ async def test_fast_path_recreates_missing_fifo(monkeypatch, tmp_path):
     loop runs the record (a `set -e` read of a missing FIFO crash-loops
     under s6 forever)."""
     from casa_core import replay_undergoing_engagements
+    from drivers.workspace import fifo_path
 
     start_calls = _fast_path_env(monkeypatch, tmp_path)
     ws_root = tmp_path / "eng"
@@ -1570,7 +1572,8 @@ async def test_fast_path_recreates_missing_fifo(monkeypatch, tmp_path):
         registry=reg, driver=driver, executor_registry=_exec_reg(),
         engagements_root=str(ws_root))
 
-    assert (ws_root / "keep1" / "stdin.fifo").exists()
+    # Task 4 (containment stage 2): the FIFO lives in the control dir.
+    assert os.path.exists(fifo_path("keep1"))
     assert start_calls == ["keep1"]
 
 
@@ -1581,11 +1584,16 @@ async def test_fast_path_replaces_non_fifo_stdin_path(monkeypatch, tmp_path):
     import stat as stat_mod
 
     from casa_core import replay_undergoing_engagements
+    from drivers.workspace import fifo_path, provision_control_dir
 
     start_calls = _fast_path_env(monkeypatch, tmp_path)
     ws_root = tmp_path / "eng"
     (ws_root / "keep1").mkdir(parents=True)
-    (ws_root / "keep1" / "stdin.fifo").write_text("not a fifo")
+    # Task 4: the (corrupted) non-fifo entry lives in the control dir now.
+    provision_control_dir("keep1")
+    fifo = fifo_path("keep1")
+    with open(fifo, "w", encoding="utf-8") as f:
+        f.write("not a fifo")
 
     reg = await _make_registry([_rec("keep1")])
     driver = _boot_driver()
@@ -1595,19 +1603,19 @@ async def test_fast_path_replaces_non_fifo_stdin_path(monkeypatch, tmp_path):
         registry=reg, driver=driver, executor_registry=_exec_reg(),
         engagements_root=str(ws_root))
 
-    st = (ws_root / "keep1" / "stdin.fifo").stat()
+    st = os.stat(fifo)
     assert stat_mod.S_ISFIFO(st.st_mode), "regular file must be replaced"
     assert start_calls == ["keep1"]
 
     # Directory variant: also repaired.
     import os as os_mod
-    os_mod.remove(ws_root / "keep1" / "stdin.fifo")
-    (ws_root / "keep1" / "stdin.fifo").mkdir()
+    os_mod.remove(fifo)
+    os_mod.mkdir(fifo)
     reg2 = await _make_registry([_rec("keep1")])
     await replay_undergoing_engagements(
         registry=reg2, driver=driver, executor_registry=_exec_reg(),
         engagements_root=str(ws_root))
-    st = (ws_root / "keep1" / "stdin.fifo").stat()
+    st = os.stat(fifo)
     assert stat_mod.S_ISFIFO(st.st_mode), "directory must be replaced"
 
 

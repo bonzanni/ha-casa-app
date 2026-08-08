@@ -7980,7 +7980,7 @@ async def delete_engagement_workspace(args: dict) -> dict:
     # v0.64.0: the per-engagement s6-log dir follows the workspace on this
     # caller-managed path too — once the workspace is gone, the retention
     # sweep can never map to the log dir again.
-    from drivers.workspace import engagement_log_dir
+    from drivers.workspace import control_dir, engagement_log_dir
     log_dir = engagement_log_dir(engagement_id)
     try:
         if os.path.isdir(log_dir):
@@ -7989,6 +7989,18 @@ async def delete_engagement_workspace(args: dict) -> dict:
         logger.warning(
             "delete_engagement_workspace: log dir rmtree %s failed: %s",
             log_dir, exc,
+        )
+    # Task 4 (containment stage 2): the root-only control dir follows the
+    # workspace on this caller-managed path too — same reasoning as the log
+    # dir above (once the workspace is gone, nothing can map back to it).
+    ctl_dir = control_dir(engagement_id)
+    try:
+        if os.path.isdir(ctl_dir):
+            shutil.rmtree(ctl_dir)
+    except OSError as exc:
+        logger.warning(
+            "delete_engagement_workspace: control dir rmtree %s failed: %s",
+            ctl_dir, exc,
         )
     return _result({
         "status": "ok", "engagement_id": engagement_id,

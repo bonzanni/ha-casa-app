@@ -36,6 +36,88 @@ def engagement_log_dir(engagement_id: str, *, root: str | None = None) -> str:
         f"casa-engagement-{engagement_id}",
     )
 
+
+# ---------------------------------------------------------------------------
+# Containment stage 2, Task 4: root-only control dir.
+# ---------------------------------------------------------------------------
+# The uid-owned workspace (``/data/engagements/<id>/``, below) holds only what
+# the engagement's OWN CLI process reads/writes by path: CLAUDE.md, .mcp.json,
+# .home/, doctrine/, plugin-provided files. Every file that ONLY root
+# (casa-core) reads or writes — session-id capture, the spawn-epoch fence,
+# per-epoch stderr rings, the inbound spool, the crash-safe stream cursor, the
+# cached executor-memory block, and the inbound stdin FIFO itself — lives here
+# instead, in a directory the CLI never gets ``--add-dir``ed into and that
+# stays root:root 0700 even after Stage 2's per-engagement uid+cap-drop lands
+# (Task 6/8). This is what kills the symlink-primitive class: a workspace
+# symlink swapped in by the (unprivileged, post-Stage-2) CLI process can never
+# again redirect a root read/write of one of these files, because none of
+# them are joined to the workspace path anymore.
+CONTROL_ROOT = "/data/engagement-ctl"
+
+# Kept in step with drivers.claude_code_driver._SPOOL_FILENAME (the driver
+# owns the constant name; this module only needs the literal to build paths).
+_SPOOL_FILENAME = ".inbound_spool.jsonl"
+
+
+def control_dir(engagement_id: str, *, root: str | None = None) -> str:
+    """Absolute path of the engagement's root-only control directory."""
+    return os.path.join(root if root is not None else CONTROL_ROOT, engagement_id)
+
+
+def provision_control_dir(engagement_id: str, *, root: str | None = None) -> str:
+    """Create the control dir for ``engagement_id`` — 0700, root-owned.
+
+    ``exist_ok=False``: mirrors ``provision_workspace``'s own contract (the
+    caller must not have created the directory already) so a double-
+    provision of the same id is a loud error, not a silent merge into
+    leftover state from a prior (crashed?) attempt.
+    """
+    base = root if root is not None else CONTROL_ROOT
+    Path(base).mkdir(parents=True, exist_ok=True)
+    d = Path(control_dir(engagement_id, root=root))
+    d.mkdir(mode=0o700, exist_ok=False)
+    return str(d)
+
+
+def session_id_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), ".session_id")
+
+
+def spawn_epoch_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), ".spawn_epoch")
+
+
+def stderr_path(
+    engagement_id: str, epoch: int, *, root: str | None = None,
+) -> str:
+    """Base path of the per-epoch stderr ring (``<base>`` is the live file;
+    ``<base>.1`` is ringlog's one rotated chunk)."""
+    return os.path.join(
+        control_dir(engagement_id, root=root), f".stderr.{epoch}.log")
+
+
+def casa_meta_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), ".casa-meta.json")
+
+
+def fifo_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), "stdin.fifo")
+
+
+def inbound_spool_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(
+        control_dir(engagement_id, root=root), _SPOOL_FILENAME)
+
+
+def stream_cursor_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(
+        control_dir(engagement_id, root=root), ".stream_cursor.json")
+
+
+def executor_memory_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(
+        control_dir(engagement_id, root=root), ".executor_memory")
+
 # Bug 5 (v0.14.6): env-var names must match shell-identifier syntax.
 # Pre-fix the key was interpolated unsanitised into `export {}='{}'`,
 # so a key containing "\n" or other shell-special chars escaped the
@@ -460,11 +542,19 @@ async def provision_workspace(
             json.dumps(settings, indent=2), encoding="utf-8",
         )
 
-    # W3 (Task 8): cache the fetched executor_memory block at <ws>/.executor_memory
-    # so a later ``refresh_claude_md`` (boot replay) can re-interpolate the SAME
-    # {executor_memory} section — the block is a LIVE Hindsight fetch, not
-    # re-derivable at boot, so it must be persisted alongside the workspace.
-    (ws / ".executor_memory").write_text(executor_memory or "", encoding="utf-8")
+    # Task 4 (containment stage 2): the control dir is provisioned here,
+    # alongside the workspace — every root-only run-state file below lands
+    # in it, never under the uid-owned workspace the CLI can symlink through.
+    provision_control_dir(engagement_id)
+
+    # W3 (Task 8): cache the fetched executor_memory block at the control-dir
+    # ``.executor_memory`` so a later ``refresh_claude_md`` (boot replay) can
+    # re-interpolate the SAME {executor_memory} section — the block is a LIVE
+    # Hindsight fetch, not re-derivable at boot, so it must be persisted
+    # alongside the workspace. Task 4: moved OUT of the workspace — root
+    # generates and reads this, the CLI never does.
+    Path(executor_memory_path(engagement_id)).write_text(
+        executor_memory or "", encoding="utf-8")
 
     # v0.74.2 (live finding 2026-07-13): provision the executor's doctrine/
     # into the workspace — the rendered CLAUDE.md references doctrine/*.md,
@@ -499,9 +589,11 @@ async def provision_workspace(
         casa_framework_mcp_url=casa_framework_mcp_url,
     )
 
-    # 3. Named FIFO for stdin.
-    fifo_path = ws / "stdin.fifo"
-    os.mkfifo(str(fifo_path), 0o600)
+    # 3. Named FIFO for stdin. Task 4: lives in the control dir — the run
+    # template's `exec < .../stdin.fifo` reads it by an absolute
+    # control-dir path (scripts/engagement_run_template.sh), never through
+    # the workspace.
+    os.mkfifo(fifo_path(engagement_id), 0o600)
 
     logger.info("Provisioned workspace for engagement %s at %s",
                 engagement_id[:8], ws)
@@ -545,7 +637,9 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     context = rec.origin.get("context", "")
     world_state_summary = rec.origin.get("world_state_summary", "")
 
-    mem_path = ws / ".executor_memory"
+    # Task 4: cached at PROVISION under the control dir (engagement id is
+    # the workspace dir's basename by construction), not the workspace.
+    mem_path = Path(executor_memory_path(ws.name))
     executor_memory = (
         mem_path.read_text(encoding="utf-8") if mem_path.is_file() else ""
     )
@@ -597,12 +691,21 @@ def write_casa_meta(
         "retention_until": retention_until,
         "plugin_artifacts": list(plugin_artifacts or []),
     }
-    path = Path(workspace_path) / ".casa-meta.json"
+    # Task 4: moved to the control dir — ``workspace_path`` is retained as a
+    # parameter for caller back-compat (every existing caller already has it
+    # in hand) but no longer contributes to the path; ``engagement_id`` alone
+    # determines where the meta lives now.
+    path = Path(casa_meta_path(engagement_id))
     path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
 def load_casa_meta(workspace_path: str) -> dict | None:
-    path = Path(workspace_path) / ".casa-meta.json"
+    # Task 4: the workspace dir's basename IS the engagement id by
+    # construction (``provision_workspace`` mkdirs exactly
+    # ``<engagements_root>/<engagement_id>``) — every existing caller passes
+    # a workspace path, so derive the id rather than widen every call site.
+    engagement_id = Path(workspace_path).name
+    path = Path(casa_meta_path(engagement_id))
     if not path.exists():
         return None
     try:
@@ -718,6 +821,19 @@ def _sweep_one_workspace(
             logger.warning(
                 "workspace sweep: log dir rmtree %s failed: %s",
                 log_dir, exc,
+            )
+        # Task 4: the control dir follows the workspace on the SAME
+        # retention decision — once the workspace is gone, nothing can
+        # ever map back to its control dir again (load_casa_meta derives
+        # the id from the workspace basename, which no longer exists).
+        ctl_dir = control_dir(entry.name)
+        try:
+            if os.path.isdir(ctl_dir):
+                shutil.rmtree(ctl_dir)
+        except OSError as exc:
+            logger.warning(
+                "workspace sweep: control dir rmtree %s failed: %s",
+                ctl_dir, exc,
             )
 
 

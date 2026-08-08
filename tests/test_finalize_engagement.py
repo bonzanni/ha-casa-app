@@ -152,13 +152,16 @@ async def test_finalize_writes_retention_for_claude_code_driver(
     retention_until = now + 7 days when driver=='claude_code' and a
     workspace dir exists."""
     import json
+    from pathlib import Path
     import tools as tools_mod
     from engagement_registry import EngagementRecord, EngagementRegistry
-    from drivers.workspace import write_casa_meta
+    from drivers.workspace import casa_meta_path, provision_control_dir, write_casa_meta
     from tools import _finalize_engagement
 
     ws = tmp_path / "eng1"
     ws.mkdir()
+    # Task 4 (containment stage 2): .casa-meta.json lives in the control dir.
+    provision_control_dir("eng1")
     write_casa_meta(
         workspace_path=str(ws), engagement_id="eng1",
         executor_type="hello-driver", status="UNDERGOING",
@@ -187,7 +190,7 @@ async def test_finalize_writes_retention_for_claude_code_driver(
         artifacts=[], next_steps=[], driver=None,
     )
 
-    meta = json.loads((ws / ".casa-meta.json").read_text())
+    meta = json.loads(Path(casa_meta_path("eng1")).read_text())
     assert meta["status"] == "COMPLETED"
     assert meta["retention_until"] is not None
     # Parseable as ISO 8601 Z.
@@ -430,7 +433,7 @@ async def test_finalize_preserves_plugin_artifacts_in_casa_meta(
     """§3.8: the terminal .casa-meta.json rewrite must NOT drop the
     immutable plugin_artifacts recorded at engagement start."""
     import tools as tools_mod
-    from drivers.workspace import load_casa_meta, write_casa_meta
+    from drivers.workspace import load_casa_meta, provision_control_dir, write_casa_meta
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
@@ -446,6 +449,8 @@ async def test_finalize_preserves_plugin_artifacts_in_casa_meta(
 
     ws = eng_root / rec.id
     ws.mkdir(parents=True)
+    # Task 4 (containment stage 2): .casa-meta.json lives in the control dir.
+    provision_control_dir(rec.id)
     artifacts = [{"name": "superpowers", "artifact_id": "a" * 64,
                   "path": "/config/plugins/store/superpowers/" + "a" * 64}]
     write_casa_meta(

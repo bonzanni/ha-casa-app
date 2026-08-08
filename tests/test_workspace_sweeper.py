@@ -12,6 +12,12 @@ pytestmark = pytest.mark.asyncio
 
 
 def _write_meta(ws: Path, *, status: str, retention_iso: str | None = None):
+    """Task 4 (containment stage 2): .casa-meta.json lives in the control
+    dir, keyed by the engagement id — which ``load_casa_meta`` derives from
+    the workspace dir's basename, so this helper provisions the control dir
+    to match."""
+    from drivers.workspace import casa_meta_path, provision_control_dir
+
     meta = {
         "engagement_id": ws.name,
         "executor_type": "hello-driver",
@@ -20,19 +26,25 @@ def _write_meta(ws: Path, *, status: str, retention_iso: str | None = None):
         "finished_at": None,
         "retention_until": retention_iso,
     }
-    (ws / ".casa-meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    provision_control_dir(ws.name)
+    Path(casa_meta_path(ws.name)).write_text(json.dumps(meta), encoding="utf-8")
 
 
 async def test_sweeper_deletes_terminal_expired(tmp_path):
-    from drivers.workspace import _sweep_workspaces
+    from drivers.workspace import _sweep_workspaces, control_dir
 
     ws1 = tmp_path / "eng-done-old"
     ws1.mkdir()
     _write_meta(ws1, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z")
+    assert Path(control_dir(ws1.name)).is_dir(), "control dir must exist pre-sweep"
 
     await _sweep_workspaces(engagements_root=str(tmp_path))
 
     assert not ws1.exists(), "expired completed workspace should be deleted"
+    # Task 4 (containment stage 2): the control dir follows the workspace.
+    assert not Path(control_dir(ws1.name)).exists(), (
+        "control dir must be removed alongside the workspace"
+    )
 
 
 async def test_sweeper_keeps_active_and_in_grace(tmp_path):
@@ -164,15 +176,17 @@ async def test_sweeper_survives_non_object_meta(tmp_path):
     """#344: one .casa-meta.json holding valid-but-non-object JSON ([]/
     string/number) must not abort the whole sweep — later workspaces
     still get swept."""
-    from drivers.workspace import _sweep_workspaces
+    from drivers.workspace import _sweep_workspaces, casa_meta_path, provision_control_dir
 
     # Names sort before the expired one so the bad entries are hit first.
     ws_list = tmp_path / "a-eng-list"
     ws_list.mkdir()
-    (ws_list / ".casa-meta.json").write_text("[]", encoding="utf-8")
+    provision_control_dir(ws_list.name)
+    Path(casa_meta_path(ws_list.name)).write_text("[]", encoding="utf-8")
     ws_str = tmp_path / "b-eng-str"
     ws_str.mkdir()
-    (ws_str / ".casa-meta.json").write_text('"oops"', encoding="utf-8")
+    provision_control_dir(ws_str.name)
+    Path(casa_meta_path(ws_str.name)).write_text('"oops"', encoding="utf-8")
 
     ws_expired = tmp_path / "z-eng-done-old"
     ws_expired.mkdir()
@@ -189,11 +203,12 @@ async def test_sweeper_survives_non_object_meta(tmp_path):
 async def test_sweeper_survives_non_string_retention(tmp_path):
     """Sol r6-1: a numeric retention_until must not TypeError the sweep —
     warned + skipped like null, and later workspaces still processed."""
-    from drivers.workspace import _sweep_workspaces
+    from drivers.workspace import _sweep_workspaces, casa_meta_path, provision_control_dir
 
     ws_bad = tmp_path / "a-eng-badret"
     ws_bad.mkdir()
-    (ws_bad / ".casa-meta.json").write_text(
+    provision_control_dir(ws_bad.name)
+    Path(casa_meta_path(ws_bad.name)).write_text(
         json.dumps({"status": "COMPLETED", "retention_until": 0}),
         encoding="utf-8",
     )
