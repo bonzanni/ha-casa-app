@@ -317,6 +317,9 @@ def validate_config_repo(
                     if os.path.isfile(os.path.join(exec_dir, f))
                 }
                 _resolve_executor_hooks(exec_dir, entry, defn, present)
+                # Task 3 floor check is deliberately NOT enforced here — this
+                # pass only validates the hooks POINTER (Terra r1-P2 parity);
+                # the containment floor is a load_all_executors gate (#360).
             except LoadError as exc:
                 errors.append(str(exc))
             except Exception as exc:  # noqa: BLE001 — report, never crash
@@ -1555,7 +1558,7 @@ def read_hooks_document(path: str) -> dict[str, Any]:
 
 def _resolve_executor_hooks(
     exec_dir: str, entry: str, defn: dict, present: set[str],
-) -> str | None:
+) -> tuple[str | None, dict[str, Any]]:
     """#312: resolve ``definition.yaml``'s ``hooks_file`` pointer, fail closed.
 
     Pre-fix, ANY present file satisfied the pointer — ``hooks_file:
@@ -1568,6 +1571,12 @@ def _resolve_executor_hooks(
     default spelled out, not a stricter declaration, Terra r1-P1). Shared by
     ``load_all_executors`` (boot/reload) and ``validate_config_repo`` (the
     pre-commit gate) so the two cannot diverge (Terra r1-P2).
+
+    Task 3 (#360): returns ``(hooks_abs, hooks_data)`` — the resolved path
+    (or ``None`` if no hooks file applies) AND the validated, constructible
+    parsed document (``{}`` only when no hooks file exists at all), so the
+    caller can snapshot the REAL declared document onto
+    ``ExecutorDefinition.hooks_document`` instead of re-reading it later.
     """
     hooks_name = defn.get("hooks_file", "hooks.yaml")
     if not isinstance(hooks_name, str) or not hooks_name:
@@ -1605,12 +1614,12 @@ def _resolve_executor_hooks(
                 f"executor {entry!r}: hooks_file {hooks_name!r} declares "
                 f"a policy the hook factories refuse: {exc}"
             ) from exc
-        return hooks_abs
+        return hooks_abs, hooks_data
     if hooks_name != "hooks.yaml":
         raise LoadError(
             f"executor {entry!r}: hooks_file {hooks_name!r} not found"
         )
-    return None
+    return None, {}
 
 
 def load_all_executors(
@@ -1686,7 +1695,44 @@ def load_all_executors(
             # #312: the hooks pointer must resolve to a schema-valid hooks
             # document — see _resolve_executor_hooks (shared with the
             # pre-commit gate so the two cannot diverge).
-            hooks_abs = _resolve_executor_hooks(exec_dir, entry, defn, present)
+            #
+            # Task 3 (#360): the resolver also hands back the validated,
+            # constructible parsed document — snapshot it onto
+            # ExecutorDefinition.hooks_document verbatim (the executor's
+            # REAL declared entries; {} only when no hooks file exists at
+            # all — REVISION 3b, Sol r3 plan:171/179: an empty snapshot for
+            # in_casa would let resolve_hooks({}) resynthesize the WIDER
+            # default /config-wide path_scope, reopening the in_casa hole).
+            hooks_abs, hooks_doc = _resolve_executor_hooks(
+                exec_dir, entry, defn, present)
+
+            # Task 3 (#360): a claude_code executor must DECLARE the
+            # containment floor itself (block_dangerous_bash + path_scope,
+            # each with its own params) — we never synthesize path_scope
+            # with guessed prefixes, so an absent/incomplete declaration is
+            # a load-time LoadError, not a silent narrower default. Gated on
+            # `driver` read straight from the definition dict (the schema
+            # constrains it to in_casa|claude_code; no default invented
+            # here) — the floor does not apply to in_casa executors, whose
+            # enforcement-time reread is Task 4.
+            if defn["driver"] == "claude_code":
+                from hooks import missing_required_cc_policies
+                declared_policy_names = {
+                    p.get("policy")
+                    for p in (hooks_doc.get("pre_tool_use") or [])
+                    if isinstance(p, dict)
+                }
+                missing_floor = missing_required_cc_policies(
+                    declared_policy_names)
+                if missing_floor:
+                    raise LoadError(
+                        f"executor {entry!r}: driver claude_code requires "
+                        f"declaring the containment floor "
+                        f"{sorted(missing_floor)} in "
+                        f"{hooks_abs or 'a hooks file (none present)'} — "
+                        f"each floor policy must be declared with its own "
+                        f"params, never synthesized"
+                    )
 
             observer_name = defn.get("observer_policy_file", "observer.yaml")
             observer_abs = (os.path.join(exec_dir, observer_name)
@@ -1835,6 +1881,7 @@ def load_all_executors(
                 idle_reminder_days=int(defn.get("idle_reminder_days", 7)),
                 prompt_template_path=prompt_abs,
                 hooks_path=hooks_abs,
+                hooks_document=hooks_doc,
                 observer_policy_path=observer_abs,
                 doctrine_dir=doctrine_abs,
                 role_artifact=role_artifact,
