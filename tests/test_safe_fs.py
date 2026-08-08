@@ -115,6 +115,56 @@ class TestForcedFallback:
         assert names == ["a.txt", "b.txt"]
 
 
+def test_refuses_absolute_rel_path_real(tmp_path):
+    (tmp_path / "a.txt").write_text("x")
+    with pytest.raises(SymlinkRefused):
+        read_text_beneath(str(tmp_path), "/etc/passwd")
+
+
+def test_refuses_absolute_rel_path_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("safe_fs.HAS_OPENAT2", False)
+    (tmp_path / "a.txt").write_text("x")
+    with pytest.raises(SymlinkRefused):
+        read_text_beneath(str(tmp_path), "/etc/passwd")
+
+
+def test_intermediate_owner_mismatch_refused_fallback(tmp_path, monkeypatch):
+    """Distinct from test_owner_uid_mismatch_refused: that test mismatches on
+    the LEAF file. This exercises the fallback's PER-COMPONENT owner check on
+    a legitimate (non-symlink) intermediate directory. We can't actually chown
+    to a different uid without root, so we fake the first os.fstat() call
+    (which the walk makes on the intermediate dir "d") to report a foreign
+    owner, while leaving the real fstat behavior for everything else —
+    confirming the mismatch is caught before "f" is ever reached."""
+    monkeypatch.setattr("safe_fs.HAS_OPENAT2", False)
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "f").write_text("x")
+
+    real_fstat = os.fstat
+    calls = {"n": 0}
+
+    class _FakeStat:
+        def __init__(self, real):
+            object.__setattr__(self, "_real", real)
+
+        def __getattr__(self, name):
+            return getattr(object.__getattribute__(self, "_real"), name)
+
+    def fake_fstat(fd):
+        calls["n"] += 1
+        real = real_fstat(fd)
+        if calls["n"] == 1:
+            fake = _FakeStat(real)
+            object.__setattr__(fake, "st_uid", real.st_uid + 1)
+            return fake
+        return real
+
+    monkeypatch.setattr("safe_fs.os.fstat", fake_fstat)
+    with pytest.raises(SymlinkRefused):
+        read_text_beneath(str(tmp_path), "d/f", owner_uid=os.getuid())
+    assert calls["n"] == 1, "walk should refuse at the intermediate dir, never reaching the leaf"
+
+
 def test_no_fd_leak_on_symlink_refusal_fallback(tmp_path, monkeypatch):
     """Regression: the fallback must close the parent fd on every raise path,
     including the intermediate-symlink case, or fds leak on repeated refusals."""

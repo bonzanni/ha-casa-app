@@ -92,9 +92,10 @@ def _openat2(dirfd, path, flags, resolve):
 
 
 def _probe_openat2():
+    dirfd = os.open(".", os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         fd = _openat2(
-            os.open(".", os.O_DIRECTORY | os.O_CLOEXEC),
+            dirfd,
             ".",
             os.O_RDONLY | os.O_DIRECTORY,
             RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
@@ -103,6 +104,8 @@ def _probe_openat2():
         return True
     except OSError as exc:
         return getattr(exc, "errno", None) not in (errno.ENOSYS, errno.EPERM, errno.EINVAL)
+    finally:
+        os.close(dirfd)
 
 
 HAS_OPENAT2 = _probe_openat2()
@@ -131,6 +134,12 @@ def _open_fallback(root, rel_path, want_dir, owner_uid):
     """Per-component openat(O_NOFOLLOW) walk, holding only fds — never a
     pathname — across the walk. Any raise path below closes whatever fd it
     currently holds so the fallback never leaks a descriptor."""
+    if os.path.isabs(rel_path):
+        # Mirror the openat2 path: RESOLVE_BENEATH rejects an absolute
+        # rel_path outright ("absolute values of path... rejected"). The
+        # fallback must refuse it too, rather than silently treating
+        # "/etc/passwd" as if it were "etc/passwd" relative to root.
+        raise SymlinkRefused(errno.EXDEV, "absolute rel_path", rel_path)
     parts = [p for p in rel_path.split("/") if p not in ("", ".")]
     if any(p == ".." for p in parts):
         raise SymlinkRefused(errno.EXDEV, "dotdot escape", rel_path)
@@ -152,7 +161,10 @@ def _open_fallback(root, rel_path, want_dir, owner_uid):
             try:
                 fd = os.open(name, flags, dir_fd=parent)
             except OSError as exc:
-                if exc.errno in (errno.ELOOP, errno.EMLINK, errno.ENOTDIR):
+                # ELOOP: O_NOFOLLOW hit a symlink. ENOTDIR: O_DIRECTORY was
+                # also requested (non-final component) and the symlink's
+                # target-type check failed first — same underlying refusal.
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise SymlinkRefused(exc.errno, "symlink component", name) from exc
                 raise
             os.close(parent)
