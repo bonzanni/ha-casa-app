@@ -971,7 +971,6 @@ def _build_executor_cc_hook_policies(executor_registry) -> dict:
     defaults (default ``path_scope`` has empty prefix lists, denying every
     workspace Read/Write/Edit).
     """
-    from agent_loader import read_hooks_document
     from hooks import UsesDefaultPolicies, build_policy_callbacks_from_hooks_yaml
 
     out: dict = {}
@@ -986,10 +985,13 @@ def _build_executor_cc_hook_policies(executor_registry) -> dict:
             out[t] = UsesDefaultPolicies()
             continue
         try:
-            # Sol r1-2: the SAME env-substituting reader load-time validation
-            # used — a raw safe_load here parsed a DIFFERENT document for any
-            # ${VAR} reference (validated substituted, enforced raw).
-            data = read_hooks_document(defn.hooks_path)
+            # Task 3 (#360): build from the load-time-validated snapshot
+            # (ExecutorDefinition.hooks_document), never by re-reading
+            # hooks_path — a fresh read here would let a post-load edit
+            # (e.g. a config-editable hooks_file: repoint) reach the HTTP
+            # enforcement path without going through reload's
+            # re-validate-and-re-snapshot.
+            data = defn.hooks_document
             out[t] = build_policy_callbacks_from_hooks_yaml(data)
         except Exception as exc:  # noqa: BLE001
             # #442 r2 (Sol/Terra P1): omitting the executor is NOT neutral —
