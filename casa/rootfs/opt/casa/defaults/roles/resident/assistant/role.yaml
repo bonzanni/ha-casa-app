@@ -10,8 +10,8 @@ model:
   default: opus
   allowed: [opus, sonnet, haiku]
 tools:
-  allowed: [Read, Write, Edit, Bash, Skill, mcp__casa-framework__cancel_engagement, mcp__casa-framework__cleanup_engagement_topics, mcp__casa-framework__delegate_to_agent, mcp__casa-framework__engage_executor, mcp__casa-framework__ask_user, mcp__casa-framework__get_schedule, mcp__casa-framework__recall_memory, mcp__casa-framework__send_message, mcp__casa-framework__send_media]
-  disallowed: []
+  allowed: [Read, Write, Edit, Skill, mcp__casa-framework__cancel_engagement, mcp__casa-framework__cleanup_engagement_topics, mcp__casa-framework__delegate_to_agent, mcp__casa-framework__engage_executor, mcp__casa-framework__ask_user, mcp__casa-framework__get_schedule, mcp__casa-framework__recall_memory, mcp__casa-framework__send_message, mcp__casa-framework__send_media]
+  disallowed: [Bash, Agent, Task]
   permission_mode: acceptEdits
   max_turns: 20
   skills: all

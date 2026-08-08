@@ -154,7 +154,7 @@ class TestHooksFileValidation:
     safety policy — and a declared-but-absent pointer silently dropped hooks
     entirely."""
 
-    def _seed(self, tmp_path, extra_defn="", hooks=None):
+    def _seed(self, tmp_path, extra_defn="", hooks=None, driver="claude_code"):
         ex_dir = tmp_path / "executors" / "myx"
         ex_dir.mkdir(parents=True)
         (ex_dir / "definition.yaml").write_text(
@@ -162,7 +162,7 @@ class TestHooksFileValidation:
             "type: myx\n"
             "description: A test executor with a minimum of twenty characters.\n"
             "model: sonnet\n"
-            "driver: claude_code\n" + extra_defn
+            f"driver: {driver}\n" + extra_defn
         )
         (ex_dir / "prompt.md").write_text("hi")
         if hooks is not None:
@@ -207,6 +207,7 @@ class TestHooksFileValidation:
             hooks=(
                 "schema_version: 1\n"
                 "pre_tool_use:\n"
+                "  - policy: block_dangerous_bash\n"
                 "  - policy: path_scope\n"
                 "    writable: [/data/engagements/]\n"
                 "    readable: [/data/engagements/]\n"
@@ -217,18 +218,25 @@ class TestHooksFileValidation:
         assert out["myx"].hooks_path.endswith("hooks.yaml")
 
     def test_absent_default_hooks_yaml_stays_optional(self, tmp_path):
+        """Terra r1-P1's optionality is about the POINTER's own default, not
+        the containment floor — Task 3 (#360) makes an absent hooks file a
+        LoadError for ``driver: claude_code`` specifically (an executor with
+        no declared floor policies), so this stays in_casa to keep testing
+        the pointer behaviour it names."""
         from agent_loader import load_all_executors
-        roles_dir = self._seed(tmp_path)
+        roles_dir = self._seed(tmp_path, driver="in_casa")
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
         assert out["myx"].hooks_path is None
 
     def test_explicit_default_hooks_file_absent_stays_optional(self, tmp_path):
         """Terra r1-P1: ``hooks_file: hooks.yaml`` spelled out is the default,
-        not a stricter declaration — absence stays optional."""
+        not a stricter declaration — absence stays optional. Task 3 (#360):
+        in_casa here for the same reason as the sibling test above — the
+        containment floor is a claude_code-only requirement."""
         from agent_loader import load_all_executors
         roles_dir = self._seed(
-            tmp_path, extra_defn="hooks_file: hooks.yaml\n",
+            tmp_path, extra_defn="hooks_file: hooks.yaml\n", driver="in_casa",
         )
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
@@ -262,6 +270,8 @@ class TestHooksFileValidation:
         import tools as tools_mod
         from agent_loader import load_all_executors
         monkeypatch.setenv("CASA_TEST_MAX_FILES", "5")
+        # Task 3 (#360): in_casa — the containment floor is claude_code-only,
+        # and this test's own docstring names the in_casa options builder.
         roles_dir = self._seed(
             tmp_path,
             hooks=(
@@ -270,6 +280,7 @@ class TestHooksFileValidation:
                 "  - policy: commit_size_guard\n"
                 "    max_files: ${CASA_TEST_MAX_FILES}\n"
             ),
+            driver="in_casa",
         )
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
@@ -285,6 +296,8 @@ class TestHooksFileValidation:
         entry after validation had passed."""
         from agent_loader import load_all_executors, read_hooks_document
         monkeypatch.setenv("CASA_TEST_MAX_FILES", "5")
+        # Task 3 (#360): in_casa — the containment floor is claude_code-only
+        # and does not bear on this test's env-substitution concern.
         roles_dir = self._seed(
             tmp_path,
             hooks=(
@@ -293,11 +306,110 @@ class TestHooksFileValidation:
                 "  - policy: commit_size_guard\n"
                 "    max_files: ${CASA_TEST_MAX_FILES}\n"
             ),
+            driver="in_casa",
         )
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
         data = read_hooks_document(out["myx"].hooks_path)
         assert data["pre_tool_use"][0]["max_files"] == 5
+
+
+class TestContainmentFloorSnapshot:
+    """Task 3 (#360): ExecutorDefinition.hooks_document snapshots the
+    load-time-validated parsed hooks doc for EVERY executor, and a
+    ``driver: claude_code`` executor must DECLARE the containment floor
+    (block_dangerous_bash + path_scope) itself or fail to load."""
+
+    def _seed_claude_code(self, tmp_path, hooks=None):
+        ex_dir = tmp_path / "executors" / "myx"
+        ex_dir.mkdir(parents=True)
+        (ex_dir / "definition.yaml").write_text(
+            "schema_version: 1\n"
+            "type: myx\n"
+            "description: A test executor with a minimum of twenty characters.\n"
+            "model: sonnet\n"
+            "driver: claude_code\n"
+        )
+        (ex_dir / "prompt.md").write_text("hi")
+        if hooks is not None:
+            (ex_dir / "hooks.yaml").write_text(hooks)
+        roles_dir = tmp_path / "roles"
+        _seed_executor_role_artifact(str(roles_dir), "myx")
+        return str(roles_dir)
+
+    def test_claude_code_empty_pre_tool_use_fails_closed_naming_missing_policy(
+        self, tmp_path,
+    ):
+        from agent_loader import load_all_executors
+        roles_dir = self._seed_claude_code(
+            tmp_path, hooks="schema_version: 1\npre_tool_use: []\n",
+        )
+        out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
+        assert out == {}
+        assert len(failed) == 1 and failed[0][0] == "myx"
+        message = failed[0][1]
+        assert "block_dangerous_bash" in message
+        assert "path_scope" in message
+
+    def test_claude_code_no_hooks_file_fails_closed(self, tmp_path):
+        from agent_loader import load_all_executors
+        roles_dir = self._seed_claude_code(tmp_path, hooks=None)
+        out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
+        assert out == {}
+        assert len(failed) == 1 and failed[0][0] == "myx"
+
+    def test_claude_code_full_floor_loads_with_snapshot(self, tmp_path):
+        from agent_loader import load_all_executors
+        hooks_yaml = (
+            "schema_version: 1\n"
+            "pre_tool_use:\n"
+            "  - policy: block_dangerous_bash\n"
+            "  - policy: path_scope\n"
+            "    writable: [/data/engagements/]\n"
+            "    readable: [/data/engagements/]\n"
+        )
+        roles_dir = self._seed_claude_code(tmp_path, hooks=hooks_yaml)
+        out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
+        assert failed == []
+        assert "myx" in out
+        import yaml
+        expected = yaml.safe_load(hooks_yaml)
+        assert out["myx"].hooks_document["pre_tool_use"] == expected["pre_tool_use"]
+
+    def test_in_casa_configurator_snapshot_is_declared_not_empty(self, tmp_path):
+        """REVISION 3b (Sol r3 plan:171/179): an in_casa executor's snapshot
+        must be its REAL declared document, never {} — {} would let
+        resolve_hooks({}) resynthesize the wider default /config-wide
+        path_scope downstream, reopening the in_casa hole. Floor rejection
+        must NOT apply to in_casa."""
+        from pathlib import Path
+        import yaml
+        from agent_loader import load_all_executors
+
+        agents_base = (
+            Path(__file__).resolve().parents[1]
+            / "casa" / "rootfs" / "opt" / "casa" / "defaults" / "agents"
+        )
+        out, failed = load_all_executors(str(agents_base))
+        assert failed == []
+        defn = out["configurator"]
+        assert defn.driver == "in_casa"
+        real_hooks = yaml.safe_load(
+            (agents_base / "executors" / "configurator" / "hooks.yaml")
+            .read_text(encoding="utf-8"))
+        assert defn.hooks_document != {}
+        assert (
+            defn.hooks_document["pre_tool_use"] == real_hooks["pre_tool_use"]
+        )
+
+    def test_in_casa_no_hooks_file_snapshots_empty_dict(self, tmp_path):
+        """{} is reserved for an executor with NO hooks file at all."""
+        from agent_loader import load_all_executors
+        base = tmp_path / "executors"
+        _write_exec(str(base), "configurator")  # in_casa, no hooks.yaml
+        out, failed = load_all_executors(str(tmp_path))
+        assert failed == []
+        assert out["configurator"].hooks_document == {}
 
 
 class TestGateHooksPointerParity:
@@ -411,7 +523,10 @@ class TestExecutorDefinitionPlan4aFields:
             "type: myx\n"
             "description: A test executor with a minimum of twenty characters.\n"
             "model: sonnet\n"
-            "driver: claude_code\n"
+            # Task 3 (#360): in_casa — these fields are driver-independent
+            # and no hooks.yaml is seeded here, which the claude_code
+            # containment floor would now reject.
+            "driver: in_casa\n"
         )
         (ex_dir / "prompt.md").write_text("hi")
         roles_dir = tmp_path / "roles"
@@ -436,7 +551,7 @@ class TestExecutorDefinitionPlan4aFields:
             "type: myx\n"
             "description: A test executor with a minimum of twenty characters.\n"
             "model: sonnet\n"
-            "driver: claude_code\n"
+            "driver: in_casa\n"  # Task 3 (#360): no hooks.yaml seeded here
             "extra_dirs:\n"
             "  - /data/casa-plugins-repo\n"
             "mirror_chat_to_topic: false\n"
@@ -461,7 +576,7 @@ class TestExecutorDefinitionPlan4aFields:
             "type: myx\n"
             "description: A test executor with a minimum of twenty characters.\n"
             "model: sonnet\n"
-            "driver: claude_code\n"
+            "driver: in_casa\n"  # Task 3 (#360): no hooks.yaml seeded here
         )
         (ex_dir / "prompt.md").write_text("hi")
         (ex_dir / "plugins").mkdir()        # the positive-path trigger

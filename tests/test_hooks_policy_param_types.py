@@ -178,6 +178,7 @@ class TestABrokenHooksDocumentNeverFallsBackToDefaults:
     """
 
     def _registry_with_hooks(self, tmp_path, body: str):
+        import yaml
         from types import SimpleNamespace
         from executor_registry import ExecutorRegistry
         hooks_path = tmp_path / "hooks.yaml"
@@ -186,6 +187,10 @@ class TestABrokenHooksDocumentNeverFallsBackToDefaults:
         reg._disabled.add("plugin-developer")
         reg._disabled_defs["plugin-developer"] = SimpleNamespace(
             driver="claude_code", hooks_path=str(hooks_path),
+            # Task 5 (#360): the builder now reads the load-time snapshot,
+            # not the file — populate it exactly as agent_loader's reader
+            # would have, for these well-formed (no ${VAR}) fixture bodies.
+            hooks_document=yaml.safe_load(body) or {},
         )
         return reg
 

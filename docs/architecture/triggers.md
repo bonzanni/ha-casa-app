@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-07
+last_reviewed: 2026-08-08
 ---
 
 # Triggers and scheduling
@@ -134,8 +134,11 @@ mode, header or tolerance change, does invalidate the approval.
 **INV-TRIG-011**: An agent's file-tool write whose path *resolves* to a resident's `triggers.yaml` is refused, and every writer of that file — the typed tools, the reminder tools, and the config reconciler's whole pass — serializes its read-modify-write under one process lock.
 
 Two halves, and both are load-bearing. A code-mandatory PreToolUse guard — carried by every
-executor *and* every resident, since the shipped assistant has broad shell access — refuses
-the write. The typed replacement then makes the change *inside* Casa, and the read, judgement
+executor *and* every resident, applied uniformly rather than only to an agent the loader
+knows has `Bash` — refuses the write. No shipped resident carries `Bash` today (#460
+removed it from the assistant, the last one that did), but the `plugin-developer` executor
+still does, and the guard's universality is what makes that fact irrelevant to whether it
+runs. The typed replacement then makes the change *inside* Casa, and the read, judgement
 and write are held under `trigger_write_lock.PASS_LOCK`, which the `config_sync` reconciler
 also holds across its entire pass (#458): a reminder or configurator write can only land
 before or after a pass, never in the middle of the reconciler's own read-decide-write, and

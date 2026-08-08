@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -65,6 +66,22 @@ def _rec(eid, driver="claude_code", status="active"):
     )
 
 
+def _seed_current_settings(ws_dir, defn):
+    """Task 6 (#360): seed .claude/settings.json exactly as boot replay would
+    regenerate it from ``defn``, so a test asserting 'ordinary restart,
+    nothing changes' isn't tripped by the settings-floor regeneration cycle
+    (comparison is by parsed JSON content, so exact formatting doesn't
+    matter — only that the two computations agree)."""
+    from casa_core import _regenerate_cc_settings
+
+    claude_dir = Path(ws_dir) / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    (claude_dir / "settings.json").write_text(
+        json.dumps(_regenerate_cc_settings(defn), indent=2, sort_keys=True)
+        + "\n", encoding="utf-8",
+    )
+
+
 async def test_replay_sweeps_orphans_and_replants_missing(monkeypatch, tmp_path):
     from casa_core import replay_undergoing_engagements
     from drivers import s6_rc
@@ -97,7 +114,8 @@ async def test_replay_sweeps_orphans_and_replants_missing(monkeypatch, tmp_path)
     (ws_root / "keep1").mkdir(parents=True)
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root),
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root),
     )
 
     # Orphan gone, keep1 still there
@@ -141,6 +159,8 @@ async def test_replay_heals_missing_service_dir_with_known_executor(
         def __init__(self, defs):
             self._defs = defs
         def get(self, t):
+            return self._defs.get(t)
+        def definition_any(self, t):
             return self._defs.get(t)
 
     exec_reg = FakeExecReg({
@@ -215,6 +235,7 @@ async def test_replay_rerenders_stale_prev75_run_script(monkeypatch, tmp_path):
     class FakeExecReg:
         def __init__(self, defs): self._defs = defs
         def get(self, t): return self._defs.get(t)
+        def definition_any(self, t): return self._defs.get(t)
 
     exec_reg = FakeExecReg({
         "hello-driver": ExecutorDefinition(role_artifact=STUB_ROLE_ARTIFACT,
@@ -249,7 +270,12 @@ async def test_replay_rerenders_stale_prev75_run_script(monkeypatch, tmp_path):
 
 
 async def test_replay_leaves_alone_unknown_executor(monkeypatch, tmp_path):
-    """Missing service dir + executor type NOT in registry → log + move on."""
+    """Missing service dir + executor DISABLED (get() → None, definition_any()
+    still resolves it — Task 6/#360 requires settings regeneration to see
+    every claude_code record via definition_any, so a fully-unresolvable type
+    now refuses resume; this test isolates the narrower heal-path gate: known
+    to definition_any, not registered under get()) → log + move on, no
+    re-plant."""
     from casa_core import replay_undergoing_engagements
     from drivers import s6_rc
 
@@ -269,6 +295,7 @@ async def test_replay_leaves_alone_unknown_executor(monkeypatch, tmp_path):
 
     class EmptyReg:
         def get(self, _t): return None
+        def definition_any(self, _t): return _brief_defn(tmp_path)
 
     reg = await _make_registry([_rec("keep1")])
     driver = _boot_driver()
@@ -334,6 +361,8 @@ async def test_replay_replants_incomplete_pair(monkeypatch, tmp_path):
                 observer_policy_path=None, doctrine_dir="/nope/doctrine",
                 extra_dirs=[], mirror_chat_to_topic=False, plugins_dir="",
             )
+        def definition_any(self, t):
+            return self.get(t)
 
     reg = await _make_registry([_rec("keep1")])
     driver = _boot_driver()
@@ -386,6 +415,8 @@ async def test_replay_heals_when_only_log_sibling_survives(
                 observer_policy_path=None, doctrine_dir="/nope/doctrine",
                 extra_dirs=[], mirror_chat_to_topic=False, plugins_dir="",
             )
+        def definition_any(self, t):
+            return self.get(t)
 
     reg = await _make_registry([_rec("keep1")])
     driver = _boot_driver()
@@ -445,6 +476,8 @@ async def test_replay_one_bad_heal_does_not_abort_others(
                 observer_policy_path=None, doctrine_dir="/nope/doctrine",
                 extra_dirs=[], mirror_chat_to_topic=False, plugins_dir="",
             )
+        def definition_any(self, t):
+            return self.get(t)
 
     reg = await _make_registry([_rec("bad1"), _rec("good1")])
     driver = _boot_driver()
@@ -498,6 +531,8 @@ async def test_replay_warn_and_skips_heal_when_workspace_missing(
                 observer_policy_path=None, doctrine_dir="/nope/doctrine",
                 extra_dirs=[], mirror_chat_to_topic=False, plugins_dir="",
             )
+        def definition_any(self, t):
+            return self.get(t)
 
     reg = await _make_registry([_rec("keep1")])
     driver = _boot_driver()
@@ -539,6 +574,8 @@ def _exec_reg():
                 observer_policy_path=None, doctrine_dir="/nope/doctrine",
                 extra_dirs=[], mirror_chat_to_topic=False, plugins_dir="",
             )
+        def definition_any(self, t):
+            return self.get(t)
     return FakeExecReg()
 
 
@@ -1033,16 +1070,19 @@ async def test_replay_b2_stale_migration_removal_fails_refuses_closed(
         s6_rc, "write_service_dir",
         lambda **kw: write_ids.append(kw["engagement_id"]))
 
-    exec_reg = _exec_reg_any(_brief_defn(tmp_path))
+    defn = _brief_defn(tmp_path)
+    exec_reg = _exec_reg_any(defn)
     ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
     reg._records["keep1"] = _brief_rec("keep1", _BRIEF)
-    # #335: this test is about the STALE-PAIR migration refusal, so give the
-    # workspace an already-current credential — otherwise the (also
-    # unconfirmable) credential cycle refuses first and the assertion below
-    # would be testing that refusal instead of this one.
+    # #335 + Task 6: this test is about the STALE-PAIR migration refusal, so
+    # give the workspace an already-current credential AND settings.json —
+    # otherwise the (also unconfirmable) merged workspace-state cycle
+    # refuses first and the assertion below would be testing that refusal
+    # instead of this one.
     _seed_current_credential(ws_root / "keep1", reg._records["keep1"])
+    _seed_current_settings(ws_root / "keep1", defn)
     driver = _boot_driver(); bg = MagicMock(); driver._spawn_background_tasks = bg
 
     await replay_undergoing_engagements(
@@ -1141,6 +1181,142 @@ async def test_replay_b2_migration_succeeds_when_removal_confirmed(
     assert reg._records["keep1"].status in ("active", "idle")
 
 
+# ---------------------------------------------------------------------------
+# Task 6 (#360) — boot replay regenerates settings.json for EVERY resumed
+# claude_code record from the load-time snapshot, and cycles the service
+# when the regenerated document differs from what's on disk.
+# ---------------------------------------------------------------------------
+
+
+async def test_task_only_record_settings_floor_regenerated_on_heal(
+    monkeypatch, tmp_path,
+):
+    """RED CASE 1: a TASK-ONLY (no brief) record whose on-disk settings.json
+    was hollowed (``{}``, no PreToolUse block at all) carries the canonical
+    containment floor after boot replay — proving the old ``has_brief`` gate
+    no longer excludes task-only records from settings regeneration. Exercises
+    the HEAL path (incomplete pair) so the write is directly observable."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()   # no pair — heal path
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "write_service_dir", lambda **kw: None)
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    start_ids: list[str] = []
+    async def fake_start(*, engagement_id): start_ids.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    rec = _rec("keep1")               # origin={} — task-only, no brief
+    reg = await _make_registry([rec])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+
+    ws_root = tmp_path / "eng"; ws_dir = ws_root / "keep1"
+    ws_dir.mkdir(parents=True)
+    _seed_current_credential(ws_dir, rec)   # isolate the settings trigger
+    claude_dir = ws_dir / ".claude"; claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text("{}")   # hollowed floor
+
+    exec_reg = _exec_reg()
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=exec_reg,
+        engagements_root=str(ws_root))
+
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    pre_commands = {
+        h["command"].rsplit(" ", 1)[-1]
+        for e in settings["hooks"]["PreToolUse"]
+        for h in e["hooks"]
+    }
+    assert {"block_dangerous_bash", "path_scope"} <= pre_commands
+    assert start_ids == ["keep1"]
+
+
+async def test_fast_path_settings_diff_drives_confirmed_cycle(
+    monkeypatch, tmp_path,
+):
+    """RED CASE 2: a COMPLETE, non-stale, current-credential service pair
+    (the ordinary-restart fast path, ~casa_core.py:649) whose settings.json
+    differs from the regenerated snapshot must NOT just get a silent file
+    rewrite — boot replay drives a CONFIRMED service down/up cycle before
+    ever reaching the fast-path continue. Asserts the checked-teardown
+    ladder is entered (ensure_service_down awaited) when that cycle can't be
+    confirmed — proving this is a real cycle, not an inert rewrite."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    start_calls = _fast_path_env(monkeypatch, tmp_path)
+    down_calls: list[str] = []
+    async def fake_down(*, engagement_id):
+        down_calls.append(engagement_id)
+        return False   # unconfirmable — must refuse, not silently rewrite
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+    monkeypatch.setattr(
+        s6_rc, "remove_service_dir",
+        lambda *, svc_root, engagement_id: None)
+
+    rec = _rec("keep1")
+    reg = await _make_registry([rec])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+
+    ws_root = tmp_path / "eng"; ws_dir = ws_root / "keep1"
+    ws_dir.mkdir(parents=True)
+    _seed_current_credential(ws_dir, rec)   # isolate the settings trigger
+    # NO settings.json seeded at all — a fresh/never-provisioned .claude/.
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # The cycle was actually attempted (not an inert rewrite-only path)...
+    assert "keep1" in down_calls
+    # ...and since it couldn't be confirmed, the resume was refused CLOSED —
+    # never started into a CLI still running with the stale cached hooks.
+    assert start_calls == []
+    assert reg.get("keep1").status == "error"
+    assert reg.get("keep1").origin["error_kind"] == (
+        "refuse_workspace_cycle_failed")
+
+
+async def test_settings_snapshot_missing_floor_refuses_resume(
+    monkeypatch, tmp_path,
+):
+    """RED CASE 3: a regenerated settings snapshot that does NOT carry the
+    containment floor (defense-in-depth belt-and-suspenders — Task 4's
+    ``translate_hooks_to_settings`` always appends it, so this simulates a
+    bypass of that emitter) refuses the resume fail-closed rather than
+    shipping a hollow floor."""
+    import casa_core
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    start_calls = _fast_path_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        casa_core, "_regenerate_cc_settings",
+        lambda defn: {"hooks": {}, "permissions": {}})
+    ensure_down = AsyncMock(return_value=True)
+    monkeypatch.setattr(s6_rc, "ensure_service_down", ensure_down)
+    monkeypatch.setattr(
+        s6_rc, "remove_service_dir",
+        lambda *, svc_root, engagement_id: None)
+
+    rec = _rec("keep1")
+    reg = await _make_registry([rec])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+
+    ws_root = tmp_path / "eng"; ws_dir = ws_root / "keep1"
+    ws_dir.mkdir(parents=True)
+    _seed_current_credential(ws_dir, rec)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    assert start_calls == []
+    assert not (ws_dir / ".claude" / "settings.json").exists(), (
+        "a floor-less snapshot must never reach disk")
+
+
 class TestReconcileTerminalSpools:
     async def test_drains_only_terminal_claude_code_records(self):
         from casa_core import reconcile_terminal_spools
@@ -1227,7 +1403,8 @@ async def test_replay_aborts_resume_when_summary_adopt_fails(monkeypatch, tmp_pa
     (ws_root / "keep1").mkdir(parents=True)
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     # Adoption was ATTEMPTED, and its failure aborted the resume:
     assert adopt_calls == ["keep1"]
@@ -1277,7 +1454,8 @@ async def test_replay_start_failure_refuses_background_attach(
     (ws_root / "keep1").mkdir(parents=True)
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     assert attached == []                          # no background machinery
     assert reg.get("keep1").status == "error"      # marked error
@@ -1333,6 +1511,8 @@ async def test_replay_fifo_recreate_failure_refuses_resume(
             self._defs = defs
         def get(self, t):
             return self._defs.get(t)
+        def definition_any(self, t):
+            return self._defs.get(t)
 
     exec_reg = FakeExecReg({
         "hello-driver": ExecutorDefinition(role_artifact=STUB_ROLE_ARTIFACT,
@@ -1387,7 +1567,8 @@ async def test_fast_path_recreates_missing_fifo(monkeypatch, tmp_path):
     driver._spawn_background_tasks = lambda rec, **kw: None
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     assert (ws_root / "keep1" / "stdin.fifo").exists()
     assert start_calls == ["keep1"]
@@ -1411,7 +1592,8 @@ async def test_fast_path_replaces_non_fifo_stdin_path(monkeypatch, tmp_path):
     driver._spawn_background_tasks = lambda rec, **kw: None
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     st = (ws_root / "keep1" / "stdin.fifo").stat()
     assert stat_mod.S_ISFIFO(st.st_mode), "regular file must be replaced"
@@ -1423,7 +1605,8 @@ async def test_fast_path_replaces_non_fifo_stdin_path(monkeypatch, tmp_path):
     (ws_root / "keep1" / "stdin.fifo").mkdir()
     reg2 = await _make_registry([_rec("keep1")])
     await replay_undergoing_engagements(
-        registry=reg2, driver=driver, engagements_root=str(ws_root))
+        registry=reg2, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
     st = (ws_root / "keep1" / "stdin.fifo").stat()
     assert stat_mod.S_ISFIFO(st.st_mode), "directory must be replaced"
 
@@ -1452,7 +1635,8 @@ async def test_fast_path_symlinked_workspace_refuses_without_repair(
     driver._spawn_background_tasks = lambda rec, **kw: None
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     assert start_calls == []
     assert (outside / "stdin.fifo" / "precious.txt").exists(), (
@@ -1481,7 +1665,8 @@ async def test_fast_path_fifo_failure_refuses_start(monkeypatch, tmp_path):
     driver._spawn_background_tasks = lambda rec, **kw: None
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     assert start_calls == []
     assert not (
@@ -1524,7 +1709,8 @@ async def test_replay_adopts_summary_before_start(monkeypatch, tmp_path):
     (ws_root / "keep1").mkdir(parents=True)
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     assert order == [("adopt", "keep1"), ("start", "keep1")]
 
@@ -1567,8 +1753,15 @@ async def test_credential_migration_rewrites_and_cycles_the_service(
     driver = _boot_driver()
     driver._spawn_background_tasks = lambda rec: None
 
+    # Task 6: seed a MATCHING settings.json so this test's single ``down``
+    # call is attributable to the credential migration alone, not a second
+    # concurrent settings-regeneration cycle (they're merged into one).
+    exec_reg = _exec_reg()
+    _seed_current_settings(ws_root / "keep1", exec_reg.get("hello-driver"))
+
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=exec_reg,
+        engagements_root=str(ws_root))
 
     assert workspace_mcp_token(str(ws_root / "keep1")) == "tok-fresh"
     down.assert_awaited_once()           # cycled so the CLI reloads it
@@ -1619,8 +1812,14 @@ async def test_stale_url_with_matching_token_rewrites_and_cycles(
     driver = _boot_driver()
     driver._spawn_background_tasks = lambda rec: None
 
+    # Task 6: seed a MATCHING settings.json so the single ``down`` call
+    # below is attributable to the URL-staleness cycle alone.
+    exec_reg = _exec_reg()
+    _seed_current_settings(ws_root / "keep1", exec_reg.get("hello-driver"))
+
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=exec_reg,
+        engagements_root=str(ws_root))
 
     assert (workspace_mcp_url(str(ws_root / "keep1"))
             == "http://127.0.0.1:8100/mcp/casa-framework")
@@ -1660,8 +1859,15 @@ async def test_unchanged_credential_neither_rewrites_nor_cycles(
     driver = _boot_driver()
     driver._spawn_background_tasks = lambda rec: None
 
+    # Task 6: an ordinary restart must also carry a MATCHING settings.json —
+    # otherwise the (correct) settings-floor regeneration would itself be a
+    # trigger, and this test's "nothing changes" claim would be false.
+    exec_reg = _exec_reg()
+    _seed_current_settings(ws_root / "keep1", exec_reg.get("hello-driver"))
+
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=exec_reg,
+        engagements_root=str(ws_root))
 
     down.assert_not_awaited()
     assert (ws_root / "keep1" / ".mcp.json").stat().st_mtime_ns == mtime_before
@@ -1722,11 +1928,16 @@ async def test_unconfirmed_stop_after_credential_refresh_refuses_resume(
     driver._spawn_background_tasks = bg
 
     await replay_undergoing_engagements(
-        registry=reg, driver=driver, engagements_root=str(ws_root))
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
 
     assert reg._records["keep1"].status == "error"
+    # Task 6: the credential and settings cycles are merged into ONE
+    # decision (a workspace with no .mcp.json AND no settings.json — this
+    # test's fresh workspace — has both triggers live), so the kind is the
+    # shared "workspace cycle" one, not the credential-only legacy name.
     assert reg._records["keep1"].origin["error_kind"] == (
-        "refuse_credential_cycle_failed")
+        "refuse_workspace_cycle_failed")
     assert started == []        # never resumed
     assert bg.call_count == 0   # and no background tasks attached
 

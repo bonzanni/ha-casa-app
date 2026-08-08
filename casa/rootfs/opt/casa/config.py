@@ -516,6 +516,14 @@ class ExecutorDefinition:
     idle_reminder_days: int = 7
     prompt_template_path: str = ""
     hooks_path: str | None = None
+    # Task 3 (#360): the load-time-validated, constructible parsed hooks
+    # document — snapshotted verbatim for EVERY executor regardless of
+    # driver (agent_loader.load_all_executors / _resolve_executor_hooks).
+    # `{}` ONLY when no hooks file exists at all; an executor WITH a hooks
+    # file (including in_casa's configurator) gets its REAL declared
+    # entries here, never a synthesized default (REVISION 3b). Consumed
+    # verbatim downstream (Tasks 4-6) — never re-read from disk.
+    hooks_document: dict = field(default_factory=dict)
     observer_policy_path: str | None = None
     doctrine_dir: str = ""
     # --- Plan 4a additions (claude_code driver) ---

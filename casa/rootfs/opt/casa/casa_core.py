@@ -239,6 +239,51 @@ async def healthz(_request: web.Request) -> web.Response:
 # ------------------------------------------------------------------
 
 
+def _regenerate_cc_settings(defn) -> dict:
+    """Task 6 (#360): rebuild the CC ``.claude/settings.json`` shape from
+    ``defn.hooks_document`` (the Task 3 load-time-validated snapshot) —
+    the exact assembly ``drivers.workspace.render_workspace_template`` uses
+    for provisioning (``translate_hooks_to_settings`` + ``_build_cc_permissions``),
+    reused verbatim here so boot replay and provisioning can never drift.
+    Raises whatever the two emitters raise; the caller is responsible for
+    fail-closed handling (a snapshot that cannot yield a settings document
+    at all is refused, not silently skipped)."""
+    from drivers.hook_bridge import translate_hooks_to_settings
+    from drivers.workspace import _build_cc_permissions
+
+    hooks_block = translate_hooks_to_settings(
+        getattr(defn, "hooks_document", None) or {},
+        proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
+    )
+    return {
+        "hooks": hooks_block.get("hooks", {}),
+        "permissions": _build_cc_permissions(defn),
+    }
+
+
+def _cc_settings_missing_floor(settings: dict) -> bool:
+    """Task 6 (#360) defense-in-depth: verify the regenerated settings
+    document actually carries every ``REQUIRED_CLAUDE_CODE_POLICIES`` entry
+    in its ``PreToolUse`` block, by policy name (the last whitespace-
+    separated token of the proxy command). ``translate_hooks_to_settings``
+    already appends the floor unconditionally (Task 4), so this should
+    never trip in practice — it exists so a future change to that emitter
+    (or a caller that bypasses it) fails boot replay closed rather than
+    silently shipping a hollow floor."""
+    from hooks import REQUIRED_CLAUDE_CODE_POLICIES
+
+    pre = (settings or {}).get("hooks", {}).get("PreToolUse", []) or []
+    declared: set = set()
+    for entry in pre:
+        if not isinstance(entry, dict):
+            continue
+        for hook in entry.get("hooks", []) or []:
+            command = hook.get("command", "") if isinstance(hook, dict) else ""
+            if command:
+                declared.add(command.rsplit(" ", 1)[-1])
+    return bool(REQUIRED_CLAUDE_CODE_POLICIES - declared)
+
+
 async def replay_undergoing_engagements(
     *, registry, driver, executor_registry=None,
     engagements_root: str = "/data/engagements",
@@ -493,6 +538,31 @@ async def replay_undergoing_engagements(
                     refused_ids.add(rec.id)
                     continue
 
+                # Task 6 (#360): resolve the executor definition for EVERY
+                # resumed claude_code record via definition_any — NOT gated
+                # on origin["brief"] (Sol/Terra r2, casa_core.py:507): the
+                # settings.json floor-regeneration below is a containment
+                # requirement, not a brief feature, so a task-only record
+                # (no brief) must be covered exactly like a brief-bearing
+                # one — it used to skip this whole block and never got its
+                # floor re-verified after a post-load hooks.yaml edit.
+                # Resolves DISABLED specialists too (r10-B5: a specialist
+                # disabled after launch still resumes); registry absent OR
+                # unresolved -> fail-closed refuse (checked teardown).
+                defn_any = (
+                    executor_registry.definition_any(rec.role_or_type)
+                    if executor_registry is not None else None
+                )
+                if defn_any is None:
+                    await _refuse_brief_resume(
+                        rec,
+                        "no executor_registry passed"
+                        if executor_registry is None
+                        else f"executor type {rec.role_or_type!r} "
+                             "not resolvable (definition_any → None)",
+                    )
+                    continue
+
                 # W3 (r8-B5/r9-B5): re-render the workspace CLAUDE.md from the
                 # VERBATIM origin["brief"] for EVERY resumed brief-bearing
                 # engagement — placed BEFORE the service_pair_complete fast
@@ -500,26 +570,11 @@ async def replay_undergoing_engagements(
                 # path never fires for a record M7 already refused).
                 # /data/casa-s6-services persists across restarts, so an
                 # ordinary restart takes the early `continue`; a refresh after
-                # the pair-rewrite would never run. Resolve the executor via
-                # definition_any (r10-B5) so a specialist DISABLED after
-                # launch still resumes; registry absent OR unresolved →
-                # fail-closed refuse (checked teardown).
+                # the pair-rewrite would never run.
                 brief_defn = None
                 has_brief = bool(rec.origin.get("brief"))
                 if has_brief:
-                    brief_defn = (
-                        executor_registry.definition_any(rec.role_or_type)
-                        if executor_registry is not None else None
-                    )
-                    if brief_defn is None:
-                        await _refuse_brief_resume(
-                            rec,
-                            "no executor_registry passed"
-                            if executor_registry is None
-                            else f"executor type {rec.role_or_type!r} "
-                                 "not resolvable (definition_any → None)",
-                        )
-                        continue
+                    brief_defn = defn_any
                     ws_dir = os.path.join(engagements_root, rec.id)
                     try:
                         refresh_claude_md(ws_dir, defn=brief_defn, rec=rec)
@@ -529,27 +584,36 @@ async def replay_undergoing_engagements(
                         )
                         continue
 
-                # #335: refresh the workspace credential from the RECORD's
-                # auth token. Placed, like the CLAUDE.md refresh above, BEFORE
-                # the service_pair_complete fast-path continue — an ordinary
-                # restart takes that continue, so a refresh after it would
-                # never run — but AFTER the refusal checks, so a record we are
-                # about to tear down is not cycled first. This is what keeps a
-                # pre-upgrade workspace resumable: load() backfilled a token
-                # onto its record, and the CLI reads the refreshed credential
-                # from disk when it respawns.
+                # #335 + Task 6 (#360): refresh the workspace credential from
+                # the RECORD's auth token AND regenerate .claude/settings.json
+                # from defn_any.hooks_document — for EVERY resumed claude_code
+                # record. Placed, like the CLAUDE.md refresh above, BEFORE the
+                # service_pair_complete fast-path continue (Sol/Terra r2,
+                # casa_core.py:649: the fast path used to resume WITHOUT
+                # regeneration) — an ordinary restart takes that continue, so
+                # a refresh after it would never run — but AFTER the refusal
+                # checks, so a record we are about to tear down is not cycled
+                # first. This is what keeps a pre-upgrade workspace resumable:
+                # load() backfilled a token onto its record, and the CLI reads
+                # the refreshed credential from disk when it respawns; a
+                # hollowed or stale settings.json is likewise repaired from
+                # the load-time-validated snapshot.
                 #
-                # Only rewrite when the credential actually CHANGED, and then
-                # force the engagement's CLI to respawn (Terra + Sol, review
-                # r1): engagement services are supervised independently of
-                # casa-main, so one can already be running — with the OLD
-                # ``.mcp.json`` cached at its spawn — while this boot mints a
-                # token for it. ``start_service`` below is idempotent and would
-                # NOT respawn it, leaving an engagement whose every call
-                # authenticates against a credential it does not have. Bring it
-                # down here, once the new file is durable, so that start brings
-                # it back up reading the new one. The unchanged case (every
-                # ordinary restart) writes nothing and cycles nothing.
+                # Only rewrite when something actually CHANGED, and then force
+                # the engagement's CLI to respawn (Terra + Sol, review r1;
+                # extended to settings by Task 6): engagement services are
+                # supervised independently of casa-main, so one can already be
+                # running — with the OLD ``.mcp.json``/``settings.json``
+                # cached at its spawn — while this boot mints a fresh
+                # credential or a regenerated floor for it. A rewrite alone is
+                # inert against a CLI that already cached settings at spawn.
+                # ``start_service`` below is idempotent and would NOT respawn
+                # it. Bring it down here, once every changed file is durable,
+                # so that start brings it back up reading the current state.
+                # Both triggers share ONE cycle decision (level-triggered,
+                # like the token+URL merge below) rather than cycling the
+                # service twice in the same boot. The fully-unchanged case
+                # (every ordinary restart) writes nothing and cycles nothing.
                 #
                 # v0.164.0 (Terra, plan r1): the baked casa-framework URL is
                 # part of the same identity — a workspace whose .mcp.json
@@ -562,10 +626,46 @@ async def replay_undergoing_engagements(
                     driver, "_casa_framework_mcp_url",
                     "http://127.0.0.1:8100/mcp/casa-framework",
                 )
-                if (os.path.isdir(_ws_dir)
-                        and (workspace_mcp_token(_ws_dir) != rec.auth_token
-                             or workspace_mcp_url(_ws_dir)
-                             != _current_mcp_url)):
+                _credential_changed = bool(
+                    os.path.isdir(_ws_dir)
+                    and (workspace_mcp_token(_ws_dir) != rec.auth_token
+                         or workspace_mcp_url(_ws_dir) != _current_mcp_url)
+                )
+
+                # Task 6: regenerate settings.json from the load-time
+                # snapshot. Fail closed — a snapshot that cannot yield a
+                # settings document, or that yields one missing the
+                # containment floor, refuses the resume rather than shipping
+                # a partial/hollow rewrite.
+                try:
+                    _new_settings = _regenerate_cc_settings(defn_any)
+                except Exception as exc:  # noqa: BLE001 — fail-closed
+                    await _refuse_brief_resume(
+                        rec,
+                        f"settings.json regeneration failed: {exc}",
+                        kind="refuse_settings_regenerate_failed",
+                    )
+                    continue
+                if _cc_settings_missing_floor(_new_settings):
+                    await _refuse_brief_resume(
+                        rec,
+                        "regenerated settings.json snapshot does not carry "
+                        "the containment floor",
+                        kind="refuse_settings_floor_missing",
+                    )
+                    continue
+                _settings_path = os.path.join(
+                    _ws_dir, ".claude", "settings.json")
+                _on_disk_settings = None
+                if os.path.isdir(_ws_dir):
+                    try:
+                        with open(_settings_path, encoding="utf-8") as _fh:
+                            _on_disk_settings = json.load(_fh)
+                    except (OSError, ValueError):
+                        _on_disk_settings = None
+                _settings_changed = _on_disk_settings != _new_settings
+
+                if _credential_changed:
                     try:
                         write_workspace_mcp_json(
                             _ws_dir,
@@ -579,29 +679,56 @@ async def replay_undergoing_engagements(
                             kind="refuse_credential_refresh_failed",
                         )
                         continue
+
+                if _settings_changed and os.path.isdir(_ws_dir):
+                    try:
+                        os.makedirs(
+                            os.path.join(_ws_dir, ".claude"), exist_ok=True)
+                        _tmp_settings_path = _settings_path + ".tmp"
+                        with open(
+                            _tmp_settings_path, "w", encoding="utf-8",
+                        ) as _fh:
+                            _fh.write(json.dumps(
+                                _new_settings, indent=2, sort_keys=True)
+                                + "\n")
+                        os.replace(_tmp_settings_path, _settings_path)
+                    except OSError as exc:
+                        await _refuse_brief_resume(
+                            rec, f"settings.json rewrite failed: {exc}",
+                            kind="refuse_settings_rewrite_failed",
+                        )
+                        continue
+
+                if _credential_changed or _settings_changed:
                     logger.info(
-                        "boot replay: engagement %s workspace credential "
-                        "refreshed — cycling its service so the CLI reloads",
-                        rec.id[:8],
+                        "boot replay: engagement %s workspace state "
+                        "refreshed (%s) — cycling its service so the CLI "
+                        "reloads", rec.id[:8],
+                        "+".join(n for n, c in (
+                            ("credential", _credential_changed),
+                            ("settings", _settings_changed),
+                        ) if c),
                     )
                     # An unconfirmed stop is FATAL to the resume, not a
-                    # warning (Sol, review r2): the new credential is already
-                    # on disk, so a surviving CLI holds one that authenticates
-                    # nowhere — and the NEXT boot would see the on-disk token
-                    # matching the record and never retry the cycle, leaving a
-                    # permanently mute engagement that still looks live. Refuse
-                    # it instead: the shared helper runs the checked teardown
-                    # ladder, lands a terminal mark, and adds it to
-                    # ``refused_ids`` so the start and background-task loops
-                    # skip it.
+                    # warning (Sol, review r2): the new state is already on
+                    # disk, so a surviving CLI holds a credential that no
+                    # longer authenticates or hooks it never re-read — and
+                    # the NEXT boot would see the on-disk state matching the
+                    # record and never retry the cycle, leaving a permanently
+                    # mute (or under-contained) engagement that still looks
+                    # live. Refuse it instead: the shared helper runs the
+                    # checked teardown ladder, lands a terminal mark, and
+                    # adds it to ``refused_ids`` so the start and
+                    # background-task loops skip it.
                     try:
                         _down = await s6_rc.ensure_service_down(
                             engagement_id=rec.id)
                     except Exception as exc:  # noqa: BLE001
                         _down = False
                         logger.warning(
-                            "boot replay: service cycle after credential "
-                            "refresh raised for %s: %s", rec.id[:8], exc,
+                            "boot replay: service cycle after workspace "
+                            "state refresh raised for %s: %s",
+                            rec.id[:8], exc,
                         )
                     if _down is False:
                         # Mark TERMINAL unconditionally, not via the helper's
@@ -619,30 +746,30 @@ async def replay_undergoing_engagements(
                         # best-effort, so a swallowed tombstone-write failure
                         # would leave the next boot reloading the record as
                         # active/idle — and it would then see the on-disk
-                        # token matching, skip the cycle, and resume the very
+                        # state matching, skip the cycle, and resume the very
                         # engagement this refusal exists to retire.
                         try:
                             await registry.try_transition_terminal(
                                 rec.id, "error", strict=True,
-                                error_kind="refuse_credential_cycle_failed",
+                                error_kind="refuse_workspace_cycle_failed",
                                 error_message=(
                                     "engagement could not be confirmed down "
-                                    "after a credential refresh"
+                                    "after a workspace state refresh"
                                 ),
                             )
                         except Exception:  # noqa: BLE001 — teardown still runs
                             logger.warning(
                                 "boot replay: durable terminal mark after a "
-                                "credential-cycle failure did not persist for "
+                                "workspace-cycle failure did not persist for "
                                 "%s — the engagement may be reloaded as live "
                                 "on the next boot", rec.id[:8], exc_info=True,
                             )
                         await _refuse_brief_resume(
                             rec,
                             "engagement could not be confirmed down after a "
-                            "credential refresh, so a surviving CLI would run "
-                            "with a credential that no longer authenticates",
-                            kind="refuse_credential_cycle_failed",
+                            "workspace state refresh, so a surviving CLI "
+                            "would run with a stale credential or hooks",
+                            kind="refuse_workspace_cycle_failed",
                         )
                         continue
 
@@ -700,13 +827,10 @@ async def replay_undergoing_engagements(
                 # from here on.
                 ws_dir = os.path.join(engagements_root, rec.id)
 
-                if executor_registry is None:
-                    logger.warning(
-                        "boot replay: service pair missing for engagement %s "
-                        "— no executor_registry passed; leaving UNDERGOING",
-                        rec.id[:8],
-                    )
-                    continue
+                # Task 6 (#360): ``executor_registry is None`` now refuses
+                # every claude_code record much earlier (the unconditional
+                # definition_any resolution above) — this branch is
+                # unreachable from here on and has been removed.
 
                 # r11-B2: for brief-bearing records reuse the already-resolved
                 # definition_any result (which resolves DISABLED specialists),
@@ -971,7 +1095,6 @@ def _build_executor_cc_hook_policies(executor_registry) -> dict:
     defaults (default ``path_scope`` has empty prefix lists, denying every
     workspace Read/Write/Edit).
     """
-    from agent_loader import read_hooks_document
     from hooks import UsesDefaultPolicies, build_policy_callbacks_from_hooks_yaml
 
     out: dict = {}
@@ -986,10 +1109,13 @@ def _build_executor_cc_hook_policies(executor_registry) -> dict:
             out[t] = UsesDefaultPolicies()
             continue
         try:
-            # Sol r1-2: the SAME env-substituting reader load-time validation
-            # used — a raw safe_load here parsed a DIFFERENT document for any
-            # ${VAR} reference (validated substituted, enforced raw).
-            data = read_hooks_document(defn.hooks_path)
+            # Task 3 (#360): build from the load-time-validated snapshot
+            # (ExecutorDefinition.hooks_document), never by re-reading
+            # hooks_path — a fresh read here would let a post-load edit
+            # (e.g. a config-editable hooks_file: repoint) reach the HTTP
+            # enforcement path without going through reload's
+            # re-validate-and-re-snapshot.
+            data = defn.hooks_document
             out[t] = build_policy_callbacks_from_hooks_yaml(data)
         except Exception as exc:  # noqa: BLE001
             # #442 r2 (Sol/Terra P1): omitting the executor is NOT neutral —

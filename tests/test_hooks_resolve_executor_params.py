@@ -188,6 +188,14 @@ async def test_disabled_executor_hook_params_still_built(tmp_path):
     from executor_registry import ExecutorRegistry
 
     hooks_path = tmp_path / "hooks.yaml"
+    hooks_doc = {
+        "schema_version": 1,
+        "pre_tool_use": [
+            {"policy": "path_scope",
+             "writable": ["/data/engagements/"],
+             "readable": ["/data/engagements/"]},
+        ],
+    }
     hooks_path.write_text(
         "schema_version: 1\n"
         "pre_tool_use:\n"
@@ -199,6 +207,7 @@ async def test_disabled_executor_hook_params_still_built(tmp_path):
     reg._disabled.add("plugin-developer")
     reg._disabled_defs["plugin-developer"] = SimpleNamespace(
         driver="claude_code", hooks_path=str(hooks_path),
+        hooks_document=hooks_doc,
     )
     built = _build_executor_cc_hook_policies(reg)
     assert "plugin-developer" in built
@@ -237,3 +246,66 @@ async def test_duplicate_declarations_same_matcher_still_compose():
          "readable": ["/data/engagements/"]},
     ]})
     assert "path_scope" in built
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (#360): the HTTP hook-policy map builds from the load-time snapshot
+# (ExecutorDefinition.hooks_document), never by re-reading hooks_path.
+# ---------------------------------------------------------------------------
+
+
+async def test_post_load_hooks_yaml_mutation_does_not_reach_the_http_map(
+    tmp_path,
+):
+    """TOCTOU red case: pin a deny-everything path_scope snapshot as the
+    load-time ``hooks_document``, then widen the ON-DISK file afterward (as a
+    config-editable ``hooks_file:`` repoint would) and rebuild the HTTP map
+    WITHOUT a reload. The rebuilt map must still enforce the narrow snapshot,
+    not the mutated file — reload (Task 3's load path) is the only supported
+    way to pick up a change."""
+    from types import SimpleNamespace
+    from casa_core import _build_executor_cc_hook_policies
+    from executor_registry import ExecutorRegistry
+
+    hooks_path = tmp_path / "hooks.yaml"
+    narrow_snapshot = {
+        "pre_tool_use": [
+            {"policy": "path_scope", "writable": [], "readable": []},
+        ],
+    }
+    hooks_path.write_text(
+        "pre_tool_use:\n"
+        "  - policy: path_scope\n"
+        "    writable: []\n"
+        "    readable: []\n",
+        encoding="utf-8",
+    )
+    reg = ExecutorRegistry(str(tmp_path / "executors"))
+    reg._disabled.add("plugin-developer")
+    reg._disabled_defs["plugin-developer"] = SimpleNamespace(
+        driver="claude_code", hooks_path=str(hooks_path),
+        hooks_document=narrow_snapshot,
+    )
+
+    # Post-load mutation: the file now grants broad write access.
+    hooks_path.write_text(
+        "pre_tool_use:\n"
+        "  - policy: path_scope\n"
+        "    writable: ['/']\n"
+        "    readable: ['/']\n",
+        encoding="utf-8",
+    )
+
+    built = _build_executor_cc_hook_policies(reg)
+    _matcher, cb = built["plugin-developer"]["path_scope"]
+    result = await cb(
+        {"tool_name": "Write",
+         "tool_input": {"file_path": "/data/engagements/e/f"}},
+        None, {},
+    )
+    assert result and result["hookSpecificOutput"]["permissionDecision"] == (
+        "deny"
+    ), (
+        "path_scope must enforce the load-time snapshot (empty writable), "
+        "not the post-load widened on-disk file"
+    )

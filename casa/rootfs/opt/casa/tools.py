@@ -1241,15 +1241,14 @@ def _build_executor_options(
     from config import HooksConfig
     from hooks import resolve_hooks
 
-    hooks_cfg = HooksConfig()
-    if defn.hooks_path and os.path.isfile(defn.hooks_path):
-        # Terra r3-1: the SAME env-substituting reader load-time validation
-        # used (agent_loader.read_hooks_document) — a raw safe_load here made
-        # a ${VAR}-bearing document that validated at load blow up in
-        # resolve_hooks when the executor actually started.
-        from agent_loader import read_hooks_document
-        raw = read_hooks_document(defn.hooks_path)
-        hooks_cfg = HooksConfig(pre_tool_use=list(raw.get("pre_tool_use") or []))
+    # Task 4 (#360): build from the load-time-validated snapshot
+    # (ExecutorDefinition.hooks_document, Task 3) instead of re-reading
+    # hooks_path here — a post-load edit to the on-disk hooks.yaml must not
+    # change what an in-casa (configurator/plugin-developer) session
+    # enforces. hooks_document is populated for every executor ({} only
+    # when there is no hooks file).
+    raw = getattr(defn, "hooks_document", None) or {}
+    hooks_cfg = HooksConfig(pre_tool_use=list(raw.get("pre_tool_use") or []))
 
     resolved_hooks = resolve_hooks(hooks_cfg, default_cwd="/config")
     # Sol #5: in_casa executors run with cwd=/config (the configurator has no

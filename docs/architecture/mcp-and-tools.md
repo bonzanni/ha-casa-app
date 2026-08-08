@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-01
+last_reviewed: 2026-08-08
 ---
 
 # The MCP surface and the tool boundary
@@ -80,6 +80,17 @@ workspace settings treats malformed shapes as absent rather than fatal: a non-ma
 document root, a non-list hook section, a non-mapping list member, or an unparseable
 per-hook timeout is skipped instead of crashing engagement provisioning, and the
 code-mandatory guard entry is emitted regardless of what the document declares.
+
+**For a `claude_code` executor, that mutability stops at the containment floor.**
+`block_dangerous_bash` and `path_scope` are not optional entries a hooks file happens to
+carry — a `claude_code` executor that does not declare both fails to *load* at all
+(INV-MCP-008), and what it declared at that moment is captured once, verbatim, onto its
+definition. Every surface that later turns a hooks document into enforced Claude Code
+settings — workspace provisioning, the HTTP hook-resolve endpoint, and boot replay — reads
+that captured document rather than the file on disk, and forces the floor's matchers to the
+values `HOOK_POLICIES` declares regardless of what the document says. Editing `hooks.yaml`
+after that point changes nothing already provisioned from it; only a reload or a fresh load
+sees the edit, and a hollowed edit is refused there exactly as it would be refused at boot.
 
 **Some guards are advisory by construction, and one of them is deliberately imperfect.**
 The pre-push self-containment guard inspects the shell command an agent is about to run,
@@ -232,6 +243,53 @@ What it does not cover: a well-typed but wrong value. A list of prefixes that is
 broad builds and enforces exactly what it says — this rule constrains the shape of a
 parameter, never its meaning. Nor does it cover an *unauthenticated* resolution, which
 selects no executor parameters at all and is governed by INV-MCP-006.
+
+**INV-MCP-008**: For a `driver: claude_code` executor, the containment floor (`block_dangerous_bash`, `path_scope`) is a load-time declaration requirement, snapshotted once and emitted with canonical per-policy matchers by every surface that turns it into settings, never by re-reading the mutable hooks file.
+
+The validated document is snapshotted once at load, and every surface that emits Claude Code
+hook settings from it — provisioning, the HTTP hook-resolve path, and boot replay — builds
+from that snapshot with canonical per-policy matchers rather than re-reading the mutable
+hooks file.
+
+`load_all_executors` reads a `claude_code` executor's declared `pre_tool_use` policy names
+and refuses to load — `LoadError`, not a narrower synthesized default — when either floor
+policy is absent. What loaded is then captured verbatim onto `ExecutorDefinition`'s
+`hooks_document` field, `{}` only when the executor carries no hooks file at all — an empty
+snapshot would make the in-casa SDK path resynthesize a wider, `/config`-rooted `path_scope`
+than the executor actually declared, which is the fail-open shape this rule exists to close.
+Provisioning (`drivers/workspace.py`), the in-casa build (`tools.py`) and the HTTP
+policy-map builder (`_build_executor_cc_hook_policies`) all read that field; none re-reads
+`hooks_path` off disk, which is what closes the window between a document validating at load
+and a later read of the same path seeing something else.
+
+Matchers are forced independently of the snapshot, at the point of emission:
+`translate_hooks_to_settings` routes every `HOOK_POLICIES`-backed policy — not only the
+floor — to `canonical_matcher_for`'s regex regardless of what the yaml under it declares,
+so a stray `matcher: Read` on `block_dangerous_bash` can no longer misroute which tool calls
+the policy sees. Only the two policies with no registry entry (`engagement_permission_relay`,
+`engagement_buttons_reminder`) keep a yaml-declared matcher, because there is no canonical
+one to override them with. Any floor policy still missing after that pass — reachable only
+if something other than `load_all_executors` produced the document — is appended with its
+canonical matcher and no synthesized parameters, mirroring the mandatory
+`managed_component_guard` append already described above.
+
+Boot replay closes the last gap: a resumed `claude_code` record's settings are regenerated
+from `hooks_document` and diffed against what is on disk for every record `definition_any`
+resolves, not a policy-affecting subset — a difference forces a confirmed service down/up
+cycle, and a snapshot that itself does not carry the floor refuses to resume
+(`refuse_workspace_cycle_failed`) rather than restart a workspace the floor cannot protect.
+
+What it does not cover: an `in_casa` executor's floor is not load-gated the same way — the
+`driver == "claude_code"` check in `load_all_executors` does not apply to it, and its
+enforcement instead comes from `resolve_hooks` synthesizing the two floor entries whenever a
+`HooksConfig` declares no `pre_tool_use` at all, over the same immutable snapshot. Nor does
+this cover a hooks document that fails to build at all, whatever the floor — that is
+INV-MCP-007's per-policy fallback, which this rule assumes has already resolved to something
+constructible before the floor check runs. And a reload rebuilds through the same load path
+the boot scan uses, so a hollowed edit is rejected there exactly as at boot; a *valid* edit
+replaces the snapshot for future emissions but does not retroactively touch a workspace
+already provisioned from the one before it — boot replay's diff-and-cycle is the mechanism
+that reconciles a resumed session against the current snapshot, not the reload itself.
 
 ## Failure behavior
 

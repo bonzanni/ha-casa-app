@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.169.0] - 2026-08-08
+
+### Security
+
+- **The assistant no longer carries a shell.** `Bash` is now hard-denied for the
+  primary resident — all concrete work already goes through delegation to
+  specialists and executors, so the broad shell was unused authority. Nothing
+  in normal use changes; a request that used to fall back to a shell command
+  is delegated instead.
+- **Executor hook containment is fixed at load and can no longer be weakened
+  by editing a config file in place.** Every Claude-Code-driven executor
+  (plugin-developer today) must now declare its two baseline guards —
+  the dangerous-command guard and the filesystem scope guard — or it fails to
+  load at all, rather than silently running with a narrower, easy-to-miss
+  default. What is declared at load time is captured once and reused
+  everywhere that guard gets enforced — when a workspace is provisioned, when
+  a running executor's hook policy is resolved over the network, and when a
+  session is resumed after a restart — so a hollowed-out or matcher-tampered
+  hooks file on disk can no longer widen what is actually enforced, and a
+  resumed executor whose enforcement has drifted from what it should be is
+  safely cycled rather than left running on stale settings.
+
 ## [0.168.0] - 2026-08-08
 
 ### Security

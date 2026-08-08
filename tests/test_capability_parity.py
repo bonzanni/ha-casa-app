@@ -261,3 +261,27 @@ def test_configurator_definition_and_role_allowlists_are_identical() -> None:
         "configurator tool allowlists drifted:\n"
         f"  only in definition.yaml: {sorted(defn_allowed - role_allowed)}\n"
         f"  only in role.yaml:       {sorted(role_allowed - defn_allowed)}")
+
+
+def test_assistant_denies_bash():
+    """Stage-1 containment: the assistant is a router; broad Bash is unused
+    authority and must be fenced via the CLI-enforced disallowed knob, not
+    merely absent from the auto-approve allowlist. Same applies to Agent/Task:
+    they bypass allowed_tools + fail-closed callback and spawn children with
+    broad default toolsets, so they must be disallowed in both config sources."""
+    role = yaml.safe_load(
+        (CASA / "defaults" / "roles" / "resident" / "assistant"
+         / "role.yaml").read_text())
+    runtime = yaml.safe_load(
+        (AGENTS / "assistant" / "runtime.yaml").read_text())
+    for cfg, src in ((role, "role.yaml"), (runtime, "runtime.yaml")):
+        allowed = cfg["tools"].get("allowed") or []
+        disallowed = cfg["tools"].get("disallowed") or []
+        # Bash
+        assert "Bash" not in allowed, f"{src}: Bash still auto-approved"
+        assert "Bash" in disallowed, f"{src}: Bash not CLI-denied"
+        # Agent/Task sub-agent spawn bypass
+        assert "Agent" not in allowed, f"{src}: Agent still auto-approved"
+        assert "Agent" in disallowed, f"{src}: Agent not CLI-denied"
+        assert "Task" not in allowed, f"{src}: Task still auto-approved"
+        assert "Task" in disallowed, f"{src}: Task not CLI-denied"

@@ -411,15 +411,13 @@ async def provision_workspace(
     ws.mkdir(parents=True, exist_ok=False)
 
     # L-1 (v0.34.2): both legacy and template paths need hooks_yaml_data.
-    # Load once here; render_workspace_template + legacy branch share it.
-    hooks_yaml_data: dict = {}
-    if getattr(defn, "hooks_path", None) and os.path.isfile(defn.hooks_path):
-        # Sol r1-2: the SAME env-substituting reader load-time validation
-        # used (see agent_loader.read_hooks_document) — a raw safe_load here
-        # rendered settings from a DIFFERENT document for any ${VAR}
-        # reference than the one that was validated.
-        from agent_loader import read_hooks_document
-        hooks_yaml_data = read_hooks_document(defn.hooks_path)
+    # Task 4 (#360): read the load-time-validated snapshot
+    # (ExecutorDefinition.hooks_document, Task 3) rather than re-reading
+    # hooks_path here — a post-load edit to the on-disk hooks.yaml must not
+    # change what an already-provisioned (or newly provisioning) engagement
+    # enforces. hooks_document is populated for every executor ({} only when
+    # there is no hooks file), so no os.path.isfile probe is needed anymore.
+    hooks_yaml_data: dict = getattr(defn, "hooks_document", None) or {}
 
     # Plan 4b §16.3: if a workspace-template exists for this executor, render it
     # into the workspace root. This subsumes the old symlink-loop behavior.

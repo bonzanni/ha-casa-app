@@ -2738,6 +2738,52 @@ HOOK_POLICIES: dict[str, dict[str, Any]] = {
 }
 
 
+# claude_code containment floor: the policies every claude_code executor must
+# declare to meet the baseline security requirements. Task 2: Single source of
+# truth for the floor + canonical matchers so policy matchers cannot be
+# override-routed by YAML edits.
+REQUIRED_CLAUDE_CODE_POLICIES: frozenset[str] = frozenset({
+    "block_dangerous_bash",
+    "path_scope",
+})
+
+
+def missing_required_cc_policies(declared_policy_names) -> frozenset:
+    """Return the set of required policies missing from the declared set.
+
+    Args:
+        declared_policy_names: An iterable of declared policy names.
+
+    Returns:
+        A frozenset of required policies not in declared_policy_names.
+        Empty frozenset means the floor is satisfied.
+    """
+    return REQUIRED_CLAUDE_CODE_POLICIES - frozenset(declared_policy_names)
+
+
+def canonical_matcher_for(policy_name: str) -> str:
+    """Return the canonical matcher for a registry-backed policy.
+
+    This is the single source of truth for policy matchers, ensuring that
+    YAML-editable matcher declarations cannot override registry matchers.
+
+    Args:
+        policy_name: The name of a policy in HOOK_POLICIES.
+
+    Returns:
+        The matcher string from HOOK_POLICIES[policy_name].
+
+    Raises:
+        UnknownPolicyError: If policy_name is not in HOOK_POLICIES.
+    """
+    if policy_name not in HOOK_POLICIES:
+        raise UnknownPolicyError(
+            f"unknown hook policy {policy_name!r}; "
+            f"available: {sorted(HOOK_POLICIES)}"
+        )
+    return HOOK_POLICIES[policy_name]["matcher"]
+
+
 def resolve_hooks(
     config: "HooksConfig",
     *,
@@ -2770,7 +2816,19 @@ def resolve_hooks(
                 f"unknown hook policy {policy_name!r}; "
                 f"available: {sorted(HOOK_POLICIES)}"
             )
-        params = {k: v for k, v in entry.items() if k != "policy"}
+        # REVISION 3 (Terra plan-review r3, #360): strip the transport-only
+        # ``matcher``/``timeout`` keys before the factory call, exactly like
+        # build_policy_callbacks_from_hooks_yaml already does above. Without
+        # this, a snapshot carrying a stray ``matcher`` (e.g. because
+        # hook_bridge's canonical-matcher force wrote it back, or an
+        # executor's yaml declared one) made every factory call raise
+        # TypeError on an unexpected kwarg — turning a config-editable
+        # cosmetic key into a START-time UnknownPolicyError for every
+        # in-casa executor.
+        params = {
+            k: v for k, v in entry.items()
+            if k not in ("policy", "matcher", "timeout")
+        }
         callback = policy["factory"](**params)
         matchers.append(HookMatcher(
             matcher=policy["matcher"],
