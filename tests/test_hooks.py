@@ -1080,3 +1080,16 @@ class TestTriggerFileWriteGuardBypasses:
             "Bash", {"command": "printf x > /data/engagements/e1/triggers.yaml"},
             cwd="/data/engagements/e1")
         assert _decision(out) == "deny"
+
+
+def test_required_floor_and_canonical_matchers():
+    """Test the claude_code containment floor and canonical matcher accessor."""
+    from hooks import (REQUIRED_CLAUDE_CODE_POLICIES,
+                       missing_required_cc_policies, canonical_matcher_for)
+    assert REQUIRED_CLAUDE_CODE_POLICIES == frozenset(
+        {"block_dangerous_bash", "path_scope"})
+    assert missing_required_cc_policies([]) == REQUIRED_CLAUDE_CODE_POLICIES
+    assert missing_required_cc_policies(
+        ["block_dangerous_bash", "path_scope"]) == frozenset()
+    assert canonical_matcher_for("block_dangerous_bash") == "Bash"
+    assert canonical_matcher_for("path_scope") == "Read|Write|Edit"
