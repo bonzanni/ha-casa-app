@@ -124,9 +124,17 @@ class UidAllocator:
     @staticmethod
     def _append_if_absent(path: str, prefix: str, line: str) -> None:
         with open(path, "r", encoding="utf-8") as fh:
-            if any(existing.startswith(prefix) for existing in fh):
-                return
+            existing = fh.read()
+        if any(l.startswith(prefix) for l in existing.splitlines()):
+            return
+        # A file missing its trailing newline (nothing guarantees /etc/passwd
+        # or /etc/group end in one) would otherwise merge the previous last
+        # entry with the new one into a single corrupted line — insert the
+        # separator ourselves rather than trusting "a" mode to append cleanly.
+        needs_separator = bool(existing) and not existing.endswith("\n")
         with open(path, "a", encoding="utf-8") as fh:
+            if needs_separator:
+                fh.write("\n")
             fh.write(line)
 
     @staticmethod
