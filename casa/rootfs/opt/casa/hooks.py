@@ -2816,7 +2816,19 @@ def resolve_hooks(
                 f"unknown hook policy {policy_name!r}; "
                 f"available: {sorted(HOOK_POLICIES)}"
             )
-        params = {k: v for k, v in entry.items() if k != "policy"}
+        # REVISION 3 (Terra plan-review r3, #360): strip the transport-only
+        # ``matcher``/``timeout`` keys before the factory call, exactly like
+        # build_policy_callbacks_from_hooks_yaml already does above. Without
+        # this, a snapshot carrying a stray ``matcher`` (e.g. because
+        # hook_bridge's canonical-matcher force wrote it back, or an
+        # executor's yaml declared one) made every factory call raise
+        # TypeError on an unexpected kwarg — turning a config-editable
+        # cosmetic key into a START-time UnknownPolicyError for every
+        # in-casa executor.
+        params = {
+            k: v for k, v in entry.items()
+            if k not in ("policy", "matcher", "timeout")
+        }
         callback = policy["factory"](**params)
         matchers.append(HookMatcher(
             matcher=policy["matcher"],

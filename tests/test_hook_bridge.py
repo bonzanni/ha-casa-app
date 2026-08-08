@@ -27,18 +27,27 @@ class TestHookBridgeTranslate:
         assert "hooks" in settings
         pre = settings["hooks"]["PreToolUse"]
         # Two declared entries + the code-mandatory managed_component_guard
-        # (round-4 Terra P0: yaml policies are additive-only).
-        assert len(pre) == 3
+        # (round-4 Terra P0: yaml policies are additive-only) + the two
+        # containment-floor policies (block_dangerous_bash, path_scope —
+        # Task 4 #360), neither of which was declared here.
+        assert len(pre) == 5
 
         first = pre[0]
-        assert first["matcher"] == "Write|Edit"
+        # Task 4 (#360): matcher is forced to the registry's canonical value
+        # regardless of the yaml-declared "Write|Edit" — casa_config_guard's
+        # canonical matcher is "Write|Edit|Bash".
+        assert first["matcher"] == "Write|Edit|Bash"
         assert first["hooks"][0]["type"] == "command"
         assert first["hooks"][0]["command"].endswith(
             "hook_proxy.sh casa_config_guard"
         )
-        assert pre[-1]["hooks"][0]["command"].endswith(
-            "hook_proxy.sh managed_component_guard"
-        )
+        commands = [e["hooks"][0]["command"] for e in pre]
+        assert any(c.endswith("hook_proxy.sh managed_component_guard")
+                    for c in commands)
+        assert any(c.endswith("hook_proxy.sh block_dangerous_bash")
+                    for c in commands)
+        assert any(c.endswith("hook_proxy.sh path_scope")
+                    for c in commands)
 
     def test_empty_hooks_yaml_still_carries_managed_guard(self):
         """Round-4 Terra P0 regression: a hollow hooks.yaml (definition.yaml's
@@ -50,11 +59,20 @@ class TestHookBridgeTranslate:
             {}, proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
         )
         pre = settings["hooks"]["PreToolUse"]
-        assert len(pre) == 1
-        assert pre[0]["matcher"] == "Write|Edit|Bash"
-        assert pre[0]["hooks"][0]["command"].endswith(
-            "hook_proxy.sh managed_component_guard"
+        # Task 4 (#360): the empty document also gets both containment-floor
+        # policies appended alongside the managed-component guard.
+        assert len(pre) == 3
+        guard = next(
+            e for e in pre
+            if e["hooks"][0]["command"].endswith(
+                "hook_proxy.sh managed_component_guard")
         )
+        assert guard["matcher"] == "Write|Edit|Bash"
+        commands = [e["hooks"][0]["command"] for e in pre]
+        assert any(c.endswith("hook_proxy.sh block_dangerous_bash")
+                    for c in commands)
+        assert any(c.endswith("hook_proxy.sh path_scope")
+                    for c in commands)
 
     def test_malformed_list_members_skipped_not_crash(self):
         """#354: a syntactically valid ``pre_tool_use: [null]`` (or a scalar
@@ -73,7 +91,11 @@ class TestHookBridgeTranslate:
         commands = [e["hooks"][0]["command"] for e in pre]
         assert f"{PROXY} casa_config_guard" in commands
         assert f"{PROXY} managed_component_guard" in commands
-        assert len(pre) == 2   # skipped members emit nothing
+        # Task 4 (#360): the two floor policies are also appended (neither
+        # was declared) alongside the one valid member + managed guard.
+        assert f"{PROXY} block_dangerous_bash" in commands
+        assert f"{PROXY} path_scope" in commands
+        assert len(pre) == 4   # skipped members emit nothing
 
     def test_non_mapping_document_root_treated_as_empty(self):
         """#354 (Sol r5-3): a hooks file whose ROOT is valid yaml but not a
@@ -86,9 +108,12 @@ class TestHookBridgeTranslate:
                 bad_root, proxy_script_path=PROXY,
             )
             pre = settings["hooks"]["PreToolUse"]
-            assert len(pre) == 1
-            assert pre[0]["hooks"][0]["command"].endswith(
-                "managed_component_guard")
+            # Task 4 (#360): managed guard + both floor policies.
+            assert len(pre) == 3
+            commands = [e["hooks"][0]["command"] for e in pre]
+            assert any(c.endswith("managed_component_guard") for c in commands)
+            assert any(c.endswith("block_dangerous_bash") for c in commands)
+            assert any(c.endswith("path_scope") for c in commands)
 
     def test_non_list_hook_section_treated_as_empty(self):
         """#354 companion: a scalar/mapping ``pre_tool_use:`` value must not
@@ -100,9 +125,12 @@ class TestHookBridgeTranslate:
                 {"pre_tool_use": bad}, proxy_script_path=PROXY,
             )
             pre = settings["hooks"]["PreToolUse"]
-            assert len(pre) == 1
-            assert pre[0]["hooks"][0]["command"].endswith(
-                "managed_component_guard")
+            # Task 4 (#360): managed guard + both floor policies.
+            assert len(pre) == 3
+            commands = [e["hooks"][0]["command"] for e in pre]
+            assert any(c.endswith("managed_component_guard") for c in commands)
+            assert any(c.endswith("block_dangerous_bash") for c in commands)
+            assert any(c.endswith("path_scope") for c in commands)
 
     def test_unparseable_timeout_skipped_not_crash(self):
         """#354 companion: ``timeout: abc`` passed boot validation, then
@@ -138,6 +166,89 @@ class TestHookBridgeTranslate:
         )
         assert "PreToolUse" in settings["hooks"]
         assert len(settings["hooks"]["PreToolUse"]) >= 1
+
+
+class TestCanonicalMatcherForced:
+    """Task 4 (#360, Sol r2 generalization): every registry-backed policy's
+    matcher is forced to HOOK_POLICIES' canonical value, not just the floor
+    — a yaml-supplied matcher on ANY registry policy is misroutable
+    (definition.yaml's hooks_file: is a config-editable pointer)."""
+
+    def test_block_dangerous_bash_matcher_forced_to_canonical(self):
+        from drivers.hook_bridge import translate_hooks_to_settings
+
+        settings = translate_hooks_to_settings(
+            {"pre_tool_use": [
+                {"policy": "block_dangerous_bash", "matcher": "Read"},
+                {"policy": "path_scope", "matcher": "Read"},
+            ]},
+            proxy_script_path=PROXY,
+        )
+        pre = settings["hooks"]["PreToolUse"]
+        entry = next(
+            e for e in pre
+            if e["hooks"][0]["command"].endswith("block_dangerous_bash")
+        )
+        assert entry["matcher"] == "Bash"
+
+    def test_self_containment_guard_matcher_forced_to_canonical(self):
+        """Verified against the registry: HOOK_POLICIES['self_containment_guard']
+        ['matcher'] is 'Bash'."""
+        from drivers.hook_bridge import translate_hooks_to_settings
+        from hooks import HOOK_POLICIES
+
+        expected = HOOK_POLICIES["self_containment_guard"]["matcher"]
+        assert expected == "Bash"
+
+        settings = translate_hooks_to_settings(
+            {"pre_tool_use": [
+                {"policy": "self_containment_guard", "matcher": "Read"},
+            ]},
+            proxy_script_path=PROXY,
+        )
+        pre = settings["hooks"]["PreToolUse"]
+        entry = next(
+            e for e in pre
+            if e["hooks"][0]["command"].endswith("self_containment_guard")
+        )
+        assert entry["matcher"] == expected
+
+    def test_non_registry_policy_keeps_yaml_matcher(self):
+        """engagement_permission_relay has no HOOK_POLICIES entry — its
+        yaml-declared matcher is the only source of truth and must survive."""
+        from drivers.hook_bridge import translate_hooks_to_settings
+
+        settings = translate_hooks_to_settings(
+            {"pre_tool_use": [
+                {"policy": "engagement_permission_relay", "matcher": ".*",
+                 "timeout": 600},
+            ]},
+            proxy_script_path=PROXY,
+        )
+        pre = settings["hooks"]["PreToolUse"]
+        entry = next(
+            e for e in pre
+            if e["hooks"][0]["command"].endswith("engagement_permission_relay")
+        )
+        assert entry["matcher"] == ".*"
+
+    def test_missing_path_scope_appended_with_canonical_matcher(self):
+        """Defense-in-depth (#360): a doc missing path_scope entirely still
+        gets it appended with the registry's canonical matcher."""
+        from drivers.hook_bridge import translate_hooks_to_settings
+
+        settings = translate_hooks_to_settings(
+            {"pre_tool_use": [
+                {"policy": "block_dangerous_bash"},
+            ]},
+            proxy_script_path=PROXY,
+        )
+        pre = settings["hooks"]["PreToolUse"]
+        entry = next(
+            e for e in pre
+            if e["hooks"][0]["command"].endswith("hook_proxy.sh path_scope")
+        )
+        assert entry["matcher"] == "Read|Write|Edit"
 
 
 class TestTimeoutPassthrough:

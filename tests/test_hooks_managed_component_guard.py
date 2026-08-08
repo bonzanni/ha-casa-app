@@ -747,9 +747,19 @@ async def _stack_denies_managed(opts) -> bool:
 
 class TestGuardIsCodeMandatoryInCasa:
     def _defn(self, hooks_path):
+        # Task 4 (#360): _build_executor_options now reads
+        # defn.hooks_document (the load-time snapshot) instead of
+        # re-reading hooks_path — populate it here exactly as
+        # agent_loader.read_hooks_document would have, for these
+        # well-formed (no ${VAR}) fixture files.
         from types import SimpleNamespace
+        hooks_document: dict = {}
+        if hooks_path:
+            hooks_document = yaml.safe_load(
+                Path(hooks_path).read_text(encoding="utf-8")) or {}
         return SimpleNamespace(
-            hooks_path=hooks_path, mcp_server_names=[], tools_allowed=["Read"],
+            hooks_path=hooks_path, hooks_document=hooks_document,
+            mcp_server_names=[], tools_allowed=["Read"],
             model="sonnet", permission_mode="acceptEdits",
             tools_disallowed=[], driver="in_casa",
         )
@@ -781,6 +791,65 @@ class TestGuardIsCodeMandatoryInCasa:
     async def test_missing_hooks_file_still_denies(self):
         """(b') hooks_file pointing nowhere (defn.hooks_path unusable)."""
         assert await _stack_denies_managed(self._build(None))
+
+    async def test_post_load_hooks_yaml_mutation_does_not_widen_path_scope(
+        self, tmp_path,
+    ):
+        """TOCTOU red case (#360, Sol r2): _build_executor_options must
+        derive hooks from ``defn.hooks_document`` (the load-time snapshot),
+        never by re-reading ``defn.hooks_path`` at build time. Pin a
+        deny-everything path_scope snapshot, then widen the ON-DISK file
+        afterward (as a config-editable hooks_file: repoint would) — the
+        in-casa configurator must still enforce the narrow snapshot."""
+        from types import SimpleNamespace
+        import tools
+
+        p = tmp_path / "hooks.yaml"
+        narrow_snapshot = {
+            "pre_tool_use": [
+                {"policy": "path_scope", "writable": [], "readable": []},
+            ],
+        }
+        p.write_text(
+            "pre_tool_use:\n"
+            "  - policy: path_scope\n"
+            "    writable: []\n"
+            "    readable: []\n",
+            encoding="utf-8",
+        )
+        defn = SimpleNamespace(
+            hooks_path=str(p), hooks_document=narrow_snapshot,
+            mcp_server_names=[], tools_allowed=["Read"],
+            model="sonnet", permission_mode="acceptEdits",
+            tools_disallowed=[], driver="in_casa",
+        )
+
+        # Post-load mutation: the file now grants broad write access.
+        p.write_text(
+            "pre_tool_use:\n"
+            "  - policy: path_scope\n"
+            "    writable: ['/']\n"
+            "    readable: ['/']\n",
+            encoding="utf-8",
+        )
+
+        opts = tools._build_executor_options(
+            defn, executor_type="configurator", plugin_paths=[],
+        )
+        write_call = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/config/anything.yaml"},
+        }
+        denied = False
+        for matcher in opts.hooks["PreToolUse"]:
+            for cb in matcher.hooks:
+                out = await cb(dict(write_call), None, {})
+                if out and _decision(out) == "deny":
+                    denied = True
+        assert denied, (
+            "path_scope must enforce the load-time snapshot (empty "
+            "writable), not the post-load widened on-disk file"
+        )
 
     async def test_declared_guard_not_double_appended(self):
         """(3) The shipped yaml declares the policy — the code-side append

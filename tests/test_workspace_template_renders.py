@@ -116,11 +116,15 @@ def test_template_path_writes_translated_hooks(tmp_path, executor_defaults):
     settings = json.loads((dest / ".claude" / "settings.json").read_text())
     assert "PreToolUse" in settings["hooks"]
     # Declared entry + the code-mandatory managed_component_guard entry
-    # (round-4 Terra P0: yaml policies are additive-only).
+    # (round-4 Terra P0: yaml policies are additive-only) + the
+    # code-mandatory path_scope floor entry (Task 4 #360: block_dangerous_bash
+    # was declared but path_scope was not).
     pre = settings["hooks"]["PreToolUse"]
-    assert len(pre) == 2
-    assert pre[1]["hooks"][0]["command"].endswith(
-        "hook_proxy.sh managed_component_guard")
+    commands = [e["hooks"][0]["command"] for e in pre]
+    assert len(pre) == 3
+    assert any(c.endswith("hook_proxy.sh managed_component_guard")
+               for c in commands)
+    assert any(c.endswith("hook_proxy.sh path_scope") for c in commands)
 
 
 def test_template_path_handles_bundled_plugin_developer(tmp_path):

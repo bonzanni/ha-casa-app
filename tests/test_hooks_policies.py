@@ -136,6 +136,29 @@ class TestResolveHooks:
         with pytest.raises(UnknownPolicyError, match="bogus_param"):
             resolve_hooks(cfg, default_cwd="/cwd")
 
+    def test_stray_matcher_and_timeout_stripped_before_factory_call(self):
+        """REVISION 3 (Terra plan-review r3, #360): resolve_hooks is the SDK
+        path used by the in-casa _build_executor_options. A snapshot
+        carrying the transport-only ``matcher``/``timeout`` keys on a floor
+        policy (e.g. because hook_bridge's canonical-matcher force wrote a
+        matcher back onto every registry entry, or the yaml itself declared
+        one) loads/reloads fine but previously blew up every in-casa
+        executor's START with UnknownPolicyError, since the factories reject
+        unexpected kwargs. Both keys must be stripped before the factory
+        call, exactly like build_policy_callbacks_from_hooks_yaml already
+        does."""
+        from hooks import resolve_hooks
+        from config import HooksConfig
+
+        cfg = HooksConfig(pre_tool_use=[
+            {"policy": "block_dangerous_bash", "matcher": "Read"},
+            {"policy": "path_scope", "matcher": "Read|Write|Edit",
+             "timeout": 600,
+             "writable": ["/workspace"], "readable": ["/workspace"]},
+        ])
+        resolved = resolve_hooks(cfg, default_cwd="/cwd")
+        assert len(resolved["PreToolUse"]) == 2
+
 
 # --- 0.13.1 — two-tier HOOK_POLICIES shape --------------------------------
 

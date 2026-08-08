@@ -676,12 +676,21 @@ class TestProvisionWithHooks:
             "  - policy: casa_config_guard\n"
             "    matcher: Write|Edit\n"
         )
+        # Task 4 (#360): provision_workspace now reads the load-time
+        # snapshot (ExecutorDefinition.hooks_document, Task 3), not
+        # hooks_path — populate it exactly as the loader would.
+        hooks_document = {
+            "pre_tool_use": [
+                {"policy": "casa_config_guard", "matcher": "Write|Edit"},
+            ],
+        }
         defn = ExecutorDefinition(role_artifact=STUB_ROLE_ARTIFACT,
             type="cfg",
             description="A config executor with twenty chars",
             model="sonnet", driver="claude_code",
             prompt_template_path=str(exec_dir / "prompt.md"),
             hooks_path=str(exec_dir / "hooks.yaml"),
+            hooks_document=hooks_document,
         )
 
         (tmp_path / "eng").mkdir()
@@ -697,11 +706,76 @@ class TestProvisionWithHooks:
             (Path(path) / ".claude" / "settings.json").read_text()
         )
         assert "PreToolUse" in settings["hooks"]
-        assert settings["hooks"]["PreToolUse"][0]["matcher"] == "Write|Edit"
         entry = settings["hooks"]["PreToolUse"][0]
+        # Task 4 (#360): the matcher is forced to the registry canonical
+        # value ("Write|Edit|Bash"), not the yaml-declared "Write|Edit".
+        assert entry["matcher"] == "Write|Edit|Bash"
         assert entry["hooks"][0]["type"] == "command"
         assert entry["hooks"][0]["command"].endswith(
             "hook_proxy.sh casa_config_guard"
+        )
+
+    async def test_settings_json_ignores_post_load_hooks_yaml_mutation(
+        self, tmp_path,
+    ):
+        """TOCTOU red case (#360): provision_workspace must derive settings
+        from ``defn.hooks_document`` (the load-time snapshot), never by
+        re-reading ``defn.hooks_path`` at provisioning time. Simulate the
+        loader having captured a snapshot, then mutate the on-disk
+        hooks.yaml afterward (as a config-editable hooks_file: repoint
+        would) — the mutation must NOT reach the emitted settings.json."""
+        from pathlib import Path
+        from drivers.workspace import provision_workspace
+        from config import ExecutorDefinition
+
+        exec_dir = tmp_path / "defaults-executors" / "cfg2"
+        exec_dir.mkdir(parents=True)
+        (exec_dir / "prompt.md").write_text("p")
+        hooks_path = exec_dir / "hooks.yaml"
+        # Snapshot captured at "load time" (what agent_loader would have
+        # produced from the original file).
+        snapshot = {
+            "pre_tool_use": [
+                {"policy": "casa_config_guard", "matcher": "Write|Edit"},
+            ],
+        }
+        hooks_path.write_text(
+            "pre_tool_use:\n"
+            "  - policy: casa_config_guard\n"
+            "    matcher: Write|Edit\n"
+        )
+        defn = ExecutorDefinition(role_artifact=STUB_ROLE_ARTIFACT,
+            type="cfg2",
+            description="A config executor with twenty chars",
+            model="sonnet", driver="claude_code",
+            prompt_template_path=str(exec_dir / "prompt.md"),
+            hooks_path=str(hooks_path),
+            hooks_document=snapshot,
+        )
+
+        # Post-load mutation of the file: an attacker (or a config-editable
+        # hooks_file: repoint) hollows the policy list to shed the guard.
+        hooks_path.write_text("pre_tool_use: []\n")
+
+        (tmp_path / "eng2").mkdir()
+        path = await provision_workspace(
+            engagements_root=str(tmp_path / "eng2"),
+            engagement_id="e43",
+            engagement_auth_token="tok-ws-test",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="x",
+        )
+
+        settings = json.loads(
+            (Path(path) / ".claude" / "settings.json").read_text()
+        )
+        commands = [
+            e["hooks"][0]["command"]
+            for e in settings["hooks"]["PreToolUse"]
+        ]
+        assert any(c.endswith("casa_config_guard") for c in commands), (
+            "settings.json must reflect the load-time snapshot, not the "
+            "post-load on-disk mutation"
         )
 
 
