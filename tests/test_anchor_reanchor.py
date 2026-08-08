@@ -1723,8 +1723,36 @@ class TestBootReplayOwner:
         monkeypatch.setattr(
             s6_rc, "ensure_service_down", AsyncMock(return_value=True))
 
+        # Task 6 (#360): boot replay now resolves every claude_code record
+        # via definition_any (settings.json floor regeneration) BEFORE the
+        # fast path — an executor_registry is required for the record to
+        # attach at all now.
+        from config import ExecutorDefinition
+        try:
+            from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
+        except ImportError:
+            from role_artifact_stub import STUB_ROLE_ARTIFACT
+
+        class _ExecReg:
+            def __init__(self):
+                self._defn = ExecutorDefinition(
+                    role_artifact=STUB_ROLE_ARTIFACT,
+                    type="configurator", description="test", model="haiku",
+                    driver="claude_code", enabled=True, tools_allowed=[],
+                    tools_disallowed=[], permission_mode="bypassPermissions",
+                    mcp_server_names=[], idle_reminder_days=1,
+                    prompt_template_path="/nope/prompt.md", hooks_path=None,
+                    observer_policy_path=None, doctrine_dir="",
+                    extra_dirs=[], mirror_chat_to_topic=False,
+                    plugins_dir="",
+                )
+            def get(self, t):
+                return self._defn if t == "configurator" else None
+            def definition_any(self, t):
+                return self._defn if t == "configurator" else None
+
         await casa_core.replay_undergoing_engagements(
-            registry=reg, driver=driver, executor_registry=None,
+            registry=reg, driver=driver, executor_registry=_ExecReg(),
             engagements_root=str(tmp_path / "eng"), telegram_ready=None)
 
         # B3: the empty-oq record was snapshotted as [] (NOT None) — the fresh ask
