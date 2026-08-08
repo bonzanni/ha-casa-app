@@ -31,6 +31,12 @@ tools:
     # #460: the assistant is a router—all concrete work is delegated.
     # Broad Bash is unused authority and must be fenced via CLI-enforcement.
     - Bash
+    # Agent/Task: Q-1 (v0.69.8) — the assistant is a pure router that delegates
+    # via mcp__casa-framework__delegate_to_agent and must not spawn sub-agents
+    # (they bypass allowed_tools + the fail-closed callback; disallowed is
+    # CLI-enforced).
+    - Agent
+    - Task
     # #396: session-scoped schedulers. These outlive nothing — CronCreate
     # reports "Session-only (not written to disk, dies when Claude exits)" —
     # so a reminder set through one is silently discarded at the next
