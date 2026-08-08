@@ -11,7 +11,6 @@ tools:
     - Read
     - Write
     - Edit
-    - Bash
     - Skill
     - mcp__casa-framework__cancel_engagement
     - mcp__casa-framework__cleanup_engagement_topics
@@ -29,6 +28,9 @@ tools:
     - mcp__casa-framework__send_message
     - mcp__casa-framework__send_media
   disallowed:
+    # #460: the assistant is a router—all concrete work is delegated.
+    # Broad Bash is unused authority and must be fenced via CLI-enforcement.
+    - Bash
     # #396: session-scoped schedulers. These outlive nothing — CronCreate
     # reports "Session-only (not written to disk, dies when Claude exits)" —
     # so a reminder set through one is silently discarded at the next
