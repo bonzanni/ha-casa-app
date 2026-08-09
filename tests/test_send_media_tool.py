@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import os
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -126,6 +127,108 @@ async def test_engagement_origin_preferred(wired):
     finally:
         tools.engagement_var.reset(etok)
     assert ch.send_media.await_args.kwargs["context"]["chat_id"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Per-engagement private outbox (containment stage 2, Task 11).
+# ---------------------------------------------------------------------------
+
+
+def _eng_with_uid(uid, chat_id=42):
+    eng = MagicMock()
+    eng.origin = {"channel": "telegram", "chat_id": chat_id}
+    eng.allocated_uid = uid
+    return eng
+
+
+async def test_send_media_uses_engagement_uid_private_outbox(wired, tmp_path):
+    """The claim comes from the AUTHENTICATED record's own private outbox,
+    not the shared one — even though the `path` argument's parent dir is
+    literally the private dir (a producer would return exactly this)."""
+    _ob, ch = wired
+    priv = plugin_outbox.PluginOutbox(str(tmp_path / "eng-42"))
+    try:
+        path = _drop(priv, "report.pdf", PDF)
+        with patch.object(
+            plugin_outbox, "get_engagement_outbox", return_value=priv,
+        ) as fake_get:
+            etok = tools.engagement_var.set(_eng_with_uid(200042))
+            try:
+                res = await tools.send_media.handler(
+                    {"path": path, "kind": "document"})
+            finally:
+                tools.engagement_var.reset(etok)
+        fake_get.assert_called_once_with(200042)
+        body = _payload(res)
+        assert body["status"] == "ok"
+        ch.send_media.assert_awaited_once()
+        assert os.listdir(priv._claims_realpath) == []   # claim cleaned up
+    finally:
+        priv.close()
+
+
+async def test_send_media_ignores_path_pointing_at_another_engagements_outbox(
+    wired, tmp_path,
+):
+    """A submitted `path` naming a DIFFERENT engagement's private outbox
+    directory must be refused, not honored — the dir to claim from is
+    whichever `get_engagement_outbox(this_record's_uid)` returns, never
+    derived from the argument."""
+    _ob, ch = wired
+    mine = plugin_outbox.PluginOutbox(str(tmp_path / "eng-mine"))
+    theirs = plugin_outbox.PluginOutbox(str(tmp_path / "eng-theirs"))
+    try:
+        secret_path = _drop(theirs, "b-secret.pdf", PDF)
+        with patch.object(
+            plugin_outbox, "get_engagement_outbox", return_value=mine,
+        ):
+            etok = tools.engagement_var.set(_eng_with_uid(200043))
+            try:
+                res = await tools.send_media.handler(
+                    {"path": secret_path, "kind": "document"})
+            finally:
+                tools.engagement_var.reset(etok)
+        body = _payload(res)
+        assert body["status"] == "error"
+        assert body["kind_error"] == "outside_outbox"
+        ch.send_media.assert_not_awaited()
+        # B's file was never touched — still sitting where B's producer left it.
+        assert os.path.exists(secret_path)
+    finally:
+        mine.close()
+        theirs.close()
+
+
+async def test_send_media_refuses_symlink_planted_in_own_private_outbox(
+    wired, tmp_path,
+):
+    """A symlink sitting in the caller's OWN private outbox (e.g. pointing at
+    a sibling engagement's `.mcp.json`) is refused by the reused hardened
+    capture — single-hard-link + `O_NOFOLLOW` — the same guard the shared
+    outbox has always had, now covering the private one too."""
+    _ob, ch = wired
+    mine = plugin_outbox.PluginOutbox(str(tmp_path / "eng-mine2"))
+    target = tmp_path / "victim-mcp.json"
+    target.write_bytes(b"super-secret-token")
+    link = Path(mine._root_realpath) / "innocuous.pdf"
+    link.symlink_to(target)
+    try:
+        with patch.object(
+            plugin_outbox, "get_engagement_outbox", return_value=mine,
+        ):
+            etok = tools.engagement_var.set(_eng_with_uid(200044))
+            try:
+                res = await tools.send_media.handler(
+                    {"path": str(link), "kind": "document"})
+            finally:
+                tools.engagement_var.reset(etok)
+        body = _payload(res)
+        assert body["status"] == "error"
+        assert body["kind_error"] == "not_regular"
+        ch.send_media.assert_not_awaited()
+        assert target.read_bytes() == b"super-secret-token"  # never exfiltrated
+    finally:
+        mine.close()
 
 
 @pytest.mark.parametrize("args,expected", [

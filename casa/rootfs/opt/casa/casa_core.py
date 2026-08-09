@@ -1066,6 +1066,15 @@ async def replay_undergoing_engagements(
                 try:
                     chown_workspace(_ws_dir, _rec_uid, _rec_uid)
                     os.chmod(_ws_dir, 0o700)
+                    # Task 11 (containment stage 2): a legacy record migrating
+                    # to the uid drop for the first time has never had a
+                    # private outbox dir — provision it here, alongside the
+                    # chown, before the (re-)rendered run script below can
+                    # start a producer plugin that expects it to exist.
+                    # Idempotent for an ordinary restart of an
+                    # already-migrated engagement.
+                    import plugin_outbox
+                    plugin_outbox.provision_engagement_outbox(_rec_uid)
                 except OSError as exc:
                     await _refuse_brief_resume(
                         rec,

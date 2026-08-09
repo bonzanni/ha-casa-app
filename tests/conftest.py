@@ -395,6 +395,38 @@ def _isolate_engagement_control_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_engagement_outbox_root(tmp_path_factory, monkeypatch):
+    """Containment stage 2, Task 11: ``plugin_outbox.ENGAGEMENT_OUTBOX_ROOT``
+    defaults to the real ``/data/plugin-outbox-eng`` in production. Without
+    this, any test that provisions a workspace (or renders a run script) for
+    a real uid would try to mkdir under that real path — unwritable in CI,
+    same rationale as ``_isolate_engagement_control_root`` above. Also clears
+    the process-global per-uid ``PluginOutbox`` cache both before and after
+    the test so a leaked cached instance (and its open dir-FDs) from one test
+    can never leak into another."""
+    try:
+        import plugin_outbox as _pob
+    except Exception:  # pragma: no cover — module import is universal in tests
+        yield
+        return
+    for _ob in _pob._engagement_outboxes.values():
+        try:
+            _ob.close()
+        except Exception:  # noqa: BLE001 — best-effort pre-test cleanup
+            pass
+    _pob._engagement_outboxes.clear()
+    out_root = tmp_path_factory.mktemp("plugin-outbox-eng")
+    monkeypatch.setattr(_pob, "ENGAGEMENT_OUTBOX_ROOT", str(out_root))
+    yield
+    for _ob in _pob._engagement_outboxes.values():
+        try:
+            _ob.close()
+        except Exception:  # noqa: BLE001 — best-effort post-test cleanup
+            pass
+    _pob._engagement_outboxes.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_resident_bindings(tmp_path, monkeypatch):
     """Personality Phase A, Task 8: point the resident instance-tuple root
     (``CASA_BINDINGS_DIR``, consumed by agent_loader's boot-time binding

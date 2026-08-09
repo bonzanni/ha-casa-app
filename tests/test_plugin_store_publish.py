@@ -1016,6 +1016,72 @@ def test_freeze_refuses_symlinked_root(tmp_path):
     assert _stat.S_IMODE(outside.stat().st_mode) & 0o222 != 0
 
 
+def test_frozen_artifact_is_world_readable_and_traversable(tmp_path):
+    """Containment stage 2, Task 11: a dropped-uid engagement CLI process
+    (`--plugin-dir`) must be able to traverse+read an artifact it does not
+    own. Freezing a 0700 dir / 0600 file must grant o+rx / o+r respectively
+    (write bits still cleared) while preserving any exec bit the file
+    already carried."""
+    import stat as _stat
+    from plugin_store import _freeze_artifact_files
+
+    root = tmp_path / "artifact"
+    (root / "sub").mkdir(parents=True)
+    root.chmod(0o700)
+    (root / "sub").chmod(0o700)
+    plain = root / "sub" / "plain.md"
+    plain.write_text("x", encoding="utf-8")
+    plain.chmod(0o600)
+    script = root / "sub" / "run.sh"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o700)          # owner-executable script
+
+    _freeze_artifact_files(root)
+
+    for d in (root, root / "sub"):
+        mode = _stat.S_IMODE(d.stat().st_mode)
+        assert mode & 0o222 == 0, f"{d} still writable: {oct(mode)}"
+        assert mode & 0o055 == 0o055, f"{d} not o+rx/g+rx: {oct(mode)}"
+
+    plain_mode = _stat.S_IMODE(plain.stat().st_mode)
+    assert plain_mode & 0o222 == 0
+    assert plain_mode & 0o044 == 0o044, f"file not o+r/g+r: {oct(plain_mode)}"
+    assert plain_mode & 0o111 == 0, "read-only file must not gain exec bits"
+
+    script_mode = _stat.S_IMODE(script.stat().st_mode)
+    assert script_mode & 0o222 == 0
+    assert script_mode & 0o044 == 0o044
+    assert script_mode & 0o100, "owner exec bit must survive the freeze"
+
+
+def test_publish_leaves_parent_chain_world_traversable(tmp_path):
+    """Task 11: the preflight checks a --plugin-dir's OWN mode, but a
+    dropped uid must also be able to TRAVERSE the plugin-store root and the
+    plugin-name dir above it. publish() must leave the whole chain o+x."""
+    import os as _os
+    import stat as _stat
+    src = _plugin_tree(tmp_path)
+    store, staging = tmp_path / "store", tmp_path / "staging"
+    # Force a restrictive umask so mkdir's default mode would NOT already
+    # grant o+x — the assertions below only prove something if the code
+    # under test had to actively widen the mode.
+    old_umask = _os.umask(0o077)
+    try:
+        with patch("plugin_store.resolve_ref", return_value=SHA), \
+             patch("plugin_store.fetch_commit_tree", side_effect=_wire_fetch(src)):
+            r = publish(name="probe", repo="o/r", ref="v1",
+                        store_root=store, staging_root=staging)
+    finally:
+        _os.umask(old_umask)
+    dest = Path(r.path)
+    # store_root and store_root/name must both grant o+x (traversal) even
+    # though this test never widened their default creation mode.
+    for d in (store, store / "probe"):
+        mode = _stat.S_IMODE(d.stat().st_mode)
+        assert mode & 0o001, f"{d} not world-traversable: {oct(mode)}"
+    assert _stat.S_IMODE(dest.stat().st_mode) & 0o001
+
+
 def test_s6_exports_pycache_prefix():
     from pathlib import Path as _P
     text = (_P(__file__).resolve().parent.parent / "casa" / "rootfs"

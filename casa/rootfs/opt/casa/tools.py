@@ -388,7 +388,24 @@ async def send_media(args: dict) -> dict:
         if caption is not None and len(caption) > _CAPTION_MAX:
             caption = caption[:_CAPTION_MAX]
 
-        outbox = plugin_outbox.get_outbox()
+        # Containment stage 2 (Task 11): a uid-dropped claude_code engagement's
+        # producer plugins can no longer write the SHARED outbox (it stays
+        # root-only, never group/world-writable) — they write a PRIVATE
+        # per-engagement dir instead. Which outbox to claim from is derived
+        # from the AUTHENTICATED engagement record's own `allocated_uid`
+        # (bound via `engagement_var`, never from the caller-submitted
+        # `path`), so engagement A can never point this claim at B's private
+        # outbox by crafting a path argument. A record with no real uid
+        # (legacy/specialist/no-engagement context) keeps using the shared
+        # outbox exactly as before.
+        from engagement_uids import owner_uid_or_none
+        _raw_uid = getattr(eng, "allocated_uid", None) if eng is not None else None
+        eng_uid = (owner_uid_or_none(_raw_uid)
+                  if isinstance(_raw_uid, int) else None)
+        if eng_uid is not None:
+            outbox = plugin_outbox.get_engagement_outbox(eng_uid)
+        else:
+            outbox = plugin_outbox.get_outbox()
         if outbox is None:
             return _result({"status": "error", "kind_error": "internal_error",
                             "message": "outbox not initialised"})
@@ -8033,6 +8050,15 @@ async def delete_engagement_workspace(args: dict) -> dict:
             logger.warning(
                 "delete_engagement_workspace: prune_identity(%s) failed: %s",
                 real_uid, exc,
+            )
+        # Task 11 (containment stage 2): the uid's private outbox dir
+        # follows the workspace on this caller-managed path too.
+        try:
+            plugin_outbox.teardown_engagement_outbox(real_uid)
+        except Exception as exc:  # noqa: BLE001 — best-effort, like prune above
+            logger.warning(
+                "delete_engagement_workspace: engagement outbox "
+                "teardown(%s) failed: %s", real_uid, exc,
             )
     return _result({
         "status": "ok", "engagement_id": engagement_id,

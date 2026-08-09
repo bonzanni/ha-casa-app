@@ -349,6 +349,21 @@ def render_run_script(
         if derived:
             extra_env = {**derived, **(extra_env or {})}
 
+    # Task 11 (containment stage 2): a real uid means the CLI (and any
+    # producer plugin it spawns) runs `--clear-groups`-dropped and can no
+    # longer write the SHARED outbox (root:root, never group/world-
+    # writable). Point it at its OWN private outbox dir instead — derived
+    # here, from the uid render already refuses to render without, so every
+    # uid-dropped launch gets it with no extra per-caller wiring. A
+    # caller-supplied extra_env still wins on collision, same as the
+    # plugin-dirs overlay above.
+    real_uid = owner_uid_or_none(uid)
+    if real_uid is not None:
+        import plugin_outbox
+        outbox_env = {plugin_outbox.OUTBOX_ENV:
+                     plugin_outbox.engagement_outbox_dir(real_uid)}
+        extra_env = {**outbox_env, **(extra_env or {})}
+
     if extra_env:
         bad = [k for k in extra_env if not _ENV_VAR_NAME_RE.match(str(k))]
         if bad:
@@ -709,6 +724,15 @@ async def provision_workspace(
         ensure_identity(real_uid, str(ws / ".home"))
         chown_workspace(str(ws), real_uid, real_gid)
         os.chmod(ws, 0o700)
+        # Task 11 (containment stage 2): provision the uid's PRIVATE outbox
+        # dir eagerly, here, so it already exists (owned by the uid) before
+        # the CLI/any producer plugin it spawns ever starts — a lazy
+        # first-send_media provision would be too late for a producer that
+        # writes before send_media is ever called. Kept entirely separate
+        # from the workspace tree (own root, own retention) — never chowned
+        # by chown_workspace above.
+        import plugin_outbox
+        plugin_outbox.provision_engagement_outbox(real_uid)
 
     logger.info("Provisioned workspace for engagement %s at %s",
                 engagement_id[:8], ws)
@@ -1033,6 +1057,17 @@ def _sweep_one_workspace(
                 logger.warning(
                     "workspace sweep: prune_identity(%s) failed: %s",
                     real_uid, exc,
+                )
+            # Task 11 (containment stage 2): the uid's private outbox dir
+            # follows the workspace on the SAME retention decision — same
+            # reasoning as the control dir and passwd entry above.
+            import plugin_outbox
+            try:
+                plugin_outbox.teardown_engagement_outbox(real_uid)
+            except Exception as exc:  # noqa: BLE001 — best-effort, like siblings
+                logger.warning(
+                    "workspace sweep: engagement outbox teardown(%s) "
+                    "failed: %s", real_uid, exc,
                 )
 
 
