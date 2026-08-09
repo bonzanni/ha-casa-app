@@ -396,3 +396,125 @@ async def test_svc_get_returns_405() -> None:
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/mcp/casa-framework")
         assert resp.status == 405
+
+
+# ---------------------------------------------------------------------------
+# /internal/channel/* forwarding — Containment Stage 2 (Task 9)
+# ---------------------------------------------------------------------------
+
+
+async def test_svc_forwards_channel_send_to_topic() -> None:
+    fwd = AsyncMock(return_value=(200, {"ok": True}))
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/internal/channel/send_to_topic",
+            json={"text": "hi", "engagement_id": "eng-1",
+                  "engagement_token": "tok-1"},
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert body == {"ok": True}
+        call_args = fwd.call_args
+        assert call_args.kwargs["path"] == "/internal/channel/send_to_topic"
+        assert call_args.kwargs["body"] == {
+            "text": "hi", "engagement_id": "eng-1",
+            "engagement_token": "tok-1",
+        }
+
+
+async def test_svc_forwards_channel_ask_and_ask_cancel() -> None:
+    fwd = AsyncMock(return_value=(200, {"ok": True, "outcome": "no_answer"}))
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/internal/channel/ask",
+            json={"question": "Q?", "options": ["A", "B"],
+                  "engagement_id": "eng-1", "engagement_token": "tok-1"},
+        )
+        assert resp.status == 200
+        resp2 = await client.post(
+            "/internal/channel/ask_cancel",
+            json={"request_id": "r1", "engagement_id": "eng-1",
+                  "engagement_token": "tok-1"},
+        )
+        assert resp2.status == 200
+    paths = [c.kwargs["path"] for c in fwd.call_args_list]
+    assert paths == ["/internal/channel/ask", "/internal/channel/ask_cancel"]
+
+
+async def test_svc_channel_ask_forward_uses_no_client_timeout() -> None:
+    """`ask` must not inherit the 180s tools/call default — the operator
+    broker can wait up to ~570s for a tap, plus the channel server's own
+    client-side pad, so a bounded proxy timeout here would race that wait."""
+    captured: dict = {}
+
+    async def _fwd(**kwargs):
+        captured.update(kwargs)
+        return 200, {"ok": True, "outcome": "no_answer"}
+    app = _make_svc_app(tools=[], forward_call=_fwd)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/internal/channel/ask",
+            json={"question": "Q?", "options": ["A", "B"]},
+        )
+        assert resp.status == 200
+    assert captured["timeout_s"] is None, (
+        f"ask forward must pass timeout_s=None, got {captured['timeout_s']!r}"
+    )
+
+
+async def test_svc_channel_send_to_topic_uses_bounded_default_timeout() -> None:
+    """The non-`ask` channel routes are ordinary bounded writes and should
+    NOT silently inherit ask's unbounded timeout."""
+    captured: dict = {}
+
+    async def _fwd(**kwargs):
+        captured.update(kwargs)
+        return 200, {"ok": True}
+    app = _make_svc_app(tools=[], forward_call=_fwd)
+    async with TestClient(TestServer(app)) as client:
+        await client.post(
+            "/internal/channel/send_to_topic", json={"text": "hi"},
+        )
+    assert captured["timeout_s"] is not None
+    assert captured["timeout_s"] >= 60
+
+
+async def test_svc_admin_reload_not_reachable_on_8100() -> None:
+    """SECURITY: /admin/reload must never be registered on the 8100
+    surface — it stays Unix-socket-only, unauthenticated-reload-reachable
+    only from root. A POST here must 404, never reach the forwarder."""
+    fwd = AsyncMock()
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/admin/reload", json={})
+        assert resp.status == 404
+        fwd.assert_not_called()
+
+
+async def test_svc_admin_personality_not_reachable_on_8100() -> None:
+    fwd = AsyncMock()
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/admin/personality/inspect", json={})
+        assert resp.status == 404
+        fwd.assert_not_called()
+
+
+async def test_svc_channel_forward_socket_unreachable_returns_503() -> None:
+    import aiohttp
+
+    async def _fwd_raises(**_):
+        raise aiohttp.ClientConnectorError(
+            connection_key=MagicMock(),
+            os_error=ConnectionRefusedError("simulated"),
+        )
+    app = _make_svc_app(tools=[], forward_call=_fwd_raises)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/internal/channel/send_to_topic", json={"text": "hi"},
+        )
+        assert resp.status == 503
+        body = await resp.json()
+        assert body["ok"] is False

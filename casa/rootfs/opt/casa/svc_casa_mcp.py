@@ -283,6 +283,95 @@ def _build_hooks_handler(*, forward_to_internal: ForwardCallable):
 
 
 # ---------------------------------------------------------------------------
+# /internal/channel/* — forward the per-engagement channel MCP server's
+# outbound calls to casa-main over the Unix socket (Containment Stage 2,
+# Task 9).
+#
+# The channel server (``channels/casa_engagement_channel.py``) runs as a
+# child of the uid-dropped CLI subprocess and therefore cannot reach the
+# 0600 root-owned Unix socket directly. It instead talks TCP to THIS
+# already-token-authed 127.0.0.1:8100 listener, which proxies on its
+# behalf. The engagement's own token still authenticates at the far end —
+# it rides in the JSON body (not a header, unlike /mcp/casa-framework and
+# /hooks/resolve) exactly as it always has, and the ``/internal/channel/*``
+# handlers (#335) verify it against the engagement record before acting.
+#
+# SECURITY: this is an explicit ALLOWLIST of exact paths — never a
+# wildcard/prefix match. `/admin/reload` and the personality-admin routes
+# are Unix-socket-only and are deliberately never registered here; a POST
+# to `/admin/reload` (or any path not in this dict) on 8100 falls through
+# to aiohttp's own 404, exactly as if the route never existed.
+# ---------------------------------------------------------------------------
+
+
+# Per-tail forwarder timeout. `ask` must NOT inherit the 180s tools/call
+# default: the broker waits up to `_ASK_MAX_TIMEOUT_S` (570s) for an
+# operator tap, and the channel server's own aiohttp client timeout for
+# `ask` is `clamped_timeout + _ASK_CLIENT_TIMEOUT_PAD_S` (up to 585s) — see
+# `channels/casa_engagement_channel.py`. A bounded proxy-side timeout here
+# would race that wait exactly as `/hooks/resolve`'s `timeout_s=None`
+# comment describes, so `ask` gets the same treatment: no client-side total
+# timeout, deferring entirely to the caller's own deadline. The other
+# channel calls (send_to_topic, post_inline_keyboard, update_state,
+# ask_cancel) are ordinary bounded operator-topic writes, so they keep the
+# forwarder's default.
+CHANNEL_FORWARD_TIMEOUTS: dict[str, float | None] = {
+    "send_to_topic": 180.0,
+    "post_inline_keyboard": 180.0,
+    "update_state": 180.0,
+    "ask": None,
+    "ask_cancel": 180.0,
+}
+
+
+def _build_channel_forward_handler(
+    *, tail: str, forward_to_internal: ForwardCallable,
+):
+    """Build the aiohttp POST handler forwarding ``/internal/channel/{tail}``
+    to casa-main's Unix socket, unchanged apart from transport."""
+    internal_path = f"/internal/channel/{tail}"
+    timeout_s = CHANNEL_FORWARD_TIMEOUTS[tail]
+
+    async def handler(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"ok": False, "error": "bad_json"}, status=400,
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"ok": False, "error": "bad_json"}, status=400,
+            )
+
+        try:
+            status, result = await forward_to_internal(
+                path=internal_path, body=body, timeout_s=timeout_s,
+            )
+        except aiohttp.ClientConnectorError as exc:
+            logger.warning(
+                "svc_casa_mcp %s: casa-main socket unreachable: %s",
+                internal_path, exc,
+            )
+            return web.json_response(
+                {"ok": False, "error": "casa_temporarily_unavailable"},
+                status=503,
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning(
+                "svc_casa_mcp %s: forwarding error: %s", internal_path, exc,
+            )
+            return web.json_response(
+                {"ok": False, "error": f"forwarding_error: {exc}"},
+                status=502,
+            )
+
+        return web.json_response(result, status=status)
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
 # GET /mcp/casa-framework -> 405
 # ---------------------------------------------------------------------------
 
@@ -316,6 +405,14 @@ def _build_app(
         "/hooks/resolve",
         _build_hooks_handler(forward_to_internal=fwd),
     )
+    # Containment Stage 2 (Task 9): explicit allowlist, one route per exact
+    # channel-family path. Never a wildcard — `/admin/reload` and
+    # personality-admin stay Unix-socket-only and are never registered here.
+    for tail in CHANNEL_FORWARD_TIMEOUTS:
+        app.router.add_post(
+            f"/internal/channel/{tail}",
+            _build_channel_forward_handler(tail=tail, forward_to_internal=fwd),
+        )
     return app
 
 

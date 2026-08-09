@@ -1,9 +1,10 @@
 """casa-engagement-channel: per-engagement stdio MCP server (v0.37.2).
 
 Launched by the ``claude_code`` driver via ``--channels server:<name>`` on the
-``claude`` CLI subprocess. Supplies operator-facing tools that route through
-casa-main's Unix-socket internal handler at ``/internal/channel/send_to_topic``,
-which fans out to Telegram (or any future channel) by topic.
+``claude`` CLI subprocess. Supplies operator-facing tools that route through svc_casa_mcp's token-authed
+``127.0.0.1:8100`` listener at ``/internal/channel/send_to_topic`` (Containment
+Stage 2, Task 9), which forwards on to casa-main over the root-only Unix
+socket and fans out to Telegram (or any future channel) by topic.
 
 Surface (v0.37.2):
 - ``reply(chat_id, text)`` — append a message to the engagement's operator topic.
@@ -31,7 +32,7 @@ from typing import Any
 
 import aiohttp
 import anyio
-from aiohttp import UnixConnector
+from aiohttp import TCPConnector
 from mcp.server.fastmcp import FastMCP
 from mcp.server.stdio import stdio_server
 
@@ -44,6 +45,15 @@ logger = logging.getLogger(__name__)
 
 ENGAGEMENT_ID: str | None = None
 INTERNAL_SOCKET: str = os.environ.get("CASA_INTERNAL_SOCKET", "/run/casa/internal.sock")
+# Containment Stage 2 (Task 9): the channel server runs as a child of the
+# uid-dropped CLI, which cannot reach the 0600 root-owned unix socket above
+# (``INTERNAL_SOCKET`` is retained only for any legacy/env-driven callers —
+# ``_internal_post`` no longer reads it). Instead it talks to svc_casa_mcp's
+# token-authed TCP listener, which forwards ONLY the ``/internal/channel/*``
+# family to the unix socket on this process's behalf (never `/admin/reload`
+# or personality-admin — see svc_casa_mcp.py's explicit route allowlist).
+CHANNEL_HTTP_HOST: str = "127.0.0.1"
+CHANNEL_HTTP_PORT: int = 8100
 # #335: per-engagement secret, injected via the workspace .mcp.json "env"
 # block. Sent alongside engagement_id in every internal POST — casa-main
 # verifies it against the record before acting with the engagement's
@@ -138,7 +148,16 @@ _RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.0, 2.0)
 async def _internal_post(
     path: str, payload: dict[str, Any], *, timeout_s: float | None = None,
 ) -> dict[str, Any]:
-    """POST ``payload`` to ``path`` on the casa-main internal Unix socket.
+    """POST ``payload`` to ``path`` on svc_casa_mcp's token-authed TCP
+    listener (``http://127.0.0.1:8100``), which forwards the
+    ``/internal/channel/*`` family on to casa-main's Unix socket.
+
+    Containment Stage 2 (Task 9): a uid-dropped engagement subprocess cannot
+    reach the 0600 root-owned Unix socket, so this client talks TCP to the
+    already-token-authed loopback listener instead. The engagement identity
+    still authenticates at the far end — ``engagement_id``/``engagement_token``
+    ride in the JSON body exactly as before, verified by the
+    ``/internal/channel/*`` handlers (#335) against the engagement record.
 
     Auto-merges ``engagement_id=ENGAGEMENT_ID`` if not already present in
     ``payload``. Retries with exponential backoff (``_RETRY_DELAYS_S``),
@@ -160,7 +179,7 @@ async def _internal_post(
     if "engagement_token" not in body and ENGAGEMENT_TOKEN is not None:
         body["engagement_token"] = ENGAGEMENT_TOKEN
 
-    connector = UnixConnector(path=INTERNAL_SOCKET)
+    connector = TCPConnector()
     session_kwargs: dict[str, Any] = {"connector": connector}
     if timeout_s is not None:
         session_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout_s)
@@ -169,7 +188,8 @@ async def _internal_post(
         for attempt, delay in enumerate(_RETRY_DELAYS_S):
             try:
                 async with session.post(
-                    f"http://localhost{path}", json=body,
+                    f"http://{CHANNEL_HTTP_HOST}:{CHANNEL_HTTP_PORT}{path}",
+                    json=body,
                 ) as resp:
                     resp.raise_for_status()
                     return await resp.json()
