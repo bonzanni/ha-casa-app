@@ -61,6 +61,18 @@ def _make_record(allocated_uid=None):
     )
 
 
+def _patch_uid_drop_ok(monkeypatch):
+    """Task 7 (containment stage 2): ``start()`` now runs
+    ``_preflight_uid_drop`` before planting the service. Its real
+    preconditions (workspace chown, passwd entry) are made true by LATER
+    tasks (8/11) that haven't landed — so orchestration tests that exercise
+    ``start()`` end-to-end (not testing the preflight itself, which has its
+    own dedicated test class below) stub it to a no-op rather than fake an
+    entire uid/NSS environment."""
+    from drivers import claude_code_driver as ccd
+    monkeypatch.setattr(ccd, "_preflight_uid_drop", lambda rec, ws: None)
+
+
 class TestStart:
     @pytest.mark.skipif(
         sys.platform == "win32",
@@ -69,6 +81,8 @@ class TestStart:
     async def test_start_provisions_writes_service_compiles_starts(self, monkeypatch, tmp_path):
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
+
+        _patch_uid_drop_ok(monkeypatch)
 
         # Mock every s6_rc subprocess call to avoid actually running s6-rc-compile.
         calls: list[tuple[str, dict]] = []
@@ -148,6 +162,8 @@ class TestStart:
         from drivers import s6_rc
         from drivers.brief import COMPLETION_ACCOUNTING_LINE
 
+        _patch_uid_drop_ok(monkeypatch)
+
         async def fake_cau():
             return None
         async def fake_start_kw(*, engagement_id):
@@ -206,6 +222,8 @@ class TestStartRollback:
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
 
+        _patch_uid_drop_ok(monkeypatch)
+
         compile_calls: list[str] = []
 
         async def fake_cau():
@@ -256,6 +274,8 @@ class TestStartRollback:
         skipped it, abandoning half-written service dirs and the workspace."""
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
+
+        _patch_uid_drop_ok(monkeypatch)
 
         async def fake_cau():
             return None
@@ -335,6 +355,181 @@ class TestStartRollback:
         # workspace tree should still be removed (rmtree(ignore_errors=True)
         # is best-effort).
         assert not (tmp_path / "engagements" / rec.id).exists()
+
+
+class TestPreflightUidDrop:
+    """Task 7 (containment stage 2): `_preflight_uid_drop` is the
+    fail-closed gate run before a service is planted — it must refuse
+    (never plant) whenever the setpriv uid drop `render_run_script` bakes
+    into the run script cannot actually succeed."""
+
+    def test_refuses_when_setpriv_missing(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+        rec = _make_record(allocated_uid=200005)
+
+        with pytest.raises(ccd.UidDropRefused, match="setpriv"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_uid_sentinel(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record()  # defaults to UNALLOCATED_UID
+
+        with pytest.raises(ccd.UidDropRefused, match="UID_BASE"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_workspace_owner_mismatch(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+
+        class FakeStat:
+            st_uid = 999999  # not the allocated uid — chown hasn't run
+
+        monkeypatch.setattr(ccd.os, "stat", lambda path, *a, **kw: FakeStat())
+
+        with pytest.raises(ccd.UidDropRefused, match="owned by uid"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_missing_passwd_entry(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+
+        class FakeStat:
+            st_uid = 200005  # ownership check passes
+
+        monkeypatch.setattr(ccd.os, "stat", lambda path, *a, **kw: FakeStat())
+
+        def fake_getpwuid(uid):
+            raise KeyError(uid)
+
+        monkeypatch.setattr(ccd.pwd, "getpwuid", fake_getpwuid)
+
+        with pytest.raises(ccd.UidDropRefused, match="passwd entry"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_unreadable_plugin_dir(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        os.chmod(plugin_dir, 0o700)  # owner-only — no world r/x
+        rec.plugin_artifacts = ({"path": str(plugin_dir)},)
+
+        real_stat = os.stat
+
+        def fake_stat(path, *a, **kw):
+            if os.fspath(path) == str(tmp_path):
+                class Owned:
+                    st_uid = 200005
+                return Owned()
+            return real_stat(path, *a, **kw)  # real stat for the plugin dir
+
+        monkeypatch.setattr(ccd.os, "stat", fake_stat)
+        monkeypatch.setattr(ccd.pwd, "getpwuid", lambda uid: object())
+
+        with pytest.raises(ccd.UidDropRefused, match="not world-readable"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_happy_path_all_checks_pass(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        rec.plugin_artifacts = ({"path": str(plugin_dir)},)
+
+        class FakeStat:
+            st_uid = 200005
+            st_mode = 0o40755  # dir, rwxr-xr-x — world r+x too
+
+        monkeypatch.setattr(ccd.os, "stat", lambda path, *a, **kw: FakeStat())
+        monkeypatch.setattr(ccd.pwd, "getpwuid", lambda uid: object())
+
+        ccd._preflight_uid_drop(rec, str(tmp_path))  # must not raise
+
+
+class TestUidDropRefusalWiredIntoStart:
+    """Task 7: the caller in `start()` must map `UidDropRefused` to a
+    dedicated `mark_error(kind="refuse_uid_drop_failed")` + best-effort
+    `ensure_service_down`, and must NEVER plant the service (write_service_dir
+    / start_service) on refusal."""
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
+    )
+    async def test_refusal_marks_error_and_never_plants_service(
+        self, monkeypatch, tmp_path,
+    ):
+        from drivers.claude_code_driver import ClaudeCodeDriver, UidDropRefused
+        from drivers import claude_code_driver as ccd
+        from drivers import s6_rc
+
+        def boom(rec, ws):
+            raise UidDropRefused("simulated uid-drop refusal")
+
+        monkeypatch.setattr(ccd, "_preflight_uid_drop", boom)
+
+        write_calls: list[str] = []
+        start_calls: list[str] = []
+
+        def fake_write_service_dir(**kw):
+            write_calls.append(kw["engagement_id"])
+        async def fake_start_kw(*, engagement_id):
+            start_calls.append(engagement_id)
+        monkeypatch.setattr(s6_rc, "write_service_dir", fake_write_service_dir)
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_kw)
+
+        ensure_down_calls: list[str] = []
+        async def fake_ensure_down(*, engagement_id, **kw):
+            ensure_down_calls.append(engagement_id)
+            return True
+        monkeypatch.setattr(s6_rc, "ensure_service_down", fake_ensure_down)
+
+        monkeypatch.setattr(
+            s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc-root"))
+        (tmp_path / "svc-root").mkdir()
+
+        mark_error_calls: list[tuple] = []
+
+        class FakeRegistry:
+            async def mark_error(self, engagement_id, kind, message):
+                mark_error_calls.append((engagement_id, kind, message))
+                return True
+
+        defn = _make_defn(tmp_path)
+        rec = _make_record(allocated_uid=200005)
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+            registry=FakeRegistry(),
+        )
+        (tmp_path / "engagements").mkdir()
+        (tmp_path / "base-plugins").mkdir()
+
+        with pytest.raises(UidDropRefused, match="simulated uid-drop refusal"):
+            await drv.start(rec, prompt="hi", options=defn)
+
+        assert write_calls == [], "write_service_dir must not run on refusal"
+        assert start_calls == [], "start_service must not run on refusal"
+        assert ensure_down_calls == [rec.id]
+        assert len(mark_error_calls) == 1
+        eid, kind, message = mark_error_calls[0]
+        assert eid == rec.id
+        assert kind == "refuse_uid_drop_failed"
+        assert "simulated uid-drop refusal" in message
 
 
 class TestNoRemoteControlNotices:
@@ -2410,6 +2605,8 @@ class TestBootSummary:
     def _mock_s6(self, monkeypatch, tmp_path, order):
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
+
+        _patch_uid_drop_ok(monkeypatch)
 
         async def fake_cau():
             return None

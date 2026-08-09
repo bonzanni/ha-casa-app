@@ -10,7 +10,9 @@ import errno
 import json
 import logging
 import os
+import pwd
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -27,7 +29,7 @@ from drivers.workspace import (
     session_id_path, stderr_path, stream_cursor_path, write_casa_meta,
 )
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
-from engagement_uids import owner_uid_or_none
+from engagement_uids import UID_BASE, owner_uid_or_none
 from safe_fs import SymlinkRefused, list_dir_beneath, open_beneath
 from settle_gate import confirmed_settle_edit
 
@@ -799,6 +801,80 @@ class _InboundSpool:
                         await fn(self._engagement_id, "operator_turn")
 
 
+class UidDropRefused(Exception):
+    """Raised by ``_preflight_uid_drop`` when the preconditions for launching
+    an engagement's CLI subprocess under its allocated uid (via setpriv)
+    cannot be verified. The caller must refuse — never plant/start the s6
+    service and never fall back to a root spawn (containment stage 2,
+    Task 7)."""
+
+
+def _preflight_uid_drop(rec: EngagementRecord, ws: str) -> None:
+    """Fail-closed gate, run BEFORE the s6 service is planted: verify the
+    ``setpriv`` uid drop that ``render_run_script`` bakes into the run
+    script (Task 6) can actually succeed at spawn time. Every precondition
+    checked here is made true by a LATER task — the chown + passwd append
+    (Task 8) and plugin-artifact mode normalization (Task 11) — so this
+    check is correct now and simply starts passing once those tasks land;
+    it must never be loosened to "skip if not yet true".
+
+    Raises ``UidDropRefused`` on the first failing check; callers must not
+    swallow it and plant the service anyway.
+    """
+    if shutil.which("setpriv") is None:
+        raise UidDropRefused("setpriv not found on PATH — cannot drop uid")
+
+    uid = rec.allocated_uid
+    if uid < UID_BASE:
+        raise UidDropRefused(
+            f"allocated_uid {uid} is below UID_BASE ({UID_BASE}) — "
+            "unallocated or otherwise invalid"
+        )
+
+    try:
+        ws_stat = os.stat(ws)
+    except OSError as exc:
+        raise UidDropRefused(
+            f"cannot stat workspace {ws!r}: {exc}"
+        ) from exc
+    if ws_stat.st_uid != uid:
+        raise UidDropRefused(
+            f"workspace {ws!r} is owned by uid {ws_stat.st_uid}, not the "
+            f"allocated uid {uid} — the uid-drop chown has not landed"
+        )
+
+    try:
+        pwd.getpwuid(uid)
+    except KeyError as exc:
+        raise UidDropRefused(
+            f"no passwd entry for uid {uid} — NSS identity not provisioned"
+        ) from exc
+
+    # Each pinned plugin artifact is passed to the CLI as a --plugin-dir
+    # flag (render_run_script) — the subprocess, running AS the allocated
+    # uid, must be able to traverse into and read it. os.access() is not a
+    # reliable check here: run as root (this preflight always is), it
+    # reports what root could do, not what the target uid could do. So
+    # check mode bits directly: either the uid owns the dir (its own
+    # artifacts), or the "other" bits grant read+execute (o+rx == 0o005) —
+    # traverse (x) to enter, read (r) to list/open entries beneath it.
+    for artifact in getattr(rec, "plugin_artifacts", ()) or ():
+        path = artifact["path"]
+        try:
+            pa_stat = os.stat(path)
+        except OSError as exc:
+            raise UidDropRefused(
+                f"cannot stat plugin dir {path!r}: {exc}"
+            ) from exc
+        if pa_stat.st_uid == uid:
+            continue
+        if (pa_stat.st_mode & 0o005) != 0o005:
+            raise UidDropRefused(
+                f"plugin dir {path!r} is not world-readable+traversable "
+                f"and not owned by uid {uid} (mode {oct(pa_stat.st_mode)})"
+            )
+
+
 class ClaudeCodeDriver(DriverProtocol):
     """s6-rc orchestrator. Does not manage subprocesses directly."""
 
@@ -1026,7 +1102,6 @@ class ClaudeCodeDriver(DriverProtocol):
         don't end up with a permanent UNDERGOING ghost. The exception is
         re-raised so engage_executor's caller surfaces the failure.
         """
-        import shutil
         defn = options
         # Workspace path is deterministic — compute it up front so the
         # rollback path can rmtree even if provision_workspace raises
@@ -1090,6 +1165,13 @@ class ClaudeCodeDriver(DriverProtocol):
                         getattr(engagement, "plugin_artifacts", ()) or ()),
                 )
 
+                # 1.5. Task 7 (containment stage 2): verify the uid drop the
+                # run script below will attempt can actually succeed BEFORE
+                # planting the service — a refusal here must never leave a
+                # service that `set -e`-crash-loops under setpriv, nor fall
+                # back to a root spawn.
+                _preflight_uid_drop(engagement, ws)
+
                 # 2. Write the s6 service pair (sibling logger service
                 #    captures the CLI's stdout — see s6_rc.write_service_dir).
                 # v0.14.9: GITHUB_TOKEN is set at addon boot via
@@ -1144,6 +1226,36 @@ class ClaudeCodeDriver(DriverProtocol):
                     "claude_code start failed for engagement %s: %s; rolling back",
                     engagement.id[:8], start_exc,
                 )
+                # Task 7 (containment stage 2): a uid-drop refusal gets its
+                # own terminal kind (not the generic "driver_start_failed"
+                # a caller further up would otherwise assign) so it's
+                # distinguishable in the registry/telemetry. mark_error is
+                # idempotent-guarded (only the first winner flips the
+                # record), so a caller upstream re-marking with a generic
+                # kind afterwards is a harmless no-op. The service was never
+                # planted (this raises before write_service_dir), so
+                # ensure_service_down is best-effort/likely a no-op — kept
+                # anyway in case a prior partial state lingers.
+                if isinstance(start_exc, UidDropRefused):
+                    try:
+                        await s6_rc.ensure_service_down(
+                            engagement_id=engagement.id)
+                    except Exception:  # noqa: BLE001 — best-effort teardown
+                        logger.warning(
+                            "uid-drop refusal: ensure_service_down failed "
+                            "for %s", engagement.id[:8], exc_info=True,
+                        )
+                    if self._registry is not None:
+                        try:
+                            await self._registry.mark_error(
+                                engagement.id, kind="refuse_uid_drop_failed",
+                                message=str(start_exc),
+                            )
+                        except Exception:  # noqa: BLE001 — best-effort mark
+                            logger.warning(
+                                "uid-drop refusal: mark_error failed for "
+                                "%s", engagement.id[:8], exc_info=True,
+                            )
                 # Best-effort rollback. Each step swallows its own errors so
                 # one rollback failure doesn't mask the original cause.
                 # v0.64.0: ALWAYS attempt dir removal — write_service_dir can

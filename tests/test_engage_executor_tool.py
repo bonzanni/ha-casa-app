@@ -1164,9 +1164,16 @@ class TestOriginContextPropagation:
         origin's 'context'/'world_state_summary' back out and pass them
         into provision_workspace. Follows the mocking pattern of
         tests/test_claude_code_driver.py::TestStart."""
+        from drivers import claude_code_driver as ccd
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
         from engagement_registry import EngagementRecord
+
+        # Task 7 (containment stage 2): stub the uid-drop preflight — its
+        # real preconditions (workspace chown, passwd entry) are landed by
+        # later tasks (8/11); this test exercises context/world_state
+        # plumbing, not the preflight itself.
+        monkeypatch.setattr(ccd, "_preflight_uid_drop", lambda rec, ws: None)
 
         async def fake_cau():
             pass
