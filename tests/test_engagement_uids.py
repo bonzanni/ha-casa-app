@@ -22,6 +22,50 @@ def test_corrupt_counter_file_refuses(tmp_path):
         a.reconstruct(known_uids=[], dir_owner_uids=[])
 
 
+def test_counter_missing_with_passwd_entry_does_not_reset_below(tmp_path):
+    # S1 code-gate fix (design §2): a LOST counter file must never reissue a
+    # uid still evidenced by a ``casa-eng-<uid>`` passwd entry — even when NO
+    # record and NO workspace dir preserve the high-water (a detached survivor
+    # whose record+workspace were pruned but whose passwd entry lingers).
+    pw = tmp_path / "passwd"
+    pw.write_text(
+        "root:x:0:0::/root:/bin/sh\n"
+        f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::"
+        "/data/engagements/x/.home:/usr/sbin/nologin\n")
+    gr = tmp_path / "group"; gr.write_text("")
+    a = UidAllocator(
+        str(tmp_path / "uids.json"),   # counter MISSING
+        passwd_path=str(pw), group_path=str(gr))
+    a.reconstruct(known_uids=[], dir_owner_uids=[])   # no record/workspace
+    # Next uid is strictly ABOVE the still-evidenced 200000, never a reissue.
+    assert a.allocate() == UID_BASE + 1
+
+
+def test_counter_missing_zero_evidence_starts_at_base(tmp_path):
+    # Genuine fresh install: no counter, no records, no dirs, no casa-eng
+    # passwd entries → allocation starts at UID_BASE (not refused).
+    pw = tmp_path / "passwd"; pw.write_text("root:x:0:0::/root:/bin/sh\n")
+    gr = tmp_path / "group"; gr.write_text("")
+    a = UidAllocator(
+        str(tmp_path / "uids.json"),
+        passwd_path=str(pw), group_path=str(gr))
+    a.reconstruct(known_uids=[], dir_owner_uids=[])
+    assert a.allocate() == UID_BASE
+
+
+def test_scan_passwd_uids_reads_uid_field(tmp_path):
+    from engagement_uids import scan_passwd_uids
+    pw = tmp_path / "passwd"
+    pw.write_text(
+        "root:x:0:0::/root:/bin/sh\n"
+        "casa-eng-200003:x:200003:200003::/h:/usr/sbin/nologin\n"
+        "someuser:x:1000:1000::/home/x:/bin/sh\n"
+        "casa-eng-bogus:x:notanint:0::/h:/usr/sbin/nologin\n")
+    assert sorted(scan_passwd_uids(str(pw))) == [200003]
+    # Missing file contributes nothing (never raises).
+    assert scan_passwd_uids(str(tmp_path / "nope")) == []
+
+
 def test_allocate_before_reconstruct_refuses(tmp_path):
     a = UidAllocator(str(tmp_path / "uids.json"))
     with pytest.raises(UidStateError):

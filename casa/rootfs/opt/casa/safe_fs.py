@@ -29,6 +29,8 @@ import ctypes
 import ctypes.util
 import errno
 import os
+import stat
+import uuid
 
 __all__ = [
     "SymlinkRefused",
@@ -36,6 +38,7 @@ __all__ = [
     "open_beneath",
     "read_text_beneath",
     "list_dir_beneath",
+    "atomic_write_beneath",
 ]
 
 
@@ -215,3 +218,103 @@ def list_dir_beneath(root, rel_path=".", *, owner_uid=None):
         # os.listdir(fd) does NOT close the fd (unlike os.fdopen in
         # read_text_beneath) — the caller retains ownership and must close it.
         os.close(fd)
+
+
+def atomic_write_beneath(root, rel_path, data, *, owner_uid=None, mode=0o644):
+    """Atomically write *data* to ``rel_path`` beneath ``root`` WITHOUT ever
+    following a symlink or writing through one — the write-side sibling of
+    :func:`open_beneath`.
+
+    The PARENT directory of ``rel_path`` is opened with the identical
+    no-symlink, workspace-confined traversal :func:`open_beneath` uses
+    (``openat2`` ``RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS``, or the FD-relative
+    ``O_NOFOLLOW`` fallback), yielding a directory fd. Every filesystem op
+    afterwards is performed RELATIVE to that fd — the temp file is created with
+    ``openat(dir_fd, O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC)`` and swapped over the
+    target with ``renameat`` (``os.replace(..., src_dir_fd=, dst_dir_fd=)``).
+    The target is never touched by absolute pathname, so an engagement-planted
+    symlink at any path component — or AT the target name itself — can never
+    redirect a root write into a sibling engagement's tree.
+
+    Fail-closed (all raise :class:`SymlinkRefused`):
+      - a symlink component anywhere in the parent path (via open_beneath);
+      - the target NAME already existing as a symlink — the write is REFUSED,
+        not silently replaced. ``renameat`` would only swap the link name (it
+        never writes through), but a planted symlink is tampering evidence, and
+        the caller (boot replay) turns the refusal into a fail-closed
+        refuse-to-resume rather than clobbering the link;
+      - ``owner_uid`` set and the parent directory not owned by it.
+
+    ``data`` may be ``str`` (encoded utf-8) or ``bytes``. ``mode`` is the exact
+    permission bits of the resulting file (forced via ``fchmod`` so umask can
+    neither loosen nor tighten it).
+
+    NOTE: the new file is owned by the writing process (root). Callers that
+    need it owned by the engagement uid re-chown the whole workspace as the
+    final provisioning/replay step (``drivers.workspace.chown_workspace``);
+    this primitive stays a pure symlink-safe writer and never chowns.
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    name = os.path.basename(rel_path)
+    parent_rel = os.path.dirname(rel_path)
+    if name in ("", ".", ".."):
+        raise SymlinkRefused(errno.EINVAL, "invalid target basename", rel_path)
+
+    dir_fd = open_beneath(
+        root, parent_rel or ".", want_dir=True, owner_uid=owner_uid)
+    tmp = None
+    try:
+        # Refuse a target that is ALREADY a symlink. renameat only swaps the
+        # link name (never writes through it), so this is belt-and-suspenders
+        # against write-through — but a planted symlink is tampering the caller
+        # must fail-closed on, not silently clobber.
+        try:
+            st = os.lstat(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(st.st_mode):
+                raise SymlinkRefused(
+                    errno.ELOOP, "target is a symlink", rel_path)
+
+        tmp = f".{name}.casa-tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        fd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            mode,
+            dir_fd=dir_fd,
+        )
+        adopted = False
+        try:
+            os.fchmod(fd, mode)  # exact bits, independent of umask
+            fh = os.fdopen(fd, "wb", closefd=True)
+            adopted = True
+            try:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            finally:
+                fh.close()
+        except BaseException:
+            if not adopted:
+                # fdopen never took the fd — close it ourselves so a failed
+                # fchmod/open path does not leak a descriptor.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
+        os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        tmp = None  # renamed into place — nothing left to unlink
+        try:
+            os.fsync(dir_fd)  # make the rename durable (best-effort)
+        except OSError:
+            pass
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
+        os.close(dir_fd)

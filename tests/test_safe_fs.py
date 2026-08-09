@@ -1,8 +1,15 @@
 import os
+import stat
 
 import pytest
 
-from safe_fs import HAS_OPENAT2, SymlinkRefused, list_dir_beneath, read_text_beneath
+from safe_fs import (
+    HAS_OPENAT2,
+    SymlinkRefused,
+    atomic_write_beneath,
+    list_dir_beneath,
+    read_text_beneath,
+)
 
 
 def test_reads_regular_file(tmp_path):
@@ -126,6 +133,73 @@ def test_refuses_absolute_rel_path_fallback(tmp_path, monkeypatch):
     (tmp_path / "a.txt").write_text("x")
     with pytest.raises(SymlinkRefused):
         read_text_beneath(str(tmp_path), "/etc/passwd")
+
+
+class TestAtomicWriteBeneath:
+    """S1 code-gate fix: the symlink-safe atomic writer (write-side sibling of
+    open_beneath), exercised on both the openat2 and forced-fallback paths."""
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_writes_regular_file_with_exact_mode(self, tmp_path, monkeypatch, has_openat2):
+        monkeypatch.setattr("safe_fs.HAS_OPENAT2", has_openat2)
+        atomic_write_beneath(str(tmp_path), "a.txt", "hello", mode=0o600)
+        p = tmp_path / "a.txt"
+        assert p.read_text() == "hello"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_writes_into_subdir_and_replaces_existing(self, tmp_path, monkeypatch, has_openat2):
+        monkeypatch.setattr("safe_fs.HAS_OPENAT2", has_openat2)
+        (tmp_path / "d").mkdir()
+        (tmp_path / "d" / "f").write_text("old")
+        atomic_write_beneath(str(tmp_path), "d/f", b"new-bytes")
+        assert (tmp_path / "d" / "f").read_text() == "new-bytes"
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_refuses_symlinked_target_leaves_sibling_unchanged(self, tmp_path, monkeypatch, has_openat2):
+        monkeypatch.setattr("safe_fs.HAS_OPENAT2", has_openat2)
+        outside = tmp_path.parent / f"victim-{tmp_path.name}"
+        outside.write_text("SECRET")
+        (tmp_path / "t.txt").symlink_to(outside)
+        with pytest.raises(SymlinkRefused):
+            atomic_write_beneath(str(tmp_path), "t.txt", "attacker")
+        # The link is untouched and the sibling was NOT written through.
+        assert (tmp_path / "t.txt").is_symlink()
+        assert outside.read_text() == "SECRET"
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_refuses_symlinked_parent_dir(self, tmp_path, monkeypatch, has_openat2):
+        monkeypatch.setattr("safe_fs.HAS_OPENAT2", has_openat2)
+        outside = tmp_path.parent / f"sibdir-{tmp_path.name}"
+        outside.mkdir()
+        (outside / "f").write_text("SECRET")
+        (tmp_path / "d").symlink_to(outside)   # parent component is a symlink
+        with pytest.raises(SymlinkRefused):
+            atomic_write_beneath(str(tmp_path), "d/f", "attacker")
+        assert (outside / "f").read_text() == "SECRET"
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_owner_mismatch_refused(self, tmp_path, monkeypatch, has_openat2):
+        monkeypatch.setattr("safe_fs.HAS_OPENAT2", has_openat2)
+        with pytest.raises((SymlinkRefused, PermissionError)):
+            atomic_write_beneath(str(tmp_path), "a.txt", "x", owner_uid=999999)
+        assert not (tmp_path / "a.txt").exists()
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_no_fd_leak_on_repeated_refusal(self, tmp_path, monkeypatch, has_openat2):
+        monkeypatch.setattr("safe_fs.HAS_OPENAT2", has_openat2)
+        outside = tmp_path.parent / f"victim2-{tmp_path.name}"
+        outside.write_text("SECRET")
+        (tmp_path / "t.txt").symlink_to(outside)
+
+        def count_open_fds():
+            return len(os.listdir(f"/proc/{os.getpid()}/fd"))
+
+        baseline = count_open_fds()
+        for _ in range(50):
+            with pytest.raises(SymlinkRefused):
+                atomic_write_beneath(str(tmp_path), "t.txt", "x")
+        assert count_open_fds() <= baseline + 2
 
 
 def test_intermediate_owner_mismatch_refused_fallback(tmp_path, monkeypatch):

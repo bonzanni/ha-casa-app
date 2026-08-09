@@ -1710,6 +1710,16 @@ class TestBootReplayOwner:
         # record).
         from drivers import workspace as _ws_mod
         monkeypatch.setattr(_ws_mod, "chown_workspace", lambda *a, **k: None)
+        # Containment Stage 2 (S1 code-gate fix): the symlink-safe .mcp.json/
+        # settings writes owner-check their parent dir against the record's
+        # allocated uid. In production an undergoing record with a real
+        # persisted uid ALWAYS has a uid-owned workspace (it was chowned when
+        # the uid was allocated). This non-root test creates a real uid via
+        # create() but cannot chown the workspace to 200000 (same reason the
+        # chown above is stubbed), so no-op the owner-uid derivation too —
+        # otherwise the write would refuse against a test-user-owned parent.
+        import casa_core as _cc
+        monkeypatch.setattr(_cc, "owner_uid_or_none", lambda uid: None)
 
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"), bus=None,

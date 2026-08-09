@@ -58,7 +58,7 @@ from provenance import sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
 from rate_limit import RateLimiter, rate_limit_response
-from safe_fs import SymlinkRefused, read_text_beneath
+from safe_fs import SymlinkRefused, atomic_write_beneath, read_text_beneath
 from timekeeping import resolve_tz
 from trigger_registry import TriggerRegistry
 from voice_delivery_config import load_voice_delivery_config
@@ -877,6 +877,7 @@ async def replay_undergoing_engagements(
                             engagement_id=rec.id,
                             engagement_auth_token=rec.auth_token,
                             casa_framework_mcp_url=_current_mcp_url,
+                            owner_uid=_owner_uid,
                         )
                     except Exception as exc:  # noqa: BLE001 — fail-closed
                         await _refuse_brief_resume(
@@ -886,17 +887,31 @@ async def replay_undergoing_engagements(
                         continue
 
                 if _settings_changed and os.path.isdir(_ws_dir):
+                    # Containment Stage 2 (S1 code-gate fix): the settings
+                    # regeneration is a root WRITE into the (on replay,
+                    # uid-owned) workspace, so it must be symlink-safe. The
+                    # prior ``makedirs`` + open-``.tmp`` + ``os.replace`` chain
+                    # created the temp BY PATHNAME under ``.claude``, so an
+                    # A-planted ``.claude`` symlink into a sibling's dir let
+                    # root clobber the sibling's settings.json. Route the write
+                    # through ``safe_fs.atomic_write_beneath`` (no-follow,
+                    # workspace-confined, renameat): a symlinked ``.claude`` OR
+                    # a symlinked settings.json is REFUSED (SymlinkRefused, an
+                    # OSError subclass) and the resume is refused, never
+                    # written through. The ``makedirs`` is retained only to
+                    # create a genuinely-absent ``.claude`` (exist_ok=True
+                    # short-circuits on a symlink, so the safe write still
+                    # catches it).
                     try:
                         os.makedirs(
                             os.path.join(_ws_dir, ".claude"), exist_ok=True)
-                        _tmp_settings_path = _settings_path + ".tmp"
-                        with open(
-                            _tmp_settings_path, "w", encoding="utf-8",
-                        ) as _fh:
-                            _fh.write(json.dumps(
-                                _new_settings, indent=2, sort_keys=True)
-                                + "\n")
-                        os.replace(_tmp_settings_path, _settings_path)
+                        atomic_write_beneath(
+                            _ws_dir,
+                            os.path.join(".claude", "settings.json"),
+                            json.dumps(
+                                _new_settings, indent=2, sort_keys=True) + "\n",
+                            owner_uid=_owner_uid, mode=0o644,
+                        )
                     except OSError as exc:
                         await _refuse_brief_resume(
                             rec, f"settings.json rewrite failed: {exc}",

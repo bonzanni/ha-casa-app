@@ -19,7 +19,7 @@ from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, ensure_identity, owner_uid_or_none,
     prune_identity,
 )
-from safe_fs import SymlinkRefused, read_text_beneath
+from safe_fs import SymlinkRefused, atomic_write_beneath, read_text_beneath
 
 logger = logging.getLogger(__name__)
 
@@ -484,6 +484,7 @@ def write_workspace_mcp_json(
     engagement_id: str,
     engagement_auth_token: str,
     casa_framework_mcp_url: str,
+    owner_uid: int | None = None,
 ) -> None:
     """Write ``<ws>/.mcp.json`` from the engagement's identity + credential.
 
@@ -519,14 +520,19 @@ def write_workspace_mcp_json(
         },
     }}
     # 0600 — this file carries the engagement's credential. Written through
-    # the atomic helper with an explicit mode so the secret is never briefly
-    # world-readable AND so a pre-#335 0644 file is migrated on the boot-replay
-    # rewrite. Defense in depth only: engagement subprocesses run as root in
-    # this container and can still read a sibling's file (Terra, review r1) —
-    # real containment needs per-engagement process identity, which this
-    # release does not attempt.
-    atomic_write_json(
-        str(Path(ws_dir) / ".mcp.json"), mcp_config, indent=2, mode=0o600)
+    # the SYMLINK-SAFE atomic helper with an explicit mode so the secret is
+    # never briefly world-readable AND so a pre-#335 0644 file is migrated on
+    # the boot-replay rewrite. Containment Stage 2 (S1 code-gate fix): route
+    # through ``safe_fs.atomic_write_beneath`` — a plain ``mkstemp``+
+    # ``os.replace`` created its temp in the workspace dir BY PATHNAME, so a
+    # symlinked ``.mcp.json`` (planted by the engagement uid, which owns the
+    # workspace) would be REFUSED here rather than clobbered, and boot replay
+    # turns that refusal into a fail-closed refuse-to-resume. ``owner_uid`` is
+    # the record's real allocated uid on the boot-replay rewrite (workspace is
+    # already uid-owned) and ``None`` at provision (root-owned, pre-chown).
+    atomic_write_beneath(
+        ws_dir, ".mcp.json", json.dumps(mcp_config, indent=2),
+        owner_uid=owner_uid, mode=0o600)
 
 
 def chown_workspace(ws: str, uid: int, gid: int) -> None:
@@ -772,6 +778,15 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     from drivers.brief import brief_task_for
 
     ws = Path(ws_dir)
+    # Containment Stage 2 (S1 code-gate fix): the CLAUDE.md write must be
+    # symlink-safe. On boot replay the workspace is uid-owned, so a plain
+    # ``Path.write_text`` would FOLLOW a symlink the engagement uid planted
+    # (e.g. CLAUDE.md → a sibling's .mcp.json) and let root overwrite the
+    # sibling's file. Route through ``safe_fs.atomic_write_beneath`` with the
+    # record's real allocated uid (``None`` for a legacy/specialist record
+    # whose workspace was never uid-chowned) so a symlinked target is REFUSED
+    # (SymlinkRefused) and the caller fail-closed refuses the resume.
+    owner_uid = owner_uid_or_none(rec.allocated_uid)
     task = brief_task_for(rec, defn)
     context = rec.origin.get("context", "")
     world_state_summary = rec.origin.get("world_state_summary", "")
@@ -798,7 +813,8 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
                 .replace("{world_state_summary}", world_state_summary)
                 .replace("{executor_memory}", executor_memory or "")
         )
-        (ws / "CLAUDE.md").write_text(text, encoding="utf-8")
+        atomic_write_beneath(
+            str(ws), "CLAUDE.md", text, owner_uid=owner_uid, mode=0o644)
     else:
         # Mirror the legacy provision branch (workspace.py:245-253) EXACTLY.
         prompt_text = _read_text(defn.prompt_template_path)
@@ -809,7 +825,9 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
             .replace("{executor_type}", defn.type)
             .replace("{executor_memory}", executor_memory or "")
         )
-        (ws / "CLAUDE.md").write_text(prompt_interpolated, encoding="utf-8")
+        atomic_write_beneath(
+            str(ws), "CLAUDE.md", prompt_interpolated,
+            owner_uid=owner_uid, mode=0o644)
 
 
 def write_casa_meta(

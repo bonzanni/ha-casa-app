@@ -1989,20 +1989,20 @@ async def test_unchanged_credential_neither_rewrites_nor_cycles(
 
 
 @pytest.mark.parametrize("has_openat2", [True, False])
-async def test_mcp_json_symlink_refused_forces_regenerate(
+async def test_mcp_json_symlink_refuses_resume(
     monkeypatch, tmp_path, has_openat2,
 ):
-    """Containment stage 2, Task 5: a ``.mcp.json`` that is a SYMLINK (e.g.
-    planted pointing into a sibling engagement's workspace once workspaces
-    are uid-chowned, Task 8) must be refused by the compare-read, not
-    followed — even when the symlink's target happens to carry a MATCHING
-    credential, which would otherwise make replay wrongly conclude
-    "unchanged" and never repair the credential a real CLI reads on
-    respawn. Parametrized over both safe_fs enforcement paths."""
+    """Containment Stage 2 (S1 code-gate fix): a ``.mcp.json`` that is a SYMLINK
+    (planted by the engagement uid, which owns its own workspace, to point into
+    a sibling's tree once workspaces are uid-chowned) is REFUSED by the
+    symlink-safe writer — the write is not followed and not silently
+    regenerated over the link. The resume is refused FAIL-CLOSED (service kept
+    down, never started, never root) and the sibling's file is UNCHANGED.
+    Parametrized over both safe_fs enforcement paths."""
     import safe_fs
     from casa_core import replay_undergoing_engagements
     from drivers import s6_rc
-    from drivers.workspace import workspace_mcp_token, write_workspace_mcp_json
+    from drivers.workspace import write_workspace_mcp_json
     from engagement_registry import EngagementRegistry
 
     monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
@@ -2011,6 +2011,9 @@ async def test_mcp_json_symlink_refused_forces_regenerate(
     monkeypatch.setattr(s6_rc, "service_pair_complete", lambda **kw: True)
     monkeypatch.setattr(s6_rc, "run_script_is_stale", lambda **kw: False)
     monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    monkeypatch.setattr(
+        s6_rc, "remove_service_dir",
+        lambda *, svc_root, engagement_id: None)
     started: list[str] = []
     async def fake_start(*, engagement_id): started.append(engagement_id)
     monkeypatch.setattr(s6_rc, "start_service", fake_start)
@@ -2026,15 +2029,16 @@ async def test_mcp_json_symlink_refused_forces_regenerate(
     rec.auth_token = "tok-same"
     reg._records["keep1"] = rec
 
-    # A SIBLING workspace's own (legitimate) .mcp.json, carrying the SAME
-    # token/url the record already has — if this were followed, replay
-    # would (wrongly) conclude "unchanged".
+    # A SIBLING workspace's own (legitimate) .mcp.json. The write must NEVER
+    # reach it (no write-through), and the resume must refuse rather than
+    # clobber the planted link.
     sibling_dir = ws_root / "sibling"
     sibling_dir.mkdir()
     write_workspace_mcp_json(
         str(sibling_dir), engagement_id="sibling",
         engagement_auth_token="tok-same",
         casa_framework_mcp_url="http://127.0.0.1:8100/mcp/casa-framework")
+    sibling_before = (sibling_dir / ".mcp.json").read_text()
     (ws_dir / ".mcp.json").symlink_to(sibling_dir / ".mcp.json")
 
     exec_reg = _exec_reg()
@@ -2047,24 +2051,22 @@ async def test_mcp_json_symlink_refused_forces_regenerate(
         registry=reg, driver=driver, executor_registry=exec_reg,
         engagements_root=str(ws_root))
 
-    # The symlink was replaced by a REAL file rewritten with the record's
-    # own credential — never left pointing at the sibling's file.
-    assert not (ws_dir / ".mcp.json").is_symlink()
-    assert workspace_mcp_token(str(ws_dir)) == "tok-same"
-    down.assert_awaited_once()           # refusal → "changed" → cycled
-    assert started == ["keep1"]
-    assert reg._records["keep1"].status != "error"
+    # Fail-closed: the write was REFUSED (target still a symlink), the sibling
+    # file is UNCHANGED, and the engagement was never started (kept down).
+    assert (ws_dir / ".mcp.json").is_symlink()
+    assert (sibling_dir / ".mcp.json").read_text() == sibling_before
+    assert started == []
+    down.assert_awaited()
 
 
 @pytest.mark.parametrize("has_openat2", [True, False])
-async def test_settings_json_symlink_refused_forces_regenerate(
+async def test_settings_json_symlink_refuses_resume(
     monkeypatch, tmp_path, has_openat2,
 ):
-    """Containment stage 2, Task 5: a ``.claude/settings.json`` that is a
-    SYMLINK must be refused by the compare-read, not followed — even when
-    the symlink's target happens to carry the exact CURRENT floor, which
-    would otherwise make replay wrongly conclude "unchanged" and skip
-    rewriting the real (uid-owned) workspace file a resumed CLI reads."""
+    """Containment Stage 2 (S1 code-gate fix): a ``.claude/settings.json`` that
+    is a SYMLINK is REFUSED by the symlink-safe writer — not followed and not
+    regenerated over the link. The resume is refused fail-closed (kept down,
+    never started) and the sibling's settings.json is UNCHANGED."""
     import safe_fs
     from casa_core import replay_undergoing_engagements
     from drivers import s6_rc
@@ -2076,6 +2078,9 @@ async def test_settings_json_symlink_refused_forces_regenerate(
     monkeypatch.setattr(s6_rc, "service_pair_complete", lambda **kw: True)
     monkeypatch.setattr(s6_rc, "run_script_is_stale", lambda **kw: False)
     monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    monkeypatch.setattr(
+        s6_rc, "remove_service_dir",
+        lambda *, svc_root, engagement_id: None)
     started: list[str] = []
     async def fake_start(*, engagement_id): started.append(engagement_id)
     monkeypatch.setattr(s6_rc, "start_service", fake_start)
@@ -2095,13 +2100,13 @@ async def test_settings_json_symlink_refused_forces_regenerate(
     exec_reg = _exec_reg()
     defn = exec_reg.get("hello-driver")
 
-    # A SIBLING workspace's own settings.json carrying the exact CURRENT
-    # floor — if followed, replay would (wrongly) conclude "unchanged".
+    # A SIBLING workspace's own settings.json. The write must never reach it.
     sibling_dir = ws_root / "sibling"
     _seed_current_settings(sibling_dir, defn)
+    sibling_settings = sibling_dir / ".claude" / "settings.json"
+    sibling_before = sibling_settings.read_text()
     (ws_dir / ".claude").mkdir(parents=True)
-    (ws_dir / ".claude" / "settings.json").symlink_to(
-        sibling_dir / ".claude" / "settings.json")
+    (ws_dir / ".claude" / "settings.json").symlink_to(sibling_settings)
 
     driver = _boot_driver()
     driver._spawn_background_tasks = lambda rec: None
@@ -2110,15 +2115,74 @@ async def test_settings_json_symlink_refused_forces_regenerate(
         registry=reg, driver=driver, executor_registry=exec_reg,
         engagements_root=str(ws_root))
 
-    # The symlink was replaced by a REAL rewritten file — never left
-    # pointing at the sibling's settings.json.
+    # Fail-closed: the write was REFUSED (target still a symlink), the sibling
+    # settings.json is UNCHANGED, and the engagement was never started.
     settings_path = ws_dir / ".claude" / "settings.json"
-    assert not settings_path.is_symlink()
-    from casa_core import _regenerate_cc_settings
-    assert json.loads(settings_path.read_text()) == _regenerate_cc_settings(defn)
-    down.assert_awaited_once()           # refusal → "changed" → cycled
-    assert started == ["keep1"]
-    assert reg._records["keep1"].status != "error"
+    assert settings_path.is_symlink()
+    assert sibling_settings.read_text() == sibling_before
+    assert started == []
+    down.assert_awaited()
+
+
+@pytest.mark.parametrize("has_openat2", [True, False])
+async def test_claude_md_symlink_refuses_resume(
+    monkeypatch, tmp_path, has_openat2,
+):
+    """Containment Stage 2 (S1 code-gate fix): a ``CLAUDE.md`` that is a SYMLINK
+    into a sibling's tree is REFUSED by ``refresh_claude_md``'s symlink-safe
+    writer — never followed (the pre-fix ``Path.write_text`` would have let root
+    overwrite the sibling's file THROUGH the link). The resume is refused
+    fail-closed and the sibling's file is UNCHANGED."""
+    import safe_fs
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    main = svc_root / "engagement-keep1"; main.mkdir()
+    (main / "type").write_text("longrun\n")
+    (main / "producer-for").write_text("engagement-keep1-log\n")
+    (svc_root / "engagement-keep1-log").mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    monkeypatch.setattr(
+        s6_rc, "remove_service_dir",
+        lambda *, svc_root, engagement_id: None)
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    down = AsyncMock(return_value=True)
+    monkeypatch.setattr(s6_rc, "ensure_service_down", down)
+
+    defn = _brief_defn(tmp_path)
+    ws_root = tmp_path / "eng"
+    ws_dir = ws_root / "keep1"
+    ws_dir.mkdir(parents=True)
+
+    # A SIBLING workspace's CLAUDE.md — the write must never write through the
+    # planted link to reach it.
+    sibling_dir = ws_root / "sibling"
+    sibling_dir.mkdir()
+    (sibling_dir / "CLAUDE.md").write_text("SIBLING SECRET\n")
+    sibling_before = (sibling_dir / "CLAUDE.md").read_text()
+    (ws_dir / "CLAUDE.md").symlink_to(sibling_dir / "CLAUDE.md")
+
+    reg = await _make_registry([_brief_rec("keep1", _BRIEF)])
+    driver = _boot_driver()
+    driver._spawn_background_tasks = lambda r: None
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg_any(defn),
+        engagements_root=str(ws_root))
+
+    # Fail-closed: refresh refused (CLAUDE.md still a symlink), the sibling
+    # file UNCHANGED, and the engagement never started.
+    assert (ws_dir / "CLAUDE.md").is_symlink()
+    assert (sibling_dir / "CLAUDE.md").read_text() == sibling_before
+    assert started == []
+    down.assert_awaited()
 
 
 @pytest.mark.parametrize(

@@ -111,6 +111,42 @@ def prune_identity(
     _remove_prefix(group_path, prefix)
 
 
+def scan_passwd_uids(passwd_path: str = "/etc/passwd") -> list[int]:
+    """Every uid that appears in a ``casa-eng-<uid>:...`` entry in *passwd_path*.
+
+    Containment Stage 2 (S1 code-gate fix, design §2): a ``casa-eng`` passwd
+    entry is one of the four evidence sources the high-water reconstruction
+    must fold in. It uniquely PRESERVES the high-water even when the record and
+    the workspace/control dirs have both been pruned (they are pruned at
+    teardown; the passwd entry is pruned at teardown too, but a *detached
+    survivor* — a process still holding the uid after its record went — keeps
+    its passwd entry until :func:`prune_identity` runs). Scanning it stops a
+    lost counter file from reissuing a uid still evidenced in ``/etc/passwd``.
+
+    The uid is read from the passwd RECORD's uid field (3rd colon-field), not
+    parsed back out of the name, so a hand-mangled name can't spoof it. A
+    missing file, or a line that does not parse, contributes nothing (the
+    reconstruction floor still applies).
+    """
+    uids: list[int] = []
+    try:
+        with open(passwd_path, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return uids
+    for line in lines:
+        if not line.startswith("casa-eng-"):
+            continue
+        fields = line.split(":")
+        if len(fields) < 3:
+            continue
+        try:
+            uids.append(int(fields[2]))
+        except ValueError:
+            continue
+    return uids
+
+
 class UidAllocator:
     """Hands out uids from a persistent, monotonic high-water mark.
 
@@ -135,15 +171,32 @@ class UidAllocator:
     def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int]) -> None:
         """Set the high-water mark to the max of every uid source.
 
-        Sources: the persisted counter file (if any), ``UID_BASE - 1`` (the
-        floor — allocate() always returns >= UID_BASE), *known_uids* (e.g.
-        uids already recorded live), and *dir_owner_uids* (e.g. uids found by
-        stat-ing on-disk engagement directories). Taking the max over all of
-        them — not just liveness — is deliberate: a uid that only shows up as
-        a stale directory owner still must never be reissued.
+        Sources (design §2): the persisted counter file (if any),
+        ``UID_BASE - 1`` (the floor — allocate() always returns >= UID_BASE),
+        *known_uids* (uids recorded on any record, incl. terminal/retained),
+        *dir_owner_uids* (uids found by stat-ing on-disk engagement/control
+        directories), and the ``casa-eng-<uid>`` entries in this allocator's
+        ``/etc/passwd`` (:func:`scan_passwd_uids`). Taking the max over ALL of
+        them — not just liveness — is deliberate: a uid that only shows up as a
+        stale directory owner, or only as a passwd entry for a detached
+        survivor whose record and workspace were both pruned, still must never
+        be reissued.
 
-        Raises :class:`UidStateError` if the counter file exists but is not
-        valid ``{"high_water": <int>}`` JSON.
+        Missing vs corrupt counter (design §2 — align impl with design without
+        breaking a genuine fresh install):
+          - counter file MISSING: the persisted floor stays ``UID_BASE - 1``.
+            If ANY evidence exists (a known uid, a dir owner, or a passwd
+            entry) the reconstructed high-water is ``max(evidence)`` and is
+            PERSISTED — a lost counter can never reset BELOW a still-evidenced
+            uid. With ZERO evidence this is a genuine fresh install and the
+            high-water stays ``UID_BASE - 1`` (first ``allocate`` → UID_BASE).
+          - counter file present but MALFORMED (unparseable / wrong shape):
+            :class:`UidStateError` — fail-closed, never silently reset to base.
+
+        Residual (documented): a detached survivor whose record AND workspace
+        AND ``casa-eng`` passwd entry are ALL gone is unevidenced — but that
+        requires a setsid-escaping descendant (the run template creates none)
+        plus a full triple-prune, so no reachable path reissues its uid.
         """
         persisted = UID_BASE - 1
         if os.path.exists(self._path):
@@ -154,7 +207,11 @@ class UidAllocator:
             except (ValueError, KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
                 raise UidStateError(f"counter file {self._path} unreadable: {exc}") from exc
 
-        candidates = [persisted, UID_BASE - 1, *known_uids, *dir_owner_uids]
+        passwd_uids = scan_passwd_uids(self._passwd)
+        candidates = [
+            persisted, UID_BASE - 1,
+            *known_uids, *dir_owner_uids, *passwd_uids,
+        ]
         with self._lock:
             self._hw = max(candidates)
             self._persist()

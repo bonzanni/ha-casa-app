@@ -186,18 +186,26 @@ def service_pair_complete(*, svc_root: str, engagement_id: str) -> bool:
 # A run script is "current" iff it carries ALL of these markers:
 #   - the pre-exec ``casa_control`` spawn NDJSON frame (v0.75.0),
 #   - the ``--output-format stream-json`` CLI flag (v0.75.0), and
-#   - the ``setpriv`` uid+cap-drop wrapper on the final exec (containment
-#     Stage 2, v0.170.0).
+#   - the ``exec setpriv --reuid`` uid+cap-drop wrapper on the final exec
+#     (containment Stage 2, v0.170.0).
 # v0.75 message-granularity streaming needs the first two together — the spawn
 # frame arms the driver's _InboundSpool and the CLI flag makes the process
 # actually emit the NDJSON the relay consumes. A script with only one is
-# half-wired and still stale; a pre-v0.75 script has neither. The ``setpriv``
-# marker makes every PRE-Stage-2 run script (which exec'd ``claude`` directly as
-# ROOT) read stale, so boot replay re-renders it into the uid-dropped form and
-# migrates the in-flight engagement off root. Boot replay uses this to migrate
-# stale pairs.
+# half-wired and still stale; a pre-v0.75 script has neither. The
+# ``exec setpriv --reuid`` marker makes every PRE-Stage-2 run script (which
+# exec'd ``claude`` directly as ROOT) read stale, so boot replay re-renders it
+# into the uid-dropped form and migrates the in-flight engagement off root.
+#
+# S1 code-gate fix (Sol): this marker is ANCHORED on the exact command literal
+# the current template emits (``exec setpriv --reuid``, scripts/
+# engagement_run_template.sh), NOT a bare ``setpriv`` substring. A pre-Stage-2
+# root script whose ``{PLUGIN_DIR_FLAGS}`` ``--plugin-dir`` path merely CONTAINS
+# the substring "setpriv" would otherwise pass as "current" while its final
+# ``exec`` is still ``exec claude`` (root) — replay would skip the re-render and
+# start it ROOT. The anchored command literal cannot be forged by a plugin path.
+# Boot replay uses this to migrate stale pairs.
 _CURRENT_RUN_MARKERS = (
-    "casa_control", "--output-format stream-json", "setpriv",
+    "casa_control", "--output-format stream-json", "exec setpriv --reuid",
 )
 
 

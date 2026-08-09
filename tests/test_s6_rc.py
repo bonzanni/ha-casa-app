@@ -918,6 +918,36 @@ class TestRunScriptIsStale:
         self._write_run(tmp_path, "e3", self._CURRENT)
         assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e3")
 
+    async def test_plugin_dir_substring_setpriv_but_exec_claude_is_stale(
+        self, tmp_path):
+        # S1 code-gate fix (Sol): the setpriv marker is ANCHORED on the real
+        # ``exec setpriv --reuid`` command literal, NOT a bare "setpriv"
+        # substring. A PRE-Stage-2 root script whose --plugin-dir path merely
+        # CONTAINS "setpriv" (a plugin named/pathed that way) but whose final
+        # exec is still ``exec claude`` (ROOT) must classify STALE — with the
+        # old bare-substring marker it would have passed as "current" and boot
+        # replay would have started it ROOT.
+        from drivers.s6_rc import run_script_is_stale
+        self._write_run(
+            tmp_path, "e6",
+            "#!/bin/sh\ncasa_control spawn\n"
+            "exec claude --print --output-format stream-json "
+            "--plugin-dir /data/plugins/my-setpriv-tool\n")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e6")
+
+    async def test_real_uid_drop_script_is_fresh(self, tmp_path):
+        # The anchored marker still classifies a genuine uid-dropped script
+        # (with ``exec setpriv --reuid``) as fresh, even when a --plugin-dir
+        # path also contains the "setpriv" substring.
+        from drivers.s6_rc import run_script_is_stale
+        self._write_run(
+            tmp_path, "e7",
+            "#!/bin/sh\ncasa_control spawn\n"
+            "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
+            "-- claude --output-format stream-json "
+            "--plugin-dir /data/plugins/my-setpriv-tool\n")
+        assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e7")
+
     async def test_missing_run_file_is_stale(self, tmp_path):
         from drivers.s6_rc import _main_service_name, run_script_is_stale
         # main dir exists but no run file (torn) — fail closed.
