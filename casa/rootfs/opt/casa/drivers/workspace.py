@@ -15,7 +15,10 @@ import yaml
 
 from atomic_io import atomic_write_json
 from drivers.hook_bridge import translate_hooks_to_settings
-from engagement_uids import UID_BASE, UNALLOCATED_UID
+from engagement_uids import (
+    UID_BASE, UNALLOCATED_UID, ensure_identity, owner_uid_or_none,
+    prune_identity,
+)
 from safe_fs import SymlinkRefused, read_text_beneath
 
 logger = logging.getLogger(__name__)
@@ -511,6 +514,28 @@ def write_workspace_mcp_json(
         str(Path(ws_dir) / ".mcp.json"), mcp_config, indent=2, mode=0o600)
 
 
+def chown_workspace(ws: str, uid: int, gid: int) -> None:
+    """Recursively chown *ws* to ``(uid, gid)``, symlink-safe.
+
+    Containment stage 2, Task 8: the FINAL filesystem write of provisioning
+    — after every root-side write below it, nothing may touch the workspace
+    again before the engagement's own uid takes ownership. Walks the tree
+    with ``os.scandir`` (never following a symlinked directory into a
+    sibling workspace or elsewhere) and calls ``os.chown(...,
+    follow_symlinks=False)`` on every entry, including symlinks themselves —
+    a symlink planted in the tree gets ITS OWN ownership changed, but its
+    target is never touched, so this can never be used to reach outside the
+    workspace and reassign ownership of an arbitrary file.
+    """
+    os.chown(ws, uid, gid, follow_symlinks=False)
+    with os.scandir(ws) as it:
+        for entry in it:
+            if entry.is_dir(follow_symlinks=False):
+                chown_workspace(entry.path, uid, gid)
+            else:
+                os.chown(entry.path, uid, gid, follow_symlinks=False)
+
+
 async def provision_workspace(
     *,
     engagements_root: str,
@@ -523,6 +548,8 @@ async def provision_workspace(
     workspace_template_root: Path | None = None,
     world_state_summary: str = "",
     executor_memory: str = "",
+    uid: int = UNALLOCATED_UID,
+    gid: int = UNALLOCATED_UID,
 ) -> str:
     """Create /<engagements_root>/<id>/ with the full provisioning tree.
 
@@ -542,6 +569,22 @@ async def provision_workspace(
     is acceptable. If profiling later shows otherwise, wrap the filesystem
     calls in ``asyncio.to_thread`` to match the pattern in
     ``drivers/s6_rc.py``.
+
+    ``uid``/``gid`` — containment stage 2, Task 8: the engagement's
+    allocated OS identity. When both are real uids (``>= UID_BASE``, via
+    :func:`engagement_uids.owner_uid_or_none`), this function appends the
+    uid's passwd/group entry (:func:`engagement_uids.ensure_identity`) and
+    then, as the LAST filesystem write before returning, recursively chowns
+    the whole workspace to ``(uid, gid)`` and sets the top-dir mode to
+    ``0700`` (:func:`chown_workspace`). Every other write above is root-side
+    and MUST land before this point — nothing may touch the workspace after
+    the chown. Default ``UNALLOCATED_UID`` skips both steps entirely (the
+    workspace stays root-owned): legacy/specialist callers and every
+    existing direct caller of this function that predates Task 8.
+    Fail-closed: a failure in either step propagates — a half-provisioned,
+    still-root-owned workspace must never be handed to a caller that thinks
+    the uid drop already happened (Task 7's preflight is exactly that
+    check).
     """
     ws = Path(engagements_root) / engagement_id
     ws.mkdir(parents=True, exist_ok=False)
@@ -649,6 +692,24 @@ async def provision_workspace(
     # the workspace.
     os.mkfifo(fifo_path(engagement_id), 0o600)
 
+    # 4. Task 8 (containment stage 2): identity + chown — LAST, after every
+    # root-side write above. ensure_identity() runs first so the uid has an
+    # NSS passwd/group entry the instant it can touch anything; chown_workspace
+    # (recursive, symlink-safe) then hands the whole tree to that uid, and the
+    # top dir is pinned to 0700 so only that uid (and root) can even list it.
+    # A real uid/gid (>= UID_BASE) is required for either step to run — the
+    # UNALLOCATED_UID default (legacy/specialist/pre-Task-8 callers) leaves
+    # the workspace root-owned exactly as before. Neither call swallows its
+    # exception: a failure here must abort provisioning, not hand back a
+    # workspace that is still root-owned while the caller believes the drop
+    # succeeded (see Task 7's _preflight_uid_drop).
+    real_uid = owner_uid_or_none(uid)
+    if real_uid is not None:
+        real_gid = gid if gid >= UID_BASE else real_uid
+        ensure_identity(real_uid, str(ws / ".home"))
+        chown_workspace(str(ws), real_uid, real_gid)
+        os.chmod(ws, 0o700)
+
     logger.info("Provisioned workspace for engagement %s at %s",
                 engagement_id[:8], ws)
     return str(ws)
@@ -732,10 +793,15 @@ def write_casa_meta(
     status: str, created_at: str,
     finished_at: str | None, retention_until: str | None,
     plugin_artifacts: list[dict] | None = None,
+    allocated_uid: int = UNALLOCATED_UID,
 ) -> None:
     # This dict is reconstructed from scratch on every rewrite — the immutable
     # plugin_artifacts (§3.8) must be re-passed by every caller (initial write
-    # + terminal finalize) or it is silently dropped.
+    # + terminal finalize) or it is silently dropped. Task 8: allocated_uid
+    # likewise must be re-passed forward by the terminal-rewrite caller
+    # (tools._finalize_engagement) — it's how the workspace sweeper, which has
+    # no registry access, learns which uid's passwd/group entry to prune once
+    # this workspace is deleted.
     meta = {
         "engagement_id": engagement_id,
         "executor_type": executor_type,
@@ -744,6 +810,7 @@ def write_casa_meta(
         "finished_at": finished_at,
         "retention_until": retention_until,
         "plugin_artifacts": list(plugin_artifacts or []),
+        "allocated_uid": allocated_uid,
     }
     # Task 4: moved to the control dir — ``workspace_path`` is retained as a
     # parameter for caller back-compat (every existing caller already has it
@@ -946,6 +1013,27 @@ def _sweep_one_workspace(
                 "workspace sweep: control dir rmtree %s failed: %s",
                 ctl_dir, exc,
             )
+        # Task 8 (containment stage 2): once a workspace is gone for good,
+        # its uid's passwd/group entry must go with it — otherwise
+        # /etc/passwd accumulates one stale ``casa-eng-<uid>`` line per
+        # completed engagement forever. ``meta`` (read above, before the
+        # rmtree) is the ONLY source of the uid here — the sweeper has no
+        # registry access, unlike the driver's own rollback or
+        # delete_engagement_workspace. ``owner_uid_or_none`` guards against
+        # both the UNALLOCATED_UID sentinel and legacy meta with no
+        # ``allocated_uid`` key at all (``.get`` default).
+        _raw_uid = meta.get("allocated_uid", UNALLOCATED_UID)
+        real_uid = (
+            owner_uid_or_none(_raw_uid) if isinstance(_raw_uid, int) else None
+        )
+        if real_uid is not None:
+            try:
+                prune_identity(real_uid)
+            except OSError as exc:
+                logger.warning(
+                    "workspace sweep: prune_identity(%s) failed: %s",
+                    real_uid, exc,
+                )
 
 
 # ---------------------------------------------------------------------------

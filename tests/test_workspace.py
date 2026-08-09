@@ -688,6 +688,261 @@ class TestProvisionWorkspace:
         assert entry["env"]["CASA_ENGAGEMENT_TOKEN"] == "tok-ws-test"
 
 
+class TestChownLastProvisioning:
+    """Containment stage 2, Task 8: identity + chown are the LAST writes
+    provision_workspace makes, and only when given a real allocated uid.
+
+    Real ``os.chown`` to an arbitrary uid requires root — the unit runner is
+    not — so the ownership assertions are gated on ``os.geteuid() == 0``;
+    everywhere else the CALL SEQUENCE (ensure_identity before chown_workspace,
+    both after every other write) is asserted via a recording monkeypatch,
+    per the task brief.
+    """
+
+    # Same executor-definition fixture as TestProvisionWorkspace — kept as a
+    # plain (non-inherited) copy so this class's tests don't also re-run
+    # every TestProvisionWorkspace test under a second name.
+    _make_defn = TestProvisionWorkspace._make_defn
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_default_uid_skips_identity_and_chown(self, tmp_path, monkeypatch):
+        """Every existing caller of provision_workspace (this file's other
+        tests included) omits uid/gid — the default (UNALLOCATED_UID) must
+        leave the workspace untouched by identity/chown, exactly as before
+        Task 8."""
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            ws_mod, "ensure_identity",
+            lambda uid, home: calls.append("ensure_identity"))
+        monkeypatch.setattr(
+            ws_mod, "chown_workspace",
+            lambda ws, uid, gid: calls.append("chown_workspace"))
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-no-uid",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+        )
+        assert calls == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_identity_before_chown_and_chown_is_last(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            ws_mod, "ensure_identity",
+            lambda uid, home: calls.append(("ensure_identity", uid, home)))
+        monkeypatch.setattr(
+            ws_mod, "chown_workspace",
+            lambda ws, uid, gid: calls.append(("chown_workspace", ws, uid, gid)))
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        path = await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-uid-order",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+            uid=UID_BASE, gid=UID_BASE,
+        )
+
+        assert [c[0] for c in calls] == ["ensure_identity", "chown_workspace"], (
+            "ensure_identity must run before chown_workspace, and both "
+            "must be the only two identity/chown calls"
+        )
+        assert calls[0][1] == UID_BASE
+        assert calls[0][2] == str(Path(path) / ".home")
+        assert calls[1][1] == path
+        assert calls[1][2] == UID_BASE
+        assert calls[1][3] == UID_BASE
+
+        # Top-dir mode 0700 is set for real (chmod needs no special
+        # privilege on a directory the test process itself owns) — even
+        # though chown_workspace above was stubbed.
+        import stat as _stat
+        mode = os.stat(path).st_mode
+        assert _stat.S_IMODE(mode) == 0o700
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_provision_propagates_ensure_identity_failure(self, tmp_path, monkeypatch):
+        """Fail-closed: a failure appending the passwd/group entry must
+        abort provisioning — never hand back a workspace the caller
+        believes was chowned when it wasn't even given an identity."""
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        def boom(uid, home):
+            raise OSError("cannot write /etc/passwd")
+        monkeypatch.setattr(ws_mod, "ensure_identity", boom)
+        chown_calls = []
+        monkeypatch.setattr(
+            ws_mod, "chown_workspace",
+            lambda ws, uid, gid: chown_calls.append(1))
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        with pytest.raises(OSError, match="passwd"):
+            await provision_workspace(
+                engagements_root=str(ws_root),
+                engagement_id="eng-id-fail",
+                engagement_auth_token="tok",
+                defn=defn, task="t", context="c",
+                casa_framework_mcp_url="http://x",
+                uid=UID_BASE, gid=UID_BASE,
+            )
+        assert chown_calls == [], "chown must never run after a failed identity append"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_provision_propagates_chown_failure(self, tmp_path, monkeypatch):
+        """Fail-closed: a chown failure (e.g. PermissionError under a
+        non-root spawner) must abort provisioning rather than hand back a
+        still-root-owned workspace silently."""
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
+
+        def boom(ws, uid, gid):
+            raise PermissionError("chown requires root")
+        monkeypatch.setattr(ws_mod, "chown_workspace", boom)
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        with pytest.raises(PermissionError, match="root"):
+            await provision_workspace(
+                engagements_root=str(ws_root),
+                engagement_id="eng-chown-fail",
+                engagement_auth_token="tok",
+                defn=defn, task="t", context="c",
+                casa_framework_mcp_url="http://x",
+                uid=UID_BASE, gid=UID_BASE,
+            )
+
+    @pytest.mark.skipif(
+        os.geteuid() != 0 if hasattr(os, "geteuid") else True,
+        reason="real chown requires root",
+    )
+    async def test_workspace_owned_by_uid_after_provision_real_root(self, tmp_path):
+        """Real end-to-end ownership check — only runs under root (e.g. a
+        privileged CI lane); everywhere else the ordering tests above cover
+        the invariant."""
+        from pathlib import Path
+
+        from drivers.workspace import chown_workspace  # noqa: F401 (imported for parity)
+        from drivers.workspace import control_dir, provision_workspace
+        from engagement_uids import UID_BASE
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        target_uid = UID_BASE + 1234
+        path = await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-real-root",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+            uid=target_uid, gid=target_uid,
+        )
+        p = Path(path)
+        for f in p.rglob("*"):
+            st = os.lstat(f)
+            assert st.st_uid == target_uid, f"{f} not owned by {target_uid}"
+        assert os.lstat(p).st_uid == target_uid
+        import stat as _stat
+        assert _stat.S_IMODE(os.stat(p).st_mode) == 0o700
+
+        # Control dir stays root-owned even though the workspace was chowned.
+        ctl = Path(control_dir("eng-real-root"))
+        assert os.stat(ctl).st_uid == 0
+
+        import pwd as _pwd
+        _pwd.getpwuid(target_uid)  # must not raise — NSS identity created
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink not meaningful on Windows")
+    async def test_chown_workspace_never_follows_symlinks(self, tmp_path, monkeypatch):
+        """A symlink planted inside the tree must be chowned itself
+        (follow_symlinks=False) — never have its TARGET chowned. Asserted
+        via the exact os.chown kwarg used, since chowning to an arbitrary
+        uid for real requires root."""
+        from drivers.workspace import chown_workspace
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        outside_target = tmp_path / "outside.txt"
+        outside_target.write_text("do not touch")
+        link = ws / "escape-link"
+        link.symlink_to(outside_target)
+        (ws / "regular.txt").write_text("y")
+        (ws / "subdir").mkdir()
+        (ws / "subdir" / "nested.txt").write_text("z")
+
+        calls: list[tuple] = []
+
+        def fake_chown(path, uid, gid, *, follow_symlinks=True):
+            calls.append((str(path), uid, gid, follow_symlinks))
+
+        monkeypatch.setattr(os, "chown", fake_chown)
+
+        chown_workspace(str(ws), 424242, 424242)
+
+        assert calls, "chown_workspace must actually chown something"
+        assert all(c[3] is False for c in calls), (
+            "every os.chown call must pass follow_symlinks=False"
+        )
+        called_paths = {c[0] for c in calls}
+        assert str(ws) in called_paths
+        assert str(link) in called_paths
+        assert str(ws / "regular.txt") in called_paths
+        assert str(ws / "subdir") in called_paths
+        assert str(ws / "subdir" / "nested.txt") in called_paths
+        # The symlink's TARGET is never in the call set — only the link
+        # itself (its own path, under ws/) is chowned.
+        assert str(outside_target) not in called_paths
+
+    @pytest.mark.skipif(
+        os.geteuid() != 0 if hasattr(os, "geteuid") else True,
+        reason="real chown requires root",
+    )
+    async def test_chown_workspace_symlink_target_owner_unchanged_real(self, tmp_path):
+        """Real-root variant: after chown_workspace, the symlink's TARGET
+        (living outside the workspace) keeps its original owner — only the
+        link itself (inside the tree) is reassigned."""
+        from drivers.workspace import chown_workspace
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        outside_target = tmp_path / "outside.txt"
+        outside_target.write_text("do not touch")
+        link = ws / "escape-link"
+        link.symlink_to(outside_target)
+
+        before_target_uid = os.stat(outside_target).st_uid
+        chown_workspace(str(ws), 0, 0)  # any distinct uid works as root
+
+        assert os.stat(outside_target).st_uid == before_target_uid
+        assert os.lstat(link).st_uid == 0
+
+
 class TestCasaMeta:
     def test_write_and_load_roundtrip(self, tmp_path):
         from drivers.workspace import (

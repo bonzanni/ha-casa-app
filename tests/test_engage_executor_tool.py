@@ -1171,9 +1171,15 @@ class TestOriginContextPropagation:
 
         # Task 7 (containment stage 2): stub the uid-drop preflight — its
         # real preconditions (workspace chown, passwd entry) are landed by
-        # later tasks (8/11); this test exercises context/world_state
-        # plumbing, not the preflight itself.
+        # Task 8; this test exercises context/world_state plumbing, not the
+        # preflight itself.
         monkeypatch.setattr(ccd, "_preflight_uid_drop", lambda rec, ws: None)
+        # Task 8: provision_workspace now really calls these for a record
+        # with a real allocated_uid (200005, below) — stub them so this
+        # test doesn't need root to chown an arbitrary uid.
+        from drivers import workspace as ws_mod
+        monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
+        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
 
         async def fake_cau():
             pass

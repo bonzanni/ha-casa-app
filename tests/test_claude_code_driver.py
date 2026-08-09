@@ -64,13 +64,25 @@ def _make_record(allocated_uid=None):
 def _patch_uid_drop_ok(monkeypatch):
     """Task 7 (containment stage 2): ``start()`` now runs
     ``_preflight_uid_drop`` before planting the service. Its real
-    preconditions (workspace chown, passwd entry) are made true by LATER
-    tasks (8/11) that haven't landed — so orchestration tests that exercise
-    ``start()`` end-to-end (not testing the preflight itself, which has its
-    own dedicated test class below) stub it to a no-op rather than fake an
-    entire uid/NSS environment."""
+    preconditions (workspace chown, passwd entry) are made true by
+    Task 8 — so orchestration tests that exercise ``start()`` end-to-end
+    (not testing the preflight itself, which has its own dedicated test
+    class below) stub it to a no-op rather than fake an entire uid/NSS
+    environment.
+
+    Task 8: also stubs ``chown_workspace``/``ensure_identity`` themselves —
+    ``provision_workspace`` now calls them for real when given a real
+    ``allocated_uid`` (every fixture here uses 200005), and a real
+    ``os.chown`` to an arbitrary uid requires root, which the unit runner
+    is not. Ordering/call-sequence of these two is covered by
+    ``tests/test_workspace.py`` directly; this helper only needs them to be
+    no-ops so end-to-end orchestration tests don't hit ``PermissionError``.
+    """
     from drivers import claude_code_driver as ccd
+    from drivers import workspace as ws_mod
     monkeypatch.setattr(ccd, "_preflight_uid_drop", lambda rec, ws: None)
+    monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
+    monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
 
 
 class TestStart:
@@ -479,6 +491,13 @@ class TestUidDropRefusalWiredIntoStart:
             raise UidDropRefused("simulated uid-drop refusal")
 
         monkeypatch.setattr(ccd, "_preflight_uid_drop", boom)
+        # Task 8: provision_workspace (step 1) runs BEFORE this preflight
+        # (step 1.5) and now really chowns for a record with a real
+        # allocated_uid (200005, below) — stub so this test doesn't need
+        # root.
+        from drivers import workspace as ws_mod
+        monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
+        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
 
         write_calls: list[str] = []
         start_calls: list[str] = []

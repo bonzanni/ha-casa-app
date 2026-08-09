@@ -29,7 +29,7 @@ from drivers.workspace import (
     session_id_path, stderr_path, stream_cursor_path, write_casa_meta,
 )
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
-from engagement_uids import UID_BASE, owner_uid_or_none
+from engagement_uids import UID_BASE, owner_uid_or_none, prune_identity
 from safe_fs import SymlinkRefused, list_dir_beneath, open_beneath
 from settle_gate import confirmed_settle_edit
 
@@ -1152,6 +1152,12 @@ class ClaudeCodeDriver(DriverProtocol):
                         template_root if template_root.is_dir() else None
                     ),
                     executor_memory=executor_memory_block,
+                    # Task 8 (containment stage 2): the allocated uid doubles
+                    # as the gid here too, same as render_run_script below —
+                    # provision_workspace chowns the whole tree to this
+                    # identity as its LAST write, after every root-side file
+                    # above has landed.
+                    uid=engagement.allocated_uid, gid=engagement.allocated_uid,
                 )
                 write_casa_meta(
                     workspace_path=ws,
@@ -1163,6 +1169,10 @@ class ClaudeCodeDriver(DriverProtocol):
                     # §3.8: record the pinned artifacts with the workspace meta.
                     plugin_artifacts=list(
                         getattr(engagement, "plugin_artifacts", ()) or ()),
+                    # Task 8: persisted so the workspace sweeper (no registry
+                    # access) can prune this uid's passwd/group entry once
+                    # retention deletes the workspace.
+                    allocated_uid=engagement.allocated_uid,
                 )
 
                 # 1.5. Task 7 (containment stage 2): verify the uid drop the
@@ -1298,6 +1308,23 @@ class ClaudeCodeDriver(DriverProtocol):
                     logger.warning(
                         "rollback rmtree(%s) failed: %s", ctl_path, rb_exc,
                     )
+                # Task 8 (containment stage 2): a failed launch may still
+                # have gotten far enough for provision_workspace to call
+                # ensure_identity() before whatever raised — best-effort
+                # prune here so a repeatedly-failing launch (or a launch
+                # that fails after Task 8's own chown step) doesn't leave a
+                # stale passwd/group entry for a uid whose workspace is
+                # about to be deleted above. A no-op if identity was never
+                # created.
+                real_uid = owner_uid_or_none(engagement.allocated_uid)
+                if real_uid is not None:
+                    try:
+                        prune_identity(real_uid)
+                    except Exception as rb_exc:  # noqa: BLE001
+                        logger.warning(
+                            "rollback prune_identity(%s) failed: %s",
+                            real_uid, rb_exc,
+                        )
                 raise
 
         # 4. Kick off the background tasks (outside lock): respawn poller,

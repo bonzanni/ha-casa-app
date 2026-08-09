@@ -55,6 +55,62 @@ class UidStateError(Exception):
     """
 
 
+# ---------------------------------------------------------------------------
+# Module-level passwd/group identity helpers (containment stage 2, Task 8).
+# ---------------------------------------------------------------------------
+# Lifted out of UidAllocator so provisioning/teardown (drivers/workspace.py)
+# can append/remove a uid's NSS identity without needing an allocator
+# instance in hand — the allocator methods below now delegate to these.
+
+
+def _append_if_absent(path: str, prefix: str, line: str) -> None:
+    with open(path, "r", encoding="utf-8") as fh:
+        existing = fh.read()
+    if any(l.startswith(prefix) for l in existing.splitlines()):
+        return
+    # A file missing its trailing newline (nothing guarantees /etc/passwd
+    # or /etc/group end in one) would otherwise merge the previous last
+    # entry with the new one into a single corrupted line — insert the
+    # separator ourselves rather than trusting "a" mode to append cleanly.
+    needs_separator = bool(existing) and not existing.endswith("\n")
+    with open(path, "a", encoding="utf-8") as fh:
+        if needs_separator:
+            fh.write("\n")
+        fh.write(line)
+
+
+def _remove_prefix(path: str, prefix: str) -> None:
+    with open(path, "r", encoding="utf-8") as fh:
+        keep = [line for line in fh if not line.startswith(prefix)]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.writelines(keep)
+
+
+def ensure_identity(
+    uid: int, home: str, *,
+    passwd_path: str = "/etc/passwd", group_path: str = "/etc/group",
+) -> None:
+    """Append passwd/group entries for *uid* if not already present.
+
+    Idempotent: a second call for the same uid is a no-op.
+    """
+    prefix = f"casa-eng-{uid}:"
+    passwd_line = f"casa-eng-{uid}:x:{uid}:{uid}::{home}:/usr/sbin/nologin\n"
+    group_line = f"casa-eng-{uid}:x:{uid}:\n"
+    _append_if_absent(passwd_path, prefix, passwd_line)
+    _append_if_absent(group_path, prefix, group_line)
+
+
+def prune_identity(
+    uid: int, *,
+    passwd_path: str = "/etc/passwd", group_path: str = "/etc/group",
+) -> None:
+    """Remove the passwd/group entries for *uid*, if present."""
+    prefix = f"casa-eng-{uid}:"
+    _remove_prefix(passwd_path, prefix)
+    _remove_prefix(group_path, prefix)
+
+
 class UidAllocator:
     """Hands out uids from a persistent, monotonic high-water mark.
 
@@ -121,39 +177,12 @@ class UidAllocator:
     def ensure_identity(self, uid: int, home: str) -> None:
         """Append passwd/group entries for *uid* if not already present.
 
-        Idempotent: a second call for the same uid is a no-op.
+        Idempotent: a second call for the same uid is a no-op. Delegates to
+        the module-level :func:`ensure_identity` (Task 8) bound to this
+        allocator's own passwd/group paths.
         """
-        prefix = f"casa-eng-{uid}:"
-        passwd_line = f"casa-eng-{uid}:x:{uid}:{uid}::{home}:/usr/sbin/nologin\n"
-        group_line = f"casa-eng-{uid}:x:{uid}:\n"
-        self._append_if_absent(self._passwd, prefix, passwd_line)
-        self._append_if_absent(self._group, prefix, group_line)
+        ensure_identity(uid, home, passwd_path=self._passwd, group_path=self._group)
 
     def prune_identity(self, uid: int) -> None:
         """Remove the passwd/group entries for *uid*, if present."""
-        prefix = f"casa-eng-{uid}:"
-        self._remove_prefix(self._passwd, prefix)
-        self._remove_prefix(self._group, prefix)
-
-    @staticmethod
-    def _append_if_absent(path: str, prefix: str, line: str) -> None:
-        with open(path, "r", encoding="utf-8") as fh:
-            existing = fh.read()
-        if any(l.startswith(prefix) for l in existing.splitlines()):
-            return
-        # A file missing its trailing newline (nothing guarantees /etc/passwd
-        # or /etc/group end in one) would otherwise merge the previous last
-        # entry with the new one into a single corrupted line — insert the
-        # separator ourselves rather than trusting "a" mode to append cleanly.
-        needs_separator = bool(existing) and not existing.endswith("\n")
-        with open(path, "a", encoding="utf-8") as fh:
-            if needs_separator:
-                fh.write("\n")
-            fh.write(line)
-
-    @staticmethod
-    def _remove_prefix(path: str, prefix: str) -> None:
-        with open(path, "r", encoding="utf-8") as fh:
-            keep = [line for line in fh if not line.startswith(prefix)]
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.writelines(keep)
+        prune_identity(uid, passwd_path=self._passwd, group_path=self._group)

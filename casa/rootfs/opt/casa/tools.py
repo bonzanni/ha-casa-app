@@ -6843,7 +6843,7 @@ async def _finalize_engagement(
     if engagement.driver == "claude_code":
         try:
             from drivers.workspace import load_casa_meta, write_casa_meta
-            from engagement_uids import owner_uid_or_none
+            from engagement_uids import UNALLOCATED_UID, owner_uid_or_none
             ws = os.path.join(_ENGAGEMENTS_ROOT, engagement.id)
             if os.path.isdir(ws):
                 meta = load_casa_meta(
@@ -6869,6 +6869,12 @@ async def _finalize_engagement(
                     retention_until=retention_iso,
                     # §3.8: the immutable binding survives the terminal rewrite.
                     plugin_artifacts=meta.get("plugin_artifacts"),
+                    # Task 8 (containment stage 2): likewise carry the
+                    # allocated uid forward — the workspace sweeper (no
+                    # registry access) reads it back from THIS field to
+                    # prune the uid's passwd/group entry once retention
+                    # deletes the workspace.
+                    allocated_uid=meta.get("allocated_uid", UNALLOCATED_UID),
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -8005,6 +8011,19 @@ async def delete_engagement_workspace(args: dict) -> dict:
             "delete_engagement_workspace: control dir rmtree %s failed: %s",
             ctl_dir, exc,
         )
+    # Task 8 (containment stage 2): this caller-managed deletion path has
+    # its own EngagementRecord (rec, above) — use its allocated_uid
+    # directly, same guard as every other prune site.
+    from engagement_uids import owner_uid_or_none, prune_identity
+    real_uid = owner_uid_or_none(rec.allocated_uid)
+    if real_uid is not None:
+        try:
+            prune_identity(real_uid)
+        except OSError as exc:
+            logger.warning(
+                "delete_engagement_workspace: prune_identity(%s) failed: %s",
+                real_uid, exc,
+            )
     return _result({
         "status": "ok", "engagement_id": engagement_id,
         "workspace_removed": os.path.isdir(ws) is False,

@@ -11,11 +11,18 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
-def _write_meta(ws: Path, *, status: str, retention_iso: str | None = None):
+def _write_meta(
+    ws: Path, *, status: str, retention_iso: str | None = None,
+    allocated_uid: int | None = None,
+):
     """Task 4 (containment stage 2): .casa-meta.json lives in the control
     dir, keyed by the engagement id — which ``load_casa_meta`` derives from
     the workspace dir's basename, so this helper provisions the control dir
-    to match."""
+    to match.
+
+    Task 8: ``allocated_uid`` is optional and omitted by default — legacy/
+    unallocated meta predating Task 8 has no such key, and the sweeper must
+    tolerate that (no prune attempted)."""
     from drivers.workspace import casa_meta_path, provision_control_dir
 
     meta = {
@@ -26,6 +33,8 @@ def _write_meta(ws: Path, *, status: str, retention_iso: str | None = None):
         "finished_at": None,
         "retention_until": retention_iso,
     }
+    if allocated_uid is not None:
+        meta["allocated_uid"] = allocated_uid
     provision_control_dir(ws.name)
     Path(casa_meta_path(ws.name)).write_text(json.dumps(meta), encoding="utf-8")
 
@@ -198,6 +207,58 @@ async def test_sweeper_survives_non_object_meta(tmp_path):
     assert ws_list.exists(), "non-object meta is skipped, not deleted"
     assert ws_str.exists()
     assert not ws_expired.exists(), "the sweep must reach later workspaces"
+
+
+async def test_sweeper_prunes_identity_for_swept_uid(tmp_path, monkeypatch):
+    """Task 8 (containment stage 2): once a workspace with a real
+    allocated_uid is swept away for good, its passwd/group entry must be
+    pruned too — otherwise /etc/passwd accumulates one stale line per
+    completed engagement forever."""
+    from drivers import workspace as ws_mod
+    from engagement_uids import UID_BASE
+
+    calls: list[int] = []
+    monkeypatch.setattr(ws_mod, "prune_identity", lambda uid: calls.append(uid))
+
+    ws = tmp_path / "eng-uid-swept"
+    ws.mkdir()
+    _write_meta(
+        ws, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z",
+        allocated_uid=UID_BASE + 3,
+    )
+
+    await ws_mod._sweep_workspaces(engagements_root=str(tmp_path))
+
+    assert not ws.exists()
+    assert calls == [UID_BASE + 3]
+
+
+async def test_sweeper_does_not_prune_unallocated_or_missing_uid(tmp_path, monkeypatch):
+    """A legacy/unallocated workspace (no allocated_uid key, or the
+    UNALLOCATED_UID sentinel) must never trigger a prune — there is no
+    real uid to prune."""
+    from drivers import workspace as ws_mod
+    from engagement_uids import UNALLOCATED_UID
+
+    calls: list[int] = []
+    monkeypatch.setattr(ws_mod, "prune_identity", lambda uid: calls.append(uid))
+
+    ws_legacy = tmp_path / "eng-legacy"
+    ws_legacy.mkdir()
+    _write_meta(ws_legacy, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z")
+
+    ws_sentinel = tmp_path / "eng-sentinel"
+    ws_sentinel.mkdir()
+    _write_meta(
+        ws_sentinel, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z",
+        allocated_uid=UNALLOCATED_UID,
+    )
+
+    await ws_mod._sweep_workspaces(engagements_root=str(tmp_path))
+
+    assert not ws_legacy.exists()
+    assert not ws_sentinel.exists()
+    assert calls == []
 
 
 async def test_sweeper_survives_non_string_retention(tmp_path):
