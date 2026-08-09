@@ -2422,6 +2422,54 @@ async def test_legacy_undergoing_record_backfills_uid_and_renders_with_it(
     assert started == ["keep1"]
 
 
+async def test_replay_provisions_private_outbox_for_migrated_uid(
+    monkeypatch, tmp_path,
+):
+    """Fix-loop round 1, finding 1 (wiring-site coverage): a legacy record
+    migrating to the uid drop for the first time has never had a private
+    outbox dir — boot replay must provision it, alongside the chown, before
+    the re-rendered run script can start a producer plugin that expects it
+    to exist. Asserted via a recording monkeypatch on the real provisioning
+    call (the same call the workspace-provision path uses) — the private
+    outbox root is already redirected to a tmp dir by the autouse
+    ``_isolate_engagement_outbox_root`` fixture."""
+    import plugin_outbox
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_uids import UNALLOCATED_UID
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(
+        s6_rc, "write_service_dir",
+        lambda **kw: (svc_root / f"engagement-{kw['engagement_id']}").mkdir())
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    async def fake_start(*, engagement_id): pass
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    calls: list[int] = []
+    real_provision = plugin_outbox.provision_engagement_outbox
+    def _recording_provision(uid, **kw):
+        calls.append(uid)
+        return real_provision(uid, **kw)
+    monkeypatch.setattr(
+        plugin_outbox, "provision_engagement_outbox", _recording_provision)
+
+    rec = _rec("keep1")
+    assert rec.allocated_uid == UNALLOCATED_UID       # legacy record
+    reg = await _make_registry([rec], uid_allocator=_tmp_allocator())
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    assert calls == [rec.allocated_uid]
+    assert os.path.isdir(plugin_outbox.engagement_outbox_dir(rec.allocated_uid))
+
+
 async def test_replay_failure_leaves_services_down_not_up(monkeypatch, tmp_path):
     """Design §6d: a heal that fails part-way (render raises) must NEVER start
     the not-yet-migrated service — it stays DOWN (the step-0 scandir sweep

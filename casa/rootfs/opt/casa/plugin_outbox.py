@@ -558,7 +558,7 @@ def register_sweep(scheduler) -> None:
 # engagement's producer drop a file into another's delivery flow). The fix is
 # a PRIVATE per-engagement dir the child DOES own, kept entirely separate
 # from the shared tree so the shared dir's mode never has to change:
-# ``<ENGAGEMENT_OUTBOX_ROOT>/<uid>/``, ``0700 uid:uid``. The claim path
+# ``<ENGAGEMENT_OUTBOX_ROOT>/<uid>/``, owned ``uid:uid``. The claim path
 # (``tools.send_media``) derives which private dir to open from the
 # AUTHENTICATED engagement record's ``allocated_uid`` — never from the
 # caller-submitted ``path`` argument — and reuses this module's existing
@@ -579,15 +579,35 @@ def engagement_outbox_dir(uid: int, *, root: str | None = None) -> str:
 
 
 def provision_engagement_outbox(uid: int, *, root: str | None = None) -> str:
-    """Create (idempotently) *uid*'s private outbox dir, owned ``uid:uid``,
-    ``0700`` — the child can freely read/write/list its OWN dir, and no
-    other uid can even traverse into it. The PARENT dir is created ``0711``
-    root-owned: any uid can still search THROUGH it to its own named
-    subdirectory (execute-only — no listing, no write), but no uid can list
-    its siblings or create an entry directly inside it. Never touches (and
-    never needs to touch) the unrelated shared ``/data/plugin-outbox``.
-    Idempotent — safe to call again for an already-provisioned uid (e.g. on
-    every boot-replay resume); never wipes existing contents."""
+    """Create (idempotently) *uid*'s private outbox dir, owned ``uid:uid``.
+
+    This function itself sets the dir to ``0700``, but the FIRST
+    :func:`get_engagement_outbox` access wraps it in a plain
+    :class:`PluginOutbox`, whose ``__init__`` unconditionally re-chmods its
+    root to ``0770`` (the SAME constructor the shared outbox uses — it has
+    no notion of "private", so it always widens to group-rwx). The
+    documented end state after normal use is therefore **``0770``, not
+    ``0700``** — the docstring here used to claim ``0700``, which is only
+    true before that first wrap. This is still cross-engagement-safe TODAY
+    because (a) the dir is owned ``uid:uid`` with ``uid`` also standing in
+    as the GID — a dedicated, single-member group per engagement (containment
+    stage 2 design §2: "GID = uid, dedicated primary group per engagement —
+    no shared group") — so the ``0770`` group-rwx bits only ever grant access
+    back to the SAME uid, and (b) the OTHER bits stay ``0`` throughout, so no
+    other uid (with ``--clear-groups``) can reach it regardless. It would
+    STOP being safe the moment any engagement's GID were changed to a
+    SHARED value — :func:`test_get_engagement_outbox_root_is_uid_owned_with_private_group`
+    (``tests/test_plugin_outbox.py``) pins uid==gid on the real
+    ``get_engagement_outbox`` path specifically so that future change trips
+    a test instead of silently reopening cross-engagement outbox access.
+
+    The PARENT dir is created ``0711`` root-owned: any uid can still search
+    THROUGH it to its own named subdirectory (execute-only — no listing, no
+    write), but no uid can list its siblings or create an entry directly
+    inside it. Never touches (and never needs to touch) the unrelated
+    shared ``/data/plugin-outbox``. Idempotent — safe to call again for an
+    already-provisioned uid (e.g. on every boot-replay resume); never wipes
+    existing contents."""
     base = root if root is not None else ENGAGEMENT_OUTBOX_ROOT
     os.makedirs(base, exist_ok=True)
     os.chmod(base, 0o711)

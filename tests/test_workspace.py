@@ -837,6 +837,50 @@ class TestChownLastProvisioning:
                 uid=UID_BASE, gid=UID_BASE,
             )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_provision_workspace_provisions_engagement_outbox(
+        self, tmp_path, monkeypatch,
+    ):
+        """Fix-loop round 1, finding 1 (wiring-site coverage): the private
+        per-engagement outbox must be provisioned as part of
+        provision_workspace's uid-drop step — the eager path a producer
+        plugin depends on existing before the CLI ever starts. Real
+        ownership is asserted under root; everywhere else the recorded
+        provisioning call is asserted (same split as ensure_identity/
+        chown_workspace above)."""
+        import plugin_outbox
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
+        monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
+        calls: list[int] = []
+        real_provision = plugin_outbox.provision_engagement_outbox
+
+        def _recording_provision(uid, **kw):
+            calls.append(uid)
+            return real_provision(uid, **kw)
+        monkeypatch.setattr(
+            plugin_outbox, "provision_engagement_outbox", _recording_provision)
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-outbox-provision",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+            uid=UID_BASE, gid=UID_BASE,
+        )
+        assert calls == [UID_BASE]
+        d = plugin_outbox.engagement_outbox_dir(UID_BASE)
+        assert os.path.isdir(d)
+        if os.geteuid() == 0:
+            assert os.stat(d).st_uid == UID_BASE
+
     @pytest.mark.skipif(
         os.geteuid() != 0 if hasattr(os, "geteuid") else True,
         reason="real chown requires root",
@@ -1580,3 +1624,35 @@ class TestExtraDirContainment:
             plugin_dirs=["/data/casa/plugin-store/sha256-abc/artifact"],
          uid=200005, gid=200005)
         assert "--plugin-dir /data/casa/plugin-store/sha256-abc/artifact" in out
+
+    def test_render_run_script_exports_private_outbox_dir(self):
+        """Fix-loop round 1, finding 1 (wiring-site coverage): a real uid's
+        rendered run script must export CASA_PLUGIN_OUTBOX_DIR pointing at
+        that uid's PRIVATE outbox dir — the producer's only way to learn it
+        no longer has access to the shared, root-only outbox."""
+        import plugin_outbox
+        from drivers.workspace import render_run_script
+        out = render_run_script(
+            engagement_id="x" * 16,
+            permission_mode="dontAsk",
+            extra_dirs=[],
+            uid=200005, gid=200005,
+        )
+        expected_dir = plugin_outbox.engagement_outbox_dir(200005)
+        assert f"export {plugin_outbox.OUTBOX_ENV}='{expected_dir}'" in out
+
+    def test_render_run_script_caller_extra_env_wins_over_outbox_dir(self):
+        """Same collision precedence as the plugin-dirs env overlay: an
+        explicit extra_env entry for the outbox var wins over the derived
+        one."""
+        import plugin_outbox
+        from drivers.workspace import render_run_script
+        out = render_run_script(
+            engagement_id="x" * 16,
+            permission_mode="dontAsk",
+            extra_dirs=[],
+            extra_env={plugin_outbox.OUTBOX_ENV: "/custom/outbox"},
+            uid=200005, gid=200005,
+        )
+        assert f"export {plugin_outbox.OUTBOX_ENV}='/custom/outbox'" in out
+        assert plugin_outbox.engagement_outbox_dir(200005) not in out

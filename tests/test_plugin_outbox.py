@@ -710,3 +710,56 @@ def test_teardown_engagement_outbox_closes_and_removes(tmp_path):
         assert ob2 is not ob
     finally:
         plugin_outbox.teardown_engagement_outbox(uid, root=str(root))
+
+
+def test_get_engagement_outbox_root_is_uid_owned_with_private_group(
+    tmp_path, monkeypatch,
+):
+    """Fix-loop round 1, finding 2: PluginOutbox.__init__ (shared with the
+    non-private outbox) unconditionally re-chmods its root to 0770 on
+    construction — the FIRST get_engagement_outbox() call for a uid ends
+    with the dir at 0770, not the 0700 provision_engagement_outbox() sets
+    in isolation. That is NOT a cross-engagement hole today only because
+    every engagement's GID equals its own uid (a private, single-member
+    group — design §2), so the widened group-rwx bits still only grant
+    access back to the SAME uid.
+
+    Runs against an ARBITRARY allocated uid (not this process's own) so the
+    assertion holds regardless of the test runner's real uid/gid layout —
+    real ownership is only asserted when actually running as root (the only
+    case where the chown can truly land); everywhere else the recorded
+    ``os.chown`` call args are asserted instead (same
+    real-ownership-when-root / recorded-args-otherwise split Task 8 used for
+    ``chown_workspace``). If a future change ever gave two engagements a
+    SHARED gid, this test — not just the docstring — would catch the
+    reopened cross-engagement exposure."""
+    root = tmp_path / "eng-outbox"
+    uid = 200099
+    chown_calls: list[tuple] = []
+    real_chown = os.chown
+
+    def _recording_chown(path, u, g, **kw):
+        chown_calls.append((path, u, g))
+        if os.geteuid() == 0:
+            real_chown(path, u, g, **kw)
+    monkeypatch.setattr(os, "chown", _recording_chown)
+
+    try:
+        ob = plugin_outbox.get_engagement_outbox(uid, root=str(root))
+        assert chown_calls, "provisioning must chown the outbox dir"
+        _path, called_uid, called_gid = chown_calls[0]
+        assert called_uid == uid
+        assert called_gid == uid, (
+            "engagement outbox root's group must be the engagement's OWN "
+            "uid (private single-member group) — a shared group here would "
+            "let another engagement using that group reach this outbox")
+        if os.geteuid() == 0:
+            st = os.stat(ob._root_realpath)
+            assert st.st_uid == uid and st.st_gid == uid
+        # Document the actual current mode (0770, not the isolated
+        # provision_engagement_outbox()'s 0700) so a silent widening beyond
+        # 0770 — e.g. to include "other" bits — is also caught here.
+        assert stat.S_IMODE(os.stat(ob._root_realpath).st_mode) == 0o770
+    finally:
+        monkeypatch.setattr(os, "chown", real_chown)
+        plugin_outbox.teardown_engagement_outbox(uid, root=str(root))

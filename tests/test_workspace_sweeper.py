@@ -233,6 +233,35 @@ async def test_sweeper_prunes_identity_for_swept_uid(tmp_path, monkeypatch):
     assert calls == [UID_BASE + 3]
 
 
+async def test_sweeper_removes_private_outbox_for_swept_uid(tmp_path):
+    """Fix-loop round 1, finding 1 (wiring-site coverage): the swept uid's
+    private outbox dir must follow the workspace/control-dir/passwd-entry
+    cleanup — otherwise it accumulates one stale per-engagement dir forever,
+    same reasoning as prune_identity above. Exercises the REAL
+    provision/teardown pair (root redirected to a tmp dir by the autouse
+    isolation fixture) rather than mocking, so a dropped teardown call
+    shows up as a leftover directory, not just a missed mock call."""
+    import plugin_outbox
+    from engagement_uids import UID_BASE
+
+    uid = UID_BASE + 4
+    d = plugin_outbox.provision_engagement_outbox(uid)
+    assert Path(d).is_dir()
+
+    ws = tmp_path / "eng-outbox-swept"
+    ws.mkdir()
+    _write_meta(
+        ws, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z",
+        allocated_uid=uid,
+    )
+
+    from drivers import workspace as ws_mod
+    await ws_mod._sweep_workspaces(engagements_root=str(tmp_path))
+
+    assert not ws.exists()
+    assert not Path(d).exists(), "swept uid's private outbox must be removed"
+
+
 async def test_sweeper_does_not_prune_unallocated_or_missing_uid(tmp_path, monkeypatch):
     """A legacy/unallocated workspace (no allocated_uid key, or the
     UNALLOCATED_UID sentinel) must never trigger a prune — there is no
