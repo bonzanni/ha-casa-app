@@ -342,31 +342,41 @@ class UidAllocator:
         Policy:
           - ANY valid durable copy → ``hw = max(valid_durables, evidence,
             UID_BASE-1)`` (a single-file loss recovers fully from the other; a
-            stale-low copy is ignored); ensure the marker exists.
+            stale-low copy is ignored); BACKFILL the marker if absent (so a
+            v0.170.0 install that already allocated gets the marker on its first
+            v0.170.1 boot — crash-safe ordering: copies first, then marker).
           - a durable file PRESENT but unreadable (malformed/stale-low) with no
             valid copy → POISON: a counter was written and is now unreadable, so
             a uid may exist whose maximum we cannot prove (Terra S2, unchanged).
           - NO valid durable copy, no present-but-invalid copy:
-              * marker ABSENT → Stage 2 never initialised (genuine fresh install
-                OR first Stage-2 boot of a pre-Stage-2 install; NO uid was ever
-                allocated) → INITIALISE at ``UID_BASE - 1``, write both copies +
-                the marker. (Fixes the v0.170.0 first-boot brick.)
               * marker PRESENT → Stage 2 WAS initialised and both high-water
-                copies are now gone → POISON (:class:`UidStateError`). Real-uid
-                evidence may exist but cannot prove the historic maximum, so we do
-                NOT init and do NOT trust ``max(evidence)`` here — refuse,
-                fail-closed (operator repairs). (Closes the v0.170.1-r1 reopened
-                reissue hole: allocate 200000 → everything cleaned + both copies
-                lost → marker still present → refuse, never reissue 200000.)
+                copies are now gone → POISON (:class:`UidStateError`); never init,
+                never reissue (operator repairs). (Closes the r1 reissue hole:
+                allocate 200000 → everything cleaned + both copies lost → marker
+                still present → refuse.)
+              * marker ABSENT + a REAL uid is evidenced anywhere (record/owner/
+                passwd/proc ``>= UID_BASE``) → POISON (v0.170.1-r3 TRANSITION
+                hole): the marker is NEW in v0.170.1, so an absent marker with a
+                real uid evidenced means a v0.170.0 install already allocated
+                (wrote copies, no marker) whose copies are now lost — a uid WAS
+                allocated whose maximum we cannot prove → refuse, never reissue.
+              * marker ABSENT + NO real-uid evidence → Stage 2 never initialised
+                (genuine fresh install OR first Stage-2 boot of a pre-Stage-2
+                install: dirs root-owned uid 0, records UNALLOCATED) → INITIALISE
+                at ``UID_BASE - 1``, write both copies + the marker. (Preserves
+                the N150 first-boot unbrick: zero real-uid evidence there.)
           - the /proc scan unconfirmable, or a persist failure → POISON
             (r4 invariant).
 
-        Why the marker and not evidence: the two states — (a) "Stage 2 never
-        initialised" and (b) "a uid was allocated, then fully cleaned + both
-        copies lost" — are INDISTINGUISHABLE from evidence alone (both can show
-        no real uid). The never-removed marker is the only signal that separates
-        them. Evidence sources (only ever RAISE, in the valid-durable branch):
-        *known_uids*, *dir_owner_uids*, ``casa-eng`` passwd, live /proc.
+        Why a marker AND real-uid evidence: (a) "Stage 2 never initialised" and
+        (b) "a uid was allocated, then fully cleaned + both copies lost" are
+        indistinguishable from evidence alone; the never-removed marker separates
+        them for post-marker installs. But the marker is new, so a PRE-marker
+        v0.170.0 allocation shows no marker — real-uid evidence is the signal that
+        catches that transition. Evidence sources (in the valid-durable branch
+        they only RAISE the high-water; in the marker-absent branch their mere
+        presence refuses): *known_uids*, *dir_owner_uids*, ``casa-eng`` passwd,
+        live /proc.
 
         Any failure poisons the allocator under the lock and surfaces as
         UidStateError; nothing escapes as a bare OSError.
@@ -421,12 +431,29 @@ class UidAllocator:
                         "present) but both durable high-water copies are lost — "
                         "refusing to allocate rather than risk reissuing a "
                         "previously-allocated uid; restore the counter to repair")
+                elif evidence_max is not None:
+                    # v0.170.1-r3 TRANSITION hole (Sol): the marker is NEW in
+                    # v0.170.1, so an ABSENT marker is ambiguous — it can mean a
+                    # virgin/pre-Stage-2 install OR a v0.170.0 install that already
+                    # allocated a uid (v0.170.0 wrote counter+anchor but NO marker).
+                    # With no valid durable copy but a REAL uid evidenced anywhere
+                    # (record/owner/passwd/proc >= UID_BASE), a uid WAS allocated
+                    # (pre-marker, or a partially-cleaned state) and we cannot prove
+                    # its maximum → REFUSE, never init at base and reissue it.
+                    raise UidStateError(
+                        "no valid durable engagement-uid high-water and no "
+                        "'initialized' marker, but a real uid is evidenced (a uid "
+                        "was allocated before the marker existed) — refusing to "
+                        "allocate rather than risk reissuing it; restore the "
+                        "counter to repair")
                 else:
-                    # marker ABSENT → Stage 2 never initialised (genuine fresh
-                    # install OR the first Stage-2 boot of a pre-Stage-2 install:
-                    # all dirs root-owned, records UNALLOCATED). No uid was ever
-                    # allocated → INITIALISE at UID_BASE-1 and write both copies +
-                    # the marker below.
+                    # marker ABSENT and NO real-uid evidence → Stage 2 never
+                    # initialised (genuine fresh install OR the first Stage-2 boot
+                    # of a pre-Stage-2 install: all dirs root-owned uid 0, records
+                    # UNALLOCATED, no casa-eng passwd, no casa /proc uid). No uid
+                    # was ever allocated → INITIALISE at UID_BASE-1 and write both
+                    # copies + the marker below. (Preserves the N150 first-boot
+                    # unbrick: its pre-Stage-2 state has zero real-uid evidence.)
                     hw = UID_BASE - 1
 
                 self._hw = hw

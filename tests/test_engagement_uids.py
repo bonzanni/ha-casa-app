@@ -70,14 +70,16 @@ def test_marker_present_both_copies_lost_refuses_reissue(tmp_path):
     # to 200000 here; the marker now forces fail-closed.)
     counter = tmp_path / "uids.json"
     anchor = tmp_path / "uids.json.initialized"
-    pw = tmp_path / "passwd"
-    pw.write_text(
-        f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::/h:/usr/sbin/nologin\n")
+    pw = tmp_path / "passwd"; pw.write_text("")
     a = UidAllocator(str(counter), passwd_path=str(pw),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    a.reconstruct([], [])                       # init → writes counter+anchor+marker
+    a.reconstruct([], [])                       # fresh init → writes copies+marker
     a.allocate()
     os.remove(str(counter)); os.remove(str(anchor))   # both high-water copies lost
+    # A real uid still evidenced (a surviving casa-eng passwd entry). The marker
+    # (present) forces refusal regardless — evidence must NOT recover here.
+    pw.write_text(
+        f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::/h:/usr/sbin/nologin\n")
     b = UidAllocator(str(counter), passwd_path=str(pw),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
     with pytest.raises(UidStateError):         # marker present + no copy → refuse
@@ -139,17 +141,44 @@ def test_first_stage2_upgrade_root_owned_dirs_initialises_not_refuses(tmp_path):
     assert counter.exists() and anchor.exists() and marker.exists()
 
 
-def test_live_proc_evidence_with_marker_absent_initialises(tmp_path):
-    # v0.170.1-r2: proc evidence but marker ABSENT — the marker is the fresh-vs-
-    # loss authority, so this is treated as never-initialised → init at base.
-    # (A proc uid without a marker means Stage 2 never wrote its marker; the
-    # marker is written before any uid is ever handed out, so this is not a
-    # reachable "allocated" state — init is correct and safe.)
-    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
-                     group_path=str(tmp_path / "gr"),
-                     proc_scanner=lambda: {UID_BASE})
+def test_marker_absent_with_real_uid_evidence_refuses_transition(tmp_path):
+    # v0.170.1-r3 TRANSITION hole (Sol): the marker is NEW in v0.170.1, so an
+    # ABSENT marker with a REAL uid evidenced means a v0.170.0 install already
+    # allocated (wrote copies, no marker) whose copies are now lost. A uid WAS
+    # allocated → REFUSE, never reissue. Exercised for each evidence source.
+    for src in ("proc", "passwd", "record", "dir_owner"):
+        d = tmp_path / src
+        d.mkdir()
+        pw = d / "passwd"
+        pw.write_text(
+            f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::/h:/usr/sbin/nologin\n"
+            if src == "passwd" else "")
+        a = UidAllocator(
+            str(d / "uids.json"), passwd_path=str(pw), group_path=str(d / "gr"),
+            proc_scanner=(lambda: {UID_BASE}) if src == "proc" else _NO_LIVE)
+        known = [UID_BASE] if src == "record" else []
+        owners = [UID_BASE] if src == "dir_owner" else []
+        with pytest.raises(UidStateError):     # marker absent + real uid → refuse
+            a.reconstruct(known_uids=known, dir_owner_uids=owners)
+        with pytest.raises(UidStateError):
+            a.allocate()
+
+
+def test_v0170_0_transition_valid_copy_backfills_marker(tmp_path):
+    # v0.170.1-r3: a v0.170.0 install that allocated has counter+anchor (valid)
+    # but NO marker. First v0.170.1 boot recovers via the copies AND backfills
+    # the marker, so a LATER both-copies-lost boot correctly poisons (not init).
+    counter = tmp_path / "uids.json"
+    anchor = tmp_path / "uids.json.initialized"
+    marker = tmp_path / ".engagement-uids-initialized"
+    counter.write_text('{"high_water": %d}' % UID_BASE)      # v0.170.0 wrote these
+    anchor.write_text('{"high_water": %d}' % UID_BASE)
+    assert not marker.exists()                                # ...but no marker
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
     a.reconstruct([], [])
-    assert a.allocate() == UID_BASE
+    assert a.allocate() == UID_BASE + 1        # recovered via the copies
+    assert marker.exists()                     # marker backfilled on this boot
 
 
 def test_counter_missing_zero_evidence_and_clean_proc_starts_at_base(tmp_path):
