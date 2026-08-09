@@ -2646,6 +2646,53 @@ async def test_refold_unscannable_proc_refuses_legacy_backfill(
     assert started == []
 
 
+async def test_refold_persist_failure_refuses_legacy_backfill(
+    monkeypatch, tmp_path,
+):
+    """S1 code-gate r4 (Terra S2): a _persist OSError during the post-sweep
+    refold must be caught fail-closed (converted to UidStateError, allocator
+    poisoned) — the legacy record is refused (never started), and no bare
+    OSError escapes to the boot logger."""
+    import engagement_uids as eu
+    from atomic_io import atomic_write_json as _real_awj
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_uids import UID_BASE, UNALLOCATED_UID
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    # Reconstruct clean (real persist); then a survivor appears AND the counter
+    # persist starts failing, so the refold's _persist raises OSError.
+    live = {"uids": set()}
+    alloc = _refold_allocator(tmp_path, lambda: set(live["uids"]))
+    live["uids"] = {UID_BASE + 1}
+    def _selective(path, data, **kw):
+        if str(path).endswith("counter.json"):
+            raise OSError("ENOSPC")
+        return _real_awj(path, data, **kw)
+    monkeypatch.setattr(eu, "atomic_write_json", _selective)
+
+    rec = _rec("keep1")
+    assert rec.allocated_uid == UNALLOCATED_UID
+    reg = await _make_registry([rec], uid_allocator=alloc)
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    # Must NOT raise (no bare OSError escaping) — the call site refuses instead.
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    assert rec.allocated_uid == UNALLOCATED_UID   # never backfilled
+    assert started == []                          # never started
+
+
 async def test_replay_provisions_private_outbox_for_migrated_uid(
     monkeypatch, tmp_path,
 ):

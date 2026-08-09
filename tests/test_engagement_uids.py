@@ -105,6 +105,71 @@ def test_refold_unscannable_proc_refuses_fail_closed(tmp_path):
         a.refold_live_uids()
 
 
+def test_refold_scan_failure_poisons_subsequent_allocate(tmp_path):
+    # S1 r4 (Sol S1): a refold scan failure must not merely refuse legacy
+    # backfill — it POISONS the allocator, so a later normal create()-path
+    # allocate() ALSO refuses rather than handing out a uid from a stale
+    # high-water (which could reissue a live survivor's uid).
+    def _boom():
+        raise OSError("/proc gone")
+    a = UidAllocator(
+        str(tmp_path / "uids.json"),
+        passwd_path=str(tmp_path / "pw"), group_path=str(tmp_path / "gr"),
+        proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    assert a.allocate() == UID_BASE        # proven-good before the failure
+    a._proc_scanner = _boom
+    with pytest.raises(UidStateError):
+        a.refold_live_uids()
+    # The create()-path allocate() now refuses too (poisoned) — no stale reissue.
+    with pytest.raises(UidStateError):
+        a.allocate()
+
+
+def test_persist_failure_during_refold_is_uidstateerror_and_poisons(tmp_path, monkeypatch):
+    # S1 r4 (Terra S2): a persist OSError (ENOSPC/EIO) must not escape as a bare
+    # OSError — it is converted to UidStateError AND poisons the allocator, so
+    # the replay call site's ``except UidStateError`` catches it and every later
+    # allocate() refuses.
+    import engagement_uids as eu
+    live = {"uids": set()}
+    a = eu.UidAllocator(
+        str(tmp_path / "uids.json"),
+        passwd_path=str(tmp_path / "pw"), group_path=str(tmp_path / "gr"),
+        proc_scanner=lambda: set(live["uids"]))
+    a.reconstruct([], [])                   # real persist OK
+    live["uids"] = {UID_BASE + 1}           # refold will change the high-water
+    def _no_disk(*args, **kwargs):
+        raise OSError("ENOSPC")
+    monkeypatch.setattr(eu, "atomic_write_json", _no_disk)
+    with pytest.raises(UidStateError):      # NOT a bare OSError
+        a.refold_live_uids()
+    with pytest.raises(UidStateError):      # poisoned → create()-path refuses
+        a.allocate()
+
+
+def test_persist_failure_during_allocate_is_uidstateerror_and_poisons(tmp_path, monkeypatch):
+    # S1 r4: the same fail-closed cut on the allocate() persist path — a persist
+    # failure poisons and raises UidStateError, and the uid is NOT returned
+    # (never hand out a uid that did not reach disk).
+    import engagement_uids as eu
+    a = eu.UidAllocator(
+        str(tmp_path / "uids.json"),
+        passwd_path=str(tmp_path / "pw"), group_path=str(tmp_path / "gr"),
+        proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    monkeypatch.setattr(eu, "atomic_write_json",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("EIO")))
+    with pytest.raises(UidStateError):
+        a.allocate()
+    # Restore disk; the allocator stays poisoned until a successful reconstruct.
+    monkeypatch.undo()
+    with pytest.raises(UidStateError):
+        a.allocate()
+    a.reconstruct([], [])                   # successful reconstruct clears poison
+    assert a.allocate() == UID_BASE
+
+
 def test_scan_proc_uids_reads_real_uid_ge_base(tmp_path):
     from engagement_uids import scan_proc_uids
     proc = tmp_path / "proc"
@@ -120,6 +185,28 @@ def test_scan_proc_uids_reads_real_uid_ge_base(tmp_path):
     # A missing proc root raises (fail-closed signal to reconstruct).
     with pytest.raises(OSError):
         scan_proc_uids(str(tmp_path / "nope"))
+
+
+def test_scan_proc_uids_folds_all_uid_fields_incl_fsuid(tmp_path):
+    # S1 r4 (fsuid finding): DAC uses the FILESYSTEM uid, not the real uid. A
+    # genuinely non-root survivor can hold a LOW real uid but a HIGH euid/suid/
+    # fsuid (setpriv --ruid 65534 --euid 200000 ...). scan_proc_uids must fold
+    # EVERY uid field (and Gid fields) so 200000 is seen and never reissued.
+    from engagement_uids import scan_proc_uids
+    proc = tmp_path / "proc"
+    (proc / "111").mkdir(parents=True)
+    (proc / "111" / "status").write_text(
+        "Name:\treader\n"
+        "Uid:\t65534\t200000\t200000\t200000\n"   # real low, euid/suid/fsuid high
+        "Gid:\t65534\t200001\t200001\t200001\n")
+    got = scan_proc_uids(str(proc))
+    assert 200000 in got            # fsuid/euid folded despite low real uid
+    assert 200001 in got            # Gid fields folded too (defense-in-depth)
+    # A uniform-high real uid still works; a low id anywhere is ignored.
+    (proc / "222").mkdir()
+    (proc / "222" / "status").write_text(
+        "Uid:\t200007\t200007\t200007\t200007\n")
+    assert 200007 in scan_proc_uids(str(proc))
 
 
 def test_counter_missing_with_passwd_entry_does_not_reset_below(tmp_path):

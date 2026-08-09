@@ -148,7 +148,7 @@ def scan_passwd_uids(passwd_path: str = "/etc/passwd") -> list[int]:
 
 
 def scan_proc_uids(proc_root: str = "/proc") -> set[int]:
-    """Real uids ``>= UID_BASE`` currently held by ANY live process.
+    """Every uid/gid ``>= UID_BASE`` a live process can use for DAC.
 
     Containment Stage 2 (S1 code-gate fix r2, both reviewers): the passwd/
     workspace/record evidence sources are all pruned at teardown, so a
@@ -156,19 +156,29 @@ def scan_proc_uids(proc_root: str = "/proc") -> set[int]:
     (plugin-developer has Bash) survives ``ensure_service_down`` yet leaves NO
     filesystem or passwd trace. A lost counter would then reconstruct to base
     and reissue that survivor's uid → cross-engagement read. Reading the live
-    ``/proc/<pid>/status`` ``Uid:`` line (real uid, the FIRST field) closes it:
-    a uid held by any live process can never be reissued even with total
-    filesystem + passwd evidence loss.
+    ``/proc/<pid>/status`` uid/gid lines closes it: a uid a live process can use
+    can never be reissued even with total filesystem + passwd evidence loss.
 
-    Only real uids ``>= UID_BASE`` are returned (Casa's engagement range); the
-    container's own root/service uids are irrelevant. Per-pid read failures (the
+    S1 r4 (fsuid finding): Linux DAC checks the FILESYSTEM uid, not the real
+    uid. ``/proc/<pid>/status`` reports ``Uid: <real> <effective> <saved>
+    <fsuid>`` (and likewise ``Gid:``). A genuinely NON-root survivor can hold a
+    LOW real uid but a HIGH fsuid — e.g. ``setpriv --ruid 65534 --euid 200000
+    ... -- reader`` yields ``Uid: 65534 200000 200000 200000``, whose fsuid
+    200000 passes DAC as engagement 200000's owner. Reading only the real uid
+    would miss it and reissue 200000. So EVERY field on the ``Uid:`` line (and,
+    defense-in-depth, the ``Gid:`` line — workspaces are uid-owned 0700, but a
+    shared-gid DAC path would matter the same way) that is ``>= UID_BASE`` is
+    folded into the returned set.
+
+    Only values ``>= UID_BASE`` are returned (Casa's engagement range); the
+    container's own root/service ids are irrelevant. Per-pid read failures (the
     process exited mid-scan, an unreadable ``status``) are SKIPPED — a vanished
-    pid holds no uid. But an inability to scan ``proc_root`` AT ALL raises
-    ``OSError`` (``/proc`` is always present in-container): the caller treats
-    that as unconfirmable and refuses allocation fail-closed, rather than
-    proceeding blind to what uids are live.
+    pid holds nothing reissuable. But an inability to scan ``proc_root`` AT ALL
+    raises ``OSError`` (``/proc`` is always present in-container): the caller
+    treats that as unconfirmable and refuses allocation fail-closed, rather than
+    proceeding blind to what ids are live.
     """
-    uids: set[int] = set()
+    ids: set[int] = set()
     with os.scandir(proc_root) as it:   # raises OSError if proc_root is absent
         for entry in it:
             if not entry.name.isdigit():
@@ -179,25 +189,26 @@ def scan_proc_uids(proc_root: str = "/proc") -> set[int]:
                     "r", encoding="utf-8",
                 ) as fh:
                     for line in fh:
-                        if not line.startswith("Uid:"):
+                        if not (line.startswith("Uid:")
+                                or line.startswith("Gid:")):
                             continue
-                        parts = line.split()
-                        # ``Uid:\t<real>\t<effective>\t<saved>\t<fs>`` — the
-                        # REAL uid is parts[1].
-                        if len(parts) >= 2:
+                        # ``Uid:\t<real>\t<effective>\t<saved>\t<fsuid>`` — fold
+                        # EVERY field (real/effective/saved/fsuid), since any of
+                        # them can be the id a DAC check uses. Per-field parse is
+                        # best-effort: a short/garbled line contributes whatever
+                        # parses (never fails the pid).
+                        for tok in line.split()[1:]:
                             try:
-                                ruid = int(parts[1])
+                                val = int(tok)
                             except ValueError:
-                                pass
-                            else:
-                                if ruid >= UID_BASE:
-                                    uids.add(ruid)
-                        break
+                                continue
+                            if val >= UID_BASE:
+                                ids.add(val)
             except OSError:
                 # Process exited between scandir and open, or status
-                # unreadable — a vanished/opaque pid holds no reissuable uid.
+                # unreadable — a vanished/opaque pid holds nothing reissuable.
                 continue
-    return uids
+    return ids
 
 
 class UidAllocator:
@@ -226,7 +237,23 @@ class UidAllocator:
         # used verbatim (direct test injection).
         self._proc_scanner = proc_scanner
         self._hw: int | None = None  # None until reconstruct() succeeds
+        # S1 r4 — the allocator is either PROVEN-GOOD (a successful
+        # reconstruct/refold whose high-water >= every evidenced/live uid, and
+        # whose value is persisted) or POISONED (refuses ALL allocation). Any
+        # failure in reconstruct/refold/_persist — scan failure OR persistence
+        # failure — poisons it under the lock and converts to UidStateError, so
+        # a later ``create()`` → ``allocate()`` can never hand out a uid against
+        # a stale/unconfirmed high-water. A subsequent SUCCESSFUL reconstruct/
+        # refold clears the poison.
+        self._poisoned = False
         self._lock = threading.Lock()
+
+    def _poison_locked(self) -> None:
+        """Mark the allocator unusable (caller MUST hold ``self._lock``).
+        ``allocate`` then refuses until a successful reconstruct/refold restores
+        the proven-good state."""
+        self._hw = None
+        self._poisoned = True
 
     def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int]) -> None:
         """Set the high-water mark to the max of every uid source.
@@ -267,34 +294,38 @@ class UidAllocator:
         entry), so with counter loss the process would be the SOLE remaining
         evidence of its uid; /proc is where that evidence lives.
         """
-        persisted = UID_BASE - 1
-        if os.path.exists(self._path):
-            try:
-                with open(self._path, "r", encoding="utf-8") as fh:
-                    raw = json.load(fh)
-                persisted = int(raw["high_water"])
-            except (ValueError, KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
-                raise UidStateError(f"counter file {self._path} unreadable: {exc}") from exc
-
-        passwd_uids = scan_passwd_uids(self._passwd)
-        # Resolve the live-uid scanner at CALL time so a module-level
-        # monkeypatch is honored (see __init__). A scan that cannot run at all
-        # ⇒ fail-closed refuse, never reconstruct blind to live uids.
-        scanner = self._proc_scanner or scan_proc_uids
-        try:
-            proc_uids = scanner()
-        except OSError as exc:
-            raise UidStateError(
-                f"live /proc uid scan failed ({exc}) — refusing to reconstruct "
-                "blind to which uids are held by live processes") from exc
-
-        candidates = [
-            persisted, UID_BASE - 1,
-            *known_uids, *dir_owner_uids, *passwd_uids, *proc_uids,
-        ]
+        # S1 r4: the ENTIRE reconstruct — counter read, evidence scans, and the
+        # high-water persist — runs under the lock inside one try. ANY failure
+        # (malformed counter, unscannable /proc, a persist OSError) poisons the
+        # allocator and surfaces as UidStateError; nothing escapes as a bare
+        # OSError and no partial state is left proven-good.
         with self._lock:
-            self._hw = max(candidates)
-            self._persist()
+            try:
+                persisted = UID_BASE - 1
+                if os.path.exists(self._path):
+                    with open(self._path, "r", encoding="utf-8") as fh:
+                        raw = json.load(fh)
+                    persisted = int(raw["high_water"])
+
+                passwd_uids = scan_passwd_uids(self._passwd)
+                # Resolve the live-uid scanner at CALL time so a module-level
+                # monkeypatch is honored (see __init__). A scan that cannot run
+                # at all ⇒ fail-closed, never reconstruct blind to live uids.
+                scanner = self._proc_scanner or scan_proc_uids
+                proc_uids = scanner()
+
+                candidates = [
+                    persisted, UID_BASE - 1,
+                    *known_uids, *dir_owner_uids, *passwd_uids, *proc_uids,
+                ]
+                self._hw = max(candidates)
+                self._poisoned = False   # proven-good
+                self._persist()          # persist failure re-poisons below
+            except Exception as exc:  # noqa: BLE001 — any failure poisons
+                self._poison_locked()
+                raise UidStateError(
+                    f"uid allocator reconstruct failed ({exc!r}) — refusing to "
+                    "allocate against an unconfirmed high-water") from exc
 
     def refold_live_uids(self) -> None:
         """Re-fold live ``/proc`` uids into the high-water, AFTER boot replay's
@@ -312,37 +343,61 @@ class UidAllocator:
         NEW survivor past that point, and this re-scan captures any that escaped
         earlier, so the high-water folds it in.
 
-        Fail-closed: an unscannable ``/proc`` raises :class:`UidStateError`
-        (the caller refuses every resume needing a fresh allocation), exactly as
-        :meth:`reconstruct` does. Raising the high-water is monotonic and
-        persisted; a scan that finds no live casa uid is a no-op.
+        Fail-closed (S1 r4): an unscannable ``/proc`` OR a persist failure
+        poisons the allocator and raises :class:`UidStateError` — the caller
+        refuses every resume needing a fresh allocation, AND every later
+        ``allocate`` (normal ``create()`` included) refuses until a successful
+        reconstruct/refold restores the proven-good state. A refold before a
+        successful reconstruct likewise raises. Raising the high-water is
+        monotonic and persisted; a scan that finds no live casa uid is a no-op.
         """
-        scanner = self._proc_scanner or scan_proc_uids
-        try:
-            proc_uids = scanner()
-        except OSError as exc:
-            raise UidStateError(
-                f"live /proc uid refold failed ({exc}) — refusing to allocate "
-                "blind to which uids are held by live processes") from exc
         with self._lock:
-            if self._hw is None:
-                raise UidStateError("refold_live_uids() called before reconstruct()")
-            if proc_uids:
-                new_hw = max(self._hw, max(proc_uids))
-                if new_hw != self._hw:
-                    self._hw = new_hw
-                    self._persist()
+            try:
+                if self._hw is None or self._poisoned:
+                    raise UidStateError(
+                        "refold_live_uids() before a successful reconstruct()")
+                scanner = self._proc_scanner or scan_proc_uids
+                proc_uids = scanner()
+                if proc_uids:
+                    new_hw = max(self._hw, max(proc_uids))
+                    if new_hw != self._hw:
+                        self._hw = new_hw
+                        self._persist()   # persist failure re-poisons below
+            except UidStateError:
+                self._poison_locked()
+                raise
+            except Exception as exc:  # noqa: BLE001 — any failure poisons
+                self._poison_locked()
+                raise UidStateError(
+                    f"live /proc uid refold failed ({exc!r}) — refusing to "
+                    "allocate blind to which uids are held by live processes"
+                ) from exc
 
     def allocate(self) -> int:
         """Return a fresh uid, persisting the new high-water before returning.
 
-        Raises :class:`UidStateError` if :meth:`reconstruct` has not run.
+        Raises :class:`UidStateError` whenever the allocator is uninitialized
+        (no successful :meth:`reconstruct`) OR poisoned by a prior
+        reconstruct/refold/persist failure — the single fail-closed gate that
+        makes EVERY allocation (legacy backfill in replay AND normal
+        ``create()``) refuse against an unconfirmed high-water (S1 r4). A
+        persist failure here also poisons, so the returned uid is always one
+        that reached disk.
         """
         with self._lock:
-            if self._hw is None:
-                raise UidStateError("allocate() called before reconstruct()")
-            self._hw += 1
-            self._persist()  # persist BEFORE returning: crash-safe, never reuse
+            if self._hw is None or self._poisoned:
+                raise UidStateError(
+                    "allocate() called on an uninitialized or poisoned "
+                    "allocator — refusing to allocate against an unconfirmed "
+                    "high-water")
+            try:
+                self._hw += 1
+                self._persist()  # persist BEFORE returning: crash-safe, never reuse
+            except Exception as exc:  # noqa: BLE001 — persist failure poisons
+                self._poison_locked()
+                raise UidStateError(
+                    f"uid counter persist failed during allocate ({exc!r}) — "
+                    "allocator poisoned, refusing further allocation") from exc
             return self._hw
 
     def _persist(self) -> None:
