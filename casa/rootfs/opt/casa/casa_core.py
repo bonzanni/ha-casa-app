@@ -314,8 +314,11 @@ def _workspace_owner_ids(engagements_root: str) -> dict[int, set[str]]:
     return owners
 
 
+_UNSET = object()   # sentinel: distinguishes "not injected" from an injected None
+
+
 def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
-                          _pidfd_open=None, _pidfd_send=None,
+                          _pidfd_open=_UNSET, _pidfd_send=_UNSET,
                           _close=os.close) -> None:
     """Best-effort SIGKILL of any lingering process whose real/effective/saved/
     fsuid is ``uid`` (an engagement's allocated uid, always ``>= UID_BASE``).
@@ -346,8 +349,17 @@ def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
     mount/AppArmor/pid-namespace, not closed here.)"""
     if uid < UID_BASE:
         return
-    pidfd_open = _pidfd_open or getattr(os, "pidfd_open", None)
-    pidfd_send = _pidfd_send or getattr(signal, "pidfd_send_signal", None)
+    # v0.170.2: resolve via a sentinel so an injected ``None`` EXPLICITLY means
+    # "primitive unavailable" (reaches the skip guard), while the production
+    # default (``_UNSET``) uses the real primitives. The prior ``_pidfd_open or
+    # getattr(...)`` made an injected ``None`` fall back to the REAL
+    # ``os.pidfd_open`` — so the "unavailable" test path never skipped and, in
+    # CI (where the fake-proc pid numbers map to real kernel threads),
+    # ``os.pidfd_open`` succeeded and a signal was recorded.
+    pidfd_open = (getattr(os, "pidfd_open", None)
+                  if _pidfd_open is _UNSET else _pidfd_open)
+    pidfd_send = (getattr(signal, "pidfd_send_signal", None)
+                  if _pidfd_send is _UNSET else _pidfd_send)
     if pidfd_open is None or pidfd_send is None:
         return   # no race-free primitive → skip (never signal a bare pid)
     try:
