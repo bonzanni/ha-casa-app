@@ -58,8 +58,13 @@ tells the operator so. The trade-off is accepted because a missed ack costs prom
 not data: the subscriber's next independent wake still finds the same durable state.
 
 **The spool is a same-uid protocol, not an inter-plugin security boundary** (callbacks
-doctrine parity). Every plugin process runs as root in one container, so `/data/events`
-guards against itself racing or crashing, not against a hostile co-tenant. Accepted
+doctrine parity). A resident's or specialist's plugin processes still run as root, same as
+every other in-process (`in_casa`-driver) attachment; a `claude_code`-driver (executor)
+engagement's `--plugin-dir`-attached plugins instead run under that one engagement's
+containment-stage-2 dropped uid, not root — but that is still one uid shared by every
+plugin *within* that engagement, so `/data/events` still guards against itself racing or
+crashing within a shared-uid process family, not against a hostile co-tenant of it.
+Accepted
 residuals, each bounded by level-triggering to lost promptness or a spurious-but-inert
 wake: same-uid forgery of an emission file for an already-consented pair; token theft or
 record rewrite to suppress or falsify a receipt; same-role token confusion by the model

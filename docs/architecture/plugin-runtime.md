@@ -27,9 +27,11 @@ not-ready state instead (INV-PLUG-009).
 Two more attachment paths are easy to miss. **Plugin environment values live in a
 mode-0600 conf file** re-sourced into the process only by the plugin-env reload scope —
 deleting an entry from the file changes nothing until that reload runs. **Plugin media
-flows through a shared outbox directory** (operator-relocatable by environment variable)
-with atomic claim semantics, size and type gates, and periodic orphan reaping —
-consumption is destructive by design.
+flows through an outbox** — the shared directory (operator-relocatable by environment
+variable) for an ordinary engagement, or a private per-uid directory for a uid-dropped
+one, since that producer can no longer write the shared, non-group-writable tree — with
+atomic claim semantics, size and type gates, and periodic orphan reaping; consumption is
+destructive by design.
 
 ## Contracts & invariants
 
