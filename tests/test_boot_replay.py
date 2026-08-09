@@ -2680,20 +2680,33 @@ def test_best_effort_kill_uid_uses_pidfd_not_bare_pid(tmp_path):
 
 
 def test_best_effort_kill_uid_skips_when_pidfd_unavailable(tmp_path):
-    # S1 r6: if the pidfd primitives are unavailable, SKIP entirely rather than
-    # signal a racy bare pid (the kill is non-load-bearing DiD).
+    # S1 r6 / v0.170.2: if the pidfd primitives are unavailable, SKIP entirely
+    # rather than signal a racy bare pid (non-load-bearing DiD). An INJECTED
+    # ``None`` must EXPLICITLY mean "unavailable" — the sentinel injection
+    # contract (v0.170.2) — otherwise ``None or real`` fell back to the REAL
+    # ``os.pidfd_open`` and, in CI, signalled a real kernel-thread pid.
     from casa_core import _best_effort_kill_uid
     from engagement_uids import UID_BASE
     proc = tmp_path / "proc"
     (proc / "10").mkdir(parents=True)
     (proc / "10" / "status").write_text("Uid:\t200000\t200000\t200000\t200000\n")
+
+    def _must_not_open(pid):
+        raise AssertionError("must not open a pidfd when unavailable")
+
+    # pidfd_open missing (None) → skip: no scan, no open, no signal.
     sent: list = []
-    # pidfd_send present but pidfd_open missing → skip (no signal at all).
     _best_effort_kill_uid(
         UID_BASE, proc_root=str(proc),
         _pidfd_open=None,
         _pidfd_send=lambda fd, sig: sent.append((fd, sig)))
     assert sent == []
+
+    # pidfd_send missing (None) → also skip (never opens a pidfd it can't signal).
+    _best_effort_kill_uid(
+        UID_BASE, proc_root=str(proc),
+        _pidfd_open=_must_not_open,
+        _pidfd_send=None)
 
 
 def test_best_effort_kill_uid_never_raises_and_skips_subbase(tmp_path):

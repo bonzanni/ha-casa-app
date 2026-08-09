@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.170.2] - 2026-08-09
+
+### Fixed
+
+- Internal: fixed a defense-in-depth test-injection contract in the
+  engagement-cleanup path so the CI unit gate is deterministic; no runtime
+  behavior change.
+
 ## [0.170.1] - 2026-08-09
 
 ### Fixed
