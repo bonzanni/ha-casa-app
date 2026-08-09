@@ -1021,6 +1021,63 @@ class EngagementRegistry:
             if task.exception() is not None:
                 raise task.exception()
 
+    async def backfill_allocated_uid(self, engagement_id: str) -> int:
+        """Containment Stage 2 (Task 10): allocate + persist an OS uid for a
+        legacy ``claude_code`` record whose ``allocated_uid`` is still the
+        ``UNALLOCATED_UID`` sentinel (created before Stage 2, or before an
+        allocator was wired), and return the resulting uid.
+
+        Called by boot replay for every UNDERGOING claude_code record before it
+        re-renders the run script under the record's uid. Idempotent: a record
+        that already carries a REAL uid (``!= UNALLOCATED_UID``) is returned
+        unchanged, no allocation, no write.
+
+        Fail-CLOSED: with no allocator configured, or if allocation raises
+        (e.g. a missing/malformed counter left the allocator un-reconstructed),
+        this raises :class:`engagement_uids.UidStateError` — the caller must
+        refuse the resume rather than launch a root/unallocated CLI. STRICT
+        persistence with rollback (mirrors :meth:`persist_session_id`): the uid
+        the subprocess will run as MUST reach disk before it is used, or the
+        next boot would re-backfill a *different* uid and orphan a workspace
+        chowned to the first — so a failed write restores the sentinel and
+        propagates.
+        """
+        from engagement_uids import UidStateError
+
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                raise UidStateError(
+                    f"backfill_allocated_uid: unknown engagement {engagement_id}"
+                )
+            if rec.allocated_uid != UNALLOCATED_UID:
+                return rec.allocated_uid
+            if self._uid_allocator is None:
+                raise UidStateError(
+                    "backfill_allocated_uid: no uid_allocator configured — "
+                    "cannot allocate a uid for a legacy record"
+                )
+            new_uid = self._uid_allocator.allocate()   # may raise UidStateError
+            prior = rec.allocated_uid
+            rec.allocated_uid = new_uid
+            task = asyncio.ensure_future(
+                self._write_tombstone_locked(strict=True))
+            cancelled: asyncio.CancelledError | None = None
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc       # settle first; re-raise after
+                except Exception:  # noqa: BLE001 — retrieved below
+                    break
+            if task.cancelled() or task.exception() is not None:
+                rec.allocated_uid = prior
+            if cancelled is not None:
+                raise cancelled
+            if task.exception() is not None:
+                raise task.exception()
+            return new_uid
+
     async def set_channel_state(
         self,
         engagement_id: str,

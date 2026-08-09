@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -15,6 +16,35 @@ except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+
+
+def _tmp_allocator():
+    """A reconstructed ``UidAllocator`` bound to throwaway tmp counter/passwd/
+    group files, so backfill (and the NSS-identity regeneration) in boot replay
+    can allocate a real uid for a legacy (``UNALLOCATED_UID``) record without
+    touching the container's real ``/etc``. Containment Stage 2 (Task 10)."""
+    from engagement_uids import UidAllocator
+
+    d = tempfile.mkdtemp(prefix="uidalloc-")
+    passwd = os.path.join(d, "passwd")
+    group = os.path.join(d, "group")
+    open(passwd, "w").close()          # ensure_identity reads these
+    open(group, "w").close()
+    alloc = UidAllocator(
+        os.path.join(d, "counter.json"), passwd_path=passwd, group_path=group)
+    alloc.reconstruct(known_uids=[], dir_owner_uids=[])
+    return alloc
+
+
+@pytest.fixture(autouse=True)
+def _noop_chown(monkeypatch):
+    """Containment Stage 2 (Task 10): boot replay chowns each resumed
+    workspace to its allocated uid as the last write before start. A unit test
+    runs as a non-root user and cannot ``os.chown`` to uid 200000+, so patch
+    the recursive chown to a no-op. Tests that need to ASSERT the chown target
+    re-patch it themselves to capture calls (a later monkeypatch wins)."""
+    from drivers import workspace
+    monkeypatch.setattr(workspace, "chown_workspace", lambda *a, **k: None)
 
 
 @pytest.fixture(autouse=True)
@@ -48,9 +78,16 @@ def _boot_driver():
     return driver
 
 
-async def _make_registry(records):
+async def _make_registry(records, *, uid_allocator=None):
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path="/tmp/x-nope.json", bus=None)
+    reg = EngagementRegistry(
+        tombstone_path=tempfile.mkstemp(prefix="tomb-", suffix=".json")[1],
+        bus=None,
+        # Containment Stage 2 (Task 10): boot replay backfills a real uid for
+        # each legacy (UNALLOCATED_UID) record via this allocator before it
+        # renders/starts the service. Default to a throwaway tmp allocator.
+        uid_allocator=uid_allocator or _tmp_allocator(),
+    )
     for r in records:
         reg._records[r.id] = r
     return reg
@@ -813,8 +850,12 @@ async def test_replay_b_refresh_failure_refuses_with_checked_teardown(
         registry=reg, driver=driver, executor_registry=_exec_reg_any(defn),
         engagements_root=str(ws_root))
 
-    ensure_down.assert_awaited_once()
-    assert ensure_down.await_args.kwargs["engagement_id"] == "keep1"
+    # Containment Stage 2 (Task 10): the down-first scandir sweep downs keep1
+    # once (step 0), then the refresh-failure refusal cycle downs it again —
+    # exactly two, both for keep1.
+    assert ensure_down.await_count == 2
+    assert all(c.kwargs["engagement_id"] == "keep1"
+               for c in ensure_down.await_args_list)
     assert removed == ["keep1"]
     assert start_ids == []
     assert bg.call_count == 0
@@ -1002,7 +1043,7 @@ async def test_replay_true_exhaustion_marks_error_via_real_registry(
     defn = _brief_defn(tmp_path)
     ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     reg._records["keep1"] = _brief_rec("keep1", _BRIEF)
     driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
 
@@ -1064,8 +1105,15 @@ async def test_replay_b2_stale_migration_removal_fails_refuses_closed(
     start_ids: list[str] = []
     async def fake_start(*, engagement_id): start_ids.append(engagement_id)
     monkeypatch.setattr(s6_rc, "start_service", fake_start)
-    # Down unconfirmable → mark_error path exercised on the real registry.
-    monkeypatch.setattr(s6_rc, "ensure_service_down", AsyncMock(return_value=False))
+    # Containment Stage 2 (Task 10): the step-0 scandir sweep CONFIRMS keep1
+    # down (first call), so migration proceeds to the removal-failure path;
+    # THAT path's checked teardown is then unconfirmable (subsequent calls
+    # False) → mark_error(refuse_migration_failed) on the real registry.
+    _down_n = {"n": 0}
+    async def _seq_down(*, engagement_id, **kw):
+        _down_n["n"] += 1
+        return _down_n["n"] == 1
+    monkeypatch.setattr(s6_rc, "ensure_service_down", _seq_down)
     write_ids: list[str] = []
     monkeypatch.setattr(
         s6_rc, "write_service_dir",
@@ -1075,7 +1123,7 @@ async def test_replay_b2_stale_migration_removal_fails_refuses_closed(
     exec_reg = _exec_reg_any(defn)
     ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     reg._records["keep1"] = _brief_rec("keep1", _BRIEF)
     # #335 + Task 6: this test is about the STALE-PAIR migration refusal, so
     # give the workspace an already-current credential AND settings.json —
@@ -1133,7 +1181,7 @@ async def test_replay_b2_partial_removal_main_survives_refuses_closed(
     ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
 
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     reg._records["keep1"] = _brief_rec("keep1", _BRIEF)
     driver = _boot_driver(); bg = MagicMock(); driver._spawn_background_tasks = bg
 
@@ -1248,9 +1296,12 @@ async def test_fast_path_settings_diff_drives_confirmed_cycle(
 
     start_calls = _fast_path_env(monkeypatch, tmp_path)
     down_calls: list[str] = []
-    async def fake_down(*, engagement_id):
+    # Containment Stage 2 (Task 10): the step-0 scandir sweep CONFIRMS keep1
+    # down (first call), so migration proceeds; the settings-diff workspace
+    # cycle is then the UNCONFIRMABLE one (subsequent calls False) → refuse.
+    async def fake_down(*, engagement_id, **kw):
         down_calls.append(engagement_id)
-        return False   # unconfirmable — must refuse, not silently rewrite
+        return len(down_calls) == 1
     monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
     monkeypatch.setattr(
         s6_rc, "remove_service_dir",
@@ -1753,7 +1804,7 @@ async def test_credential_migration_rewrites_and_cycles_the_service(
 
     ws_root = tmp_path / "eng"
     (ws_root / "keep1").mkdir(parents=True)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     rec = _brief_rec("keep1", _BRIEF)
     rec.origin = {}                      # brief-less: pure credential path
     rec.auth_token = "tok-fresh"
@@ -1807,7 +1858,7 @@ async def test_stale_url_with_matching_token_rewrites_and_cycles(
 
     ws_root = tmp_path / "eng"
     (ws_root / "keep1").mkdir(parents=True)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     rec = _brief_rec("keep1", _BRIEF)
     rec.origin = {}
     rec.auth_token = "tok-same"
@@ -1857,7 +1908,7 @@ async def test_unchanged_credential_neither_rewrites_nor_cycles(
 
     ws_root = tmp_path / "eng"
     (ws_root / "keep1").mkdir(parents=True)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     rec = _brief_rec("keep1", _BRIEF)
     rec.origin = {}
     rec.auth_token = "tok-same"
@@ -1913,7 +1964,7 @@ async def test_mcp_json_symlink_refused_forces_regenerate(
     ws_root = tmp_path / "eng"
     ws_dir = ws_root / "keep1"
     ws_dir.mkdir(parents=True)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     rec = _brief_rec("keep1", _BRIEF)
     rec.origin = {}
     rec.auth_token = "tok-same"
@@ -1978,7 +2029,7 @@ async def test_settings_json_symlink_refused_forces_regenerate(
     ws_root = tmp_path / "eng"
     ws_dir = ws_root / "keep1"
     ws_dir.mkdir(parents=True)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     rec = _brief_rec("keep1", _BRIEF)
     rec.origin = {}
     rec.auth_token = "tok-same"
@@ -2059,7 +2110,7 @@ async def test_unconfirmed_stop_after_credential_refresh_refuses_resume(
 
     ws_root = tmp_path / "eng"
     (ws_root / "keep1").mkdir(parents=True)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None, uid_allocator=_tmp_allocator())
     rec = _brief_rec("keep1", _BRIEF)
     rec.origin = {}
     rec.auth_token = "tok-fresh"
@@ -2198,7 +2249,7 @@ async def test_brief_record_missing_workspace_takes_m7_refusal(
     start_calls = _fast_path_env(monkeypatch, tmp_path)
     down_calls: list[str] = []
 
-    async def fake_down(*, engagement_id):
+    async def fake_down(*, engagement_id, **kw):
         down_calls.append(engagement_id)
         return True
 
@@ -2215,8 +2266,345 @@ async def test_brief_record_missing_workspace_takes_m7_refusal(
         engagements_root=str(tmp_path / "eng"),   # workspace ABSENT
     )
     assert start_calls == []
-    assert down_calls == []                       # no checked teardown ran
+    # Containment Stage 2 (Task 10): the step-0 scandir sweep downs the lingering
+    # service ONCE (a missing-workspace engagement's root service must not be
+    # left up); the M7 refusal itself runs NO further checked teardown.
+    assert down_calls == ["keep1"]
     # The M7 refusal retains the record and its service sources for diagnosis.
     assert reg.get("keep1").status == "active"
     svc_root = Path(s6_rc.ENGAGEMENT_SOURCES_ROOT)
     assert (svc_root / "engagement-keep1").exists()
+
+
+# ---------------------------------------------------------------------------
+# Containment Stage 2 (Task 10): scandir-first confirmed-down migration + uid
+# backfill + fail-closed replay.
+# ---------------------------------------------------------------------------
+
+
+async def test_scandir_down_covers_service_without_undergoing_record(
+    monkeypatch, tmp_path,
+):
+    """Design §6: the down-FIRST step is scandir-driven, NOT record-driven. A
+    service pair whose record went TERMINAL *before* driver.cancel() ran
+    (crash-before-cancel) leaves a supervised ROOT service that no UNDERGOING
+    loop would touch. Replay must ``ensure_service_down`` that orphan BEFORE
+    migrating anything, independent of registry status."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    # Orphan pair present in the sources, but its record is TERMINAL (completed)
+    # — the crash-before-cancel case.
+    (svc_root / "engagement-orphan1").mkdir()
+    (svc_root / "engagement-orphan1" / "type").write_text("longrun\n")
+    # A live UNDERGOING engagement alongside it.
+    (svc_root / "engagement-keep1").mkdir()
+    (svc_root / "engagement-keep1" / "type").write_text("longrun\n")
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+
+    def fake_write(**kw):
+        (svc_root / f"engagement-{kw['engagement_id']}").mkdir(exist_ok=True)
+    monkeypatch.setattr(s6_rc, "write_service_dir", fake_write)
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    monkeypatch.setattr(s6_rc, "start_service", AsyncMock())
+
+    down_ids: list[str] = []
+    async def fake_down(*, engagement_id, **kw):
+        down_ids.append(engagement_id)
+        return True
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+
+    reg = await _make_registry(
+        [_rec("keep1"), _rec("orphan1", status="completed")])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"
+    (ws_root / "keep1").mkdir(parents=True)
+    (ws_root / "orphan1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # The TERMINAL orphan's service was confirmed down by the scandir sweep,
+    # even though it is not an UNDERGOING record.
+    assert "orphan1" in down_ids
+    # The live one was also downed (every enumerated service is downed first).
+    assert "keep1" in down_ids
+
+
+async def test_scandir_unconfirmed_down_refuses_and_never_starts(
+    monkeypatch, tmp_path,
+):
+    """Design §6 / fail-closed: a service that cannot be confirmed down blocks
+    its own engagement — kept durably down + mark_error, NEVER re-started as
+    root. Here the UNDERGOING record's own pre-migration down cannot be
+    confirmed, so it must be refused (no start_service) and marked error."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_registry import EngagementRegistry
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    (svc_root / "engagement-keep1").mkdir()
+    (svc_root / "engagement-keep1" / "type").write_text("longrun\n")
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    # Its pre-migration down can NEVER be confirmed.
+    monkeypatch.setattr(
+        s6_rc, "ensure_service_down", AsyncMock(return_value=False))
+
+    reg = EngagementRegistry(
+        tombstone_path=str(tmp_path / "tomb.json"), bus=None,
+        uid_allocator=_tmp_allocator())
+    reg._records["keep1"] = _rec("keep1")
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # Never started as root, and marked error (fail-closed).
+    assert started == []
+    assert reg.get("keep1").status == "error"
+
+
+async def test_legacy_undergoing_record_backfills_uid_and_renders_with_it(
+    monkeypatch, tmp_path,
+):
+    """Design §6.1: a legacy UNDERGOING record (allocated_uid == sentinel) has
+    its uid backfilled + persisted, and the re-rendered run script drops to
+    exactly that uid via setpriv."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_uids import UID_BASE, UNALLOCATED_UID
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()   # empty → heal path renders
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    write_calls: list[dict] = []
+    def fake_write(**kw):
+        write_calls.append(kw)
+        (svc_root / f"engagement-{kw['engagement_id']}").mkdir()
+    monkeypatch.setattr(s6_rc, "write_service_dir", fake_write)
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    rec = _rec("keep1")
+    assert rec.allocated_uid == UNALLOCATED_UID       # legacy record
+    reg = await _make_registry([rec], uid_allocator=_tmp_allocator())
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # uid backfilled to a real value ON the record...
+    assert rec.allocated_uid >= UID_BASE
+    # ...and persisted to the tombstone (strict).
+    saved = json.loads(Path(reg._tombstone_path).read_text())
+    assert any(r["id"] == "keep1" and r["allocated_uid"] == rec.allocated_uid
+               for r in saved)
+    # ...and the rendered run script drops to EXACTLY that uid via setpriv.
+    assert len(write_calls) == 1
+    run_script = write_calls[0]["run_script"]
+    assert "setpriv" in run_script
+    assert f"--reuid {rec.allocated_uid}" in run_script
+    assert f"--regid {rec.allocated_uid}" in run_script
+    assert started == ["keep1"]
+
+
+async def test_replay_failure_leaves_services_down_not_up(monkeypatch, tmp_path):
+    """Design §6d: a heal that fails part-way (render raises) must NEVER start
+    the not-yet-migrated service — it stays DOWN (the step-0 scandir sweep
+    already downed it), never resurrected as root."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc, workspace as ws_mod
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    # A stale (pre-Stage-2) pair present so replay takes the render/migration
+    # path — where we force the render to blow up.
+    (svc_root / "engagement-keep1").mkdir()
+    (svc_root / "engagement-keep1" / "type").write_text("longrun\n")
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    down_ids: list[str] = []
+    async def fake_down(*, engagement_id, **kw):
+        down_ids.append(engagement_id)
+        return True
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+
+    # Force the run-script render to raise mid-migration.
+    def boom(**kw):
+        raise RuntimeError("render blew up")
+    monkeypatch.setattr(ws_mod, "render_run_script", boom)
+
+    reg = await _make_registry([_rec("keep1")])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # It was downed first (step 0) and NEVER started despite the render failure.
+    assert "keep1" in down_ids
+    assert started == []
+
+
+async def test_uid_shared_with_terminal_record_refuses_resume(
+    monkeypatch, tmp_path,
+):
+    """Sol+Terra review r1: uid uniqueness spans the WHOLE registry, not just
+    this boot's resumes. An UNDERGOING record that (via a corrupt/torn
+    tombstone) shares its allocated_uid with a TERMINAL/retained record must be
+    refused — never chowned/started onto a uid whose retained sibling workspace
+    it could then read."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_uids import UID_BASE
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    write_ids: list[str] = []
+    def fake_write(**kw):
+        write_ids.append(kw["engagement_id"])
+        (svc_root / f"engagement-{kw['engagement_id']}").mkdir(exist_ok=True)
+    monkeypatch.setattr(s6_rc, "write_service_dir", fake_write)
+
+    shared = UID_BASE + 7
+    under = _rec("under1")                    # UNDERGOING
+    under.allocated_uid = shared
+    term = _rec("term1", status="completed")  # TERMINAL, retained
+    term.allocated_uid = shared              # SAME uid — corruption on disk
+    reg = await _make_registry([under, term])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "under1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # The undergoing record was refused — never rendered, never started onto the
+    # uid its terminal sibling still owns.
+    assert started == []
+    assert "under1" not in write_ids
+
+
+async def test_uid_owned_by_orphan_workspace_dir_refuses_resume(
+    monkeypatch, tmp_path,
+):
+    """Sol review r2: uid uniqueness also spans ON-DISK workspaces whose record
+    was pruned/lost. A resumed record whose uid owns a workspace directory
+    belonging to a DIFFERENT engagement id (record-invisible) must be refused —
+    never started onto a uid that could read that sibling workspace."""
+    import casa_core
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_uids import UID_BASE
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    write_ids: list[str] = []
+    def fake_write(**kw):
+        write_ids.append(kw["engagement_id"])
+        (svc_root / f"engagement-{kw['engagement_id']}").mkdir(exist_ok=True)
+    monkeypatch.setattr(s6_rc, "write_service_dir", fake_write)
+
+    shared = UID_BASE + 11
+    # A non-root test cannot os.chown a real dir to uid 200011, so fake the
+    # on-disk owner map: uid `shared` owns a workspace for the pruned id "ghost".
+    monkeypatch.setattr(
+        casa_core, "_workspace_owner_ids",
+        lambda root: {shared: {"ghost"}})
+
+    rec = _rec("under1")
+    rec.allocated_uid = shared               # collides with the orphan dir owner
+    reg = await _make_registry([rec])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "under1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    assert started == []
+    assert "under1" not in write_ids
+
+
+async def test_missing_setpriv_refuses_all_resumes_not_crashloop(
+    monkeypatch, tmp_path,
+):
+    """Design §5 / §6(g): setpriv removed from the image ⇒ every claude_code
+    resume is REFUSED (kept down, marked error), NOT re-rendered into a
+    ``set -e`` script whose ``exec setpriv …`` would fail into an s6 crash-loop,
+    and never started as root. A single boot-level presence gate."""
+    import shutil as _shutil
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    # A stale legacy pair present — without the gate this record would be
+    # re-rendered + started (that is exactly what must NOT happen).
+    (svc_root / "engagement-keep1").mkdir()
+    (svc_root / "engagement-keep1" / "type").write_text("longrun\n")
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    write_ids: list[str] = []
+    monkeypatch.setattr(
+        s6_rc, "write_service_dir",
+        lambda **kw: write_ids.append(kw["engagement_id"]))
+    down_ids: list[str] = []
+    async def fake_down(*, engagement_id, **kw):
+        down_ids.append(engagement_id)
+        return True
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+
+    # setpriv is GONE from the image (present for everything else).
+    _orig_which = _shutil.which
+    monkeypatch.setattr(
+        _shutil, "which",
+        lambda name, *a, **k: None if name == "setpriv"
+        else _orig_which(name, *a, **k))
+
+    reg = await _make_registry([_rec("keep1")])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # Refused, not crash-looped: no re-render, no start; step 0 kept it down;
+    # marked error for operator visibility.
+    assert started == []
+    assert write_ids == []
+    assert "keep1" in down_ids
+    assert reg.get("keep1").status == "error"
+    assert reg.get("keep1").origin["error_kind"] == "refuse_uid_drop_failed"

@@ -49,6 +49,52 @@ def _log_service_name(engagement_id: str) -> str:
     return f"engagement-{engagement_id}{LOG_SERVICE_SUFFIX}"
 
 
+def _engagement_id_from_service_name(name: str) -> str | None:
+    """Parse the engagement id out of a service directory / scandir entry name.
+
+    Recognises both the main (``engagement-<id>``) and logger
+    (``engagement-<id>-log``) forms, returning ``<id>`` for either. Names that
+    are not an engagement service (no ``engagement-`` prefix) return ``None``.
+    Engagement ids are hex UUIDs, so the ``-log`` suffix is unambiguous.
+    """
+    prefix = "engagement-"
+    if not name.startswith(prefix):
+        return None
+    return name[len(prefix):].removesuffix(LOG_SERVICE_SUFFIX)
+
+
+def iter_engagement_service_ids(
+    *,
+    svc_root: str = ENGAGEMENT_SOURCES_ROOT,
+    scandir_root: str = SERVICE_SCANDIR_ROOT,
+) -> set[str]:
+    """Every engagement id that has an s6 presence — a source-definition dir
+    under ``svc_root`` OR a live supervised scandir entry under
+    ``scandir_root`` (the UNION of both).
+
+    Containment Stage 2 boot replay (design §6): the down-FIRST migration must
+    confirm EVERY existing engagement service down before it migrates anything —
+    including a service whose registry record went terminal *before*
+    ``driver.cancel()`` ran (crash-before-cancel), which no registry-status loop
+    would touch. That orphan still supervises a ROOT ``claude`` CLI, so it is
+    enumerated here by scanning the filesystem/scandir directly, independent of
+    the registry. Both roots are read best-effort: a missing root contributes
+    nothing (fresh boot, or ``svc_root`` never created).
+    """
+    ids: set[str] = set()
+    for root in (svc_root, scandir_root):
+        try:
+            entries = os.scandir(root)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        with entries as it:
+            for entry in it:
+                eid = _engagement_id_from_service_name(entry.name)
+                if eid:
+                    ids.add(eid)
+    return ids
+
+
 def _emit_longrun(
     svc_dir: Path, *, run_script: str, depends_on: list[str],
 ) -> None:
@@ -137,14 +183,22 @@ def service_pair_complete(*, svc_root: str, engagement_id: str) -> bool:
     )
 
 
-# A run script is "current" (v0.75.0+) iff it carries BOTH streaming markers:
-# the pre-exec ``casa_control`` spawn NDJSON frame AND the ``--output-format
-# stream-json`` CLI flag. v0.75 message-granularity streaming needs the two
-# together — the spawn frame arms the driver's _InboundSpool and the CLI flag
-# makes the process actually emit the NDJSON the relay consumes. A script with
-# only one is half-wired and still stale; a pre-v0.75 script has neither. Boot
-# replay uses this to migrate stale pairs.
-_CURRENT_RUN_MARKERS = ("casa_control", "--output-format stream-json")
+# A run script is "current" iff it carries ALL of these markers:
+#   - the pre-exec ``casa_control`` spawn NDJSON frame (v0.75.0),
+#   - the ``--output-format stream-json`` CLI flag (v0.75.0), and
+#   - the ``setpriv`` uid+cap-drop wrapper on the final exec (containment
+#     Stage 2, v0.170.0).
+# v0.75 message-granularity streaming needs the first two together — the spawn
+# frame arms the driver's _InboundSpool and the CLI flag makes the process
+# actually emit the NDJSON the relay consumes. A script with only one is
+# half-wired and still stale; a pre-v0.75 script has neither. The ``setpriv``
+# marker makes every PRE-Stage-2 run script (which exec'd ``claude`` directly as
+# ROOT) read stale, so boot replay re-renders it into the uid-dropped form and
+# migrates the in-flight engagement off root. Boot replay uses this to migrate
+# stale pairs.
+_CURRENT_RUN_MARKERS = (
+    "casa_control", "--output-format stream-json", "setpriv",
+)
 
 
 def run_script_is_stale(*, svc_root: str, engagement_id: str) -> bool:

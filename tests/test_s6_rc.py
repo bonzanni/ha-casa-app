@@ -865,11 +865,22 @@ class TestDirectKillpg:
 
 
 class TestRunScriptIsStale:
-    """B1 (Sol diff r2): v0.75.0 streaming requires BOTH markers
-    (``casa_control`` AND ``--output-format stream-json``). A script carrying
-    only one is still stale, and a missing/unreadable run file fails CLOSED
-    (stale=True) so boot replay re-plants rather than resuming an unarmed pair.
+    """B1 (Sol diff r2): v0.75.0 streaming requires the ``casa_control`` AND
+    ``--output-format stream-json`` markers; containment Stage 2 (v0.170.0)
+    adds a third — ``setpriv`` — so every PRE-Stage-2 run script (which exec'd
+    ``claude`` directly as root) reads STALE and boot replay re-renders it into
+    the uid-dropped form. A script missing ANY marker is stale, and a
+    missing/unreadable run file fails CLOSED (stale=True) so boot replay
+    re-plants rather than resuming an unarmed / un-contained pair.
     """
+
+    # A run script carrying all three current markers (streaming pair + setpriv
+    # uid drop). Used by the "fresh" and "unreadable-but-fresh" cases.
+    _CURRENT = (
+        "#!/bin/sh\ncasa_control spawn\n"
+        "exec setpriv --reuid 200001 --regid 200001 --clear-groups "
+        "-- claude --print --output-format stream-json\n"
+    )
 
     def _write_run(self, svc_root: Path, eid: str, run_text: str) -> None:
         from drivers.s6_rc import _main_service_name
@@ -891,12 +902,20 @@ class TestRunScriptIsStale:
             "#!/bin/sh\ncasa_control spawn\nexec claude --print\n")
         assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e2")
 
-    async def test_both_markers_is_fresh(self, tmp_path):
+    async def test_legacy_no_setpriv_script_is_stale(self, tmp_path):
+        # Containment Stage 2: a PRE-Stage-2 script has both streaming markers
+        # but NO setpriv wrapper (it ran claude as root) → stale, so replay
+        # migrates it to the uid-dropped form.
         from drivers.s6_rc import run_script_is_stale
         self._write_run(
-            tmp_path, "e3",
+            tmp_path, "e2b",
             "#!/bin/sh\ncasa_control spawn\n"
             "exec claude --print --output-format stream-json\n")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e2b")
+
+    async def test_all_three_markers_is_fresh(self, tmp_path):
+        from drivers.s6_rc import run_script_is_stale
+        self._write_run(tmp_path, "e3", self._CURRENT)
         assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e3")
 
     async def test_missing_run_file_is_stale(self, tmp_path):
@@ -912,13 +931,10 @@ class TestRunScriptIsStale:
 
     async def test_unreadable_run_file_is_stale(self, tmp_path, monkeypatch):
         from drivers import s6_rc
-        self._write_run(
-            tmp_path, "e5",
-            "#!/bin/sh\ncasa_control spawn\n"
-            "exec claude --print --output-format stream-json\n")
+        self._write_run(tmp_path, "e5", self._CURRENT)
 
-        # Even a BOTH-marker script must classify stale if the file cannot be
-        # read (permission/OSError) — patch Path.read_text to raise.
+        # Even a current (all-marker) script must classify stale if the file
+        # cannot be read (permission/OSError) — patch Path.read_text to raise.
         real_read_text = Path.read_text
 
         def _boom(self, *a, **k):
@@ -928,6 +944,45 @@ class TestRunScriptIsStale:
 
         monkeypatch.setattr(Path, "read_text", _boom)
         assert s6_rc.run_script_is_stale(svc_root=str(tmp_path), engagement_id="e5")
+
+
+class TestIterEngagementServiceIds:
+    """Containment Stage 2 (Task 10): the scandir-first down migration
+    enumerates every engagement id with an s6 presence — a source-definition
+    dir OR a live scandir entry — as the UNION of both roots, so a
+    crash-before-cancel orphan (source dir gone but scandir entry lingering, or
+    vice versa) is still caught and driven down before migration."""
+
+    async def test_unions_source_and_scandir(self, tmp_path):
+        from drivers.s6_rc import (
+            _log_service_name, _main_service_name, iter_engagement_service_ids,
+        )
+        svc = tmp_path / "svc"
+        scan = tmp_path / "scan"
+        svc.mkdir()
+        scan.mkdir()
+        # In sources only.
+        (svc / _main_service_name("src-only")).mkdir()
+        (svc / _log_service_name("src-only")).mkdir()   # -log parses to same id
+        # In both.
+        (svc / _main_service_name("both")).mkdir()
+        (scan / _main_service_name("both")).mkdir()
+        # In scandir only (crash-before-cancel orphan whose source was swept).
+        (scan / _main_service_name("scan-only")).mkdir()
+        # A foreign dir under each root must be ignored.
+        (svc / "s6rc-oneshot-runner").mkdir()
+        (scan / "casa-mcp").mkdir()
+
+        ids = iter_engagement_service_ids(
+            svc_root=str(svc), scandir_root=str(scan))
+        assert ids == {"src-only", "both", "scan-only"}
+
+    async def test_missing_roots_yield_empty(self, tmp_path):
+        from drivers.s6_rc import iter_engagement_service_ids
+        ids = iter_engagement_service_ids(
+            svc_root=str(tmp_path / "nope-svc"),
+            scandir_root=str(tmp_path / "nope-scan"))
+        assert ids == set()
 
 
 class TestServiceDirsAbsent:

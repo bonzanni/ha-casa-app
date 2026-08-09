@@ -88,6 +88,74 @@ class TestRegistryInitAndLoad:
         assert any("corrupt" in r.message.lower() for r in caplog.records)
 
 
+class TestBackfillAllocatedUid:
+    """Containment Stage 2 (Task 10): boot replay backfills a real OS uid onto a
+    legacy claude_code record via ``backfill_allocated_uid``. Fail-closed with
+    no allocator; idempotent when a real uid is already present."""
+
+    def _tmp_allocator(self, tmp_path):
+        from engagement_uids import UidAllocator
+        d = tmp_path / "uidalloc"; d.mkdir()
+        passwd = str(d / "passwd"); group = str(d / "group")
+        open(passwd, "w").close(); open(group, "w").close()
+        alloc = UidAllocator(
+            str(d / "c.json"), passwd_path=passwd, group_path=group)
+        alloc.reconstruct(known_uids=[], dir_owner_uids=[])
+        return alloc
+
+    async def test_backfills_and_persists(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UID_BASE, UNALLOCATED_UID
+
+        path = str(tmp_path / "e.json")
+        reg = EngagementRegistry(
+            tombstone_path=path, bus=None,
+            uid_allocator=self._tmp_allocator(tmp_path))
+        rec = await reg.create(
+            kind="executor", role_or_type="x", driver="claude_code",
+            task="t", origin={}, topic_id=1)
+        # create() already allocated one; force the legacy sentinel to exercise
+        # the backfill path directly.
+        rec.allocated_uid = UNALLOCATED_UID
+        uid = await reg.backfill_allocated_uid(rec.id)
+        assert uid >= UID_BASE
+        assert rec.allocated_uid == uid
+        # Persisted to the tombstone (strict).
+        saved = json.loads(Path(path).read_text())
+        assert any(r["id"] == rec.id and r["allocated_uid"] == uid
+                   for r in saved)
+
+    async def test_idempotent_when_uid_already_real(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UID_BASE
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            uid_allocator=self._tmp_allocator(tmp_path))
+        rec = await reg.create(
+            kind="executor", role_or_type="x", driver="claude_code",
+            task="t", origin={}, topic_id=1)
+        first = rec.allocated_uid
+        assert first >= UID_BASE
+        # A record that already carries a real uid is returned unchanged — no
+        # second allocation.
+        again = await reg.backfill_allocated_uid(rec.id)
+        assert again == first
+
+    async def test_fail_closed_without_allocator(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UidStateError, UNALLOCATED_UID
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None)  # no allocator
+        rec = await reg.create(
+            kind="executor", role_or_type="x", driver="claude_code",
+            task="t", origin={}, topic_id=1)
+        assert rec.allocated_uid == UNALLOCATED_UID
+        with pytest.raises(UidStateError):
+            await reg.backfill_allocated_uid(rec.id)
+
+
 class TestRegistryCreate:
     async def test_create_assigns_uuid_and_indexes_topic(self, tmp_path):
         from engagement_registry import EngagementRegistry
