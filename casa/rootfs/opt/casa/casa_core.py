@@ -620,6 +620,37 @@ async def replay_undergoing_engagements(
                         "%s failed: %s", rec.id[:8], exc,
                     )
 
+        # 0c. Re-fold live /proc uids into the uid high-water NOW that the
+        # down-first sweep has confirmed every engagement service down (S1
+        # code-gate r3 — TOCTOU). The boot-time uid reconstruct() ran BEFORE
+        # this sweep, so a legacy engagement could have setsid/double-forked a
+        # non-root survivor under a not-yet-issued uid AFTER that scan but
+        # BEFORE its service was killed here — the boot scan would have missed
+        # it. With every legacy service now confirmed down (step 0), no service
+        # can spawn a NEW survivor past this point, and this re-scan captures
+        # any that escaped earlier, so the high-water folds it in and no
+        # backfill below can reissue a uid a live process still holds.
+        # Fail-CLOSED: an unscannable /proc (or a never-reconstructed allocator)
+        # sets ``_refold_failed``, which refuses every resume NEEDING a fresh
+        # uid allocation (a legacy record's backfill) rather than allocating
+        # against a stale/unknown high-water. (A legacy ROOT survivor that
+        # escapes the sweep and STAYS root is a separate pre-existing class — a
+        # root process reads siblings regardless of uid — closed by Stage 3
+        # mount/AppArmor, not this uid-isolation fix.) A missing allocator (unit
+        # fakes) skips the refold; production always wires one.
+        _refold_failed = False
+        if _uid_allocator is not None:
+            try:
+                _uid_allocator.refold_live_uids()
+            except UidStateError as exc:
+                _refold_failed = True
+                logger.critical(
+                    "boot replay: live /proc uid refold failed (%s) — every "
+                    "resume needing a fresh uid allocation will be REFUSED this "
+                    "boot (fail-closed) rather than risk reissuing a uid held "
+                    "by a live survivor process", exc,
+                )
+
         # 1. Orphan sweep — dirs for non-UNDERGOING engagements, remove them.
         removed_orphans = s6_rc.sweep_orphan_service_dirs(
             svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
@@ -1008,6 +1039,19 @@ async def replay_undergoing_engagements(
                 # the boot reconstruct failed so allocate() raises) refuses the
                 # resume rather than launch a root/unallocated CLI.
                 if rec.allocated_uid == UNALLOCATED_UID:
+                    # S1 r3: if the post-sweep live-uid refold could not run,
+                    # the high-water is not confirmed against live survivors —
+                    # refuse THIS resume (it needs a fresh allocation) rather
+                    # than backfill a uid that a setsid survivor may still hold.
+                    if _refold_failed:
+                        await _refuse_brief_resume(
+                            rec,
+                            "live /proc uid refold failed earlier this boot — "
+                            "refusing to allocate a uid against an unconfirmed "
+                            "high-water",
+                            kind="refuse_uid_alloc_failed",
+                        )
+                        continue
                     try:
                         await registry.backfill_allocated_uid(rec.id)
                     except Exception as exc:  # noqa: BLE001 — fail-closed

@@ -68,6 +68,43 @@ def test_proc_scan_failure_refuses_fail_closed(tmp_path):
         a.reconstruct(known_uids=[], dir_owner_uids=[])
 
 
+def test_refold_live_uids_raises_high_water(tmp_path):
+    # S1 r3: a survivor appearing AFTER the initial reconstruct is folded in by
+    # the post-sweep refold, so a later allocate cannot reissue its uid.
+    live = {"uids": set()}
+    a = UidAllocator(
+        str(tmp_path / "uids.json"),
+        passwd_path=str(tmp_path / "passwd"), group_path=str(tmp_path / "group"),
+        proc_scanner=lambda: set(live["uids"]),
+    )
+    a.reconstruct(known_uids=[], dir_owner_uids=[])   # clean at boot
+    assert a._hw == UID_BASE - 1
+    live["uids"] = {UID_BASE + 1}                      # survivor escapes later
+    a.refold_live_uids()
+    assert a.allocate() == UID_BASE + 2                # strictly above survivor
+
+
+def test_refold_persisted_survives_reload(tmp_path):
+    p = str(tmp_path / "uids.json")
+    a = UidAllocator(p, passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"),
+                     proc_scanner=lambda: {UID_BASE + 5})
+    a.reconstruct([], [])
+    a.refold_live_uids()          # folds 200005, persists
+    b = UidAllocator(p, proc_scanner=_NO_LIVE); b.reconstruct([], [])
+    assert b.allocate() == UID_BASE + 6   # persisted high-water carried over
+
+
+def test_refold_unscannable_proc_refuses_fail_closed(tmp_path):
+    def _boom():
+        raise OSError("/proc unavailable")
+    a = UidAllocator(str(tmp_path / "uids.json"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    a._proc_scanner = _boom
+    with pytest.raises(UidStateError):
+        a.refold_live_uids()
+
+
 def test_scan_proc_uids_reads_real_uid_ge_base(tmp_path):
     from engagement_uids import scan_proc_uids
     proc = tmp_path / "proc"

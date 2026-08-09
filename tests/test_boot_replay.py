@@ -2542,6 +2542,110 @@ async def test_legacy_undergoing_record_backfills_uid_and_renders_with_it(
     assert started == ["keep1"]
 
 
+def _refold_allocator(tmp_path, proc_scanner):
+    """A reconstructed allocator with an injected (call-ordered) proc scanner,
+    for the S1 r3 TOCTOU tests. Reconstruct runs at construction with whatever
+    the scanner returns THEN; the test mutates the scanner's backing state
+    before replay so the post-sweep refold sees a different live-uid set."""
+    from engagement_uids import UidAllocator
+    d = tempfile.mkdtemp(prefix="uidalloc-r3-")
+    open(os.path.join(d, "passwd"), "w").close()
+    open(os.path.join(d, "group"), "w").close()
+    alloc = UidAllocator(
+        os.path.join(d, "counter.json"),
+        passwd_path=os.path.join(d, "passwd"),
+        group_path=os.path.join(d, "group"),
+        proc_scanner=proc_scanner)
+    alloc.reconstruct(known_uids=[], dir_owner_uids=[])
+    return alloc
+
+
+async def test_refold_after_sweep_prevents_reissue_of_escaped_uid(
+    monkeypatch, tmp_path,
+):
+    """S1 code-gate r3 (TOCTOU): a non-root survivor that escapes the supervised
+    group AFTER the boot reconstruct but BEFORE the down-first sweep must not
+    have its uid reissued. The post-sweep live-uid refold folds it in, so the
+    legacy record's backfill allocates strictly ABOVE it."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_uids import UID_BASE, UNALLOCATED_UID
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()   # empty → heal path renders
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(
+        s6_rc, "write_service_dir",
+        lambda **kw: (svc_root / f"engagement-{kw['engagement_id']}").mkdir())
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    # Clean at boot reconstruct; a survivor holding 200001 appears by the time
+    # the post-sweep refold runs.
+    live = {"uids": set()}
+    alloc = _refold_allocator(tmp_path, lambda: set(live["uids"]))
+    live["uids"] = {UID_BASE + 1}
+
+    rec = _rec("keep1")
+    assert rec.allocated_uid == UNALLOCATED_UID
+    reg = await _make_registry([rec], uid_allocator=alloc)
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # The backfilled uid is strictly ABOVE the escaped survivor's 200001 —
+    # never a reissue.
+    assert rec.allocated_uid > UID_BASE + 1
+    assert started == ["keep1"]
+
+
+async def test_refold_unscannable_proc_refuses_legacy_backfill(
+    monkeypatch, tmp_path,
+):
+    """S1 code-gate r3: if the post-sweep refold cannot scan /proc, a legacy
+    record needing a fresh uid is REFUSED (never started, never backfilled
+    against an unconfirmed high-water) — fail-closed."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_uids import UNALLOCATED_UID
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    # Clean at reconstruct, then /proc becomes unscannable before the refold.
+    state = {"boom": False}
+    def scanner():
+        if state["boom"]:
+            raise OSError("/proc unavailable")
+        return set()
+    alloc = _refold_allocator(tmp_path, scanner)
+    state["boom"] = True
+
+    rec = _rec("keep1")
+    assert rec.allocated_uid == UNALLOCATED_UID
+    reg = await _make_registry([rec], uid_allocator=alloc)
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # Fail-closed: never backfilled, never started.
+    assert rec.allocated_uid == UNALLOCATED_UID
+    assert started == []
+
+
 async def test_replay_provisions_private_outbox_for_migrated_uid(
     monkeypatch, tmp_path,
 ):

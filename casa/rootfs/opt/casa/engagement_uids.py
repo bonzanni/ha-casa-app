@@ -296,6 +296,43 @@ class UidAllocator:
             self._hw = max(candidates)
             self._persist()
 
+    def refold_live_uids(self) -> None:
+        """Re-fold live ``/proc`` uids into the high-water, AFTER boot replay's
+        down-first sweep has confirmed every engagement service down.
+
+        Containment Stage 2 (S1 code-gate fix r3 — TOCTOU): :meth:`reconstruct`
+        runs at ``casa_core.main`` startup, BEFORE ``replay_undergoing_
+        engagements`` drives every existing engagement service to a confirmed
+        down. On a Stage-2 upgrade with a lost counter and legacy ROOT services
+        still alive, a legacy engagement could ``setsid``/double-fork a non-root
+        survivor under a not-yet-issued uid AFTER the boot scan ran but BEFORE
+        its service was killed — the boot scan would miss it, and a subsequent
+        backfill could reissue that live uid. Calling this once the sweep has
+        confirmed every service down closes the window: no service can spawn a
+        NEW survivor past that point, and this re-scan captures any that escaped
+        earlier, so the high-water folds it in.
+
+        Fail-closed: an unscannable ``/proc`` raises :class:`UidStateError`
+        (the caller refuses every resume needing a fresh allocation), exactly as
+        :meth:`reconstruct` does. Raising the high-water is monotonic and
+        persisted; a scan that finds no live casa uid is a no-op.
+        """
+        scanner = self._proc_scanner or scan_proc_uids
+        try:
+            proc_uids = scanner()
+        except OSError as exc:
+            raise UidStateError(
+                f"live /proc uid refold failed ({exc}) — refusing to allocate "
+                "blind to which uids are held by live processes") from exc
+        with self._lock:
+            if self._hw is None:
+                raise UidStateError("refold_live_uids() called before reconstruct()")
+            if proc_uids:
+                new_hw = max(self._hw, max(proc_uids))
+                if new_hw != self._hw:
+                    self._hw = new_hw
+                    self._persist()
+
     def allocate(self) -> int:
         """Return a fresh uid, persisting the new high-water before returning.
 
