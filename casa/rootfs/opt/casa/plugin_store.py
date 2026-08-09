@@ -1368,6 +1368,8 @@ def _stage_and_swap(*, name, repo, ref, revision, subdir, staged: Path,
             _fsync_tree(dest)
             _fsync_dir_strict(dest.parent)
             _fsync_dir_strict(Path(store_root))
+            _freeze_artifact_files(dest)
+            _ensure_parent_chain_traversable(dest, store_root)
             shutil.rmtree(staged, ignore_errors=True)
             return PublishResult(name, artifact_id, revision,
                                  manifest["version"], str(dest), manifest)
@@ -1399,6 +1401,7 @@ def _stage_and_swap(*, name, repo, ref, revision, subdir, staged: Path,
     _fsync_dir_strict(dest.parent)
     _fsync_dir_strict(Path(store_root))
     _freeze_artifact_files(dest)
+    _ensure_parent_chain_traversable(dest, store_root)
     return PublishResult(name, artifact_id, revision, manifest["version"],
                          str(dest), manifest)
 
@@ -1445,6 +1448,19 @@ def _freeze_artifact_files(root: Path) -> None:
     ignore modes anyway). Best-effort — never fails a publish; the
     /config/plugins write guards (Sol #5) are the primary barrier.
 
+    Containment stage 2, Task 11: a `--plugin-dir`-loaded artifact is read by
+    the engagement CLI process running as its OWN uid-dropped, non-root
+    identity — not root, and not the artifact's (root) owner. Preserving
+    whatever traverse/read bits the source tree happened to carry (typically
+    none beyond owner, e.g. a `0700` dir / `0600` file straight off a git
+    checkout) would make the artifact unreadable to that uid and fail
+    `--plugin-dir` load. These artifacts are immutable, root-owned, and
+    shared read-only across every engagement, so beyond stripping write bits,
+    DIRECTORIES are additionally granted o+rx/g+rx (traverse+list) and FILES
+    o+r/g+r (read) — an OR onto the existing bits, never touching exec, so an
+    already-executable file (a plugin script) keeps that exec bit and a
+    non-executable file never gains one.
+
     Sol round-3 H7: NEVER chmod through a symlink — `os.chmod(path)` follows
     symlinks, so an artifact containing `x -> /etc/passwd` would change the
     EXTERNAL target's mode. Symlinks are skipped here (and escaping symlinks are
@@ -1463,7 +1479,8 @@ def _freeze_artifact_files(root: Path) -> None:
                 try:
                     if os.path.islink(p):
                         continue
-                    os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & ~0o222)
+                    mode = stat.S_IMODE(os.lstat(p).st_mode)
+                    os.chmod(p, (mode & ~0o222) | 0o044)
                 except OSError:
                     pass
             for dn in dirs:
@@ -1471,16 +1488,51 @@ def _freeze_artifact_files(root: Path) -> None:
                 try:
                     if os.path.islink(d):
                         continue
-                    os.chmod(d, stat.S_IMODE(os.lstat(d).st_mode) & ~0o222)
+                    mode = stat.S_IMODE(os.lstat(d).st_mode)
+                    os.chmod(d, (mode & ~0o222) | 0o055)
                 except OSError:
                     pass
         # Sol v0951b-1: the walk never visits ROOT itself.
         try:
-            os.chmod(root, stat.S_IMODE(os.lstat(root).st_mode) & ~0o222)
+            mode = stat.S_IMODE(os.lstat(root).st_mode)
+            os.chmod(root, (mode & ~0o222) | 0o055)
         except OSError:
             pass
     except OSError:
         pass
+
+
+def _ensure_parent_chain_traversable(dest: Path, store_root: Path) -> None:
+    """Containment stage 2, Task 11: `_freeze_artifact_files` makes the
+    artifact directory ITSELF world-traversable, but a dropped-uid engagement
+    process reaching a `--plugin-dir` path must also be able to traverse
+    every directory ABOVE it — the plugin-store root and the plugin-name
+    directory in between — neither of which the preflight's per-artifact
+    mode check (`claude_code_driver._preflight_uid_drop`) inspects. Grants
+    o+x (traversal only, no listing, no write — `0o001`) on every directory
+    from *store_root* down to (but not including) *dest* itself. Scoped
+    strictly to the plugin-store tree: a *dest* that does not resolve under
+    *store_root* is a no-op, and this never walks upward past *store_root*.
+    Best-effort, like `_freeze_artifact_files`."""
+    try:
+        dest_r = Path(dest).resolve()
+        store_r = Path(store_root).resolve()
+        rel_parts = dest_r.relative_to(store_r).parts
+    except (OSError, ValueError):
+        return
+    current = store_r
+    chain = [current]
+    for part in rel_parts[:-1]:
+        current = current / part
+        chain.append(current)
+    for d in chain:
+        try:
+            if os.path.islink(d):
+                continue
+            mode = stat.S_IMODE(os.lstat(d).st_mode)
+            os.chmod(d, mode | 0o001)
+        except OSError:
+            pass
 
 
 def _reject_escaping_symlinks(root: Path) -> None:
@@ -1597,6 +1649,7 @@ def import_bundle(bundle_root: Path, store_root: Path = STORE_ROOT) -> list:
                                      reason_code="corrupt_artifact")
                 os.rename(tmp, dest)
                 _freeze_artifact_files(dest)         # Sol round-3 H7: freeze imports too
+                _ensure_parent_chain_traversable(dest, store_root)
             except (OSError, StoreError) as exc:
                 shutil.rmtree(tmp, ignore_errors=True)
                 code = getattr(exc, "reason_code", "import_failed")

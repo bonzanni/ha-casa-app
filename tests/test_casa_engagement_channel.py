@@ -429,3 +429,104 @@ class TestAskTool:
         for i in range(8):
             data = f"v1|engagement_ask|{rid}|{i}"
             assert len(data.encode("utf-8")) <= 64
+
+
+class TestChannelServerTransportIsTcp8100:
+    """Containment Stage 2 (Task 9): the channel server can't reach the
+    0600 root Unix socket from a uid-dropped process, so it must talk TCP
+    to svc_casa_mcp's token-authed 127.0.0.1:8100 listener instead."""
+
+    async def test_channel_server_posts_to_8100_not_unix_socket(
+        self, channel_server, monkeypatch,
+    ):
+        captured: dict = {}
+
+        class _FakeResp:
+            def raise_for_status(self):
+                pass
+
+            async def json(self):
+                return {"ok": True}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _FakeSession:
+            def __init__(self, *, connector=None, timeout=None):
+                captured["connector"] = connector
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def post(self, url, json=None):
+                captured["url"] = url
+                captured["payload"] = json
+                return _FakeResp()
+
+        monkeypatch.setattr(channel_server.aiohttp, "ClientSession", _FakeSession)
+
+        result = await channel_server._invoke_tool_for_tests(
+            "reply", {"chat_id": "x", "text": "hi"},
+        )
+
+        assert result == {"ok": True}
+        # Must NOT be a UnixConnector — must be a plain TCPConnector.
+        assert not hasattr(captured["connector"], "path"), (
+            "channel server still builds a UnixConnector — Task 9 requires "
+            "a TCPConnector to 127.0.0.1:8100"
+        )
+        assert captured["url"].startswith("http://127.0.0.1:8100/"), (
+            f"expected the channel server to POST to 127.0.0.1:8100, "
+            f"got {captured['url']!r}"
+        )
+
+    async def test_channel_ask_forward_uses_long_timeout(
+        self, channel_server, monkeypatch,
+    ):
+        """The `ask` client-side timeout must never be truncated to the
+        180s tools/call default — it must stay >= the broker's own
+        deadline (clamped_timeout + pad, up to 585s)."""
+        captured: dict = {}
+
+        class _FakeResp:
+            def raise_for_status(self):
+                pass
+
+            async def json(self):
+                return {"ok": True, "outcome": "no_answer"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _FakeSession:
+            def __init__(self, *, connector=None, timeout=None):
+                captured["timeout"] = timeout
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def post(self, url, json=None):
+                return _FakeResp()
+
+        monkeypatch.setattr(channel_server.aiohttp, "ClientSession", _FakeSession)
+
+        await channel_server._invoke_tool_for_tests(
+            "ask", {"question": "Proceed?", "options": ["A", "B"],
+                    "timeout_s": 300},
+        )
+        assert captured["timeout"].total >= 315, (
+            f"ask forward timeout {captured['timeout'].total!r} must stay "
+            ">= the client-side ask deadline, not the 180s tools/call default"
+        )

@@ -945,11 +945,13 @@ Artifact integrity rests on **content-addressing + checksum detection**: each
 artifact directory is named by a hash of its source, and its bytes are checksum-
 verified whenever the plugin snapshot is (re)loaded — a mismatch is reported
 (`corrupt_artifact`) so a tampered or damaged artifact is never silently loaded. The write guards on
-`/config/plugins` and the read-only freeze of published files are **best-effort
-defense-in-depth** — the real trust boundary is each agent's minimal tool scope,
-not a hard filesystem barrier. They are not designed to stop a deliberately
-evasive process running as root; a true filesystem/privilege boundary is a
-separate, later hardening item.
+`/config/plugins` and the read-only freeze of published files clear every write
+bit on the artifact tree. For a `claude_code` executor, that is now a real
+filesystem/privilege boundary rather than only defense-in-depth: its subprocess
+runs under its own dropped, capability-stripped OS user (see [Executor
+isolation](#executor-isolation-v01700)), which can neither write those files
+nor `chmod` them back writable. It remains best-effort for any caller class
+outside that isolation.
 
 ### Fresh install & rollback
 
@@ -1033,6 +1035,23 @@ lifetime-coupled).
   with the workspace when retention expires.
 - **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` flows via s6-overlay's `/command/with-contenv`.
   No `ANTHROPIC_API_KEY` path.
+
+### Executor isolation (v0.170.0)
+
+Each `claude_code` engagement is allocated its own dedicated, never-reused OS
+user (a monotonic uid counter, never reset or reused across restarts). Its
+workspace is `chown`ed to that user before anything is planted in it, and the
+run script's final `exec` drops privilege via `setpriv` — clearing the
+supplementary groups, emptying the capability bounding set, and setting
+`no_new_privs` — before handing off to the real `claude` CLI, which therefore
+never runs as root and can never regain a capability. An engagement is refused
+outright (never started as root, never left to crash-loop under its
+supervisor) if any part of that chain — `setpriv` itself, a valid allocated
+uid, correct workspace ownership, a matching system-user entry, or a
+readable plugin directory — cannot be established. One consequence: a
+same-container engagement can no longer read another engagement's workspace
+or credential file directly, closing that off at the filesystem level rather
+than relying only on the token check below.
 
 ### Security caveat
 

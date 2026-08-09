@@ -24,7 +24,7 @@ class TestRenderRunScript:
             engagement_id="abc12345def67890",
             permission_mode="acceptEdits",
             extra_dirs=["/share/casa-plugins-repo"],
-        )
+         uid=200005, gid=200005)
 
         assert "{ID}" not in out
         assert "{ID_SHORT}" not in out
@@ -44,7 +44,7 @@ class TestRenderRunScript:
             engagement_id="xxxxxxxxxxxxxxxx",
             permission_mode="dontAsk",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         assert "--add-dir /data/engagements/xxxxxxxxxxxxxxxx/" in out
         assert "--permission-mode dontAsk" in out
 
@@ -56,13 +56,43 @@ class TestRenderRunScript:
             permission_mode="dontAsk",
             extra_dirs=[],
             extra_unset=["MY_SECRET", "ANOTHER_TOKEN"],
-        )
+         uid=200005, gid=200005)
         # The template unsets base secrets then "{EXTRA_UNSET}" — after
         # rendering, the extras should appear in the unset command.
         assert "MY_SECRET" in out
         assert "ANOTHER_TOKEN" in out
         assert "{EXTRA_UNSET}" not in out
 
+
+    def test_render_emits_setpriv_with_uid(self):
+        """Task 6 (containment stage 2): the final exec drops privileges via
+        setpriv before handing off to claude — reuid/regid come straight
+        from the allocated uid/gid, bounding set and inh-caps cleared,
+        no_new_privs set."""
+        import re as _re
+        from drivers.workspace import render_run_script
+
+        script = render_run_script(
+            engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
+            extra_dirs=[], uid=200005, gid=200005)
+        collapsed = _re.sub(r"\s+", " ", script.replace("\\\n", " "))
+        assert (
+            "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
+            "--bounding-set -all --inh-caps -all --no-new-privs -- claude"
+        ) in collapsed
+
+    def test_render_refuses_unallocated_uid(self):
+        """Fail-closed: UNALLOCATED_UID (-1) or root (0) must never reach
+        --reuid — either would silently skip or defeat the privilege drop."""
+        from drivers.workspace import render_run_script
+        with pytest.raises(ValueError):
+            render_run_script(
+                engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
+                extra_dirs=[], uid=-1, gid=-1)
+        with pytest.raises(ValueError):
+            render_run_script(
+                engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
+                extra_dirs=[], uid=0, gid=0)
 
     def test_render_log_run_script(self):
         from drivers.workspace import render_log_run_script
@@ -90,7 +120,7 @@ class TestRenderRunScript:
             engagement_id="abcd1234-eng-id",
             permission_mode="acceptEdits",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         assert "--channels server:casa-engagement-channel" in script
         # v0.64.0: --remote-control dropped — inert headless (non-TTY stdout
         # degrades the CLI to one-shot --print; no interactive/remote session
@@ -112,13 +142,15 @@ class TestRenderRunScript:
             engagement_id=eid,
             permission_mode="acceptEdits",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         # The shell idiom (hardened v0.131.0): if .session_id exists AND its
         # content is an exact UUID, pass it as a single =-joined argv token.
         # The old unquoted `--resume $(cat ...)` word-split arbitrary file
-        # content into extra CLI flags — .session_id lives inside the
-        # engagement workspace, which the engagement's own CLI can write.
-        assert f"/data/engagements/{eid}/.session_id" in script
+        # content into extra CLI flags. Task 4 (containment stage 2):
+        # .session_id lives in the root-only control dir, never the
+        # engagement's own workspace.
+        assert f'CTL="/data/engagement-ctl/{eid}"' in script
+        assert '$CTL/.session_id' in script
         assert '=~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' in script
         assert 'RESUME_ARGS=("--resume=$SID")' in script
         assert '"${RESUME_ARGS[@]}"' in script
@@ -151,16 +183,22 @@ class TestRunScriptResumeArgvBehavior:
             engagement_id=self.EID,
             permission_mode="acceptEdits",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         ws = tmp_path / "ws"
         (ws / ".home").mkdir(parents=True)
-        # Re-root the workspace path and neutralize the two infra excs that
-        # need container facilities (the stdin FIFO and the ringlog stderr
-        # pipeline) — the contract under test is the resume argv, not I/O
-        # plumbing. The exec'd `claude` resolves via PATH to our stub.
+        ctl = tmp_path / "ctl"
+        ctl.mkdir(parents=True)
+        # Re-root the workspace AND control-dir paths, and neutralize the two
+        # infra excs that need container facilities (the stdin FIFO and the
+        # ringlog stderr pipeline) — the contract under test is the resume
+        # argv, not I/O plumbing. The exec'd `claude` resolves via PATH to our
+        # stub. Task 4: .session_id/.spawn_epoch/stdin.fifo/stderr now live
+        # under $CTL — substituting the CTL="..." assignment's literal value
+        # re-roots every `$CTL/...` reference for free.
         script = script.replace(f"/data/engagements/{self.EID}", str(ws))
+        script = script.replace(f'CTL="/data/engagement-ctl/{self.EID}"', f'CTL="{ctl}"')
         script = script.replace(
-            f'exec <{ws}/stdin.fifo', "exec </dev/null"
+            'exec <"$CTL/stdin.fifo"', "exec </dev/null"
         )
         script = script.replace(
             'exec 2> >(/opt/casa/scripts/ringlog.sh "$STDERR_LOG" 65536 "$EPOCH")',
@@ -170,7 +208,7 @@ class TestRunScriptResumeArgvBehavior:
             "ringlog substitution missed — template line changed?"
         )
         if session_id_content is not None:
-            (ws / ".session_id").write_text(session_id_content)
+            (ctl / ".session_id").write_text(session_id_content)
 
         stub_dir = tmp_path / "bin"
         stub_dir.mkdir()
@@ -181,6 +219,23 @@ class TestRunScriptResumeArgvBehavior:
             f'printf "%s\\n" "$@" > "{argv_file}"\n'
         )
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        # Task 6: the final line now wraps the exec in `setpriv --reuid ...
+        # -- claude ...`. Real setpriv requires CAP_SETUID (root) to actually
+        # change identity — this test process is an ordinary unprivileged
+        # test-runner user, and the contract under test is the resume argv,
+        # not the privilege drop itself (that's Task 7/9's territory). Stub
+        # setpriv as a transparent pass-through: skip past its own flags to
+        # the `--` separator and exec whatever follows.
+        setpriv_stub = stub_dir / "setpriv"
+        setpriv_stub.write_text(
+            "#!/bin/bash\n"
+            "while [ $# -gt 0 ]; do\n"
+            '  if [ "$1" = "--" ]; then shift; exec "$@"; fi\n'
+            "  shift\n"
+            "done\n"
+            'exec "$@"\n'
+        )
+        setpriv_stub.chmod(setpriv_stub.stat().st_mode | stat.S_IEXEC)
 
         script_path = tmp_path / "run.sh"
         script_path.write_text(script)
@@ -247,7 +302,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp; rm -rf /data"],
-            )
+             uid=200005, gid=200005)
 
     def test_extra_dir_with_quote_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -256,7 +311,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp/'; touch /tmp/pwned ;#"],
-            )
+             uid=200005, gid=200005)
 
     def test_extra_dir_with_newline_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -265,7 +320,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp\nrm -rf /data"],
-            )
+             uid=200005, gid=200005)
 
     def test_relative_extra_dir_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -274,7 +329,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["relative/path"],
-            )
+             uid=200005, gid=200005)
 
     def test_extra_dir_with_space_quoted_via_shlex(self):
         """Spaces in absolute paths are allowed but rendered shlex-quoted."""
@@ -283,7 +338,7 @@ class TestRenderRunScriptShellInjection:
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=["/share/with space"],
-        )
+         uid=200005, gid=200005)
         # Either shlex.quote'd or single-quoted — never bare.
         assert "/share/with space" in out
         # The bare unquoted form would be a defect.
@@ -298,7 +353,7 @@ class TestRenderRunScriptShellInjection:
                 permission_mode="dontAsk",
                 extra_dirs=[],
                 extra_env={"FOO\nrm -rf /data": "harmless"},
-            )
+             uid=200005, gid=200005)
 
     def test_extra_env_key_with_dollar_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -308,7 +363,7 @@ class TestRenderRunScriptShellInjection:
                 permission_mode="dontAsk",
                 extra_dirs=[],
                 extra_env={"$(whoami)": "harmless"},
-            )
+             uid=200005, gid=200005)
 
     def test_extra_env_lowercase_key_rejected(self):
         """Lowercase keys also rejected — convention is upper-snake."""
@@ -319,7 +374,7 @@ class TestRenderRunScriptShellInjection:
                 permission_mode="dontAsk",
                 extra_dirs=[],
                 extra_env={"foo": "bar"},
-            )
+             uid=200005, gid=200005)
 
     def test_extra_env_value_with_quote_escaped(self):
         """Embedded single-quote in value is escaped via '\\'' idiom."""
@@ -329,7 +384,7 @@ class TestRenderRunScriptShellInjection:
             permission_mode="dontAsk",
             extra_dirs=[],
             extra_env={"GITHUB_TOKEN": "abc'def"},
-        )
+         uid=200005, gid=200005)
         assert "export GITHUB_TOKEN='abc'\\''def'" in out
 
     def test_valid_extra_env_renders(self):
@@ -339,7 +394,7 @@ class TestRenderRunScriptShellInjection:
             permission_mode="dontAsk",
             extra_dirs=[],
             extra_env={"GITHUB_TOKEN": "ghp_abc", "OP_TOKEN": "ops_xyz"},
-        )
+         uid=200005, gid=200005)
         assert "export GITHUB_TOKEN='ghp_abc'" in out
         assert "export OP_TOKEN='ops_xyz'" in out
 
@@ -416,10 +471,13 @@ class TestProvisionWorkspace:
         # Plugin symlinks removed in v0.14.x (Plan 4b §16.2); HOME dir still created.
         assert (p / ".home" / ".claude" / "plugins").is_dir()
 
-        # FIFO
-        assert os.path.exists(p / "stdin.fifo")
+        # FIFO — Task 4: lives in the control dir, not the workspace.
+        from drivers.workspace import fifo_path
+        fifo = fifo_path("eng1")
+        assert not os.path.exists(p / "stdin.fifo")
+        assert os.path.exists(fifo)
         import stat as _stat
-        mode = os.stat(p / "stdin.fifo").st_mode
+        mode = os.stat(fifo).st_mode
         assert _stat.S_ISFIFO(mode)
 
 
@@ -630,12 +688,320 @@ class TestProvisionWorkspace:
         assert entry["env"]["CASA_ENGAGEMENT_TOKEN"] == "tok-ws-test"
 
 
+class TestChownLastProvisioning:
+    """Containment stage 2, Task 8: identity + chown are the LAST writes
+    provision_workspace makes, and only when given a real allocated uid.
+
+    Real ``os.chown`` to an arbitrary uid requires root — the unit runner is
+    not — so the ownership assertions are gated on ``os.geteuid() == 0``;
+    everywhere else the CALL SEQUENCE (ensure_identity before chown_workspace,
+    both after every other write) is asserted via a recording monkeypatch,
+    per the task brief.
+    """
+
+    # Same executor-definition fixture as TestProvisionWorkspace — kept as a
+    # plain (non-inherited) copy so this class's tests don't also re-run
+    # every TestProvisionWorkspace test under a second name.
+    _make_defn = TestProvisionWorkspace._make_defn
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_default_uid_skips_identity_and_chown(self, tmp_path, monkeypatch):
+        """Every existing caller of provision_workspace (this file's other
+        tests included) omits uid/gid — the default (UNALLOCATED_UID) must
+        leave the workspace untouched by identity/chown, exactly as before
+        Task 8."""
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            ws_mod, "ensure_identity",
+            lambda uid, home: calls.append("ensure_identity"))
+        monkeypatch.setattr(
+            ws_mod, "chown_workspace",
+            lambda ws, uid, gid: calls.append("chown_workspace"))
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-no-uid",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+        )
+        assert calls == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_identity_before_chown_and_chown_is_last(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            ws_mod, "ensure_identity",
+            lambda uid, home: calls.append(("ensure_identity", uid, home)))
+        monkeypatch.setattr(
+            ws_mod, "chown_workspace",
+            lambda ws, uid, gid: calls.append(("chown_workspace", ws, uid, gid)))
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        path = await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-uid-order",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+            uid=UID_BASE, gid=UID_BASE,
+        )
+
+        assert [c[0] for c in calls] == ["ensure_identity", "chown_workspace"], (
+            "ensure_identity must run before chown_workspace, and both "
+            "must be the only two identity/chown calls"
+        )
+        assert calls[0][1] == UID_BASE
+        assert calls[0][2] == str(Path(path) / ".home")
+        assert calls[1][1] == path
+        assert calls[1][2] == UID_BASE
+        assert calls[1][3] == UID_BASE
+
+        # Top-dir mode 0700 is set for real (chmod needs no special
+        # privilege on a directory the test process itself owns) — even
+        # though chown_workspace above was stubbed.
+        import stat as _stat
+        mode = os.stat(path).st_mode
+        assert _stat.S_IMODE(mode) == 0o700
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_provision_propagates_ensure_identity_failure(self, tmp_path, monkeypatch):
+        """Fail-closed: a failure appending the passwd/group entry must
+        abort provisioning — never hand back a workspace the caller
+        believes was chowned when it wasn't even given an identity."""
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        def boom(uid, home):
+            raise OSError("cannot write /etc/passwd")
+        monkeypatch.setattr(ws_mod, "ensure_identity", boom)
+        chown_calls = []
+        monkeypatch.setattr(
+            ws_mod, "chown_workspace",
+            lambda ws, uid, gid: chown_calls.append(1))
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        with pytest.raises(OSError, match="passwd"):
+            await provision_workspace(
+                engagements_root=str(ws_root),
+                engagement_id="eng-id-fail",
+                engagement_auth_token="tok",
+                defn=defn, task="t", context="c",
+                casa_framework_mcp_url="http://x",
+                uid=UID_BASE, gid=UID_BASE,
+            )
+        assert chown_calls == [], "chown must never run after a failed identity append"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_provision_propagates_chown_failure(self, tmp_path, monkeypatch):
+        """Fail-closed: a chown failure (e.g. PermissionError under a
+        non-root spawner) must abort provisioning rather than hand back a
+        still-root-owned workspace silently."""
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
+
+        def boom(ws, uid, gid):
+            raise PermissionError("chown requires root")
+        monkeypatch.setattr(ws_mod, "chown_workspace", boom)
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        with pytest.raises(PermissionError, match="root"):
+            await provision_workspace(
+                engagements_root=str(ws_root),
+                engagement_id="eng-chown-fail",
+                engagement_auth_token="tok",
+                defn=defn, task="t", context="c",
+                casa_framework_mcp_url="http://x",
+                uid=UID_BASE, gid=UID_BASE,
+            )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo/symlink not meaningful on Windows")
+    async def test_provision_workspace_provisions_engagement_outbox(
+        self, tmp_path, monkeypatch,
+    ):
+        """Fix-loop round 1, finding 1 (wiring-site coverage): the private
+        per-engagement outbox must be provisioned as part of
+        provision_workspace's uid-drop step — the eager path a producer
+        plugin depends on existing before the CLI ever starts. Real
+        ownership is asserted under root; everywhere else the recorded
+        provisioning call is asserted (same split as ensure_identity/
+        chown_workspace above)."""
+        import plugin_outbox
+        from drivers import workspace as ws_mod
+        from drivers.workspace import provision_workspace
+        from engagement_uids import UID_BASE
+
+        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
+        monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
+        calls: list[int] = []
+        real_provision = plugin_outbox.provision_engagement_outbox
+
+        def _recording_provision(uid, **kw):
+            calls.append(uid)
+            return real_provision(uid, **kw)
+        monkeypatch.setattr(
+            plugin_outbox, "provision_engagement_outbox", _recording_provision)
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-outbox-provision",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+            uid=UID_BASE, gid=UID_BASE,
+        )
+        assert calls == [UID_BASE]
+        d = plugin_outbox.engagement_outbox_dir(UID_BASE)
+        assert os.path.isdir(d)
+        if os.geteuid() == 0:
+            assert os.stat(d).st_uid == UID_BASE
+
+    @pytest.mark.skipif(
+        os.geteuid() != 0 if hasattr(os, "geteuid") else True,
+        reason="real chown requires root",
+    )
+    async def test_workspace_owned_by_uid_after_provision_real_root(self, tmp_path):
+        """Real end-to-end ownership check — only runs under root (e.g. a
+        privileged CI lane); everywhere else the ordering tests above cover
+        the invariant."""
+        from pathlib import Path
+
+        from drivers.workspace import chown_workspace  # noqa: F401 (imported for parity)
+        from drivers.workspace import control_dir, provision_workspace
+        from engagement_uids import UID_BASE
+
+        defn = self._make_defn(tmp_path)
+        ws_root = tmp_path / "engagements"
+        ws_root.mkdir()
+        target_uid = UID_BASE + 1234
+        path = await provision_workspace(
+            engagements_root=str(ws_root),
+            engagement_id="eng-real-root",
+            engagement_auth_token="tok",
+            defn=defn, task="t", context="c",
+            casa_framework_mcp_url="http://x",
+            uid=target_uid, gid=target_uid,
+        )
+        p = Path(path)
+        for f in p.rglob("*"):
+            st = os.lstat(f)
+            assert st.st_uid == target_uid, f"{f} not owned by {target_uid}"
+        assert os.lstat(p).st_uid == target_uid
+        import stat as _stat
+        assert _stat.S_IMODE(os.stat(p).st_mode) == 0o700
+
+        # Control dir stays root-owned even though the workspace was chowned.
+        ctl = Path(control_dir("eng-real-root"))
+        assert os.stat(ctl).st_uid == 0
+
+        import pwd as _pwd
+        _pwd.getpwuid(target_uid)  # must not raise — NSS identity created
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink not meaningful on Windows")
+    async def test_chown_workspace_never_follows_symlinks(self, tmp_path, monkeypatch):
+        """A symlink planted inside the tree must be chowned itself
+        (follow_symlinks=False) — never have its TARGET chowned. Asserted
+        via the exact os.chown kwarg used, since chowning to an arbitrary
+        uid for real requires root."""
+        from drivers.workspace import chown_workspace
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        outside_target = tmp_path / "outside.txt"
+        outside_target.write_text("do not touch")
+        link = ws / "escape-link"
+        link.symlink_to(outside_target)
+        (ws / "regular.txt").write_text("y")
+        (ws / "subdir").mkdir()
+        (ws / "subdir" / "nested.txt").write_text("z")
+
+        calls: list[tuple] = []
+
+        def fake_chown(path, uid, gid, *, follow_symlinks=True):
+            calls.append((str(path), uid, gid, follow_symlinks))
+
+        monkeypatch.setattr(os, "chown", fake_chown)
+
+        chown_workspace(str(ws), 424242, 424242)
+
+        assert calls, "chown_workspace must actually chown something"
+        assert all(c[3] is False for c in calls), (
+            "every os.chown call must pass follow_symlinks=False"
+        )
+        called_paths = {c[0] for c in calls}
+        assert str(ws) in called_paths
+        assert str(link) in called_paths
+        assert str(ws / "regular.txt") in called_paths
+        assert str(ws / "subdir") in called_paths
+        assert str(ws / "subdir" / "nested.txt") in called_paths
+        # The symlink's TARGET is never in the call set — only the link
+        # itself (its own path, under ws/) is chowned.
+        assert str(outside_target) not in called_paths
+
+    @pytest.mark.skipif(
+        os.geteuid() != 0 if hasattr(os, "geteuid") else True,
+        reason="real chown requires root",
+    )
+    async def test_chown_workspace_symlink_target_owner_unchanged_real(self, tmp_path):
+        """Real-root variant: after chown_workspace, the symlink's TARGET
+        (living outside the workspace) keeps its original owner — only the
+        link itself (inside the tree) is reassigned."""
+        from drivers.workspace import chown_workspace
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        outside_target = tmp_path / "outside.txt"
+        outside_target.write_text("do not touch")
+        link = ws / "escape-link"
+        link.symlink_to(outside_target)
+
+        before_target_uid = os.stat(outside_target).st_uid
+        chown_workspace(str(ws), 0, 0)  # any distinct uid works as root
+
+        assert os.stat(outside_target).st_uid == before_target_uid
+        assert os.lstat(link).st_uid == 0
+
+
 class TestCasaMeta:
     def test_write_and_load_roundtrip(self, tmp_path):
-        from drivers.workspace import write_casa_meta, load_casa_meta
+        from drivers.workspace import (
+            write_casa_meta, load_casa_meta, provision_control_dir,
+        )
 
-        ws = tmp_path / "w"
+        # load_casa_meta derives the engagement id from the workspace dir's
+        # BASENAME (provision_workspace always names it that way) — name the
+        # dir "e1" to match, rather than widen load_casa_meta's contract.
+        ws = tmp_path / "e1"
         ws.mkdir()
+        # Task 4: .casa-meta.json lives in the control dir now — provisioned
+        # separately from the workspace (provision_workspace does this for a
+        # real engagement; this unit test does it explicitly).
+        provision_control_dir("e1")
         write_casa_meta(
             workspace_path=str(ws),
             engagement_id="e1", executor_type="hello-driver",
@@ -653,6 +1019,101 @@ class TestCasaMeta:
         ws = tmp_path / "w"
         ws.mkdir()
         assert load_casa_meta(str(ws)) is None
+
+    def test_load_falls_back_to_and_migrates_legacy_workspace_path(
+            self, tmp_path):
+        """Fix-loop round 1 (Important 2): a `.casa-meta.json` written
+        BEFORE this release deploys lives only at the legacy workspace path
+        (no control-dir copy exists yet). load_casa_meta must still find it
+        — dropping it would orphan plugin_artifacts/created_at on finalize
+        and permanently leak the workspace past the retention sweep — and
+        opportunistically migrate it into the control dir so later reads
+        (and any write_casa_meta rewrite) land on the canonical location."""
+        import json
+        from pathlib import Path
+        from drivers.workspace import (
+            casa_meta_path, control_dir, load_casa_meta,
+        )
+
+        ws = tmp_path / "e-legacy"
+        ws.mkdir()
+        legacy = ws / ".casa-meta.json"
+        meta = {
+            "engagement_id": "e-legacy", "executor_type": "hello-driver",
+            "status": "COMPLETED", "created_at": "2026-04-23T10:00:00Z",
+            "finished_at": "2026-04-23T10:05:00Z",
+            "retention_until": "2099-01-01T00:00:00Z",
+            "plugin_artifacts": [{"name": "x", "artifact_id": "a" * 64,
+                                   "path": "/config/plugins/store/x/" + "a" * 64}],
+        }
+        legacy.write_text(json.dumps(meta), encoding="utf-8")
+        # No control dir at all yet — the pre-deploy state.
+        assert not Path(control_dir("e-legacy")).exists()
+
+        loaded = load_casa_meta(str(ws))
+        assert loaded == meta
+
+        # Migrated forward: a second load (and the sweep/finalize callers
+        # that key off the control-dir path) now find it there too.
+        ctl_copy = Path(casa_meta_path("e-legacy"))
+        assert ctl_copy.exists()
+        assert json.loads(ctl_copy.read_text(encoding="utf-8")) == meta
+        # The legacy file is left in place (harmless — it's removed with the
+        # rest of the workspace at retention time); re-loading still works
+        # and doesn't re-migrate destructively.
+        assert legacy.exists()
+        assert load_casa_meta(str(ws)) == meta
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_legacy_fallback_refuses_symlinked_casa_meta(
+            self, tmp_path, monkeypatch, has_openat2):
+        """Containment stage 2, Task 5: the legacy-path fallback
+        (pre-Task-4 ``.casa-meta.json`` still under the WORKSPACE root) is a
+        root read of a uid-owned workspace path — once Task 8 chowns the
+        workspace, a symlink there is a live sibling-exfiltration primitive.
+        A workspace whose ``.casa-meta.json`` is a SYMLINK (e.g. into a
+        sibling engagement's control dir) must be refused, not followed —
+        treated as absent, never migrated forward, and never returned as if
+        it were this engagement's own metadata."""
+        import json
+        from pathlib import Path
+
+        import safe_fs
+        from drivers.workspace import (
+            casa_meta_path, control_dir, load_casa_meta,
+        )
+
+        monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
+
+        # Sibling engagement's own (legitimate) legacy meta file.
+        sibling_ws = tmp_path / "sibling"
+        sibling_ws.mkdir()
+        sibling_meta = {
+            "engagement_id": "sibling", "executor_type": "hello-driver",
+            "status": "COMPLETED", "created_at": "2026-04-23T10:00:00Z",
+            "finished_at": "2026-04-23T10:05:00Z",
+            "retention_until": "2099-01-01T00:00:00Z",
+            "plugin_artifacts": [],
+        }
+        (sibling_ws / ".casa-meta.json").write_text(
+            json.dumps(sibling_meta), encoding="utf-8")
+
+        # This engagement's workspace: .casa-meta.json is a SYMLINK to the
+        # sibling's file instead of its own.
+        ws = tmp_path / "e-legacy-symlink"
+        ws.mkdir()
+        (ws / ".casa-meta.json").symlink_to(sibling_ws / ".casa-meta.json")
+        assert not Path(control_dir("e-legacy-symlink")).exists()
+
+        loaded = load_casa_meta(str(ws))
+
+        assert loaded is None, (
+            "a symlinked legacy .casa-meta.json must be refused (treated "
+            f"as absent), never followed to a sibling's metadata; got {loaded!r}"
+        )
+        # Never migrated forward — a refused read must not write the
+        # sibling's content into this engagement's own control dir.
+        assert not Path(casa_meta_path("e-legacy-symlink")).exists()
 
 
 class TestProvisionWithHooks:
@@ -1041,8 +1502,9 @@ class TestRefreshClaudeMd:
             casa_framework_mcp_url="http://x",
         )
         ws_dir = Path(path)
-        # Memory was cached for a later boot refresh.
-        assert (ws_dir / ".executor_memory").read_text() == "mem-marker"
+        # Memory was cached for a later boot refresh — Task 4: control dir.
+        from drivers.workspace import executor_memory_path
+        assert Path(executor_memory_path(rec.id)).read_text() == "mem-marker"
 
         # Blank CLAUDE.md (simulate a wiped workspace file), then refresh.
         (ws_dir / "CLAUDE.md").write_text("")
@@ -1097,7 +1559,7 @@ class TestExtraDirContainment:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[bad],
-            )
+             uid=200005, gid=200005)
 
     @pytest.mark.parametrize("ok", ["/share", "/share/foo", "/media/nas"])
     def test_under_approved_roots_allowed(self, ok):
@@ -1106,7 +1568,7 @@ class TestExtraDirContainment:
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[ok],
-        )
+         uid=200005, gid=200005)
         assert f"--add-dir {ok}" in out
 
     def test_dotdot_traversal_rejected(self):
@@ -1116,7 +1578,7 @@ class TestExtraDirContainment:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/share/../config"],
-            )
+             uid=200005, gid=200005)
 
     def test_symlink_escaping_approved_root_rejected(self, tmp_path, monkeypatch):
         """Terra r1-2: a symlink under an approved root pointing outside
@@ -1140,7 +1602,7 @@ class TestExtraDirContainment:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[str(link)],
-            )
+             uid=200005, gid=200005)
         # A real subdir under the root still passes.
         real = share / "ok"
         real.mkdir()
@@ -1148,7 +1610,7 @@ class TestExtraDirContainment:
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[str(real)],
-        )
+         uid=200005, gid=200005)
         assert f"--add-dir {real}" in out
 
     def test_plugin_dirs_are_not_containment_checked(self):
@@ -1160,5 +1622,37 @@ class TestExtraDirContainment:
             permission_mode="dontAsk",
             extra_dirs=[],
             plugin_dirs=["/data/casa/plugin-store/sha256-abc/artifact"],
-        )
+         uid=200005, gid=200005)
         assert "--plugin-dir /data/casa/plugin-store/sha256-abc/artifact" in out
+
+    def test_render_run_script_exports_private_outbox_dir(self):
+        """Fix-loop round 1, finding 1 (wiring-site coverage): a real uid's
+        rendered run script must export CASA_PLUGIN_OUTBOX_DIR pointing at
+        that uid's PRIVATE outbox dir — the producer's only way to learn it
+        no longer has access to the shared, root-only outbox."""
+        import plugin_outbox
+        from drivers.workspace import render_run_script
+        out = render_run_script(
+            engagement_id="x" * 16,
+            permission_mode="dontAsk",
+            extra_dirs=[],
+            uid=200005, gid=200005,
+        )
+        expected_dir = plugin_outbox.engagement_outbox_dir(200005)
+        assert f"export {plugin_outbox.OUTBOX_ENV}='{expected_dir}'" in out
+
+    def test_render_run_script_caller_extra_env_wins_over_outbox_dir(self):
+        """Same collision precedence as the plugin-dirs env overlay: an
+        explicit extra_env entry for the outbox var wins over the derived
+        one."""
+        import plugin_outbox
+        from drivers.workspace import render_run_script
+        out = render_run_script(
+            engagement_id="x" * 16,
+            permission_mode="dontAsk",
+            extra_dirs=[],
+            extra_env={plugin_outbox.OUTBOX_ENV: "/custom/outbox"},
+            uid=200005, gid=200005,
+        )
+        assert f"export {plugin_outbox.OUTBOX_ENV}='/custom/outbox'" in out
+        assert plugin_outbox.engagement_outbox_dir(200005) not in out

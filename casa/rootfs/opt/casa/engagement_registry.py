@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from atomic_io import atomic_write_json
+from engagement_uids import UNALLOCATED_UID
 from sensitivity import TIERS
 
 logger = logging.getLogger(__name__)
@@ -266,6 +267,16 @@ class EngagementRecord:
     # Additive + absent-tolerant on load (legacy rows have no key → "" → each
     # reader falls back to the derived concise_task label, no crash).
     topic_title: str = ""
+    # Containment Stage 2 (Task 3): the OS uid this engagement's subprocess
+    # runs as, once containment lands a per-engagement identity boundary.
+    # Allocated (via ``EngagementRegistry``'s injected ``UidAllocator``) in
+    # ``create()`` for ``driver == "claude_code"`` records only — specialists
+    # and any other driver stay at the ``UNALLOCATED_UID`` sentinel forever.
+    # Persisted so a resumed/restarted engagement keeps the SAME uid (the
+    # allocator's never-reuse invariant is meaningless if a reload could hand
+    # a live engagement a different one); legacy rows predating this field
+    # load with the sentinel via ``load()``'s ``.get``-default.
+    allocated_uid: int = UNALLOCATED_UID
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +300,24 @@ class EngagementRegistry:
     the sweep task; tests that don't exercise the sweep may pass ``None``.
     """
 
-    def __init__(self, *, tombstone_path: str, bus: Any | None) -> None:
+    def __init__(
+        self,
+        *,
+        tombstone_path: str,
+        bus: Any | None,
+        uid_allocator: Any | None = None,
+    ) -> None:
         self._tombstone_path = tombstone_path
         self._bus = bus
+        # Containment Stage 2 (Task 3): injected ``engagement_uids.UidAllocator``,
+        # already ``.reconstruct()``-ed by the caller before this registry is
+        # used. Optional/defaults to None so every existing construction site
+        # (and every pre-Task-10 test) keeps working unchanged — a create()
+        # for a claude_code engagement with no allocator configured simply
+        # leaves ``allocated_uid`` at the sentinel (see create()) rather than
+        # raising, and downstream containment code is expected to fail closed
+        # on the sentinel rather than render a root/unallocated uid.
+        self._uid_allocator = uid_allocator
         self._records: dict[str, EngagementRecord] = {}
         self._topic_index: dict[int, str] = {}
         self._lock = asyncio.Lock()
@@ -361,6 +387,7 @@ class EngagementRegistry:
                     summary_message_id=row.get("summary_message_id"),
                     summary_revision=int(row.get("summary_revision", 0) or 0),
                     topic_title=row.get("topic_title", "") or "",
+                    allocated_uid=int(row.get("allocated_uid", UNALLOCATED_UID)),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("Skipping malformed engagement row: %s", exc)
@@ -512,6 +539,7 @@ class EngagementRegistry:
                 "summary_message_id": rec.summary_message_id,
                 "summary_revision": rec.summary_revision,
                 "topic_title": rec.topic_title,
+                "allocated_uid": rec.allocated_uid,
             })
         try:
             await asyncio.to_thread(self._write_tombstone, snapshot)
@@ -578,6 +606,33 @@ class EngagementRegistry:
             self._records[engagement_id] = rec
             if topic_id is not None:
                 self._topic_index[topic_id] = engagement_id
+
+            # Containment Stage 2 (Task 3): allocate a durable OS uid for a
+            # claude_code engagement BEFORE the strict tombstone write below —
+            # a uid that never reached disk must never be handed to a live
+            # subprocess. Specialists / any other driver stay UNALLOCATED_UID.
+            # A missing allocator is the fail-CLOSED default: rather than
+            # mint a bogus uid (or raise and break every caller that hasn't
+            # been wired to inject one yet — that's Task 10), the record is
+            # left at the sentinel and containment's own preflight (Task 6/7)
+            # refuses to render/launch a claude_code process at that uid.
+            if driver == "claude_code":
+                if self._uid_allocator is not None:
+                    try:
+                        rec.allocated_uid = self._uid_allocator.allocate()
+                    except Exception:
+                        self._records.pop(engagement_id, None)
+                        if (topic_id is not None
+                                and self._topic_index.get(topic_id) == engagement_id):
+                            del self._topic_index[topic_id]
+                        raise
+                else:
+                    logger.warning(
+                        "engagement %s (claude_code) created with no "
+                        "uid_allocator configured — allocated_uid left at "
+                        "the sentinel; containment preflight must refuse it",
+                        engagement_id[:8],
+                    )
 
             # #326: STRICT persistence — the record's whole point is crash
             # recovery, so reporting success after a swallowed write failure
@@ -965,6 +1020,63 @@ class EngagementRegistry:
                 raise cancelled
             if task.exception() is not None:
                 raise task.exception()
+
+    async def backfill_allocated_uid(self, engagement_id: str) -> int:
+        """Containment Stage 2 (Task 10): allocate + persist an OS uid for a
+        legacy ``claude_code`` record whose ``allocated_uid`` is still the
+        ``UNALLOCATED_UID`` sentinel (created before Stage 2, or before an
+        allocator was wired), and return the resulting uid.
+
+        Called by boot replay for every UNDERGOING claude_code record before it
+        re-renders the run script under the record's uid. Idempotent: a record
+        that already carries a REAL uid (``!= UNALLOCATED_UID``) is returned
+        unchanged, no allocation, no write.
+
+        Fail-CLOSED: with no allocator configured, or if allocation raises
+        (e.g. a missing/malformed counter left the allocator un-reconstructed),
+        this raises :class:`engagement_uids.UidStateError` — the caller must
+        refuse the resume rather than launch a root/unallocated CLI. STRICT
+        persistence with rollback (mirrors :meth:`persist_session_id`): the uid
+        the subprocess will run as MUST reach disk before it is used, or the
+        next boot would re-backfill a *different* uid and orphan a workspace
+        chowned to the first — so a failed write restores the sentinel and
+        propagates.
+        """
+        from engagement_uids import UidStateError
+
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                raise UidStateError(
+                    f"backfill_allocated_uid: unknown engagement {engagement_id}"
+                )
+            if rec.allocated_uid != UNALLOCATED_UID:
+                return rec.allocated_uid
+            if self._uid_allocator is None:
+                raise UidStateError(
+                    "backfill_allocated_uid: no uid_allocator configured — "
+                    "cannot allocate a uid for a legacy record"
+                )
+            new_uid = self._uid_allocator.allocate()   # may raise UidStateError
+            prior = rec.allocated_uid
+            rec.allocated_uid = new_uid
+            task = asyncio.ensure_future(
+                self._write_tombstone_locked(strict=True))
+            cancelled: asyncio.CancelledError | None = None
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc       # settle first; re-raise after
+                except Exception:  # noqa: BLE001 — retrieved below
+                    break
+            if task.cancelled() or task.exception() is not None:
+                rec.allocated_uid = prior
+            if cancelled is not None:
+                raise cancelled
+            if task.exception() is not None:
+                raise task.exception()
+            return new_uid
 
     async def set_channel_state(
         self,

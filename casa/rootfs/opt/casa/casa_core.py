@@ -39,6 +39,9 @@ from claude_runtime import (
 )
 from config import AgentConfig
 from config_git import init_repo, snapshot_manual_edits
+from engagement_uids import (
+    UID_BASE, UNALLOCATED_UID, UidAllocator, UidStateError, owner_uid_or_none,
+)
 from freshness_reaper import FreshnessReaper
 from ingress_identity import (
     IngressIdentityError,
@@ -55,6 +58,7 @@ from provenance import sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
 from rate_limit import RateLimiter, rate_limit_response
+from safe_fs import SymlinkRefused, atomic_write_beneath, read_text_beneath
 from timekeeping import resolve_tz
 from trigger_registry import TriggerRegistry
 from voice_delivery_config import load_voice_delivery_config
@@ -284,6 +288,153 @@ def _cc_settings_missing_floor(settings: dict) -> bool:
     return bool(REQUIRED_CLAUDE_CODE_POLICIES - declared)
 
 
+def _workspace_owner_ids(engagements_root: str) -> dict[int, set[str]]:
+    """Map each on-disk workspace-owner uid → the set of engagement-id basenames
+    it owns under ``engagements_root`` (containment Stage 2, Task 10, Sol r2).
+
+    Boot replay's uid-uniqueness gate consults this so a resumed record whose uid
+    already owns a workspace belonging to a DIFFERENT engagement — even one whose
+    registry record was pruned/lost, which the record-only check cannot see — is
+    refused rather than chowned/started onto a uid that could read that sibling
+    workspace. Best-effort: a missing/unreadable root or entry contributes
+    nothing. Root-owned (uid 0) dirs are irrelevant here (a dropped uid is always
+    ``>= UID_BASE``), but are recorded harmlessly."""
+    owners: dict[int, set[str]] = {}
+    try:
+        with os.scandir(engagements_root) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        owners.setdefault(
+                            entry.stat().st_uid, set()).add(entry.name)
+                except OSError:
+                    continue
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    return owners
+
+
+def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
+                          _pidfd_open=None, _pidfd_send=None,
+                          _close=os.close) -> None:
+    """Best-effort SIGKILL of any lingering process whose real/effective/saved/
+    fsuid is ``uid`` (an engagement's allocated uid, always ``>= UID_BASE``).
+
+    Containment Stage 2 (S1 r5, secondary defense-in-depth; the durable,
+    monotonic uid high-water is the actual non-reissue guarantee): after the
+    boot down-first sweep confirms an engagement's SERVICE down, a
+    ``setsid``/double-forked NON-root descendant could linger. Kill it so it
+    cannot keep reading its own soon-retained workspace. NEVER raises, NEVER
+    blocks; only ``uid >= UID_BASE`` is targeted, so casa-core (root) and
+    container services are never touched.
+
+    S1 r6 (Sol S2 — PID-reuse race): a numeric ``os.kill`` after a status read
+    can hit a REUSED pid (the inspected process exited and its pid was recycled
+    for an unrelated, possibly critical process) → self-DoS. Instead: open a
+    ``pidfd`` FIRST (pinning that exact process instance), verify the uid via
+    the now-current ``/proc/<pid>/status``, then signal via
+    ``signal.pidfd_send_signal`` — which only ever reaches the pinned process
+    (or ``ESRCH`` if it already exited), never a pid reuser. If the pidfd
+    primitives are unavailable, SKIP entirely (this is non-load-bearing DiD)
+    rather than signal a bare numeric pid.
+
+    (A CAP_DAC_OVERRIDE / root-equivalent survivor reads any workspace
+    regardless of uid; only a legacy pre-Stage-2 ROOT engagement could grant
+    such caps to a descendant across the single upgrade boot — post-migration
+    engagements are non-root with an empty bounding set + no_new_privs and
+    CANNOT. That residual is the excluded root-survivor class, Stage 3
+    mount/AppArmor/pid-namespace, not closed here.)"""
+    if uid < UID_BASE:
+        return
+    pidfd_open = _pidfd_open or getattr(os, "pidfd_open", None)
+    pidfd_send = _pidfd_send or getattr(signal, "pidfd_send_signal", None)
+    if pidfd_open is None or pidfd_send is None:
+        return   # no race-free primitive → skip (never signal a bare pid)
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pidfd = None
+        try:
+            # Pin the process instance BEFORE inspecting it, so the later signal
+            # can never reach a reused pid.
+            pidfd = pidfd_open(int(entry.name))
+            hit = False
+            with open(os.path.join(proc_root, entry.name, "status"),
+                      "r", encoding="utf-8") as fh:
+                for line in fh:
+                    if not line.startswith("Uid:"):
+                        continue
+                    for tok in line.split()[1:]:
+                        try:
+                            if int(tok) == uid:
+                                hit = True
+                                break
+                        except ValueError:
+                            continue
+                    break
+            if hit:
+                pidfd_send(pidfd, signal.SIGKILL)
+        except (OSError, ValueError):
+            continue   # process vanished / unreadable / already gone — skip
+        finally:
+            if pidfd is not None:
+                try:
+                    _close(pidfd)
+                except OSError:
+                    pass
+
+
+def _gather_reconstruct_evidence(registry, *, data_dir: str):
+    """Gather every uid-reissue evidence source for ``UidAllocator.reconstruct``
+    (Containment Stage 2, S1 r7 — completed the evidence set).
+
+    Returns ``(known_uids, dir_owner_uids, prior_existence)``:
+      - ``known_uids``: ``allocated_uid`` of EVERY record incl. terminal/retained
+        (a pruned-but-lingering process still holds its uid);
+      - ``dir_owner_uids``: the owner uid of every on-disk per-engagement dir
+        under ALL three artifact roots — ``<data_dir>/engagements/*``,
+        ``/data/engagement-ctl/*``, AND ``/data/plugin-outbox-eng/*`` (the outbox
+        class was the last unscanned artifact: a leftover outbox dir chowned to a
+        uid the counter never recorded);
+      - ``prior_existence``: True iff ANY of those artifact roots EXISTS — Casa
+        has run before, so a both-durable-copies-lost boot fails closed rather
+        than resetting the high-water to base.
+
+    Every source only ever RAISES the reconstructed high-water; scanning is
+    best-effort (a missing/unreadable root or entry contributes nothing)."""
+    from plugin_outbox import ENGAGEMENT_OUTBOX_ROOT
+    known_uids = [
+        r.allocated_uid
+        for r in (list(registry.active_and_idle())
+                  + list(registry.terminal_records()))
+        if r.allocated_uid != UNALLOCATED_UID
+    ]
+    artifact_roots = (
+        os.path.join(data_dir, "engagements"),
+        "/data/engagement-ctl",
+        ENGAGEMENT_OUTBOX_ROOT,
+    )
+    dir_owner_uids: list[int] = []
+    prior_existence = False
+    for base in artifact_roots:
+        try:
+            with os.scandir(base) as it:
+                prior_existence = True   # the root exists → Casa has run before
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            dir_owner_uids.append(entry.stat().st_uid)
+                    except OSError:
+                        continue
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    return known_uids, dir_owner_uids, prior_existence
+
+
 async def replay_undergoing_engagements(
     *, registry, driver, executor_registry=None,
     engagements_root: str = "/data/engagements",
@@ -298,10 +449,20 @@ async def replay_undergoing_engagements(
     (§7.3 of the 4a.1 spec).
     """
     from drivers import s6_rc
-    from drivers.workspace import (
-        refresh_claude_md, render_log_run_script, render_run_script,
-        workspace_mcp_token, workspace_mcp_url, write_workspace_mcp_json,
+    from drivers.claude_code_driver import (
+        UidDropRefused, _check_plugin_dirs_readable,
     )
+    from drivers.workspace import (
+        chown_workspace, fifo_path, refresh_claude_md, render_log_run_script,
+        render_run_script, workspace_mcp_token, workspace_mcp_url,
+        write_workspace_mcp_json,
+    )
+
+    # Containment Stage 2 (Task 10): the allocator injected into the registry at
+    # boot (casa_core wiring). Used to regenerate each resumed uid's NSS identity
+    # (container /etc is ephemeral — design §7). Backfill of a legacy record's
+    # uid goes through ``registry.backfill_allocated_uid`` (strict-persisted).
+    _uid_allocator = getattr(registry, "_uid_allocator", None)
 
     undergoing = [
         r for r in registry.active_and_idle()
@@ -391,14 +552,21 @@ async def replay_undergoing_engagements(
         intact pair + undergoing record for this boot's fast path).
         True = present/created; False = resume refused via the
         checked-teardown ladder (retryable next boot when containment is
-        confirmed, terminal-marked when it is not)."""
-        fifo = os.path.join(engagements_root, rec.id, "stdin.fifo")
-        # Sol r5-1: never run the destructive repair below THROUGH a
-        # symlinked workspace dir — isdir/lstat would examine (and rmtree
-        # could delete) entries under the symlink's target. Workspaces
-        # are always created as real directories, so a symlink here is
-        # corruption: refuse the resume.
-        if os.path.islink(os.path.dirname(fifo)):
+        confirmed, terminal-marked when it is not).
+
+        Task 4 (containment stage 2): the FIFO itself lives in the root-only
+        control dir now, not the workspace — moved so the workspace-symlink
+        primitive this whole stage removes could never again retarget IT.
+        The workspace-symlink guard below is kept regardless: other boot-
+        replay touches (CLAUDE.md refresh, .mcp.json rewrite) still reach
+        INTO the workspace and are not yet made symlink-safe (Task 5), so a
+        symlinked workspace is still refused here as general corruption —
+        this is the one boot-replay step that already runs for every record
+        early enough to catch it. The control dir gets its OWN symlink guard
+        (a real one is never created there, but a repair must never trust
+        that blindly)."""
+        ws_dir = os.path.join(engagements_root, rec.id)
+        if os.path.islink(ws_dir):
             await _refuse_brief_resume(
                 rec,
                 "workspace directory is a symlink; refusing FIFO "
@@ -406,27 +574,49 @@ async def replay_undergoing_engagements(
                 kind="fifo_recreate_failed",
             )
             return False
+        fifo = fifo_path(rec.id)
+        ctl_dir = os.path.dirname(fifo)
+        # Sol r5-1: never run the destructive repair below THROUGH a
+        # symlinked control dir — isdir/lstat would examine (and rmtree
+        # could delete) entries under the symlink's target. Control dirs
+        # are always created as real directories, so a symlink here is
+        # corruption: refuse the resume.
+        if os.path.islink(ctl_dir):
+            await _refuse_brief_resume(
+                rec,
+                "control directory is a symlink; refusing FIFO "
+                "verification/repair through it",
+                kind="fifo_recreate_failed",
+            )
+            return False
         try:
-            if os.path.isdir(os.path.dirname(fifo)):
-                st = os.lstat(fifo) if os.path.lexists(fifo) else None
-                if st is not None and not stat.S_ISFIFO(st.st_mode):
-                    # Terra r4-1: a NON-fifo at the FIFO path (regular
-                    # file, dir, or symlink left by corruption/partial
-                    # recovery) reads as instant EOF or fails outright —
-                    # the same crash-loop as a missing FIFO. Repair by
-                    # replacing it; a repair failure takes the refusal
-                    # ladder below.
-                    logger.warning(
-                        "boot replay: %s exists but is not a FIFO — "
-                        "replacing it", fifo,
-                    )
-                    if stat.S_ISDIR(st.st_mode):
-                        shutil.rmtree(fifo)
-                    else:
-                        os.remove(fifo)
-                    st = None
-                if st is None:
-                    os.mkfifo(fifo, 0o600)
+            # Task 4: the control dir may not exist yet for an engagement
+            # provisioned before this release (or lost to a prior partial
+            # failure) — repair it here too, idempotently, rather than
+            # silently skipping FIFO creation the way the pre-Task-4 code
+            # skipped it for a missing WORKSPACE (M7 already refused those
+            # earlier in this same boot pass).
+            if not os.path.isdir(ctl_dir):
+                os.makedirs(ctl_dir, mode=0o700, exist_ok=True)
+            st = os.lstat(fifo) if os.path.lexists(fifo) else None
+            if st is not None and not stat.S_ISFIFO(st.st_mode):
+                # Terra r4-1: a NON-fifo at the FIFO path (regular
+                # file, dir, or symlink left by corruption/partial
+                # recovery) reads as instant EOF or fails outright —
+                # the same crash-loop as a missing FIFO. Repair by
+                # replacing it; a repair failure takes the refusal
+                # ladder below.
+                logger.warning(
+                    "boot replay: %s exists but is not a FIFO — "
+                    "replacing it", fifo,
+                )
+                if stat.S_ISDIR(st.st_mode):
+                    shutil.rmtree(fifo)
+                else:
+                    os.remove(fifo)
+                st = None
+            if st is None:
+                os.mkfifo(fifo, 0o600)
             return True
         except OSError as exc:
             await _refuse_brief_resume(
@@ -460,6 +650,145 @@ async def replay_undergoing_engagements(
                 )
 
     async with s6_rc._compile_lock:
+        # 0. DOWN FIRST — Containment Stage 2 migration (design §6). Before ANY
+        # registry-status filtering, workspace access, or migration, drive EVERY
+        # existing engagement service to a CONFIRMED down. This is scandir-driven
+        # (source dirs + live scandir), NOT record-driven: a record that went
+        # terminal *before* driver.cancel() ran (crash between mark_* and cancel)
+        # leaves a supervised ROOT service that no UNDERGOING loop would touch —
+        # so it is enumerated from the filesystem directly and killed here. Every
+        # PRE-Stage-2 run script exec'd ``claude`` as root; downing them all now,
+        # before the re-render below plants the uid-dropped form, is what
+        # migrates in-flight engagements off root without ever leaving two
+        # generations (old root + new dropped) supervised at once. A service that
+        # cannot be confirmed down blocks its own engagement (kept durably down +
+        # mark_error), never left running as root and never re-started below.
+        # S1 r5 (secondary): map each engagement id → its allocated uid so the
+        # down-first sweep can best-effort kill escaped non-root descendants
+        # (hygiene; the durable high-water is the real guarantee).
+        _svc_uid_by_id: dict[str, int] = {}
+        for _r in (list(registry.active_and_idle())
+                   + list(registry.terminal_records())):
+            _u = getattr(_r, "allocated_uid", UNALLOCATED_UID)
+            if _u >= UID_BASE:
+                _svc_uid_by_id[_r.id] = _u
+
+        for _svc_eid in s6_rc.iter_engagement_service_ids(
+            svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
+            scandir_root=s6_rc.SERVICE_SCANDIR_ROOT,
+        ):
+            try:
+                _pre_down = await s6_rc.ensure_service_down(
+                    engagement_id=_svc_eid)
+            except Exception as exc:  # noqa: BLE001 — teardown is best-effort
+                _pre_down = False
+                logger.warning(
+                    "boot replay: pre-migration ensure_service_down raised for "
+                    "%s: %s", _svc_eid[:8], exc,
+                )
+            # Best-effort: after the service is downed, SIGKILL any escaped
+            # non-root descendant still holding this engagement's uid (S1 r5
+            # secondary). Never blocks, never raises; only runs when the uid is
+            # known and real. Not the guarantee — the durable high-water is.
+            _esc_uid = _svc_uid_by_id.get(_svc_eid)
+            if _esc_uid is not None:
+                _best_effort_kill_uid(_esc_uid)
+            if _pre_down is False:
+                # Cannot confirm this service down → refuse to migrate/start it.
+                # It is NOT added to any start loop (refused_ids) and is marked
+                # error best-effort (a pure scandir orphan with no record just
+                # no-ops the mark). Its still-supervised state is a durable-down
+                # attempt already made by ensure_service_down's ladder.
+                logger.error(
+                    "boot replay: engagement service %s could not be confirmed "
+                    "down before migration — refusing resume (never re-started "
+                    "as root)", _svc_eid[:8],
+                )
+                refused_ids.add(_svc_eid)
+                try:
+                    await registry.mark_error(
+                        _svc_eid,
+                        kind="refuse_pre_migration_down_failed",
+                        message=(
+                            "engagement service could not be confirmed down "
+                            "before the Stage 2 uid migration"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort mark
+                    logger.warning(
+                        "boot replay: mark_error(refuse_pre_migration_down_"
+                        "failed) for %s failed: %s", _svc_eid[:8], exc,
+                    )
+
+        # 0b. setpriv presence gate — Containment Stage 2 (design §5, §6(g)
+        # acceptance criterion: "setpriv removed from image ⇒ engagement
+        # REFUSED, not crash-looping, not root"). A single BOOT-level check (not
+        # per render): every re-rendered run script ends in ``exec setpriv …``
+        # under ``set -e``, so if setpriv is absent from the image the started
+        # service would fail that exec and s6 would crash-loop it. Refuse EVERY
+        # claude_code resume this boot instead — the services are already downed
+        # by step 0, so this keeps them down (never started, never root, never
+        # crash-looping) and lands an operator-visible terminal mark. Placed
+        # after the down-first sweep so the refusal builds on already-down
+        # services.
+        if undergoing and shutil.which("setpriv") is None:
+            logger.critical(
+                "boot replay: setpriv not found on PATH — refusing ALL %d "
+                "claude_code engagement resume(s) this boot (kept down by the "
+                "pre-migration sweep, never started as a crash-looping or root "
+                "service). Restore setpriv in the image to resume.",
+                len(undergoing),
+            )
+            for rec in undergoing:
+                if rec.id in refused_ids:
+                    continue
+                refused_ids.add(rec.id)
+                try:
+                    await registry.mark_error(
+                        rec.id, kind="refuse_uid_drop_failed",
+                        message=(
+                            "setpriv missing from image — the run script's "
+                            "privilege drop cannot execute; resume refused "
+                            "rather than started as a crash-looping service"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort mark
+                    logger.warning(
+                        "boot replay: mark_error(refuse_uid_drop_failed) for "
+                        "%s failed: %s", rec.id[:8], exc,
+                    )
+
+        # 0c. Re-fold live /proc uids into the uid high-water NOW that the
+        # down-first sweep has confirmed every engagement service down (S1
+        # code-gate r3 — TOCTOU). The boot-time uid reconstruct() ran BEFORE
+        # this sweep, so a legacy engagement could have setsid/double-forked a
+        # non-root survivor under a not-yet-issued uid AFTER that scan but
+        # BEFORE its service was killed here — the boot scan would have missed
+        # it. With every legacy service now confirmed down (step 0), no service
+        # can spawn a NEW survivor past this point, and this re-scan captures
+        # any that escaped earlier, so the high-water folds it in and no
+        # backfill below can reissue a uid a live process still holds.
+        # Fail-CLOSED: an unscannable /proc (or a never-reconstructed allocator)
+        # sets ``_refold_failed``, which refuses every resume NEEDING a fresh
+        # uid allocation (a legacy record's backfill) rather than allocating
+        # against a stale/unknown high-water. (A legacy ROOT survivor that
+        # escapes the sweep and STAYS root is a separate pre-existing class — a
+        # root process reads siblings regardless of uid — closed by Stage 3
+        # mount/AppArmor, not this uid-isolation fix.) A missing allocator (unit
+        # fakes) skips the refold; production always wires one.
+        _refold_failed = False
+        if _uid_allocator is not None:
+            try:
+                _uid_allocator.refold_live_uids()
+            except UidStateError as exc:
+                _refold_failed = True
+                logger.critical(
+                    "boot replay: live /proc uid refold failed (%s) — every "
+                    "resume needing a fresh uid allocation will be REFUSED this "
+                    "boot (fail-closed) rather than risk reissuing a uid held "
+                    "by a live survivor process", exc,
+                )
+
         # 1. Orphan sweep — dirs for non-UNDERGOING engagements, remove them.
         removed_orphans = s6_rc.sweep_orphan_service_dirs(
             svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
@@ -485,7 +814,31 @@ async def replay_undergoing_engagements(
         # in-flight engagements to the working log pipeline. Each record
         # heals independently: one failure must not abort the others'
         # compile/start below.
+        # Containment Stage 2 (Task 10): uid-uniqueness gate across the WHOLE
+        # registry (Sol+Terra review r1). ``_migrated_uids`` alone only catches
+        # a collision between two records BOTH resumed this boot; a uid shared
+        # with a TERMINAL/retained (or otherwise non-undergoing) record would
+        # slip through — and that record's retained workspace is chowned to the
+        # very uid we would hand this resume, so starting here would let this
+        # CLI read a sibling's files. The monotonic allocator prevents NEW
+        # collisions, but a pre-existing corrupt duplicate on disk
+        # (hand-edited / torn tombstone) must still be refused. Snapshot every
+        # record's real uid → owning id(s) so a resumed record whose uid is
+        # owned by a DIFFERENT engagement is refused, not migrated.
+        _all_records = (list(registry.active_and_idle())
+                        + list(registry.terminal_records()))
+        # Sol r2: also snapshot uid → owning workspace-id basenames on disk, so a
+        # uid owning a sibling workspace whose RECORD was pruned/lost is caught
+        # too (the record-only map cannot see it). Together these close the whole
+        # uid-uniqueness class: records ∪ on-disk workspace owners.
+        _ws_owner_ids = _workspace_owner_ids(engagements_root)
+        _migrated_uids: set[int] = set()
         for rec in undergoing:
+            # Step 0 refused this record (its pre-migration service could not be
+            # confirmed down) — never migrate/start it. Skip before any workspace
+            # write or uid allocation.
+            if rec.id in refused_ids:
+                continue
             try:
                 # #314: the M7 (missing workspace) and §3.8 (missing recorded
                 # artifact) validations must gate EVERY resume — they used to
@@ -626,10 +979,16 @@ async def replay_undergoing_engagements(
                     driver, "_casa_framework_mcp_url",
                     "http://127.0.0.1:8100/mcp/casa-framework",
                 )
+                # Task 5: owner_uid is the record's REAL allocated uid (once
+                # Task 8 chowns the workspace), else None for a
+                # not-yet-allocated/legacy workspace — never 0.
+                _owner_uid = owner_uid_or_none(rec.allocated_uid)
                 _credential_changed = bool(
                     os.path.isdir(_ws_dir)
-                    and (workspace_mcp_token(_ws_dir) != rec.auth_token
-                         or workspace_mcp_url(_ws_dir) != _current_mcp_url)
+                    and (workspace_mcp_token(_ws_dir, owner_uid=_owner_uid)
+                         != rec.auth_token
+                         or workspace_mcp_url(_ws_dir, owner_uid=_owner_uid)
+                         != _current_mcp_url)
                 )
 
                 # Task 6: regenerate settings.json from the load-time
@@ -658,9 +1017,24 @@ async def replay_undergoing_engagements(
                     _ws_dir, ".claude", "settings.json")
                 _on_disk_settings = None
                 if os.path.isdir(_ws_dir):
+                    # Task 5: compare-read via safe_fs — a symlinked
+                    # .claude/settings.json (e.g. planted pointing at a
+                    # sibling engagement's workspace) is refused rather than
+                    # followed. Fail-safe: refusal (like any other read
+                    # failure) leaves _on_disk_settings None, which never
+                    # equals _new_settings, so the floor is (re)written.
                     try:
-                        with open(_settings_path, encoding="utf-8") as _fh:
-                            _on_disk_settings = json.load(_fh)
+                        _on_disk_settings = json.loads(read_text_beneath(
+                            _ws_dir, os.path.join(".claude", "settings.json"),
+                            owner_uid=_owner_uid,
+                        ))
+                    except SymlinkRefused as exc:
+                        logger.warning(
+                            "boot replay: engagement %s settings.json "
+                            "compare-read refused (symlink) — treating as "
+                            "changed: %s", rec.id[:8], exc,
+                        )
+                        _on_disk_settings = None
                     except (OSError, ValueError):
                         _on_disk_settings = None
                 _settings_changed = _on_disk_settings != _new_settings
@@ -672,6 +1046,7 @@ async def replay_undergoing_engagements(
                             engagement_id=rec.id,
                             engagement_auth_token=rec.auth_token,
                             casa_framework_mcp_url=_current_mcp_url,
+                            owner_uid=_owner_uid,
                         )
                     except Exception as exc:  # noqa: BLE001 — fail-closed
                         await _refuse_brief_resume(
@@ -681,17 +1056,31 @@ async def replay_undergoing_engagements(
                         continue
 
                 if _settings_changed and os.path.isdir(_ws_dir):
+                    # Containment Stage 2 (S1 code-gate fix): the settings
+                    # regeneration is a root WRITE into the (on replay,
+                    # uid-owned) workspace, so it must be symlink-safe. The
+                    # prior ``makedirs`` + open-``.tmp`` + ``os.replace`` chain
+                    # created the temp BY PATHNAME under ``.claude``, so an
+                    # A-planted ``.claude`` symlink into a sibling's dir let
+                    # root clobber the sibling's settings.json. Route the write
+                    # through ``safe_fs.atomic_write_beneath`` (no-follow,
+                    # workspace-confined, renameat): a symlinked ``.claude`` OR
+                    # a symlinked settings.json is REFUSED (SymlinkRefused, an
+                    # OSError subclass) and the resume is refused, never
+                    # written through. The ``makedirs`` is retained only to
+                    # create a genuinely-absent ``.claude`` (exist_ok=True
+                    # short-circuits on a symlink, so the safe write still
+                    # catches it).
                     try:
                         os.makedirs(
                             os.path.join(_ws_dir, ".claude"), exist_ok=True)
-                        _tmp_settings_path = _settings_path + ".tmp"
-                        with open(
-                            _tmp_settings_path, "w", encoding="utf-8",
-                        ) as _fh:
-                            _fh.write(json.dumps(
-                                _new_settings, indent=2, sort_keys=True)
-                                + "\n")
-                        os.replace(_tmp_settings_path, _settings_path)
+                        atomic_write_beneath(
+                            _ws_dir,
+                            os.path.join(".claude", "settings.json"),
+                            json.dumps(
+                                _new_settings, indent=2, sort_keys=True) + "\n",
+                            owner_uid=_owner_uid, mode=0o644,
+                        )
                     except OSError as exc:
                         await _refuse_brief_resume(
                             rec, f"settings.json rewrite failed: {exc}",
@@ -773,6 +1162,127 @@ async def replay_undergoing_engagements(
                         )
                         continue
 
+                # Containment Stage 2 (Task 10): establish the record's OS uid.
+                # Placed AFTER the credential/settings compare above and BEFORE
+                # the chown/render below (design §6): the compare-reads use
+                # ``owner_uid_or_none(rec.allocated_uid)``, so a LEGACY record
+                # (still UNALLOCATED_UID here) compares with owner_uid=None —
+                # correct, because its workspace is still ROOT-owned until the
+                # chown lands just below; only after this backfill + chown does a
+                # subsequent boot compare against the now-uid-owned files. A
+                # legacy uid is backfilled via the allocator (allocate +
+                # strict-persist under the registry lock); a record that already
+                # carries a real uid (Stage-2 steady state) is returned
+                # unchanged. Fail-CLOSED: an allocation failure (no allocator, or
+                # the boot reconstruct failed so allocate() raises) refuses the
+                # resume rather than launch a root/unallocated CLI.
+                if rec.allocated_uid == UNALLOCATED_UID:
+                    # S1 r3: if the post-sweep live-uid refold could not run,
+                    # the high-water is not confirmed against live survivors —
+                    # refuse THIS resume (it needs a fresh allocation) rather
+                    # than backfill a uid that a setsid survivor may still hold.
+                    if _refold_failed:
+                        await _refuse_brief_resume(
+                            rec,
+                            "live /proc uid refold failed earlier this boot — "
+                            "refusing to allocate a uid against an unconfirmed "
+                            "high-water",
+                            kind="refuse_uid_alloc_failed",
+                        )
+                        continue
+                    try:
+                        await registry.backfill_allocated_uid(rec.id)
+                    except Exception as exc:  # noqa: BLE001 — fail-closed
+                        await _refuse_brief_resume(
+                            rec, f"uid backfill failed: {exc}",
+                            kind="refuse_uid_alloc_failed",
+                        )
+                        continue
+                _rec_uid = rec.allocated_uid
+                if _rec_uid < UID_BASE:
+                    # Defensive: backfill returned but the uid is still invalid
+                    # (should be unreachable — allocate() returns >= UID_BASE).
+                    await _refuse_brief_resume(
+                        rec,
+                        f"allocated_uid {_rec_uid} below UID_BASE after backfill",
+                        kind="refuse_uid_alloc_failed",
+                    )
+                    continue
+                # Uniqueness across the WHOLE registry AND on-disk workspaces,
+                # not just this boot's resumes (Sol+Terra r1/r2): refuse if this
+                # uid is already owned by ANY other record (terminal/retained/
+                # refused included), by another engagement resumed earlier in
+                # this loop, OR by a workspace directory whose id is not this
+                # record's (a pruned/lost-record sibling the record map misses).
+                _uid_conflict = (
+                    _rec_uid in _migrated_uids
+                    or any(
+                        other.id != rec.id and other.allocated_uid == _rec_uid
+                        for other in _all_records)
+                    or any(
+                        _bn != rec.id
+                        for _bn in _ws_owner_ids.get(_rec_uid, ()))
+                )
+                if _uid_conflict:
+                    await _refuse_brief_resume(
+                        rec,
+                        f"allocated_uid {_rec_uid} is already owned by another "
+                        "engagement (duplicate uid) — refusing to chown/start a "
+                        "second engagement onto one uid",
+                        kind="refuse_uid_duplicate",
+                    )
+                    continue
+                _migrated_uids.add(_rec_uid)
+
+                # §7: regenerate the uid's NSS identity — container /etc is
+                # ephemeral, so an UNDERGOING record resumed after a container
+                # restart has no passwd/group entry and ``getpwuid`` (git, node,
+                # the CLI) would fail. Idempotent. Routed through the injected
+                # allocator so tests bind it to a tmp passwd/group; a missing
+                # allocator (unit fakes) skips it — production always wires one.
+                if _uid_allocator is not None:
+                    try:
+                        _uid_allocator.ensure_identity(
+                            _rec_uid, os.path.join(_ws_dir, ".home"))
+                    except OSError as exc:
+                        await _refuse_brief_resume(
+                            rec,
+                            f"NSS identity regeneration failed: {exc}",
+                            kind="refuse_uid_identity_failed",
+                        )
+                        continue
+
+                # Containment Stage 2 (Task 8/§3): re-chown the workspace to the
+                # record's uid as the LAST filesystem write before the service is
+                # (re-)started — after every root-side write above (CLAUDE.md
+                # refresh, .mcp.json/settings rewrite). The service is already
+                # down (step 0 confirmed it), so nothing runs against a
+                # mid-chown tree. Idempotent: an already-uid-owned workspace
+                # (ordinary restart of a Stage-2 engagement) is re-chowned
+                # cheaply; a legacy root-owned workspace is handed to its uid
+                # here for the first time. A chown failure refuses the resume —
+                # a still-root-owned workspace would make the dropped CLI EACCES
+                # its own files (or the preflight/render invariant break).
+                try:
+                    chown_workspace(_ws_dir, _rec_uid, _rec_uid)
+                    os.chmod(_ws_dir, 0o700)
+                    # Task 11 (containment stage 2): a legacy record migrating
+                    # to the uid drop for the first time has never had a
+                    # private outbox dir — provision it here, alongside the
+                    # chown, before the (re-)rendered run script below can
+                    # start a producer plugin that expects it to exist.
+                    # Idempotent for an ordinary restart of an
+                    # already-migrated engagement.
+                    import plugin_outbox
+                    plugin_outbox.provision_engagement_outbox(_rec_uid)
+                except OSError as exc:
+                    await _refuse_brief_resume(
+                        rec,
+                        f"workspace chown to uid {_rec_uid} failed: {exc}",
+                        kind="refuse_uid_chown_failed",
+                    )
+                    continue
+
                 if s6_rc.service_pair_complete(
                     svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
                     engagement_id=rec.id,
@@ -850,6 +1360,28 @@ async def replay_undergoing_engagements(
                 # §3.8 (missing recorded artifacts) already validated above
                 # (#314) — every recorded --plugin-dir target exists.
 
+                # Containment Stage 2 (Task 7 parity): the fresh-launch path
+                # gates on _preflight_uid_drop, which verifies each pinned
+                # --plugin-dir is readable+traversable by the allocated uid
+                # BEFORE the CLI (dropped to that uid) tries to open it. In
+                # practice ``plugin_boot.heal_and_freeze_store`` re-freezes
+                # artifacts o+rx before replay runs, so this should already
+                # hold — but replay must CHECK rather than assume, the same
+                # way the fresh path does, so a miss refuses this record's
+                # resume instead of rendering/starting a run script that
+                # crash-loops the moment the dropped-uid CLI can't read its
+                # own --plugin-dir. Reuses the SAME check _preflight_uid_drop
+                # uses (shared helper) rather than a divergent copy.
+                try:
+                    _check_plugin_dirs_readable(_rec_uid, rec.plugin_artifacts)
+                except UidDropRefused as exc:
+                    await _refuse_brief_resume(
+                        rec,
+                        f"plugin dir not readable by uid {_rec_uid}: {exc}",
+                        kind="refuse_plugin_dir_unreadable",
+                    )
+                    continue
+
                 # Clear stale/legacy/torn dirs first — write_service_dir
                 # mkdirs with exist_ok=False (a surviving -log sibling would
                 # otherwise collide).
@@ -858,12 +1390,17 @@ async def replay_undergoing_engagements(
                     engagement_id=rec.id,
                 )
 
-                # Re-render run + log scripts.
+                # Re-render run + log scripts. Task 6/Stage 2: render WITH the
+                # record's uid so the migrated run script drops privilege via
+                # setpriv (render refuses the UNALLOCATED_UID sentinel — the uid
+                # was established/backfilled above, so this fails closed for an
+                # unallocated record rather than emitting a root CLI).
                 run_script = render_run_script(
                     engagement_id=rec.id,
                     permission_mode=defn.permission_mode or "acceptEdits",
                     extra_dirs=list(defn.extra_dirs or []),
                     plugin_dirs=[pa["path"] for pa in rec.plugin_artifacts],
+                    uid=_rec_uid, gid=_rec_uid,
                 )
                 log_script = render_log_run_script(engagement_id=rec.id)
                 s6_rc.write_service_dir(
@@ -886,9 +1423,16 @@ async def replay_undergoing_engagements(
                     rec.id[:8], rec.role_or_type,
                 )
             except Exception as exc:  # noqa: BLE001 — per-record isolation
+                # Containment Stage 2 (Task 10, design §6d): a heal that failed
+                # part-way (e.g. render/chown/write raised after step 0 downed
+                # the service) must NEVER be started below — a not-yet-migrated
+                # engagement stays DOWN, never resurrected as root. Refuse it so
+                # the start + background loops skip it (the service is already
+                # down from step 0; the compile-path prune keeps sources sane).
+                refused_ids.add(rec.id)
                 logger.warning(
-                    "boot replay: heal failed for engagement %s: %s — "
-                    "continuing (compile-path prune keeps sources sane)",
+                    "boot replay: heal failed for engagement %s: %s — refusing "
+                    "resume (kept down, not started)",
                     rec.id[:8], exc,
                 )
 
@@ -2744,11 +3288,54 @@ async def main() -> None:
     specialist_registry.load(roles_dir=str(roles_overlay))
 
     from engagement_registry import EngagementRegistry
+    # Containment Stage 2 (Task 10): the persistent, monotonic, never-reused
+    # per-engagement uid allocator. Constructed here and injected into the
+    # registry so create() can allocate a uid under the registry lock; then
+    # RECONSTRUCTED from every uid source below (after load(), which populates
+    # the records the reconstruct scan reads).
+    uid_allocator = UidAllocator(os.path.join(DATA_DIR, "engagement-uids.json"))
     engagement_registry = EngagementRegistry(
         tombstone_path=os.path.join(DATA_DIR, "engagements.json"),
         bus=bus,
+        uid_allocator=uid_allocator,
     )
     await engagement_registry.load()
+
+    # Reconstruct the uid high-water from the max of every source that could
+    # have handed out a uid the allocator must never reissue (design §2):
+    #   - the persisted counter file (read inside reconstruct),
+    #   - the ``allocated_uid`` of EVERY record incl. terminal/retained (NOT
+    #     just live ones — a pruned-but-lingering process still holds its uid),
+    #   - the owner uid of every on-disk /data/engagements/*,
+    #     /data/engagement-ctl/* AND /data/plugin-outbox-eng/* directory (a
+    #     workspace/control/outbox dir chowned to a uid the counter never
+    #     recorded — S1 r7 completed the outbox class, the last per-engagement
+    #     /data artifact that was unscanned). The EXISTENCE of any such
+    #     per-engagement artifact root is also a prior-existence signal, so a
+    #     both-durable-copies-lost boot with a leftover artifact fails closed
+    #     rather than resetting to base (see UidAllocator.reconstruct).
+    # A UidStateError (missing/malformed/inconsistent counter) is FAIL-CLOSED:
+    # log CRITICAL and leave the allocator un-reconstructed, so allocate()
+    # raises for every create()/backfill this boot — new engagements and
+    # legacy-uid migrations are refused rather than risk reissuing a live uid.
+    # Boot itself continues (matching the surrounding best-effort boot-error
+    # convention): existing already-uid'd engagements still replay.
+    try:
+        _known_uids, _dir_owner_uids, _prior_existence = (
+            _gather_reconstruct_evidence(engagement_registry, data_dir=DATA_DIR))
+        uid_allocator.reconstruct(
+            known_uids=_known_uids, dir_owner_uids=_dir_owner_uids,
+            extra_prior_existence=_prior_existence)
+    except UidStateError:
+        logger.critical(
+            "Engagement uid allocator could NOT reconstruct its high-water "
+            "mark — the counter file is missing/malformed/inconsistent. New "
+            "engagements and legacy-uid migrations will be REFUSED this boot "
+            "(fail-closed) rather than risk reissuing a live uid. Repair "
+            "%s to restore allocation.",
+            os.path.join(DATA_DIR, "engagement-uids.json"),
+            exc_info=True,
+        )
 
     from executor_registry import ExecutorRegistry
     executor_registry = ExecutorRegistry(

@@ -40,15 +40,49 @@ def _make_defn(tmp_path, plugins=None):
     )
 
 
-def _make_record():
+def _make_record(allocated_uid=None):
     from engagement_registry import EngagementRecord
+    from engagement_uids import UNALLOCATED_UID
     return EngagementRecord(
         id="abc12345def67890", kind="executor", role_or_type="hello-driver",
         driver="claude_code", status="active", topic_id=999,
         started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
         completed_at=None, sdk_session_id=None,
         origin={"channel": "telegram", "chat_id": "42"}, task="say hello",
+        # Task 6 (containment stage 2): start() feeds allocated_uid into
+        # render_run_script's setpriv wrapper (raises on the sentinel).
+        # Default stays UNALLOCATED_UID so callers that don't care about
+        # start()'s uid wiring (e.g. session-id capture's owner_uid_or_none
+        # check, which treats the sentinel as "no ownership check") are
+        # unaffected — tests that exercise start() pass a real uid.
+        allocated_uid=(
+            UNALLOCATED_UID if allocated_uid is None else allocated_uid
+        ),
     )
+
+
+def _patch_uid_drop_ok(monkeypatch):
+    """Task 7 (containment stage 2): ``start()`` now runs
+    ``_preflight_uid_drop`` before planting the service. Its real
+    preconditions (workspace chown, passwd entry) are made true by
+    Task 8 — so orchestration tests that exercise ``start()`` end-to-end
+    (not testing the preflight itself, which has its own dedicated test
+    class below) stub it to a no-op rather than fake an entire uid/NSS
+    environment.
+
+    Task 8: also stubs ``chown_workspace``/``ensure_identity`` themselves —
+    ``provision_workspace`` now calls them for real when given a real
+    ``allocated_uid`` (every fixture here uses 200005), and a real
+    ``os.chown`` to an arbitrary uid requires root, which the unit runner
+    is not. Ordering/call-sequence of these two is covered by
+    ``tests/test_workspace.py`` directly; this helper only needs them to be
+    no-ops so end-to-end orchestration tests don't hit ``PermissionError``.
+    """
+    from drivers import claude_code_driver as ccd
+    from drivers import workspace as ws_mod
+    monkeypatch.setattr(ccd, "_preflight_uid_drop", lambda rec, ws: None)
+    monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
+    monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
 
 
 class TestStart:
@@ -59,6 +93,8 @@ class TestStart:
     async def test_start_provisions_writes_service_compiles_starts(self, monkeypatch, tmp_path):
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
+
+        _patch_uid_drop_ok(monkeypatch)
 
         # Mock every s6_rc subprocess call to avoid actually running s6-rc-compile.
         calls: list[tuple[str, dict]] = []
@@ -98,7 +134,7 @@ class TestStart:
         )
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
 
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
@@ -118,7 +154,10 @@ class TestStart:
         assert (tmp_path / "svc-root" / f"engagement-{rec.id}" / "run").is_file()
         # Workspace provisioned
         assert (tmp_path / "engagements" / rec.id / "CLAUDE.md").exists()
-        assert (tmp_path / "engagements" / rec.id / "stdin.fifo").exists()
+        # Task 4 (containment stage 2): the FIFO lives in the control dir.
+        from drivers.workspace import fifo_path
+        assert os.path.exists(fifo_path(rec.id))
+        assert not (tmp_path / "engagements" / rec.id / "stdin.fifo").exists()
 
 
     @pytest.mark.skipif(
@@ -134,6 +173,8 @@ class TestStart:
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
         from drivers.brief import COMPLETION_ACCOUNTING_LINE
+
+        _patch_uid_drop_ok(monkeypatch)
 
         async def fake_cau():
             return None
@@ -153,7 +194,7 @@ class TestStart:
         monkeypatch.setattr(ClaudeCodeDriver, "_write_to_fifo", _noop_write)
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         rec.origin["brief"] = {
             "objective": "Rotate the API keys",
             "acceptance_criteria": ["old keys revoked"],
@@ -193,6 +234,8 @@ class TestStartRollback:
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
 
+        _patch_uid_drop_ok(monkeypatch)
+
         compile_calls: list[str] = []
 
         async def fake_cau():
@@ -208,7 +251,7 @@ class TestStartRollback:
         (tmp_path / "svc-root").mkdir()
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
 
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
@@ -244,6 +287,8 @@ class TestStartRollback:
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
 
+        _patch_uid_drop_ok(monkeypatch)
+
         async def fake_cau():
             return None
 
@@ -257,7 +302,7 @@ class TestStartRollback:
         (tmp_path / "svc-root").mkdir()
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=AsyncMock(),
@@ -270,6 +315,60 @@ class TestStartRollback:
             await drv.start(rec, prompt="hi", options=defn)
         assert not (tmp_path / "engagements" / rec.id).exists()
         assert not (tmp_path / "svc-root" / f"engagement-{rec.id}").exists()
+
+    async def test_start_service_failure_removes_engagement_outbox(
+            self, monkeypatch, tmp_path):
+        """M1 (containment stage 2 fix-wave, final review): the rollback path
+        must also remove the uid's private outbox dir that
+        ``provision_workspace`` created (Task 11,
+        ``plugin_outbox.provision_engagement_outbox``) — pre-fix the rollback
+        removed the workspace/control dir and pruned the passwd identity but
+        left this dir behind, and uids are never reused so a repeatedly-
+        failing launch leaked a permanent empty dir per attempt. Asymmetric
+        with the sweeper/``delete_engagement_workspace`` teardown paths, which
+        already remove it (``tools.py`` Task 11 call site)."""
+        import plugin_outbox
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers import s6_rc
+
+        _patch_uid_drop_ok(monkeypatch)
+
+        async def fake_cau():
+            pass
+
+        async def fake_start_fail(*, engagement_id):
+            raise RuntimeError("simulated s6-rc start failure")
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked", fake_cau)
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+        monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT",
+                            str(tmp_path / "svc-root"))
+        (tmp_path / "svc-root").mkdir()
+
+        defn = _make_defn(tmp_path)
+        rec = _make_record(allocated_uid=200005)
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+        )
+        (tmp_path / "engagements").mkdir()
+        (tmp_path / "base-plugins").mkdir()
+
+        # Sanity: provision_workspace (real, not faked here) really creates
+        # the private outbox dir for this uid before start_service fails —
+        # otherwise this test would trivially pass with a no-op fix.
+        outbox_dir = plugin_outbox.engagement_outbox_dir(200005)
+
+        with pytest.raises(RuntimeError, match="simulated s6-rc start failure"):
+            await drv.start(rec, prompt="hi", options=defn)
+
+        assert not os.path.isdir(outbox_dir), (
+            "M1: rollback must remove the uid's private outbox dir "
+            "provisioned during start() — a failed launch otherwise leaks a "
+            "permanent empty dir (uids are never reused)"
+        )
 
     async def test_provision_failure_cleans_up(self, monkeypatch, tmp_path):
         """Failure during provisioning (before service-dir write) — only
@@ -322,6 +421,188 @@ class TestStartRollback:
         # workspace tree should still be removed (rmtree(ignore_errors=True)
         # is best-effort).
         assert not (tmp_path / "engagements" / rec.id).exists()
+
+
+class TestPreflightUidDrop:
+    """Task 7 (containment stage 2): `_preflight_uid_drop` is the
+    fail-closed gate run before a service is planted — it must refuse
+    (never plant) whenever the setpriv uid drop `render_run_script` bakes
+    into the run script cannot actually succeed."""
+
+    def test_refuses_when_setpriv_missing(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+        rec = _make_record(allocated_uid=200005)
+
+        with pytest.raises(ccd.UidDropRefused, match="setpriv"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_uid_sentinel(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record()  # defaults to UNALLOCATED_UID
+
+        with pytest.raises(ccd.UidDropRefused, match="UID_BASE"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_workspace_owner_mismatch(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+
+        class FakeStat:
+            st_uid = 999999  # not the allocated uid — chown hasn't run
+
+        monkeypatch.setattr(ccd.os, "stat", lambda path, *a, **kw: FakeStat())
+
+        with pytest.raises(ccd.UidDropRefused, match="owned by uid"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_missing_passwd_entry(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+
+        class FakeStat:
+            st_uid = 200005  # ownership check passes
+
+        monkeypatch.setattr(ccd.os, "stat", lambda path, *a, **kw: FakeStat())
+
+        def fake_getpwuid(uid):
+            raise KeyError(uid)
+
+        monkeypatch.setattr(ccd.pwd, "getpwuid", fake_getpwuid)
+
+        with pytest.raises(ccd.UidDropRefused, match="passwd entry"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_refuses_unreadable_plugin_dir(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        os.chmod(plugin_dir, 0o700)  # owner-only — no world r/x
+        rec.plugin_artifacts = ({"path": str(plugin_dir)},)
+
+        real_stat = os.stat
+
+        def fake_stat(path, *a, **kw):
+            if os.fspath(path) == str(tmp_path):
+                class Owned:
+                    st_uid = 200005
+                return Owned()
+            return real_stat(path, *a, **kw)  # real stat for the plugin dir
+
+        monkeypatch.setattr(ccd.os, "stat", fake_stat)
+        monkeypatch.setattr(ccd.pwd, "getpwuid", lambda uid: object())
+
+        with pytest.raises(ccd.UidDropRefused, match="not world-readable"):
+            ccd._preflight_uid_drop(rec, str(tmp_path))
+
+    def test_happy_path_all_checks_pass(self, monkeypatch, tmp_path):
+        from drivers import claude_code_driver as ccd
+
+        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        rec = _make_record(allocated_uid=200005)
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        rec.plugin_artifacts = ({"path": str(plugin_dir)},)
+
+        class FakeStat:
+            st_uid = 200005
+            st_mode = 0o40755  # dir, rwxr-xr-x — world r+x too
+
+        monkeypatch.setattr(ccd.os, "stat", lambda path, *a, **kw: FakeStat())
+        monkeypatch.setattr(ccd.pwd, "getpwuid", lambda uid: object())
+
+        ccd._preflight_uid_drop(rec, str(tmp_path))  # must not raise
+
+
+class TestUidDropRefusalWiredIntoStart:
+    """Task 7: the caller in `start()` must map `UidDropRefused` to a
+    dedicated `mark_error(kind="refuse_uid_drop_failed")` + best-effort
+    `ensure_service_down`, and must NEVER plant the service (write_service_dir
+    / start_service) on refusal."""
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
+    )
+    async def test_refusal_marks_error_and_never_plants_service(
+        self, monkeypatch, tmp_path,
+    ):
+        from drivers.claude_code_driver import ClaudeCodeDriver, UidDropRefused
+        from drivers import claude_code_driver as ccd
+        from drivers import s6_rc
+
+        def boom(rec, ws):
+            raise UidDropRefused("simulated uid-drop refusal")
+
+        monkeypatch.setattr(ccd, "_preflight_uid_drop", boom)
+        # Task 8: provision_workspace (step 1) runs BEFORE this preflight
+        # (step 1.5) and now really chowns for a record with a real
+        # allocated_uid (200005, below) — stub so this test doesn't need
+        # root.
+        from drivers import workspace as ws_mod
+        monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
+        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
+
+        write_calls: list[str] = []
+        start_calls: list[str] = []
+
+        def fake_write_service_dir(**kw):
+            write_calls.append(kw["engagement_id"])
+        async def fake_start_kw(*, engagement_id):
+            start_calls.append(engagement_id)
+        monkeypatch.setattr(s6_rc, "write_service_dir", fake_write_service_dir)
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_kw)
+
+        ensure_down_calls: list[str] = []
+        async def fake_ensure_down(*, engagement_id, **kw):
+            ensure_down_calls.append(engagement_id)
+            return True
+        monkeypatch.setattr(s6_rc, "ensure_service_down", fake_ensure_down)
+
+        monkeypatch.setattr(
+            s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc-root"))
+        (tmp_path / "svc-root").mkdir()
+
+        mark_error_calls: list[tuple] = []
+
+        class FakeRegistry:
+            async def mark_error(self, engagement_id, kind, message):
+                mark_error_calls.append((engagement_id, kind, message))
+                return True
+
+        defn = _make_defn(tmp_path)
+        rec = _make_record(allocated_uid=200005)
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+            registry=FakeRegistry(),
+        )
+        (tmp_path / "engagements").mkdir()
+        (tmp_path / "base-plugins").mkdir()
+
+        with pytest.raises(UidDropRefused, match="simulated uid-drop refusal"):
+            await drv.start(rec, prompt="hi", options=defn)
+
+        assert write_calls == [], "write_service_dir must not run on refusal"
+        assert start_calls == [], "start_service must not run on refusal"
+        assert ensure_down_calls == [rec.id]
+        assert len(mark_error_calls) == 1
+        eid, kind, message = mark_error_calls[0]
+        assert eid == rec.id
+        assert kind == "refuse_uid_drop_failed"
+        assert "simulated uid-drop refusal" in message
 
 
 class TestNoRemoteControlNotices:
@@ -458,11 +739,14 @@ class TestSessionIdCapture:
         ``<uuid>.jsonl`` file. Watcher persists the UUID to
         ``<ws>/.session_id`` and invokes ``persist_session_id`` callback.
         """
+        from pathlib import Path
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         projects.mkdir(parents=True)
         sid = "8ab67de0-1234-5678-9abc-def012345678"
@@ -491,10 +775,12 @@ class TestSessionIdCapture:
         except asyncio.CancelledError:
             pass
 
-        session_file = ws / ".session_id"
+        # Task 4 (containment stage 2): .session_id lives in the control dir.
+        session_file = Path(session_id_path(rec.id))
         assert session_file.exists(), (
-            f".session_id file must be written to workspace dir "
-            f"({ws}); contents of dir: {list(ws.iterdir())}"
+            f".session_id file must be written to the control dir "
+            f"({session_file.parent}); contents: "
+            f"{list(session_file.parent.iterdir())}"
         )
         assert session_file.read_text(encoding="utf-8").strip() == sid
         assert persisted == [(rec.id, sid)], (
@@ -509,10 +795,12 @@ class TestSessionIdCapture:
         until the directory + file appear.
         """
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         # Don't create projects yet — let the watcher poll.
 
@@ -544,7 +832,9 @@ class TestSessionIdCapture:
         except asyncio.CancelledError:
             pass
 
-        assert (ws / ".session_id").read_text(encoding="utf-8").strip() == sid
+        import pathlib as _pathlib
+        assert _pathlib.Path(session_id_path(rec.id)).read_text(
+            encoding="utf-8").strip() == sid
         assert persisted == [(rec.id, sid)]
 
     async def test_ignores_non_uuid_filenames(self, tmp_path):
@@ -552,10 +842,12 @@ class TestSessionIdCapture:
         session files). Other files in the projects dir (logs, locks,
         partial writes) must NOT be persisted as session_ids."""
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         projects.mkdir(parents=True)
         # Decoy files that look superficially like jsonl but are NOT
@@ -589,7 +881,9 @@ class TestSessionIdCapture:
             pass
 
         # The decoy files were ignored; the UUID-named file was captured.
-        assert (ws / ".session_id").read_text(encoding="utf-8").strip() == sid
+        import pathlib as _pathlib
+        assert _pathlib.Path(session_id_path(rec.id)).read_text(
+            encoding="utf-8").strip() == sid
         assert persisted == [(rec.id, sid)]
 
     async def test_atomic_write_via_temp_rename(self, tmp_path):
@@ -598,10 +892,12 @@ class TestSessionIdCapture:
         ``claude --resume <truncated>``. Verify temp+rename atomicity
         (no leftover ``.session_id.tmp`` in workspace)."""
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import control_dir, provision_control_dir
 
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         projects = self._projects_dir(ws)
         projects.mkdir(parents=True)
         sid = "deadbeef-0000-0000-0000-000000000000"
@@ -622,11 +918,82 @@ class TestSessionIdCapture:
         except asyncio.CancelledError:
             pass
 
-        leftovers = [p.name for p in ws.iterdir() if p.name.startswith(".session_id")]
+        # Task 4: .session_id (and its .tmp) live in the control dir.
+        import pathlib as _pathlib
+        ctl = _pathlib.Path(control_dir(rec.id))
+        leftovers = [p.name for p in ctl.iterdir() if p.name.startswith(".session_id")]
         assert ".session_id" in leftovers
         tmp_leftovers = [n for n in leftovers if n != ".session_id"]
         assert tmp_leftovers == [], (
-            f"atomic-write temp file leaked into workspace: {tmp_leftovers!r}"
+            f"atomic-write temp file leaked into the control dir: {tmp_leftovers!r}"
+        )
+
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    async def test_refuses_symlinked_projects_dir(
+        self, tmp_path, monkeypatch, has_openat2,
+    ):
+        """Containment stage 2, Task 5: engagement A's ``.home/.claude/
+        projects/<name>`` is a SYMLINK to sibling engagement B's own
+        projects dir. The watcher must refuse to follow it — never adopting
+        B's session UUID as A's — and stop watching (no adoption at all),
+        rather than silently reading through the symlink. Parametrized over
+        both the ``openat2`` fast path and the per-component fallback (the
+        two independent enforcement mechanisms in ``safe_fs``)."""
+        from pathlib import Path
+
+        import safe_fs
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
+
+        monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
+
+        rec = _make_record()
+        ws_a = tmp_path / rec.id
+        ws_a.mkdir()
+        provision_control_dir(rec.id)
+
+        # Sibling B's own (legitimate) projects dir, holding B's session.
+        ws_b = tmp_path / "sibling-b"
+        b_projects = (
+            ws_b / ".home" / ".claude" / "projects" / "-data-engagements-sibling-b"
+        )
+        b_projects.mkdir(parents=True)
+        b_sid = "bbbbbbbb-0000-0000-0000-000000000000"
+        (b_projects / f"{b_sid}.jsonl").write_text("{}\n", encoding="utf-8")
+
+        # A's own projects dir path is a SYMLINK to B's — the attack this
+        # task closes: once workspaces are uid-chowned (Task 8), a
+        # compromised A can plant this to read B's session artifacts.
+        a_home_claude_projects = ws_a / ".home" / ".claude" / "projects"
+        a_home_claude_projects.mkdir(parents=True)
+        (a_home_claude_projects / f"-data-engagements-{rec.id}").symlink_to(
+            b_projects, target_is_directory=True,
+        )
+
+        persisted: list[tuple[str, str]] = []
+
+        async def fake_persist(engagement_id: str, session_id: str) -> None:
+            persisted.append((engagement_id, session_id))
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="x",
+            persist_session_id=fake_persist,
+        )
+
+        # No infinite poll loop: a refusal must make the watcher RETURN
+        # promptly rather than spin forever re-hitting the same symlink.
+        await asyncio.wait_for(drv._capture_session_id(rec), timeout=5.0)
+
+        # No adoption at all — neither B's uuid nor anything else.
+        assert persisted == [], (
+            f"session capture must not adopt ANY session id through a "
+            f"symlinked projects dir; got {persisted!r}"
+        )
+        assert not Path(session_id_path(rec.id)).exists(), (
+            ".session_id must not be written when the projects dir "
+            "resolution was refused as a symlink"
         )
 
 
@@ -859,7 +1226,9 @@ class TestWriteToFifoBounded:
 
         ws = tmp_path / "eng-no-reader"
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir("eng-no-reader")
+        os.mkfifo(fifo_path("eng-no-reader"))
         sent = []
         driver = self._driver(tmp_path, sent)
         rec = SimpleNamespace(id="eng-no-reader", topic_id=42)
@@ -882,7 +1251,9 @@ class TestWriteToFifoBounded:
 
         ws = tmp_path / "eng-retained"
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir("eng-retained")
+        os.mkfifo(fifo_path("eng-retained"))
         sent = []
         driver = self._driver(tmp_path, sent)
         rec = SimpleNamespace(id="eng-retained", topic_id=42)
@@ -905,7 +1276,9 @@ class TestWriteToFifoBounded:
 
         ws = tmp_path / "eng-legacy"
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir("eng-legacy")
+        os.mkfifo(fifo_path("eng-legacy"))
         sent = []
         driver = self._driver(tmp_path, sent)
         rec = SimpleNamespace(id="eng-legacy", topic_id=42)
@@ -951,9 +1324,12 @@ class TestWriteToFifoBounded:
         import threading
         from types import SimpleNamespace
 
+        from drivers.workspace import fifo_path, provision_control_dir
+
         ws = tmp_path / "eng-reader"
         ws.mkdir()
-        fifo = str(ws / "stdin.fifo")
+        provision_control_dir("eng-reader")
+        fifo = fifo_path("eng-reader")
         os.mkfifo(fifo)
         got = []
         t = threading.Thread(
@@ -1350,11 +1726,14 @@ class TestSpawnBackgroundTasksInbound:
             engagements_root=str(tmp_path),
             send_to_topic=sender, casa_framework_mcp_url="x",
         )
+        from drivers.workspace import inbound_spool_path, provision_control_dir
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
+        provision_control_dir(rec.id)
         # A surviving spool with one queued envelope + one consumed envelope
-        # still owing a receipt (pending).
+        # still owing a receipt (pending). Task 4: lives in the control dir.
         import json
         lines = [
             json.dumps({
@@ -1370,7 +1749,8 @@ class TestSpawnBackgroundTasksInbound:
                 "seq": 1, "is_initial": False,
             }),
         ]
-        (ws / ".inbound_spool.jsonl").write_text(
+        import pathlib as _pathlib
+        _pathlib.Path(inbound_spool_path(rec.id)).write_text(
             "\n".join(lines) + "\n", encoding="utf-8")
         try:
             drv._spawn_background_tasks(rec)
@@ -1407,10 +1787,14 @@ class TestAbnormalExitCorrelation:
             engagements_root=str(tmp_path),
             send_to_topic=AsyncMock(), casa_framework_mcp_url="x",
         )
+        from drivers.workspace import provision_control_dir, stderr_path
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
-        (ws / ".stderr.1.log").write_text(
+        provision_control_dir(rec.id)
+        # Task 4: the per-epoch stderr ring lives in the control dir.
+        __import__("pathlib").Path(stderr_path(rec.id, 1)).write_text(
             "traceback: boom on epoch 1\n", encoding="utf-8")
 
         with caplog.at_level(logging.WARNING):
@@ -1704,12 +2088,15 @@ class TestCancelBypassesQueue:
             s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc"))
         (tmp_path / "svc").mkdir()
 
+        from drivers.workspace import provision_control_dir
+
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path),
             send_to_topic=AsyncMock(), casa_framework_mcp_url="x",
         )
         rec = _make_record()
         (tmp_path / rec.id).mkdir()
+        provision_control_dir(rec.id)  # Task 4: spool persist needs the control dir
 
         # Wire the spool; enqueue while unarmed (busy — no spawn yet).
         drv._spawn_background_tasks(rec)
@@ -1761,16 +2148,22 @@ class TestSpoolThreadingAndSeam:
 
 
 class TestTerminalSpoolDrainAndReconcile:
-    def _write_spool(self, ws, *, receipt="pending", notice="none", tg=12):
+    def _write_spool(self, engagement_id, *, receipt="pending", notice="none", tg=12):
+        """Task 4: the spool lives in the control dir, keyed by engagement id
+        (not the workspace path callers used to pass)."""
         import json
-        ws.mkdir(parents=True, exist_ok=True)
+        import pathlib as _pathlib
+        from drivers.workspace import inbound_spool_path, provision_control_dir
+
+        provision_control_dir(engagement_id)
         line = json.dumps({
             "text": "owes a receipt", "tg_message_id": tg,
             "priority": False, "receipt": receipt, "notice": notice,
             "enqueued_at": 1.0, "delivery_epoch": 5, "state": "consumed",
             "seq": 0, "is_initial": False,
         })
-        (ws / ".inbound_spool.jsonl").write_text(line + "\n", encoding="utf-8")
+        _pathlib.Path(inbound_spool_path(engagement_id)).write_text(
+            line + "\n", encoding="utf-8")
 
     async def test_drain_inbound_spool_flushes_pending_receipt(self, tmp_path):
         from drivers.claude_code_driver import ClaudeCodeDriver, _RECEIPT_COPY
@@ -1782,7 +2175,8 @@ class TestTerminalSpoolDrainAndReconcile:
         )
         rec = _make_record()
         ws = tmp_path / rec.id
-        self._write_spool(ws)
+        ws.mkdir(parents=True, exist_ok=True)
+        self._write_spool(rec.id)
         drv._spawn_background_tasks(rec)
         # Cancel the recover task so it doesn't also drain (isolate the drain).
         for t in drv._tasks.get(rec.id, []):
@@ -1799,7 +2193,9 @@ class TestTerminalSpoolDrainAndReconcile:
     async def test_reconcile_terminal_spool_posts_when_topic_exists(self, tmp_path):
         """terminal-commit→kill→boot-drain: a terminal spool with a pending
         receipt is drained to the (existing) topic on boot reconciliation."""
+        import pathlib as _pathlib
         from drivers.claude_code_driver import ClaudeCodeDriver, _RECEIPT_COPY
+        from drivers.workspace import inbound_spool_path
 
         sender = AsyncMock(return_value=1)
         drv = ClaudeCodeDriver(
@@ -1807,18 +2203,20 @@ class TestTerminalSpoolDrainAndReconcile:
             send_to_topic=sender, casa_framework_mcp_url="x",
         )
         rec = _make_record()                          # topic_id = 999
-        self._write_spool(tmp_path / rec.id)
+        self._write_spool(rec.id)
         await drv.reconcile_terminal_spool(rec)
         posts = [c for c in sender.await_args_list if _RECEIPT_COPY in c.args]
         assert posts and posts[0].args[0] == rec.topic_id
         # Settled + pruned on disk (no pending left).
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' not in remaining
 
     async def test_reconcile_terminal_spool_warn_drops_when_topic_gone(
         self, tmp_path,
     ):
+        import pathlib as _pathlib
         from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import inbound_spool_path
         from engagement_registry import EngagementRecord
 
         sender = AsyncMock()
@@ -1833,17 +2231,20 @@ class TestTerminalSpoolDrainAndReconcile:
             completed_at=1.0, sdk_session_id=None,
             origin={"channel": "telegram"}, task="t",
         )
-        self._write_spool(tmp_path / rec.id)
+        self._write_spool(rec.id)
         await drv.reconcile_terminal_spool(rec)
         # Topic gone → WARN-drop, nothing sent, pending settled so it won't retry.
         assert sender.await_count == 0
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' not in remaining
 
     async def test_drain_failure_then_restart_retries(self, tmp_path):
         """drain-failure→restart→retry: a send that fails at drain leaves the
         receipt pending; a later reconcile (restart) retries and succeeds."""
         from drivers.claude_code_driver import ClaudeCodeDriver, _RECEIPT_COPY
+
+        import pathlib as _pathlib
+        from drivers.workspace import inbound_spool_path
 
         # First send raises (drain fails), later sends succeed.
         sender = AsyncMock(side_effect=[RuntimeError("telegram down"), 1, 1])
@@ -1852,13 +2253,13 @@ class TestTerminalSpoolDrainAndReconcile:
             send_to_topic=sender, casa_framework_mcp_url="x",
         )
         rec = _make_record()
-        self._write_spool(tmp_path / rec.id)
+        self._write_spool(rec.id)
         await drv.reconcile_terminal_spool(rec)       # send fails → still pending
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' in remaining
         await drv.reconcile_terminal_spool(rec)       # restart → retry, succeeds
         assert any(_RECEIPT_COPY in c.args for c in sender.await_args_list)
-        remaining = (tmp_path / rec.id / ".inbound_spool.jsonl").read_text()
+        remaining = _pathlib.Path(inbound_spool_path(rec.id)).read_text()
         assert '"receipt": "pending"' not in remaining
 
 
@@ -2278,6 +2679,8 @@ class TestBootSummary:
         from drivers.claude_code_driver import ClaudeCodeDriver
         from drivers import s6_rc
 
+        _patch_uid_drop_ok(monkeypatch)
+
         async def fake_cau():
             return None
 
@@ -2322,7 +2725,7 @@ class TestBootSummary:
         reg = FakeReg()
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=send,
@@ -2349,7 +2752,7 @@ class TestBootSummary:
             raise RuntimeError("telegram down")
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=boom,
@@ -2372,7 +2775,7 @@ class TestBootSummary:
             return None
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=send,
@@ -2624,10 +3027,13 @@ class TestNoReaderNoticeThroughSequencer:
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path), send_to_topic=sent_direct,
             casa_framework_mcp_url="x")
+        from drivers.workspace import fifo_path, provision_control_dir
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))  # exists, but NO reader ⇒ deadline hit
+        provision_control_dir(rec.id)
+        os.mkfifo(fifo_path(rec.id))  # exists, but NO reader ⇒ deadline hit
 
         posts: list = []
 
@@ -2668,10 +3074,13 @@ class TestNoReaderNoticeThroughSequencer:
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path), send_to_topic=sent_direct,
             casa_framework_mcp_url="x")
+        from drivers.workspace import fifo_path, provision_control_dir
+
         rec = _make_record()
         ws = tmp_path / rec.id
         ws.mkdir()
-        os.mkfifo(str(ws / "stdin.fifo"))
+        provision_control_dir(rec.id)
+        os.mkfifo(fifo_path(rec.id))
 
         ok = await asyncio.wait_for(
             drv._write_to_fifo(rec, "hello", timeout_s=0.3, poll_s=0.05),

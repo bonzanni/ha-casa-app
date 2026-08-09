@@ -1,0 +1,320 @@
+"""safe_fs — no-symlink, workspace-confined root access.
+
+Lets casa-core (running as root) read/traverse files inside a uid-owned
+engagement workspace without following an attacker-planted symlink out to a
+sibling engagement's tree.
+
+Two code paths, both fail-closed:
+
+- Fast path: a single `openat2(2)` syscall with
+  `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`. The kernel refuses ANY symlink
+  component (final or intermediate) and any `..` escape past the starting
+  directory in one atomic resolution — immune to a TOCTOU race between
+  components. Invoked via a raw `ctypes` syscall because the Python stdlib
+  does not wrap `openat2`.
+- Fallback path (kernels without openat2, e.g. < 5.6): walk the path one
+  component at a time, opening each with `openat(..., O_NOFOLLOW)` relative
+  to the previous component's directory fd, never by re-resolving a full
+  pathname. This is deliberately NOT a single check-then-open: an attacker
+  who can swap a path component between a check and a later open (a
+  classic TOCTOU) cannot win here because each step's fd is what the next
+  step opens relative to, and nothing is ever reopened by name afterward.
+
+Owner-uid enforcement (`owner_uid=...`) is layered on top of both paths via
+`fstat` on the final fd: even a legitimately-resolved (non-symlink) path is
+refused if it is not owned by the expected uid.
+"""
+
+import ctypes
+import ctypes.util
+import errno
+import os
+import stat
+import uuid
+
+__all__ = [
+    "SymlinkRefused",
+    "HAS_OPENAT2",
+    "open_beneath",
+    "read_text_beneath",
+    "list_dir_beneath",
+    "atomic_write_beneath",
+]
+
+
+class SymlinkRefused(OSError):
+    """Raised when a path component is a symlink, or resolution would
+    escape the confinement root — on either the openat2 or fallback path."""
+
+
+# --- openat2 syscall plumbing -------------------------------------------------
+
+RESOLVE_NO_SYMLINKS = 0x04
+RESOLVE_BENEATH = 0x08
+
+# __NR_openat2 is 437 on both supported build arches (Casa targets amd64 +
+# arm64). Confirmed against /usr/include/asm-generic/unistd.h (the arm64/
+# generic syscall table) and /usr/include/x86_64-linux-gnu/asm/unistd_64.h
+# (the x86_64 table) on 2026-08-09 — both define __NR_openat2 as 437.
+_NR_OPENAT2_BY_ARCH = {"x86_64": 437, "aarch64": 437}
+_NR_openat2 = _NR_OPENAT2_BY_ARCH.get(os.uname().machine, 437)
+
+
+class _OpenHow(ctypes.Structure):
+    _fields_ = [
+        ("flags", ctypes.c_uint64),
+        ("mode", ctypes.c_uint64),
+        ("resolve", ctypes.c_uint64),
+    ]
+
+
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def _openat2(dirfd, path, flags, resolve):
+    how = _OpenHow(flags=flags | os.O_CLOEXEC, mode=0, resolve=resolve)
+    rc = _libc.syscall(
+        ctypes.c_long(_NR_openat2),
+        ctypes.c_int(dirfd),
+        ctypes.c_char_p(os.fsencode(path)),
+        ctypes.byref(how),
+        ctypes.c_size_t(ctypes.sizeof(how)),
+    )
+    if rc < 0:
+        e = ctypes.get_errno()
+        if e in (errno.ELOOP, errno.EXDEV, errno.EAGAIN):
+            # ELOOP: a symlink component was rejected by RESOLVE_NO_SYMLINKS.
+            # EXDEV: resolution would cross outside the beneath-root (or a
+            #        mount point) under RESOLVE_BENEATH.
+            # EAGAIN: RESOLVE_BENEATH detected the walk was raced (retry-worthy
+            #        in general, but we treat it as a refusal here: fail closed
+            #        rather than retry into an attacker-controlled loop).
+            raise SymlinkRefused(e, os.strerror(e), path)
+        raise OSError(e, os.strerror(e), path)
+    return rc
+
+
+def _probe_openat2():
+    dirfd = os.open(".", os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        fd = _openat2(
+            dirfd,
+            ".",
+            os.O_RDONLY | os.O_DIRECTORY,
+            RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+        )
+        os.close(fd)
+        return True
+    except OSError as exc:
+        return getattr(exc, "errno", None) not in (errno.ENOSYS, errno.EPERM, errno.EINVAL)
+    finally:
+        os.close(dirfd)
+
+
+HAS_OPENAT2 = _probe_openat2()
+
+
+def _open_root_dir(root):
+    """Open `root` itself, refusing it too if it is a symlink. Symmetric
+    between the openat2 and fallback paths so neither treats a
+    symlink-as-root as implicitly trusted."""
+    try:
+        return os.open(root, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        # O_NOFOLLOW + O_DIRECTORY on a symlink reports ELOOP on some
+        # kernels and ENOTDIR on others (the symlink itself is not a
+        # directory, so the O_DIRECTORY check can fail first) — both mean
+        # "root resolved to a symlink", so both are refused.
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise SymlinkRefused(exc.errno, "root is a symlink", root) from exc
+        raise
+
+
+# --- FD-relative fallback -----------------------------------------------------
+
+
+def _open_fallback(root, rel_path, want_dir, owner_uid):
+    """Per-component openat(O_NOFOLLOW) walk, holding only fds — never a
+    pathname — across the walk. Any raise path below closes whatever fd it
+    currently holds so the fallback never leaks a descriptor."""
+    if os.path.isabs(rel_path):
+        # Mirror the openat2 path: RESOLVE_BENEATH rejects an absolute
+        # rel_path outright ("absolute values of path... rejected"). The
+        # fallback must refuse it too, rather than silently treating
+        # "/etc/passwd" as if it were "etc/passwd" relative to root.
+        raise SymlinkRefused(errno.EXDEV, "absolute rel_path", rel_path)
+    parts = [p for p in rel_path.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        raise SymlinkRefused(errno.EXDEV, "dotdot escape", rel_path)
+
+    parent = _open_root_dir(root)
+    try:
+        if not parts:
+            # rel_path resolved to "." itself — root already open as parent.
+            if owner_uid is not None and os.fstat(parent).st_uid != owner_uid:
+                raise SymlinkRefused(errno.EPERM, f"owner != {owner_uid}", rel_path)
+            return parent
+
+        for i, name in enumerate(parts):
+            last = i == len(parts) - 1
+            if last and not want_dir:
+                flags = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_RDONLY
+            else:
+                flags = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_DIRECTORY | os.O_RDONLY
+            try:
+                fd = os.open(name, flags, dir_fd=parent)
+            except OSError as exc:
+                # ELOOP: O_NOFOLLOW hit a symlink. ENOTDIR: O_DIRECTORY was
+                # also requested (non-final component) and the symlink's
+                # target-type check failed first — same underlying refusal.
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise SymlinkRefused(exc.errno, "symlink component", name) from exc
+                raise
+            os.close(parent)
+            parent = fd
+            if owner_uid is not None and os.fstat(parent).st_uid != owner_uid:
+                raise SymlinkRefused(errno.EPERM, f"owner != {owner_uid}", name)
+        return parent
+    except BaseException:
+        os.close(parent)
+        raise
+
+
+# --- public API ----------------------------------------------------------------
+
+
+def open_beneath(root, rel_path, *, want_dir=False, owner_uid=None):
+    """Return an fd for `rel_path` resolved beneath `root`, refusing any
+    symlink component (intermediate or final) and any escape attempt.
+    Raises SymlinkRefused on refusal, or OSError for ordinary I/O errors."""
+    if HAS_OPENAT2:
+        rfd = _open_root_dir(root)
+        try:
+            flags = os.O_RDONLY | (os.O_DIRECTORY if want_dir else 0)
+            fd = _openat2(
+                rfd, rel_path or ".", flags, RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS
+            )
+        finally:
+            os.close(rfd)
+        if owner_uid is not None and os.fstat(fd).st_uid != owner_uid:
+            os.close(fd)
+            raise SymlinkRefused(errno.EPERM, f"owner != {owner_uid}", rel_path)
+        return fd
+    return _open_fallback(root, rel_path, want_dir, owner_uid)
+
+
+def read_text_beneath(root, rel_path, *, owner_uid=None, max_bytes=None):
+    fd = open_beneath(root, rel_path, want_dir=False, owner_uid=owner_uid)
+    with os.fdopen(fd, "rb") as fh:
+        data = fh.read() if max_bytes is None else fh.read(max_bytes)
+    return data.decode("utf-8", errors="replace")
+
+
+def list_dir_beneath(root, rel_path=".", *, owner_uid=None):
+    fd = open_beneath(root, rel_path, want_dir=True, owner_uid=owner_uid)
+    try:
+        return os.listdir(fd)
+    finally:
+        # os.listdir(fd) does NOT close the fd (unlike os.fdopen in
+        # read_text_beneath) — the caller retains ownership and must close it.
+        os.close(fd)
+
+
+def atomic_write_beneath(root, rel_path, data, *, owner_uid=None, mode=0o644):
+    """Atomically write *data* to ``rel_path`` beneath ``root`` WITHOUT ever
+    following a symlink or writing through one — the write-side sibling of
+    :func:`open_beneath`.
+
+    The PARENT directory of ``rel_path`` is opened with the identical
+    no-symlink, workspace-confined traversal :func:`open_beneath` uses
+    (``openat2`` ``RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS``, or the FD-relative
+    ``O_NOFOLLOW`` fallback), yielding a directory fd. Every filesystem op
+    afterwards is performed RELATIVE to that fd — the temp file is created with
+    ``openat(dir_fd, O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC)`` and swapped over the
+    target with ``renameat`` (``os.replace(..., src_dir_fd=, dst_dir_fd=)``).
+    The target is never touched by absolute pathname, so an engagement-planted
+    symlink at any path component — or AT the target name itself — can never
+    redirect a root write into a sibling engagement's tree.
+
+    Fail-closed (all raise :class:`SymlinkRefused`):
+      - a symlink component anywhere in the parent path (via open_beneath);
+      - the target NAME already existing as a symlink — the write is REFUSED,
+        not silently replaced. ``renameat`` would only swap the link name (it
+        never writes through), but a planted symlink is tampering evidence, and
+        the caller (boot replay) turns the refusal into a fail-closed
+        refuse-to-resume rather than clobbering the link;
+      - ``owner_uid`` set and the parent directory not owned by it.
+
+    ``data`` may be ``str`` (encoded utf-8) or ``bytes``. ``mode`` is the exact
+    permission bits of the resulting file (forced via ``fchmod`` so umask can
+    neither loosen nor tighten it).
+
+    NOTE: the new file is owned by the writing process (root). Callers that
+    need it owned by the engagement uid re-chown the whole workspace as the
+    final provisioning/replay step (``drivers.workspace.chown_workspace``);
+    this primitive stays a pure symlink-safe writer and never chowns.
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    name = os.path.basename(rel_path)
+    parent_rel = os.path.dirname(rel_path)
+    if name in ("", ".", ".."):
+        raise SymlinkRefused(errno.EINVAL, "invalid target basename", rel_path)
+
+    dir_fd = open_beneath(
+        root, parent_rel or ".", want_dir=True, owner_uid=owner_uid)
+    tmp = None
+    try:
+        # Refuse a target that is ALREADY a symlink. renameat only swaps the
+        # link name (never writes through it), so this is belt-and-suspenders
+        # against write-through — but a planted symlink is tampering the caller
+        # must fail-closed on, not silently clobber.
+        try:
+            st = os.lstat(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(st.st_mode):
+                raise SymlinkRefused(
+                    errno.ELOOP, "target is a symlink", rel_path)
+
+        tmp = f".{name}.casa-tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        fd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            mode,
+            dir_fd=dir_fd,
+        )
+        adopted = False
+        try:
+            os.fchmod(fd, mode)  # exact bits, independent of umask
+            fh = os.fdopen(fd, "wb", closefd=True)
+            adopted = True
+            try:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            finally:
+                fh.close()
+        except BaseException:
+            if not adopted:
+                # fdopen never took the fd — close it ourselves so a failed
+                # fchmod/open path does not leak a descriptor.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
+        os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        tmp = None  # renamed into place — nothing left to unlink
+        try:
+            os.fsync(dir_fd)  # make the rename durable (best-effort)
+        except OSError:
+            pass
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
+        os.close(dir_fd)

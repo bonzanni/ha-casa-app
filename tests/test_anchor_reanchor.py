@@ -31,6 +31,26 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 # ---------------------------------------------------------------------------
 
 
+def _anchor_tmp_allocator(tmp_path):
+    """A reconstructed ``UidAllocator`` on throwaway tmp counter/passwd/group
+    files (Containment Stage 2, Task 10) so boot replay can allocate a real uid
+    for the resumed claude_code record without touching the real ``/etc``."""
+    import os
+    from engagement_uids import UidAllocator
+
+    d = tmp_path / "uidalloc"
+    d.mkdir(exist_ok=True)
+    passwd = str(d / "passwd")
+    group = str(d / "group")
+    open(passwd, "w").close()
+    open(group, "w").close()
+    alloc = UidAllocator(
+        str(d / "counter.json"), passwd_path=passwd, group_path=group,
+        proc_scanner=lambda: set())   # deterministic: don't scan real /proc
+    alloc.reconstruct(known_uids=[], dir_owner_uids=[])
+    return alloc
+
+
 class _Wire:
     """One ordered fake wire backing BOTH the text send (``send_to_topic`` /
     platform notices) and the markup send (``post_discrete``), so message
@@ -1684,8 +1704,27 @@ class TestBootReplayOwner:
         monkeypatch.setattr(s6_rc, "service_pair_complete", lambda **kw: True)
         monkeypatch.setattr(s6_rc, "run_script_is_stale", lambda **kw: False)
         monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+        # Containment Stage 2 (Task 10): replay chowns the resumed workspace to
+        # its uid as the last write before start — a non-root test cannot chown
+        # to uid 200000+, so no-op it; and the registry needs a uid allocator so
+        # create() assigns a real uid (no backfill/refuse on this claude_code
+        # record).
+        from drivers import workspace as _ws_mod
+        monkeypatch.setattr(_ws_mod, "chown_workspace", lambda *a, **k: None)
+        # Containment Stage 2 (S1 code-gate fix): the symlink-safe .mcp.json/
+        # settings writes owner-check their parent dir against the record's
+        # allocated uid. In production an undergoing record with a real
+        # persisted uid ALWAYS has a uid-owned workspace (it was chowned when
+        # the uid was allocated). This non-root test creates a real uid via
+        # create() but cannot chown the workspace to 200000 (same reason the
+        # chown above is stubbed), so no-op the owner-uid derivation too —
+        # otherwise the write would refuse against a test-user-owned parent.
+        import casa_core as _cc
+        monkeypatch.setattr(_cc, "owner_uid_or_none", lambda uid: None)
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            uid_allocator=_anchor_tmp_allocator(tmp_path))
         rec = await reg.create("executor", "configurator", "claude_code", "t",
                                {"user_id": 1}, topic_id=333)
         # ACTIVE (default) → undergoing; empty open_questions at snapshot time.

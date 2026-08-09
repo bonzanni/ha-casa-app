@@ -191,7 +191,7 @@ def test_render_run_script_plugin_dir_flags():
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
         plugin_dirs=["/config/plugins/store/a/aaa",
-                     "/config/plugins/store/b/bbb"])
+                     "/config/plugins/store/b/bbb"], uid=200005, gid=200005)
     assert ("--plugin-dir /config/plugins/store/a/aaa "
             "--plugin-dir /config/plugins/store/b/bbb") in out
 
@@ -202,7 +202,7 @@ def test_render_run_script_rejects_relative_or_shell_special_plugin_dir():
         with pytest.raises(WorkspaceConfigError):
             render_run_script(engagement_id="e" * 32,
                               permission_mode="acceptEdits", extra_dirs=[],
-                              plugin_dirs=[bad])
+                              plugin_dirs=[bad], uid=200005, gid=200005)
 
 
 def test_run_template_has_no_seed_or_cache_env():
@@ -259,14 +259,14 @@ _RINGLOG = os.path.abspath(
 def rendered_run_script():
     from drivers.workspace import render_run_script
     return render_run_script(engagement_id="e" * 32, permission_mode="acceptEdits",
-                              extra_dirs=[], plugin_dirs=[])
+                              extra_dirs=[], plugin_dirs=[], uid=200005, gid=200005)
 
 
 @pytest.fixture
 def rendered_probe_script():
     from drivers.workspace import render_run_script
     return render_run_script(engagement_id=_PROBE_ID, permission_mode="acceptEdits",
-                              extra_dirs=[], plugin_dirs=[])
+                              extra_dirs=[], plugin_dirs=[], uid=200005, gid=200005)
 
 
 @_bash_required
@@ -291,7 +291,17 @@ def test_rendered_run_script_contract(rendered_run_script):
     # per-epoch stderr file.
     assert s.index("RESUME_ARGS=()") < s.index("ringlog.sh")
     assert "exec 2>&1" not in s
-    assert 'exec claude ' in s and s.index('exec claude') > s.index('ringlog.sh')
+    # Task 6 (containment stage 2): the final exec wraps the CLI in a
+    # setpriv uid+cap drop — `setpriv` is the literal token Task 8's
+    # staleness marker keys on. The template line-continues with `\` +
+    # newline + indent, so normalize whitespace before matching the
+    # brief's contiguous-string contract.
+    collapsed = re.sub(r"\s+", " ", s.replace("\\\n", " "))
+    assert (
+        "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
+        "--bounding-set -all --inh-caps -all --no-new-privs -- claude"
+    ) in collapsed
+    assert s.index('exec setpriv') > s.index('ringlog.sh')
 
 
 @_bash_required
@@ -352,22 +362,24 @@ def test_ringlog_rotates_on_threshold(tmp_path):
 
 def _harness_script(rendered: str, tmp_path, final_exec: str) -> Path:
     """Rewrite the rendered run script (id already substituted to _PROBE_ID)
-    for a NON-BLOCKING local run: real ws tmp dir, stdin </dev/null (not the
-    FIFO), the ringlog path pointed at the REPO copy (the /opt/casa host path
-    doesn't exist — r3-B6), and the final `exec claude …` replaced."""
+    for a NON-BLOCKING local run: real ws tmp dir, real control dir (Task 4:
+    .spawn_epoch/.stderr.*/stdin.fifo all live there now, not the workspace),
+    stdin </dev/null (not the FIFO), the ringlog path pointed at the REPO
+    copy (the /opt/casa host path doesn't exist — r3-B6), and the final
+    `exec claude …` replaced."""
     ws = tmp_path / "ws"; (ws / ".home").mkdir(parents=True, exist_ok=True)  # r6-B2: repeated calls
+    ctl = tmp_path / "ctl"; ctl.mkdir(parents=True, exist_ok=True)          # r6-B2: repeated calls
     s = rendered.replace(f"/data/engagements/{_PROBE_ID}", str(ws))
+    # Re-root the control dir by substituting the CTL="..." assignment's
+    # literal value — every subsequent `$CTL/...` reference in the script
+    # (spawn epoch, stderr ring, stdin fifo) re-roots for free.
+    s = s.replace(f'CTL="/data/engagement-ctl/{_PROBE_ID}"', f'CTL="{ctl}"')
     s = s.replace("/opt/casa/scripts/ringlog.sh", _RINGLOG)
-    # Make STDERR_LOG absolute (the live script leaves it as a relative
-    # ".stderr.$EPOCH.log" filename, resolved via cwd at runtime) so ringlog's
-    # argv actually contains this test's tmp_path — otherwise
-    # `pgrep -f "ringlog.sh.*{marker}"` in _wait_ringlogs_exit never matches
-    # and the writer-exit barrier is a silent no-op. The files still land in
-    # `ws` either way, so `ws.glob(".stderr.*.log")` assertions are unaffected.
-    s = s.replace('STDERR_LOG=".stderr.$EPOCH.log"',
-                  f'STDERR_LOG="{ws}/.stderr.$EPOCH.log"')
-    s = re.sub(r"exec <\S*stdin\.fifo", "exec </dev/null", s)
-    s = re.sub(r"exec claude .*?(?=\n[A-Z#]|\Z)", final_exec, s, flags=re.S)
+    s = s.replace('exec <"$CTL/stdin.fifo"', "exec </dev/null")
+    # Task 6: the final line is now `exec setpriv ... -- claude ...` — match
+    # from `exec setpriv` (the wrapper's own exec) through to the end of the
+    # invocation, same anchor logic as before.
+    s = re.sub(r"exec setpriv .*?(?=\n[A-Z#]|\Z)", final_exec, s, flags=re.S)
     p = tmp_path / "run"; p.write_text(s); return p
 
 
@@ -401,10 +413,10 @@ def test_run_script_epoch_unique_files_and_sweep_prunes(
     for expect in range(1, 8):
         r = subprocess.run([BASH, str(p)], capture_output=True, text=True)
         assert f'{{"casa_control": "spawn", "epoch": {expect}}}' in r.stdout
-    ws = tmp_path / "ws"
-    assert (ws / ".spawn_epoch").read_text().strip() == "7"
+    ctl = tmp_path / "ctl"                              # Task 4: control dir
+    assert (ctl / ".spawn_epoch").read_text().strip() == "7"
     _wait_ringlogs_exit(str(tmp_path))                  # r9-B4: writer barrier here too
-    logs = sorted(f.name for f in ws.glob(".stderr.*.log"))
+    logs = sorted(f.name for f in ctl.glob(".stderr.*.log"))
     assert logs == [".stderr.4.log", ".stderr.5.log",
                     ".stderr.6.log", ".stderr.7.log"]   # <=E-4 all swept, bounded
 
@@ -487,6 +499,71 @@ def test_ringlog_stale_fence_self_unlinks_without_sweep(tmp_path):
 
 
 @_bash_required
+def test_template_ringlog_stale_fence_reads_control_dir_not_cwd(
+        tmp_path, rendered_probe_script):
+    """Regression (Task 4 fix-loop round 1): ringlog's stale-epoch self-unlink
+    fence (r7-B4/r8-B4) must read ``.spawn_epoch`` from the CONTROL dir, not
+    cwd — the run template's cwd is the WORKSPACE (Task 4 moved
+    ``.spawn_epoch`` to the control dir), so a naive ``cat .spawn_epoch``
+    always misses there and falls back to ``$MY_EPOCH`` (never stale), which
+    would silently reopen the bug class the fence exists to close.
+
+    Unlike the three ``test_ringlog_stale_*`` tests above — which invoke
+    ``ringlog.sh`` DIRECTLY with ``cwd`` == the very directory holding
+    ``.spawn_epoch`` and so would pass even with the cwd-relative bug — this
+    drives the REAL rendered+harnessed run template (whose cwd is the
+    workspace, distinct from its control dir) end to end, bumps
+    ``.spawn_epoch`` in the control dir the template itself computed to
+    simulate later spawns WITHOUT ever running a later spawn's sweep loop
+    (so any removal below can only be ringlog's own fence, not the sweep),
+    and asserts the ring self-unlinks on rotation."""
+    fifo = tmp_path / "release"; os.mkfifo(fifo)
+    # A tiny helper script (not inline `bash -c '...'`) sidesteps quoting the
+    # child's own logic through the harness's regex substitution.
+    child = tmp_path / "child.sh"
+    child.write_text(
+        "#!/bin/bash\n"
+        "head -c 2048 /dev/zero | tr '\\0' 'a' >&2\n"
+        f"cat {fifo} >/dev/null\n"                    # blocks until released
+        "head -c 2048 /dev/zero | tr '\\0' 'z' >&2\n"  # 2nd chunk → rotation
+    )
+    child.chmod(0o755)
+
+    p = _harness_script(rendered_probe_script, tmp_path, f"exec {child}")
+    # Shrink ringlog's MAX (the template hardcodes 65536) so a rotation is
+    # reachable within a small, deterministic byte count — the ONE template
+    # constant this test overrides; everything else (the CTL wiring,
+    # STDERR_LOG derivation, and the ringlog invocation itself) is exercised
+    # exactly as rendered.
+    text = p.read_text()
+    patched = text.replace('"$STDERR_LOG" 65536 "$EPOCH"',
+                            '"$STDERR_LOG" 3000 "$EPOCH"')
+    assert patched != text, "MAX substitution missed — template line changed?"
+    p.write_text(patched)
+
+    ctl = tmp_path / "ctl"
+    proc = subprocess.Popen([BASH, str(p)], stdout=subprocess.DEVNULL)
+    log = ctl / ".stderr.1.log"
+    _await_file_bytes(log, 2048)                      # ringlog opened + wrote chunk 1
+    assert (ctl / ".spawn_epoch").read_text().strip() == "1"
+    # Simulate 4 LATER spawns advancing the epoch — without ever running a
+    # later spawn (so its sweep loop never executes for this file).
+    (ctl / ".spawn_epoch").write_text("5")
+    with open(fifo, "w") as f:
+        f.write("go\n")                               # release the child → rotation
+    proc.wait(timeout=5)
+    assert proc.returncode == 0
+    # r8-B4: the exec'd child's exit does NOT imply the process-substitution
+    # ringlog consumer has finished — real writer barrier before asserting.
+    _wait_ringlogs_exit(str(tmp_path))
+    assert not log.exists(), (
+        "ringlog's rotation-time stale check must read .spawn_epoch from the "
+        "control dir (via dirname of its own FILE argument), not cwd — cwd "
+        "is the workspace, where .spawn_epoch no longer lives (Task 4)"
+    )
+
+
+@_bash_required
 def test_sweep_removes_slipped_stale_file_next_spawn(tmp_path, rendered_probe_script):
     # r8-B4 (check→open TOCTOU backstop): a file that slips through the tiny
     # pre-check→open window while going stale persists ONLY until the next
@@ -495,15 +572,15 @@ def test_sweep_removes_slipped_stale_file_next_spawn(tmp_path, rendered_probe_sc
     # the slipped file directly, run one template spawn, assert it is gone.
     p = _harness_script(rendered_probe_script, tmp_path,
                         "exec bash -c 'true'")
-    ws = tmp_path / "ws"
+    ctl = tmp_path / "ctl"                                    # Task 4: control dir
     subprocess.run([BASH, str(p)], capture_output=True)      # epoch 1
-    (ws / ".stderr.0.log").write_text("slipped stale file")   # simulate the window
+    (ctl / ".stderr.0.log").write_text("slipped stale file")  # simulate the window
     subprocess.run([BASH, str(p)], capture_output=True)      # epoch 2 → sweeps <= -2…
     # advance until the sweep window covers it (epochs 3,4 → E-4 >= 0)
     subprocess.run([BASH, str(p)], capture_output=True)
     subprocess.run([BASH, str(p)], capture_output=True)
     _wait_ringlogs_exit(str(tmp_path))                        # real writer barrier
-    assert not (ws / ".stderr.0.log").exists()               # swept by a later spawn
+    assert not (ctl / ".stderr.0.log").exists()              # swept by a later spawn
 
 
 def _wait_ringlogs_exit(marker: str, timeout: float = 5.0) -> None:
@@ -532,9 +609,9 @@ def test_run_script_lingering_writer_no_resurrection(
     for _ in range(7):
         subprocess.run([BASH, str(p)], capture_output=True, text=True)
     _wait_ringlogs_exit(str(tmp_path))               # r8-B4: real writer barrier
-    ws = tmp_path / "ws"
-    assert not (ws / ".stderr.1.log").exists()       # swept, not resurrected
-    assert len(list(ws.glob(".stderr.*.log"))) <= 4  # bounded total
+    ctl = tmp_path / "ctl"                           # Task 4: control dir
+    assert not (ctl / ".stderr.1.log").exists()      # swept, not resurrected
+    assert len(list(ctl.glob(".stderr.*.log"))) <= 4  # bounded total
 
 
 def test_render_run_script_refuses_to_shadow_its_own_exports():
@@ -547,7 +624,7 @@ def test_render_run_script_refuses_to_shadow_its_own_exports():
     with _pytest.raises(WorkspaceConfigError) as exc:
         render_run_script(
             engagement_id="e" * 32, permission_mode="acceptEdits",
-            extra_dirs=[], extra_env={"MCP_TOOL_TIMEOUT": ""})
+            extra_dirs=[], extra_env={"MCP_TOOL_TIMEOUT": ""}, uid=200005, gid=200005)
     assert "MCP_TOOL_TIMEOUT" in str(exc.value)
 
 
@@ -555,5 +632,5 @@ def test_render_run_script_still_accepts_an_ordinary_extra_env():
     from drivers.workspace import render_run_script
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits",
-        extra_dirs=[], extra_env={"CASA_BANKFEED_EB_CP_TOKEN": ""})
+        extra_dirs=[], extra_env={"CASA_BANKFEED_EB_CP_TOKEN": ""}, uid=200005, gid=200005)
     assert "export CASA_BANKFEED_EB_CP_TOKEN=''" in out

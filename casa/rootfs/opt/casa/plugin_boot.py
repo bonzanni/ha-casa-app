@@ -45,6 +45,11 @@ def heal_and_freeze_store(store_root, log) -> None:
             except Exception as exc:  # noqa: BLE001 — heal is best-effort
                 log.warning("heal sweep failed for %s: %s", plugdir, exc)
             plugin_store._freeze_artifact_files(plugdir)
+            # Task 11 (containment stage 2): a legacy artifact frozen before
+            # world-traversable parents shipped may still sit under a
+            # non-traversable store_root/name chain — re-derive it every
+            # boot, same idempotent/best-effort contract as the freeze above.
+            plugin_store._ensure_parent_chain_traversable(plugdir, store_root)
 
 
 def main() -> int:

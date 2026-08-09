@@ -5,6 +5,7 @@ import errno
 import os
 import socket
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -651,3 +652,140 @@ def test_init_displaces_preexisting_producer_file_named_reap(tmp_path):
         assert displaced[0].read_bytes() == PDF
     finally:
         ob.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-engagement private outbox (containment stage 2, Task 11).
+# ---------------------------------------------------------------------------
+
+
+def test_provision_engagement_outbox_owned_by_uid(tmp_path):
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()  # unit tests run unprivileged — chown to our own uid
+    d = plugin_outbox.provision_engagement_outbox(uid, root=str(root))
+    st = os.stat(d)
+    assert st.st_uid == uid
+    assert stat.S_IMODE(st.st_mode) == 0o700
+    # the shared parent must stay root's (here: the test uid's) but grant
+    # o+x so a DIFFERENT uid can still traverse THROUGH it to its own dir —
+    # never o+w, never o+r (no listing of sibling engagement dirs).
+    parent_mode = stat.S_IMODE(os.stat(root).st_mode)
+    assert parent_mode & 0o001
+    assert parent_mode & 0o002 == 0
+    assert parent_mode & 0o004 == 0
+
+
+def test_provision_engagement_outbox_idempotent(tmp_path):
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()
+    d1 = plugin_outbox.provision_engagement_outbox(uid, root=str(root))
+    (Path(d1) / "leftover.txt").write_bytes(b"x")
+    d2 = plugin_outbox.provision_engagement_outbox(uid, root=str(root))
+    assert d1 == d2
+    assert (Path(d2) / "leftover.txt").exists()  # re-provision never wipes
+
+
+def test_provision_engagement_outbox_fresh_clears_leftover(tmp_path):
+    # S1 r7: fresh=True (a newly-allocated uid) must never inherit a
+    # predecessor's leftover files — an existing dir is rmtree'd + recreated.
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()
+    d1 = plugin_outbox.provision_engagement_outbox(uid, root=str(root))
+    (Path(d1) / "sibling-secret.pdf").write_bytes(b"A's media")
+    d2 = plugin_outbox.provision_engagement_outbox(uid, root=str(root), fresh=True)
+    assert d1 == d2
+    assert not (Path(d2) / "sibling-secret.pdf").exists()  # cleared
+    assert os.path.isdir(d2)                                # recreated fresh
+
+
+def test_provision_engagement_outbox_fresh_replaces_stray_nondir(tmp_path):
+    # fresh=True also clears a stray non-dir planted at the outbox path.
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()
+    plugin_outbox.provision_engagement_outbox(uid, root=str(root))  # makes base
+    d = plugin_outbox.engagement_outbox_dir(uid, root=str(root))
+    import shutil as _sh
+    _sh.rmtree(d)
+    Path(d).write_bytes(b"not a dir")
+    d2 = plugin_outbox.provision_engagement_outbox(uid, root=str(root), fresh=True)
+    assert os.path.isdir(d2)
+
+
+def test_get_engagement_outbox_caches_instance(tmp_path):
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()
+    try:
+        ob1 = plugin_outbox.get_engagement_outbox(uid, root=str(root))
+        ob2 = plugin_outbox.get_engagement_outbox(uid, root=str(root))
+        assert ob1 is ob2
+    finally:
+        plugin_outbox.teardown_engagement_outbox(uid, root=str(root))
+
+
+def test_teardown_engagement_outbox_closes_and_removes(tmp_path):
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()
+    ob = plugin_outbox.get_engagement_outbox(uid, root=str(root))
+    d = ob._root_realpath
+    plugin_outbox.teardown_engagement_outbox(uid, root=str(root))
+    assert not os.path.exists(d)
+    assert ob._closed is True
+    # a fresh get() after teardown provisions a new instance, not the closed one
+    ob2 = plugin_outbox.get_engagement_outbox(uid, root=str(root))
+    try:
+        assert ob2 is not ob
+    finally:
+        plugin_outbox.teardown_engagement_outbox(uid, root=str(root))
+
+
+def test_get_engagement_outbox_root_is_uid_owned_with_private_group(
+    tmp_path, monkeypatch,
+):
+    """Fix-loop round 1, finding 2: PluginOutbox.__init__ (shared with the
+    non-private outbox) unconditionally re-chmods its root to 0770 on
+    construction — the FIRST get_engagement_outbox() call for a uid ends
+    with the dir at 0770, not the 0700 provision_engagement_outbox() sets
+    in isolation. That is NOT a cross-engagement hole today only because
+    every engagement's GID equals its own uid (a private, single-member
+    group — design §2), so the widened group-rwx bits still only grant
+    access back to the SAME uid.
+
+    Runs against an ARBITRARY allocated uid (not this process's own) so the
+    assertion holds regardless of the test runner's real uid/gid layout —
+    real ownership is only asserted when actually running as root (the only
+    case where the chown can truly land); everywhere else the recorded
+    ``os.chown`` call args are asserted instead (same
+    real-ownership-when-root / recorded-args-otherwise split Task 8 used for
+    ``chown_workspace``). If a future change ever gave two engagements a
+    SHARED gid, this test — not just the docstring — would catch the
+    reopened cross-engagement exposure."""
+    root = tmp_path / "eng-outbox"
+    uid = 200099
+    chown_calls: list[tuple] = []
+    real_chown = os.chown
+
+    def _recording_chown(path, u, g, **kw):
+        chown_calls.append((path, u, g))
+        if os.geteuid() == 0:
+            real_chown(path, u, g, **kw)
+    monkeypatch.setattr(os, "chown", _recording_chown)
+
+    try:
+        ob = plugin_outbox.get_engagement_outbox(uid, root=str(root))
+        assert chown_calls, "provisioning must chown the outbox dir"
+        _path, called_uid, called_gid = chown_calls[0]
+        assert called_uid == uid
+        assert called_gid == uid, (
+            "engagement outbox root's group must be the engagement's OWN "
+            "uid (private single-member group) — a shared group here would "
+            "let another engagement using that group reach this outbox")
+        if os.geteuid() == 0:
+            st = os.stat(ob._root_realpath)
+            assert st.st_uid == uid and st.st_gid == uid
+        # Document the actual current mode (0770, not the isolated
+        # provision_engagement_outbox()'s 0700) so a silent widening beyond
+        # 0770 — e.g. to include "other" bits — is also caught here.
+        assert stat.S_IMODE(os.stat(ob._root_realpath).st_mode) == 0o770
+    finally:
+        monkeypatch.setattr(os, "chown", real_chown)
+        plugin_outbox.teardown_engagement_outbox(uid, root=str(root))

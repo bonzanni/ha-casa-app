@@ -88,6 +88,74 @@ class TestRegistryInitAndLoad:
         assert any("corrupt" in r.message.lower() for r in caplog.records)
 
 
+class TestBackfillAllocatedUid:
+    """Containment Stage 2 (Task 10): boot replay backfills a real OS uid onto a
+    legacy claude_code record via ``backfill_allocated_uid``. Fail-closed with
+    no allocator; idempotent when a real uid is already present."""
+
+    def _tmp_allocator(self, tmp_path):
+        from engagement_uids import UidAllocator
+        d = tmp_path / "uidalloc"; d.mkdir()
+        passwd = str(d / "passwd"); group = str(d / "group")
+        open(passwd, "w").close(); open(group, "w").close()
+        alloc = UidAllocator(
+            str(d / "c.json"), passwd_path=passwd, group_path=group)
+        alloc.reconstruct(known_uids=[], dir_owner_uids=[])
+        return alloc
+
+    async def test_backfills_and_persists(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UID_BASE, UNALLOCATED_UID
+
+        path = str(tmp_path / "e.json")
+        reg = EngagementRegistry(
+            tombstone_path=path, bus=None,
+            uid_allocator=self._tmp_allocator(tmp_path))
+        rec = await reg.create(
+            kind="executor", role_or_type="x", driver="claude_code",
+            task="t", origin={}, topic_id=1)
+        # create() already allocated one; force the legacy sentinel to exercise
+        # the backfill path directly.
+        rec.allocated_uid = UNALLOCATED_UID
+        uid = await reg.backfill_allocated_uid(rec.id)
+        assert uid >= UID_BASE
+        assert rec.allocated_uid == uid
+        # Persisted to the tombstone (strict).
+        saved = json.loads(Path(path).read_text())
+        assert any(r["id"] == rec.id and r["allocated_uid"] == uid
+                   for r in saved)
+
+    async def test_idempotent_when_uid_already_real(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UID_BASE
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            uid_allocator=self._tmp_allocator(tmp_path))
+        rec = await reg.create(
+            kind="executor", role_or_type="x", driver="claude_code",
+            task="t", origin={}, topic_id=1)
+        first = rec.allocated_uid
+        assert first >= UID_BASE
+        # A record that already carries a real uid is returned unchanged — no
+        # second allocation.
+        again = await reg.backfill_allocated_uid(rec.id)
+        assert again == first
+
+    async def test_fail_closed_without_allocator(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UidStateError, UNALLOCATED_UID
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None)  # no allocator
+        rec = await reg.create(
+            kind="executor", role_or_type="x", driver="claude_code",
+            task="t", origin={}, topic_id=1)
+        assert rec.allocated_uid == UNALLOCATED_UID
+        with pytest.raises(UidStateError):
+            await reg.backfill_allocated_uid(rec.id)
+
+
 class TestRegistryCreate:
     async def test_create_assigns_uuid_and_indexes_topic(self, tmp_path):
         from engagement_registry import EngagementRegistry
@@ -1393,3 +1461,128 @@ class TestPersistSessionIdCancellationSafety:
             await t
         # The write settled COMMITTED → memory matches disk (no rollback).
         assert rec.sdk_session_id == "sess-abc"
+
+
+class TestAllocatedUid:
+    """Containment Stage 2 (Task 3): claude_code engagements get a distinct,
+    persisted, never-reused OS uid via an injected ``UidAllocator``."""
+
+    @staticmethod
+    def _make_allocator(tmp_path):
+        from engagement_uids import UidAllocator
+
+        alloc = UidAllocator(counter_path=str(tmp_path / "uid_counter.json"))
+        alloc.reconstruct(known_uids=[], dir_owner_uids=[])
+        return alloc
+
+    @pytest.fixture
+    def registry_with_allocator(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+
+        alloc = self._make_allocator(tmp_path)
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "engagements.json"),
+            bus=None,
+            uid_allocator=alloc,
+        )
+        return reg, alloc
+
+    async def test_create_allocates_uid_for_claude_code(
+        self, registry_with_allocator,
+    ):
+        reg, _alloc = registry_with_allocator
+        rec = await reg.create(
+            kind="executor", role_or_type="plugin-developer",
+            driver="claude_code", task="t", origin={}, topic_id=1,
+        )
+        assert rec.allocated_uid >= 200000
+
+    async def test_create_does_not_allocate_for_specialist_in_casa(
+        self, registry_with_allocator,
+    ):
+        reg, _alloc = registry_with_allocator
+        rec = await reg.create(
+            kind="specialist", role_or_type="finance",
+            driver="in_casa", task="t", origin={}, topic_id=1,
+        )
+        from engagement_uids import UNALLOCATED_UID
+
+        assert rec.allocated_uid == UNALLOCATED_UID
+
+    async def test_two_claude_code_creates_get_distinct_uids(
+        self, registry_with_allocator,
+    ):
+        reg, _alloc = registry_with_allocator
+        rec1 = await reg.create(
+            kind="executor", role_or_type="plugin-developer",
+            driver="claude_code", task="t1", origin={}, topic_id=1,
+        )
+        rec2 = await reg.create(
+            kind="executor", role_or_type="plugin-developer",
+            driver="claude_code", task="t2", origin={}, topic_id=2,
+        )
+        assert rec1.allocated_uid != rec2.allocated_uid
+
+    async def test_uid_persists_and_reloads(self, registry_with_allocator, tmp_path):
+        from engagement_registry import EngagementRegistry
+
+        reg, _alloc = registry_with_allocator
+        rec = await reg.create(
+            kind="executor", role_or_type="plugin-developer",
+            driver="claude_code", task="t", origin={}, topic_id=1,
+        )
+        uid = rec.allocated_uid
+
+        reg2 = EngagementRegistry(
+            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+        )
+        await reg2.load()
+        reloaded = reg2.get(rec.id)
+        assert reloaded is not None
+        assert reloaded.allocated_uid == uid
+
+    async def test_legacy_record_loads_with_sentinel(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UNALLOCATED_UID
+
+        tombstone = tmp_path / "engagements.json"
+        legacy_row = {
+            "id": "legacy-1",
+            "kind": "executor",
+            "role_or_type": "plugin-developer",
+            "driver": "claude_code",
+            "status": "completed",
+            "topic_id": 99,
+            "started_at": 1000.0,
+            "last_user_turn_ts": 1000.0,
+            "last_idle_reminder_ts": 0.0,
+            "completed_at": 1001.0,
+            "sdk_session_id": None,
+            "origin": {},
+            "task": "legacy task",
+            # No "allocated_uid" key — predates this field.
+        }
+        tombstone.write_text(json.dumps([legacy_row]))
+
+        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        await reg.load()
+        rec = reg.get("legacy-1")
+        assert rec is not None
+        assert rec.allocated_uid == UNALLOCATED_UID
+
+    async def test_no_allocator_leaves_sentinel(self, tmp_path):
+        """Fail-closed default (no Task-10 boot wiring yet): a claude_code
+        create() with no uid_allocator injected must not silently mint a
+        root/bogus uid — it leaves the sentinel for downstream preflight to
+        refuse."""
+        from engagement_registry import EngagementRegistry
+        from engagement_uids import UNALLOCATED_UID
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+        )
+        rec = await reg.create(
+            kind="executor", role_or_type="plugin-developer",
+            driver="claude_code", task="t", origin={}, topic_id=1,
+        )
+        assert rec.allocated_uid == UNALLOCATED_UID

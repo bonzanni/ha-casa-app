@@ -240,7 +240,9 @@ def _zero_coord() -> dict:
 
 @dataclass
 class StreamCursor:
-    """Persisted at ``<ws>/.stream_cursor.json`` via temp+rename (atomic_io).
+    """Persisted at the control dir's ``.stream_cursor.json`` (Task 4,
+    containment stage 2 — ``drivers.workspace.stream_cursor_path``) via
+    temp+rename (atomic_io).
 
     Coordinates are SEGMENT-QUALIFIED: ``segment`` is a log file's stable
     ``[st_dev, st_ino]`` identity recorded at open, so an offset is never

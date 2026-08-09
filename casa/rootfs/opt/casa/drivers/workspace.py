@@ -15,6 +15,11 @@ import yaml
 
 from atomic_io import atomic_write_json
 from drivers.hook_bridge import translate_hooks_to_settings
+from engagement_uids import (
+    UID_BASE, UNALLOCATED_UID, ensure_identity, owner_uid_or_none,
+    prune_identity,
+)
+from safe_fs import SymlinkRefused, atomic_write_beneath, read_text_beneath
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,88 @@ def engagement_log_dir(engagement_id: str, *, root: str | None = None) -> str:
         root if root is not None else ENGAGEMENT_LOG_ROOT,
         f"casa-engagement-{engagement_id}",
     )
+
+
+# ---------------------------------------------------------------------------
+# Containment stage 2, Task 4: root-only control dir.
+# ---------------------------------------------------------------------------
+# The uid-owned workspace (``/data/engagements/<id>/``, below) holds only what
+# the engagement's OWN CLI process reads/writes by path: CLAUDE.md, .mcp.json,
+# .home/, doctrine/, plugin-provided files. Every file that ONLY root
+# (casa-core) reads or writes — session-id capture, the spawn-epoch fence,
+# per-epoch stderr rings, the inbound spool, the crash-safe stream cursor, the
+# cached executor-memory block, and the inbound stdin FIFO itself — lives here
+# instead, in a directory the CLI never gets ``--add-dir``ed into and that
+# stays root:root 0700 even after Stage 2's per-engagement uid+cap-drop lands
+# (Task 6/8). This is what kills the symlink-primitive class: a workspace
+# symlink swapped in by the (unprivileged, post-Stage-2) CLI process can never
+# again redirect a root read/write of one of these files, because none of
+# them are joined to the workspace path anymore.
+CONTROL_ROOT = "/data/engagement-ctl"
+
+# Kept in step with drivers.claude_code_driver._SPOOL_FILENAME (the driver
+# owns the constant name; this module only needs the literal to build paths).
+_SPOOL_FILENAME = ".inbound_spool.jsonl"
+
+
+def control_dir(engagement_id: str, *, root: str | None = None) -> str:
+    """Absolute path of the engagement's root-only control directory."""
+    return os.path.join(root if root is not None else CONTROL_ROOT, engagement_id)
+
+
+def provision_control_dir(engagement_id: str, *, root: str | None = None) -> str:
+    """Create the control dir for ``engagement_id`` — 0700, root-owned.
+
+    ``exist_ok=False``: mirrors ``provision_workspace``'s own contract (the
+    caller must not have created the directory already) so a double-
+    provision of the same id is a loud error, not a silent merge into
+    leftover state from a prior (crashed?) attempt.
+    """
+    base = root if root is not None else CONTROL_ROOT
+    Path(base).mkdir(parents=True, exist_ok=True)
+    d = Path(control_dir(engagement_id, root=root))
+    d.mkdir(mode=0o700, exist_ok=False)
+    return str(d)
+
+
+def session_id_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), ".session_id")
+
+
+def spawn_epoch_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), ".spawn_epoch")
+
+
+def stderr_path(
+    engagement_id: str, epoch: int, *, root: str | None = None,
+) -> str:
+    """Base path of the per-epoch stderr ring (``<base>`` is the live file;
+    ``<base>.1`` is ringlog's one rotated chunk)."""
+    return os.path.join(
+        control_dir(engagement_id, root=root), f".stderr.{epoch}.log")
+
+
+def casa_meta_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), ".casa-meta.json")
+
+
+def fifo_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(control_dir(engagement_id, root=root), "stdin.fifo")
+
+
+def inbound_spool_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(
+        control_dir(engagement_id, root=root), _SPOOL_FILENAME)
+
+
+def stream_cursor_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(
+        control_dir(engagement_id, root=root), ".stream_cursor.json")
+
+
+def executor_memory_path(engagement_id: str, *, root: str | None = None) -> str:
+    return os.path.join(
+        control_dir(engagement_id, root=root), ".executor_memory")
 
 # Bug 5 (v0.14.6): env-var names must match shell-identifier syntax.
 # Pre-fix the key was interpolated unsanitised into `export {}='{}'`,
@@ -181,6 +268,7 @@ def render_run_script(
     extra_dirs: list[str], extra_unset: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
     plugin_dirs: list[str] | None = None,
+    uid: int = UNALLOCATED_UID, gid: int = UNALLOCATED_UID,
 ) -> str:
     """Read the run-script template and substitute per-engagement values.
 
@@ -196,7 +284,32 @@ def render_run_script(
     inside the run script. Names must match ``[A-Za-z_][A-Za-z0-9_]*``
     (rejected at render time). Values are single-quote-escaped via the
     standard ``'\\''`` idiom (Bug 5, v0.14.6).
+
+    ``uid``/``gid`` — containment stage 2, Task 6: the allocated OS-level
+    identity the rendered script's final ``exec`` drops into via
+    ``setpriv --reuid --regid --clear-groups --bounding-set -all
+    --inh-caps -all --no-new-privs`` before handing off to the ``claude``
+    CLI. Both default to ``UNALLOCATED_UID`` (the sentinel a not-yet-wired
+    caller passes, or that a legacy/specialist ``EngagementRecord`` still
+    carries) so an out-of-scope caller keeps compiling; render itself
+    refuses to substitute that sentinel — or any uid below ``UID_BASE``,
+    which would only ever be 0 (root) — into the script, since emitting
+    ``--reuid -1`` or ``--reuid 0`` would silently skip the privilege drop
+    this task exists to add. Fail-closed: no uid, no launch.
     """
+    if uid == UNALLOCATED_UID or uid < UID_BASE:
+        raise ValueError(
+            f"render_run_script: refusing to render for unallocated/invalid "
+            f"uid={uid!r} (must be >= UID_BASE={UID_BASE}) — the setpriv "
+            f"privilege drop would otherwise be silently skipped or would "
+            f"target root"
+        )
+    if gid == UNALLOCATED_UID or gid < UID_BASE:
+        raise ValueError(
+            f"render_run_script: refusing to render for unallocated/invalid "
+            f"gid={gid!r} (must be >= UID_BASE={UID_BASE})"
+        )
+
     with open(_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
         template = fh.read()
 
@@ -236,6 +349,21 @@ def render_run_script(
         if derived:
             extra_env = {**derived, **(extra_env or {})}
 
+    # Task 11 (containment stage 2): a real uid means the CLI (and any
+    # producer plugin it spawns) runs `--clear-groups`-dropped and can no
+    # longer write the SHARED outbox (root:root, never group/world-
+    # writable). Point it at its OWN private outbox dir instead — derived
+    # here, from the uid render already refuses to render without, so every
+    # uid-dropped launch gets it with no extra per-caller wiring. A
+    # caller-supplied extra_env still wins on collision, same as the
+    # plugin-dirs overlay above.
+    real_uid = owner_uid_or_none(uid)
+    if real_uid is not None:
+        import plugin_outbox
+        outbox_env = {plugin_outbox.OUTBOX_ENV:
+                     plugin_outbox.engagement_outbox_dir(real_uid)}
+        extra_env = {**outbox_env, **(extra_env or {})}
+
     if extra_env:
         bad = [k for k in extra_env if not _ENV_VAR_NAME_RE.match(str(k))]
         if bad:
@@ -260,6 +388,8 @@ def render_run_script(
         template
         .replace("{ID_SHORT}", engagement_id[:8])
         .replace("{ID}", engagement_id)
+        .replace("{UID}", str(uid))
+        .replace("{GID}", str(gid))
         .replace("{PERMISSION_MODE}", permission_mode)
         .replace("{ADD_DIR_FLAGS}", add_dir_flags)
         .replace("{PLUGIN_DIR_FLAGS}", plugin_dir_flags)
@@ -285,7 +415,7 @@ def render_log_run_script(*, engagement_id: str) -> str:
     )
 
 
-def workspace_mcp_token(ws_dir: str) -> str | None:
+def workspace_mcp_token(ws_dir: str, *, owner_uid: int | None = None) -> str | None:
     """The engagement token currently baked into ``<ws>/.mcp.json``.
 
     ``None`` when the file is absent, unreadable, malformed, or predates
@@ -293,20 +423,35 @@ def workspace_mcp_token(ws_dir: str) -> str | None:
     token to decide whether the workspace credential actually CHANGED — a
     running CLI caches ``.mcp.json`` at spawn, so a changed credential means
     that CLI must be respawned or every one of its calls is rejected.
+
+    Containment stage 2, Task 5: read via ``safe_fs.read_text_beneath`` so a
+    symlink planted at ``<ws>/.mcp.json`` (pointing at a SIBLING
+    engagement's workspace once the workspace is uid-chowned, Task 8) is
+    refused rather than followed. ``owner_uid`` — the record's real
+    ``allocated_uid``, or ``None`` for a not-yet-allocated/legacy workspace
+    — is layered on top when given. A refusal returns ``None``, the same
+    as any other unreadable file: the caller (boot replay) treats that as
+    "changed" and regenerates — fail-safe, never a silent same-content skip.
     """
     try:
         cfg = json.loads(
-            (Path(ws_dir) / ".mcp.json").read_text(encoding="utf-8"))
+            read_text_beneath(ws_dir, ".mcp.json", owner_uid=owner_uid))
         token = (
             cfg["mcpServers"]["casa-framework"]["headers"]
             ["X-Casa-Engagement-Token"]
         )
+    except SymlinkRefused as exc:
+        logger.warning(
+            "workspace_mcp_token: refused symlinked .mcp.json under %s "
+            "(%s) — treating as changed", ws_dir, exc,
+        )
+        return None
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return token if isinstance(token, str) and token else None
 
 
-def workspace_mcp_url(ws_dir: str) -> str | None:
+def workspace_mcp_url(ws_dir: str, *, owner_uid: int | None = None) -> str | None:
     """The casa-framework URL currently baked into ``<ws>/.mcp.json``.
 
     ``None`` when the file is absent, unreadable, or malformed. Boot replay
@@ -314,11 +459,20 @@ def workspace_mcp_url(ws_dir: str) -> str | None:
     workspace whose baked URL has drifted from the served endpoint is
     rewritten (and its CLI cycled) exactly like a changed credential —
     the URL is part of the workspace's identity, not an artifact to trust.
+
+    Containment stage 2, Task 5: same ``safe_fs`` routing/owner-uid/
+    fail-safe-None-on-refusal contract as :func:`workspace_mcp_token` above.
     """
     try:
         cfg = json.loads(
-            (Path(ws_dir) / ".mcp.json").read_text(encoding="utf-8"))
+            read_text_beneath(ws_dir, ".mcp.json", owner_uid=owner_uid))
         url = cfg["mcpServers"]["casa-framework"]["url"]
+    except SymlinkRefused as exc:
+        logger.warning(
+            "workspace_mcp_url: refused symlinked .mcp.json under %s "
+            "(%s) — treating as changed", ws_dir, exc,
+        )
+        return None
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return url if isinstance(url, str) and url else None
@@ -330,6 +484,7 @@ def write_workspace_mcp_json(
     engagement_id: str,
     engagement_auth_token: str,
     casa_framework_mcp_url: str,
+    owner_uid: int | None = None,
 ) -> None:
     """Write ``<ws>/.mcp.json`` from the engagement's identity + credential.
 
@@ -365,14 +520,41 @@ def write_workspace_mcp_json(
         },
     }}
     # 0600 — this file carries the engagement's credential. Written through
-    # the atomic helper with an explicit mode so the secret is never briefly
-    # world-readable AND so a pre-#335 0644 file is migrated on the boot-replay
-    # rewrite. Defense in depth only: engagement subprocesses run as root in
-    # this container and can still read a sibling's file (Terra, review r1) —
-    # real containment needs per-engagement process identity, which this
-    # release does not attempt.
-    atomic_write_json(
-        str(Path(ws_dir) / ".mcp.json"), mcp_config, indent=2, mode=0o600)
+    # the SYMLINK-SAFE atomic helper with an explicit mode so the secret is
+    # never briefly world-readable AND so a pre-#335 0644 file is migrated on
+    # the boot-replay rewrite. Containment Stage 2 (S1 code-gate fix): route
+    # through ``safe_fs.atomic_write_beneath`` — a plain ``mkstemp``+
+    # ``os.replace`` created its temp in the workspace dir BY PATHNAME, so a
+    # symlinked ``.mcp.json`` (planted by the engagement uid, which owns the
+    # workspace) would be REFUSED here rather than clobbered, and boot replay
+    # turns that refusal into a fail-closed refuse-to-resume. ``owner_uid`` is
+    # the record's real allocated uid on the boot-replay rewrite (workspace is
+    # already uid-owned) and ``None`` at provision (root-owned, pre-chown).
+    atomic_write_beneath(
+        ws_dir, ".mcp.json", json.dumps(mcp_config, indent=2),
+        owner_uid=owner_uid, mode=0o600)
+
+
+def chown_workspace(ws: str, uid: int, gid: int) -> None:
+    """Recursively chown *ws* to ``(uid, gid)``, symlink-safe.
+
+    Containment stage 2, Task 8: the FINAL filesystem write of provisioning
+    — after every root-side write below it, nothing may touch the workspace
+    again before the engagement's own uid takes ownership. Walks the tree
+    with ``os.scandir`` (never following a symlinked directory into a
+    sibling workspace or elsewhere) and calls ``os.chown(...,
+    follow_symlinks=False)`` on every entry, including symlinks themselves —
+    a symlink planted in the tree gets ITS OWN ownership changed, but its
+    target is never touched, so this can never be used to reach outside the
+    workspace and reassign ownership of an arbitrary file.
+    """
+    os.chown(ws, uid, gid, follow_symlinks=False)
+    with os.scandir(ws) as it:
+        for entry in it:
+            if entry.is_dir(follow_symlinks=False):
+                chown_workspace(entry.path, uid, gid)
+            else:
+                os.chown(entry.path, uid, gid, follow_symlinks=False)
 
 
 async def provision_workspace(
@@ -387,6 +569,8 @@ async def provision_workspace(
     workspace_template_root: Path | None = None,
     world_state_summary: str = "",
     executor_memory: str = "",
+    uid: int = UNALLOCATED_UID,
+    gid: int = UNALLOCATED_UID,
 ) -> str:
     """Create /<engagements_root>/<id>/ with the full provisioning tree.
 
@@ -406,6 +590,22 @@ async def provision_workspace(
     is acceptable. If profiling later shows otherwise, wrap the filesystem
     calls in ``asyncio.to_thread`` to match the pattern in
     ``drivers/s6_rc.py``.
+
+    ``uid``/``gid`` — containment stage 2, Task 8: the engagement's
+    allocated OS identity. When both are real uids (``>= UID_BASE``, via
+    :func:`engagement_uids.owner_uid_or_none`), this function appends the
+    uid's passwd/group entry (:func:`engagement_uids.ensure_identity`) and
+    then, as the LAST filesystem write before returning, recursively chowns
+    the whole workspace to ``(uid, gid)`` and sets the top-dir mode to
+    ``0700`` (:func:`chown_workspace`). Every other write above is root-side
+    and MUST land before this point — nothing may touch the workspace after
+    the chown. Default ``UNALLOCATED_UID`` skips both steps entirely (the
+    workspace stays root-owned): legacy/specialist callers and every
+    existing direct caller of this function that predates Task 8.
+    Fail-closed: a failure in either step propagates — a half-provisioned,
+    still-root-owned workspace must never be handed to a caller that thinks
+    the uid drop already happened (Task 7's preflight is exactly that
+    check).
     """
     ws = Path(engagements_root) / engagement_id
     ws.mkdir(parents=True, exist_ok=False)
@@ -460,11 +660,19 @@ async def provision_workspace(
             json.dumps(settings, indent=2), encoding="utf-8",
         )
 
-    # W3 (Task 8): cache the fetched executor_memory block at <ws>/.executor_memory
-    # so a later ``refresh_claude_md`` (boot replay) can re-interpolate the SAME
-    # {executor_memory} section — the block is a LIVE Hindsight fetch, not
-    # re-derivable at boot, so it must be persisted alongside the workspace.
-    (ws / ".executor_memory").write_text(executor_memory or "", encoding="utf-8")
+    # Task 4 (containment stage 2): the control dir is provisioned here,
+    # alongside the workspace — every root-only run-state file below lands
+    # in it, never under the uid-owned workspace the CLI can symlink through.
+    provision_control_dir(engagement_id)
+
+    # W3 (Task 8): cache the fetched executor_memory block at the control-dir
+    # ``.executor_memory`` so a later ``refresh_claude_md`` (boot replay) can
+    # re-interpolate the SAME {executor_memory} section — the block is a LIVE
+    # Hindsight fetch, not re-derivable at boot, so it must be persisted
+    # alongside the workspace. Task 4: moved OUT of the workspace — root
+    # generates and reads this, the CLI never does.
+    Path(executor_memory_path(engagement_id)).write_text(
+        executor_memory or "", encoding="utf-8")
 
     # v0.74.2 (live finding 2026-07-13): provision the executor's doctrine/
     # into the workspace — the rendered CLAUDE.md references doctrine/*.md,
@@ -499,9 +707,42 @@ async def provision_workspace(
         casa_framework_mcp_url=casa_framework_mcp_url,
     )
 
-    # 3. Named FIFO for stdin.
-    fifo_path = ws / "stdin.fifo"
-    os.mkfifo(str(fifo_path), 0o600)
+    # 3. Named FIFO for stdin. Task 4: lives in the control dir — the run
+    # template's `exec < .../stdin.fifo` reads it by an absolute
+    # control-dir path (scripts/engagement_run_template.sh), never through
+    # the workspace.
+    os.mkfifo(fifo_path(engagement_id), 0o600)
+
+    # 4. Task 8 (containment stage 2): identity + chown — LAST, after every
+    # root-side write above. ensure_identity() runs first so the uid has an
+    # NSS passwd/group entry the instant it can touch anything; chown_workspace
+    # (recursive, symlink-safe) then hands the whole tree to that uid, and the
+    # top dir is pinned to 0700 so only that uid (and root) can even list it.
+    # A real uid/gid (>= UID_BASE) is required for either step to run — the
+    # UNALLOCATED_UID default (legacy/specialist/pre-Task-8 callers) leaves
+    # the workspace root-owned exactly as before. Neither call swallows its
+    # exception: a failure here must abort provisioning, not hand back a
+    # workspace that is still root-owned while the caller believes the drop
+    # succeeded (see Task 7's _preflight_uid_drop).
+    real_uid = owner_uid_or_none(uid)
+    if real_uid is not None:
+        real_gid = gid if gid >= UID_BASE else real_uid
+        ensure_identity(real_uid, str(ws / ".home"))
+        chown_workspace(str(ws), real_uid, real_gid)
+        os.chmod(ws, 0o700)
+        # Task 11 (containment stage 2): provision the uid's PRIVATE outbox
+        # dir eagerly, here, so it already exists (owned by the uid) before
+        # the CLI/any producer plugin it spawns ever starts — a lazy
+        # first-send_media provision would be too late for a producer that
+        # writes before send_media is ever called. Kept entirely separate
+        # from the workspace tree (own root, own retention) — never chowned
+        # by chown_workspace above.
+        import plugin_outbox
+        # fresh=True: a newly-allocated uid must never inherit a predecessor's
+        # leftover outbox (S1 r7 defense-in-depth behind the never-reuse uid
+        # invariant). Boot-replay resume of an EXISTING uid uses the default
+        # (fresh=False) so in-flight outbox contents are preserved.
+        plugin_outbox.provision_engagement_outbox(real_uid, fresh=True)
 
     logger.info("Provisioned workspace for engagement %s at %s",
                 engagement_id[:8], ws)
@@ -541,11 +782,22 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     from drivers.brief import brief_task_for
 
     ws = Path(ws_dir)
+    # Containment Stage 2 (S1 code-gate fix): the CLAUDE.md write must be
+    # symlink-safe. On boot replay the workspace is uid-owned, so a plain
+    # ``Path.write_text`` would FOLLOW a symlink the engagement uid planted
+    # (e.g. CLAUDE.md → a sibling's .mcp.json) and let root overwrite the
+    # sibling's file. Route through ``safe_fs.atomic_write_beneath`` with the
+    # record's real allocated uid (``None`` for a legacy/specialist record
+    # whose workspace was never uid-chowned) so a symlinked target is REFUSED
+    # (SymlinkRefused) and the caller fail-closed refuses the resume.
+    owner_uid = owner_uid_or_none(rec.allocated_uid)
     task = brief_task_for(rec, defn)
     context = rec.origin.get("context", "")
     world_state_summary = rec.origin.get("world_state_summary", "")
 
-    mem_path = ws / ".executor_memory"
+    # Task 4: cached at PROVISION under the control dir (engagement id is
+    # the workspace dir's basename by construction), not the workspace.
+    mem_path = Path(executor_memory_path(ws.name))
     executor_memory = (
         mem_path.read_text(encoding="utf-8") if mem_path.is_file() else ""
     )
@@ -565,7 +817,8 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
                 .replace("{world_state_summary}", world_state_summary)
                 .replace("{executor_memory}", executor_memory or "")
         )
-        (ws / "CLAUDE.md").write_text(text, encoding="utf-8")
+        atomic_write_beneath(
+            str(ws), "CLAUDE.md", text, owner_uid=owner_uid, mode=0o644)
     else:
         # Mirror the legacy provision branch (workspace.py:245-253) EXACTLY.
         prompt_text = _read_text(defn.prompt_template_path)
@@ -576,7 +829,9 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
             .replace("{executor_type}", defn.type)
             .replace("{executor_memory}", executor_memory or "")
         )
-        (ws / "CLAUDE.md").write_text(prompt_interpolated, encoding="utf-8")
+        atomic_write_beneath(
+            str(ws), "CLAUDE.md", prompt_interpolated,
+            owner_uid=owner_uid, mode=0o644)
 
 
 def write_casa_meta(
@@ -584,10 +839,15 @@ def write_casa_meta(
     status: str, created_at: str,
     finished_at: str | None, retention_until: str | None,
     plugin_artifacts: list[dict] | None = None,
+    allocated_uid: int = UNALLOCATED_UID,
 ) -> None:
     # This dict is reconstructed from scratch on every rewrite — the immutable
     # plugin_artifacts (§3.8) must be re-passed by every caller (initial write
-    # + terminal finalize) or it is silently dropped.
+    # + terminal finalize) or it is silently dropped. Task 8: allocated_uid
+    # likewise must be re-passed forward by the terminal-rewrite caller
+    # (tools._finalize_engagement) — it's how the workspace sweeper, which has
+    # no registry access, learns which uid's passwd/group entry to prune once
+    # this workspace is deleted.
     meta = {
         "engagement_id": engagement_id,
         "executor_type": executor_type,
@@ -596,35 +856,102 @@ def write_casa_meta(
         "finished_at": finished_at,
         "retention_until": retention_until,
         "plugin_artifacts": list(plugin_artifacts or []),
+        "allocated_uid": allocated_uid,
     }
-    path = Path(workspace_path) / ".casa-meta.json"
+    # Task 4: moved to the control dir — ``workspace_path`` is retained as a
+    # parameter for caller back-compat (every existing caller already has it
+    # in hand) but no longer contributes to the path; ``engagement_id`` alone
+    # determines where the meta lives now.
+    path = Path(casa_meta_path(engagement_id))
     path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
-def load_casa_meta(workspace_path: str) -> dict | None:
-    path = Path(workspace_path) / ".casa-meta.json"
-    if not path.exists():
-        return None
+def _migrate_legacy_casa_meta(engagement_id: str, legacy_text: str) -> None:
+    """Best-effort forward-copy of a pre-Task-4 ``.casa-meta.json`` (written
+    under the workspace, back when that was the only location) into the
+    control dir — so every read/write from here on lands on the one,
+    now-canonical location. Idempotent (``target.exists()`` short-circuits a
+    concurrent/repeated migration) and never raises: a migration failure
+    must not turn a successful legacy READ into an error, and the next
+    ``load_casa_meta`` call simply retries it.
+
+    Takes the already-read file CONTENT (not a path) — Containment stage 2,
+    Task 5: the caller reads the legacy file exactly once, through
+    ``safe_fs``; re-opening it here by path would defeat that (a second,
+    unguarded read of an attacker-controlled workspace path)."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        Path(CONTROL_ROOT).mkdir(parents=True, exist_ok=True)
+        Path(control_dir(engagement_id)).mkdir(mode=0o700, exist_ok=True)
+        target = Path(casa_meta_path(engagement_id))
+        if not target.exists():
+            target.write_text(legacy_text, encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "load_casa_meta: failed to migrate legacy .casa-meta.json into "
+            "the control dir for engagement %s", engagement_id, exc_info=True,
+        )
+
+
+def load_casa_meta(
+    workspace_path: str, *, owner_uid: int | None = None,
+) -> dict | None:
+    # Task 4: the workspace dir's basename IS the engagement id by
+    # construction (``provision_workspace`` mkdirs exactly
+    # ``<engagements_root>/<engagement_id>``) — every existing caller passes
+    # a workspace path, so derive the id rather than widen every call site.
+    engagement_id = Path(workspace_path).name
+    path = Path(casa_meta_path(engagement_id))
+    legacy_text: str | None = None
+    is_legacy = not path.exists()
+    if not is_legacy:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning(
+                "load_casa_meta: I/O error reading %s", path, exc_info=True,
+            )
+            return None
+    else:
+        # Fix-loop round 1 (Important 2): an engagement whose
+        # .casa-meta.json was written before this release deploys still has
+        # it at the LEGACY workspace path — without this fallback it is
+        # unreachable, which drops plugin_artifacts/created_at on finalize
+        # (tools.py) and permanently leaks its (already-terminal) workspace
+        # past the retention sweep (never gets deleted again). Read the
+        # legacy copy (via safe_fs, Task 5 — this is a root read of a
+        # uid-owned WORKSPACE path, so a symlink there must be refused, not
+        # followed) and opportunistically migrate it forward.
+        try:
+            text = read_text_beneath(
+                workspace_path, ".casa-meta.json", owner_uid=owner_uid)
+        except SymlinkRefused as exc:
+            logger.warning(
+                "load_casa_meta: refused symlinked legacy .casa-meta.json "
+                "under workspace %s for engagement %s (%s) — treating as "
+                "absent", workspace_path, engagement_id, exc,
+            )
+            return None
+        except OSError:
+            return None
+        legacy_text = text
+    try:
+        data = json.loads(text)
         # #344: valid-but-non-object JSON ([]/string/number) used to
         # escape here and crash the first .get() in a consumer — one bad
         # file aborted the whole retention sweep for later workspaces.
         if not isinstance(data, dict):
             logger.warning(
-                "load_casa_meta: %s is not a JSON object — treating as "
-                "absent", path,
+                "load_casa_meta: %s legacy=%s is not a JSON object — "
+                "treating as absent", engagement_id, is_legacy,
             )
             return None
+        if legacy_text is not None:
+            _migrate_legacy_casa_meta(engagement_id, legacy_text)
         return data
     except json.JSONDecodeError:
         logger.warning(
-            "load_casa_meta: %s is not valid JSON — treating as absent", path,
-        )
-        return None
-    except OSError:
-        logger.warning(
-            "load_casa_meta: I/O error reading %s", path, exc_info=True,
+            "load_casa_meta: %s legacy=%s is not valid JSON — treating as "
+            "absent", engagement_id, is_legacy,
         )
         return None
 
@@ -719,6 +1046,51 @@ def _sweep_one_workspace(
                 "workspace sweep: log dir rmtree %s failed: %s",
                 log_dir, exc,
             )
+        # Task 4: the control dir follows the workspace on the SAME
+        # retention decision — once the workspace is gone, nothing can
+        # ever map back to its control dir again (load_casa_meta derives
+        # the id from the workspace basename, which no longer exists).
+        ctl_dir = control_dir(entry.name)
+        try:
+            if os.path.isdir(ctl_dir):
+                shutil.rmtree(ctl_dir)
+        except OSError as exc:
+            logger.warning(
+                "workspace sweep: control dir rmtree %s failed: %s",
+                ctl_dir, exc,
+            )
+        # Task 8 (containment stage 2): once a workspace is gone for good,
+        # its uid's passwd/group entry must go with it — otherwise
+        # /etc/passwd accumulates one stale ``casa-eng-<uid>`` line per
+        # completed engagement forever. ``meta`` (read above, before the
+        # rmtree) is the ONLY source of the uid here — the sweeper has no
+        # registry access, unlike the driver's own rollback or
+        # delete_engagement_workspace. ``owner_uid_or_none`` guards against
+        # both the UNALLOCATED_UID sentinel and legacy meta with no
+        # ``allocated_uid`` key at all (``.get`` default).
+        _raw_uid = meta.get("allocated_uid", UNALLOCATED_UID)
+        real_uid = (
+            owner_uid_or_none(_raw_uid) if isinstance(_raw_uid, int) else None
+        )
+        if real_uid is not None:
+            try:
+                prune_identity(real_uid)
+            except OSError as exc:
+                logger.warning(
+                    "workspace sweep: prune_identity(%s) failed: %s",
+                    real_uid, exc,
+                )
+            # Task 11 (containment stage 2): the uid's private outbox dir
+            # follows the workspace on the SAME retention decision — same
+            # reasoning as the control dir and passwd entry above.
+            import plugin_outbox
+            try:
+                plugin_outbox.teardown_engagement_outbox(real_uid)
+            except Exception as exc:  # noqa: BLE001 — best-effort, like siblings
+                logger.warning(
+                    "workspace sweep: engagement outbox teardown(%s) "
+                    "failed: %s", real_uid, exc,
+                )
 
 
 # ---------------------------------------------------------------------------

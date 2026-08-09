@@ -388,7 +388,24 @@ async def send_media(args: dict) -> dict:
         if caption is not None and len(caption) > _CAPTION_MAX:
             caption = caption[:_CAPTION_MAX]
 
-        outbox = plugin_outbox.get_outbox()
+        # Containment stage 2 (Task 11): a uid-dropped claude_code engagement's
+        # producer plugins can no longer write the SHARED outbox (it stays
+        # root-only, never group/world-writable) — they write a PRIVATE
+        # per-engagement dir instead. Which outbox to claim from is derived
+        # from the AUTHENTICATED engagement record's own `allocated_uid`
+        # (bound via `engagement_var`, never from the caller-submitted
+        # `path`), so engagement A can never point this claim at B's private
+        # outbox by crafting a path argument. A record with no real uid
+        # (legacy/specialist/no-engagement context) keeps using the shared
+        # outbox exactly as before.
+        from engagement_uids import owner_uid_or_none
+        _raw_uid = getattr(eng, "allocated_uid", None) if eng is not None else None
+        eng_uid = (owner_uid_or_none(_raw_uid)
+                  if isinstance(_raw_uid, int) else None)
+        if eng_uid is not None:
+            outbox = plugin_outbox.get_engagement_outbox(eng_uid)
+        else:
+            outbox = plugin_outbox.get_outbox()
         if outbox is None:
             return _result({"status": "error", "kind_error": "internal_error",
                             "message": "outbox not initialised"})
@@ -6843,9 +6860,12 @@ async def _finalize_engagement(
     if engagement.driver == "claude_code":
         try:
             from drivers.workspace import load_casa_meta, write_casa_meta
+            from engagement_uids import owner_uid_or_none
             ws = os.path.join(_ENGAGEMENTS_ROOT, engagement.id)
             if os.path.isdir(ws):
-                meta = load_casa_meta(ws) or {}
+                meta = load_casa_meta(
+                    ws, owner_uid=owner_uid_or_none(engagement.allocated_uid),
+                ) or {}
                 finished_iso = time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now),
                 )
@@ -6866,6 +6886,22 @@ async def _finalize_engagement(
                     retention_until=retention_iso,
                     # §3.8: the immutable binding survives the terminal rewrite.
                     plugin_artifacts=meta.get("plugin_artifacts"),
+                    # Task 8 (containment stage 2): likewise carry the
+                    # allocated uid forward — the workspace sweeper (no
+                    # registry access) reads it back from THIS field to
+                    # prune the uid's passwd/group entry once retention
+                    # deletes the workspace. Fix-loop round 1 (Important):
+                    # use engagement.allocated_uid — the AUTHORITATIVE
+                    # value, already used one line up for owner_uid_or_none
+                    # — not a round-trip through `meta`. load_casa_meta
+                    # returns None/{} on I/O error, malformed/non-object
+                    # JSON, or a refused legacy symlink; falling back to
+                    # meta.get(...) in any of those cases would silently
+                    # regress a real uid to UNALLOCATED_UID in this
+                    # terminal rewrite and permanently orphan the
+                    # casa-eng-<uid> passwd/group lines (the sweeper reads
+                    # ONLY this field).
+                    allocated_uid=engagement.allocated_uid,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -7980,7 +8016,7 @@ async def delete_engagement_workspace(args: dict) -> dict:
     # v0.64.0: the per-engagement s6-log dir follows the workspace on this
     # caller-managed path too — once the workspace is gone, the retention
     # sweep can never map to the log dir again.
-    from drivers.workspace import engagement_log_dir
+    from drivers.workspace import control_dir, engagement_log_dir
     log_dir = engagement_log_dir(engagement_id)
     try:
         if os.path.isdir(log_dir):
@@ -7990,6 +8026,40 @@ async def delete_engagement_workspace(args: dict) -> dict:
             "delete_engagement_workspace: log dir rmtree %s failed: %s",
             log_dir, exc,
         )
+    # Task 4 (containment stage 2): the root-only control dir follows the
+    # workspace on this caller-managed path too — same reasoning as the log
+    # dir above (once the workspace is gone, nothing can map back to it).
+    ctl_dir = control_dir(engagement_id)
+    try:
+        if os.path.isdir(ctl_dir):
+            shutil.rmtree(ctl_dir)
+    except OSError as exc:
+        logger.warning(
+            "delete_engagement_workspace: control dir rmtree %s failed: %s",
+            ctl_dir, exc,
+        )
+    # Task 8 (containment stage 2): this caller-managed deletion path has
+    # its own EngagementRecord (rec, above) — use its allocated_uid
+    # directly, same guard as every other prune site.
+    from engagement_uids import owner_uid_or_none, prune_identity
+    real_uid = owner_uid_or_none(rec.allocated_uid)
+    if real_uid is not None:
+        try:
+            prune_identity(real_uid)
+        except OSError as exc:
+            logger.warning(
+                "delete_engagement_workspace: prune_identity(%s) failed: %s",
+                real_uid, exc,
+            )
+        # Task 11 (containment stage 2): the uid's private outbox dir
+        # follows the workspace on this caller-managed path too.
+        try:
+            plugin_outbox.teardown_engagement_outbox(real_uid)
+        except Exception as exc:  # noqa: BLE001 — best-effort, like prune above
+            logger.warning(
+                "delete_engagement_workspace: engagement outbox "
+                "teardown(%s) failed: %s", real_uid, exc,
+            )
     return _result({
         "status": "ok", "engagement_id": engagement_id,
         "workspace_removed": os.path.isdir(ws) is False,

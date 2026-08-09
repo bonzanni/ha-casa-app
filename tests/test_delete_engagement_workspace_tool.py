@@ -82,6 +82,108 @@ async def test_delete_also_removes_log_dir(tmp_path, monkeypatch):
     assert not (log_root / "casa-engagement-eng-done").exists()
 
 
+async def test_delete_prunes_identity_for_real_allocated_uid(tmp_path, monkeypatch):
+    """Task 8 (containment stage 2): this caller-managed deletion path has
+    its own EngagementRecord — a real allocated_uid must be pruned from
+    passwd/group once the workspace is gone."""
+    import engagement_uids as eu_mod
+    import tools as tools_mod
+    from tools import delete_engagement_workspace
+    from engagement_registry import EngagementRegistry, EngagementRecord
+
+    _make_ws(tmp_path, "eng-uid")
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "t.json"), bus=None)
+    reg._records["eng-uid"] = EngagementRecord(
+        id="eng-uid", kind="executor", role_or_type="hello-driver",
+        driver="claude_code", status="completed", topic_id=None,
+        started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+        completed_at=0.0, sdk_session_id=None, origin={}, task="t",
+        allocated_uid=eu_mod.UID_BASE + 9,
+    )
+    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
+    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(tmp_path),
+                        raising=False)
+
+    calls: list[int] = []
+    monkeypatch.setattr(eu_mod, "prune_identity", lambda uid: calls.append(uid))
+
+    result = await delete_engagement_workspace.handler(
+        {"engagement_id": "eng-uid"},
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "ok"
+    assert calls == [eu_mod.UID_BASE + 9]
+
+
+async def test_delete_removes_private_outbox_for_real_allocated_uid(
+    tmp_path, monkeypatch,
+):
+    """Fix-loop round 1, finding 1 (wiring-site coverage): this
+    caller-managed deletion path must remove the uid's private outbox dir
+    too, alongside prune_identity — exercises the real provision/teardown
+    pair (root redirected to a tmp dir by the autouse isolation fixture)."""
+    import plugin_outbox
+    import engagement_uids as eu_mod
+    import tools as tools_mod
+    from tools import delete_engagement_workspace
+    from engagement_registry import EngagementRegistry, EngagementRecord
+
+    uid = eu_mod.UID_BASE + 10
+    d = plugin_outbox.provision_engagement_outbox(uid)
+    assert Path(d).is_dir()
+
+    _make_ws(tmp_path, "eng-outbox")
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "t.json"), bus=None)
+    reg._records["eng-outbox"] = EngagementRecord(
+        id="eng-outbox", kind="executor", role_or_type="hello-driver",
+        driver="claude_code", status="completed", topic_id=None,
+        started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+        completed_at=0.0, sdk_session_id=None, origin={}, task="t",
+        allocated_uid=uid,
+    )
+    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
+    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(tmp_path),
+                        raising=False)
+
+    result = await delete_engagement_workspace.handler(
+        {"engagement_id": "eng-outbox"},
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "ok"
+    assert not Path(d).exists(), "deleted engagement's private outbox must be removed"
+
+
+async def test_delete_does_not_prune_unallocated_uid(tmp_path, monkeypatch):
+    """A legacy/unallocated engagement (UNALLOCATED_UID default) must never
+    trigger a prune attempt — there is no real uid to prune."""
+    import engagement_uids as eu_mod
+    import tools as tools_mod
+    from tools import delete_engagement_workspace
+    from engagement_registry import EngagementRegistry, EngagementRecord
+
+    _make_ws(tmp_path, "eng-legacy")
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "t.json"), bus=None)
+    reg._records["eng-legacy"] = EngagementRecord(
+        id="eng-legacy", kind="executor", role_or_type="hello-driver",
+        driver="claude_code", status="completed", topic_id=None,
+        started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+        completed_at=0.0, sdk_session_id=None, origin={}, task="t",
+    )
+    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
+    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(tmp_path),
+                        raising=False)
+
+    calls: list[int] = []
+    monkeypatch.setattr(eu_mod, "prune_identity", lambda uid: calls.append(uid))
+
+    result = await delete_engagement_workspace.handler(
+        {"engagement_id": "eng-legacy"},
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "ok"
+    assert calls == []
+
+
 async def test_refuses_undergoing_without_force(tmp_path, monkeypatch):
     import tools as tools_mod
     from tools import delete_engagement_workspace

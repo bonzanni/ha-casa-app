@@ -10,7 +10,9 @@ import errno
 import json
 import logging
 import os
+import pwd
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -22,10 +24,14 @@ from drivers import s6_rc
 from drivers.brief import brief_task_for
 from drivers.driver_protocol import DriverProtocol
 from drivers.workspace import (
-    engagement_log_dir, provision_workspace, render_log_run_script,
-    render_run_script, write_casa_meta,
+    control_dir, engagement_log_dir, fifo_path, inbound_spool_path,
+    provision_workspace, render_log_run_script, render_run_script,
+    session_id_path, stderr_path, stream_cursor_path, write_casa_meta,
 )
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
+from engagement_uids import UID_BASE, owner_uid_or_none, prune_identity
+import plugin_outbox
+from safe_fs import SymlinkRefused, list_dir_beneath, open_beneath
 from settle_gate import confirmed_settle_edit
 
 logger = logging.getLogger(__name__)
@@ -796,6 +802,89 @@ class _InboundSpool:
                         await fn(self._engagement_id, "operator_turn")
 
 
+class UidDropRefused(Exception):
+    """Raised by ``_preflight_uid_drop`` when the preconditions for launching
+    an engagement's CLI subprocess under its allocated uid (via setpriv)
+    cannot be verified. The caller must refuse — never plant/start the s6
+    service and never fall back to a root spawn (containment stage 2,
+    Task 7)."""
+
+
+def _preflight_uid_drop(rec: EngagementRecord, ws: str) -> None:
+    """Fail-closed gate, run BEFORE the s6 service is planted: verify the
+    ``setpriv`` uid drop that ``render_run_script`` bakes into the run
+    script (Task 6) can actually succeed at spawn time. Every precondition
+    checked here is made true by a LATER task — the chown + passwd append
+    (Task 8) and plugin-artifact mode normalization (Task 11) — so this
+    check is correct now and simply starts passing once those tasks land;
+    it must never be loosened to "skip if not yet true".
+
+    Raises ``UidDropRefused`` on the first failing check; callers must not
+    swallow it and plant the service anyway.
+    """
+    if shutil.which("setpriv") is None:
+        raise UidDropRefused("setpriv not found on PATH — cannot drop uid")
+
+    uid = rec.allocated_uid
+    if uid < UID_BASE:
+        raise UidDropRefused(
+            f"allocated_uid {uid} is below UID_BASE ({UID_BASE}) — "
+            "unallocated or otherwise invalid"
+        )
+
+    try:
+        ws_stat = os.stat(ws)
+    except OSError as exc:
+        raise UidDropRefused(
+            f"cannot stat workspace {ws!r}: {exc}"
+        ) from exc
+    if ws_stat.st_uid != uid:
+        raise UidDropRefused(
+            f"workspace {ws!r} is owned by uid {ws_stat.st_uid}, not the "
+            f"allocated uid {uid} — the uid-drop chown has not landed"
+        )
+
+    try:
+        pwd.getpwuid(uid)
+    except KeyError as exc:
+        raise UidDropRefused(
+            f"no passwd entry for uid {uid} — NSS identity not provisioned"
+        ) from exc
+
+    _check_plugin_dirs_readable(uid, getattr(rec, "plugin_artifacts", ()))
+
+
+def _check_plugin_dirs_readable(uid: int, plugin_artifacts) -> None:
+    """Shared by :func:`_preflight_uid_drop` (fresh launch) and the boot-replay
+    migration loop (``casa_core.replay_undergoing_engagements``) — containment
+    stage 2 parity: BOTH paths render a run script that passes each pinned
+    plugin artifact to the CLI as a ``--plugin-dir`` flag, so both must verify
+    the subprocess, running AS *uid*, can actually traverse into and read it
+    before planting/starting the service. ``os.access()`` is not a reliable
+    check here: run as root (both callers always are), it reports what root
+    could do, not what the target uid could do. So check mode bits directly:
+    either the uid owns the dir (its own artifacts), or the "other" bits
+    grant read+execute (o+rx == 0o005) — traverse (x) to enter, read (r) to
+    list/open entries beneath it. Raises ``UidDropRefused`` on the first
+    failing artifact; callers must not swallow it and plant/start the
+    service anyway."""
+    for artifact in plugin_artifacts or ():
+        path = artifact["path"]
+        try:
+            pa_stat = os.stat(path)
+        except OSError as exc:
+            raise UidDropRefused(
+                f"cannot stat plugin dir {path!r}: {exc}"
+            ) from exc
+        if pa_stat.st_uid == uid:
+            continue
+        if (pa_stat.st_mode & 0o005) != 0o005:
+            raise UidDropRefused(
+                f"plugin dir {path!r} is not world-readable+traversable "
+                f"and not owned by uid {uid} (mode {oct(pa_stat.st_mode)})"
+            )
+
+
 class ClaudeCodeDriver(DriverProtocol):
     """s6-rc orchestrator. Does not manage subprocesses directly."""
 
@@ -1023,7 +1112,6 @@ class ClaudeCodeDriver(DriverProtocol):
         don't end up with a permanent UNDERGOING ghost. The exception is
         re-raised so engage_executor's caller surfaces the failure.
         """
-        import shutil
         defn = options
         # Workspace path is deterministic — compute it up front so the
         # rollback path can rmtree even if provision_workspace raises
@@ -1074,6 +1162,12 @@ class ClaudeCodeDriver(DriverProtocol):
                         template_root if template_root.is_dir() else None
                     ),
                     executor_memory=executor_memory_block,
+                    # Task 8 (containment stage 2): the allocated uid doubles
+                    # as the gid here too, same as render_run_script below —
+                    # provision_workspace chowns the whole tree to this
+                    # identity as its LAST write, after every root-side file
+                    # above has landed.
+                    uid=engagement.allocated_uid, gid=engagement.allocated_uid,
                 )
                 write_casa_meta(
                     workspace_path=ws,
@@ -1085,7 +1179,18 @@ class ClaudeCodeDriver(DriverProtocol):
                     # §3.8: record the pinned artifacts with the workspace meta.
                     plugin_artifacts=list(
                         getattr(engagement, "plugin_artifacts", ()) or ()),
+                    # Task 8: persisted so the workspace sweeper (no registry
+                    # access) can prune this uid's passwd/group entry once
+                    # retention deletes the workspace.
+                    allocated_uid=engagement.allocated_uid,
                 )
+
+                # 1.5. Task 7 (containment stage 2): verify the uid drop the
+                # run script below will attempt can actually succeed BEFORE
+                # planting the service — a refusal here must never leave a
+                # service that `set -e`-crash-loops under setpriv, nor fall
+                # back to a root spawn.
+                _preflight_uid_drop(engagement, ws)
 
                 # 2. Write the s6 service pair (sibling logger service
                 #    captures the CLI's stdout — see s6_rc.write_service_dir).
@@ -1105,6 +1210,11 @@ class ClaudeCodeDriver(DriverProtocol):
                     # §3.8: load the pinned artifacts via --plugin-dir flags.
                     plugin_dirs=[pa["path"] for pa in
                                  getattr(engagement, "plugin_artifacts", ()) or ()],
+                    # Task 6 (containment stage 2): the allocated uid doubles
+                    # as the gid — render refuses the UNALLOCATED_UID
+                    # sentinel, so a not-yet-allocated record fails closed
+                    # here rather than launching a setpriv-less/root CLI.
+                    uid=engagement.allocated_uid, gid=engagement.allocated_uid,
                 )
                 log_script = render_log_run_script(engagement_id=engagement.id)
                 s6_rc.write_service_dir(
@@ -1136,6 +1246,36 @@ class ClaudeCodeDriver(DriverProtocol):
                     "claude_code start failed for engagement %s: %s; rolling back",
                     engagement.id[:8], start_exc,
                 )
+                # Task 7 (containment stage 2): a uid-drop refusal gets its
+                # own terminal kind (not the generic "driver_start_failed"
+                # a caller further up would otherwise assign) so it's
+                # distinguishable in the registry/telemetry. mark_error is
+                # idempotent-guarded (only the first winner flips the
+                # record), so a caller upstream re-marking with a generic
+                # kind afterwards is a harmless no-op. The service was never
+                # planted (this raises before write_service_dir), so
+                # ensure_service_down is best-effort/likely a no-op — kept
+                # anyway in case a prior partial state lingers.
+                if isinstance(start_exc, UidDropRefused):
+                    try:
+                        await s6_rc.ensure_service_down(
+                            engagement_id=engagement.id)
+                    except Exception:  # noqa: BLE001 — best-effort teardown
+                        logger.warning(
+                            "uid-drop refusal: ensure_service_down failed "
+                            "for %s", engagement.id[:8], exc_info=True,
+                        )
+                    if self._registry is not None:
+                        try:
+                            await self._registry.mark_error(
+                                engagement.id, kind="refuse_uid_drop_failed",
+                                message=str(start_exc),
+                            )
+                        except Exception:  # noqa: BLE001 — best-effort mark
+                            logger.warning(
+                                "uid-drop refusal: mark_error failed for "
+                                "%s", engagement.id[:8], exc_info=True,
+                            )
                 # Best-effort rollback. Each step swallows its own errors so
                 # one rollback failure doesn't mask the original cause.
                 # v0.64.0: ALWAYS attempt dir removal — write_service_dir can
@@ -1167,6 +1307,47 @@ class ClaudeCodeDriver(DriverProtocol):
                     logger.warning(
                         "rollback rmtree(%s) failed: %s", ws_path, rb_exc,
                     )
+                # Task 4: the control dir is provisioned alongside the
+                # workspace (provision_control_dir, called from within
+                # provision_workspace) — remove it on the same rollback so a
+                # failed launch never leaves an orphaned root-only directory.
+                ctl_path = control_dir(engagement.id)
+                try:
+                    shutil.rmtree(ctl_path, ignore_errors=True)
+                except Exception as rb_exc:  # noqa: BLE001
+                    logger.warning(
+                        "rollback rmtree(%s) failed: %s", ctl_path, rb_exc,
+                    )
+                # Task 8 (containment stage 2): a failed launch may still
+                # have gotten far enough for provision_workspace to call
+                # ensure_identity() before whatever raised — best-effort
+                # prune here so a repeatedly-failing launch (or a launch
+                # that fails after Task 8's own chown step) doesn't leave a
+                # stale passwd/group entry for a uid whose workspace is
+                # about to be deleted above. A no-op if identity was never
+                # created.
+                real_uid = owner_uid_or_none(engagement.allocated_uid)
+                if real_uid is not None:
+                    try:
+                        prune_identity(real_uid)
+                    except Exception as rb_exc:  # noqa: BLE001
+                        logger.warning(
+                            "rollback prune_identity(%s) failed: %s",
+                            real_uid, rb_exc,
+                        )
+                    # Task 11 (containment stage 2): the uid's private
+                    # outbox dir follows the workspace on this rollback path
+                    # too — provision_workspace may have gotten far enough
+                    # to create it before whatever raised. Best-effort, same
+                    # guard/shape as the sibling teardown call in
+                    # tools.delete_engagement_workspace.
+                    try:
+                        plugin_outbox.teardown_engagement_outbox(real_uid)
+                    except Exception as rb_exc:  # noqa: BLE001
+                        logger.warning(
+                            "rollback engagement outbox teardown(%s) "
+                            "failed: %s", real_uid, rb_exc,
+                        )
                 raise
 
         # 4. Kick off the background tasks (outside lock): respawn poller,
@@ -1393,7 +1574,9 @@ class ClaudeCodeDriver(DriverProtocol):
         # asyncio.to_thread threads are uncancellable, so a handful of stuck
         # writes starve all subprocess orchestration app-wide. Open + write
         # non-blocking with a bounded deadline instead — no thread at all.
-        fifo = (Path(self._engagements_root) / engagement.id / "stdin.fifo")
+        # Task 4 (containment stage 2): the FIFO lives in the root-only
+        # control dir, not the uid-owned workspace.
+        fifo = Path(fifo_path(engagement.id))
         if not fifo.exists():
             logger.warning("FIFO missing for engagement %s", engagement.id[:8])
             return False
@@ -1482,7 +1665,6 @@ class ClaudeCodeDriver(DriverProtocol):
         # Sol r2-B6: boot replay calls this DIRECTLY (not start), so the inbound
         # spool, reply-text set, epoch tracker AND the spool recovery all live
         # here — a resumed engagement gets the same wiring as a fresh one.
-        ws = Path(self._engagements_root) / engagement.id
         self._reply_texts.setdefault(engagement.id, set())
         self._epoch_pending.setdefault(engagement.id, None)
         self._turn_running.setdefault(engagement.id, False)
@@ -1502,7 +1684,7 @@ class ClaudeCodeDriver(DriverProtocol):
         # retry (recovery scheduled below).
         self._inbound[engagement.id] = _InboundSpool(
             engagement_id=engagement.id,
-            spool_path=str(ws / _SPOOL_FILENAME),
+            spool_path=inbound_spool_path(engagement.id),
             # #322: the spool RETAINS on a False return (auto-redelivery on
             # the next spawn) — its no-reader notice promises the retry.
             write_fifo=lambda text: self._write_to_fifo(
@@ -1530,7 +1712,7 @@ class ClaudeCodeDriver(DriverProtocol):
                 name=f"seq_watcher:{engagement.id[:8]}"),
             # P31 (v0.37.10): capture the SDK session_id by watching the
             # claude CLI's own session-storage directory. Persists the
-            # UUID to ``<workspace>/.session_id`` so the run script's
+            # UUID to the control dir's ``.session_id`` (Task 4) so the run script's
             # resume plumbing (UUID-validated single ``--resume=<uuid>``
             # token since v0.131.0) picks up after a Casa restart.
             asyncio.create_task(self._capture_session_id(engagement)),
@@ -1567,7 +1749,7 @@ class ClaudeCodeDriver(DriverProtocol):
         # Scheduled only when a spool file survives (a fresh engagement has
         # nothing to recover), mirroring the old conditional marker reconcile.
         spool = self._inbound.get(engagement.id)
-        if spool is not None and (ws / _SPOOL_FILENAME).exists():
+        if spool is not None and Path(inbound_spool_path(engagement.id)).exists():
             tasks.append(asyncio.create_task(spool.recover()))
 
         # v0.79.0 (§4): boot reconciliation of open questions. The broker /
@@ -1806,8 +1988,7 @@ class ClaudeCodeDriver(DriverProtocol):
         file still holds pending receipts/notices (a drain that crashed / a
         send that failed pre-terminal) is drained here — posting to the topic
         if it still exists, else WARN-dropping (the topic is gone)."""
-        ws = Path(self._engagements_root) / engagement.id
-        spool_path = ws / _SPOOL_FILENAME
+        spool_path = Path(inbound_spool_path(engagement.id))
         if not spool_path.exists():
             return
         spool = _InboundSpool(
@@ -2700,7 +2881,10 @@ class ClaudeCodeDriver(DriverProtocol):
         task = asyncio.create_task(
             self._force_turn_boundary(
                 engagement_id=eng_id,
-                workspace_dir=str(Path(self._engagements_root) / eng_id),
+                # Task 4: ``.spawn_epoch`` moved to the control dir — this
+                # kwarg is s6_rc's read-target for the epoch guard, not
+                # literally "the workspace" anymore.
+                workspace_dir=control_dir(eng_id),
                 expected_epoch=epoch,
                 track_task=(lambda t, eid=eng_id:
                             self._register_force_cleanup(eid, t)),
@@ -2949,7 +3133,8 @@ class ClaudeCodeDriver(DriverProtocol):
         try:
             ok = await self._force_turn_boundary(
                 engagement_id=engagement_id,
-                workspace_dir=str(Path(self._engagements_root) / engagement_id),
+                # Task 4: see the twin call site's comment above.
+                workspace_dir=control_dir(engagement_id),
                 expected_epoch=self._forced_suspend_epochs.get(engagement_id),
                 track_task=(
                     lambda t, eid=engagement_id:
@@ -4032,8 +4217,9 @@ class ClaudeCodeDriver(DriverProtocol):
         The relay reads the engagement's NDJSON s6-log to the live end then
         returns; each claude_code turn is a fresh CLI spawn that appends a
         burst then exits, so we re-run on a short poll — the crash-safe cursor
-        (``<ws>/.stream_cursor.json``) resumes exactly where the last run left
-        off, and REPLAY-mode side-effect suppression keeps re-runs idempotent.
+        (control-dir ``.stream_cursor.json``, Task 4) resumes exactly where
+        the last run left off, and REPLAY-mode side-effect suppression keeps
+        re-runs idempotent.
         """
         from drivers.topic_stream import TopicStreamRelay
 
@@ -4051,12 +4237,12 @@ class ClaudeCodeDriver(DriverProtocol):
                 return None
             return (entry["n"], entry["tg_message_id"], entry.get("source_hash"))
 
-        ws = Path(self._engagements_root) / engagement.id
         relay = TopicStreamRelay(
             engagement_id=engagement.id,
             topic_id=engagement.topic_id,
             log_dir=engagement_log_dir(engagement.id),
-            cursor_path=str(ws / ".stream_cursor.json"),
+            # Task 4: crash-safe cursor moved to the control dir.
+            cursor_path=stream_cursor_path(engagement.id),
             send_message=self._relay_send_message,
             edit_message=self._relay_edit_message,
             delete_message=self._relay_delete_message,
@@ -4355,12 +4541,13 @@ class ClaudeCodeDriver(DriverProtocol):
         never misattributed to a reused slot)."""
         if epoch is None:
             return None
-        ws = Path(self._engagements_root) / engagement.id
+        # Task 4: the ring lives in the control dir now.
+        base = Path(stderr_path(engagement.id, epoch))
         chunks: list[str] = []
-        for name in (f".stderr.{epoch}.log.1", f".stderr.{epoch}.log"):
+        for p in (base.with_name(base.name + ".1"), base):
             try:
                 chunks.append(
-                    (ws / name).read_text(encoding="utf-8", errors="replace"))
+                    p.read_text(encoding="utf-8", errors="replace"))
             except OSError:
                 continue
         if not chunks:
@@ -4408,8 +4595,8 @@ class ClaudeCodeDriver(DriverProtocol):
     ) -> None:
         """P31 (v0.37.10): watch the claude CLI's own session-storage
         directory for the first ``<uuid>.jsonl`` file. The filename
-        (minus extension) IS the SDK session UUID. Persist to
-        ``<workspace>/.session_id`` so a boot-replay resumes the
+        (minus extension) IS the SDK session UUID. Persist to the control
+        dir's ``.session_id`` (Task 4) so a boot-replay resumes the
         conversation (the run script validates the file's content as an
         exact UUID and passes a single ``--resume=<uuid>`` argv token —
         v0.131.0 hardening).
@@ -4439,14 +4626,31 @@ class ClaudeCodeDriver(DriverProtocol):
         """
         short = engagement.id[:8]
         ws = Path(self._engagements_root) / engagement.id
-        target = ws / ".session_id"
-        tmp = ws / ".session_id.tmp"
-        projects_dir = (
-            ws / ".home" / ".claude" / "projects"
-            / f"-data-engagements-{engagement.id}"
+        # Task 4: the WRITE target moves to the control dir. The scan below
+        # still reads the CLI's own session-storage directory under the
+        # workspace's .home. Task 5: that scan is now routed through
+        # ``safe_fs`` — rooted at ``<ws>/.home`` and never following a
+        # symlink component (e.g. a sibling engagement planting
+        # ``.home/.claude/projects/<name>`` as a symlink to ITS OWN projects
+        # dir, which would otherwise leak its session UUID here).
+        target = Path(session_id_path(engagement.id))
+        tmp = target.with_name(target.name + ".tmp")
+        ws_home = ws / ".home"
+        rel_projects_dir = (
+            f".claude/projects/-data-engagements-{engagement.id}"
         )
+        owner_uid = owner_uid_or_none(engagement.allocated_uid)
         while True:
-            sid = self._scan_projects_dir_for_sid(projects_dir)
+            try:
+                sid = self._scan_projects_dir_for_sid(
+                    ws_home, rel_projects_dir, owner_uid=owner_uid)
+            except SymlinkRefused as exc:
+                logger.warning(
+                    "engagement %s session capture refused: symlinked "
+                    "projects dir (%s) — no session id will be adopted",
+                    short, exc,
+                )
+                return
             if sid is not None:
                 try:
                     tmp.write_text(sid + "\n", encoding="utf-8")
@@ -4473,33 +4677,63 @@ class ClaudeCodeDriver(DriverProtocol):
             await asyncio.sleep(poll_interval_s)
 
     @staticmethod
-    def _scan_projects_dir_for_sid(projects_dir: Path) -> str | None:
-        """Return the oldest UUID-named .jsonl in projects_dir, or None.
+    def _scan_projects_dir_for_sid(
+        ws_home: Path, rel_projects_dir: str, *, owner_uid: int | None,
+    ) -> str | None:
+        """Return the oldest UUID-named .jsonl in the CLI's session-projects
+        dir (``<ws_home>/<rel_projects_dir>``), or None if not present yet.
+
+        Task 5: listed via ``safe_fs.list_dir_beneath`` rooted at
+        ``ws_home`` — refuses to follow a symlinked ``rel_projects_dir``
+        (e.g. one planted pointing at a SIBLING engagement's own projects
+        dir) rather than reading whatever it points to. Raises
+        ``SymlinkRefused`` up to the caller in that case: the caller treats
+        a refused DIRECTORY as "no session capture, ever" for this
+        watcher — never silently adopting a sibling's UUID.
+
+        A candidate FILE that is itself a symlink (finer-grained than the
+        directory case above) is instead just skipped — same effect as if
+        it were absent, since only the directory-level refusal needs to
+        abort the whole watch.
 
         Sort by mtime ascending so the first session file (the one
         spawned by the initial CLI start) wins over any later ones the
         CLI might write on a resume retry.
         """
         try:
-            if not projects_dir.is_dir():
-                return None
-            candidates: list[tuple[float, str]] = []
-            for p in projects_dir.iterdir():
-                if p.suffix != ".jsonl":
-                    continue
-                stem = p.stem
-                if _UUID_REGEX.match(stem) is None:
-                    continue
-                try:
-                    candidates.append((p.stat().st_mtime, stem))
-                except OSError:
-                    continue
-            if not candidates:
-                return None
-            candidates.sort()
-            return candidates[0][1]
+            names = list_dir_beneath(
+                str(ws_home), rel_projects_dir, owner_uid=owner_uid)
+        except SymlinkRefused:
+            raise
         except OSError:
             return None
+        candidates: list[tuple[float, str]] = []
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            stem = name[: -len(".jsonl")]
+            if _UUID_REGEX.match(stem) is None:
+                continue
+            rel_file = f"{rel_projects_dir}/{name}"
+            try:
+                fd = open_beneath(
+                    str(ws_home), rel_file, owner_uid=owner_uid)
+            except SymlinkRefused:
+                # This specific entry is a symlink — skip it (do not adopt
+                # its target's mtime/content), but the directory itself
+                # resolved cleanly so the watch continues.
+                continue
+            except OSError:
+                continue
+            try:
+                mtime = os.fstat(fd).st_mtime
+            finally:
+                os.close(fd)
+            candidates.append((mtime, stem))
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0][1]
 
     async def _poll_respawns(
         self, engagement: EngagementRecord, *, interval_s: float = 5.0,

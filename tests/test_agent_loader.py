@@ -1718,6 +1718,143 @@ class TestValidateConfigRepoWalkScope:
         assert "BOGUS_HOOK_KEY" in errors[0]
 
 
+class TestValidateConfigRepoExecutorGrantGuard:
+    """Task 12 — containment stage 2 config-validate guard (belt-and-
+    suspenders). Stage 2's per-uid filesystem isolation does not close the
+    confused-deputy bridge-read hole: an executor holding the whole-server
+    ``mcp__casa-framework`` grant or one of the ``*_engagement_workspace``
+    admin tools could ask casa-core (root) to read/act on ANY engagement's
+    workspace via a caller-controlled ``engagement_id``. No shipped
+    executor grants these today; this guard fails the build if config
+    drift ever adds one, so the gate catches it before it ships."""
+
+    def _executor_defn(self, allowed: list[str]) -> str:
+        return textwrap.dedent(f"""\
+            schema_version: 1
+            type: task
+            description: A reasonably long description meeting minLength 20.
+            model: sonnet
+            driver: in_casa
+            enabled: true
+            tools:
+              allowed: {allowed}
+              permission_mode: acceptEdits
+            mcp_server_names: [casa-framework]
+        """)
+
+    def test_rejects_server_level_casa_grant_on_executor(self, tmp_path):
+        from agent_loader import validate_config_repo
+
+        repo = tmp_path / "cfg"
+        _seed_resident(repo / "agents", "assistant")
+        _policies_file(repo / "policies")
+        _w(
+            repo / "agents" / "executors" / "task" / "definition.yaml",
+            self._executor_defn(["Read", "mcp__casa-framework"]),
+        )
+        _w(repo / "agents" / "executors" / "task" / "prompt.md", "Hi.")
+
+        errors = validate_config_repo(str(repo))
+        assert any(
+            "task" in e and "mcp__casa-framework" in e for e in errors
+        ), errors
+
+    def test_rejects_peek_engagement_workspace_grant(self, tmp_path):
+        from agent_loader import validate_config_repo
+
+        repo = tmp_path / "cfg"
+        _seed_resident(repo / "agents", "assistant")
+        _policies_file(repo / "policies")
+        _w(
+            repo / "agents" / "executors" / "task" / "definition.yaml",
+            self._executor_defn(
+                ["Read", "mcp__casa-framework__peek_engagement_workspace"]
+            ),
+        )
+        _w(repo / "agents" / "executors" / "task" / "prompt.md", "Hi.")
+
+        errors = validate_config_repo(str(repo))
+        assert any(
+            "peek_engagement_workspace" in e for e in errors
+        ), errors
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "mcp__casa-framework__list_engagement_workspaces",
+            "mcp__casa-framework__delete_engagement_workspace",
+        ],
+    )
+    def test_rejects_list_and_delete_engagement_workspace_grant(
+        self, tmp_path, tool,
+    ):
+        from agent_loader import validate_config_repo
+
+        repo = tmp_path / "cfg"
+        _seed_resident(repo / "agents", "assistant")
+        _policies_file(repo / "policies")
+        _w(
+            repo / "agents" / "executors" / "task" / "definition.yaml",
+            self._executor_defn(["Read", tool]),
+        )
+        _w(repo / "agents" / "executors" / "task" / "prompt.md", "Hi.")
+
+        errors = validate_config_repo(str(repo))
+        assert any(tool in e for e in errors), errors
+
+    def test_normal_executor_grant_passes(self, tmp_path):
+        """A real, per-tool grant list — no bare server-level grant, no
+        engagement-workspace admin tools — must not trip the guard."""
+        from agent_loader import validate_config_repo
+
+        repo = tmp_path / "cfg"
+        _seed_resident(repo / "agents", "assistant")
+        _policies_file(repo / "policies")
+        _w(
+            repo / "agents" / "executors" / "task" / "definition.yaml",
+            self._executor_defn([
+                "Read",
+                "mcp__casa-framework__query_engager",
+                "mcp__casa-framework__emit_completion",
+            ]),
+        )
+        _w(repo / "agents" / "executors" / "task" / "prompt.md", "Hi.")
+
+        errors = validate_config_repo(str(repo))
+        assert errors == [], errors
+
+    def test_shipped_configurator_grants_pass(self, tmp_path):
+        """The real, shipped configurator definition.yaml grants neither
+        the bare server-level tool nor any *_engagement_workspace admin
+        tool — copy it verbatim into a synthetic repo and confirm the
+        guard does not fire (the configurator is NOT exempted; it simply
+        does not hold these grants)."""
+        from agent_loader import validate_config_repo
+
+        real_defn = (
+            Path(__file__).resolve().parents[1]
+            / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
+            / "definition.yaml"
+        ).read_text(encoding="utf-8")
+
+        repo = tmp_path / "cfg"
+        _seed_resident(repo / "agents", "assistant")
+        _policies_file(repo / "policies")
+        _w(
+            repo / "agents" / "executors" / "configurator" / "definition.yaml",
+            real_defn,
+        )
+        _w(
+            repo / "agents" / "executors" / "configurator" / "prompt.md",
+            "Hi.",
+        )
+
+        errors = validate_config_repo(str(repo))
+        assert not any(
+            "mcp__casa-framework" in e and "grants" in e for e in errors
+        ), errors
+
+
 class TestSpecialistBindingActivation:
     """Task N1b, Steps 19-21: agent_loader's specialist counterpart to the
     Task 8 resident binding-activation block."""

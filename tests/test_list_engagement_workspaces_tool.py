@@ -11,6 +11,8 @@ pytestmark = pytest.mark.asyncio
 
 
 def _make_workspace(root: Path, eid: str, status: str):
+    from drivers.workspace import casa_meta_path, provision_control_dir
+
     ws = root / eid
     ws.mkdir()
     (ws / "file.txt").write_text("hello", encoding="utf-8")
@@ -22,7 +24,9 @@ def _make_workspace(root: Path, eid: str, status: str):
         "finished_at": ("2026-04-01T00:05:00Z" if status != "UNDERGOING" else None),
         "retention_until": ("2099-01-01T00:00:00Z" if status != "UNDERGOING" else None),
     }
-    (ws / ".casa-meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    # Task 4 (containment stage 2): .casa-meta.json lives in the control dir.
+    provision_control_dir(eid)
+    Path(casa_meta_path(eid)).write_text(json.dumps(meta), encoding="utf-8")
     return ws
 
 

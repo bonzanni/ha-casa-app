@@ -548,6 +548,150 @@ def register_sweep(scheduler) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Per-engagement PRIVATE outbox (containment stage 2, Task 11 / design §7).
+# ---------------------------------------------------------------------------
+# A producer plugin assigned to a uid-dropped engagement runs AS that
+# engagement's allocated uid (``--clear-groups``), so it can no longer write
+# the SHARED ``/data/plugin-outbox`` (``0770 root:root``) — and that dir must
+# stay non-group/world-writable (a shared writable outbox would let one
+# engagement's producer drop a file into another's delivery flow). The fix is
+# a PRIVATE per-engagement dir the child DOES own, kept entirely separate
+# from the shared tree so the shared dir's mode never has to change:
+# ``<ENGAGEMENT_OUTBOX_ROOT>/<uid>/``, owned ``uid:uid``. The claim path
+# (``tools.send_media``) derives which private dir to open from the
+# AUTHENTICATED engagement record's ``allocated_uid`` — never from the
+# caller-submitted ``path`` argument — and reuses this module's existing
+# ``PluginOutbox.claim``/``capture`` (dir-FD, ``O_NOFOLLOW``, single-hard-
+# link, no-later-pathname-access) completely unchanged: pointing a fresh
+# instance at a different root is the only thing that differs.
+
+ENGAGEMENT_OUTBOX_ROOT = "/data/plugin-outbox-eng"
+
+_engagement_outboxes: dict[int, "PluginOutbox"] = {}
+_engagement_outboxes_lock = threading.Lock()
+
+
+def engagement_outbox_dir(uid: int, *, root: str | None = None) -> str:
+    """Absolute path of *uid*'s private outbox dir."""
+    return os.path.join(root if root is not None else ENGAGEMENT_OUTBOX_ROOT,
+                        str(uid))
+
+
+def provision_engagement_outbox(uid: int, *, root: str | None = None,
+                                fresh: bool = False) -> str:
+    """Create *uid*'s private outbox dir, owned ``uid:uid``.
+
+    ``fresh`` (S1 r7, defense-in-depth behind the never-reuse uid invariant):
+    when True — the FRESH-engagement provisioning path (a newly ALLOCATED uid,
+    which by the durable-high-water invariant has never been issued before) —
+    the dir MUST NOT contain another engagement's leftover files. If it already
+    exists (only reachable if the invariant were violated, e.g. a prior
+    engagement's best-effort outbox teardown failed and its uid were somehow
+    reissued), it is rmtree'd and recreated FRESH, so a new engagement can never
+    read a predecessor's leftover media. When False (the default; the
+    boot-replay RESUME path for an already-provisioned SAME uid) the call stays
+    idempotent and NEVER wipes existing contents.
+
+    This function itself sets the dir to ``0700``, but the FIRST
+    :func:`get_engagement_outbox` access wraps it in a plain
+    :class:`PluginOutbox`, whose ``__init__`` unconditionally re-chmods its
+    root to ``0770`` (the SAME constructor the shared outbox uses — it has
+    no notion of "private", so it always widens to group-rwx). The
+    documented end state after normal use is therefore **``0770``, not
+    ``0700``** — the docstring here used to claim ``0700``, which is only
+    true before that first wrap. This is still cross-engagement-safe TODAY
+    because (a) the dir is owned ``uid:uid`` with ``uid`` also standing in
+    as the GID — a dedicated, single-member group per engagement (containment
+    stage 2 design §2: "GID = uid, dedicated primary group per engagement —
+    no shared group") — so the ``0770`` group-rwx bits only ever grant access
+    back to the SAME uid, and (b) the OTHER bits stay ``0`` throughout, so no
+    other uid (with ``--clear-groups``) can reach it regardless. It would
+    STOP being safe the moment any engagement's GID were changed to a
+    SHARED value — :func:`test_get_engagement_outbox_root_is_uid_owned_with_private_group`
+    (``tests/test_plugin_outbox.py``) pins uid==gid on the real
+    ``get_engagement_outbox`` path specifically so that future change trips
+    a test instead of silently reopening cross-engagement outbox access.
+
+    The PARENT dir is created ``0711`` root-owned: any uid can still search
+    THROUGH it to its own named subdirectory (execute-only — no listing, no
+    write), but no uid can list its siblings or create an entry directly
+    inside it. Never touches (and never needs to touch) the unrelated
+    shared ``/data/plugin-outbox``. Idempotent — safe to call again for an
+    already-provisioned uid (e.g. on every boot-replay resume); never wipes
+    existing contents."""
+    base = root if root is not None else ENGAGEMENT_OUTBOX_ROOT
+    os.makedirs(base, exist_ok=True)
+    os.chmod(base, 0o711)
+    d = engagement_outbox_dir(uid, root=root)
+    if fresh and os.path.lexists(d):
+        # A newly-allocated uid must never inherit a predecessor's outbox. Clear
+        # any leftover (symlink-safe: lexists + rmtree of the resolved dir, or
+        # unlink a stray non-dir) before recreating.
+        if os.path.isdir(d) and not os.path.islink(d):
+            shutil.rmtree(d)
+        else:
+            os.unlink(d)
+    os.makedirs(d, exist_ok=True)
+    try:
+        os.chown(d, uid, uid, follow_symlinks=False)
+    except PermissionError:
+        # Production always runs this as root (the containment-stage-2
+        # threat model assumes it — see design §"gating measurement"), so a
+        # real chown to an arbitrary allocated uid always succeeds there.
+        # An unprivileged process (unit tests; a dev shell) cannot chown to
+        # an arbitrary uid it does not own — degrade instead of crashing so
+        # the store/provisioning path stays exercisable without root.
+        if os.geteuid() == 0:
+            raise
+        logger.debug(
+            "engagement outbox: chown to uid %s skipped — process is not "
+            "root (euid=%s)", uid, os.geteuid())
+    os.chmod(d, 0o700)
+    return d
+
+
+def get_engagement_outbox(uid: int, *, root: str | None = None) -> "PluginOutbox":
+    """Return the cached :class:`PluginOutbox` rooted at *uid*'s private
+    outbox dir, provisioning the dir first if this is the first access for
+    *uid* in this process (lazy fallback — the normal path is eager
+    provisioning at workspace setup). Cached per-uid so repeated
+    ``send_media`` calls across one engagement's lifetime reuse the same
+    pinned dir-FDs instead of reopening them on every claim."""
+    with _engagement_outboxes_lock:
+        ob = _engagement_outboxes.get(uid)
+        if ob is not None:
+            return ob
+        path = provision_engagement_outbox(uid, root=root)
+        ob = PluginOutbox(path)
+        _engagement_outboxes[uid] = ob
+        return ob
+
+
+def teardown_engagement_outbox(uid: int, *, root: str | None = None) -> None:
+    """Close the cached instance (if any) and remove *uid*'s private outbox
+    dir — called alongside the other per-engagement teardown paths (the
+    workspace retention sweep, ``delete_engagement_workspace``). Best-effort,
+    matching the sibling control-dir/passwd-entry cleanup at those same call
+    sites: a removal failure is logged, never raised."""
+    with _engagement_outboxes_lock:
+        ob = _engagement_outboxes.pop(uid, None)
+    if ob is not None:
+        try:
+            ob.close()
+        except Exception:  # noqa: BLE001 — best-effort, mirrors sibling cleanups
+            logger.warning("engagement outbox close failed for uid %s", uid,
+                           exc_info=True)
+    d = engagement_outbox_dir(uid, root=root)
+    try:
+        if os.path.islink(d):
+            os.unlink(d)
+        elif os.path.isdir(d):
+            shutil.rmtree(d)
+    except OSError as exc:
+        logger.warning("engagement outbox rmtree failed for uid %s: %s", uid, exc)
+
+
 async def wire(scheduler, root: str) -> None:
     """One-call boot wiring casa_core invokes in section 7 (BEFORE channels/HTTP
     go live): init the outbox, run the boot reap, register the hourly sweep. A
