@@ -199,6 +199,76 @@ async def test_finalize_writes_retention_for_claude_code_driver(
                         meta["retention_until"])
 
 
+async def test_finalize_preserves_real_allocated_uid_when_meta_unreadable(
+    tmp_path, monkeypatch,
+):
+    """Fix-loop round 1 (Important): the terminal .casa-meta.json rewrite
+    must persist the RECORD's allocated_uid, never a round-trip through
+    ``load_casa_meta`` — that helper returns None/{} on I/O error,
+    malformed/non-object JSON, or a refused legacy symlink, and falling
+    back to ``meta.get("allocated_uid", ...)`` in any of those cases would
+    silently regress a real uid to UNALLOCATED_UID in this rewrite,
+    permanently orphaning that uid's casa-eng-<uid> passwd/group lines
+    (the registry-less sweeper reads ONLY this field to decide what to
+    prune)."""
+    import json
+    from pathlib import Path
+
+    import tools as tools_mod
+    from drivers.workspace import casa_meta_path, provision_control_dir, write_casa_meta
+    from engagement_registry import EngagementRecord, EngagementRegistry
+    from engagement_uids import UID_BASE
+    from tools import _finalize_engagement
+
+    ws = tmp_path / "eng-uid-fin"
+    ws.mkdir()
+    provision_control_dir("eng-uid-fin")
+    write_casa_meta(
+        workspace_path=str(ws), engagement_id="eng-uid-fin",
+        executor_type="hello-driver", status="UNDERGOING",
+        created_at="2026-04-23T08:00:00Z",
+        finished_at=None, retention_until=None,
+        allocated_uid=UID_BASE + 42,
+    )
+
+    # Simulate load_casa_meta returning None (unreadable/malformed/refused)
+    # — exactly the fallback case the finding calls out. _finalize_engagement
+    # does `from drivers.workspace import load_casa_meta` INSIDE the
+    # function body, so the patch target is drivers.workspace's own
+    # attribute, not a name on the tools module. If the fix regressed to
+    # ``meta.get("allocated_uid", ...)``, this would make the finalize
+    # rewrite fall back to UNALLOCATED_UID.
+    import drivers.workspace as ws_mod
+    monkeypatch.setattr(ws_mod, "load_casa_meta", lambda *a, **kw: None)
+
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    rec = EngagementRecord(
+        id="eng-uid-fin", kind="executor", role_or_type="hello-driver",
+        driver="claude_code", status="active", topic_id=None,
+        started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+        completed_at=None, sdk_session_id=None, origin={}, task="t",
+        allocated_uid=UID_BASE + 42,
+    )
+    reg._records["eng-uid-fin"] = rec
+
+    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
+    monkeypatch.setattr(tools_mod, "_channel_manager", None)
+    monkeypatch.setattr(tools_mod, "_bus", None)
+    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(tmp_path),
+                        raising=False)
+
+    await _finalize_engagement(
+        rec, outcome="completed", text="done",
+        artifacts=[], next_steps=[], driver=None,
+    )
+
+    meta = json.loads(Path(casa_meta_path("eng-uid-fin")).read_text())
+    assert meta["status"] == "COMPLETED"
+    # The real uid must survive the terminal rewrite — this is what the
+    # sweeper will read to decide which passwd/group entry to prune.
+    assert meta["allocated_uid"] == UID_BASE + 42
+
+
 class TestFinalizeU3Transition:
     """E-12 (v0.37.0) Task 23: terminal-state U3 flip from _finalize_engagement."""
 

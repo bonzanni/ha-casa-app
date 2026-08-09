@@ -6843,7 +6843,7 @@ async def _finalize_engagement(
     if engagement.driver == "claude_code":
         try:
             from drivers.workspace import load_casa_meta, write_casa_meta
-            from engagement_uids import UNALLOCATED_UID, owner_uid_or_none
+            from engagement_uids import owner_uid_or_none
             ws = os.path.join(_ENGAGEMENTS_ROOT, engagement.id)
             if os.path.isdir(ws):
                 meta = load_casa_meta(
@@ -6873,8 +6873,18 @@ async def _finalize_engagement(
                     # allocated uid forward — the workspace sweeper (no
                     # registry access) reads it back from THIS field to
                     # prune the uid's passwd/group entry once retention
-                    # deletes the workspace.
-                    allocated_uid=meta.get("allocated_uid", UNALLOCATED_UID),
+                    # deletes the workspace. Fix-loop round 1 (Important):
+                    # use engagement.allocated_uid — the AUTHORITATIVE
+                    # value, already used one line up for owner_uid_or_none
+                    # — not a round-trip through `meta`. load_casa_meta
+                    # returns None/{} on I/O error, malformed/non-object
+                    # JSON, or a refused legacy symlink; falling back to
+                    # meta.get(...) in any of those cases would silently
+                    # regress a real uid to UNALLOCATED_UID in this
+                    # terminal rewrite and permanently orphan the
+                    # casa-eng-<uid> passwd/group lines (the sweeper reads
+                    # ONLY this field).
+                    allocated_uid=engagement.allocated_uid,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
