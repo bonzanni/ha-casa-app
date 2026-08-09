@@ -738,7 +738,11 @@ async def provision_workspace(
         # from the workspace tree (own root, own retention) — never chowned
         # by chown_workspace above.
         import plugin_outbox
-        plugin_outbox.provision_engagement_outbox(real_uid)
+        # fresh=True: a newly-allocated uid must never inherit a predecessor's
+        # leftover outbox (S1 r7 defense-in-depth behind the never-reuse uid
+        # invariant). Boot-replay resume of an EXISTING uid uses the default
+        # (fresh=False) so in-flight outbox contents are preserved.
+        plugin_outbox.provision_engagement_outbox(real_uid, fresh=True)
 
     logger.info("Provisioned workspace for engagement %s at %s",
                 engagement_id[:8], ws)

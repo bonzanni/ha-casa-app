@@ -388,6 +388,53 @@ def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
                     pass
 
 
+def _gather_reconstruct_evidence(registry, *, data_dir: str):
+    """Gather every uid-reissue evidence source for ``UidAllocator.reconstruct``
+    (Containment Stage 2, S1 r7 — completed the evidence set).
+
+    Returns ``(known_uids, dir_owner_uids, prior_existence)``:
+      - ``known_uids``: ``allocated_uid`` of EVERY record incl. terminal/retained
+        (a pruned-but-lingering process still holds its uid);
+      - ``dir_owner_uids``: the owner uid of every on-disk per-engagement dir
+        under ALL three artifact roots — ``<data_dir>/engagements/*``,
+        ``/data/engagement-ctl/*``, AND ``/data/plugin-outbox-eng/*`` (the outbox
+        class was the last unscanned artifact: a leftover outbox dir chowned to a
+        uid the counter never recorded);
+      - ``prior_existence``: True iff ANY of those artifact roots EXISTS — Casa
+        has run before, so a both-durable-copies-lost boot fails closed rather
+        than resetting the high-water to base.
+
+    Every source only ever RAISES the reconstructed high-water; scanning is
+    best-effort (a missing/unreadable root or entry contributes nothing)."""
+    from plugin_outbox import ENGAGEMENT_OUTBOX_ROOT
+    known_uids = [
+        r.allocated_uid
+        for r in (list(registry.active_and_idle())
+                  + list(registry.terminal_records()))
+        if r.allocated_uid != UNALLOCATED_UID
+    ]
+    artifact_roots = (
+        os.path.join(data_dir, "engagements"),
+        "/data/engagement-ctl",
+        ENGAGEMENT_OUTBOX_ROOT,
+    )
+    dir_owner_uids: list[int] = []
+    prior_existence = False
+    for base in artifact_roots:
+        try:
+            with os.scandir(base) as it:
+                prior_existence = True   # the root exists → Casa has run before
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            dir_owner_uids.append(entry.stat().st_uid)
+                    except OSError:
+                        continue
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    return known_uids, dir_owner_uids, prior_existence
+
+
 async def replay_undergoing_engagements(
     *, registry, driver, executor_registry=None,
     engagements_root: str = "/data/engagements",
@@ -3259,9 +3306,14 @@ async def main() -> None:
     #   - the persisted counter file (read inside reconstruct),
     #   - the ``allocated_uid`` of EVERY record incl. terminal/retained (NOT
     #     just live ones — a pruned-but-lingering process still holds its uid),
-    #   - the owner uid of every on-disk /data/engagements/* and
-    #     /data/engagement-ctl/* directory (a workspace chowned to a uid the
-    #     counter never recorded).
+    #   - the owner uid of every on-disk /data/engagements/*,
+    #     /data/engagement-ctl/* AND /data/plugin-outbox-eng/* directory (a
+    #     workspace/control/outbox dir chowned to a uid the counter never
+    #     recorded — S1 r7 completed the outbox class, the last per-engagement
+    #     /data artifact that was unscanned). The EXISTENCE of any such
+    #     per-engagement artifact root is also a prior-existence signal, so a
+    #     both-durable-copies-lost boot with a leftover artifact fails closed
+    #     rather than resetting to base (see UidAllocator.reconstruct).
     # A UidStateError (missing/malformed/inconsistent counter) is FAIL-CLOSED:
     # log CRITICAL and leave the allocator un-reconstructed, so allocate()
     # raises for every create()/backfill this boot — new engagements and
@@ -3269,27 +3321,11 @@ async def main() -> None:
     # Boot itself continues (matching the surrounding best-effort boot-error
     # convention): existing already-uid'd engagements still replay.
     try:
-        _known_uids = [
-            r.allocated_uid
-            for r in (list(engagement_registry.active_and_idle())
-                      + list(engagement_registry.terminal_records()))
-            if r.allocated_uid != UNALLOCATED_UID
-        ]
-        _dir_owner_uids: list[int] = []
-        for _base in (os.path.join(DATA_DIR, "engagements"),
-                      "/data/engagement-ctl"):
-            try:
-                with os.scandir(_base) as _it:
-                    for _entry in _it:
-                        try:
-                            if _entry.is_dir(follow_symlinks=False):
-                                _dir_owner_uids.append(_entry.stat().st_uid)
-                        except OSError:
-                            continue
-            except (FileNotFoundError, NotADirectoryError):
-                continue
+        _known_uids, _dir_owner_uids, _prior_existence = (
+            _gather_reconstruct_evidence(engagement_registry, data_dir=DATA_DIR))
         uid_allocator.reconstruct(
-            known_uids=_known_uids, dir_owner_uids=_dir_owner_uids)
+            known_uids=_known_uids, dir_owner_uids=_dir_owner_uids,
+            extra_prior_existence=_prior_existence)
     except UidStateError:
         logger.critical(
             "Engagement uid allocator could NOT reconstruct its high-water "

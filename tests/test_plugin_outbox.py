@@ -685,6 +685,32 @@ def test_provision_engagement_outbox_idempotent(tmp_path):
     assert (Path(d2) / "leftover.txt").exists()  # re-provision never wipes
 
 
+def test_provision_engagement_outbox_fresh_clears_leftover(tmp_path):
+    # S1 r7: fresh=True (a newly-allocated uid) must never inherit a
+    # predecessor's leftover files — an existing dir is rmtree'd + recreated.
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()
+    d1 = plugin_outbox.provision_engagement_outbox(uid, root=str(root))
+    (Path(d1) / "sibling-secret.pdf").write_bytes(b"A's media")
+    d2 = plugin_outbox.provision_engagement_outbox(uid, root=str(root), fresh=True)
+    assert d1 == d2
+    assert not (Path(d2) / "sibling-secret.pdf").exists()  # cleared
+    assert os.path.isdir(d2)                                # recreated fresh
+
+
+def test_provision_engagement_outbox_fresh_replaces_stray_nondir(tmp_path):
+    # fresh=True also clears a stray non-dir planted at the outbox path.
+    root = tmp_path / "eng-outbox"
+    uid = os.getuid()
+    plugin_outbox.provision_engagement_outbox(uid, root=str(root))  # makes base
+    d = plugin_outbox.engagement_outbox_dir(uid, root=str(root))
+    import shutil as _sh
+    _sh.rmtree(d)
+    Path(d).write_bytes(b"not a dir")
+    d2 = plugin_outbox.provision_engagement_outbox(uid, root=str(root), fresh=True)
+    assert os.path.isdir(d2)
+
+
 def test_get_engagement_outbox_caches_instance(tmp_path):
     root = tmp_path / "eng-outbox"
     uid = os.getuid()

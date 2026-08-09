@@ -77,6 +77,55 @@ def test_both_durable_absent_with_evidence_refuses(tmp_path):
         a.allocate()
 
 
+def test_leftover_outbox_owner_folds_into_high_water(tmp_path):
+    # S1 r7: a leftover /data/plugin-outbox-eng/200000 (owned 200000) with both
+    # durable copies absent must NOT classify fresh. Folded as a dir owner it
+    # becomes evidence — and evidence with no valid durable copy REFUSES (never
+    # reissues 200000). (In production the caller also passes
+    # extra_prior_existence for the root; here the owner uid alone suffices.)
+    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    with pytest.raises(UidStateError):
+        a.reconstruct(known_uids=[], dir_owner_uids=[UID_BASE])   # outbox owner
+
+
+def test_gather_evidence_scans_the_outbox_root(tmp_path, monkeypatch):
+    # S1 r7: the casa_core evidence gatherer MUST scan /data/plugin-outbox-eng —
+    # a leftover per-uid outbox dir owner is folded, and the root's existence is
+    # a prior-existence signal. (Reverting the outbox root from the scan drops
+    # both — this is the folding red-case.)
+    import casa_core
+    import plugin_outbox
+    outbox_root = tmp_path / "plugin-outbox-eng"
+    (outbox_root / "200000").mkdir(parents=True)   # A's leftover outbox dir
+    monkeypatch.setattr(plugin_outbox, "ENGAGEMENT_OUTBOX_ROOT", str(outbox_root))
+
+    class _Reg:
+        def active_and_idle(self): return []
+        def terminal_records(self): return []
+
+    known, owners, prior = casa_core._gather_reconstruct_evidence(
+        _Reg(), data_dir=str(tmp_path / "no-engagements"))
+    assert os.stat(str(outbox_root / "200000")).st_uid in owners
+    assert prior is True
+
+
+def test_extra_prior_existence_refuses_when_durable_lost(tmp_path):
+    # S1 r7: even a root-owned/empty leftover artifact (no uid-owned subdir, so
+    # no owner evidence) forces fail-closed via extra_prior_existence — both
+    # durable copies absent + a prior artifact exists → POISON, never fresh.
+    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    with pytest.raises(UidStateError):
+        a.reconstruct(known_uids=[], dir_owner_uids=[],
+                      extra_prior_existence=True)
+    # Genuine fresh (no artifact signal) still initialises at base.
+    b = UidAllocator(str(tmp_path / "u2.json"), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    b.reconstruct(known_uids=[], dir_owner_uids=[], extra_prior_existence=False)
+    assert b.allocate() == UID_BASE
+
+
 def test_both_durable_absent_with_live_proc_refuses(tmp_path):
     # S1 r6: proc evidence alone (no durable copy) also refuses — never reset.
     a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),

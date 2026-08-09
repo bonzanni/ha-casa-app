@@ -578,8 +578,20 @@ def engagement_outbox_dir(uid: int, *, root: str | None = None) -> str:
                         str(uid))
 
 
-def provision_engagement_outbox(uid: int, *, root: str | None = None) -> str:
-    """Create (idempotently) *uid*'s private outbox dir, owned ``uid:uid``.
+def provision_engagement_outbox(uid: int, *, root: str | None = None,
+                                fresh: bool = False) -> str:
+    """Create *uid*'s private outbox dir, owned ``uid:uid``.
+
+    ``fresh`` (S1 r7, defense-in-depth behind the never-reuse uid invariant):
+    when True — the FRESH-engagement provisioning path (a newly ALLOCATED uid,
+    which by the durable-high-water invariant has never been issued before) —
+    the dir MUST NOT contain another engagement's leftover files. If it already
+    exists (only reachable if the invariant were violated, e.g. a prior
+    engagement's best-effort outbox teardown failed and its uid were somehow
+    reissued), it is rmtree'd and recreated FRESH, so a new engagement can never
+    read a predecessor's leftover media. When False (the default; the
+    boot-replay RESUME path for an already-provisioned SAME uid) the call stays
+    idempotent and NEVER wipes existing contents.
 
     This function itself sets the dir to ``0700``, but the FIRST
     :func:`get_engagement_outbox` access wraps it in a plain
@@ -612,6 +624,14 @@ def provision_engagement_outbox(uid: int, *, root: str | None = None) -> str:
     os.makedirs(base, exist_ok=True)
     os.chmod(base, 0o711)
     d = engagement_outbox_dir(uid, root=root)
+    if fresh and os.path.lexists(d):
+        # A newly-allocated uid must never inherit a predecessor's outbox. Clear
+        # any leftover (symlink-safe: lexists + rmtree of the resolved dir, or
+        # unlink a stray non-dir) before recreating.
+        if os.path.isdir(d) and not os.path.islink(d):
+            shutil.rmtree(d)
+        else:
+            os.unlink(d)
     os.makedirs(d, exist_ok=True)
     try:
         os.chown(d, uid, uid, follow_symlinks=False)

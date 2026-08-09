@@ -297,7 +297,8 @@ class UidAllocator:
             return None
         return v if v >= UID_BASE - 1 else None
 
-    def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int]) -> None:
+    def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int],
+                    *, extra_prior_existence: bool = False) -> None:
         """Establish the monotonic, DURABLE high-water — or fail closed.
 
         S1 r6 CUT (converged) — the load-bearing non-reissue guarantee. A uid is
@@ -320,12 +321,15 @@ class UidAllocator:
             UID_BASE-1)`` (a single-file loss recovers fully from the other; a
             stale-low copy is ignored).
           - NO valid durable copy:
-              * neither file EXISTS on disk AND no evidence → genuine fresh
-                install → ``UID_BASE - 1``, write both durable files.
-              * otherwise (either file exists — even if invalid — OR any
-                evidence) → POISON / refuse (:class:`UidStateError`): evidence
-                alone cannot prove the prior maximum, so we fail closed rather
-                than risk a backwards reset.
+              * neither durable file exists AND no ``extra_prior_existence``
+                artifact AND no evidence → genuine fresh install →
+                ``UID_BASE - 1``, write both durable files.
+              * otherwise (either durable file exists — even if invalid — OR the
+                caller found a per-engagement /data artifact
+                (``extra_prior_existence``: engagements/engagement-ctl/
+                plugin-outbox-eng) OR any evidence) → POISON / refuse
+                (:class:`UidStateError`): evidence alone cannot prove the prior
+                maximum, so we fail closed rather than risk a backwards reset.
           - the /proc scan unconfirmable, or a persist failure → POISON
             (r4 invariant).
 
@@ -343,10 +347,15 @@ class UidAllocator:
                 anchor_v = self._read_durable(self._anchor)
                 valid_durables = [v for v in (counter_v, anchor_v)
                                   if v is not None]
-                # A file that EXISTS (even if its content is invalid/stale-low)
-                # is a prior-existence signal — this is NOT a virgin /data.
+                # A durable file that EXISTS (even if its content is invalid/
+                # stale-low), OR any per-engagement /data artifact the caller
+                # found (``extra_prior_existence`` — engagements/engagement-ctl/
+                # plugin-outbox-eng, S1 r7), is a prior-existence signal: this is
+                # NOT a virgin /data, so a both-durable-lost boot fails closed
+                # rather than resetting to base.
                 prior_existence = (os.path.exists(self._path)
-                                   or os.path.exists(self._anchor))
+                                   or os.path.exists(self._anchor)
+                                   or extra_prior_existence)
 
                 # Evidence: only values >= UID_BASE count as "a uid was issued"
                 # (a root-owned pre-chown dir has st_uid 0 — not evidence).
