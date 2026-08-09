@@ -24,7 +24,7 @@ class TestRenderRunScript:
             engagement_id="abc12345def67890",
             permission_mode="acceptEdits",
             extra_dirs=["/share/casa-plugins-repo"],
-        )
+         uid=200005, gid=200005)
 
         assert "{ID}" not in out
         assert "{ID_SHORT}" not in out
@@ -44,7 +44,7 @@ class TestRenderRunScript:
             engagement_id="xxxxxxxxxxxxxxxx",
             permission_mode="dontAsk",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         assert "--add-dir /data/engagements/xxxxxxxxxxxxxxxx/" in out
         assert "--permission-mode dontAsk" in out
 
@@ -56,13 +56,43 @@ class TestRenderRunScript:
             permission_mode="dontAsk",
             extra_dirs=[],
             extra_unset=["MY_SECRET", "ANOTHER_TOKEN"],
-        )
+         uid=200005, gid=200005)
         # The template unsets base secrets then "{EXTRA_UNSET}" — after
         # rendering, the extras should appear in the unset command.
         assert "MY_SECRET" in out
         assert "ANOTHER_TOKEN" in out
         assert "{EXTRA_UNSET}" not in out
 
+
+    def test_render_emits_setpriv_with_uid(self):
+        """Task 6 (containment stage 2): the final exec drops privileges via
+        setpriv before handing off to claude — reuid/regid come straight
+        from the allocated uid/gid, bounding set and inh-caps cleared,
+        no_new_privs set."""
+        import re as _re
+        from drivers.workspace import render_run_script
+
+        script = render_run_script(
+            engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
+            extra_dirs=[], uid=200005, gid=200005)
+        collapsed = _re.sub(r"\s+", " ", script.replace("\\\n", " "))
+        assert (
+            "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
+            "--bounding-set -all --inh-caps -all --no-new-privs -- claude"
+        ) in collapsed
+
+    def test_render_refuses_unallocated_uid(self):
+        """Fail-closed: UNALLOCATED_UID (-1) or root (0) must never reach
+        --reuid — either would silently skip or defeat the privilege drop."""
+        from drivers.workspace import render_run_script
+        with pytest.raises(ValueError):
+            render_run_script(
+                engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
+                extra_dirs=[], uid=-1, gid=-1)
+        with pytest.raises(ValueError):
+            render_run_script(
+                engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
+                extra_dirs=[], uid=0, gid=0)
 
     def test_render_log_run_script(self):
         from drivers.workspace import render_log_run_script
@@ -90,7 +120,7 @@ class TestRenderRunScript:
             engagement_id="abcd1234-eng-id",
             permission_mode="acceptEdits",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         assert "--channels server:casa-engagement-channel" in script
         # v0.64.0: --remote-control dropped — inert headless (non-TTY stdout
         # degrades the CLI to one-shot --print; no interactive/remote session
@@ -112,7 +142,7 @@ class TestRenderRunScript:
             engagement_id=eid,
             permission_mode="acceptEdits",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         # The shell idiom (hardened v0.131.0): if .session_id exists AND its
         # content is an exact UUID, pass it as a single =-joined argv token.
         # The old unquoted `--resume $(cat ...)` word-split arbitrary file
@@ -153,7 +183,7 @@ class TestRunScriptResumeArgvBehavior:
             engagement_id=self.EID,
             permission_mode="acceptEdits",
             extra_dirs=[],
-        )
+         uid=200005, gid=200005)
         ws = tmp_path / "ws"
         (ws / ".home").mkdir(parents=True)
         ctl = tmp_path / "ctl"
@@ -189,6 +219,23 @@ class TestRunScriptResumeArgvBehavior:
             f'printf "%s\\n" "$@" > "{argv_file}"\n'
         )
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        # Task 6: the final line now wraps the exec in `setpriv --reuid ...
+        # -- claude ...`. Real setpriv requires CAP_SETUID (root) to actually
+        # change identity — this test process is an ordinary unprivileged
+        # test-runner user, and the contract under test is the resume argv,
+        # not the privilege drop itself (that's Task 7/9's territory). Stub
+        # setpriv as a transparent pass-through: skip past its own flags to
+        # the `--` separator and exec whatever follows.
+        setpriv_stub = stub_dir / "setpriv"
+        setpriv_stub.write_text(
+            "#!/bin/bash\n"
+            "while [ $# -gt 0 ]; do\n"
+            '  if [ "$1" = "--" ]; then shift; exec "$@"; fi\n'
+            "  shift\n"
+            "done\n"
+            'exec "$@"\n'
+        )
+        setpriv_stub.chmod(setpriv_stub.stat().st_mode | stat.S_IEXEC)
 
         script_path = tmp_path / "run.sh"
         script_path.write_text(script)
@@ -255,7 +302,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp; rm -rf /data"],
-            )
+             uid=200005, gid=200005)
 
     def test_extra_dir_with_quote_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -264,7 +311,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp/'; touch /tmp/pwned ;#"],
-            )
+             uid=200005, gid=200005)
 
     def test_extra_dir_with_newline_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -273,7 +320,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp\nrm -rf /data"],
-            )
+             uid=200005, gid=200005)
 
     def test_relative_extra_dir_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -282,7 +329,7 @@ class TestRenderRunScriptShellInjection:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["relative/path"],
-            )
+             uid=200005, gid=200005)
 
     def test_extra_dir_with_space_quoted_via_shlex(self):
         """Spaces in absolute paths are allowed but rendered shlex-quoted."""
@@ -291,7 +338,7 @@ class TestRenderRunScriptShellInjection:
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=["/share/with space"],
-        )
+         uid=200005, gid=200005)
         # Either shlex.quote'd or single-quoted — never bare.
         assert "/share/with space" in out
         # The bare unquoted form would be a defect.
@@ -306,7 +353,7 @@ class TestRenderRunScriptShellInjection:
                 permission_mode="dontAsk",
                 extra_dirs=[],
                 extra_env={"FOO\nrm -rf /data": "harmless"},
-            )
+             uid=200005, gid=200005)
 
     def test_extra_env_key_with_dollar_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
@@ -316,7 +363,7 @@ class TestRenderRunScriptShellInjection:
                 permission_mode="dontAsk",
                 extra_dirs=[],
                 extra_env={"$(whoami)": "harmless"},
-            )
+             uid=200005, gid=200005)
 
     def test_extra_env_lowercase_key_rejected(self):
         """Lowercase keys also rejected — convention is upper-snake."""
@@ -327,7 +374,7 @@ class TestRenderRunScriptShellInjection:
                 permission_mode="dontAsk",
                 extra_dirs=[],
                 extra_env={"foo": "bar"},
-            )
+             uid=200005, gid=200005)
 
     def test_extra_env_value_with_quote_escaped(self):
         """Embedded single-quote in value is escaped via '\\'' idiom."""
@@ -337,7 +384,7 @@ class TestRenderRunScriptShellInjection:
             permission_mode="dontAsk",
             extra_dirs=[],
             extra_env={"GITHUB_TOKEN": "abc'def"},
-        )
+         uid=200005, gid=200005)
         assert "export GITHUB_TOKEN='abc'\\''def'" in out
 
     def test_valid_extra_env_renders(self):
@@ -347,7 +394,7 @@ class TestRenderRunScriptShellInjection:
             permission_mode="dontAsk",
             extra_dirs=[],
             extra_env={"GITHUB_TOKEN": "ghp_abc", "OP_TOKEN": "ops_xyz"},
-        )
+         uid=200005, gid=200005)
         assert "export GITHUB_TOKEN='ghp_abc'" in out
         assert "export OP_TOKEN='ops_xyz'" in out
 
@@ -1213,7 +1260,7 @@ class TestExtraDirContainment:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[bad],
-            )
+             uid=200005, gid=200005)
 
     @pytest.mark.parametrize("ok", ["/share", "/share/foo", "/media/nas"])
     def test_under_approved_roots_allowed(self, ok):
@@ -1222,7 +1269,7 @@ class TestExtraDirContainment:
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[ok],
-        )
+         uid=200005, gid=200005)
         assert f"--add-dir {ok}" in out
 
     def test_dotdot_traversal_rejected(self):
@@ -1232,7 +1279,7 @@ class TestExtraDirContainment:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/share/../config"],
-            )
+             uid=200005, gid=200005)
 
     def test_symlink_escaping_approved_root_rejected(self, tmp_path, monkeypatch):
         """Terra r1-2: a symlink under an approved root pointing outside
@@ -1256,7 +1303,7 @@ class TestExtraDirContainment:
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[str(link)],
-            )
+             uid=200005, gid=200005)
         # A real subdir under the root still passes.
         real = share / "ok"
         real.mkdir()
@@ -1264,7 +1311,7 @@ class TestExtraDirContainment:
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[str(real)],
-        )
+         uid=200005, gid=200005)
         assert f"--add-dir {real}" in out
 
     def test_plugin_dirs_are_not_containment_checked(self):
@@ -1276,5 +1323,5 @@ class TestExtraDirContainment:
             permission_mode="dontAsk",
             extra_dirs=[],
             plugin_dirs=["/data/casa/plugin-store/sha256-abc/artifact"],
-        )
+         uid=200005, gid=200005)
         assert "--plugin-dir /data/casa/plugin-store/sha256-abc/artifact" in out

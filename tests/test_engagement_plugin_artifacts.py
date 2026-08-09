@@ -55,7 +55,7 @@ async def test_run_script_contains_plugin_dir_flags_from_record(tmp_path):
     eng = SimpleNamespace(id="e" * 32, plugin_artifacts=_ARTIFACTS)
     out = render_run_script(
         engagement_id=eng.id, permission_mode="acceptEdits", extra_dirs=[],
-        plugin_dirs=[pa["path"] for pa in eng.plugin_artifacts])
+        plugin_dirs=[pa["path"] for pa in eng.plugin_artifacts], uid=200005, gid=200005)
     for pa in _ARTIFACTS:
         assert f"--plugin-dir {pa['path']}" in out
 
@@ -103,7 +103,7 @@ def test_run_script_pins_declared_vars_as_empty_exports(tmp_path, monkeypatch):
     root = _declaring_artifact(tmp_path, casa=_BANKFEED_CASA)
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
-        plugin_dirs=[str(root)])
+        plugin_dirs=[str(root)], uid=200005, gid=200005)
     assert "export CASA_PLUGIN_BANKFEED_PRIVATE_KEY=\'\'" in out
     assert "CASA_PLUGIN_BANKFEED_CP_TOKEN" not in out
 
@@ -121,7 +121,7 @@ def test_run_script_pins_a_declared_var_the_launch_config_never_names(
     root = _declaring_artifact(tmp_path, casa=_BANKFEED_CASA, refs=False)
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
-        plugin_dirs=[str(root)])
+        plugin_dirs=[str(root)], uid=200005, gid=200005)
     assert "export CASA_PLUGIN_BANKFEED_PRIVATE_KEY=\'\'" in out
 
 
@@ -132,7 +132,7 @@ def test_run_script_leaves_a_wired_value_alone(tmp_path, monkeypatch):
     root = _declaring_artifact(tmp_path, casa=_BANKFEED_CASA)
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
-        plugin_dirs=[str(root)])
+        plugin_dirs=[str(root)], uid=200005, gid=200005)
     assert "CASA_PLUGIN_BANKFEED_PRIVATE_KEY" not in out
     assert "CASA_PLUGIN_BANKFEED_CP_TOKEN" not in out
 
@@ -143,7 +143,7 @@ def test_run_script_no_overlay_without_declarations(tmp_path, monkeypatch):
     root = _declaring_artifact(tmp_path, casa={})
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
-        plugin_dirs=[str(root)])
+        plugin_dirs=[str(root)], uid=200005, gid=200005)
     assert "CASA_PLUGIN_BANKFEED" not in out
 
 
@@ -152,7 +152,7 @@ def test_run_script_never_fails_over_a_broken_artifact(tmp_path):
     from drivers.workspace import render_run_script
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
-        plugin_dirs=[str(tmp_path / "nonexistent")])
+        plugin_dirs=[str(tmp_path / "nonexistent")], uid=200005, gid=200005)
     assert "--plugin-dir" in out
 
 
@@ -169,5 +169,5 @@ def test_boot_reconciliation_render_gets_the_same_overlay(tmp_path,
                       "path": str(root)}]
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits",
-        extra_dirs=[], plugin_dirs=[pa["path"] for pa in rec_artifacts])
+        extra_dirs=[], plugin_dirs=[pa["path"] for pa in rec_artifacts], uid=200005, gid=200005)
     assert "export CASA_PLUGIN_BANKFEED_PRIVATE_KEY=\'\'" in out

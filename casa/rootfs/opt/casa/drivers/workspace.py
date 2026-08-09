@@ -15,6 +15,7 @@ import yaml
 
 from atomic_io import atomic_write_json
 from drivers.hook_bridge import translate_hooks_to_settings
+from engagement_uids import UID_BASE, UNALLOCATED_UID
 from safe_fs import SymlinkRefused, read_text_beneath
 
 logger = logging.getLogger(__name__)
@@ -264,6 +265,7 @@ def render_run_script(
     extra_dirs: list[str], extra_unset: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
     plugin_dirs: list[str] | None = None,
+    uid: int = UNALLOCATED_UID, gid: int = UNALLOCATED_UID,
 ) -> str:
     """Read the run-script template and substitute per-engagement values.
 
@@ -279,7 +281,32 @@ def render_run_script(
     inside the run script. Names must match ``[A-Za-z_][A-Za-z0-9_]*``
     (rejected at render time). Values are single-quote-escaped via the
     standard ``'\\''`` idiom (Bug 5, v0.14.6).
+
+    ``uid``/``gid`` — containment stage 2, Task 6: the allocated OS-level
+    identity the rendered script's final ``exec`` drops into via
+    ``setpriv --reuid --regid --clear-groups --bounding-set -all
+    --inh-caps -all --no-new-privs`` before handing off to the ``claude``
+    CLI. Both default to ``UNALLOCATED_UID`` (the sentinel a not-yet-wired
+    caller passes, or that a legacy/specialist ``EngagementRecord`` still
+    carries) so an out-of-scope caller keeps compiling; render itself
+    refuses to substitute that sentinel — or any uid below ``UID_BASE``,
+    which would only ever be 0 (root) — into the script, since emitting
+    ``--reuid -1`` or ``--reuid 0`` would silently skip the privilege drop
+    this task exists to add. Fail-closed: no uid, no launch.
     """
+    if uid == UNALLOCATED_UID or uid < UID_BASE:
+        raise ValueError(
+            f"render_run_script: refusing to render for unallocated/invalid "
+            f"uid={uid!r} (must be >= UID_BASE={UID_BASE}) — the setpriv "
+            f"privilege drop would otherwise be silently skipped or would "
+            f"target root"
+        )
+    if gid == UNALLOCATED_UID or gid < UID_BASE:
+        raise ValueError(
+            f"render_run_script: refusing to render for unallocated/invalid "
+            f"gid={gid!r} (must be >= UID_BASE={UID_BASE})"
+        )
+
     with open(_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
         template = fh.read()
 
@@ -343,6 +370,8 @@ def render_run_script(
         template
         .replace("{ID_SHORT}", engagement_id[:8])
         .replace("{ID}", engagement_id)
+        .replace("{UID}", str(uid))
+        .replace("{GID}", str(gid))
         .replace("{PERMISSION_MODE}", permission_mode)
         .replace("{ADD_DIR_FLAGS}", add_dir_flags)
         .replace("{PLUGIN_DIR_FLAGS}", plugin_dir_flags)

@@ -1108,6 +1108,11 @@ class ClaudeCodeDriver(DriverProtocol):
                     # §3.8: load the pinned artifacts via --plugin-dir flags.
                     plugin_dirs=[pa["path"] for pa in
                                  getattr(engagement, "plugin_artifacts", ()) or ()],
+                    # Task 6 (containment stage 2): the allocated uid doubles
+                    # as the gid — render refuses the UNALLOCATED_UID
+                    # sentinel, so a not-yet-allocated record fails closed
+                    # here rather than launching a setpriv-less/root CLI.
+                    uid=engagement.allocated_uid, gid=engagement.allocated_uid,
                 )
                 log_script = render_log_run_script(engagement_id=engagement.id)
                 s6_rc.write_service_dir(

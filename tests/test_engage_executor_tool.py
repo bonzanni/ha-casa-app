@@ -1209,6 +1209,10 @@ class TestOriginContextPropagation:
                 "world_state_summary": "ws-summary",
             },
             task="do it",
+            # Task 6 (containment stage 2): start() feeds allocated_uid into
+            # render_run_script's setpriv wrapper — a real allocated uid
+            # keeps this the fixture for a NORMAL (post-allocation) launch.
+            allocated_uid=200005,
         )
 
         drv = ClaudeCodeDriver(

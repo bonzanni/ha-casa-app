@@ -191,7 +191,7 @@ def test_render_run_script_plugin_dir_flags():
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
         plugin_dirs=["/config/plugins/store/a/aaa",
-                     "/config/plugins/store/b/bbb"])
+                     "/config/plugins/store/b/bbb"], uid=200005, gid=200005)
     assert ("--plugin-dir /config/plugins/store/a/aaa "
             "--plugin-dir /config/plugins/store/b/bbb") in out
 
@@ -202,7 +202,7 @@ def test_render_run_script_rejects_relative_or_shell_special_plugin_dir():
         with pytest.raises(WorkspaceConfigError):
             render_run_script(engagement_id="e" * 32,
                               permission_mode="acceptEdits", extra_dirs=[],
-                              plugin_dirs=[bad])
+                              plugin_dirs=[bad], uid=200005, gid=200005)
 
 
 def test_run_template_has_no_seed_or_cache_env():
@@ -259,14 +259,14 @@ _RINGLOG = os.path.abspath(
 def rendered_run_script():
     from drivers.workspace import render_run_script
     return render_run_script(engagement_id="e" * 32, permission_mode="acceptEdits",
-                              extra_dirs=[], plugin_dirs=[])
+                              extra_dirs=[], plugin_dirs=[], uid=200005, gid=200005)
 
 
 @pytest.fixture
 def rendered_probe_script():
     from drivers.workspace import render_run_script
     return render_run_script(engagement_id=_PROBE_ID, permission_mode="acceptEdits",
-                              extra_dirs=[], plugin_dirs=[])
+                              extra_dirs=[], plugin_dirs=[], uid=200005, gid=200005)
 
 
 @_bash_required
@@ -291,7 +291,17 @@ def test_rendered_run_script_contract(rendered_run_script):
     # per-epoch stderr file.
     assert s.index("RESUME_ARGS=()") < s.index("ringlog.sh")
     assert "exec 2>&1" not in s
-    assert 'exec claude ' in s and s.index('exec claude') > s.index('ringlog.sh')
+    # Task 6 (containment stage 2): the final exec wraps the CLI in a
+    # setpriv uid+cap drop — `setpriv` is the literal token Task 8's
+    # staleness marker keys on. The template line-continues with `\` +
+    # newline + indent, so normalize whitespace before matching the
+    # brief's contiguous-string contract.
+    collapsed = re.sub(r"\s+", " ", s.replace("\\\n", " "))
+    assert (
+        "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
+        "--bounding-set -all --inh-caps -all --no-new-privs -- claude"
+    ) in collapsed
+    assert s.index('exec setpriv') > s.index('ringlog.sh')
 
 
 @_bash_required
@@ -366,7 +376,10 @@ def _harness_script(rendered: str, tmp_path, final_exec: str) -> Path:
     s = s.replace(f'CTL="/data/engagement-ctl/{_PROBE_ID}"', f'CTL="{ctl}"')
     s = s.replace("/opt/casa/scripts/ringlog.sh", _RINGLOG)
     s = s.replace('exec <"$CTL/stdin.fifo"', "exec </dev/null")
-    s = re.sub(r"exec claude .*?(?=\n[A-Z#]|\Z)", final_exec, s, flags=re.S)
+    # Task 6: the final line is now `exec setpriv ... -- claude ...` — match
+    # from `exec setpriv` (the wrapper's own exec) through to the end of the
+    # invocation, same anchor logic as before.
+    s = re.sub(r"exec setpriv .*?(?=\n[A-Z#]|\Z)", final_exec, s, flags=re.S)
     p = tmp_path / "run"; p.write_text(s); return p
 
 
@@ -611,7 +624,7 @@ def test_render_run_script_refuses_to_shadow_its_own_exports():
     with _pytest.raises(WorkspaceConfigError) as exc:
         render_run_script(
             engagement_id="e" * 32, permission_mode="acceptEdits",
-            extra_dirs=[], extra_env={"MCP_TOOL_TIMEOUT": ""})
+            extra_dirs=[], extra_env={"MCP_TOOL_TIMEOUT": ""}, uid=200005, gid=200005)
     assert "MCP_TOOL_TIMEOUT" in str(exc.value)
 
 
@@ -619,5 +632,5 @@ def test_render_run_script_still_accepts_an_ordinary_extra_env():
     from drivers.workspace import render_run_script
     out = render_run_script(
         engagement_id="e" * 32, permission_mode="acceptEdits",
-        extra_dirs=[], extra_env={"CASA_BANKFEED_EB_CP_TOKEN": ""})
+        extra_dirs=[], extra_env={"CASA_BANKFEED_EB_CP_TOKEN": ""}, uid=200005, gid=200005)
     assert "export CASA_BANKFEED_EB_CP_TOKEN=''" in out

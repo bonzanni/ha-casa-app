@@ -40,14 +40,24 @@ def _make_defn(tmp_path, plugins=None):
     )
 
 
-def _make_record():
+def _make_record(allocated_uid=None):
     from engagement_registry import EngagementRecord
+    from engagement_uids import UNALLOCATED_UID
     return EngagementRecord(
         id="abc12345def67890", kind="executor", role_or_type="hello-driver",
         driver="claude_code", status="active", topic_id=999,
         started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
         completed_at=None, sdk_session_id=None,
         origin={"channel": "telegram", "chat_id": "42"}, task="say hello",
+        # Task 6 (containment stage 2): start() feeds allocated_uid into
+        # render_run_script's setpriv wrapper (raises on the sentinel).
+        # Default stays UNALLOCATED_UID so callers that don't care about
+        # start()'s uid wiring (e.g. session-id capture's owner_uid_or_none
+        # check, which treats the sentinel as "no ownership check") are
+        # unaffected — tests that exercise start() pass a real uid.
+        allocated_uid=(
+            UNALLOCATED_UID if allocated_uid is None else allocated_uid
+        ),
     )
 
 
@@ -98,7 +108,7 @@ class TestStart:
         )
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
 
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
@@ -156,7 +166,7 @@ class TestStart:
         monkeypatch.setattr(ClaudeCodeDriver, "_write_to_fifo", _noop_write)
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         rec.origin["brief"] = {
             "objective": "Rotate the API keys",
             "acceptance_criteria": ["old keys revoked"],
@@ -211,7 +221,7 @@ class TestStartRollback:
         (tmp_path / "svc-root").mkdir()
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
 
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
@@ -260,7 +270,7 @@ class TestStartRollback:
         (tmp_path / "svc-root").mkdir()
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=AsyncMock(),
@@ -2445,7 +2455,7 @@ class TestBootSummary:
         reg = FakeReg()
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=send,
@@ -2472,7 +2482,7 @@ class TestBootSummary:
             raise RuntimeError("telegram down")
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=boom,
@@ -2495,7 +2505,7 @@ class TestBootSummary:
             return None
 
         defn = _make_defn(tmp_path)
-        rec = _make_record()
+        rec = _make_record(allocated_uid=200005)
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path / "engagements"),
             send_to_topic=send,

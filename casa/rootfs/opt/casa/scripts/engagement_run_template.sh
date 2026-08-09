@@ -62,9 +62,9 @@ printf '{"casa_control": "spawn", "epoch": %s}\n' "$EPOCH"   # NDJSON, pre-exec
 
 exec <"$CTL/stdin.fifo"
 
-exec claude --channels server:casa-engagement-channel \
-            --print --verbose --output-format stream-json \
-            "${RESUME_ARGS[@]}" \
-            --permission-mode {PERMISSION_MODE} \
-            {ADD_DIR_FLAGS} \
-            {PLUGIN_DIR_FLAGS}
+exec setpriv --reuid {UID} --regid {GID} --clear-groups \
+             --bounding-set -all --inh-caps -all --no-new-privs \
+             -- claude --channels server:casa-engagement-channel \
+             --print --verbose --output-format stream-json \
+             "${RESUME_ARGS[@]}" --permission-mode {PERMISSION_MODE} \
+             {ADD_DIR_FLAGS} {PLUGIN_DIR_FLAGS}
