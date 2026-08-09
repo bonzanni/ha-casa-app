@@ -328,6 +328,9 @@ async def replay_undergoing_engagements(
     (§7.3 of the 4a.1 spec).
     """
     from drivers import s6_rc
+    from drivers.claude_code_driver import (
+        UidDropRefused, _check_plugin_dirs_readable,
+    )
     from drivers.workspace import (
         chown_workspace, fifo_path, refresh_claude_md, render_log_run_script,
         render_run_script, workspace_mcp_token, workspace_mcp_url,
@@ -1159,6 +1162,28 @@ async def replay_undergoing_engagements(
 
                 # §3.8 (missing recorded artifacts) already validated above
                 # (#314) — every recorded --plugin-dir target exists.
+
+                # Containment Stage 2 (Task 7 parity): the fresh-launch path
+                # gates on _preflight_uid_drop, which verifies each pinned
+                # --plugin-dir is readable+traversable by the allocated uid
+                # BEFORE the CLI (dropped to that uid) tries to open it. In
+                # practice ``plugin_boot.heal_and_freeze_store`` re-freezes
+                # artifacts o+rx before replay runs, so this should already
+                # hold — but replay must CHECK rather than assume, the same
+                # way the fresh path does, so a miss refuses this record's
+                # resume instead of rendering/starting a run script that
+                # crash-loops the moment the dropped-uid CLI can't read its
+                # own --plugin-dir. Reuses the SAME check _preflight_uid_drop
+                # uses (shared helper) rather than a divergent copy.
+                try:
+                    _check_plugin_dirs_readable(_rec_uid, rec.plugin_artifacts)
+                except UidDropRefused as exc:
+                    await _refuse_brief_resume(
+                        rec,
+                        f"plugin dir not readable by uid {_rec_uid}: {exc}",
+                        kind="refuse_plugin_dir_unreadable",
+                    )
+                    continue
 
                 # Clear stale/legacy/torn dirs first — write_service_dir
                 # mkdirs with exist_ok=False (a surviving -log sibling would

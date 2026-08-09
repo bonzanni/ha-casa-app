@@ -30,6 +30,7 @@ from drivers.workspace import (
 )
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
 from engagement_uids import UID_BASE, owner_uid_or_none, prune_identity
+import plugin_outbox
 from safe_fs import SymlinkRefused, list_dir_beneath, open_beneath
 from settle_gate import confirmed_settle_edit
 
@@ -850,15 +851,24 @@ def _preflight_uid_drop(rec: EngagementRecord, ws: str) -> None:
             f"no passwd entry for uid {uid} — NSS identity not provisioned"
         ) from exc
 
-    # Each pinned plugin artifact is passed to the CLI as a --plugin-dir
-    # flag (render_run_script) — the subprocess, running AS the allocated
-    # uid, must be able to traverse into and read it. os.access() is not a
-    # reliable check here: run as root (this preflight always is), it
-    # reports what root could do, not what the target uid could do. So
-    # check mode bits directly: either the uid owns the dir (its own
-    # artifacts), or the "other" bits grant read+execute (o+rx == 0o005) —
-    # traverse (x) to enter, read (r) to list/open entries beneath it.
-    for artifact in getattr(rec, "plugin_artifacts", ()) or ():
+    _check_plugin_dirs_readable(uid, getattr(rec, "plugin_artifacts", ()))
+
+
+def _check_plugin_dirs_readable(uid: int, plugin_artifacts) -> None:
+    """Shared by :func:`_preflight_uid_drop` (fresh launch) and the boot-replay
+    migration loop (``casa_core.replay_undergoing_engagements``) — containment
+    stage 2 parity: BOTH paths render a run script that passes each pinned
+    plugin artifact to the CLI as a ``--plugin-dir`` flag, so both must verify
+    the subprocess, running AS *uid*, can actually traverse into and read it
+    before planting/starting the service. ``os.access()`` is not a reliable
+    check here: run as root (both callers always are), it reports what root
+    could do, not what the target uid could do. So check mode bits directly:
+    either the uid owns the dir (its own artifacts), or the "other" bits
+    grant read+execute (o+rx == 0o005) — traverse (x) to enter, read (r) to
+    list/open entries beneath it. Raises ``UidDropRefused`` on the first
+    failing artifact; callers must not swallow it and plant/start the
+    service anyway."""
+    for artifact in plugin_artifacts or ():
         path = artifact["path"]
         try:
             pa_stat = os.stat(path)
@@ -1324,6 +1334,19 @@ class ClaudeCodeDriver(DriverProtocol):
                         logger.warning(
                             "rollback prune_identity(%s) failed: %s",
                             real_uid, rb_exc,
+                        )
+                    # Task 11 (containment stage 2): the uid's private
+                    # outbox dir follows the workspace on this rollback path
+                    # too — provision_workspace may have gotten far enough
+                    # to create it before whatever raised. Best-effort, same
+                    # guard/shape as the sibling teardown call in
+                    # tools.delete_engagement_workspace.
+                    try:
+                        plugin_outbox.teardown_engagement_outbox(real_uid)
+                    except Exception as rb_exc:  # noqa: BLE001
+                        logger.warning(
+                            "rollback engagement outbox teardown(%s) "
+                            "failed: %s", real_uid, rb_exc,
                         )
                 raise
 

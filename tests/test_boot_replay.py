@@ -705,6 +705,62 @@ async def test_replay_refuses_when_recorded_artifact_missing(monkeypatch, tmp_pa
     assert "healthy1" in bg_ids
 
 
+async def test_replay_refuses_when_plugin_dir_unreadable_by_uid(
+        monkeypatch, tmp_path):
+    """M2 (containment stage 2 fix-wave, final review): parity with the
+    fresh-launch path's ``_preflight_uid_drop``, which refuses to plant a
+    service whose ``--plugin-dir`` artifact the dropped-uid CLI cannot read.
+    Boot replay must apply the SAME check (via the shared
+    ``_check_plugin_dirs_readable`` helper) to each migrated UNDERGOING
+    record — a miss would render/start a run script that crash-loops the
+    instant the dropped-uid CLI tries to open a plugin dir it cannot read.
+    The artifact dir here exists (so §3.8's missing-artifact refusal does not
+    fire) but is chmod'd 0700 with no matching owner — unreadable by any
+    uid but its creator."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    write_ids: list[str] = []
+    def fake_write(**kw):
+        write_ids.append(kw["engagement_id"])
+        (svc_root / f"engagement-{kw['engagement_id']}").mkdir()
+    monkeypatch.setattr(s6_rc, "write_service_dir", fake_write)
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    start_ids: list[str] = []
+    async def fake_start(*, engagement_id): start_ids.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    unreadable_dir = tmp_path / "store" / "sp" / ("c" * 64)
+    unreadable_dir.mkdir(parents=True)
+    os.chmod(unreadable_dir, 0o700)  # owner-only — no world r/x, not uid-owned
+
+    rec = _rec_pa("blocked1",
+                  [{"name": "superpowers", "artifact_id": "c" * 64,
+                    "path": str(unreadable_dir)}], topic_id=7)
+    reg = await _make_registry([rec], uid_allocator=_tmp_allocator())
+
+    driver = _boot_driver()
+    from unittest.mock import MagicMock
+    bg = MagicMock()
+    driver._spawn_background_tasks = bg
+    ws_root = tmp_path / "eng"; (ws_root / "blocked1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    # Refused — matches the other replay refusals: no service written, no
+    # start_service, no background tasks; the run script (which would have
+    # baked in the setpriv drop to a uid that can't read its own
+    # --plugin-dir) is never rendered/started.
+    assert "blocked1" not in write_ids
+    assert "blocked1" not in start_ids
+    bg_ids = {c.args[0].id for c in bg.call_args_list}
+    assert "blocked1" not in bg_ids
+
+
 # ---------------------------------------------------------------------------
 # W3 (Task 8): brief boot re-render + fail-closed checked-teardown refusal.
 # ---------------------------------------------------------------------------

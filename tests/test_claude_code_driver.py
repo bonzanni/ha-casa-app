@@ -316,6 +316,60 @@ class TestStartRollback:
         assert not (tmp_path / "engagements" / rec.id).exists()
         assert not (tmp_path / "svc-root" / f"engagement-{rec.id}").exists()
 
+    async def test_start_service_failure_removes_engagement_outbox(
+            self, monkeypatch, tmp_path):
+        """M1 (containment stage 2 fix-wave, final review): the rollback path
+        must also remove the uid's private outbox dir that
+        ``provision_workspace`` created (Task 11,
+        ``plugin_outbox.provision_engagement_outbox``) — pre-fix the rollback
+        removed the workspace/control dir and pruned the passwd identity but
+        left this dir behind, and uids are never reused so a repeatedly-
+        failing launch leaked a permanent empty dir per attempt. Asymmetric
+        with the sweeper/``delete_engagement_workspace`` teardown paths, which
+        already remove it (``tools.py`` Task 11 call site)."""
+        import plugin_outbox
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers import s6_rc
+
+        _patch_uid_drop_ok(monkeypatch)
+
+        async def fake_cau():
+            pass
+
+        async def fake_start_fail(*, engagement_id):
+            raise RuntimeError("simulated s6-rc start failure")
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked", fake_cau)
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+        monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT",
+                            str(tmp_path / "svc-root"))
+        (tmp_path / "svc-root").mkdir()
+
+        defn = _make_defn(tmp_path)
+        rec = _make_record(allocated_uid=200005)
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+        )
+        (tmp_path / "engagements").mkdir()
+        (tmp_path / "base-plugins").mkdir()
+
+        # Sanity: provision_workspace (real, not faked here) really creates
+        # the private outbox dir for this uid before start_service fails —
+        # otherwise this test would trivially pass with a no-op fix.
+        outbox_dir = plugin_outbox.engagement_outbox_dir(200005)
+
+        with pytest.raises(RuntimeError, match="simulated s6-rc start failure"):
+            await drv.start(rec, prompt="hi", options=defn)
+
+        assert not os.path.isdir(outbox_dir), (
+            "M1: rollback must remove the uid's private outbox dir "
+            "provisioned during start() — a failed launch otherwise leaks a "
+            "permanent empty dir (uids are never reused)"
+        )
+
     async def test_provision_failure_cleans_up(self, monkeypatch, tmp_path):
         """Failure during provisioning (before service-dir write) — only
         the workspace tree needs cleanup, not the (never-written) service dir."""
