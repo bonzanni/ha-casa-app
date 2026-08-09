@@ -27,6 +27,8 @@ from drivers.workspace import (
     session_id_path, stderr_path, stream_cursor_path, write_casa_meta,
 )
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
+from engagement_uids import owner_uid_or_none
+from safe_fs import SymlinkRefused, list_dir_beneath, open_beneath
 from settle_gate import confirmed_settle_edit
 
 logger = logging.getLogger(__name__)
@@ -4459,16 +4461,29 @@ class ClaudeCodeDriver(DriverProtocol):
         ws = Path(self._engagements_root) / engagement.id
         # Task 4: the WRITE target moves to the control dir. The scan below
         # still reads the CLI's own session-storage directory under the
-        # workspace's .home — that scan is not yet made symlink-safe (Task 5
-        # owns it); this task is path relocation only.
+        # workspace's .home. Task 5: that scan is now routed through
+        # ``safe_fs`` — rooted at ``<ws>/.home`` and never following a
+        # symlink component (e.g. a sibling engagement planting
+        # ``.home/.claude/projects/<name>`` as a symlink to ITS OWN projects
+        # dir, which would otherwise leak its session UUID here).
         target = Path(session_id_path(engagement.id))
         tmp = target.with_name(target.name + ".tmp")
-        projects_dir = (
-            ws / ".home" / ".claude" / "projects"
-            / f"-data-engagements-{engagement.id}"
+        ws_home = ws / ".home"
+        rel_projects_dir = (
+            f".claude/projects/-data-engagements-{engagement.id}"
         )
+        owner_uid = owner_uid_or_none(engagement.allocated_uid)
         while True:
-            sid = self._scan_projects_dir_for_sid(projects_dir)
+            try:
+                sid = self._scan_projects_dir_for_sid(
+                    ws_home, rel_projects_dir, owner_uid=owner_uid)
+            except SymlinkRefused as exc:
+                logger.warning(
+                    "engagement %s session capture refused: symlinked "
+                    "projects dir (%s) — no session id will be adopted",
+                    short, exc,
+                )
+                return
             if sid is not None:
                 try:
                     tmp.write_text(sid + "\n", encoding="utf-8")
@@ -4495,33 +4510,63 @@ class ClaudeCodeDriver(DriverProtocol):
             await asyncio.sleep(poll_interval_s)
 
     @staticmethod
-    def _scan_projects_dir_for_sid(projects_dir: Path) -> str | None:
-        """Return the oldest UUID-named .jsonl in projects_dir, or None.
+    def _scan_projects_dir_for_sid(
+        ws_home: Path, rel_projects_dir: str, *, owner_uid: int | None,
+    ) -> str | None:
+        """Return the oldest UUID-named .jsonl in the CLI's session-projects
+        dir (``<ws_home>/<rel_projects_dir>``), or None if not present yet.
+
+        Task 5: listed via ``safe_fs.list_dir_beneath`` rooted at
+        ``ws_home`` — refuses to follow a symlinked ``rel_projects_dir``
+        (e.g. one planted pointing at a SIBLING engagement's own projects
+        dir) rather than reading whatever it points to. Raises
+        ``SymlinkRefused`` up to the caller in that case: the caller treats
+        a refused DIRECTORY as "no session capture, ever" for this
+        watcher — never silently adopting a sibling's UUID.
+
+        A candidate FILE that is itself a symlink (finer-grained than the
+        directory case above) is instead just skipped — same effect as if
+        it were absent, since only the directory-level refusal needs to
+        abort the whole watch.
 
         Sort by mtime ascending so the first session file (the one
         spawned by the initial CLI start) wins over any later ones the
         CLI might write on a resume retry.
         """
         try:
-            if not projects_dir.is_dir():
-                return None
-            candidates: list[tuple[float, str]] = []
-            for p in projects_dir.iterdir():
-                if p.suffix != ".jsonl":
-                    continue
-                stem = p.stem
-                if _UUID_REGEX.match(stem) is None:
-                    continue
-                try:
-                    candidates.append((p.stat().st_mtime, stem))
-                except OSError:
-                    continue
-            if not candidates:
-                return None
-            candidates.sort()
-            return candidates[0][1]
+            names = list_dir_beneath(
+                str(ws_home), rel_projects_dir, owner_uid=owner_uid)
+        except SymlinkRefused:
+            raise
         except OSError:
             return None
+        candidates: list[tuple[float, str]] = []
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            stem = name[: -len(".jsonl")]
+            if _UUID_REGEX.match(stem) is None:
+                continue
+            rel_file = f"{rel_projects_dir}/{name}"
+            try:
+                fd = open_beneath(
+                    str(ws_home), rel_file, owner_uid=owner_uid)
+            except SymlinkRefused:
+                # This specific entry is a symlink — skip it (do not adopt
+                # its target's mtime/content), but the directory itself
+                # resolved cleanly so the watch continues.
+                continue
+            except OSError:
+                continue
+            try:
+                mtime = os.fstat(fd).st_mtime
+            finally:
+                os.close(fd)
+            candidates.append((mtime, stem))
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0][1]
 
     async def _poll_respawns(
         self, engagement: EngagementRecord, *, interval_s: float = 5.0,

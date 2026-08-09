@@ -1881,6 +1881,139 @@ async def test_unchanged_credential_neither_rewrites_nor_cycles(
     assert (ws_root / "keep1" / ".mcp.json").stat().st_mtime_ns == mtime_before
 
 
+@pytest.mark.parametrize("has_openat2", [True, False])
+async def test_mcp_json_symlink_refused_forces_regenerate(
+    monkeypatch, tmp_path, has_openat2,
+):
+    """Containment stage 2, Task 5: a ``.mcp.json`` that is a SYMLINK (e.g.
+    planted pointing into a sibling engagement's workspace once workspaces
+    are uid-chowned, Task 8) must be refused by the compare-read, not
+    followed — even when the symlink's target happens to carry a MATCHING
+    credential, which would otherwise make replay wrongly conclude
+    "unchanged" and never repair the credential a real CLI reads on
+    respawn. Parametrized over both safe_fs enforcement paths."""
+    import safe_fs
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from drivers.workspace import workspace_mcp_token, write_workspace_mcp_json
+    from engagement_registry import EngagementRegistry
+
+    monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
+    monkeypatch.setattr(s6_rc, "sweep_orphan_service_dirs", lambda **kw: [])
+    monkeypatch.setattr(s6_rc, "sweep_orphan_compiled_dbs", lambda: None)
+    monkeypatch.setattr(s6_rc, "service_pair_complete", lambda **kw: True)
+    monkeypatch.setattr(s6_rc, "run_script_is_stale", lambda **kw: False)
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    down = AsyncMock(return_value=True)
+    monkeypatch.setattr(s6_rc, "ensure_service_down", down)
+
+    ws_root = tmp_path / "eng"
+    ws_dir = ws_root / "keep1"
+    ws_dir.mkdir(parents=True)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    rec = _brief_rec("keep1", _BRIEF)
+    rec.origin = {}
+    rec.auth_token = "tok-same"
+    reg._records["keep1"] = rec
+
+    # A SIBLING workspace's own (legitimate) .mcp.json, carrying the SAME
+    # token/url the record already has — if this were followed, replay
+    # would (wrongly) conclude "unchanged".
+    sibling_dir = ws_root / "sibling"
+    sibling_dir.mkdir()
+    write_workspace_mcp_json(
+        str(sibling_dir), engagement_id="sibling",
+        engagement_auth_token="tok-same",
+        casa_framework_mcp_url="http://127.0.0.1:8100/mcp/casa-framework")
+    (ws_dir / ".mcp.json").symlink_to(sibling_dir / ".mcp.json")
+
+    exec_reg = _exec_reg()
+    _seed_current_settings(ws_dir, exec_reg.get("hello-driver"))
+
+    driver = _boot_driver()
+    driver._spawn_background_tasks = lambda rec: None
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=exec_reg,
+        engagements_root=str(ws_root))
+
+    # The symlink was replaced by a REAL file rewritten with the record's
+    # own credential — never left pointing at the sibling's file.
+    assert not (ws_dir / ".mcp.json").is_symlink()
+    assert workspace_mcp_token(str(ws_dir)) == "tok-same"
+    down.assert_awaited_once()           # refusal → "changed" → cycled
+    assert started == ["keep1"]
+    assert reg._records["keep1"].status != "error"
+
+
+@pytest.mark.parametrize("has_openat2", [True, False])
+async def test_settings_json_symlink_refused_forces_regenerate(
+    monkeypatch, tmp_path, has_openat2,
+):
+    """Containment stage 2, Task 5: a ``.claude/settings.json`` that is a
+    SYMLINK must be refused by the compare-read, not followed — even when
+    the symlink's target happens to carry the exact CURRENT floor, which
+    would otherwise make replay wrongly conclude "unchanged" and skip
+    rewriting the real (uid-owned) workspace file a resumed CLI reads."""
+    import safe_fs
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from engagement_registry import EngagementRegistry
+
+    monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
+    monkeypatch.setattr(s6_rc, "sweep_orphan_service_dirs", lambda **kw: [])
+    monkeypatch.setattr(s6_rc, "sweep_orphan_compiled_dbs", lambda: None)
+    monkeypatch.setattr(s6_rc, "service_pair_complete", lambda **kw: True)
+    monkeypatch.setattr(s6_rc, "run_script_is_stale", lambda **kw: False)
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    down = AsyncMock(return_value=True)
+    monkeypatch.setattr(s6_rc, "ensure_service_down", down)
+
+    ws_root = tmp_path / "eng"
+    ws_dir = ws_root / "keep1"
+    ws_dir.mkdir(parents=True)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
+    rec = _brief_rec("keep1", _BRIEF)
+    rec.origin = {}
+    rec.auth_token = "tok-same"
+    reg._records["keep1"] = rec
+    _seed_current_credential(ws_dir, rec)   # isolate the settings trigger
+
+    exec_reg = _exec_reg()
+    defn = exec_reg.get("hello-driver")
+
+    # A SIBLING workspace's own settings.json carrying the exact CURRENT
+    # floor — if followed, replay would (wrongly) conclude "unchanged".
+    sibling_dir = ws_root / "sibling"
+    _seed_current_settings(sibling_dir, defn)
+    (ws_dir / ".claude").mkdir(parents=True)
+    (ws_dir / ".claude" / "settings.json").symlink_to(
+        sibling_dir / ".claude" / "settings.json")
+
+    driver = _boot_driver()
+    driver._spawn_background_tasks = lambda rec: None
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=exec_reg,
+        engagements_root=str(ws_root))
+
+    # The symlink was replaced by a REAL rewritten file — never left
+    # pointing at the sibling's settings.json.
+    settings_path = ws_dir / ".claude" / "settings.json"
+    assert not settings_path.is_symlink()
+    from casa_core import _regenerate_cc_settings
+    assert json.loads(settings_path.read_text()) == _regenerate_cc_settings(defn)
+    down.assert_awaited_once()           # refusal → "changed" → cycled
+    assert started == ["keep1"]
+    assert reg._records["keep1"].status != "error"
+
+
 @pytest.mark.parametrize(
     "stop_outcome", ["returns_false", "raises", "raises_persistently"])
 async def test_unconfirmed_stop_after_credential_refresh_refuses_resume(

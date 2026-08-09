@@ -650,6 +650,74 @@ class TestSessionIdCapture:
             f"atomic-write temp file leaked into the control dir: {tmp_leftovers!r}"
         )
 
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    async def test_refuses_symlinked_projects_dir(
+        self, tmp_path, monkeypatch, has_openat2,
+    ):
+        """Containment stage 2, Task 5: engagement A's ``.home/.claude/
+        projects/<name>`` is a SYMLINK to sibling engagement B's own
+        projects dir. The watcher must refuse to follow it — never adopting
+        B's session UUID as A's — and stop watching (no adoption at all),
+        rather than silently reading through the symlink. Parametrized over
+        both the ``openat2`` fast path and the per-component fallback (the
+        two independent enforcement mechanisms in ``safe_fs``)."""
+        from pathlib import Path
+
+        import safe_fs
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.workspace import provision_control_dir, session_id_path
+
+        monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
+
+        rec = _make_record()
+        ws_a = tmp_path / rec.id
+        ws_a.mkdir()
+        provision_control_dir(rec.id)
+
+        # Sibling B's own (legitimate) projects dir, holding B's session.
+        ws_b = tmp_path / "sibling-b"
+        b_projects = (
+            ws_b / ".home" / ".claude" / "projects" / "-data-engagements-sibling-b"
+        )
+        b_projects.mkdir(parents=True)
+        b_sid = "bbbbbbbb-0000-0000-0000-000000000000"
+        (b_projects / f"{b_sid}.jsonl").write_text("{}\n", encoding="utf-8")
+
+        # A's own projects dir path is a SYMLINK to B's — the attack this
+        # task closes: once workspaces are uid-chowned (Task 8), a
+        # compromised A can plant this to read B's session artifacts.
+        a_home_claude_projects = ws_a / ".home" / ".claude" / "projects"
+        a_home_claude_projects.mkdir(parents=True)
+        (a_home_claude_projects / f"-data-engagements-{rec.id}").symlink_to(
+            b_projects, target_is_directory=True,
+        )
+
+        persisted: list[tuple[str, str]] = []
+
+        async def fake_persist(engagement_id: str, session_id: str) -> None:
+            persisted.append((engagement_id, session_id))
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="x",
+            persist_session_id=fake_persist,
+        )
+
+        # No infinite poll loop: a refusal must make the watcher RETURN
+        # promptly rather than spin forever re-hitting the same symlink.
+        await asyncio.wait_for(drv._capture_session_id(rec), timeout=5.0)
+
+        # No adoption at all — neither B's uuid nor anything else.
+        assert persisted == [], (
+            f"session capture must not adopt ANY session id through a "
+            f"symlinked projects dir; got {persisted!r}"
+        )
+        assert not Path(session_id_path(rec.id)).exists(), (
+            ".session_id must not be written when the projects dir "
+            "resolution was refused as a symlink"
+        )
+
 
 class TestRespawnPoller:
     async def test_emits_bus_event_on_pid_change(self, monkeypatch, tmp_path):

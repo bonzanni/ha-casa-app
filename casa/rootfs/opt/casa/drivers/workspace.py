@@ -15,6 +15,7 @@ import yaml
 
 from atomic_io import atomic_write_json
 from drivers.hook_bridge import translate_hooks_to_settings
+from safe_fs import SymlinkRefused, read_text_beneath
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +368,7 @@ def render_log_run_script(*, engagement_id: str) -> str:
     )
 
 
-def workspace_mcp_token(ws_dir: str) -> str | None:
+def workspace_mcp_token(ws_dir: str, *, owner_uid: int | None = None) -> str | None:
     """The engagement token currently baked into ``<ws>/.mcp.json``.
 
     ``None`` when the file is absent, unreadable, malformed, or predates
@@ -375,20 +376,35 @@ def workspace_mcp_token(ws_dir: str) -> str | None:
     token to decide whether the workspace credential actually CHANGED — a
     running CLI caches ``.mcp.json`` at spawn, so a changed credential means
     that CLI must be respawned or every one of its calls is rejected.
+
+    Containment stage 2, Task 5: read via ``safe_fs.read_text_beneath`` so a
+    symlink planted at ``<ws>/.mcp.json`` (pointing at a SIBLING
+    engagement's workspace once the workspace is uid-chowned, Task 8) is
+    refused rather than followed. ``owner_uid`` — the record's real
+    ``allocated_uid``, or ``None`` for a not-yet-allocated/legacy workspace
+    — is layered on top when given. A refusal returns ``None``, the same
+    as any other unreadable file: the caller (boot replay) treats that as
+    "changed" and regenerates — fail-safe, never a silent same-content skip.
     """
     try:
         cfg = json.loads(
-            (Path(ws_dir) / ".mcp.json").read_text(encoding="utf-8"))
+            read_text_beneath(ws_dir, ".mcp.json", owner_uid=owner_uid))
         token = (
             cfg["mcpServers"]["casa-framework"]["headers"]
             ["X-Casa-Engagement-Token"]
         )
+    except SymlinkRefused as exc:
+        logger.warning(
+            "workspace_mcp_token: refused symlinked .mcp.json under %s "
+            "(%s) — treating as changed", ws_dir, exc,
+        )
+        return None
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return token if isinstance(token, str) and token else None
 
 
-def workspace_mcp_url(ws_dir: str) -> str | None:
+def workspace_mcp_url(ws_dir: str, *, owner_uid: int | None = None) -> str | None:
     """The casa-framework URL currently baked into ``<ws>/.mcp.json``.
 
     ``None`` when the file is absent, unreadable, or malformed. Boot replay
@@ -396,11 +412,20 @@ def workspace_mcp_url(ws_dir: str) -> str | None:
     workspace whose baked URL has drifted from the served endpoint is
     rewritten (and its CLI cycled) exactly like a changed credential —
     the URL is part of the workspace's identity, not an artifact to trust.
+
+    Containment stage 2, Task 5: same ``safe_fs`` routing/owner-uid/
+    fail-safe-None-on-refusal contract as :func:`workspace_mcp_token` above.
     """
     try:
         cfg = json.loads(
-            (Path(ws_dir) / ".mcp.json").read_text(encoding="utf-8"))
+            read_text_beneath(ws_dir, ".mcp.json", owner_uid=owner_uid))
         url = cfg["mcpServers"]["casa-framework"]["url"]
+    except SymlinkRefused as exc:
+        logger.warning(
+            "workspace_mcp_url: refused symlinked .mcp.json under %s "
+            "(%s) — treating as changed", ws_dir, exc,
+        )
+        return None
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return url if isinstance(url, str) and url else None
@@ -699,71 +724,92 @@ def write_casa_meta(
     path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
-def _migrate_legacy_casa_meta(engagement_id: str, legacy_path: Path) -> None:
+def _migrate_legacy_casa_meta(engagement_id: str, legacy_text: str) -> None:
     """Best-effort forward-copy of a pre-Task-4 ``.casa-meta.json`` (written
     under the workspace, back when that was the only location) into the
     control dir — so every read/write from here on lands on the one,
     now-canonical location. Idempotent (``target.exists()`` short-circuits a
     concurrent/repeated migration) and never raises: a migration failure
     must not turn a successful legacy READ into an error, and the next
-    ``load_casa_meta`` call simply retries it."""
+    ``load_casa_meta`` call simply retries it.
+
+    Takes the already-read file CONTENT (not a path) — Containment stage 2,
+    Task 5: the caller reads the legacy file exactly once, through
+    ``safe_fs``; re-opening it here by path would defeat that (a second,
+    unguarded read of an attacker-controlled workspace path)."""
     try:
         Path(CONTROL_ROOT).mkdir(parents=True, exist_ok=True)
         Path(control_dir(engagement_id)).mkdir(mode=0o700, exist_ok=True)
         target = Path(casa_meta_path(engagement_id))
         if not target.exists():
-            target.write_text(
-                legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+            target.write_text(legacy_text, encoding="utf-8")
     except OSError:
         logger.warning(
-            "load_casa_meta: failed to migrate legacy %s into the control "
-            "dir for engagement %s", legacy_path, engagement_id, exc_info=True,
+            "load_casa_meta: failed to migrate legacy .casa-meta.json into "
+            "the control dir for engagement %s", engagement_id, exc_info=True,
         )
 
 
-def load_casa_meta(workspace_path: str) -> dict | None:
+def load_casa_meta(
+    workspace_path: str, *, owner_uid: int | None = None,
+) -> dict | None:
     # Task 4: the workspace dir's basename IS the engagement id by
     # construction (``provision_workspace`` mkdirs exactly
     # ``<engagements_root>/<engagement_id>``) — every existing caller passes
     # a workspace path, so derive the id rather than widen every call site.
     engagement_id = Path(workspace_path).name
     path = Path(casa_meta_path(engagement_id))
-    legacy_path: Path | None = None
-    if not path.exists():
+    legacy_text: str | None = None
+    is_legacy = not path.exists()
+    if not is_legacy:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning(
+                "load_casa_meta: I/O error reading %s", path, exc_info=True,
+            )
+            return None
+    else:
         # Fix-loop round 1 (Important 2): an engagement whose
         # .casa-meta.json was written before this release deploys still has
         # it at the LEGACY workspace path — without this fallback it is
         # unreachable, which drops plugin_artifacts/created_at on finalize
         # (tools.py) and permanently leaks its (already-terminal) workspace
         # past the retention sweep (never gets deleted again). Read the
-        # legacy copy and opportunistically migrate it forward.
-        legacy = Path(workspace_path) / ".casa-meta.json"  # containment-legacy-read-only: pre-Task-4 fallback (test_root_workspace_accessor_inventory.py), migrated forward on read, never a write target
-        if not legacy.exists():
+        # legacy copy (via safe_fs, Task 5 — this is a root read of a
+        # uid-owned WORKSPACE path, so a symlink there must be refused, not
+        # followed) and opportunistically migrate it forward.
+        try:
+            text = read_text_beneath(
+                workspace_path, ".casa-meta.json", owner_uid=owner_uid)
+        except SymlinkRefused as exc:
+            logger.warning(
+                "load_casa_meta: refused symlinked legacy .casa-meta.json "
+                "under workspace %s for engagement %s (%s) — treating as "
+                "absent", workspace_path, engagement_id, exc,
+            )
             return None
-        path = legacy
-        legacy_path = legacy
+        except OSError:
+            return None
+        legacy_text = text
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(text)
         # #344: valid-but-non-object JSON ([]/string/number) used to
         # escape here and crash the first .get() in a consumer — one bad
         # file aborted the whole retention sweep for later workspaces.
         if not isinstance(data, dict):
             logger.warning(
-                "load_casa_meta: %s is not a JSON object — treating as "
-                "absent", path,
+                "load_casa_meta: %s legacy=%s is not a JSON object — "
+                "treating as absent", engagement_id, is_legacy,
             )
             return None
-        if legacy_path is not None:
-            _migrate_legacy_casa_meta(engagement_id, legacy_path)
+        if legacy_text is not None:
+            _migrate_legacy_casa_meta(engagement_id, legacy_text)
         return data
     except json.JSONDecodeError:
         logger.warning(
-            "load_casa_meta: %s is not valid JSON — treating as absent", path,
-        )
-        return None
-    except OSError:
-        logger.warning(
-            "load_casa_meta: I/O error reading %s", path, exc_info=True,
+            "load_casa_meta: %s legacy=%s is not valid JSON — treating as "
+            "absent", engagement_id, is_legacy,
         )
         return None
 

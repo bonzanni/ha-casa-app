@@ -718,6 +718,57 @@ class TestCasaMeta:
         assert legacy.exists()
         assert load_casa_meta(str(ws)) == meta
 
+    @pytest.mark.parametrize("has_openat2", [True, False])
+    def test_legacy_fallback_refuses_symlinked_casa_meta(
+            self, tmp_path, monkeypatch, has_openat2):
+        """Containment stage 2, Task 5: the legacy-path fallback
+        (pre-Task-4 ``.casa-meta.json`` still under the WORKSPACE root) is a
+        root read of a uid-owned workspace path — once Task 8 chowns the
+        workspace, a symlink there is a live sibling-exfiltration primitive.
+        A workspace whose ``.casa-meta.json`` is a SYMLINK (e.g. into a
+        sibling engagement's control dir) must be refused, not followed —
+        treated as absent, never migrated forward, and never returned as if
+        it were this engagement's own metadata."""
+        import json
+        from pathlib import Path
+
+        import safe_fs
+        from drivers.workspace import (
+            casa_meta_path, control_dir, load_casa_meta,
+        )
+
+        monkeypatch.setattr(safe_fs, "HAS_OPENAT2", has_openat2)
+
+        # Sibling engagement's own (legitimate) legacy meta file.
+        sibling_ws = tmp_path / "sibling"
+        sibling_ws.mkdir()
+        sibling_meta = {
+            "engagement_id": "sibling", "executor_type": "hello-driver",
+            "status": "COMPLETED", "created_at": "2026-04-23T10:00:00Z",
+            "finished_at": "2026-04-23T10:05:00Z",
+            "retention_until": "2099-01-01T00:00:00Z",
+            "plugin_artifacts": [],
+        }
+        (sibling_ws / ".casa-meta.json").write_text(
+            json.dumps(sibling_meta), encoding="utf-8")
+
+        # This engagement's workspace: .casa-meta.json is a SYMLINK to the
+        # sibling's file instead of its own.
+        ws = tmp_path / "e-legacy-symlink"
+        ws.mkdir()
+        (ws / ".casa-meta.json").symlink_to(sibling_ws / ".casa-meta.json")
+        assert not Path(control_dir("e-legacy-symlink")).exists()
+
+        loaded = load_casa_meta(str(ws))
+
+        assert loaded is None, (
+            "a symlinked legacy .casa-meta.json must be refused (treated "
+            f"as absent), never followed to a sibling's metadata; got {loaded!r}"
+        )
+        # Never migrated forward — a refused read must not write the
+        # sibling's content into this engagement's own control dir.
+        assert not Path(casa_meta_path("e-legacy-symlink")).exists()
+
 
 class TestProvisionWithHooks:
     @pytest.mark.skipif(

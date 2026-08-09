@@ -32,6 +32,20 @@ UID_BASE = 200000
 UNALLOCATED_UID = -1
 
 
+def owner_uid_or_none(uid: int) -> int | None:
+    """Containment stage 2, Task 5: the ``owner_uid`` argument ``safe_fs``
+    expects, derived from an ``EngagementRecord.allocated_uid``.
+
+    Returns *uid* unchanged only when it is a REAL allocated uid
+    (``>= UID_BASE``); returns ``None`` for the ``UNALLOCATED_UID`` sentinel
+    (specialist / legacy record — its workspace was never uid-chowned, so
+    there is no uid to check ownership against) and for any other bogus
+    value (e.g. ``0``, which must never be passed to ``safe_fs`` as an
+    owner-uid check — that would mean "must be owned by root", defeating
+    the whole point of the check for a record with no real uid)."""
+    return uid if uid >= UID_BASE else None
+
+
 class UidStateError(Exception):
     """Raised when the uid counter is missing invariants it must hold.
 

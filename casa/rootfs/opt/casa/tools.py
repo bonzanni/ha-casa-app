@@ -6843,9 +6843,12 @@ async def _finalize_engagement(
     if engagement.driver == "claude_code":
         try:
             from drivers.workspace import load_casa_meta, write_casa_meta
+            from engagement_uids import owner_uid_or_none
             ws = os.path.join(_ENGAGEMENTS_ROOT, engagement.id)
             if os.path.isdir(ws):
-                meta = load_casa_meta(ws) or {}
+                meta = load_casa_meta(
+                    ws, owner_uid=owner_uid_or_none(engagement.allocated_uid),
+                ) or {}
                 finished_iso = time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now),
                 )

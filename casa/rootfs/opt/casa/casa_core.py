@@ -39,6 +39,7 @@ from claude_runtime import (
 )
 from config import AgentConfig
 from config_git import init_repo, snapshot_manual_edits
+from engagement_uids import owner_uid_or_none
 from freshness_reaper import FreshnessReaper
 from ingress_identity import (
     IngressIdentityError,
@@ -55,6 +56,7 @@ from provenance import sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
 from rate_limit import RateLimiter, rate_limit_response
+from safe_fs import SymlinkRefused, read_text_beneath
 from timekeeping import resolve_tz
 from trigger_registry import TriggerRegistry
 from voice_delivery_config import load_voice_delivery_config
@@ -655,10 +657,16 @@ async def replay_undergoing_engagements(
                     driver, "_casa_framework_mcp_url",
                     "http://127.0.0.1:8100/mcp/casa-framework",
                 )
+                # Task 5: owner_uid is the record's REAL allocated uid (once
+                # Task 8 chowns the workspace), else None for a
+                # not-yet-allocated/legacy workspace — never 0.
+                _owner_uid = owner_uid_or_none(rec.allocated_uid)
                 _credential_changed = bool(
                     os.path.isdir(_ws_dir)
-                    and (workspace_mcp_token(_ws_dir) != rec.auth_token
-                         or workspace_mcp_url(_ws_dir) != _current_mcp_url)
+                    and (workspace_mcp_token(_ws_dir, owner_uid=_owner_uid)
+                         != rec.auth_token
+                         or workspace_mcp_url(_ws_dir, owner_uid=_owner_uid)
+                         != _current_mcp_url)
                 )
 
                 # Task 6: regenerate settings.json from the load-time
@@ -687,9 +695,24 @@ async def replay_undergoing_engagements(
                     _ws_dir, ".claude", "settings.json")
                 _on_disk_settings = None
                 if os.path.isdir(_ws_dir):
+                    # Task 5: compare-read via safe_fs — a symlinked
+                    # .claude/settings.json (e.g. planted pointing at a
+                    # sibling engagement's workspace) is refused rather than
+                    # followed. Fail-safe: refusal (like any other read
+                    # failure) leaves _on_disk_settings None, which never
+                    # equals _new_settings, so the floor is (re)written.
                     try:
-                        with open(_settings_path, encoding="utf-8") as _fh:
-                            _on_disk_settings = json.load(_fh)
+                        _on_disk_settings = json.loads(read_text_beneath(
+                            _ws_dir, os.path.join(".claude", "settings.json"),
+                            owner_uid=_owner_uid,
+                        ))
+                    except SymlinkRefused as exc:
+                        logger.warning(
+                            "boot replay: engagement %s settings.json "
+                            "compare-read refused (symlink) — treating as "
+                            "changed: %s", rec.id[:8], exc,
+                        )
+                        _on_disk_settings = None
                     except (OSError, ValueError):
                         _on_disk_settings = None
                 _settings_changed = _on_disk_settings != _new_settings
