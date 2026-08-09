@@ -315,19 +315,28 @@ def _workspace_owner_ids(engagements_root: str) -> dict[int, set[str]]:
 
 
 def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
-                          _kill=os.kill) -> None:
+                          _pidfd_open=None, _pidfd_send=None,
+                          _close=os.close) -> None:
     """Best-effort SIGKILL of any lingering process whose real/effective/saved/
     fsuid is ``uid`` (an engagement's allocated uid, always ``>= UID_BASE``).
 
-    Containment Stage 2 (S1 r5, secondary defense-in-depth): after the boot
-    down-first sweep confirms an engagement's SERVICE down, a
-    ``setsid``/double-forked NON-root descendant could linger (it escaped the
-    supervised process group). Kill it so it cannot keep reading its own
-    soon-retained workspace. This is HYGIENE, not the guarantee — the durable,
-    monotonic uid high-water is what makes a survivor's uid un-reissuable, so a
-    new engagement never shares it regardless. NEVER raises and NEVER blocks; a
-    scan failure or a kill race is swallowed. Only ``uid >= UID_BASE`` is ever
-    targeted, so casa-core (root) and container services are never touched.
+    Containment Stage 2 (S1 r5, secondary defense-in-depth; the durable,
+    monotonic uid high-water is the actual non-reissue guarantee): after the
+    boot down-first sweep confirms an engagement's SERVICE down, a
+    ``setsid``/double-forked NON-root descendant could linger. Kill it so it
+    cannot keep reading its own soon-retained workspace. NEVER raises, NEVER
+    blocks; only ``uid >= UID_BASE`` is targeted, so casa-core (root) and
+    container services are never touched.
+
+    S1 r6 (Sol S2 — PID-reuse race): a numeric ``os.kill`` after a status read
+    can hit a REUSED pid (the inspected process exited and its pid was recycled
+    for an unrelated, possibly critical process) → self-DoS. Instead: open a
+    ``pidfd`` FIRST (pinning that exact process instance), verify the uid via
+    the now-current ``/proc/<pid>/status``, then signal via
+    ``signal.pidfd_send_signal`` — which only ever reaches the pinned process
+    (or ``ESRCH`` if it already exited), never a pid reuser. If the pidfd
+    primitives are unavailable, SKIP entirely (this is non-load-bearing DiD)
+    rather than signal a bare numeric pid.
 
     (A CAP_DAC_OVERRIDE / root-equivalent survivor reads any workspace
     regardless of uid; only a legacy pre-Stage-2 ROOT engagement could grant
@@ -337,6 +346,10 @@ def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
     mount/AppArmor/pid-namespace, not closed here.)"""
     if uid < UID_BASE:
         return
+    pidfd_open = _pidfd_open or getattr(os, "pidfd_open", None)
+    pidfd_send = _pidfd_send or getattr(signal, "pidfd_send_signal", None)
+    if pidfd_open is None or pidfd_send is None:
+        return   # no race-free primitive → skip (never signal a bare pid)
     try:
         entries = list(os.scandir(proc_root))
     except OSError:
@@ -344,10 +357,14 @@ def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
     for entry in entries:
         if not entry.name.isdigit():
             continue
+        pidfd = None
         try:
+            # Pin the process instance BEFORE inspecting it, so the later signal
+            # can never reach a reused pid.
+            pidfd = pidfd_open(int(entry.name))
+            hit = False
             with open(os.path.join(proc_root, entry.name, "status"),
                       "r", encoding="utf-8") as fh:
-                hit = False
                 for line in fh:
                     if not line.startswith("Uid:"):
                         continue
@@ -360,9 +377,15 @@ def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
                             continue
                     break
             if hit:
-                _kill(int(entry.name), signal.SIGKILL)
+                pidfd_send(pidfd, signal.SIGKILL)
         except (OSError, ValueError):
             continue   # process vanished / unreadable / already gone — skip
+        finally:
+            if pidfd is not None:
+                try:
+                    _close(pidfd)
+                except OSError:
+                    pass
 
 
 async def replay_undergoing_engagements(

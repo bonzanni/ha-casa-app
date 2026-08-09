@@ -243,19 +243,23 @@ class UidAllocator:
         passwd_path: str = "/etc/passwd",
         group_path: str = "/etc/group",
         proc_scanner=None,
-        marker_path: str | None = None,
+        anchor_path: str | None = None,
     ) -> None:
         self._path = counter_path
         self._passwd = passwd_path
         self._group = group_path
-        # S1 r5 — the durable "initialized" sentinel. A SEPARATE file from the
-        # counter, written once at first successful init, so that
-        # (counter-absent + marker-present) is DETECTABLE as counter LOSS rather
-        # than a genuine fresh install. The counter file is exactly what can get
-        # "lost", so the marker must be a second artifact; both live under /data,
-        # so a full /data wipe (uninstall) clears both → correctly reads as
-        # fresh, while a single-file counter loss keeps the marker → refuse.
-        self._marker = marker_path or (counter_path + ".initialized")
+        # S1 r6 — a SECOND, independently-updated durable high-water copy (the
+        # "anchor"), written atomically alongside the counter on EVERY persist.
+        # The r5 boolean marker detected counter LOSS but did not PRESERVE the
+        # high-water, so loss recovered to max(evidence) — and evidence can be
+        # INCOMPLETE (a higher uid's record aged out while a lower uid's
+        # workspace survives), moving the high-water BACKWARDS and reissuing a
+        # uid. Two durable copies fix this: reconstruct takes the max of every
+        # VALID durable copy (>= UID_BASE-1); a single-file loss recovers fully
+        # from the other; evidence only ever RAISES, never lowers below a valid
+        # durable copy. Both live under /data, so a full /data wipe (uninstall)
+        # clears both → genuine fresh; any partial loss recovers or fails closed.
+        self._anchor = anchor_path or (counter_path + ".initialized")
         # S1 r2: the live-uid source (design fail-closed). ``None`` → resolve
         # the module-level :func:`scan_proc_uids` at reconstruct time (so a
         # test that monkeypatches ``engagement_uids.scan_proc_uids`` is honored
@@ -281,57 +285,68 @@ class UidAllocator:
         self._hw = None
         self._poisoned = True
 
-    def _ensure_marker_locked(self) -> None:
-        """Write the durable ``initialized`` sentinel if absent (caller holds the
-        lock). Its mere EXISTENCE distinguishes a lost counter from a fresh
-        install; content is irrelevant (only :func:`os.path.exists` is checked).
-        A durable atomic write so it survives a crash."""
-        if not os.path.exists(self._marker):
-            atomic_write_json(self._marker, {"initialized": True}, mode=0o600)
+    def _read_durable(self, path: str) -> int | None:
+        """Read one durable high-water copy. Returns the int iff it parses as
+        ``{"high_water": N}`` with ``N >= UID_BASE - 1`` (the valid floor); any
+        absent / malformed / below-floor file (e.g. a stale ``{"high_water": 0}``
+        — Terra S2) returns ``None`` (INVALID, ignored). Never raises."""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                v = int(json.load(fh)["high_water"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return None
+        return v if v >= UID_BASE - 1 else None
 
     def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int]) -> None:
         """Establish the monotonic, DURABLE high-water — or fail closed.
 
-        S1 r5 CUT — the load-bearing non-reissue guarantee. A uid is NEVER
-        reissued: the high-water is durable (the persisted counter PLUS a
-        separate durable ``initialized`` sentinel), monotonic (folding evidence
-        only ever RAISES it), and any situation where we cannot PROVE the next
-        uid exceeds every previously-issued uid fails closed. This closes the
-        whole survivor-uid-reissue class — the per-thread setresuid worker, the
-        fsuid path, the CAP_DAC case's reissue facet, all of it — WITHOUT
-        depending on seeing the survivor in /proc, because a new engagement
-        simply never receives a uid at or below any previously-issued one.
+        S1 r6 CUT (converged) — the load-bearing non-reissue guarantee. A uid is
+        NEVER reissued. The high-water lives in TWO durable files (the counter
+        and the anchor), both written on every persist. reconstruct takes the max
+        of every VALID durable copy; evidence only ever RAISES it, never lowers
+        it below a valid durable copy. This closes the whole survivor-uid-reissue
+        class — per-thread worker, fsuid, the CAP_DAC reissue facet — WITHOUT
+        depending on seeing the survivor in /proc.
 
-        Evidence folded in (only ever RAISES the high-water): *known_uids*
-        (records incl. terminal/retained), *dir_owner_uids* (workspace/control/
-        outbox owners), the ``casa-eng-<uid>`` passwd entries
-        (:func:`scan_passwd_uids`), and every live thread's uid/gid
-        (:func:`scan_proc_uids` — defense-in-depth, no longer load-bearing).
+        The r5 boolean marker detected loss but did not PRESERVE the high-water,
+        so loss recovered to ``max(evidence)`` — and evidence can be INCOMPLETE
+        (a higher uid's record aged out / its workspace-owner stat transiently
+        failed while a lower uid's workspace survives), moving the high-water
+        BACKWARDS and reissuing a uid. The second durable copy removes the
+        dependence on evidence for recovery.
 
-        Fresh-vs-loss (design §2, restored):
-          - counter PRESENT + parseable → high-water = max(counter, evidence);
-            never below the counter; persist; ensure the marker exists.
-          - counter ABSENT + marker ABSENT + NO evidence → genuine fresh install
-            → init at ``UID_BASE - 1``; write counter + marker.
-          - counter ABSENT but (marker PRESENT or any evidence) → this is LOSS,
-            not fresh:
-              * evidence exists → high-water = max(evidence), persist (recover);
-              * NO evidence to reconstruct from (all pruned) → POISON / refuse
-                ALL allocation (:class:`UidStateError`) — NEVER reset to base.
-          - counter MALFORMED, the /proc scan unconfirmable, or a persist
-            failure → POISON / :class:`UidStateError` (fail-closed).
+        Policy:
+          - ANY valid durable copy → ``hw = max(valid_durables, evidence,
+            UID_BASE-1)`` (a single-file loss recovers fully from the other; a
+            stale-low copy is ignored).
+          - NO valid durable copy:
+              * neither file EXISTS on disk AND no evidence → genuine fresh
+                install → ``UID_BASE - 1``, write both durable files.
+              * otherwise (either file exists — even if invalid — OR any
+                evidence) → POISON / refuse (:class:`UidStateError`): evidence
+                alone cannot prove the prior maximum, so we fail closed rather
+                than risk a backwards reset.
+          - the /proc scan unconfirmable, or a persist failure → POISON
+            (r4 invariant).
+
+        Evidence sources (only ever RAISE): *known_uids* (records incl.
+        terminal/retained), *dir_owner_uids* (workspace/control/outbox owners),
+        the ``casa-eng-<uid>`` passwd entries (:func:`scan_passwd_uids`), and
+        every live thread's uid/gid (:func:`scan_proc_uids`, defense-in-depth).
 
         Any failure poisons the allocator under the lock and surfaces as
         UidStateError; nothing escapes as a bare OSError.
         """
         with self._lock:
             try:
-                counter_present = os.path.exists(self._path)
-                counter_hw = None
-                if counter_present:
-                    with open(self._path, "r", encoding="utf-8") as fh:
-                        raw = json.load(fh)
-                    counter_hw = int(raw["high_water"])
+                counter_v = self._read_durable(self._path)
+                anchor_v = self._read_durable(self._anchor)
+                valid_durables = [v for v in (counter_v, anchor_v)
+                                  if v is not None]
+                # A file that EXISTS (even if its content is invalid/stale-low)
+                # is a prior-existence signal — this is NOT a virgin /data.
+                prior_existence = (os.path.exists(self._path)
+                                   or os.path.exists(self._anchor))
 
                 # Evidence: only values >= UID_BASE count as "a uid was issued"
                 # (a root-owned pre-chown dir has st_uid 0 — not evidence).
@@ -347,29 +362,27 @@ class UidAllocator:
                     if v >= UID_BASE
                 ]
                 evidence_max = max(evidence) if evidence else None
-                marker_present = os.path.exists(self._marker)
 
-                if counter_present:
-                    hw = max(counter_hw, UID_BASE - 1)
+                if valid_durables:
+                    hw = max(*valid_durables, UID_BASE - 1)
                     if evidence_max is not None:
                         hw = max(hw, evidence_max)
-                elif not marker_present and evidence_max is None:
+                elif not prior_existence and evidence_max is None:
                     hw = UID_BASE - 1            # genuine fresh install
-                elif evidence_max is not None:
-                    hw = max(evidence_max, UID_BASE - 1)   # LOSS, recoverable
                 else:
-                    # Counter LOST, marker present, NO surviving evidence → we
-                    # cannot prove the next uid exceeds every issued one.
+                    # No valid durable copy, but a durable file exists (invalid)
+                    # or evidence exists → we cannot PROVE the next uid exceeds
+                    # every issued one. Fail closed rather than risk a backwards
+                    # reset (both reviewers' r6 finding).
                     raise UidStateError(
-                        "engagement uid counter is missing but the durable "
-                        "'initialized' marker is present and no uid evidence "
-                        "survives — refusing to allocate (a lost counter must "
-                        "never reset to base and risk reissuing a live uid)")
+                        "no valid durable engagement-uid high-water is readable "
+                        "(counter and anchor both absent/invalid) yet prior "
+                        "state exists — refusing to allocate rather than risk "
+                        "resetting the high-water backwards and reissuing a uid")
 
                 self._hw = hw
                 self._poisoned = False           # proven-good
                 self._persist()                  # persist failure re-poisons below
-                self._ensure_marker_locked()     # durable fresh-vs-loss sentinel
             except Exception as exc:  # noqa: BLE001 — any failure poisons
                 self._poison_locked()
                 if isinstance(exc, UidStateError):
@@ -452,7 +465,23 @@ class UidAllocator:
             return self._hw
 
     def _persist(self) -> None:
-        atomic_write_json(self._path, {"high_water": self._hw}, mode=0o600)
+        """Write the high-water to BOTH durable copies (counter + anchor), each
+        atomically, under the caller's lock.
+
+        S1 r6 write policy (stated exactly): attempt both writes; tolerate ONE
+        failing (a single transient error must not brick allocation, and on the
+        next read ``max()`` handles the divergence — the surviving copy carries
+        the current high-water). Raise (→ the caller poisons) ONLY if BOTH
+        writes fail, so we never proceed with NEITHER copy updated."""
+        payload = {"high_water": self._hw}
+        errors: list[OSError] = []
+        for path in (self._path, self._anchor):
+            try:
+                atomic_write_json(path, payload, mode=0o600)
+            except OSError as exc:
+                errors.append(exc)
+        if len(errors) == 2:
+            raise errors[-1]   # both durable writes failed → caller poisons
 
     def ensure_identity(self, uid: int, home: str) -> None:
         """Append passwd/group entries for *uid* if not already present.

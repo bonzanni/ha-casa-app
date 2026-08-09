@@ -2649,10 +2649,10 @@ async def test_refold_unscannable_proc_refuses_legacy_backfill(
     assert started == []
 
 
-def test_best_effort_kill_uid_targets_only_matching_uid(tmp_path):
-    # S1 r5 (secondary DiD): kill escaped descendants holding the engagement's
-    # uid — matched on ANY Uid field (fsuid included), never touching sub-base
-    # ids. Injected proc_root + kill fn so no real process is signalled.
+def test_best_effort_kill_uid_uses_pidfd_not_bare_pid(tmp_path):
+    # S1 r6 (Sol S2 — PID-reuse race): the best-effort kill must pin the process
+    # with a pidfd and signal via pidfd_send_signal, NEVER os.kill on a numeric
+    # pid. Matches on ANY Uid field (fsuid included), never touches sub-base ids.
     from casa_core import _best_effort_kill_uid
     from engagement_uids import UID_BASE
     import signal as _sig
@@ -2661,23 +2661,55 @@ def test_best_effort_kill_uid_targets_only_matching_uid(tmp_path):
     (proc / "10" / "status").write_text("Uid:\t65534\t200000\t200000\t200000\n")
     (proc / "20").mkdir()                 # unrelated root process — never killed
     (proc / "20" / "status").write_text("Uid:\t0\t0\t0\t0\n")
-    killed: list = []
+    opened: list = []
+    sent: list = []
+    closed: list = []
+    def _open(pid):
+        opened.append(pid)
+        return 5000 + pid          # a fake pidfd distinct from any real fd
     _best_effort_kill_uid(
         UID_BASE, proc_root=str(proc),
-        _kill=lambda pid, sig: killed.append((pid, sig)))
-    assert killed == [(10, _sig.SIGKILL)]
+        _pidfd_open=_open,
+        _pidfd_send=lambda fd, sig: sent.append((fd, sig)),
+        _close=lambda fd: closed.append(fd))
+    # A pidfd is opened for every scanned pid, but only the uid-matching one is
+    # signalled — via the pidfd (fake fd 5010), never a bare pid.
+    assert sent == [(5010, _sig.SIGKILL)]
+    assert sorted(opened) == [10, 20]
+    assert sorted(closed) == [5010, 5020]  # every pidfd closed
+
+
+def test_best_effort_kill_uid_skips_when_pidfd_unavailable(tmp_path):
+    # S1 r6: if the pidfd primitives are unavailable, SKIP entirely rather than
+    # signal a racy bare pid (the kill is non-load-bearing DiD).
+    from casa_core import _best_effort_kill_uid
+    from engagement_uids import UID_BASE
+    proc = tmp_path / "proc"
+    (proc / "10").mkdir(parents=True)
+    (proc / "10" / "status").write_text("Uid:\t200000\t200000\t200000\t200000\n")
+    sent: list = []
+    # pidfd_send present but pidfd_open missing → skip (no signal at all).
+    _best_effort_kill_uid(
+        UID_BASE, proc_root=str(proc),
+        _pidfd_open=None,
+        _pidfd_send=lambda fd, sig: sent.append((fd, sig)))
+    assert sent == []
 
 
 def test_best_effort_kill_uid_never_raises_and_skips_subbase(tmp_path):
     from casa_core import _best_effort_kill_uid
     from engagement_uids import UID_BASE
-    # Missing proc root → no-op, never raises.
+    def _must_not(*a, **k):
+        raise AssertionError("must not be reached")
+    # Missing proc root → no-op, never raises (primitives present).
     _best_effort_kill_uid(
-        UID_BASE, proc_root=str(tmp_path / "nope"), _kill=lambda *a: None)
-    # A sub-base uid is refused outright (never scans, never kills).
-    def _must_not_kill(*a):
-        raise AssertionError("sub-base uid must never be targeted")
-    _best_effort_kill_uid(0, proc_root=str(tmp_path), _kill=_must_not_kill)
+        UID_BASE, proc_root=str(tmp_path / "nope"),
+        _pidfd_open=lambda pid: 1, _pidfd_send=lambda *a: None,
+        _close=lambda fd: None)
+    # A sub-base uid is refused outright (never scans, never opens a pidfd).
+    _best_effort_kill_uid(
+        0, proc_root=str(tmp_path),
+        _pidfd_open=_must_not, _pidfd_send=_must_not)
 
 
 async def test_refold_persist_failure_refuses_legacy_backfill(
@@ -2706,8 +2738,10 @@ async def test_refold_persist_failure_refuses_legacy_backfill(
     live = {"uids": set()}
     alloc = _refold_allocator(tmp_path, lambda: set(live["uids"]))
     live["uids"] = {UID_BASE + 1}
+    # Fail BOTH durable copies (counter + its anchor sibling) so the r6
+    # dual-write poisons (a single-copy failure is now tolerated).
     def _selective(path, data, **kw):
-        if str(path).endswith("counter.json"):
+        if os.path.basename(str(path)).startswith("counter.json"):
             raise OSError("ENOSPC")
         return _real_awj(path, data, **kw)
     monkeypatch.setattr(eu, "atomic_write_json", _selective)

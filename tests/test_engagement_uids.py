@@ -16,32 +16,74 @@ def test_allocate_is_monotonic_and_never_reused(tmp_path):
     assert first == UID_BASE and second == UID_BASE + 1
 
 
-def test_reconstruct_takes_max_over_all_sources_not_liveness(tmp_path):
-    a = UidAllocator(str(tmp_path / "uids.json"), proc_scanner=_NO_LIVE)
-    a.reconstruct(known_uids=[UID_BASE + 5], dir_owner_uids=[UID_BASE + 9])
-    assert a.allocate() == UID_BASE + 10   # never below any seen uid
+def test_reconstruct_evidence_raises_above_valid_durable(tmp_path):
+    # S1 r6: evidence only ever RAISES above a valid durable copy (never lowers
+    # it below the durable). Here a valid counter (200002) plus higher evidence
+    # (200009) yields 200009.
+    counter = tmp_path / "uids.json"
+    counter.write_text('{"high_water": %d}' % (UID_BASE + 2))
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct(known_uids=[UID_BASE + 9], dir_owner_uids=[])
+    assert a.allocate() == UID_BASE + 10
 
 
 def test_corrupt_counter_file_refuses(tmp_path):
+    # A malformed counter with NO valid anchor: prior-existence (the file exists)
+    # + no valid durable → POISON (never reset).
     p = tmp_path / "uids.json"; p.write_text("{not json")
-    a = UidAllocator(str(p), proc_scanner=_NO_LIVE)
+    a = UidAllocator(str(p), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
     with pytest.raises(UidStateError):
         a.reconstruct(known_uids=[], dir_owner_uids=[])
 
 
-def test_counter_missing_with_live_proc_uid_does_not_reset_below(tmp_path):
-    # S1 r2 (both reviewers): a LOST counter with ZERO filesystem/passwd
-    # evidence must STILL never reissue a uid held by a LIVE process — a
-    # setsid/double-fork descendant that escaped the supervised group survives
-    # teardown (which prunes record + workspace + passwd) yet lingers in /proc.
-    a = UidAllocator(
-        str(tmp_path / "uids.json"),   # counter MISSING
-        passwd_path=str(tmp_path / "passwd"),   # absent → no passwd evidence
-        group_path=str(tmp_path / "group"),
-        proc_scanner=lambda: {UID_BASE},   # a live survivor holds 200000
-    )
-    a.reconstruct(known_uids=[], dir_owner_uids=[])   # no fs/passwd evidence
-    assert a.allocate() == UID_BASE + 1   # strictly above the live survivor
+def test_anchor_recovers_when_counter_absent_evidence_only_lower(tmp_path):
+    # S1 r6 red-case #1: counter absent + anchor present (200002) + evidence
+    # only [200000] → reconstruct = 200002 (from the anchor, NOT the lower
+    # evidence); next allocate = 200003 (never reissues 200001/200002).
+    anchor = tmp_path / "uids.json.initialized"
+    anchor.write_text('{"high_water": %d}' % (UID_BASE + 2))
+    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct(known_uids=[UID_BASE], dir_owner_uids=[])
+    assert a.allocate() == UID_BASE + 3
+
+
+def test_stale_low_counter_ignored_recovers_from_anchor(tmp_path):
+    # S1 r6 red-case #4 (Terra S2): a stale-low counter {"high_water":0} is
+    # INVALID; a valid anchor (200005) is used. reconstruct = 200005.
+    counter = tmp_path / "uids.json"; counter.write_text('{"high_water": 0}')
+    anchor = tmp_path / "uids.json.initialized"
+    anchor.write_text('{"high_water": %d}' % (UID_BASE + 5))
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    assert a.allocate() == UID_BASE + 6
+
+
+def test_both_durable_absent_with_evidence_refuses(tmp_path):
+    # S1 r6 red-case #2: no valid durable copy but evidence exists → POISON.
+    # Evidence alone cannot prove the prior maximum (it can be incomplete), so
+    # we fail closed rather than risk a backwards reset.
+    pw = tmp_path / "passwd"
+    pw.write_text(
+        f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::/h:/usr/sbin/nologin\n")
+    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(pw),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    with pytest.raises(UidStateError):
+        a.reconstruct([], [])
+    with pytest.raises(UidStateError):
+        a.allocate()
+
+
+def test_both_durable_absent_with_live_proc_refuses(tmp_path):
+    # S1 r6: proc evidence alone (no durable copy) also refuses — never reset.
+    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"),
+                     proc_scanner=lambda: {UID_BASE})
+    with pytest.raises(UidStateError):
+        a.reconstruct([], [])
 
 
 def test_counter_missing_zero_evidence_and_clean_proc_starts_at_base(tmp_path):
@@ -57,57 +99,69 @@ def test_counter_missing_zero_evidence_and_clean_proc_starts_at_base(tmp_path):
     assert a.allocate() == UID_BASE
 
 
-def test_counter_loss_with_marker_no_evidence_refuses(tmp_path):
-    # S1 r5 CUT: a counter LOST after init (durable marker survives) with NO
-    # surviving evidence must REFUSE (poison) — never reset to base. This is the
-    # case Sol's per-thread survivor needed: closed by refusal, not by seeing
-    # the thread.
-    counter = tmp_path / "uids.json"
-    a = UidAllocator(
-        str(counter), passwd_path=str(tmp_path / "pw"),
-        group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    a.reconstruct([], [])                       # fresh: writes counter + marker
-    assert a.allocate() == UID_BASE
-    os.remove(str(counter))                     # counter LOST (marker survives)
-    b = UidAllocator(
-        str(counter), passwd_path=str(tmp_path / "pw"),
-        group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    with pytest.raises(UidStateError):          # loss + no evidence → refuse
-        b.reconstruct([], [])
-    with pytest.raises(UidStateError):          # poisoned → allocate refuses
-        b.allocate()
-
-
-def test_counter_loss_with_evidence_recovers_above(tmp_path):
-    # S1 r5: a counter LOST but with surviving evidence recovers to max(evidence)
-    # and persists — allocation continues strictly above every evidenced uid.
+def test_single_file_loss_recovers_from_the_other_durable_copy(tmp_path):
+    # S1 r6: a single-file loss is FULLY recovered from the other durable copy
+    # — no dependence on (possibly incomplete) evidence.
     counter = tmp_path / "uids.json"
     a = UidAllocator(
         str(counter), passwd_path=str(tmp_path / "pw"),
         group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
     a.reconstruct([], [])
-    os.remove(str(counter))                     # counter LOST (marker survives)
+    assert a.allocate() == UID_BASE            # both copies now hold UID_BASE
+    os.remove(str(counter))                    # counter LOST, anchor survives
     b = UidAllocator(
         str(counter), passwd_path=str(tmp_path / "pw"),
         group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    b.reconstruct(known_uids=[UID_BASE + 7], dir_owner_uids=[])
-    assert b.allocate() == UID_BASE + 8
+    b.reconstruct([], [])                       # recovers from the anchor
+    assert b.allocate() == UID_BASE + 1        # continues, never reissues
+    # And the counter copy was rewritten on the recovering reconstruct/allocate.
+    assert counter.exists()
 
 
-def test_marker_written_on_fresh_and_counter_present_path(tmp_path):
-    # S1 r5: a genuine fresh install writes both counter and marker; a later
-    # counter-present reconstruct keeps working normally (regression).
+def test_invalid_durable_file_present_no_valid_copy_refuses(tmp_path):
+    # S1 r6: a present-but-invalid durable file (stale-low) with no valid copy
+    # and no evidence still REFUSES (prior-existence signal → not fresh).
+    counter = tmp_path / "uids.json"; counter.write_text('{"high_water": 0}')
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    with pytest.raises(UidStateError):
+        a.reconstruct([], [])
+
+
+def test_both_durable_written_on_fresh_and_persist(tmp_path):
+    # S1 r6: a genuine fresh install writes BOTH durable copies; both carry the
+    # high-water after an allocate.
     counter = tmp_path / "uids.json"
-    marker = tmp_path / "uids.json.initialized"
+    anchor = tmp_path / "uids.json.initialized"
     a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
     a.reconstruct([], [])
-    assert counter.exists() and marker.exists()
+    assert counter.exists() and anchor.exists()
     a.allocate()
-    b = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
-                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    b.reconstruct([], [])                       # counter PRESENT → normal
-    assert b.allocate() == UID_BASE + 1
+    import json as _json
+    assert _json.loads(counter.read_text())["high_water"] == UID_BASE
+    assert _json.loads(anchor.read_text())["high_water"] == UID_BASE
+
+
+def test_persist_tolerates_one_durable_write_failing(tmp_path, monkeypatch):
+    # S1 r6 write policy: tolerate ONE durable write failing (the other carries
+    # the high-water); poison only if BOTH fail. Here the anchor write fails but
+    # the counter succeeds → allocation proceeds, counter holds the value.
+    import engagement_uids as eu
+    counter = tmp_path / "uids.json"
+    anchor = tmp_path / "uids.json.initialized"
+    a = eu.UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                        group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    real = eu.atomic_write_json
+    def _fail_anchor(path, data, **kw):
+        if str(path).endswith(".initialized"):
+            raise OSError("ENOSPC on anchor")
+        return real(path, data, **kw)
+    monkeypatch.setattr(eu, "atomic_write_json", _fail_anchor)
+    assert a.allocate() == UID_BASE            # tolerated — not poisoned
+    import json as _json
+    assert _json.loads(counter.read_text())["high_water"] == UID_BASE
 
 
 def test_proc_scan_failure_refuses_fail_closed(tmp_path):
@@ -139,11 +193,13 @@ def test_refold_live_uids_raises_high_water(tmp_path):
 
 def test_refold_persisted_survives_reload(tmp_path):
     p = str(tmp_path / "uids.json")
+    live = {"uids": set()}
     a = UidAllocator(p, passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"),
-                     proc_scanner=lambda: {UID_BASE + 5})
-    a.reconstruct([], [])
-    a.refold_live_uids()          # folds 200005, persists
+                     proc_scanner=lambda: set(live["uids"]))
+    a.reconstruct([], [])         # clean at boot (fresh)
+    live["uids"] = {UID_BASE + 5}
+    a.refold_live_uids()          # folds 200005, persists both durable copies
     b = UidAllocator(p, proc_scanner=_NO_LIVE); b.reconstruct([], [])
     assert b.allocate() == UID_BASE + 6   # persisted high-water carried over
 
@@ -277,25 +333,6 @@ def test_scan_proc_uids_reads_per_thread_task_status(tmp_path):
     (proc / "500" / "task" / "777" / "status").write_text(
         "Uid:\t200000\t200000\t200000\t200000\n")
     assert 200000 in scan_proc_uids(str(proc))
-
-
-def test_counter_missing_with_passwd_entry_does_not_reset_below(tmp_path):
-    # S1 code-gate fix (design §2): a LOST counter file must never reissue a
-    # uid still evidenced by a ``casa-eng-<uid>`` passwd entry — even when NO
-    # record and NO workspace dir preserve the high-water (a detached survivor
-    # whose record+workspace were pruned but whose passwd entry lingers).
-    pw = tmp_path / "passwd"
-    pw.write_text(
-        "root:x:0:0::/root:/bin/sh\n"
-        f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::"
-        "/data/engagements/x/.home:/usr/sbin/nologin\n")
-    gr = tmp_path / "group"; gr.write_text("")
-    a = UidAllocator(
-        str(tmp_path / "uids.json"),   # counter MISSING
-        passwd_path=str(pw), group_path=str(gr), proc_scanner=_NO_LIVE)
-    a.reconstruct(known_uids=[], dir_owner_uids=[])   # no record/workspace
-    # Next uid is strictly ABOVE the still-evidenced 200000, never a reissue.
-    assert a.allocate() == UID_BASE + 1
 
 
 def test_counter_missing_zero_evidence_starts_at_base(tmp_path):
