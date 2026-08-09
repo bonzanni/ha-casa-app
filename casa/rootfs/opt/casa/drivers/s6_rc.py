@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import signal
 import stat
@@ -186,7 +187,7 @@ def service_pair_complete(*, svc_root: str, engagement_id: str) -> bool:
 # A run script is "current" iff it carries ALL of these markers:
 #   - the pre-exec ``casa_control`` spawn NDJSON frame (v0.75.0),
 #   - the ``--output-format stream-json`` CLI flag (v0.75.0), and
-#   - the ``exec setpriv --reuid`` uid+cap-drop wrapper on the final exec
+#   - the ``exec setpriv --reuid`` uid+cap-drop wrapper AS THE FINAL COMMAND
 #     (containment Stage 2, v0.170.0).
 # v0.75 message-granularity streaming needs the first two together — the spawn
 # frame arms the driver's _InboundSpool and the CLI flag makes the process
@@ -195,35 +196,48 @@ def service_pair_complete(*, svc_root: str, engagement_id: str) -> bool:
 # ``exec setpriv --reuid`` marker makes every PRE-Stage-2 run script (which
 # exec'd ``claude`` directly as ROOT) read stale, so boot replay re-renders it
 # into the uid-dropped form and migrates the in-flight engagement off root.
-#
-# S1 code-gate fix (Sol): this marker is ANCHORED on the exact command literal
-# the current template emits (``exec setpriv --reuid``, scripts/
-# engagement_run_template.sh), NOT a bare ``setpriv`` substring. A pre-Stage-2
-# root script whose ``{PLUGIN_DIR_FLAGS}`` ``--plugin-dir`` path merely CONTAINS
-# the substring "setpriv" would otherwise pass as "current" while its final
-# ``exec`` is still ``exec claude`` (root) — replay would skip the re-render and
-# start it ROOT. The anchored command literal cannot be forged by a plugin path.
-# Boot replay uses this to migrate stale pairs.
-_CURRENT_RUN_MARKERS = (
-    "casa_control", "--output-format stream-json", "exec setpriv --reuid",
-)
+_STREAMING_MARKERS = ("casa_control", "--output-format stream-json")
+
+# S1 code-gate fix r2 (both reviewers): the uid-drop marker CANNOT be a
+# substring test. Anchoring the literal ``exec setpriv --reuid`` still failed
+# open — a pre-Stage-2 root script whose final line is ``exec claude ...`` can
+# carry a legitimate, shell-quoted ``--add-dir '/share/exec setpriv --reuid'``
+# extra-dir arg (extra-dir paths permit spaces), so the literal appears MID-LINE
+# and ``marker in text`` passed the root script as "current" → replay started it
+# ROOT. The mechanism is cut: match the FINAL COMMAND at START-OF-LINE with a
+# regex against the exact form the current template renders
+# (``scripts/engagement_run_template.sh`` line 65:
+# ``exec setpriv --reuid {UID} --regid {GID} --clear-groups \`` at column 0).
+# A LEGACY script's final line is ``exec claude ...`` (starts with
+# ``exec claude``); any ``exec setpriv --reuid`` only ever appears mid-line
+# inside a quoted arg, which a ``^``-anchored (MULTILINE) match never sees. A
+# path arg cannot forge a column-0 command line.
+_UID_DROP_LINE_RE = re.compile(
+    r"(?m)^exec setpriv --reuid \d+ --regid \d+ --clear-groups\b")
 
 
 def run_script_is_stale(*, svc_root: str, engagement_id: str) -> bool:
-    """True iff the persisted MAIN run script is NOT the v0.75.0 streaming
-    contract — i.e. it does not carry BOTH ``casa_control`` AND
-    ``--output-format stream-json``.
+    """True iff the persisted MAIN run script is NOT the current contract —
+    i.e. it does not carry BOTH ``casa_control`` AND ``--output-format
+    stream-json`` (streaming) AND a start-of-line ``exec setpriv --reuid ...
+    --clear-groups`` final command (the Stage-2 uid drop).
 
     Fails CLOSED (stale=True) when the run file is missing or unreadable: a
     resumed pair we cannot prove is current must be re-planted rather than
-    started on a possibly-unarmed script (``service_pair_complete`` does NOT
-    inspect the run file, so this predicate is the only gate that does)."""
+    started on a possibly-unarmed / un-contained script (``service_pair_complete``
+    does NOT inspect the run file, so this predicate is the only gate that
+    does)."""
     run_path = Path(svc_root) / _main_service_name(engagement_id) / "run"
     try:
         text = run_path.read_text()
     except OSError:
         return True
-    return not all(marker in text for marker in _CURRENT_RUN_MARKERS)
+    if not all(marker in text for marker in _STREAMING_MARKERS):
+        return True
+    # The uid drop is validated by a START-OF-LINE regex, never a substring —
+    # an ``exec setpriv --reuid`` buried in a quoted --add-dir arg on a root
+    # ``exec claude`` script must NOT count as current (S1 r2).
+    return _UID_DROP_LINE_RE.search(text) is None
 
 
 def service_dirs_absent(*, svc_root: str, engagement_id: str) -> bool:

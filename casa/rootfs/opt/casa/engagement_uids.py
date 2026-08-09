@@ -147,6 +147,59 @@ def scan_passwd_uids(passwd_path: str = "/etc/passwd") -> list[int]:
     return uids
 
 
+def scan_proc_uids(proc_root: str = "/proc") -> set[int]:
+    """Real uids ``>= UID_BASE`` currently held by ANY live process.
+
+    Containment Stage 2 (S1 code-gate fix r2, both reviewers): the passwd/
+    workspace/record evidence sources are all pruned at teardown, so a
+    ``setsid``/double-fork descendant that ESCAPED the supervised process group
+    (plugin-developer has Bash) survives ``ensure_service_down`` yet leaves NO
+    filesystem or passwd trace. A lost counter would then reconstruct to base
+    and reissue that survivor's uid → cross-engagement read. Reading the live
+    ``/proc/<pid>/status`` ``Uid:`` line (real uid, the FIRST field) closes it:
+    a uid held by any live process can never be reissued even with total
+    filesystem + passwd evidence loss.
+
+    Only real uids ``>= UID_BASE`` are returned (Casa's engagement range); the
+    container's own root/service uids are irrelevant. Per-pid read failures (the
+    process exited mid-scan, an unreadable ``status``) are SKIPPED — a vanished
+    pid holds no uid. But an inability to scan ``proc_root`` AT ALL raises
+    ``OSError`` (``/proc`` is always present in-container): the caller treats
+    that as unconfirmable and refuses allocation fail-closed, rather than
+    proceeding blind to what uids are live.
+    """
+    uids: set[int] = set()
+    with os.scandir(proc_root) as it:   # raises OSError if proc_root is absent
+        for entry in it:
+            if not entry.name.isdigit():
+                continue
+            try:
+                with open(
+                    os.path.join(proc_root, entry.name, "status"),
+                    "r", encoding="utf-8",
+                ) as fh:
+                    for line in fh:
+                        if not line.startswith("Uid:"):
+                            continue
+                        parts = line.split()
+                        # ``Uid:\t<real>\t<effective>\t<saved>\t<fs>`` — the
+                        # REAL uid is parts[1].
+                        if len(parts) >= 2:
+                            try:
+                                ruid = int(parts[1])
+                            except ValueError:
+                                pass
+                            else:
+                                if ruid >= UID_BASE:
+                                    uids.add(ruid)
+                        break
+            except OSError:
+                # Process exited between scandir and open, or status
+                # unreadable — a vanished/opaque pid holds no reissuable uid.
+                continue
+    return uids
+
+
 class UidAllocator:
     """Hands out uids from a persistent, monotonic high-water mark.
 
@@ -161,10 +214,17 @@ class UidAllocator:
         counter_path: str,
         passwd_path: str = "/etc/passwd",
         group_path: str = "/etc/group",
+        proc_scanner=None,
     ) -> None:
         self._path = counter_path
         self._passwd = passwd_path
         self._group = group_path
+        # S1 r2: the live-uid source (design fail-closed). ``None`` → resolve
+        # the module-level :func:`scan_proc_uids` at reconstruct time (so a
+        # test that monkeypatches ``engagement_uids.scan_proc_uids`` is honored
+        # even for an allocator constructed earlier); an explicit callable is
+        # used verbatim (direct test injection).
+        self._proc_scanner = proc_scanner
         self._hw: int | None = None  # None until reconstruct() succeeds
         self._lock = threading.Lock()
 
@@ -175,28 +235,37 @@ class UidAllocator:
         ``UID_BASE - 1`` (the floor — allocate() always returns >= UID_BASE),
         *known_uids* (uids recorded on any record, incl. terminal/retained),
         *dir_owner_uids* (uids found by stat-ing on-disk engagement/control
-        directories), and the ``casa-eng-<uid>`` entries in this allocator's
-        ``/etc/passwd`` (:func:`scan_passwd_uids`). Taking the max over ALL of
-        them — not just liveness — is deliberate: a uid that only shows up as a
-        stale directory owner, or only as a passwd entry for a detached
-        survivor whose record and workspace were both pruned, still must never
-        be reissued.
+        directories), the ``casa-eng-<uid>`` entries in this allocator's
+        ``/etc/passwd`` (:func:`scan_passwd_uids`), AND the real uids of every
+        LIVE process ``>= UID_BASE`` (:func:`scan_proc_uids`). Taking the max
+        over ALL of them — not just liveness, and not just filesystem evidence —
+        is deliberate: a uid that only shows up as a stale directory owner, only
+        as a passwd entry, or ONLY as a live setsid-escaped survivor process
+        (S1 r2) still must never be reissued.
 
         Missing vs corrupt counter (design §2 — align impl with design without
         breaking a genuine fresh install):
           - counter file MISSING: the persisted floor stays ``UID_BASE - 1``.
-            If ANY evidence exists (a known uid, a dir owner, or a passwd
-            entry) the reconstructed high-water is ``max(evidence)`` and is
-            PERSISTED — a lost counter can never reset BELOW a still-evidenced
-            uid. With ZERO evidence this is a genuine fresh install and the
-            high-water stays ``UID_BASE - 1`` (first ``allocate`` → UID_BASE).
+            If ANY evidence exists (a known uid, a dir owner, a passwd entry,
+            or a live process uid) the reconstructed high-water is
+            ``max(evidence)`` and is PERSISTED — a lost counter can never reset
+            BELOW a still-evidenced uid. With ZERO evidence AND a clean /proc
+            scan this is a genuine fresh install and the high-water stays
+            ``UID_BASE - 1`` (first ``allocate`` → UID_BASE).
           - counter file present but MALFORMED (unparseable / wrong shape):
             :class:`UidStateError` — fail-closed, never silently reset to base.
+          - the ``/proc`` live-uid scan CANNOT be performed (unexpected — /proc
+            is always present in-container): :class:`UidStateError` — treat as
+            unconfirmable and refuse allocation rather than reconstruct blind to
+            which uids are live (same fail-closed posture as a malformed
+            counter).
 
-        Residual (documented): a detached survivor whose record AND workspace
-        AND ``casa-eng`` passwd entry are ALL gone is unevidenced — but that
-        requires a setsid-escaping descendant (the run template creates none)
-        plus a full triple-prune, so no reachable path reissues its uid.
+        S1 r2: folding live /proc uids closes the last reissue path — a
+        ``setsid``/double-fork descendant that escaped the supervised group
+        survives ``ensure_service_down`` and normal teardown (which prunes its
+        record, workspace, control/outbox dirs AND its ``casa-eng`` passwd
+        entry), so with counter loss the process would be the SOLE remaining
+        evidence of its uid; /proc is where that evidence lives.
         """
         persisted = UID_BASE - 1
         if os.path.exists(self._path):
@@ -208,9 +277,20 @@ class UidAllocator:
                 raise UidStateError(f"counter file {self._path} unreadable: {exc}") from exc
 
         passwd_uids = scan_passwd_uids(self._passwd)
+        # Resolve the live-uid scanner at CALL time so a module-level
+        # monkeypatch is honored (see __init__). A scan that cannot run at all
+        # ⇒ fail-closed refuse, never reconstruct blind to live uids.
+        scanner = self._proc_scanner or scan_proc_uids
+        try:
+            proc_uids = scanner()
+        except OSError as exc:
+            raise UidStateError(
+                f"live /proc uid scan failed ({exc}) — refusing to reconstruct "
+                "blind to which uids are held by live processes") from exc
+
         candidates = [
             persisted, UID_BASE - 1,
-            *known_uids, *dir_owner_uids, *passwd_uids,
+            *known_uids, *dir_owner_uids, *passwd_uids, *proc_uids,
         ]
         with self._lock:
             self._hw = max(candidates)

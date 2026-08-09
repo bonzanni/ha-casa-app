@@ -1,25 +1,88 @@
 import json, os, pytest
 from engagement_uids import UidAllocator, UidStateError, UID_BASE, UNALLOCATED_UID
 
+# S1 r2: reconstruct now folds LIVE /proc uids into the high-water. The
+# exact-value tests below inject an EMPTY live-uid scanner so they do not depend
+# on the real /proc contents of the test host (a process with uid >= UID_BASE
+# would otherwise perturb the asserted allocation). Tests that exercise the
+# live-uid path inject their own scanner.
+_NO_LIVE = lambda: set()
+
 
 def test_allocate_is_monotonic_and_never_reused(tmp_path):
-    a = UidAllocator(str(tmp_path / "uids.json"))
+    a = UidAllocator(str(tmp_path / "uids.json"), proc_scanner=_NO_LIVE)
     a.reconstruct(known_uids=[], dir_owner_uids=[])
     first = a.allocate(); second = a.allocate()
     assert first == UID_BASE and second == UID_BASE + 1
 
 
 def test_reconstruct_takes_max_over_all_sources_not_liveness(tmp_path):
-    a = UidAllocator(str(tmp_path / "uids.json"))
+    a = UidAllocator(str(tmp_path / "uids.json"), proc_scanner=_NO_LIVE)
     a.reconstruct(known_uids=[UID_BASE + 5], dir_owner_uids=[UID_BASE + 9])
     assert a.allocate() == UID_BASE + 10   # never below any seen uid
 
 
 def test_corrupt_counter_file_refuses(tmp_path):
     p = tmp_path / "uids.json"; p.write_text("{not json")
-    a = UidAllocator(str(p))
+    a = UidAllocator(str(p), proc_scanner=_NO_LIVE)
     with pytest.raises(UidStateError):
         a.reconstruct(known_uids=[], dir_owner_uids=[])
+
+
+def test_counter_missing_with_live_proc_uid_does_not_reset_below(tmp_path):
+    # S1 r2 (both reviewers): a LOST counter with ZERO filesystem/passwd
+    # evidence must STILL never reissue a uid held by a LIVE process — a
+    # setsid/double-fork descendant that escaped the supervised group survives
+    # teardown (which prunes record + workspace + passwd) yet lingers in /proc.
+    a = UidAllocator(
+        str(tmp_path / "uids.json"),   # counter MISSING
+        passwd_path=str(tmp_path / "passwd"),   # absent → no passwd evidence
+        group_path=str(tmp_path / "group"),
+        proc_scanner=lambda: {UID_BASE},   # a live survivor holds 200000
+    )
+    a.reconstruct(known_uids=[], dir_owner_uids=[])   # no fs/passwd evidence
+    assert a.allocate() == UID_BASE + 1   # strictly above the live survivor
+
+
+def test_counter_missing_zero_evidence_and_clean_proc_starts_at_base(tmp_path):
+    # Genuine fresh install: no counter, no records/dirs/passwd, and the /proc
+    # scan finds no casa uids → allocation starts at UID_BASE (not refused).
+    a = UidAllocator(
+        str(tmp_path / "uids.json"),
+        passwd_path=str(tmp_path / "passwd"),
+        group_path=str(tmp_path / "group"),
+        proc_scanner=_NO_LIVE,
+    )
+    a.reconstruct(known_uids=[], dir_owner_uids=[])
+    assert a.allocate() == UID_BASE
+
+
+def test_proc_scan_failure_refuses_fail_closed(tmp_path):
+    # S1 r2: if the /proc live-uid scan cannot run at all, reconstruct must
+    # REFUSE (UidStateError), never proceed blind to which uids are live —
+    # same fail-closed posture as a malformed counter.
+    def _boom():
+        raise OSError("/proc unavailable")
+    a = UidAllocator(str(tmp_path / "uids.json"), proc_scanner=_boom)
+    with pytest.raises(UidStateError):
+        a.reconstruct(known_uids=[], dir_owner_uids=[])
+
+
+def test_scan_proc_uids_reads_real_uid_ge_base(tmp_path):
+    from engagement_uids import scan_proc_uids
+    proc = tmp_path / "proc"
+    # A high-uid process (in Casa's engagement range) and a low-uid one.
+    (proc / "111").mkdir(parents=True)
+    (proc / "111" / "status").write_text(
+        "Name:\tclaude\nUid:\t200007\t200007\t200007\t200007\n")
+    (proc / "222").mkdir()
+    (proc / "222" / "status").write_text(
+        "Name:\tsh\nUid:\t1000\t1000\t1000\t1000\n")
+    (proc / "not-a-pid").mkdir()   # non-numeric entry ignored
+    assert scan_proc_uids(str(proc)) == {200007}
+    # A missing proc root raises (fail-closed signal to reconstruct).
+    with pytest.raises(OSError):
+        scan_proc_uids(str(tmp_path / "nope"))
 
 
 def test_counter_missing_with_passwd_entry_does_not_reset_below(tmp_path):
@@ -35,7 +98,7 @@ def test_counter_missing_with_passwd_entry_does_not_reset_below(tmp_path):
     gr = tmp_path / "group"; gr.write_text("")
     a = UidAllocator(
         str(tmp_path / "uids.json"),   # counter MISSING
-        passwd_path=str(pw), group_path=str(gr))
+        passwd_path=str(pw), group_path=str(gr), proc_scanner=_NO_LIVE)
     a.reconstruct(known_uids=[], dir_owner_uids=[])   # no record/workspace
     # Next uid is strictly ABOVE the still-evidenced 200000, never a reissue.
     assert a.allocate() == UID_BASE + 1
@@ -43,12 +106,12 @@ def test_counter_missing_with_passwd_entry_does_not_reset_below(tmp_path):
 
 def test_counter_missing_zero_evidence_starts_at_base(tmp_path):
     # Genuine fresh install: no counter, no records, no dirs, no casa-eng
-    # passwd entries → allocation starts at UID_BASE (not refused).
+    # passwd entries, clean /proc → allocation starts at UID_BASE (not refused).
     pw = tmp_path / "passwd"; pw.write_text("root:x:0:0::/root:/bin/sh\n")
     gr = tmp_path / "group"; gr.write_text("")
     a = UidAllocator(
         str(tmp_path / "uids.json"),
-        passwd_path=str(pw), group_path=str(gr))
+        passwd_path=str(pw), group_path=str(gr), proc_scanner=_NO_LIVE)
     a.reconstruct(known_uids=[], dir_owner_uids=[])
     assert a.allocate() == UID_BASE
 
@@ -74,8 +137,9 @@ def test_allocate_before_reconstruct_refuses(tmp_path):
 
 def test_persist_survives_reload(tmp_path):
     p = str(tmp_path / "uids.json")
-    a = UidAllocator(p); a.reconstruct([], []); a.allocate(); a.allocate()
-    b = UidAllocator(p); b.reconstruct([], [])
+    a = UidAllocator(p, proc_scanner=_NO_LIVE)
+    a.reconstruct([], []); a.allocate(); a.allocate()
+    b = UidAllocator(p, proc_scanner=_NO_LIVE); b.reconstruct([], [])
     assert b.allocate() == UID_BASE + 2   # continues, never reuses
 
 

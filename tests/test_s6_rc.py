@@ -948,6 +948,25 @@ class TestRunScriptIsStale:
             "--plugin-dir /data/plugins/my-setpriv-tool\n")
         assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e7")
 
+    async def test_add_dir_forged_setpriv_arg_on_exec_claude_is_stale(
+        self, tmp_path):
+        # S1 r2 (both reviewers): the uid-drop marker is matched at
+        # START-OF-LINE, never as a substring. A LEGACY pre-Stage-2 root script
+        # whose final command is ``exec claude ...`` can carry a legitimate,
+        # shell-quoted ``--add-dir '/share/exec setpriv --reuid'`` extra-dir arg
+        # (extra-dir paths permit spaces), so ``exec setpriv --reuid`` appears
+        # MID-LINE. It must STILL classify STALE — otherwise replay would start
+        # the root ``exec claude`` script unchanged. Only a column-0 final
+        # command line counts.
+        from drivers.s6_rc import run_script_is_stale
+        self._write_run(
+            tmp_path, "e8",
+            "#!/bin/sh\ncasa_control spawn\n"
+            "exec claude --print --output-format stream-json "
+            "--add-dir '/share/exec setpriv --reuid 200000 --regid 200000 "
+            "--clear-groups'\n")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e8")
+
     async def test_missing_run_file_is_stale(self, tmp_path):
         from drivers.s6_rc import _main_service_name, run_script_is_stale
         # main dir exists but no run file (torn) — fail closed.
