@@ -389,22 +389,24 @@ def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
 
 
 def _gather_reconstruct_evidence(registry, *, data_dir: str):
-    """Gather every uid-reissue evidence source for ``UidAllocator.reconstruct``
-    (Containment Stage 2, S1 r7 — completed the evidence set).
+    """Gather every real-uid evidence source for ``UidAllocator.reconstruct``
+    (Containment Stage 2; S1 r7 completed the artifact set, v0.170.1 corrected
+    the fresh-vs-loss key to REAL-uid evidence).
 
-    Returns ``(known_uids, dir_owner_uids, prior_existence)``:
+    Returns ``(known_uids, dir_owner_uids)``:
       - ``known_uids``: ``allocated_uid`` of EVERY record incl. terminal/retained
         (a pruned-but-lingering process still holds its uid);
       - ``dir_owner_uids``: the owner uid of every on-disk per-engagement dir
         under ALL three artifact roots — ``<data_dir>/engagements/*``,
-        ``/data/engagement-ctl/*``, AND ``/data/plugin-outbox-eng/*`` (the outbox
-        class was the last unscanned artifact: a leftover outbox dir chowned to a
-        uid the counter never recorded);
-      - ``prior_existence``: True iff ANY of those artifact roots EXISTS — Casa
-        has run before, so a both-durable-copies-lost boot fails closed rather
-        than resetting the high-water to base.
+        ``/data/engagement-ctl/*``, AND ``/data/plugin-outbox-eng/*`` (a leftover
+        dir chowned to a uid the counter never recorded is real-uid evidence).
 
-    Every source only ever RAISES the reconstructed high-water; scanning is
+    Only OWNER uids are returned, NOT a "root exists" boolean: mere existence of
+    a pre-Stage-2 (root-owned, uid 0) engagement dir is NOT evidence a uid was
+    allocated — treating it as such refused allocation on every existing
+    install's first Stage-2 upgrade boot (v0.170.0 regression). ``reconstruct``
+    keys the fresh-vs-loss decision on whether any evidenced value is
+    ``>= UID_BASE``. Every source only ever RAISES the high-water; scanning is
     best-effort (a missing/unreadable root or entry contributes nothing)."""
     from plugin_outbox import ENGAGEMENT_OUTBOX_ROOT
     known_uids = [
@@ -419,11 +421,9 @@ def _gather_reconstruct_evidence(registry, *, data_dir: str):
         ENGAGEMENT_OUTBOX_ROOT,
     )
     dir_owner_uids: list[int] = []
-    prior_existence = False
     for base in artifact_roots:
         try:
             with os.scandir(base) as it:
-                prior_existence = True   # the root exists → Casa has run before
                 for entry in it:
                     try:
                         if entry.is_dir(follow_symlinks=False):
@@ -432,7 +432,7 @@ def _gather_reconstruct_evidence(registry, *, data_dir: str):
                         continue
         except (FileNotFoundError, NotADirectoryError):
             continue
-    return known_uids, dir_owner_uids, prior_existence
+    return known_uids, dir_owner_uids
 
 
 async def replay_undergoing_engagements(
@@ -3321,11 +3321,10 @@ async def main() -> None:
     # Boot itself continues (matching the surrounding best-effort boot-error
     # convention): existing already-uid'd engagements still replay.
     try:
-        _known_uids, _dir_owner_uids, _prior_existence = (
-            _gather_reconstruct_evidence(engagement_registry, data_dir=DATA_DIR))
+        _known_uids, _dir_owner_uids = _gather_reconstruct_evidence(
+            engagement_registry, data_dir=DATA_DIR)
         uid_allocator.reconstruct(
-            known_uids=_known_uids, dir_owner_uids=_dir_owner_uids,
-            extra_prior_existence=_prior_existence)
+            known_uids=_known_uids, dir_owner_uids=_dir_owner_uids)
     except UidStateError:
         logger.critical(
             "Engagement uid allocator could NOT reconstruct its high-water "

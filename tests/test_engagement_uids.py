@@ -62,38 +62,34 @@ def test_stale_low_counter_ignored_recovers_from_anchor(tmp_path):
     assert a.allocate() == UID_BASE + 6
 
 
-def test_both_durable_absent_with_evidence_refuses(tmp_path):
-    # S1 r6 red-case #2: no valid durable copy but evidence exists → POISON.
-    # Evidence alone cannot prove the prior maximum (it can be incomplete), so
-    # we fail closed rather than risk a backwards reset.
+def test_both_durable_absent_with_passwd_evidence_recovers(tmp_path):
+    # v0.170.1: both durable copies ABSENT but a REAL uid is evidenced (a
+    # casa-eng passwd entry for 200000 — a uid WAS allocated) → RECOVER to
+    # max(evidence), never reset below it. (The r6 "evidence alone → poison"
+    # was reversed: a real uid IS the recovery value.)
     pw = tmp_path / "passwd"
     pw.write_text(
         f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::/h:/usr/sbin/nologin\n")
     a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(pw),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    with pytest.raises(UidStateError):
-        a.reconstruct([], [])
-    with pytest.raises(UidStateError):
-        a.allocate()
+    a.reconstruct([], [])
+    assert a.allocate() == UID_BASE + 1        # strictly above the evidenced uid
 
 
-def test_leftover_outbox_owner_folds_into_high_water(tmp_path):
-    # S1 r7: a leftover /data/plugin-outbox-eng/200000 (owned 200000) with both
-    # durable copies absent must NOT classify fresh. Folded as a dir owner it
-    # becomes evidence — and evidence with no valid durable copy REFUSES (never
-    # reissues 200000). (In production the caller also passes
-    # extra_prior_existence for the root; here the owner uid alone suffices.)
+def test_leftover_outbox_owner_recovers_above(tmp_path):
+    # S1 r7 (v0.170.1): a leftover plugin-outbox-eng/200000 (owner 200000) with
+    # both durable copies absent is real-uid evidence → RECOVER to >= 200000,
+    # never reissues 200000/below (closes R7 without bricking).
     a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    with pytest.raises(UidStateError):
-        a.reconstruct(known_uids=[], dir_owner_uids=[UID_BASE])   # outbox owner
+    a.reconstruct(known_uids=[], dir_owner_uids=[UID_BASE])   # outbox owner
+    assert a.allocate() == UID_BASE + 1
 
 
 def test_gather_evidence_scans_the_outbox_root(tmp_path, monkeypatch):
     # S1 r7: the casa_core evidence gatherer MUST scan /data/plugin-outbox-eng —
-    # a leftover per-uid outbox dir owner is folded, and the root's existence is
-    # a prior-existence signal. (Reverting the outbox root from the scan drops
-    # both — this is the folding red-case.)
+    # a leftover per-uid outbox dir OWNER is folded (real-uid evidence). Reverting
+    # the outbox root from the scan drops it — this is the folding red-case.
     import casa_core
     import plugin_outbox
     outbox_root = tmp_path / "plugin-outbox-eng"
@@ -104,35 +100,37 @@ def test_gather_evidence_scans_the_outbox_root(tmp_path, monkeypatch):
         def active_and_idle(self): return []
         def terminal_records(self): return []
 
-    known, owners, prior = casa_core._gather_reconstruct_evidence(
+    known, owners = casa_core._gather_reconstruct_evidence(
         _Reg(), data_dir=str(tmp_path / "no-engagements"))
     assert os.stat(str(outbox_root / "200000")).st_uid in owners
-    assert prior is True
 
 
-def test_extra_prior_existence_refuses_when_durable_lost(tmp_path):
-    # S1 r7: even a root-owned/empty leftover artifact (no uid-owned subdir, so
-    # no owner evidence) forces fail-closed via extra_prior_existence — both
-    # durable copies absent + a prior artifact exists → POISON, never fresh.
-    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
+def test_first_stage2_upgrade_root_owned_dirs_initialises_not_refuses(tmp_path):
+    # v0.170.1 REGRESSION (the N150 brick): first Stage-2 boot of a pre-Stage-2
+    # install — engagement DIRS exist but are ROOT-owned (uid 0), records carry
+    # UNALLOCATED_UID, no durable counter/anchor, no casa-eng passwd, no proc
+    # casa uid. Mere dir existence is NOT evidence a uid was allocated →
+    # reconstruct INITIALISES at UID_BASE-1 (does NOT refuse), writes both
+    # durable copies. (v0.170.0 wrongly raised UidStateError here.)
+    counter = tmp_path / "uids.json"
+    anchor = tmp_path / "uids.json.initialized"
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    with pytest.raises(UidStateError):
-        a.reconstruct(known_uids=[], dir_owner_uids=[],
-                      extra_prior_existence=True)
-    # Genuine fresh (no artifact signal) still initialises at base.
-    b = UidAllocator(str(tmp_path / "u2.json"), passwd_path=str(tmp_path / "pw"),
-                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    b.reconstruct(known_uids=[], dir_owner_uids=[], extra_prior_existence=False)
-    assert b.allocate() == UID_BASE
+    # dir_owner_uids = [0]: pre-Stage-2, root-owned workspace/ctl/outbox dirs
+    # (uid 0 < UID_BASE → NOT real-uid evidence). records UNALLOCATED (not folded).
+    a.reconstruct(known_uids=[], dir_owner_uids=[0, 0, 0])
+    assert a.allocate() == UID_BASE             # migration can proceed
+    assert counter.exists() and anchor.exists()  # durable copies now written
 
 
-def test_both_durable_absent_with_live_proc_refuses(tmp_path):
-    # S1 r6: proc evidence alone (no durable copy) also refuses — never reset.
+def test_both_durable_absent_with_live_proc_recovers(tmp_path):
+    # v0.170.1: proc evidence (a live casa uid) with no durable copy → RECOVER
+    # above it (a live uid WAS allocated), not refuse.
     a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"),
                      proc_scanner=lambda: {UID_BASE})
-    with pytest.raises(UidStateError):
-        a.reconstruct([], [])
+    a.reconstruct([], [])
+    assert a.allocate() == UID_BASE + 1
 
 
 def test_counter_missing_zero_evidence_and_clean_proc_starts_at_base(tmp_path):

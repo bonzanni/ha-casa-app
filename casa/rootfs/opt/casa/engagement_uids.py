@@ -297,8 +297,7 @@ class UidAllocator:
             return None
         return v if v >= UID_BASE - 1 else None
 
-    def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int],
-                    *, extra_prior_existence: bool = False) -> None:
+    def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int]) -> None:
         """Establish the monotonic, DURABLE high-water — or fail closed.
 
         S1 r6 CUT (converged) — the load-bearing non-reissue guarantee. A uid is
@@ -321,15 +320,20 @@ class UidAllocator:
             UID_BASE-1)`` (a single-file loss recovers fully from the other; a
             stale-low copy is ignored).
           - NO valid durable copy:
-              * neither durable file exists AND no ``extra_prior_existence``
-                artifact AND no evidence → genuine fresh install →
-                ``UID_BASE - 1``, write both durable files.
-              * otherwise (either durable file exists — even if invalid — OR the
-                caller found a per-engagement /data artifact
-                (``extra_prior_existence``: engagements/engagement-ctl/
-                plugin-outbox-eng) OR any evidence) → POISON / refuse
-                (:class:`UidStateError`): evidence alone cannot prove the prior
-                maximum, so we fail closed rather than risk a backwards reset.
+              * a durable file is PRESENT but unreadable (malformed/stale-low)
+                → POISON (:class:`UidStateError`): a counter was written here and
+                is now unreadable, so a uid may have been allocated whose maximum
+                we cannot prove.
+              * both durable files ABSENT + a REAL uid is evidenced (a
+                record/owner/passwd/proc uid ``>= UID_BASE`` — a uid WAS
+                allocated) → recover ``hw = max(evidence)`` and persist; never
+                resets below any evidenced uid.
+              * both durable files ABSENT + NO real-uid evidence → genuine fresh
+                install OR the FIRST Stage-2 boot of a pre-Stage-2 install (all
+                dirs root-owned, records UNALLOCATED) → INITIALIZE at
+                ``UID_BASE - 1``, write both durable files. (v0.170.1: mere
+                existence of a pre-Stage-2 engagement DIR is NOT evidence a uid
+                was allocated — refusing here bricked every upgrade.)
           - the /proc scan unconfirmable, or a persist failure → POISON
             (r4 invariant).
 
@@ -347,18 +351,22 @@ class UidAllocator:
                 anchor_v = self._read_durable(self._anchor)
                 valid_durables = [v for v in (counter_v, anchor_v)
                                   if v is not None]
-                # A durable file that EXISTS (even if its content is invalid/
-                # stale-low), OR any per-engagement /data artifact the caller
-                # found (``extra_prior_existence`` — engagements/engagement-ctl/
-                # plugin-outbox-eng, S1 r7), is a prior-existence signal: this is
-                # NOT a virgin /data, so a both-durable-lost boot fails closed
-                # rather than resetting to base.
-                prior_existence = (os.path.exists(self._path)
-                                   or os.path.exists(self._anchor)
-                                   or extra_prior_existence)
+                # A durable file that is PRESENT on disk but yields no valid
+                # value (malformed / stale-low) means a uid counter was written
+                # here before and is now unreadable — a uid may have been
+                # allocated whose maximum we cannot prove. That poisons
+                # (v0.170.1: this is the ONLY "prior state" signal that refuses;
+                # mere existence of a pre-Stage-2, root-owned engagement DIR is
+                # NOT evidence a uid was allocated — see below).
+                durable_file_present_but_invalid = (
+                    (os.path.exists(self._path) and counter_v is None)
+                    or (os.path.exists(self._anchor) and anchor_v is None))
 
-                # Evidence: only values >= UID_BASE count as "a uid was issued"
-                # (a root-owned pre-chown dir has st_uid 0 — not evidence).
+                # Evidence: only values >= UID_BASE count as "a uid WAS
+                # allocated" (a root-owned pre-Stage-2 dir has st_uid 0 — NOT
+                # evidence; that conflation bricked the first Stage-2 upgrade
+                # boot in v0.170.0). Sources: record allocated_uids, workspace/
+                # ctl/outbox dir OWNER uids, casa-eng passwd, live /proc.
                 passwd_uids = scan_passwd_uids(self._passwd)
                 # Resolve the live-uid scanner at CALL time so a module-level
                 # monkeypatch is honored (see __init__). An unconfirmable scan
@@ -376,18 +384,31 @@ class UidAllocator:
                     hw = max(*valid_durables, UID_BASE - 1)
                     if evidence_max is not None:
                         hw = max(hw, evidence_max)
-                elif not prior_existence and evidence_max is None:
-                    hw = UID_BASE - 1            # genuine fresh install
-                else:
-                    # No valid durable copy, but a durable file exists (invalid)
-                    # or evidence exists → we cannot PROVE the next uid exceeds
-                    # every issued one. Fail closed rather than risk a backwards
-                    # reset (both reviewers' r6 finding).
+                elif durable_file_present_but_invalid:
+                    # A durable copy existed and is now unreadable → cannot prove
+                    # the prior maximum → fail closed (Terra S2 / malformed
+                    # counter). Unchanged from r6.
                     raise UidStateError(
-                        "no valid durable engagement-uid high-water is readable "
-                        "(counter and anchor both absent/invalid) yet prior "
-                        "state exists — refusing to allocate rather than risk "
-                        "resetting the high-water backwards and reissuing a uid")
+                        "an engagement-uid durable copy is present but unreadable "
+                        "(malformed/stale-low) and no valid copy remains — "
+                        "refusing to allocate rather than risk resetting the "
+                        "high-water backwards and reissuing a uid")
+                elif evidence_max is not None:
+                    # Both durable copies ABSENT but a REAL uid is evidenced (a
+                    # uid WAS allocated: a record/owner/passwd/proc uid) → recover
+                    # to max(evidence) and persist; never resets below any
+                    # evidenced uid (closes R5/R7 — a leftover outbox dir owned
+                    # 200000 recovers to >= 200000).
+                    hw = max(evidence_max, UID_BASE - 1)
+                else:
+                    # Both durable copies ABSENT and NO real-uid evidence
+                    # anywhere → either a genuine fresh install OR the FIRST
+                    # Stage-2 boot of a pre-Stage-2 install (all workspaces
+                    # root-owned, all records UNALLOCATED, no casa-eng passwd, no
+                    # casa /proc uid). No uid was ever allocated, so INITIALIZE at
+                    # UID_BASE-1 (v0.170.1 hotfix — v0.170.0 wrongly refused here,
+                    # bricking allocation on every existing install's upgrade).
+                    hw = UID_BASE - 1
 
                 self._hw = hw
                 self._poisoned = False           # proven-good
