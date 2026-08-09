@@ -674,6 +674,50 @@ class TestCasaMeta:
         ws.mkdir()
         assert load_casa_meta(str(ws)) is None
 
+    def test_load_falls_back_to_and_migrates_legacy_workspace_path(
+            self, tmp_path):
+        """Fix-loop round 1 (Important 2): a `.casa-meta.json` written
+        BEFORE this release deploys lives only at the legacy workspace path
+        (no control-dir copy exists yet). load_casa_meta must still find it
+        — dropping it would orphan plugin_artifacts/created_at on finalize
+        and permanently leak the workspace past the retention sweep — and
+        opportunistically migrate it into the control dir so later reads
+        (and any write_casa_meta rewrite) land on the canonical location."""
+        import json
+        from pathlib import Path
+        from drivers.workspace import (
+            casa_meta_path, control_dir, load_casa_meta,
+        )
+
+        ws = tmp_path / "e-legacy"
+        ws.mkdir()
+        legacy = ws / ".casa-meta.json"
+        meta = {
+            "engagement_id": "e-legacy", "executor_type": "hello-driver",
+            "status": "COMPLETED", "created_at": "2026-04-23T10:00:00Z",
+            "finished_at": "2026-04-23T10:05:00Z",
+            "retention_until": "2099-01-01T00:00:00Z",
+            "plugin_artifacts": [{"name": "x", "artifact_id": "a" * 64,
+                                   "path": "/config/plugins/store/x/" + "a" * 64}],
+        }
+        legacy.write_text(json.dumps(meta), encoding="utf-8")
+        # No control dir at all yet — the pre-deploy state.
+        assert not Path(control_dir("e-legacy")).exists()
+
+        loaded = load_casa_meta(str(ws))
+        assert loaded == meta
+
+        # Migrated forward: a second load (and the sweep/finalize callers
+        # that key off the control-dir path) now find it there too.
+        ctl_copy = Path(casa_meta_path("e-legacy"))
+        assert ctl_copy.exists()
+        assert json.loads(ctl_copy.read_text(encoding="utf-8")) == meta
+        # The legacy file is left in place (harmless — it's removed with the
+        # rest of the workspace at retention time); re-loading still works
+        # and doesn't re-migrate destructively.
+        assert legacy.exists()
+        assert load_casa_meta(str(ws)) == meta
+
 
 class TestProvisionWithHooks:
     @pytest.mark.skipif(

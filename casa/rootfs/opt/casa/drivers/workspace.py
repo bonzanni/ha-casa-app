@@ -699,6 +699,28 @@ def write_casa_meta(
     path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
+def _migrate_legacy_casa_meta(engagement_id: str, legacy_path: Path) -> None:
+    """Best-effort forward-copy of a pre-Task-4 ``.casa-meta.json`` (written
+    under the workspace, back when that was the only location) into the
+    control dir — so every read/write from here on lands on the one,
+    now-canonical location. Idempotent (``target.exists()`` short-circuits a
+    concurrent/repeated migration) and never raises: a migration failure
+    must not turn a successful legacy READ into an error, and the next
+    ``load_casa_meta`` call simply retries it."""
+    try:
+        Path(CONTROL_ROOT).mkdir(parents=True, exist_ok=True)
+        Path(control_dir(engagement_id)).mkdir(mode=0o700, exist_ok=True)
+        target = Path(casa_meta_path(engagement_id))
+        if not target.exists():
+            target.write_text(
+                legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "load_casa_meta: failed to migrate legacy %s into the control "
+            "dir for engagement %s", legacy_path, engagement_id, exc_info=True,
+        )
+
+
 def load_casa_meta(workspace_path: str) -> dict | None:
     # Task 4: the workspace dir's basename IS the engagement id by
     # construction (``provision_workspace`` mkdirs exactly
@@ -706,8 +728,20 @@ def load_casa_meta(workspace_path: str) -> dict | None:
     # a workspace path, so derive the id rather than widen every call site.
     engagement_id = Path(workspace_path).name
     path = Path(casa_meta_path(engagement_id))
+    legacy_path: Path | None = None
     if not path.exists():
-        return None
+        # Fix-loop round 1 (Important 2): an engagement whose
+        # .casa-meta.json was written before this release deploys still has
+        # it at the LEGACY workspace path — without this fallback it is
+        # unreachable, which drops plugin_artifacts/created_at on finalize
+        # (tools.py) and permanently leaks its (already-terminal) workspace
+        # past the retention sweep (never gets deleted again). Read the
+        # legacy copy and opportunistically migrate it forward.
+        legacy = Path(workspace_path) / ".casa-meta.json"  # containment-legacy-read-only: pre-Task-4 fallback (test_root_workspace_accessor_inventory.py), migrated forward on read, never a write target
+        if not legacy.exists():
+            return None
+        path = legacy
+        legacy_path = legacy
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         # #344: valid-but-non-object JSON ([]/string/number) used to
@@ -719,6 +753,8 @@ def load_casa_meta(workspace_path: str) -> dict | None:
                 "absent", path,
             )
             return None
+        if legacy_path is not None:
+            _migrate_legacy_casa_meta(engagement_id, legacy_path)
         return data
     except json.JSONDecodeError:
         logger.warning(

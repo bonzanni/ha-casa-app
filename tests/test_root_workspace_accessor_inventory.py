@@ -127,10 +127,22 @@ def _collect_const_aliases(tree: ast.Module) -> dict[str, str]:
     return aliases
 
 
+# Fix-loop round 1 (Important 2): a narrow, explicit escape hatch for a
+# LEGACY READ — code that reads (never writes) a control-only file at the
+# workspace path, solely to migrate a pre-Task-4 engagement's data forward
+# into the control dir. This is a real, deliberate exception (see
+# drivers/workspace.py::load_casa_meta), not a loophole: it is line-scoped
+# (the pragma must sit on the exact offending line, so it can't blanket-
+# exempt a whole file or function), and it is reviewed the same as any other
+# line — a reviewer sees the pragma AND the join together in the diff.
+_LEGACY_READ_PRAGMA = "containment-legacy-read-only:"
+
+
 def _scan_for_workspace_joins(src: str, control_only: frozenset) -> list[str]:
     """Return one description string per offending join found in ``src``."""
     tree = ast.parse(src)
     const_aliases = _collect_const_aliases(tree)
+    src_lines = src.splitlines()
 
     def _control_value(node: ast.AST) -> str | None:
         direct = _control_literal_value(node)
@@ -140,6 +152,11 @@ def _scan_for_workspace_joins(src: str, control_only: frozenset) -> list[str]:
             val = const_aliases[node.id]
             return val if val in control_only else None
         return None
+
+    def _exempt(lineno: int) -> bool:
+        if not (1 <= lineno <= len(src_lines)):
+            return False
+        return _LEGACY_READ_PRAGMA in src_lines[lineno - 1]
 
     offenders: list[str] = []
 
@@ -156,7 +173,7 @@ def _scan_for_workspace_joins(src: str, control_only: frozenset) -> list[str]:
             args = node.args
             has_root = any(_is_workspace_root_ref(a) for a in args)
             has_control = any(_control_value(a) is not None for a in args)
-            if has_root and has_control:
+            if has_root and has_control and not _exempt(node.lineno):
                 offenders.append(
                     f"line {node.lineno}: os.path.join(...) mixes the "
                     "workspace root with a control-only basename")
@@ -166,7 +183,7 @@ def _scan_for_workspace_joins(src: str, control_only: frozenset) -> list[str]:
             leaves = _flatten_div_chain(node)
             has_root = any(_is_workspace_root_ref(leaf) for leaf in leaves)
             has_control = any(_control_value(leaf) is not None for leaf in leaves)
-            if has_root and has_control:
+            if has_root and has_control and not _exempt(node.lineno):
                 offenders.append(
                     f"line {node.lineno}: pathlib '/' chain mixes the "
                     "workspace root with a control-only basename")
@@ -185,7 +202,7 @@ def _scan_for_workspace_joins(src: str, control_only: frozenset) -> list[str]:
                 and any(name in v.value for name in control_only)
                 for v in node.values
             )
-            if has_root and has_control:
+            if has_root and has_control and not _exempt(node.lineno):
                 offenders.append(
                     f"line {node.lineno}: f-string mixes the workspace "
                     "root with a control-only basename")
@@ -278,3 +295,19 @@ class TestScannerCatchesThePreRelocationShape:
             "    return os.path.join(engagements_root, eid, \"CLAUDE.md\")\n"
         )
         assert _scan_for_workspace_joins(src, _CONTROL_ONLY) == []
+
+    def test_legacy_read_pragma_exempts_only_its_own_line(self):
+        """Fix-loop round 1 (Important 2): the pragma is LINE-scoped — an
+        unmarked join two lines away in the same function must still be
+        caught, so the escape hatch can't be widened into a blanket
+        exemption by accident."""
+        src = (
+            "from pathlib import Path\n"
+            "def f(workspace_path, ws_dir):\n"
+            "    legacy = Path(workspace_path) / \".casa-meta.json\"  "
+            f"# {_LEGACY_READ_PRAGMA} pre-Task-4 fallback\n"
+            "    other = Path(ws_dir) / \".casa-meta.json\"\n"
+            "    return legacy, other\n"
+        )
+        found = _scan_for_workspace_joins(src, _CONTROL_ONLY)
+        assert len(found) == 1 and "line 4" in found[0], found

@@ -486,6 +486,71 @@ def test_ringlog_stale_fence_self_unlinks_without_sweep(tmp_path):
 
 
 @_bash_required
+def test_template_ringlog_stale_fence_reads_control_dir_not_cwd(
+        tmp_path, rendered_probe_script):
+    """Regression (Task 4 fix-loop round 1): ringlog's stale-epoch self-unlink
+    fence (r7-B4/r8-B4) must read ``.spawn_epoch`` from the CONTROL dir, not
+    cwd — the run template's cwd is the WORKSPACE (Task 4 moved
+    ``.spawn_epoch`` to the control dir), so a naive ``cat .spawn_epoch``
+    always misses there and falls back to ``$MY_EPOCH`` (never stale), which
+    would silently reopen the bug class the fence exists to close.
+
+    Unlike the three ``test_ringlog_stale_*`` tests above — which invoke
+    ``ringlog.sh`` DIRECTLY with ``cwd`` == the very directory holding
+    ``.spawn_epoch`` and so would pass even with the cwd-relative bug — this
+    drives the REAL rendered+harnessed run template (whose cwd is the
+    workspace, distinct from its control dir) end to end, bumps
+    ``.spawn_epoch`` in the control dir the template itself computed to
+    simulate later spawns WITHOUT ever running a later spawn's sweep loop
+    (so any removal below can only be ringlog's own fence, not the sweep),
+    and asserts the ring self-unlinks on rotation."""
+    fifo = tmp_path / "release"; os.mkfifo(fifo)
+    # A tiny helper script (not inline `bash -c '...'`) sidesteps quoting the
+    # child's own logic through the harness's regex substitution.
+    child = tmp_path / "child.sh"
+    child.write_text(
+        "#!/bin/bash\n"
+        "head -c 2048 /dev/zero | tr '\\0' 'a' >&2\n"
+        f"cat {fifo} >/dev/null\n"                    # blocks until released
+        "head -c 2048 /dev/zero | tr '\\0' 'z' >&2\n"  # 2nd chunk → rotation
+    )
+    child.chmod(0o755)
+
+    p = _harness_script(rendered_probe_script, tmp_path, f"exec {child}")
+    # Shrink ringlog's MAX (the template hardcodes 65536) so a rotation is
+    # reachable within a small, deterministic byte count — the ONE template
+    # constant this test overrides; everything else (the CTL wiring,
+    # STDERR_LOG derivation, and the ringlog invocation itself) is exercised
+    # exactly as rendered.
+    text = p.read_text()
+    patched = text.replace('"$STDERR_LOG" 65536 "$EPOCH"',
+                            '"$STDERR_LOG" 3000 "$EPOCH"')
+    assert patched != text, "MAX substitution missed — template line changed?"
+    p.write_text(patched)
+
+    ctl = tmp_path / "ctl"
+    proc = subprocess.Popen([BASH, str(p)], stdout=subprocess.DEVNULL)
+    log = ctl / ".stderr.1.log"
+    _await_file_bytes(log, 2048)                      # ringlog opened + wrote chunk 1
+    assert (ctl / ".spawn_epoch").read_text().strip() == "1"
+    # Simulate 4 LATER spawns advancing the epoch — without ever running a
+    # later spawn (so its sweep loop never executes for this file).
+    (ctl / ".spawn_epoch").write_text("5")
+    with open(fifo, "w") as f:
+        f.write("go\n")                               # release the child → rotation
+    proc.wait(timeout=5)
+    assert proc.returncode == 0
+    # r8-B4: the exec'd child's exit does NOT imply the process-substitution
+    # ringlog consumer has finished — real writer barrier before asserting.
+    _wait_ringlogs_exit(str(tmp_path))
+    assert not log.exists(), (
+        "ringlog's rotation-time stale check must read .spawn_epoch from the "
+        "control dir (via dirname of its own FILE argument), not cwd — cwd "
+        "is the workspace, where .spawn_epoch no longer lives (Task 4)"
+    )
+
+
+@_bash_required
 def test_sweep_removes_slipped_stale_file_next_spawn(tmp_path, rendered_probe_script):
     # r8-B4 (check→open TOCTOU backstop): a file that slips through the tiny
     # pre-check→open window while going stale persists ONLY until the next

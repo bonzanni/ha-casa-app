@@ -5,6 +5,12 @@
 # (bounded memory even for a multi-MB no-newline line — all probe-verified).
 export LC_ALL=C
 FILE="$1"; MAX="${2:-65536}"; MY_EPOCH="${3:-0}"; CHUNK=2048
+# Task 4 (containment stage 2): FILE is now the CONTROL-DIR ".stderr.<epoch>.log"
+# path (the run template's cwd stays the WORKSPACE, so a bare ".spawn_epoch"
+# read here would always miss). Derive the control dir from FILE's own
+# dirname rather than trusting cwd — this is exactly the directory the run
+# template publishes ".spawn_epoch" into, whatever that directory is.
+CTL_DIR=$(dirname -- "$FILE")
 # STALE-EPOCH FENCE (r7-B4/r8-B4): my file is prunable once the current spawn
 # epoch is >= MY_EPOCH+4. A check-BEFORE-open has a TOCTOU hole (pass the check,
 # E+4 publishes+sweeps, THEN we create the path). So the fence is checked AFTER
@@ -12,7 +18,7 @@ FILE="$1"; MAX="${2:-65536}"; MY_EPOCH="${3:-0}"; CHUNK=2048
 # and exit. Whoever creates a stale path deletes it themselves — the invariant
 # does not depend on winning a race with the sweeper. (.spawn_epoch is published
 # ATOMICALLY by the run script via tmp+mv, so we never read a torn value.)
-_stale() { local c; c=$(cat .spawn_epoch 2>/dev/null || echo "$MY_EPOCH"); [ "$(( c - MY_EPOCH ))" -ge 4 ]; }
+_stale() { local c; c=$(cat "$CTL_DIR/.spawn_epoch" 2>/dev/null || echo "$MY_EPOCH"); [ "$(( c - MY_EPOCH ))" -ge 4 ]; }
 _fence() {  # close fd 3 if open, remove OWN paths, exit — post-open stale check
   exec 3>&- 2>/dev/null || true
   rm -f "$FILE" "$FILE.1" 2>/dev/null || true
