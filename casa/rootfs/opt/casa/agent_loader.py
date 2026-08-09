@@ -122,6 +122,28 @@ def _is_editor_backup(name: str) -> bool:
 
 _DELEGATE_MCP_TOOL = "mcp__casa-framework__delegate_to_agent"
 
+# Containment Stage 2 config-validate guard (belt-and-suspenders — see
+# doctrine "Scope fence" in the stage-2 design). Stage 2's per-uid
+# filesystem isolation stops a dropped engagement uid from `open()`-ing a
+# sibling's workspace, but it does NOT stop an executor from asking
+# casa-core (root) to do that read/act FOR it via a bridge tool that
+# accepts a caller-controlled ``engagement_id`` —
+# ``peek_engagement_workspace``, ``list_engagement_workspaces``,
+# ``delete_engagement_workspace`` — or via the whole-server
+# ``mcp__casa-framework`` grant, which the v0.166 bridge grant-gate
+# (``engagement_casa_grant_names``, tools.py) treats as "any casa tool".
+# No shipped executor grants any of these today; this set exists purely so
+# a future definition.yaml edit can't silently reopen the confused-deputy
+# path. Bare server-level grant plus the three admin/workspace tools —
+# exact tokens, no prefix matching (a real per-tool grant like
+# ``mcp__casa-framework__query_engager`` must never trip this).
+_FORBIDDEN_EXECUTOR_GRANTS: frozenset[str] = frozenset({
+    "mcp__casa-framework",
+    "mcp__casa-framework__peek_engagement_workspace",
+    "mcp__casa-framework__list_engagement_workspaces",
+    "mcp__casa-framework__delete_engagement_workspace",
+})
+
 
 class LoadError(Exception):
     """Raised on any per-agent load failure."""
@@ -306,6 +328,37 @@ def validate_config_repo(
                     continue  # malformed definition — surfaced by the walk
                 if not isinstance(defn, dict):
                     continue
+            # Containment Stage 2 drift guard (belt-and-suspenders — see
+            # _FORBIDDEN_EXECUTOR_GRANTS above). Checked against the RAW
+            # declared tools.allowed, independent of the role-ceiling clamp
+            # load_all_executors applies at boot: this is a build-time gate
+            # on the committed config, not a runtime capability check, and
+            # must fail closed even if a role artifact would have dropped
+            # the grant silently. Every executor is in scope, including the
+            # configurator — it does not hold any of these tools today (see
+            # defaults/agents/executors/configurator/definition.yaml).
+            declared_tools = defn.get("tools") or {}
+            if isinstance(declared_tools, dict):
+                declared_allowed = declared_tools.get("allowed") or []
+            else:
+                declared_allowed = []
+            if isinstance(declared_allowed, list):
+                forbidden_hits = sorted(
+                    set(declared_allowed) & _FORBIDDEN_EXECUTOR_GRANTS)
+                if forbidden_hits:
+                    errors.append(
+                        f"executor {entry!r}: definition.yaml tools.allowed "
+                        f"grants {forbidden_hits} — the server-level "
+                        f"mcp__casa-framework grant and the "
+                        f"*_engagement_workspace bridge tools accept a "
+                        f"caller-controlled engagement_id and let "
+                        f"casa-core (root) read/act on ANY engagement's "
+                        f"workspace; Stage 2's per-uid filesystem isolation "
+                        f"does not close this confused-deputy path "
+                        f"(containment stage 2 design, 'Scope fence'), so "
+                        f"no executor may hold them"
+                    )
+
             # A dir WITHOUT definition.yaml fails to load as an executor at
             # boot anyway, but a present default-named hooks.yaml still gets
             # schema-gated here (defn = {} resolves the default pointer) —
