@@ -214,11 +214,11 @@ falls back to a direct send that bypasses sequencing entirely.
 
 **INV-CONT-001**: A `claude_code` engagement's uid comes from two independently-written durable high-water copies and is never handed out twice, even if either file is lost.
 
-Reconstruction takes the max of every still-valid durable copy, raised by evidence — prior
-records, directory owners, `casa-eng-*` passwd entries, live `/proc` uid/gid fields — never
-by liveness alone. Losing both copies is not fresh when that evidence, or any prior-artifact
-trace, says otherwise: the allocator poisons and refuses rather than reset the high-water
-backwards.
+Reconstruction takes the max of every still-valid durable copy, raised (never lowered) by
+records, dir owners, `casa-eng-*` passwd, and `/proc` ids. With both copies lost, a
+never-removed `initialized` marker present — OR absent but a real uid (`>= UID_BASE`) evidenced —
+poisons (a uid was allocated); marker absent with no real uid inits at base. An unreadable copy
+also poisons.
 
 What it does not cover: specialist and legacy `EngagementRecord`s carry `UNALLOCATED_UID` and
 are never chowned or uid-dropped — this applies only to `claude_code` executors. SCOPE: a

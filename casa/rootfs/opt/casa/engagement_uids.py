@@ -244,10 +244,31 @@ class UidAllocator:
         group_path: str = "/etc/group",
         proc_scanner=None,
         anchor_path: str | None = None,
+        marker_path: str | None = None,
     ) -> None:
         self._path = counter_path
         self._passwd = passwd_path
         self._group = group_path
+        # v0.170.1-r2 — a THIRD durable artifact, SEPARATE from the two
+        # high-water copies (counter + anchor): a boolean "Stage-2 uid allocator
+        # initialised" marker, written ONCE at first successful init and NEVER
+        # written or removed by any teardown/sweep/prune path (allocator-owned,
+        # not per-engagement). It is what makes two otherwise-indistinguishable
+        # states distinguishable when BOTH high-water copies are lost:
+        #   (a) Stage 2 never initialised (fresh install / first Stage-2 boot) →
+        #       marker ABSENT → initialise (no uid was ever allocated);
+        #   (b) a uid WAS allocated, then everything (workspaces, ctl, outbox,
+        #       passwd, the terminal record) was cleaned AND both high-water
+        #       copies lost → marker PRESENT → POISON (evidence cannot prove the
+        #       historic maximum; reissuing would collide with a survivor).
+        # Both the v0.170.0 artifact-existence signal and the v0.170.1 no-marker
+        # init were wrong for one of (a)/(b); the marker settles both. A FULL
+        # /data wipe (uninstall) loses all three artifacts → marker absent →
+        # initialise, which is correct because a wipe removes every engagement
+        # too. The marker only needs to survive loss of the two high-water copies
+        # SHORT of a full wipe — a separate, never-cleaned file does exactly that.
+        self._marker = marker_path or os.path.join(
+            os.path.dirname(counter_path) or ".", ".engagement-uids-initialized")
         # S1 r6 — a SECOND, independently-updated durable high-water copy (the
         # "anchor"), written atomically alongside the counter on EVERY persist.
         # The r5 boolean marker detected counter LOSS but did not PRESERVE the
@@ -297,46 +318,65 @@ class UidAllocator:
             return None
         return v if v >= UID_BASE - 1 else None
 
-    def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int],
-                    *, extra_prior_existence: bool = False) -> None:
+    def _ensure_marker_locked(self) -> None:
+        """Write the durable "initialised" marker if absent (caller holds the
+        lock). Its mere EXISTENCE — not its content — is the signal, so it is
+        written once and never rewritten. Any write failure propagates → the
+        caller poisons (fail-closed): without the marker a later both-copies-lost
+        boot could not tell a fresh install from a fully-cleaned one."""
+        if not os.path.exists(self._marker):
+            atomic_write_json(self._marker, {"initialized": True}, mode=0o600)
+
+    def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int]) -> None:
         """Establish the monotonic, DURABLE high-water — or fail closed.
 
-        S1 r6 CUT (converged) — the load-bearing non-reissue guarantee. A uid is
-        NEVER reissued. The high-water lives in TWO durable files (the counter
-        and the anchor), both written on every persist. reconstruct takes the max
-        of every VALID durable copy; evidence only ever RAISES it, never lowers
-        it below a valid durable copy. This closes the whole survivor-uid-reissue
-        class — per-thread worker, fsuid, the CAP_DAC reissue facet — WITHOUT
-        depending on seeing the survivor in /proc.
-
-        The r5 boolean marker detected loss but did not PRESERVE the high-water,
-        so loss recovered to ``max(evidence)`` — and evidence can be INCOMPLETE
-        (a higher uid's record aged out / its workspace-owner stat transiently
-        failed while a lower uid's workspace survives), moving the high-water
-        BACKWARDS and reissuing a uid. The second durable copy removes the
-        dependence on evidence for recovery.
+        The load-bearing non-reissue guarantee: a uid is NEVER reissued. The
+        high-water lives in TWO durable copies (counter + anchor), both written
+        on every persist; a THIRD durable artifact — a boolean "initialised"
+        marker (:attr:`_marker`), written once and never removed — records that
+        Stage 2 has run at least once. reconstruct takes the max of every VALID
+        durable copy; evidence only ever RAISES it, never lowers it below a valid
+        copy. Closes the whole survivor-uid-reissue class WITHOUT depending on
+        seeing the survivor in /proc.
 
         Policy:
           - ANY valid durable copy → ``hw = max(valid_durables, evidence,
             UID_BASE-1)`` (a single-file loss recovers fully from the other; a
-            stale-low copy is ignored).
-          - NO valid durable copy:
-              * neither durable file exists AND no ``extra_prior_existence``
-                artifact AND no evidence → genuine fresh install →
-                ``UID_BASE - 1``, write both durable files.
-              * otherwise (either durable file exists — even if invalid — OR the
-                caller found a per-engagement /data artifact
-                (``extra_prior_existence``: engagements/engagement-ctl/
-                plugin-outbox-eng) OR any evidence) → POISON / refuse
-                (:class:`UidStateError`): evidence alone cannot prove the prior
-                maximum, so we fail closed rather than risk a backwards reset.
+            stale-low copy is ignored); BACKFILL the marker if absent (so a
+            v0.170.0 install that already allocated gets the marker on its first
+            v0.170.1 boot — crash-safe ordering: copies first, then marker).
+          - a durable file PRESENT but unreadable (malformed/stale-low) with no
+            valid copy → POISON: a counter was written and is now unreadable, so
+            a uid may exist whose maximum we cannot prove (Terra S2, unchanged).
+          - NO valid durable copy, no present-but-invalid copy:
+              * marker PRESENT → Stage 2 WAS initialised and both high-water
+                copies are now gone → POISON (:class:`UidStateError`); never init,
+                never reissue (operator repairs). (Closes the r1 reissue hole:
+                allocate 200000 → everything cleaned + both copies lost → marker
+                still present → refuse.)
+              * marker ABSENT + a REAL uid is evidenced anywhere (record/owner/
+                passwd/proc ``>= UID_BASE``) → POISON (v0.170.1-r3 TRANSITION
+                hole): the marker is NEW in v0.170.1, so an absent marker with a
+                real uid evidenced means a v0.170.0 install already allocated
+                (wrote copies, no marker) whose copies are now lost — a uid WAS
+                allocated whose maximum we cannot prove → refuse, never reissue.
+              * marker ABSENT + NO real-uid evidence → Stage 2 never initialised
+                (genuine fresh install OR first Stage-2 boot of a pre-Stage-2
+                install: dirs root-owned uid 0, records UNALLOCATED) → INITIALISE
+                at ``UID_BASE - 1``, write both copies + the marker. (Preserves
+                the N150 first-boot unbrick: zero real-uid evidence there.)
           - the /proc scan unconfirmable, or a persist failure → POISON
             (r4 invariant).
 
-        Evidence sources (only ever RAISE): *known_uids* (records incl.
-        terminal/retained), *dir_owner_uids* (workspace/control/outbox owners),
-        the ``casa-eng-<uid>`` passwd entries (:func:`scan_passwd_uids`), and
-        every live thread's uid/gid (:func:`scan_proc_uids`, defense-in-depth).
+        Why a marker AND real-uid evidence: (a) "Stage 2 never initialised" and
+        (b) "a uid was allocated, then fully cleaned + both copies lost" are
+        indistinguishable from evidence alone; the never-removed marker separates
+        them for post-marker installs. But the marker is new, so a PRE-marker
+        v0.170.0 allocation shows no marker — real-uid evidence is the signal that
+        catches that transition. Evidence sources (in the valid-durable branch
+        they only RAISE the high-water; in the marker-absent branch their mere
+        presence refuses): *known_uids*, *dir_owner_uids*, ``casa-eng`` passwd,
+        live /proc.
 
         Any failure poisons the allocator under the lock and surfaces as
         UidStateError; nothing escapes as a bare OSError.
@@ -347,18 +387,17 @@ class UidAllocator:
                 anchor_v = self._read_durable(self._anchor)
                 valid_durables = [v for v in (counter_v, anchor_v)
                                   if v is not None]
-                # A durable file that EXISTS (even if its content is invalid/
-                # stale-low), OR any per-engagement /data artifact the caller
-                # found (``extra_prior_existence`` — engagements/engagement-ctl/
-                # plugin-outbox-eng, S1 r7), is a prior-existence signal: this is
-                # NOT a virgin /data, so a both-durable-lost boot fails closed
-                # rather than resetting to base.
-                prior_existence = (os.path.exists(self._path)
-                                   or os.path.exists(self._anchor)
-                                   or extra_prior_existence)
+                # A durable file PRESENT but yielding no valid value
+                # (malformed/stale-low) → a counter was written and is now
+                # unreadable → cannot prove the prior maximum → poison.
+                durable_file_present_but_invalid = (
+                    (os.path.exists(self._path) and counter_v is None)
+                    or (os.path.exists(self._anchor) and anchor_v is None))
 
-                # Evidence: only values >= UID_BASE count as "a uid was issued"
-                # (a root-owned pre-chown dir has st_uid 0 — not evidence).
+                # Evidence (only RAISES within the valid-durable branch): record
+                # allocated_uids, workspace/ctl/outbox dir OWNER uids, casa-eng
+                # passwd, live /proc — only values >= UID_BASE ("a uid was
+                # allocated"; a root-owned pre-Stage-2 dir's st_uid 0 is not).
                 passwd_uids = scan_passwd_uids(self._passwd)
                 # Resolve the live-uid scanner at CALL time so a module-level
                 # monkeypatch is honored (see __init__). An unconfirmable scan
@@ -376,22 +415,51 @@ class UidAllocator:
                     hw = max(*valid_durables, UID_BASE - 1)
                     if evidence_max is not None:
                         hw = max(hw, evidence_max)
-                elif not prior_existence and evidence_max is None:
-                    hw = UID_BASE - 1            # genuine fresh install
-                else:
-                    # No valid durable copy, but a durable file exists (invalid)
-                    # or evidence exists → we cannot PROVE the next uid exceeds
-                    # every issued one. Fail closed rather than risk a backwards
-                    # reset (both reviewers' r6 finding).
+                elif durable_file_present_but_invalid:
                     raise UidStateError(
-                        "no valid durable engagement-uid high-water is readable "
-                        "(counter and anchor both absent/invalid) yet prior "
-                        "state exists — refusing to allocate rather than risk "
-                        "resetting the high-water backwards and reissuing a uid")
+                        "an engagement-uid durable copy is present but unreadable "
+                        "(malformed/stale-low) and no valid copy remains — "
+                        "refusing to allocate rather than risk resetting the "
+                        "high-water backwards and reissuing a uid")
+                elif os.path.exists(self._marker):
+                    # Stage 2 WAS initialised (marker present) but both high-water
+                    # copies are gone → cannot prove the historic maximum. Evidence
+                    # (even a real uid) cannot bound it, so refuse — never init and
+                    # never reissue. Operator repairs the durable copies.
+                    raise UidStateError(
+                        "the engagement-uid allocator was initialised (marker "
+                        "present) but both durable high-water copies are lost — "
+                        "refusing to allocate rather than risk reissuing a "
+                        "previously-allocated uid; restore the counter to repair")
+                elif evidence_max is not None:
+                    # v0.170.1-r3 TRANSITION hole (Sol): the marker is NEW in
+                    # v0.170.1, so an ABSENT marker is ambiguous — it can mean a
+                    # virgin/pre-Stage-2 install OR a v0.170.0 install that already
+                    # allocated a uid (v0.170.0 wrote counter+anchor but NO marker).
+                    # With no valid durable copy but a REAL uid evidenced anywhere
+                    # (record/owner/passwd/proc >= UID_BASE), a uid WAS allocated
+                    # (pre-marker, or a partially-cleaned state) and we cannot prove
+                    # its maximum → REFUSE, never init at base and reissue it.
+                    raise UidStateError(
+                        "no valid durable engagement-uid high-water and no "
+                        "'initialized' marker, but a real uid is evidenced (a uid "
+                        "was allocated before the marker existed) — refusing to "
+                        "allocate rather than risk reissuing it; restore the "
+                        "counter to repair")
+                else:
+                    # marker ABSENT and NO real-uid evidence → Stage 2 never
+                    # initialised (genuine fresh install OR the first Stage-2 boot
+                    # of a pre-Stage-2 install: all dirs root-owned uid 0, records
+                    # UNALLOCATED, no casa-eng passwd, no casa /proc uid). No uid
+                    # was ever allocated → INITIALISE at UID_BASE-1 and write both
+                    # copies + the marker below. (Preserves the N150 first-boot
+                    # unbrick: its pre-Stage-2 state has zero real-uid evidence.)
+                    hw = UID_BASE - 1
 
                 self._hw = hw
                 self._poisoned = False           # proven-good
-                self._persist()                  # persist failure re-poisons below
+                self._persist()                  # counter + anchor (poisons on dual-fail)
+                self._ensure_marker_locked()     # THIRD durable artifact (poisons on fail)
             except Exception as exc:  # noqa: BLE001 — any failure poisons
                 self._poison_locked()
                 if isinstance(exc, UidStateError):

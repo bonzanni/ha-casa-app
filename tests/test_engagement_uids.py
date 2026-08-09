@@ -62,38 +62,51 @@ def test_stale_low_counter_ignored_recovers_from_anchor(tmp_path):
     assert a.allocate() == UID_BASE + 6
 
 
-def test_both_durable_absent_with_evidence_refuses(tmp_path):
-    # S1 r6 red-case #2: no valid durable copy but evidence exists → POISON.
-    # Evidence alone cannot prove the prior maximum (it can be incomplete), so
-    # we fail closed rather than risk a backwards reset.
-    pw = tmp_path / "passwd"
+def test_marker_present_both_copies_lost_refuses_reissue(tmp_path):
+    # v0.170.1-r2 REISSUE regression (the reopened hole): Stage 2 initialised
+    # (marker present), both durable copies then lost, and only real-uid evidence
+    # [200000] survives → REFUSE. Evidence cannot prove the historic maximum, so
+    # we must NOT init at base and reissue 200000. (v0.170.1-r1 wrongly recovered
+    # to 200000 here; the marker now forces fail-closed.)
+    counter = tmp_path / "uids.json"
+    anchor = tmp_path / "uids.json.initialized"
+    pw = tmp_path / "passwd"; pw.write_text("")
+    a = UidAllocator(str(counter), passwd_path=str(pw),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])                       # fresh init → writes copies+marker
+    a.allocate()
+    os.remove(str(counter)); os.remove(str(anchor))   # both high-water copies lost
+    # A real uid still evidenced (a surviving casa-eng passwd entry). The marker
+    # (present) forces refusal regardless — evidence must NOT recover here.
     pw.write_text(
         f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::/h:/usr/sbin/nologin\n")
-    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(pw),
+    b = UidAllocator(str(counter), passwd_path=str(pw),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    with pytest.raises(UidStateError):         # marker present + no copy → refuse
+        b.reconstruct([], [])
     with pytest.raises(UidStateError):
-        a.reconstruct([], [])
-    with pytest.raises(UidStateError):
-        a.allocate()
+        b.allocate()
 
 
-def test_leftover_outbox_owner_folds_into_high_water(tmp_path):
-    # S1 r7: a leftover /data/plugin-outbox-eng/200000 (owned 200000) with both
-    # durable copies absent must NOT classify fresh. Folded as a dir owner it
-    # becomes evidence — and evidence with no valid durable copy REFUSES (never
-    # reissues 200000). (In production the caller also passes
-    # extra_prior_existence for the root; here the owner uid alone suffices.)
-    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
+def test_marker_present_both_copies_lost_no_evidence_refuses(tmp_path):
+    # v0.170.1-r2: same, with NO evidence at all — marker present + both copies
+    # gone → REFUSE (never silently reset to base).
+    counter = tmp_path / "uids.json"
+    anchor = tmp_path / "uids.json.initialized"
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    os.remove(str(counter)); os.remove(str(anchor))
+    b = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
     with pytest.raises(UidStateError):
-        a.reconstruct(known_uids=[], dir_owner_uids=[UID_BASE])   # outbox owner
+        b.reconstruct([], [])
 
 
 def test_gather_evidence_scans_the_outbox_root(tmp_path, monkeypatch):
     # S1 r7: the casa_core evidence gatherer MUST scan /data/plugin-outbox-eng —
-    # a leftover per-uid outbox dir owner is folded, and the root's existence is
-    # a prior-existence signal. (Reverting the outbox root from the scan drops
-    # both — this is the folding red-case.)
+    # a leftover per-uid outbox dir OWNER is folded (real-uid evidence). Reverting
+    # the outbox root from the scan drops it — this is the folding red-case.
     import casa_core
     import plugin_outbox
     outbox_root = tmp_path / "plugin-outbox-eng"
@@ -104,35 +117,68 @@ def test_gather_evidence_scans_the_outbox_root(tmp_path, monkeypatch):
         def active_and_idle(self): return []
         def terminal_records(self): return []
 
-    known, owners, prior = casa_core._gather_reconstruct_evidence(
+    known, owners = casa_core._gather_reconstruct_evidence(
         _Reg(), data_dir=str(tmp_path / "no-engagements"))
     assert os.stat(str(outbox_root / "200000")).st_uid in owners
-    assert prior is True
 
 
-def test_extra_prior_existence_refuses_when_durable_lost(tmp_path):
-    # S1 r7: even a root-owned/empty leftover artifact (no uid-owned subdir, so
-    # no owner evidence) forces fail-closed via extra_prior_existence — both
-    # durable copies absent + a prior artifact exists → POISON, never fresh.
-    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
+def test_first_stage2_upgrade_root_owned_dirs_initialises_not_refuses(tmp_path):
+    # v0.170.1 REGRESSION (the N150 brick): first Stage-2 boot of a pre-Stage-2
+    # install — engagement DIRS exist but are ROOT-owned (uid 0), records carry
+    # UNALLOCATED_UID, no durable counter/anchor, NO marker, no casa-eng passwd,
+    # no proc casa uid. Marker ABSENT → Stage 2 never initialised → reconstruct
+    # INITIALISES at UID_BASE-1 (does NOT refuse), writes both copies + marker.
+    # (v0.170.0 wrongly raised UidStateError here.)
+    counter = tmp_path / "uids.json"
+    anchor = tmp_path / "uids.json.initialized"
+    marker = tmp_path / ".engagement-uids-initialized"
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    with pytest.raises(UidStateError):
-        a.reconstruct(known_uids=[], dir_owner_uids=[],
-                      extra_prior_existence=True)
-    # Genuine fresh (no artifact signal) still initialises at base.
-    b = UidAllocator(str(tmp_path / "u2.json"), passwd_path=str(tmp_path / "pw"),
+    # dir_owner_uids = [0]: pre-Stage-2, root-owned workspace/ctl/outbox dirs
+    # (uid 0 < UID_BASE → NOT real-uid evidence). records UNALLOCATED (not folded).
+    a.reconstruct(known_uids=[], dir_owner_uids=[0, 0, 0])
+    assert a.allocate() == UID_BASE             # migration can proceed
+    assert counter.exists() and anchor.exists() and marker.exists()
+
+
+def test_marker_absent_with_real_uid_evidence_refuses_transition(tmp_path):
+    # v0.170.1-r3 TRANSITION hole (Sol): the marker is NEW in v0.170.1, so an
+    # ABSENT marker with a REAL uid evidenced means a v0.170.0 install already
+    # allocated (wrote copies, no marker) whose copies are now lost. A uid WAS
+    # allocated → REFUSE, never reissue. Exercised for each evidence source.
+    for src in ("proc", "passwd", "record", "dir_owner"):
+        d = tmp_path / src
+        d.mkdir()
+        pw = d / "passwd"
+        pw.write_text(
+            f"casa-eng-{UID_BASE}:x:{UID_BASE}:{UID_BASE}::/h:/usr/sbin/nologin\n"
+            if src == "passwd" else "")
+        a = UidAllocator(
+            str(d / "uids.json"), passwd_path=str(pw), group_path=str(d / "gr"),
+            proc_scanner=(lambda: {UID_BASE}) if src == "proc" else _NO_LIVE)
+        known = [UID_BASE] if src == "record" else []
+        owners = [UID_BASE] if src == "dir_owner" else []
+        with pytest.raises(UidStateError):     # marker absent + real uid → refuse
+            a.reconstruct(known_uids=known, dir_owner_uids=owners)
+        with pytest.raises(UidStateError):
+            a.allocate()
+
+
+def test_v0170_0_transition_valid_copy_backfills_marker(tmp_path):
+    # v0.170.1-r3: a v0.170.0 install that allocated has counter+anchor (valid)
+    # but NO marker. First v0.170.1 boot recovers via the copies AND backfills
+    # the marker, so a LATER both-copies-lost boot correctly poisons (not init).
+    counter = tmp_path / "uids.json"
+    anchor = tmp_path / "uids.json.initialized"
+    marker = tmp_path / ".engagement-uids-initialized"
+    counter.write_text('{"high_water": %d}' % UID_BASE)      # v0.170.0 wrote these
+    anchor.write_text('{"high_water": %d}' % UID_BASE)
+    assert not marker.exists()                                # ...but no marker
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
                      group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
-    b.reconstruct(known_uids=[], dir_owner_uids=[], extra_prior_existence=False)
-    assert b.allocate() == UID_BASE
-
-
-def test_both_durable_absent_with_live_proc_refuses(tmp_path):
-    # S1 r6: proc evidence alone (no durable copy) also refuses — never reset.
-    a = UidAllocator(str(tmp_path / "uids.json"), passwd_path=str(tmp_path / "pw"),
-                     group_path=str(tmp_path / "gr"),
-                     proc_scanner=lambda: {UID_BASE})
-    with pytest.raises(UidStateError):
-        a.reconstruct([], [])
+    a.reconstruct([], [])
+    assert a.allocate() == UID_BASE + 1        # recovered via the copies
+    assert marker.exists()                     # marker backfilled on this boot
 
 
 def test_counter_missing_zero_evidence_and_clean_proc_starts_at_base(tmp_path):

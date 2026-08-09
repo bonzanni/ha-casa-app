@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.170.1] - 2026-08-09
+
+### Fixed
+
+- **Upgrading an existing install to the isolated-engagement release no longer
+  blocks new engagements on the first boot.** On the very first start after
+  upgrading, Casa sets up its per-engagement user bookkeeping from scratch;
+  a check meant to protect against reusing a user id was too strict and
+  mistook a normal pre-upgrade engagement folder for evidence that setup had
+  been lost, refusing to hand out any new engagement user until the next
+  boot. Casa now recognises a genuine first-time setup and initialises
+  cleanly, while still refusing (as designed) if real evidence shows its
+  bookkeeping was actually lost. Fresh installs and already-upgraded installs
+  are unaffected.
+
 ## [0.170.0] - 2026-08-09
 
 ### Security
