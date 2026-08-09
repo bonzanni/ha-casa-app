@@ -59,6 +59,10 @@ resident or specialist alike — from delegating onwards. It is read in one plac
 in one place, and the executor launch path touches neither — so it is not a general limit on
 agents creating long-running work. See the invariant below for exactly what it covers.
 
+**A `claude_code` engagement gets its own OS identity, not just its own record.** A
+never-reused uid is allocated per engagement, its workspace chowned to it, and the run
+script's final `exec` drops privilege via `setpriv` — see the invariants below for the rest.
+
 ## Contracts & invariants
 
 **INV-ENG-001**: A terminal transition has exactly one winner, and only the winner performs the finalization side effects.
@@ -209,6 +213,53 @@ What it does not cover: ordering depends on a bounded drain. If the drain times 
 completion is posted anyway with a warning, and if no live sequencer exists the finalize path
 falls back to a direct send that bypasses sequencing entirely.
 
+**INV-CONT-001**: A `claude_code` engagement's uid is allocated from a persistent, monotonically-increasing counter and is never handed out twice.
+
+Reconstruction takes the maximum across every source that could have produced a uid — the
+persisted counter, `/etc/passwd`, any already-allocated record — not liveness, so a freed uid
+cannot be reissued while stale state referencing it might remain.
+
+What it does not cover: specialist and legacy `EngagementRecord`s carry the `UNALLOCATED_UID`
+sentinel and are never chowned or uid-dropped — this applies only to `claude_code` executors.
+
+**INV-CONT-002**: Root's own accessor for engagement workspace files refuses to follow a symlink at the final path component or any intermediate one, and can require the resolved file's owner to match an expected uid.
+
+Enforced by `safe_fs.py`, preferring `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`,
+falling back to an equivalent FD-relative walk on a kernel without it.
+
+What it does not cover: root's own reachability into a workspace it already has filesystem
+access to — not a boundary between two non-root uids, which ordinary file permissions after
+`chown_workspace` enforce instead.
+
+**INV-CONT-003**: Root-touched engagement run-state is never joined into the uid-owned workspace root a `claude_code` engagement's own CLI process can reach.
+
+That root is reachable by the subprocess via `--add-dir`, so a control-only file placed there
+would be a symlink-planting target for the process the uid drop exists to contain. Every root
+module touching run-state is held to a fixed allowlist of control-only basenames that must
+never be path-joined to a workspace-root symbol.
+
+What it does not cover: a static, symbol-name-based check over a fixed set of root modules,
+not a full dataflow analysis — it catches established naming for "the workspace root," not an
+arbitrarily renamed variable.
+
+**INV-CONT-004**: The uid-drop preflight refuses to plant or resume a `claude_code` service — never starting it as root, never leaving it to crash-loop under its supervisor — whenever `setpriv` is unavailable, the record's uid is unallocated, the workspace is not owned by that uid, no passwd entry exists for it, or a plugin directory it needs is not world-readable.
+
+Run immediately before planting or resuming a service, so a chain that would otherwise fail
+at `setpriv`-exec time — or worse, silently exec without dropping — is caught earlier, named.
+
+What it does not cover: the preflight checks the *conditions* a drop requires; it does not
+verify the exec'd `claude` process ended up with the expected `Uid`/`CapBnd`, a live property
+confirmed operationally.
+
+**INV-CONT-005**: Boot replay migrates a legacy root run-script to the uid-dropped form, or resumes an existing one, only after confirming the corresponding s6 service is fully down; an unconfirmed-down service refuses the resume.
+
+The confirmation scans the supervised service tree itself rather than trusting the durable
+record, so a service still up — including one with no matching "undergoing" record — is
+never migrated or restarted out from under itself.
+
+What it does not cover: a service that never registers as fully down refuses the resume
+outright, rather than forcing the old process down itself.
+
 ## Failure behavior
 
 **Completion is called with a bad status or arguments.** Rejected before any transition; the
@@ -320,6 +371,8 @@ cap to cover it.
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
 - `casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer`
 - `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
+- `casa/rootfs/opt/casa/engagement_uids.py::UidAllocator`
+- `casa/rootfs/opt/casa/safe_fs.py::read_text_beneath`
 
 **Tests**
 - `tests/test_delegate_to_agent.py`
@@ -328,6 +381,10 @@ cap to cover it.
 - `tests/test_cancel_engagement_tool.py`
 - `tests/test_engagement_registry.py`
 - `tests/test_observer.py`
+- `tests/test_engagement_uids.py`
+- `tests/test_safe_fs.py`
+- `tests/test_root_workspace_accessor_inventory.py`
+- `tests/test_boot_replay.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

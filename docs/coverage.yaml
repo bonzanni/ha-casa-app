@@ -83,6 +83,10 @@
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/engagement_registry.py
   doc: architecture/engagements.md
+- item: casa/rootfs/opt/casa/engagement_uids.py
+  doc: architecture/engagements.md
+- item: casa/rootfs/opt/casa/safe_fs.py
+  doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/event_acks.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_attempts.py
@@ -458,6 +462,8 @@
 - item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:/hooks/resolve
   doc: architecture/mcp-and-tools.md
 - item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:/mcp/casa-framework
+  doc: architecture/mcp-and-tools.md
+- item: "route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:f'/internal/channel/{tail}'"
   doc: architecture/mcp-and-tools.md
 - item: casa/Dockerfile
   doc: architecture/overview.md

@@ -53,17 +53,17 @@ engagement-channel routes that act on a record's topic and questions. An id the 
 gets an honest `not_in_engagement` from the tool rather than an authentication error.
 
 **What the token does not contain, stated plainly.** It raises the bar from "know an id" to
-"hold a secret", and it is not process isolation. Engagement subprocesses run as root in one
-container, so a shell-capable engagement can still read a sibling workspace's credential
-file directly; the credential files are `0600` as defense in depth, which is not a boundary
-against a co-resident root process. The inspection tool refuses to return the credential
-file's contents precisely because that surface *is* reachable without any identity at all.
-Hook resolution presents the same credential: the shim reads the pair from its own
-workspace `.mcp.json` and the resolver authenticates any engagement-identity claim against
-the record before selecting executor hook parameters or invoking an identity-consuming
-policy — the payload's working directory is never an identity source (INV-MCP-006). Treat
-the token as removing identity forgery from *knowing an id*, not as containment of a
-hostile in-container process.
+"hold a secret". Since stage 2, a `claude_code` subprocess execs under its own never-reused
+uid with an empty capability set, and its workspace is chowned `0700` — so a sibling's
+subprocess can no longer read that credential file; the boundary is per-uid, so it neither
+constrains casa-core (still root, reading workspaces only through `safe_fs.py`'s no-symlink
+accessor) nor covers a driver with no isolable OS subprocess (an in-process specialist). The
+credential files stay `0600` as defense in depth, and the inspection tool refuses their
+contents precisely because that surface is reachable without identity at all. Hook resolution
+presents the same credential: the shim sends it from its own workspace `.mcp.json`, and the
+resolver authenticates any identity claim before selecting hook parameters (INV-MCP-006).
+Treat the token as removing identity forgery from *knowing an id* — containment of a hostile
+process is now the uid drop's job.
 
 **The bridge runs as its own supervised service** so that the bridge *connection* survives a
 restart of the main application. Its own client is a thin shell shim, and the failure
@@ -124,21 +124,25 @@ its own `query_engager`.
 
 What it does not cover: tool-local checks still apply on top; a terminal-binding subset
 (`emit_completion`) dispatches even unbound, for completion retries; and it binds the
-*engagement identity*, not the OS process — a root executor that steals a more-privileged
-*live* sibling's token still authenticates as that sibling (the residual that needs
-per-engagement process isolation, tracked separately).
+*engagement identity*, not the OS process. Before stage 2 a root `claude_code` subprocess
+could read a live sibling's credential file and authenticate as it; per-engagement uid
+allocation plus `0700` workspace ownership close that OS-level path now. The grant check
+remains the control for what an authenticated caller — however it got a valid token — invokes.
 
 **INV-MCP-002**: The internal endpoint is reachable only from inside the container, over a Unix socket with restricted permissions.
 
-This bounds who *outside* the container can reach the socket (nothing). It does NOT bound
-callers *inside* the container: engagement subprocesses run as root and reach the socket
-directly, which is exactly why INV-MCP-001 enforces the per-engagement grant at dispatch
-rather than trusting socket reachability.
+This bounds who *outside* the container can reach the socket (nothing). Inside it, the socket
+file is root-owned mode `0600`; since stage 2 a `claude_code` subprocess execs under a
+dropped, capability-stripped uid and cannot open it — so it reaches dispatch only through the
+loopback bridge below, never the socket directly. INV-MCP-001 still enforces the
+per-engagement grant regardless of transport, since dispatch cannot assume every caller is
+uid-dropped.
 
-What it does not cover: the `svc-casa-mcp` bridge on loopback port 8100, which forwards
-into this socket for workspace subprocesses. Its listener is loopback-bound and neither
-nginx listener proxies to it, so it sits inside the same container boundary rather than
-punching through it (see the mental model).
+What it does not cover: the `svc-casa-mcp` bridge on loopback port 8100, forwarding into this
+socket for workspace subprocesses — including the `/internal/channel/*` family a
+per-engagement channel server posts (`send_to_topic`, `ask`, `ask_cancel`), never
+`/admin/reload` or any other admin path. Its listener is loopback-bound and unproxied by
+nginx, inside the same container boundary rather than punching through it.
 
 **INV-MCP-003**: The two surfaces expose different tool sets — role-filtered on the SDK side, the full static set advertised over HTTP but grant-filtered at dispatch.
 
@@ -152,9 +156,10 @@ The terminal-binding allowlist is inside this rule, not an exception to it: a te
 record still binds for a completion retry only when the token matches.
 
 What it does not cover: an id the registry does not know — that call dispatches with no
-engagement bound (unchanged), and the tool answers for itself. It also does not cover a
-co-resident root process reading another workspace's credential file (see the mental
-model; tracked as #365). The hook-resolution path carries its own statement of the same
+engagement bound (unchanged), and the tool answers for itself. A `claude_code` sibling's
+subprocess reading another workspace's credential file is now refused at the OS permission
+layer by stage 2's per-engagement uid and workspace ownership; the residual is a caller class
+containment does not cover, and casa-core itself. The hook-resolution path states the same
 rule, INV-MCP-006.
 
 **INV-MCP-005**: The workspace-inspection tool never returns the contents of a credential-bearing workspace file.
@@ -177,11 +182,10 @@ callback in-process; the permission relay and the buttons reminder act only on t
 identity, which is what stops a forged working directory from posting a permission
 keyboard into another engagement's topic or borrowing another executor's hook parameters.
 
-What it does not cover: an id the registry does not know proceeds unauthenticated under
-the default-configured policies (mirroring INV-MCP-004's unknown-id clause); the shim's
-fail-open transport contract is unchanged (an unreachable bridge still allows); and a
-co-resident root process can read a sibling's credential file (see the mental model;
-tracked as #365).
+What it does not cover: an id the registry does not know proceeds unauthenticated under the
+default-configured policies (mirroring INV-MCP-004's unknown-id clause); the shim's fail-open
+transport is unchanged (an unreachable bridge still allows); and, as with INV-MCP-004, a
+caller class stage 2 does not cover, or casa-core itself, is out of scope.
 
 **INV-MCP-007**: A hook policy parameter of the wrong type fails the build of that policy, and an authenticated hook resolution naming an executor the per-executor policy map does not represent is refused rather than answered from the default-configured policies.
 
@@ -349,6 +353,7 @@ dispatch path first.
 - `tests/test_internal_handlers.py`
 - `tests/test_svc_casa_mcp.py`
 - `tests/test_mcp_envelope.py`
+- `tests/test_casa_engagement_channel.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

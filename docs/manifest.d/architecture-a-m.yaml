@@ -140,6 +140,8 @@
     - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
     - casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer
     - casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements
+    - casa/rootfs/opt/casa/engagement_uids.py::UidAllocator
+    - casa/rootfs/opt/casa/safe_fs.py::read_text_beneath
   tests:
     - tests/test_delegate_to_agent.py
     - tests/test_delegate_to_agent_interactive.py
@@ -147,8 +149,12 @@
     - tests/test_cancel_engagement_tool.py
     - tests/test_engagement_registry.py
     - tests/test_observer.py
+    - tests/test_engagement_uids.py
+    - tests/test_safe_fs.py
+    - tests/test_root_workspace_accessor_inventory.py
+    - tests/test_boot_replay.py
   related: [architecture/overview.md, architecture/turn-loop.md, architecture/agent-taxonomy.md]
-  defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-003, INV-ENG-004, INV-ENG-005, INV-ENG-006, INV-ENG-007]
+  defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-003, INV-ENG-004, INV-ENG-005, INV-ENG-006, INV-ENG-007, INV-CONT-001, INV-CONT-002, INV-CONT-003, INV-CONT-004, INV-CONT-005]
   invariant_tests:
     INV-ENG-001: [tests/test_emit_completion_tool.py::test_cancel_during_g2_reload_window_finalizes_once, tests/test_engagement_registry.py::test_mark_idle_never_overwrites_terminal, tests/test_engagement_registry.py::test_mark_error_loses_to_terminal_winner, tests/test_engagement_registry.py::test_sweep_does_not_resurrect_concurrently_finalized]
     INV-ENG-002: [tests/test_engagement_registry.py::test_strict_transition_rolls_back_full_field_on_persist_failure, tests/test_engagement_registry.py::test_create_persist_failure_raises_and_rolls_back]
@@ -157,6 +163,11 @@
     INV-ENG-005: [tests/test_anchor_narration_buffer.py::test_terminal_latch_discards_via_sequencer_writers, tests/test_output_sequencer.py::test_post_intent_locked_discards_under_terminal_latch]
     INV-ENG-006: [tests/test_delegation_acl.py::TestDelegationAliasResolution::test_undeclared_persona_name_still_denied, tests/test_delegation_acl.py::TestDelegationAliasResolution::test_ambiguous_persona_name_denied, tests/test_delegation_acl.py::TestDelegationAliasResolution::test_exact_role_id_wins_over_another_delegates_name, tests/test_voice_delegation_budget.py::TestConciergeVoiceHandoffPolicy::test_handoff_policy_applies_when_addressed_by_display_name]
     INV-ENG-007: [tests/test_delegates_block_live_names.py::test_per_role_reload_refreshes_a_live_agents_delegates_block, tests/test_delegates_block_live_names.py::TestRenderWithLiveNames::test_live_names_win_over_a_stale_construction_registry, tests/test_delegates_block_live_names.py::TestRenderWithLiveNames::test_live_names_decide_membership_not_the_stale_registry, tests/test_delegates_block_live_names.py::TestLiveAgentDirectory::test_none_when_the_role_map_is_empty, tests/test_delegation_context_wrapper.py::test_caller_name_follows_a_rename_without_a_full_restart, tests/test_reload_delegates_prompt_refresh.py::test_rename_drops_warm_clients_of_agents_that_declare_the_role, tests/test_reload_delegates_prompt_refresh.py::test_a_reload_that_changes_no_name_refreshes_nobody, tests/test_reload_delegates_prompt_refresh.py::test_refresh_is_scheduled_not_awaited_by_the_reload, tests/test_reload_delegates_prompt_refresh.py::test_policies_cascade_refreshes_the_role_map_it_changed]
+    INV-CONT-001: [tests/test_engagement_uids.py::test_allocate_is_monotonic_and_never_reused, tests/test_engagement_uids.py::test_reconstruct_takes_max_over_all_sources_not_liveness]
+    INV-CONT-002: [tests/test_safe_fs.py::test_refuses_symlink_final_component, tests/test_safe_fs.py::test_refuses_symlink_intermediate_component, tests/test_safe_fs.py::test_owner_uid_mismatch_refused]
+    INV-CONT-003: [tests/test_root_workspace_accessor_inventory.py::test_no_control_state_under_workspace_root]
+    INV-CONT-004: [tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_when_setpriv_missing, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_uid_sentinel, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_workspace_owner_mismatch, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_missing_passwd_entry, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_unreadable_plugin_dir, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_happy_path_all_checks_pass]
+    INV-CONT-005: [tests/test_boot_replay.py::test_scandir_down_covers_service_without_undergoing_record, tests/test_boot_replay.py::test_scandir_unconfirmed_down_refuses_and_never_starts, tests/test_boot_replay.py::test_missing_setpriv_refuses_all_resumes_not_crashloop]
 
 - doc: architecture/eval-framework.md
   summary: The evaluation scaffolding — and the fact that its registry ships empty.
@@ -251,11 +262,12 @@
     - tests/test_internal_handlers.py
     - tests/test_svc_casa_mcp.py
     - tests/test_mcp_envelope.py
+    - tests/test_casa_engagement_channel.py
   related: [architecture/plugins.md, architecture/agent-taxonomy.md, architecture/http-surface.md]
   defines_invariants: [INV-MCP-001, INV-MCP-002, INV-MCP-003, INV-MCP-004, INV-MCP-005, INV-MCP-006, INV-MCP-007, INV-MCP-008]
   invariant_tests:
     INV-MCP-001: [tests/test_pin_g4_invariants.py::test_pin_inv_mcp_001_internal_dispatch_enforces_engagement_grant, tests/test_bridge_tools_allowed_gate.py::test_ungranted_tool_is_rejected]
-    INV-MCP-002: [tests/test_unix_socket_runner.py::test_unix_runner_creates_socket_with_mode_0600]
+    INV-MCP-002: [tests/test_unix_socket_runner.py::test_unix_runner_creates_socket_with_mode_0600, tests/test_casa_engagement_channel.py::TestChannelServerTransportIsTcp8100::test_channel_server_posts_to_8100_not_unix_socket, tests/test_svc_casa_mcp.py::test_svc_admin_reload_not_reachable_on_8100]
     INV-MCP-003: [tests/test_role_scoped_mcp.py::test_casa_framework_factory_exposes_only_granted_tools, tests/test_svc_casa_mcp.py::test_svc_tools_list_uses_static_snapshot]
     INV-MCP-004: [tests/test_engagement_auth_token.py::test_forged_id_without_token_is_rejected_and_tool_never_runs]
     INV-MCP-005: [tests/test_engagement_auth_token.py::test_peek_refuses_to_return_mcp_json_contents]

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.170.0] - 2026-08-09
+
+### Security
+
+- **Executor engagements now run under isolated per-engagement OS users with
+  dropped privileges.** Each `claude_code` engagement (plugin-developer
+  today) gets its own dedicated, never-reused system user with no elevated
+  capabilities and no path to regain root, and its workspace is locked down
+  to that user alone. A running engagement's own process can no longer read
+  another engagement's files or credentials — that boundary is now enforced
+  by the operating system itself, not only by application-level checks.
+  Casa's own housekeeping (reading a plugin artifact, migrating an older
+  engagement after an upgrade) goes through a hardened accessor that refuses
+  to follow a symlink out of a workspace. An engagement is refused outright,
+  rather than started with weaker protection or left crash-looping, if any
+  part of this isolation cannot be set up. Nothing about a resident's or
+  specialist's day-to-day experience changes.
+
 ## [0.169.0] - 2026-08-08
 
 ### Security
