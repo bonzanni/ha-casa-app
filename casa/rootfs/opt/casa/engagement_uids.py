@@ -147,67 +147,84 @@ def scan_passwd_uids(passwd_path: str = "/etc/passwd") -> list[int]:
     return uids
 
 
+def _fold_status_ids(status_path: str, ids: set[int]) -> None:
+    """Fold every ``Uid:``/``Gid:`` field ``>= UID_BASE`` from one
+    ``/proc/.../status`` file into *ids*.
+
+    ENOENT (the thread/process exited between enumeration and open) is a no-op —
+    a vanished task holds nothing reissuable. ANY OTHER ``OSError`` (EACCES, EIO,
+    a mid-read failure) PROPAGATES: an unreadable-but-present status is
+    unconfirmable, and the caller must fail closed rather than under-count live
+    ids. Per-field parse is best-effort (a short/garbled line contributes
+    whatever integers parse)."""
+    try:
+        fh = open(status_path, "r", encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        return  # confirmed exit (ENOENT / ESRCH) — nothing to fold
+    with fh:
+        for line in fh:
+            if not (line.startswith("Uid:") or line.startswith("Gid:")):
+                continue
+            # ``Uid:\t<real>\t<effective>\t<saved>\t<fsuid>`` — fold EVERY field
+            # (real/effective/saved/fsuid), since any can be the id a DAC check
+            # uses (S1 r4 fsuid finding).
+            for tok in line.split()[1:]:
+                try:
+                    val = int(tok)
+                except ValueError:
+                    continue
+                if val >= UID_BASE:
+                    ids.add(val)
+
+
 def scan_proc_uids(proc_root: str = "/proc") -> set[int]:
-    """Every uid/gid ``>= UID_BASE`` a live process can use for DAC.
+    """Every uid/gid ``>= UID_BASE`` a live THREAD can use for DAC.
 
-    Containment Stage 2 (S1 code-gate fix r2, both reviewers): the passwd/
-    workspace/record evidence sources are all pruned at teardown, so a
+    Defense-in-depth for the uid-reuse class (the load-bearing guarantee is the
+    durable, monotonic high-water — see :meth:`UidAllocator.reconstruct`). A
     ``setsid``/double-fork descendant that ESCAPED the supervised process group
-    (plugin-developer has Bash) survives ``ensure_service_down`` yet leaves NO
-    filesystem or passwd trace. A lost counter would then reconstruct to base
-    and reissue that survivor's uid → cross-engagement read. Reading the live
-    ``/proc/<pid>/status`` uid/gid lines closes it: a uid a live process can use
-    can never be reissued even with total filesystem + passwd evidence loss.
+    survives ``ensure_service_down`` yet may leave no filesystem/passwd trace;
+    reading the live ``/proc`` uid/gid lines folds its id into the high-water so
+    it can never be reissued.
 
-    S1 r4 (fsuid finding): Linux DAC checks the FILESYSTEM uid, not the real
-    uid. ``/proc/<pid>/status`` reports ``Uid: <real> <effective> <saved>
-    <fsuid>`` (and likewise ``Gid:``). A genuinely NON-root survivor can hold a
-    LOW real uid but a HIGH fsuid — e.g. ``setpriv --ruid 65534 --euid 200000
-    ... -- reader`` yields ``Uid: 65534 200000 200000 200000``, whose fsuid
-    200000 passes DAC as engagement 200000's owner. Reading only the real uid
-    would miss it and reissue 200000. So EVERY field on the ``Uid:`` line (and,
-    defense-in-depth, the ``Gid:`` line — workspaces are uid-owned 0700, but a
-    shared-gid DAC path would matter the same way) that is ``>= UID_BASE`` is
-    folded into the returned set.
+    S1 r5 (per-thread): ``/proc/<pid>`` lists only the thread-group LEADER, so a
+    per-thread ``setresuid``/``setfsuid`` worker (a non-leader ``<tid>``) is
+    invisible at the process level. This enumerates every
+    ``/proc/<pid>/task/<tid>/status`` so a worker thread that dropped to an
+    engagement uid is seen too.
 
-    Only values ``>= UID_BASE`` are returned (Casa's engagement range); the
-    container's own root/service ids are irrelevant. Per-pid read failures (the
-    process exited mid-scan, an unreadable ``status``) are SKIPPED — a vanished
-    pid holds nothing reissuable. But an inability to scan ``proc_root`` AT ALL
-    raises ``OSError`` (``/proc`` is always present in-container): the caller
-    treats that as unconfirmable and refuses allocation fail-closed, rather than
-    proceeding blind to what ids are live.
+    S1 r4 (fsuid): DAC checks the FILESYSTEM uid, not the real uid, so EVERY
+    field of the ``Uid:`` line (real/effective/saved/fsuid) and the ``Gid:``
+    line (defense-in-depth) that is ``>= UID_BASE`` is folded.
+
+    Fail-closed: a confirmed thread/process EXIT (ENOENT) is skipped, but an
+    inability to scan ``proc_root`` at all, or an unreadable-but-present status
+    (any non-ENOENT ``OSError``), PROPAGATES so the caller refuses allocation
+    rather than under-counting live ids.
     """
     ids: set[int] = set()
     with os.scandir(proc_root) as it:   # raises OSError if proc_root is absent
         for entry in it:
             if not entry.name.isdigit():
                 continue
+            task_dir = os.path.join(proc_root, entry.name, "task")
             try:
-                with open(
-                    os.path.join(proc_root, entry.name, "status"),
-                    "r", encoding="utf-8",
-                ) as fh:
-                    for line in fh:
-                        if not (line.startswith("Uid:")
-                                or line.startswith("Gid:")):
-                            continue
-                        # ``Uid:\t<real>\t<effective>\t<saved>\t<fsuid>`` — fold
-                        # EVERY field (real/effective/saved/fsuid), since any of
-                        # them can be the id a DAC check uses. Per-field parse is
-                        # best-effort: a short/garbled line contributes whatever
-                        # parses (never fails the pid).
-                        for tok in line.split()[1:]:
-                            try:
-                                val = int(tok)
-                            except ValueError:
-                                continue
-                            if val >= UID_BASE:
-                                ids.add(val)
-            except OSError:
-                # Process exited between scandir and open, or status
-                # unreadable — a vanished/opaque pid holds nothing reissuable.
+                task_it = os.scandir(task_dir)
+            except (FileNotFoundError, ProcessLookupError):
+                # Process exited between the pid enumeration and here (or a
+                # kernel without a task/ dir) → fall back to the process-level
+                # status, itself exit-safe.
+                _fold_status_ids(
+                    os.path.join(proc_root, entry.name, "status"), ids)
                 continue
+            # A task dir present but unreadable (non-ENOENT) propagates → the
+            # caller fails closed.
+            with task_it as tit:
+                for t in tit:
+                    if not t.name.isdigit():
+                        continue
+                    _fold_status_ids(
+                        os.path.join(task_dir, t.name, "status"), ids)
     return ids
 
 
@@ -226,10 +243,19 @@ class UidAllocator:
         passwd_path: str = "/etc/passwd",
         group_path: str = "/etc/group",
         proc_scanner=None,
+        marker_path: str | None = None,
     ) -> None:
         self._path = counter_path
         self._passwd = passwd_path
         self._group = group_path
+        # S1 r5 — the durable "initialized" sentinel. A SEPARATE file from the
+        # counter, written once at first successful init, so that
+        # (counter-absent + marker-present) is DETECTABLE as counter LOSS rather
+        # than a genuine fresh install. The counter file is exactly what can get
+        # "lost", so the marker must be a second artifact; both live under /data,
+        # so a full /data wipe (uninstall) clears both → correctly reads as
+        # fresh, while a single-file counter loss keeps the marker → refuse.
+        self._marker = marker_path or (counter_path + ".initialized")
         # S1 r2: the live-uid source (design fail-closed). ``None`` → resolve
         # the module-level :func:`scan_proc_uids` at reconstruct time (so a
         # test that monkeypatches ``engagement_uids.scan_proc_uids`` is honored
@@ -255,74 +281,99 @@ class UidAllocator:
         self._hw = None
         self._poisoned = True
 
+    def _ensure_marker_locked(self) -> None:
+        """Write the durable ``initialized`` sentinel if absent (caller holds the
+        lock). Its mere EXISTENCE distinguishes a lost counter from a fresh
+        install; content is irrelevant (only :func:`os.path.exists` is checked).
+        A durable atomic write so it survives a crash."""
+        if not os.path.exists(self._marker):
+            atomic_write_json(self._marker, {"initialized": True}, mode=0o600)
+
     def reconstruct(self, known_uids: Iterable[int], dir_owner_uids: Iterable[int]) -> None:
-        """Set the high-water mark to the max of every uid source.
+        """Establish the monotonic, DURABLE high-water — or fail closed.
 
-        Sources (design §2): the persisted counter file (if any),
-        ``UID_BASE - 1`` (the floor — allocate() always returns >= UID_BASE),
-        *known_uids* (uids recorded on any record, incl. terminal/retained),
-        *dir_owner_uids* (uids found by stat-ing on-disk engagement/control
-        directories), the ``casa-eng-<uid>`` entries in this allocator's
-        ``/etc/passwd`` (:func:`scan_passwd_uids`), AND the real uids of every
-        LIVE process ``>= UID_BASE`` (:func:`scan_proc_uids`). Taking the max
-        over ALL of them — not just liveness, and not just filesystem evidence —
-        is deliberate: a uid that only shows up as a stale directory owner, only
-        as a passwd entry, or ONLY as a live setsid-escaped survivor process
-        (S1 r2) still must never be reissued.
+        S1 r5 CUT — the load-bearing non-reissue guarantee. A uid is NEVER
+        reissued: the high-water is durable (the persisted counter PLUS a
+        separate durable ``initialized`` sentinel), monotonic (folding evidence
+        only ever RAISES it), and any situation where we cannot PROVE the next
+        uid exceeds every previously-issued uid fails closed. This closes the
+        whole survivor-uid-reissue class — the per-thread setresuid worker, the
+        fsuid path, the CAP_DAC case's reissue facet, all of it — WITHOUT
+        depending on seeing the survivor in /proc, because a new engagement
+        simply never receives a uid at or below any previously-issued one.
 
-        Missing vs corrupt counter (design §2 — align impl with design without
-        breaking a genuine fresh install):
-          - counter file MISSING: the persisted floor stays ``UID_BASE - 1``.
-            If ANY evidence exists (a known uid, a dir owner, a passwd entry,
-            or a live process uid) the reconstructed high-water is
-            ``max(evidence)`` and is PERSISTED — a lost counter can never reset
-            BELOW a still-evidenced uid. With ZERO evidence AND a clean /proc
-            scan this is a genuine fresh install and the high-water stays
-            ``UID_BASE - 1`` (first ``allocate`` → UID_BASE).
-          - counter file present but MALFORMED (unparseable / wrong shape):
-            :class:`UidStateError` — fail-closed, never silently reset to base.
-          - the ``/proc`` live-uid scan CANNOT be performed (unexpected — /proc
-            is always present in-container): :class:`UidStateError` — treat as
-            unconfirmable and refuse allocation rather than reconstruct blind to
-            which uids are live (same fail-closed posture as a malformed
-            counter).
+        Evidence folded in (only ever RAISES the high-water): *known_uids*
+        (records incl. terminal/retained), *dir_owner_uids* (workspace/control/
+        outbox owners), the ``casa-eng-<uid>`` passwd entries
+        (:func:`scan_passwd_uids`), and every live thread's uid/gid
+        (:func:`scan_proc_uids` — defense-in-depth, no longer load-bearing).
 
-        S1 r2: folding live /proc uids closes the last reissue path — a
-        ``setsid``/double-fork descendant that escaped the supervised group
-        survives ``ensure_service_down`` and normal teardown (which prunes its
-        record, workspace, control/outbox dirs AND its ``casa-eng`` passwd
-        entry), so with counter loss the process would be the SOLE remaining
-        evidence of its uid; /proc is where that evidence lives.
+        Fresh-vs-loss (design §2, restored):
+          - counter PRESENT + parseable → high-water = max(counter, evidence);
+            never below the counter; persist; ensure the marker exists.
+          - counter ABSENT + marker ABSENT + NO evidence → genuine fresh install
+            → init at ``UID_BASE - 1``; write counter + marker.
+          - counter ABSENT but (marker PRESENT or any evidence) → this is LOSS,
+            not fresh:
+              * evidence exists → high-water = max(evidence), persist (recover);
+              * NO evidence to reconstruct from (all pruned) → POISON / refuse
+                ALL allocation (:class:`UidStateError`) — NEVER reset to base.
+          - counter MALFORMED, the /proc scan unconfirmable, or a persist
+            failure → POISON / :class:`UidStateError` (fail-closed).
+
+        Any failure poisons the allocator under the lock and surfaces as
+        UidStateError; nothing escapes as a bare OSError.
         """
-        # S1 r4: the ENTIRE reconstruct — counter read, evidence scans, and the
-        # high-water persist — runs under the lock inside one try. ANY failure
-        # (malformed counter, unscannable /proc, a persist OSError) poisons the
-        # allocator and surfaces as UidStateError; nothing escapes as a bare
-        # OSError and no partial state is left proven-good.
         with self._lock:
             try:
-                persisted = UID_BASE - 1
-                if os.path.exists(self._path):
+                counter_present = os.path.exists(self._path)
+                counter_hw = None
+                if counter_present:
                     with open(self._path, "r", encoding="utf-8") as fh:
                         raw = json.load(fh)
-                    persisted = int(raw["high_water"])
+                    counter_hw = int(raw["high_water"])
 
+                # Evidence: only values >= UID_BASE count as "a uid was issued"
+                # (a root-owned pre-chown dir has st_uid 0 — not evidence).
                 passwd_uids = scan_passwd_uids(self._passwd)
                 # Resolve the live-uid scanner at CALL time so a module-level
-                # monkeypatch is honored (see __init__). A scan that cannot run
-                # at all ⇒ fail-closed, never reconstruct blind to live uids.
+                # monkeypatch is honored (see __init__). An unconfirmable scan
+                # raises → fail-closed below.
                 scanner = self._proc_scanner or scan_proc_uids
                 proc_uids = scanner()
-
-                candidates = [
-                    persisted, UID_BASE - 1,
-                    *known_uids, *dir_owner_uids, *passwd_uids, *proc_uids,
+                evidence = [
+                    v for v in (*known_uids, *dir_owner_uids,
+                                *passwd_uids, *proc_uids)
+                    if v >= UID_BASE
                 ]
-                self._hw = max(candidates)
-                self._poisoned = False   # proven-good
-                self._persist()          # persist failure re-poisons below
+                evidence_max = max(evidence) if evidence else None
+                marker_present = os.path.exists(self._marker)
+
+                if counter_present:
+                    hw = max(counter_hw, UID_BASE - 1)
+                    if evidence_max is not None:
+                        hw = max(hw, evidence_max)
+                elif not marker_present and evidence_max is None:
+                    hw = UID_BASE - 1            # genuine fresh install
+                elif evidence_max is not None:
+                    hw = max(evidence_max, UID_BASE - 1)   # LOSS, recoverable
+                else:
+                    # Counter LOST, marker present, NO surviving evidence → we
+                    # cannot prove the next uid exceeds every issued one.
+                    raise UidStateError(
+                        "engagement uid counter is missing but the durable "
+                        "'initialized' marker is present and no uid evidence "
+                        "survives — refusing to allocate (a lost counter must "
+                        "never reset to base and risk reissuing a live uid)")
+
+                self._hw = hw
+                self._poisoned = False           # proven-good
+                self._persist()                  # persist failure re-poisons below
+                self._ensure_marker_locked()     # durable fresh-vs-loss sentinel
             except Exception as exc:  # noqa: BLE001 — any failure poisons
                 self._poison_locked()
+                if isinstance(exc, UidStateError):
+                    raise                        # preserve the precise reason
                 raise UidStateError(
                     f"uid allocator reconstruct failed ({exc!r}) — refusing to "
                     "allocate against an unconfirmed high-water") from exc

@@ -314,6 +314,57 @@ def _workspace_owner_ids(engagements_root: str) -> dict[int, set[str]]:
     return owners
 
 
+def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
+                          _kill=os.kill) -> None:
+    """Best-effort SIGKILL of any lingering process whose real/effective/saved/
+    fsuid is ``uid`` (an engagement's allocated uid, always ``>= UID_BASE``).
+
+    Containment Stage 2 (S1 r5, secondary defense-in-depth): after the boot
+    down-first sweep confirms an engagement's SERVICE down, a
+    ``setsid``/double-forked NON-root descendant could linger (it escaped the
+    supervised process group). Kill it so it cannot keep reading its own
+    soon-retained workspace. This is HYGIENE, not the guarantee — the durable,
+    monotonic uid high-water is what makes a survivor's uid un-reissuable, so a
+    new engagement never shares it regardless. NEVER raises and NEVER blocks; a
+    scan failure or a kill race is swallowed. Only ``uid >= UID_BASE`` is ever
+    targeted, so casa-core (root) and container services are never touched.
+
+    (A CAP_DAC_OVERRIDE / root-equivalent survivor reads any workspace
+    regardless of uid; only a legacy pre-Stage-2 ROOT engagement could grant
+    such caps to a descendant across the single upgrade boot — post-migration
+    engagements are non-root with an empty bounding set + no_new_privs and
+    CANNOT. That residual is the excluded root-survivor class, Stage 3
+    mount/AppArmor/pid-namespace, not closed here.)"""
+    if uid < UID_BASE:
+        return
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(os.path.join(proc_root, entry.name, "status"),
+                      "r", encoding="utf-8") as fh:
+                hit = False
+                for line in fh:
+                    if not line.startswith("Uid:"):
+                        continue
+                    for tok in line.split()[1:]:
+                        try:
+                            if int(tok) == uid:
+                                hit = True
+                                break
+                        except ValueError:
+                            continue
+                    break
+            if hit:
+                _kill(int(entry.name), signal.SIGKILL)
+        except (OSError, ValueError):
+            continue   # process vanished / unreadable / already gone — skip
+
+
 async def replay_undergoing_engagements(
     *, registry, driver, executor_registry=None,
     engagements_root: str = "/data/engagements",
@@ -542,6 +593,16 @@ async def replay_undergoing_engagements(
         # generations (old root + new dropped) supervised at once. A service that
         # cannot be confirmed down blocks its own engagement (kept durably down +
         # mark_error), never left running as root and never re-started below.
+        # S1 r5 (secondary): map each engagement id → its allocated uid so the
+        # down-first sweep can best-effort kill escaped non-root descendants
+        # (hygiene; the durable high-water is the real guarantee).
+        _svc_uid_by_id: dict[str, int] = {}
+        for _r in (list(registry.active_and_idle())
+                   + list(registry.terminal_records())):
+            _u = getattr(_r, "allocated_uid", UNALLOCATED_UID)
+            if _u >= UID_BASE:
+                _svc_uid_by_id[_r.id] = _u
+
         for _svc_eid in s6_rc.iter_engagement_service_ids(
             svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
             scandir_root=s6_rc.SERVICE_SCANDIR_ROOT,
@@ -555,6 +616,13 @@ async def replay_undergoing_engagements(
                     "boot replay: pre-migration ensure_service_down raised for "
                     "%s: %s", _svc_eid[:8], exc,
                 )
+            # Best-effort: after the service is downed, SIGKILL any escaped
+            # non-root descendant still holding this engagement's uid (S1 r5
+            # secondary). Never blocks, never raises; only runs when the uid is
+            # known and real. Not the guarantee — the durable high-water is.
+            _esc_uid = _svc_uid_by_id.get(_svc_eid)
+            if _esc_uid is not None:
+                _best_effort_kill_uid(_esc_uid)
             if _pre_down is False:
                 # Cannot confirm this service down → refuse to migrate/start it.
                 # It is NOT added to any start loop (refused_ids) and is marked

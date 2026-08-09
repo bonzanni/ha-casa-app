@@ -45,7 +45,8 @@ def _anchor_tmp_allocator(tmp_path):
     open(passwd, "w").close()
     open(group, "w").close()
     alloc = UidAllocator(
-        str(d / "counter.json"), passwd_path=passwd, group_path=group)
+        str(d / "counter.json"), passwd_path=passwd, group_path=group,
+        proc_scanner=lambda: set())   # deterministic: don't scan real /proc
     alloc.reconstruct(known_uids=[], dir_owner_uids=[])
     return alloc
 

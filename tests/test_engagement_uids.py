@@ -57,6 +57,59 @@ def test_counter_missing_zero_evidence_and_clean_proc_starts_at_base(tmp_path):
     assert a.allocate() == UID_BASE
 
 
+def test_counter_loss_with_marker_no_evidence_refuses(tmp_path):
+    # S1 r5 CUT: a counter LOST after init (durable marker survives) with NO
+    # surviving evidence must REFUSE (poison) — never reset to base. This is the
+    # case Sol's per-thread survivor needed: closed by refusal, not by seeing
+    # the thread.
+    counter = tmp_path / "uids.json"
+    a = UidAllocator(
+        str(counter), passwd_path=str(tmp_path / "pw"),
+        group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])                       # fresh: writes counter + marker
+    assert a.allocate() == UID_BASE
+    os.remove(str(counter))                     # counter LOST (marker survives)
+    b = UidAllocator(
+        str(counter), passwd_path=str(tmp_path / "pw"),
+        group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    with pytest.raises(UidStateError):          # loss + no evidence → refuse
+        b.reconstruct([], [])
+    with pytest.raises(UidStateError):          # poisoned → allocate refuses
+        b.allocate()
+
+
+def test_counter_loss_with_evidence_recovers_above(tmp_path):
+    # S1 r5: a counter LOST but with surviving evidence recovers to max(evidence)
+    # and persists — allocation continues strictly above every evidenced uid.
+    counter = tmp_path / "uids.json"
+    a = UidAllocator(
+        str(counter), passwd_path=str(tmp_path / "pw"),
+        group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    os.remove(str(counter))                     # counter LOST (marker survives)
+    b = UidAllocator(
+        str(counter), passwd_path=str(tmp_path / "pw"),
+        group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    b.reconstruct(known_uids=[UID_BASE + 7], dir_owner_uids=[])
+    assert b.allocate() == UID_BASE + 8
+
+
+def test_marker_written_on_fresh_and_counter_present_path(tmp_path):
+    # S1 r5: a genuine fresh install writes both counter and marker; a later
+    # counter-present reconstruct keeps working normally (regression).
+    counter = tmp_path / "uids.json"
+    marker = tmp_path / "uids.json.initialized"
+    a = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    a.reconstruct([], [])
+    assert counter.exists() and marker.exists()
+    a.allocate()
+    b = UidAllocator(str(counter), passwd_path=str(tmp_path / "pw"),
+                     group_path=str(tmp_path / "gr"), proc_scanner=_NO_LIVE)
+    b.reconstruct([], [])                       # counter PRESENT → normal
+    assert b.allocate() == UID_BASE + 1
+
+
 def test_proc_scan_failure_refuses_fail_closed(tmp_path):
     # S1 r2: if the /proc live-uid scan cannot run at all, reconstruct must
     # REFUSE (UidStateError), never proceed blind to which uids are live —
@@ -207,6 +260,23 @@ def test_scan_proc_uids_folds_all_uid_fields_incl_fsuid(tmp_path):
     (proc / "222" / "status").write_text(
         "Uid:\t200007\t200007\t200007\t200007\n")
     assert 200007 in scan_proc_uids(str(proc))
+
+
+def test_scan_proc_uids_reads_per_thread_task_status(tmp_path):
+    # S1 r5 (per-thread DiD): /proc/<pid> lists only the tgid leader, so a
+    # per-thread setresuid/setfsuid worker (a non-leader <tid>) is invisible at
+    # the process level. scan_proc_uids must enumerate /proc/<pid>/task/<tid>.
+    from engagement_uids import scan_proc_uids
+    proc = tmp_path / "proc"
+    # Leader thread stays at a low uid; a worker THREAD (tid 777) dropped to
+    # engagement uid 200000.
+    (proc / "500" / "task" / "500").mkdir(parents=True)
+    (proc / "500" / "task" / "500" / "status").write_text(
+        "Uid:\t1000\t1000\t1000\t1000\n")
+    (proc / "500" / "task" / "777").mkdir(parents=True)
+    (proc / "500" / "task" / "777" / "status").write_text(
+        "Uid:\t200000\t200000\t200000\t200000\n")
+    assert 200000 in scan_proc_uids(str(proc))
 
 
 def test_counter_missing_with_passwd_entry_does_not_reset_below(tmp_path):

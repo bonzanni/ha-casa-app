@@ -30,8 +30,11 @@ def _tmp_allocator():
     group = os.path.join(d, "group")
     open(passwd, "w").close()          # ensure_identity reads these
     open(group, "w").close()
+    # Inject an empty live-uid scanner so replay tests don't depend on (or scan)
+    # the host's real /proc (S1 r5 made the scan per-thread).
     alloc = UidAllocator(
-        os.path.join(d, "counter.json"), passwd_path=passwd, group_path=group)
+        os.path.join(d, "counter.json"), passwd_path=passwd, group_path=group,
+        proc_scanner=lambda: set())
     alloc.reconstruct(known_uids=[], dir_owner_uids=[])
     return alloc
 
@@ -2644,6 +2647,37 @@ async def test_refold_unscannable_proc_refuses_legacy_backfill(
     # Fail-closed: never backfilled, never started.
     assert rec.allocated_uid == UNALLOCATED_UID
     assert started == []
+
+
+def test_best_effort_kill_uid_targets_only_matching_uid(tmp_path):
+    # S1 r5 (secondary DiD): kill escaped descendants holding the engagement's
+    # uid — matched on ANY Uid field (fsuid included), never touching sub-base
+    # ids. Injected proc_root + kill fn so no real process is signalled.
+    from casa_core import _best_effort_kill_uid
+    from engagement_uids import UID_BASE
+    import signal as _sig
+    proc = tmp_path / "proc"
+    (proc / "10").mkdir(parents=True)     # survivor: low real uid, high fsuid
+    (proc / "10" / "status").write_text("Uid:\t65534\t200000\t200000\t200000\n")
+    (proc / "20").mkdir()                 # unrelated root process — never killed
+    (proc / "20" / "status").write_text("Uid:\t0\t0\t0\t0\n")
+    killed: list = []
+    _best_effort_kill_uid(
+        UID_BASE, proc_root=str(proc),
+        _kill=lambda pid, sig: killed.append((pid, sig)))
+    assert killed == [(10, _sig.SIGKILL)]
+
+
+def test_best_effort_kill_uid_never_raises_and_skips_subbase(tmp_path):
+    from casa_core import _best_effort_kill_uid
+    from engagement_uids import UID_BASE
+    # Missing proc root → no-op, never raises.
+    _best_effort_kill_uid(
+        UID_BASE, proc_root=str(tmp_path / "nope"), _kill=lambda *a: None)
+    # A sub-base uid is refused outright (never scans, never kills).
+    def _must_not_kill(*a):
+        raise AssertionError("sub-base uid must never be targeted")
+    _best_effort_kill_uid(0, proc_root=str(tmp_path), _kill=_must_not_kill)
 
 
 async def test_refold_persist_failure_refuses_legacy_backfill(
