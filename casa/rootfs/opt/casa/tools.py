@@ -4143,6 +4143,12 @@ async def delegate_to_agent(args: dict) -> dict:
             # before that still releases via the outer finally (all releases
             # are idempotent).
             rec.permit = permit
+            # #369 (Sol diff-gate r3): capture the context generation at
+            # prompt-source time, exactly as engage_executor does — this
+            # interactive prompt is built from the pre-clamp task/context
+            # locals, so a clamp→rebuild cycle completing during the option/
+            # client startup awaits must abort this launch at the driver gate.
+            _ctx_gen0 = rec.context_generation
             # Persist initial state emoji so update_topic_state knows
             # whether it needs to edit the title (no-op when state didn't change).
             try:
@@ -4179,8 +4185,22 @@ async def delegate_to_agent(args: dict) -> dict:
                 # + the outer finally (owned still set) — both idempotent.
                 return _result({"status": "error", "kind": "no_driver",
                                 "message": "engagement driver not initialized"})
+            from drivers.driver_protocol import StaleLaunchError
             try:
-                await driver.start(rec, prompt=prompt, options=options)
+                await driver.start(
+                    rec, prompt=prompt, options=options,
+                    expected_generation=_ctx_gen0)
+            except StaleLaunchError as exc:
+                # #369: a clearance clamp landed during launch — abort rather
+                # than deliver the pre-clamp task/context.
+                await _engagement_registry.mark_error(
+                    rec.id, kind="clearance_changed_during_launch",
+                    message=str(exc))
+                await _abort_engagement_topic(channel, rec.id, topic_id)
+                # permit released by mark_error + the outer finally (idempotent).
+                return _result({
+                    "status": "error", "kind": "clearance_changed_during_launch",
+                    "message": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 await _engagement_registry.mark_error(rec.id, kind="driver_start_failed",
                                                       message=str(exc))
