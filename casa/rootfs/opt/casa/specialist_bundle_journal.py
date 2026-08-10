@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,6 +189,7 @@ class BundleTxn:
     registry_path: Path = plugin_registry.REGISTRY_PATH
     specialists_dir: Path = SPECIALISTS_DIR
     acks_path: Path = ACKS_PATH
+    agents_specialists_dir: Path = Path("/config/agents/specialists")
 
     def rollback_disk(self) -> None:
         """Restore the registry entries, tuple/sidecar files, and consent-ack
@@ -219,15 +221,49 @@ class BundleTxn:
         plugin_registry.save_registry(data, self.registry_path)
 
         # 2. Tuple/sidecar files: write recorded content back; delete files
-        # recorded as absent (content is None).
-        slug_dir = Path(self.specialists_dir) / self.slug
-        for filename, content in self.before_tuple_files.items():
-            target = slug_dir / filename
-            if content is None:
-                target.unlink(missing_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+        # recorded as absent (content is None). Sol diff r1 (#490): steps 2/2b
+        # run under MATERIALIZE_LOCK — the reconcile pass re-reads the active
+        # tuple under that lock immediately before materializing, so an
+        # unlocked rollback could interleave (reconcile reads a still-present
+        # active → rollback removes tuple AND symlink → reconcile materializes
+        # its stale read), resurrecting the orphan symlink this step removes.
+        # Serialized, either order converges: reconcile-first is undone by the
+        # rollback's removal; rollback-first leaves no active for reconcile to
+        # materialize. No caller holds the lock here (the lifecycle's
+        # sync-phase handlers call rollback_disk from except blocks after
+        # their `with MATERIALIZE_LOCK:` scopes exited; the tool compensation
+        # thread and boot reconciliation never take it).
+        from specialist_materialize import MATERIALIZE_LOCK, resolve_material_content_dir
+        with MATERIALIZE_LOCK:
+            slug_dir = Path(self.specialists_dir) / self.slug
+            for filename, content in self.before_tuple_files.items():
+                target = slug_dir / filename
+                if content is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+
+            # 2b (#490). Fresh install (no prior active tuple): the op-symlink
+            # created by materialization has no prior generation to fall back
+            # to — remove it and GC its contained content dir, or every later
+            # reload re-discovers the slug through the surviving symlink while
+            # the roles overlay (rebuilt from the rolled-back index) no longer
+            # carries it, and the specialist fails every reload until removed
+            # by hand. An upgrade rollback keeps the symlink: the slug stays
+            # installed and the self-heal reconcile re-materializes from the
+            # restored active tuple. Containment-gated exactly like the
+            # materializer's own GC: only THIS slug's `.{slug}.material-<hex>`
+            # target inside the agents dir is ever rmtree'd; anything else is
+            # unlinked only.
+            if self.before_tuple_files.get("active.yaml") is None:
+                agents_dir = Path(self.agents_specialists_dir)
+                link = agents_dir / self.slug
+                if link.is_symlink():
+                    content_dir = resolve_material_content_dir(link, agents_dir)
+                    link.unlink(missing_ok=True)
+                    if content_dir is not None:
+                        shutil.rmtree(content_dir, ignore_errors=True)
 
         # 3. Consent-ack records: slug-scoped delta re-insert (never a
         # whole-map rewrite — see SpecialistInstallAckStore.restore_records).
@@ -362,7 +398,9 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
                     specialists_dir: Path = SPECIALISTS_DIR,
                     acks_path: Path = ACKS_PATH,
                     receipts_dir: Path = RECEIPTS_DIR,
-                    personas_dir: "Path | None" = None) -> list[dict]:
+                    personas_dir: "Path | None" = None,
+                    agents_specialists_dir: Path = Path(
+                        "/config/agents/specialists")) -> list[dict]:
     """Scan EVERY regular file in `ops_dir` (skipping `*.quarantined`) and
     reconcile it per the module docstring. Runs before the plugin snapshot
     loads. Returns `[{slug, action}]` for the health report; also stashed on
@@ -518,6 +556,7 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
             registry_path=registry_path,
             specialists_dir=specialists_dir,
             acks_path=acks_path,
+            agents_specialists_dir=agents_specialists_dir,
         )
         try:
             txn.rollback_disk()

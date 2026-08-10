@@ -558,9 +558,12 @@ def build_admin_reload_handler(*, runtime):
         # must acquire _PLUGIN_TOOLS_LOCK BEFORE dispatch — never inside
         # reload.py (AB/BA deadlock vs reload's own writer/reader lock). Global
         # order everywhere: _PLUGIN_TOOLS_LOCK -> reload writer/reader lock.
+        # #489: the GUARD, not the raw lock — reload_full's include_env arm
+        # reaches the plugin_env handler, whose health block re-enters via
+        # the same guard.
         if scope == "full":
             import tools as tools_mod
-            async with tools_mod._PLUGIN_TOOLS_LOCK:
+            async with tools_mod._plugin_tools_guard():
                 result = await reload_mod.dispatch(
                     scope, runtime=active, role=role, include_env=include_env)
         else:

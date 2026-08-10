@@ -1925,7 +1925,8 @@ def commit_specialist_install(
                 journal_path=journal, slug=inspection.slug,
                 before_entries=before_owned, before_tuple_files=before_tuple_files,
                 ack_records=ack_records, registry_path=registry_path,
-                specialists_dir=specialists_dir, acks_path=acks.path)
+                specialists_dir=specialists_dir, acks_path=acks.path,
+                agents_specialists_dir=agents_specialists_dir)
             try:
                 published = _publish_owned_plugins(
                     inspection.slug, receipt, tree_paths, store_root=plugin_store_root)
@@ -1954,7 +1955,8 @@ def commit_specialist_install(
                     ack_records=ack_records, removed_artifact_ids=removed,
                     new_artifact_ids=tuple(sorted(new_artifact_ids)),
                     registry_path=registry_path, specialists_dir=specialists_dir,
-                    acks_path=acks.path)
+                    acks_path=acks.path,
+                    agents_specialists_dir=agents_specialists_dir)
             except BaseException:
                 # Sync-phase failure: nothing was reloaded, so restore disk
                 # state from the before-state (spec §3.2 failure handling — no
@@ -2145,7 +2147,8 @@ def upgrade_specialist(
             journal_path=journal, slug=slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             registry_path=registry_path, specialists_dir=specialists_dir,
-            acks_path=acks.path)
+            acks_path=acks.path,
+            agents_specialists_dir=agents_specialists_dir)
         try:
             instance = _upgrade_core(
                 slug=slug, inspection=eff_inspection, config=config,
@@ -2181,7 +2184,8 @@ def upgrade_specialist(
                 removed_artifact_ids=removed,
                 new_artifact_ids=tuple(sorted(new_artifact_ids)),
                 registry_path=registry_path, specialists_dir=specialists_dir,
-                acks_path=acks.path)
+                acks_path=acks.path,
+                agents_specialists_dir=agents_specialists_dir)
         except BaseException:
             # P1-1: complete the journal ONLY after a SUCCESSFUL rollback. A
             # rollback that raises leaves the in-progress journal on disk so boot
@@ -2814,7 +2818,8 @@ def rollback_specialist(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
         registry_path=registry_path, specialists_dir=specialists_dir,
-        acks_path=acks.path)
+        acks_path=acks.path,
+        agents_specialists_dir=agents_specialists_dir)
     try:
         prior_entries = [_prior_owned_entry(slug, r) for r in prior_rows]
         before_entries, _ = plugin_registry.apply_owned_swap(
@@ -2836,7 +2841,8 @@ def rollback_specialist(
             removed_artifact_ids=removed,
             new_artifact_ids=tuple(sorted(prior_ids)),
             registry_path=registry_path, specialists_dir=specialists_dir,
-            acks_path=acks.path)
+            acks_path=acks.path,
+            agents_specialists_dir=agents_specialists_dir)
     except BaseException:
         # P1-1: complete the journal ONLY after a SUCCESSFUL rollback. A
         # rollback that raises leaves the in-progress journal on disk so boot
@@ -3074,7 +3080,8 @@ def uninstall_specialist(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
         registry_path=registry_path, specialists_dir=specialists_dir,
-        acks_path=acks.path)
+        acks_path=acks.path,
+        agents_specialists_dir=agents_specialists_dir)
     try:
         before_entries, _ = plugin_registry.apply_owned_swap(
             slug=slug, new_entries=[], registry_path=registry_path)
@@ -3090,7 +3097,8 @@ def uninstall_specialist(
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             removed_artifact_ids=all_ids, new_artifact_ids=(),
             registry_path=registry_path, specialists_dir=specialists_dir,
-            acks_path=acks.path)
+            acks_path=acks.path,
+            agents_specialists_dir=agents_specialists_dir)
     except BaseException:
         # P1-1: complete the journal ONLY after a SUCCESSFUL rollback. A
         # rollback that raises leaves the in-progress journal on disk so boot

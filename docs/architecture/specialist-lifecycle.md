@@ -180,6 +180,20 @@ block another's.
 **A bundle sync phase fails.** The journal rolls the recorded pre-state back; if rollback
 itself fails, the journal stays in progress for boot to finish.
 
+**The post-commit sequencer fails.** The transaction compensates: the recorded pre-state
+is restored, and for a fresh install (no prior active tuple) that restoration includes
+removing the op-symlink materialized during the commit — its content directory is
+garbage-collected under the same containment gate materialization uses — so a rolled-back
+install leaves nothing for agent discovery to keep tripping over. The failure result
+states the outcome explicitly: `rolled_back` when the disk state was restored (with
+`runtime_compensation_incomplete` when the compensating runtime sweep did not converge —
+the next reload or restart converges it), `compensation_failed` when the disk rollback
+itself failed and boot reconciliation is the backstop. A sequencer verdict that blocks
+only on integrity and binding reasons: config-pending readiness — an unresolved secret,
+a missing system-requirement binary, or a `casa.setupProvides` variable still
+unprovisioned on a fresh install — is a verified-legal terminal state and never triggers
+compensation.
+
 **Boot finds journals.** Complete ones are pruned, valid in-progress ones rolled back,
 corrupt or unrollbackable ones quarantined — a filename that cannot be parsed quarantines
 every owned entry rather than guessing. The same boot pass age-sweeps orphan consent

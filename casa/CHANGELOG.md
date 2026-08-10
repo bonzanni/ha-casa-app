@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.173.0] - 2026-08-11
+
+### Fixed
+
+- **Installing a specialist whose bundled plugin creates its own credentials
+  no longer fails and undoes itself.** A plugin that declares "my setup tool
+  provisions this credential" is, on a fresh install, always unprovisioned —
+  that is the state its setup tool exists to fix. The post-install check was
+  reading that normal state as a failure and rolling the whole install back,
+  making such specialists impossible to install. Unprovisioned-by-design now
+  counts as "installed, awaiting setup", exactly as documented. (#488)
+- **A full reload that also refreshes plugin secrets no longer freezes
+  Casa's configuration tools.** Asking for a full reload with the
+  environment refresh included made the reload wait on itself forever —
+  the calling conversation hung mid-turn, and every later reload or plugin
+  change queued behind it until a restart. The two steps now recognise they
+  are one operation and the reload completes. (#489)
+- **A rolled-back specialist install cleans up after itself completely.**
+  Rolling back a fresh install used to leave a dangling link behind that
+  made every subsequent reload retry — and fail — the specialist that was
+  no longer there, until the link was removed by hand. The rollback now
+  removes it. (#490)
+- **When an install is rolled back, the result now says so.** The failure
+  result used to describe only what wasn't ready, reading as "installed but
+  dormant" — so a rolled-back install could be reported (and acted on) as a
+  committed one. The result now states plainly that the change was undone,
+  distinguishes a complete rollback from one the runtime hasn't fully
+  caught up with, and the deciding verdict is logged. (#491)
+
 ## [0.172.0] - 2026-08-10
 
 ### Fixed
