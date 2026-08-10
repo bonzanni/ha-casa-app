@@ -4192,7 +4192,18 @@ async def delegate_to_agent(args: dict) -> dict:
                     expected_generation=_ctx_gen0)
             except StaleLaunchError as exc:
                 # #369: a clearance clamp landed during launch — abort rather
-                # than deliver the pre-clamp task/context.
+                # than deliver the pre-clamp task/context. Terra r5: with
+                # record_live a rebuild COMPLETED meanwhile — the engagement
+                # is alive on its floor session, so transfer the permit
+                # exactly as the success path does and report it pending.
+                if exc.record_live:
+                    owned = None  # permit transferred to the live record
+                    _record_launch_safe(agent_name)
+                    return _result({
+                        "status": "pending", "engagement_id": rec.id,
+                        "agent": agent_name, "mode": "interactive",
+                        "topic_id": topic_id,
+                    })
                 await _engagement_registry.mark_error(
                     rec.id, kind="clearance_changed_during_launch",
                     message=str(exc))
@@ -6345,9 +6356,15 @@ async def engage_executor(args: dict) -> dict:
                     expected_generation=_ctx_gen0)
             except StaleLaunchError as exc:
                 # #369: a clearance clamp landed during launch — the prompt in
-                # hand was rendered from pre-clamp materials. Abort cleanly;
-                # the caller may retry (a fresh engagement resolves current
-                # markers).
+                # hand was rendered from pre-clamp materials. Terra r5: when a
+                # clamp→rebuild cycle COMPLETED meanwhile, the engagement is
+                # ALIVE on its rebuilt floor session — only this stale prompt
+                # aborts, never the living record/topic.
+                if exc.record_live:
+                    return _result({
+                        "status": "pending", "engagement_id": rec.id,
+                        "executor_type": executor_type, "topic_id": topic_id,
+                    })
                 await _engagement_registry.mark_error(
                     rec.id, kind="clearance_changed_during_launch",
                     message=str(exc),
@@ -6396,7 +6413,13 @@ async def engage_executor(args: dict) -> dict:
                     rec, prompt=prompt, options=options,
                     expected_generation=_ctx_gen0)
             except StaleLaunchError as exc:
-                # #369: see the claude_code branch above.
+                # #369: see the claude_code branch above (incl. Terra r5's
+                # record_live supersede).
+                if exc.record_live:
+                    return _result({
+                        "status": "pending", "engagement_id": rec.id,
+                        "executor_type": executor_type, "topic_id": topic_id,
+                    })
                 await _engagement_registry.mark_error(
                     rec.id, kind="clearance_changed_during_launch",
                     message=str(exc),

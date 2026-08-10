@@ -1404,24 +1404,31 @@ class ClaudeCodeDriver(DriverProtocol):
             # outside the Bug-13 rollback scope — raising alone would leave a
             # live service supervising a CLI whose workspace CLAUDE.md was
             # rendered from pre-clamp materials. Tear the service and the
-            # in-memory machinery down first (best-effort on the stop: the
-            # errored record refuses delivery either way, and the rebuild
-            # path re-verifies extinction before any fresh start).
-            try:
-                await s6_rc.ensure_service_down(engagement_id=engagement.id)
-            except Exception:  # noqa: BLE001 — best-effort; logged
-                logger.warning(
-                    "stale-launch teardown: ensure_service_down failed for "
-                    "%s", engagement.id[:8], exc_info=True)
-            try:
-                await self.cancel(engagement)
-            except Exception:  # noqa: BLE001 — best-effort; logged
-                logger.warning(
-                    "stale-launch teardown: driver cancel failed for %s",
-                    engagement.id[:8], exc_info=True)
+            # in-memory machinery down first — but ONLY while the rebuild is
+            # still pending (Terra r5): the s6 service is shared by
+            # engagement id, so once a rebuild has completed (pending
+            # cleared, generation-only mismatch) the running service is the
+            # REBUILT floor one and must be left alone; this launch then
+            # aborts without touching it.
+            if getattr(latest, "context_rebuild_pending", False):
+                try:
+                    await s6_rc.ensure_service_down(
+                        engagement_id=engagement.id)
+                except Exception:  # noqa: BLE001 — best-effort; logged
+                    logger.warning(
+                        "stale-launch teardown: ensure_service_down failed "
+                        "for %s", engagement.id[:8], exc_info=True)
+                try:
+                    await self.cancel(engagement)
+                except Exception:  # noqa: BLE001 — best-effort; logged
+                    logger.warning(
+                        "stale-launch teardown: driver cancel failed for %s",
+                        engagement.id[:8], exc_info=True)
             raise StaleLaunchError(
                 f"engagement {engagement.id[:8]} was clearance-clamped "
-                "during launch; aborting the pre-clamp prompt")
+                "during launch; aborting the pre-clamp prompt",
+                record_live=not getattr(
+                    latest, "context_rebuild_pending", False))
 
         # 5. Enqueue the initial prompt (is_initial=True) — the first spawn
         #    arms the reader and delivers it. Enqueue is instant while the

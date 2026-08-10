@@ -177,7 +177,12 @@ class InCasaDriver(DriverProtocol):
                         engagement.id[:8], exc_info=True)
                 raise StaleLaunchError(
                     f"engagement {engagement.id[:8]} was clearance-clamped "
-                    "during launch; aborting the pre-clamp prompt")
+                    "during launch; aborting the pre-clamp prompt",
+                    # Terra r5: pending cleared + generation moved = a rebuild
+                    # COMPLETED while we were suspended — the engagement is
+                    # alive on its floor client and must not be errored.
+                    record_live=not getattr(
+                        latest, "context_rebuild_pending", False))
             self._clients[engagement.id] = entered or client
             self._ctx_stack[engagement.id] = client  # for __aexit__
             self._locks[engagement.id] = asyncio.Lock()
