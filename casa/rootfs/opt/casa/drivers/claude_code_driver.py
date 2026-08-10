@@ -920,8 +920,13 @@ class ClaudeCodeDriver(DriverProtocol):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         reanchor_retry_sleep: Callable[[float], Awaitable[None]] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        executor_defn_lookup: Callable[[str], Any] | None = None,
     ) -> None:
         self._engagements_root = engagements_root
+        # #369: (executor_type) -> definition | None, wired by casa_core to
+        # executor_registry.definition_any — rebuild_fresh_context re-renders
+        # CLAUDE.md after a clearance downgrade and needs the defn's template.
+        self._executor_defn_lookup = executor_defn_lookup
         # F3 (whole-branch gate): injectable monotonic clock for the force-suspend
         # re-arm cooldown (tests advance it deterministically; never patch a
         # shared module attribute).
@@ -1149,6 +1154,13 @@ class ClaudeCodeDriver(DriverProtocol):
                         task=engagement.task,
                         origin_channel=engagement.origin.get("channel", "telegram"),
                         token_budget=defn.memory.token_budget,
+                        # #369/#336: filter at the record's own markers, as the
+                        # in_casa launch does — omitting them fell through to
+                        # channel-keyed clearance (telegram ⇒ private), handing
+                        # a low-clearance creator the operator's private tier.
+                        origin_route=engagement.origin.get("_origin_route"),
+                        origin_clearance=engagement.origin.get(
+                            "_origin_clearance"),
                     )
 
                 # §3.3: a workspace-template/ (e.g. plugin-developer) selects
@@ -1369,6 +1381,20 @@ class ClaudeCodeDriver(DriverProtocol):
         #    session-id capture, and (at DEBUG) the log relay.
         self._spawn_background_tasks(engagement)
 
+        # #369 (Sol design r2): LAST-instant gate before the initial prompt is
+        # enqueued — a clearance clamp landing during the service-start awaits
+        # above means `prompt` was rendered from pre-clamp materials and must
+        # not reach the fresh process. Abort; the launcher's error path rolls
+        # the engagement back.
+        _lookup = getattr(self._registry, "get", None)
+        latest = _lookup(engagement.id) if callable(_lookup) else None
+        if latest is not None and getattr(
+                latest, "context_rebuild_pending", False):
+            from drivers.driver_protocol import StaleLaunchError
+            raise StaleLaunchError(
+                f"engagement {engagement.id[:8]} was clearance-clamped "
+                "during launch; aborting the pre-clamp prompt")
+
         # 5. Enqueue the initial prompt (is_initial=True) — the first spawn
         #    arms the reader and delivers it. Enqueue is instant while the
         #    reader is unarmed, so no background task is needed.
@@ -1397,6 +1423,57 @@ class ClaudeCodeDriver(DriverProtocol):
             return await spool.enqueue(text, tg_message_id=tg_message_id)
         await self._write_to_fifo(engagement, text)
         return None
+
+    async def invalidate_session(self, engagement: EngagementRecord) -> None:
+        """#369: tear down a session whose clearance was downgraded — the live
+        CLI process (whose in-memory conversation holds pre-clamp context) is
+        stopped, the control-dir session pointer is removed (the run template
+        starts a FRESH session when it is absent), the cached executor-memory
+        archive is blanked (it was fetched at the old tier and boot-replay's
+        CLAUDE.md refresh would otherwise re-render it), and the media outbox
+        is re-provisioned empty. The service is left DOWN;
+        :meth:`rebuild_fresh_context` brings it back up. Raises on the
+        teardown steps that matter — the caller fails closed on the durable
+        ``context_rebuild_pending`` flag either way."""
+        from drivers.workspace import executor_memory_path, session_id_path
+        import plugin_outbox
+
+        await s6_rc.ensure_service_down(engagement_id=engagement.id)
+        # In-memory spool/task state for the old process.
+        for t in self._tasks.pop(engagement.id, []):
+            t.cancel()
+        self._inbound.pop(engagement.id, None)
+        self._epoch_pending.pop(engagement.id, None)
+        self._turn_running.pop(engagement.id, None)
+        mem_path = Path(executor_memory_path(engagement.id))
+        if mem_path.is_file():
+            mem_path.write_text("", encoding="utf-8")
+        Path(session_id_path(engagement.id)).unlink(missing_ok=True)
+        real_uid = owner_uid_or_none(engagement.allocated_uid)
+        if real_uid is not None:
+            plugin_outbox.provision_engagement_outbox(real_uid, fresh=True)
+
+    async def rebuild_fresh_context(self, engagement: EngagementRecord) -> None:
+        """#369: establish the post-downgrade FLOOR context — re-render the
+        workspace CLAUDE.md from the (now clearance-withheld) record and the
+        (now blank) archive cache, then start the service, which spawns a
+        fresh session (no ``.session_id``). Raises on failure so the caller
+        keeps ``context_rebuild_pending`` set and refuses delivery."""
+        from drivers.workspace import refresh_claude_md
+
+        defn = (
+            self._executor_defn_lookup(engagement.role_or_type)
+            if self._executor_defn_lookup is not None else None
+        )
+        if defn is None:
+            raise RuntimeError(
+                f"cannot rebuild engagement {engagement.id[:8]}: executor "
+                f"definition {engagement.role_or_type!r} unavailable")
+        ws_path = str(Path(self._engagements_root) / engagement.id)
+        await asyncio.to_thread(
+            refresh_claude_md, ws_path, defn=defn, rec=engagement)
+        await s6_rc.start_service(engagement_id=engagement.id)
+        self._spawn_background_tasks(engagement)
 
     async def cancel(self, engagement: EngagementRecord) -> None:
         """Teardown for a terminal transition (cancelled or completed).

@@ -103,10 +103,18 @@ async def build_retain_items(
         if tier not in TIERS:
             raise ValueError("invalid sensitivity tier returned by classifier")
         provenance_json = canonical_json_bytes(provenance_mapping(turn.provenance)).decode("utf-8")
-        items.append({
+        item: dict[str, object] = {
             "content": text,
             "tags": [tier, encode_provenance_tag(turn.provenance), *application_tags],
             "metadata": {"casa_source_v1": provenance_json},
             "document_id": document_id,
-        })
+        }
+        # #471: the turn's wall-clock time rides OUT-OF-BAND (a documented
+        # retain-item field, semantic_memory.retain) now that the envelope is
+        # stripped from the hashed/stored content. Within-batch duplicates keep
+        # the first occurrence's timestamp; a cross-session re-retain upserts
+        # the whole document, timestamp included.
+        if turn.timestamp is not None:
+            item["timestamp"] = turn.timestamp
+        items.append(item)
     return items

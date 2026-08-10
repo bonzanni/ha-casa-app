@@ -990,6 +990,52 @@ async def replay_undergoing_engagements(
                     )
                     continue
 
+                # #369: a crash between a clearance clamp and its context
+                # rebuild leaves context_rebuild_pending set — the recorded
+                # session and the cached executor-memory archive were built
+                # ABOVE the record's clamped floor. Blank the archive cache
+                # and drop the control-dir session pointer BEFORE any refresh
+                # or service start: the run template then spawns a FRESH
+                # session, the CLAUDE.md refresh below renders from the
+                # (clamp-withheld) record, and the replayed engagement comes
+                # up at the floor — which IS the rebuild, so clear the flag.
+                if getattr(rec, "context_rebuild_pending", False):
+                    from drivers.workspace import (
+                        executor_memory_path, session_id_path,
+                    )
+                    try:
+                        _mem = Path(executor_memory_path(rec.id))
+                        if _mem.is_file():
+                            _mem.write_text("", encoding="utf-8")
+                        Path(session_id_path(rec.id)).unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning(
+                            "boot replay: engagement %s context reset failed "
+                            "(%s) — refusing resume (flag stays set)",
+                            rec.id[:8], exc)
+                        refused_ids.add(rec.id)
+                        continue
+                    # Force the CLAUDE.md re-render here: the clamp popped
+                    # origin["brief"], so the brief-gated refresh below will
+                    # NOT run for this record, yet the workspace still holds
+                    # the pre-clamp task text.
+                    try:
+                        refresh_claude_md(
+                            os.path.join(engagements_root, rec.id),
+                            defn=defn_any, rec=rec)
+                    except Exception as exc:  # noqa: BLE001 — fail-closed
+                        logger.warning(
+                            "boot replay: engagement %s floor CLAUDE.md "
+                            "re-render failed (%s) — refusing resume",
+                            rec.id[:8], exc)
+                        refused_ids.add(rec.id)
+                        continue
+                    await registry.clear_context_rebuild_pending(rec.id)
+                    logger.info(
+                        "boot replay: engagement %s context rebuilt at the "
+                        "clamped floor (fresh session, archive cleared)",
+                        rec.id[:8])
+
                 # W3 (r8-B5/r9-B5): re-render the workspace CLAUDE.md from the
                 # VERBATIM origin["brief"] for EVERY resumed brief-bearing
                 # engagement — placed BEFORE the service_pair_complete fast
@@ -3785,6 +3831,9 @@ async def main() -> None:
         topic_stream_factory=_topic_stream_factory,
         persist_session_id=engagement_registry.persist_session_id,
         result_observer=_specialist_result_observer,
+        # #369: last-instant launch gate — start() re-reads the live record
+        # before delivering the initial prompt.
+        record_lookup=engagement_registry.get,
     )
 
     # claude_code driver: send_to_topic doubles as the live TopicStreamRelay's
@@ -3908,6 +3957,9 @@ async def main() -> None:
         # capture; this hook keeps EngagementRecord.sdk_session_id in
         # lockstep with the on-disk file the run script reads on resume.
         persist_session_id=engagement_registry.persist_session_id,
+        # #369: rebuild_fresh_context re-renders CLAUDE.md after a clearance
+        # downgrade — resolve the defn the same way boot replay does.
+        executor_defn_lookup=executor_registry.definition_any,
     )
 
     # Wire bus sink so subprocess_respawn events reach the observer.
@@ -3987,6 +4039,39 @@ async def main() -> None:
             await engagement_driver.send_user_turn(rec, text)
             return None
         telegram_channel._driver_send_user_turn = _driver_send_user_turn
+
+        # #369: clearance-downgrade context revocation. ``invalidate`` tears
+        # the pre-clamp session down (the durable context_rebuild_pending flag,
+        # set by the clamp itself, is what refuses resume if any step fails);
+        # ``rebuild`` establishes a fresh session at the clamped floor and
+        # returns the preamble prepended to the next delivered turn. The
+        # rebuilt session deliberately re-imports NOTHING from the launch —
+        # the record's task/brief/context were withheld by the clamp, and
+        # memory stays reachable through clearance-gated recall.
+        _REBUILD_NOTE = (
+            "[Context reset: this engagement's earlier working context is no "
+            "longer available. Continue from the messages in this topic; use "
+            "recall_memory if you need prior facts.]"
+        )
+
+        async def _driver_invalidate_session(rec):
+            if rec.driver == "claude_code":
+                await claude_code_driver.invalidate_session(rec)
+            else:
+                await engagement_driver.cancel(rec)
+
+        async def _engagement_context_rebuilder(rec) -> str:
+            if rec.driver == "claude_code":
+                await claude_code_driver.rebuild_fresh_context(rec)
+            else:
+                # Idempotent teardown first: the invalidate step normally ran,
+                # but a crash-recovered pending flag reaches here directly.
+                await engagement_driver.cancel(rec)
+                await engagement_driver.open_fresh(rec)
+            return _REBUILD_NOTE
+        telegram_channel._driver_invalidate_session = _driver_invalidate_session
+        telegram_channel._engagement_context_rebuilder = (
+            _engagement_context_rebuilder)
 
         # v0.83.0 (§A3, Sol r7-1): the answered-RESERVATION seam. reserve is
         # SYNCHRONOUS (set in the handler's same section as the high-water

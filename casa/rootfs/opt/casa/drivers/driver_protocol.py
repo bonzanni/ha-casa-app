@@ -13,6 +13,16 @@ from typing import Any
 from engagement_registry import EngagementRecord
 
 
+class StaleLaunchError(RuntimeError):
+    """#369: raised by a driver's ``start()`` when, at the last suspension
+    point before the initial prompt is enqueued, the engagement record turns
+    out to have been clearance-clamped (``context_rebuild_pending``) — the
+    prompt in hand was rendered from pre-clamp materials and MUST NOT reach
+    the fresh process. The launcher aborts the engagement; the clamp landing
+    mid-launch is rare enough that "abort, let the caller retry" beats
+    re-rendering a floor prompt nobody asked for."""
+
+
 class DriverProtocol(ABC):
     """Lifecycle interface all engagement drivers must honour."""
 

@@ -943,6 +943,10 @@ class TestSteeringClampsEngagementClearance:
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
         ch._driver_send_user_turn = AsyncMock()
+        # #369: a moving clamp now also tears down + rebuilds the session
+        # context; wire the seams so delivery can proceed.
+        ch._driver_invalidate_session = AsyncMock()
+        ch._engagement_context_rebuilder = AsyncMock(return_value="")
         ch._engagement_registry = engagement_fixture.registry
         rec = engagement_fixture.active_record
         rec.origin["_origin_route"] = "telegram"

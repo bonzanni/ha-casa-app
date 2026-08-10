@@ -348,6 +348,14 @@ class TestEngagementClearanceClampOnSteering:
         await reg.lower_origin_clearance(rec.id, "public")
         token = tools_mod.engagement_var.set(rec)
         try:
+            # #369: between the clamp and the context rebuild the engagement
+            # may not read at all — the fence refuses without touching the
+            # backend (the old session is still running on pre-clamp context).
+            fenced = await tools_mod.recall_memory.handler({"query": "alarm code"})
+            assert calls == []
+            assert "rebuilt" in fenced["content"][0]["text"]
+            # Once the rebuild completes, reads run at the lowered tier.
+            await reg.clear_context_rebuild_pending(rec.id)
             await tools_mod.recall_memory.handler({"query": "alarm code"})
         finally:
             tools_mod.engagement_var.reset(token)

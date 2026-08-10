@@ -121,6 +121,8 @@ async def test_engagement_origin_preferred(wired):
     # origin_var says chat 1197017861, but the active engagement says chat 42.
     eng = MagicMock()
     eng.origin = {"channel": "telegram", "chat_id": 42}
+    eng.status = "active"
+    eng.context_rebuild_pending = False
     etok = tools.engagement_var.set(eng)
     try:
         await tools.send_media.handler({"path": path, "kind": "document"})
@@ -138,6 +140,8 @@ def _eng_with_uid(uid, chat_id=42):
     eng = MagicMock()
     eng.origin = {"channel": "telegram", "chat_id": chat_id}
     eng.allocated_uid = uid
+    eng.status = "active"
+    eng.context_rebuild_pending = False
     return eng
 
 

@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.172.0] - 2026-08-10
+
+### Fixed
+
+- **Saying the same thing twice no longer stores it twice.** Long-term memory
+  is content-addressed so a repeated fact collapses to one stored document,
+  but the per-turn timestamp block that rides on every sent message had crept
+  into the stored text and its identity hash — so the same sentence said in
+  two conversations minted two near-identical memories, and the bank slowly
+  filled with duplicates. The timestamp is now split off before a turn is
+  stored: the memory text is clean, the identity is timestamp-independent,
+  and the turn's wall-clock time is kept on the stored item itself.
+  Existing duplicates in the bank are not rewritten; new retentions
+  deduplicate from here on. (#471)
+- **Casa no longer tells you "there is no record in memory" when it simply
+  can't read the record from where you're asking.** A memory search is
+  filtered by the surface's read clearance, so an empty result can mean
+  "never told" or "not readable here" — and the agent was wording both as
+  non-existence. Empty search results now tell the agent exactly what it may
+  claim: nothing readable here, not proof of absence — and when readable
+  matches exist but were too large to render, it says that instead of
+  denying them. (#472)
+
+### Security
+
+- **Lowering an engagement's clearance now also takes away what it had
+  already read.** When someone with lower clearance steers an engagement,
+  its future memory reads were already clamped down — but everything it had
+  fetched earlier (its conversation so far, the memory digest injected at
+  launch, even its original task text) stayed available, so it could simply
+  be asked to restate private material. A downgrade now durably invalidates
+  the engagement's working context: its session is rebuilt fresh at the new
+  clearance floor before the steering message is answered, the original
+  task/context are withheld from every later rebuild, in-flight memory reads
+  are re-filtered at the new floor, and until the rebuild completes the old
+  process can neither read memory nor launch new work. Restarts cannot bring
+  the old session back. What was already posted in the (group-visible) topic
+  stays, as does output of a turn that was already running. (#369)
+
 ## [0.171.0] - 2026-08-10
 
 ### Security

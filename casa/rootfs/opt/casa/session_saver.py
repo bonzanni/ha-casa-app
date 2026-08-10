@@ -21,6 +21,7 @@ from memory_provenance import build_retain_items
 from personality_types import RetainedTurn, SpeakerProvenance
 from speaker_provenance import provenance_from_mapping, provenance_mapping
 from tier_classifier import classify_tier
+from timekeeping import split_time_envelope
 
 if TYPE_CHECKING:
     from agent import SessionEntrySnapshot
@@ -98,7 +99,18 @@ async def transcript_to_items(
         if not text:
             continue
         if getattr(m, "type", "") == "user":
-            turns.append(RetainedTurn(text, user_provenance))
+            # #471: agent.py prepends a <current_time> envelope to the SENT
+            # query text and the SDK transcript echoes it back — with it inside
+            # the hash, an identical utterance minted a new document in every
+            # session and the cross-session dedup content addressing exists for
+            # (F1) never engaged. Split it off USER turns only (an assistant
+            # reply starting with an envelope-shaped block is its own content),
+            # so id and stored text are envelope-free while the wall-clock time
+            # survives out-of-band on the item.
+            ts, text = split_time_envelope(text)
+            if not text.strip():
+                continue
+            turns.append(RetainedTurn(text, user_provenance, timestamp=ts))
         else:
             turns.append(RetainedTurn(text, speaker_provenance))
     if not turns:

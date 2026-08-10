@@ -19,7 +19,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from drivers.driver_protocol import DriverProtocol
+from drivers.driver_protocol import DriverProtocol, StaleLaunchError
 from engagement_registry import EngagementRecord
 import sdk_logging
 
@@ -88,11 +88,17 @@ class InCasaDriver(DriverProtocol):
         topic_stream_factory: TopicStreamFactory,
         persist_session_id: SessionIdPersister | None = None,
         result_observer: "ResultObserver | None" = None,
+        record_lookup: Callable[[str], Any] | None = None,
     ) -> None:
         self._topic_stream_factory = topic_stream_factory
         self._persist_session_id = persist_session_id
         # Task 6 (spec §4.6): optional per-turn cost/usage observer.
         self._result_observer = result_observer
+        # #369: live registry lookup (engagement_id -> record | None) consulted
+        # at the LAST suspension point before the initial prompt is delivered —
+        # a clearance clamp can land during __aenter__, after the launcher's
+        # own checks. None-safe for tests and legacy wiring.
+        self._record_lookup = record_lookup
         self._clients: dict[str, ClaudeSDKClient] = {}
         self._ctx_stack: dict[str, Any] = {}
         # Per-engagement asyncio.Lock guards query/receive_response sequencing:
@@ -145,6 +151,24 @@ class InCasaDriver(DriverProtocol):
                 "Engagement %s driver=in_casa client opened",
                 engagement.id[:8],
             )
+            # #369 (Sol design r2): LAST-instant gate — a clearance clamp that
+            # landed while __aenter__ was suspended means `prompt` was rendered
+            # from pre-clamp materials. Abort (rolling the client back) rather
+            # than deliver it into the fresh process.
+            latest = (
+                self._record_lookup(engagement.id)
+                if self._record_lookup is not None else None
+            )
+            if latest is not None and getattr(
+                    latest, "context_rebuild_pending", False):
+                cleanup = asyncio.ensure_future(self.cancel(engagement))
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    pass
+                raise StaleLaunchError(
+                    f"engagement {engagement.id[:8]} was clearance-clamped "
+                    "during launch; aborting the pre-clamp prompt")
             try:
                 await self._deliver_turn(engagement, prompt)
             except BaseException:
@@ -252,6 +276,42 @@ class InCasaDriver(DriverProtocol):
             logger.info(
                 "Engagement %s resumed (session=%s)",
                 engagement.id[:8], session_id,
+            )
+        finally:
+            engagement_var.reset(token)
+
+    async def open_fresh(self, engagement: EngagementRecord) -> None:
+        """#369: open a NEW session for an engagement whose context was
+        invalidated by a clearance downgrade — the same fully-restricted
+        option set as :meth:`resume`, but with no ``resume=`` sid, so the
+        CLI starts a fresh conversation holding nothing fetched at the old
+        tier. Raises on failure (the caller fails closed and retries on the
+        next turn)."""
+        from tools import build_engagement_resume_options, engagement_var
+
+        if self.is_alive(engagement):
+            logger.warning(
+                "open_fresh() called on engagement %s that is already alive",
+                engagement.id[:8],
+            )
+            return
+        options = await asyncio.to_thread(
+            build_engagement_resume_options, engagement, None,
+        )
+        client = ClaudeSDKClient(
+            sdk_logging.with_stderr_callback(
+                options, engagement_id=engagement.id[:8],
+            ),
+        )
+        token = engagement_var.set(engagement)
+        try:
+            entered = await client.__aenter__()
+            self._clients[engagement.id] = entered or client
+            self._ctx_stack[engagement.id] = client
+            self._locks[engagement.id] = asyncio.Lock()
+            logger.info(
+                "Engagement %s reopened FRESH after clearance downgrade",
+                engagement.id[:8],
             )
         finally:
             engagement_var.reset(token)

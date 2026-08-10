@@ -25,6 +25,11 @@ class SpeakerProvenance:
 class RetainedTurn:
     text: str
     provenance: SpeakerProvenance
+    # #471: the turn's wall-clock time (ISO string) parsed from the sent query
+    # text's <current_time> envelope, preserved OUT-OF-BAND once the envelope
+    # is stripped from the hashed/stored content. None when the source carried
+    # no envelope (agent turns, delegated writes).
+    timestamp: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

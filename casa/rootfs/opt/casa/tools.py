@@ -351,7 +351,16 @@ async def send_media(args: dict) -> dict:
         # 1. Resolve target chat — NO default fallback. Active engagement first
         #    (HTTP engagement handlers bind engagement_var, not origin_var); a
         #    delegated specialist turn carries the origin via origin_var.
+        fenced = _engagement_rebuild_fence()
+        if fenced is not None:
+            return _result(fenced)
         eng = engagement_var.get(None)
+        # #369: mirror `react`'s live status re-check — media produced by a
+        # terminal (or torn-down) engagement must not still reach the origin
+        # chat through a call that raced the transition.
+        if eng is not None and getattr(eng, "status", "") != "active":
+            return _result({"status": "error", "kind_error": "not_active",
+                            "message": "engagement is not active"})
         origin = dict(eng.origin) if eng is not None else _snapshot_origin()
         if not origin:
             return _result({"status": "error", "kind_error": "no_origin",
@@ -861,6 +870,24 @@ def _origin_clearance_markers(origin: dict) -> tuple[str | None, str | None]:
         eng_origin.get("_origin_route"),
         eng_origin.get("_origin_clearance"),
     )
+
+
+def _engagement_rebuild_fence() -> dict | None:
+    """#369: refuse an engagement-bound tool call while the record's
+    ``context_rebuild_pending`` is set (a clearance downgrade invalidated the
+    session the caller is still running in). The internal-socket choke point
+    enforces this for claude_code executors; in_casa engagements dispatch
+    tools IN-PROCESS, so the engagement-sensitive tools call this fence too.
+    Returns the refusal payload, or None when the call may proceed."""
+    eng = engagement_var.get(None)
+    if eng is None or not getattr(eng, "context_rebuild_pending", False):
+        return None
+    return {
+        "status": "error", "kind": "engagement_context_rebuilding",
+        "message": (
+            "This engagement's context is being rebuilt; retry shortly."
+        ),
+    }
 
 
 def inherit_origin_markers(origin: dict) -> dict:
@@ -1378,7 +1405,9 @@ def _build_executor_options(
     )
 
 
-def build_engagement_resume_options(engagement, session_id: str) -> ClaudeAgentOptions:
+def build_engagement_resume_options(
+    engagement, session_id: str | None,
+) -> ClaudeAgentOptions:
     """Rebuild the FULL option set for a resumed engagement, then attach
     ``resume=session_id`` (Finding 2, codex review v0.69.10).
 
@@ -3883,6 +3912,13 @@ async def delegate_to_agent(args: dict) -> dict:
     # Import lazily — matches the `agent.py` origin_var ContextVar.
     import agent as agent_mod
 
+    # #369: a caller still running inside a downgraded engagement's OLD
+    # session must not launch new work — the delegation prompt would carry
+    # its above-floor task/context verbatim into a child.
+    _fenced = _engagement_rebuild_fence()
+    if _fenced is not None:
+        return _result(_fenced)
+
     # TOTAL over arbitrary JSON, exactly as the `mode` coercion below is and
     # for the same reason: `args` can carry any type on the paths that don't
     # run the schema validator first. A non-string target must reach the
@@ -4967,6 +5003,11 @@ async def recall_memory(args: dict) -> dict:
     if not query:
         return _result({"status": "error", "kind": "empty_query",
                         "message": "Error: query is required"})
+    # #369: a downgraded engagement's old session must not read at all until
+    # its context is rebuilt at the clamped floor.
+    _fenced = _engagement_rebuild_fence()
+    if _fenced is not None:
+        return _result(_fenced)
     sem = getattr(agent_mod, "active_semantic_memory", None)
     if sem is None:
         # No backend wired: memory CANNOT be checked — never a fake zero-hit.
@@ -5046,10 +5087,49 @@ async def recall_memory(args: dict) -> dict:
                 "say the information doesn't exist or that you don't have it."
             ),
         })
+    # #369: the clamp is monotonic and the record is live, so re-resolving
+    # after the awaited recall closes the in-flight window — a downgrade that
+    # landed while the backend call was suspended must filter THIS result,
+    # not merely the next one. Hits carry their tier; drop what the new
+    # clearance cannot read before anything is rendered.
+    _route2, _stamped2 = _origin_clearance_markers(origin)
+    clearance_now = clearance_for_origin(_route2, _stamped2, channel)
+    if clearance_now != clearance:
+        readable_now = set(readable_tiers(clearance_now))
+        hits = tuple(h for h in hits if h.sensitivity in readable_now)
+        clearance = clearance_now
     digest = render_recall(
         hits, current_speaker=current_speaker, surface=surface,
         clearance=clearance, token_budget=tokens,
     )
+    if not digest:
+        # #472: an empty result must never license "no record exists". The
+        # request's tags filter makes the backend drop above-clearance hits
+        # SERVER-SIDE, so a clearance-blocked search returns the same
+        # well-formed empty as a genuine miss — and even at top clearance,
+        # max_tokens truncation, the types filter and mental-model overlays
+        # can hide content. Absence is therefore unknowable from an empty
+        # result at EVERY tier; the two shapes below are what the client can
+        # actually distinguish.
+        if hits:
+            return _result({
+                "status": "ok", "memory": "",
+                "message": (
+                    "Readable matching memories exist but exceeded the "
+                    "render budget. Refine the query — narrow the topic or "
+                    "be more specific — and try again."
+                ),
+            })
+        return _result({
+            "status": "ok", "memory": "",
+            "message": (
+                "This search found nothing readable from this surface. That "
+                "is NOT proof of absence — memory may hold entries this "
+                "surface cannot read, and the search itself is bounded. Do "
+                "not claim non-existence to the user; say you don't have "
+                "anything you can share on that here."
+            ),
+        })
     return _result({"status": "ok", "memory": digest})
 
 
@@ -5851,6 +5931,11 @@ async def _fetch_executor_archive(
 )
 async def engage_executor(args: dict) -> dict:
     import agent as agent_mod
+    # #369: same fence as delegate_to_agent — a downgraded parent's stale
+    # session must not spawn children carrying its above-floor task text.
+    _fenced = _engagement_rebuild_fence()
+    if _fenced is not None:
+        return _result(_fenced)
     # AR-2: snapshot at entry — this handler awaits extensively (topic
     # creation, engagement-registry create, driver dispatch) and reads
     # `origin` well after those awaits; a pooled client's holder rewrite
@@ -6248,8 +6333,23 @@ async def engage_executor(args: dict) -> dict:
                     "status": "error", "kind": "no_driver",
                     "message": "claude_code driver not initialized",
                 })
+            from drivers.driver_protocol import StaleLaunchError
             try:
                 await driver.start(rec, prompt=prompt, options=defn)
+            except StaleLaunchError as exc:
+                # #369: a clearance clamp landed during launch — the prompt in
+                # hand was rendered from pre-clamp materials. Abort cleanly;
+                # the caller may retry (a fresh engagement resolves current
+                # markers).
+                await _engagement_registry.mark_error(
+                    rec.id, kind="clearance_changed_during_launch",
+                    message=str(exc),
+                )
+                await _abort_engagement_topic(channel, rec.id, topic_id)
+                return _result({
+                    "status": "error", "kind": "clearance_changed_during_launch",
+                    "message": str(exc),
+                })
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "claude_code driver.start failed for %s", rec.id[:8],
@@ -6283,8 +6383,20 @@ async def engage_executor(args: dict) -> dict:
                     "status": "error", "kind": "no_driver",
                     "message": "engagement driver not initialized",
                 })
+            from drivers.driver_protocol import StaleLaunchError
             try:
                 await driver.start(rec, prompt=prompt, options=options)
+            except StaleLaunchError as exc:
+                # #369: see the claude_code branch above.
+                await _engagement_registry.mark_error(
+                    rec.id, kind="clearance_changed_during_launch",
+                    message=str(exc),
+                )
+                await _abort_engagement_topic(channel, rec.id, topic_id)
+                return _result({
+                    "status": "error", "kind": "clearance_changed_during_launch",
+                    "message": str(exc),
+                })
             except Exception as exc:  # noqa: BLE001
                 await _engagement_registry.mark_error(
                     rec.id, kind="driver_start_failed", message=str(exc),
@@ -7486,10 +7598,11 @@ async def _synthesize_answer(
     "query_engager",
     "Ask the engaging agent a question. status=ok returns the answer "
     "synthesized from the engager's clearance-filtered memory; status=unknown "
-    "means the memory was searched and holds nothing relevant; "
-    "status=unavailable means memory could not be checked (do not conclude "
-    "the information doesn't exist). Callable only from inside an active "
-    "engagement.",
+    "means the search of readable memory found nothing — NOT proof of "
+    "absence, since entries above this engagement's clearance are never "
+    "searched; status=unavailable means memory could not be checked (do not "
+    "conclude the information doesn't exist). Callable only from inside an "
+    "active engagement.",
     {"question": str, "max_tokens": int},
 )
 async def query_engager(args: dict) -> dict:
@@ -7497,6 +7610,10 @@ async def query_engager(args: dict) -> dict:
     if engagement is None:
         return _result({"status": "error", "kind": "not_in_engagement",
                         "message": "query_engager called outside an engagement"})
+    # #369: a downgraded engagement's old session must not read until rebuilt.
+    _fenced = _engagement_rebuild_fence()
+    if _fenced is not None:
+        return _result(_fenced)
     question = args.get("question", "") or ""
     # #201 (Sol + Terra, Blocking): a blank question performed no search, yet
     # fell through to `status=unknown` — which this tool's own description
@@ -7525,17 +7642,27 @@ async def query_engager(args: dict) -> dict:
         memory_unavailable = True
     else:
         try:
-            context = await delegated_recall(
-                sem, query=question,
-                origin_channel=str(engagement.origin.get("channel", "")),
-                max_tokens=2000, path="query_engager",
-                # #336 (Sol, review r3): the engager-side context is read on
-                # behalf of THIS engagement, so it is filtered at the
-                # clearance of the turn that created it — the record's own
-                # persisted markers, exactly like its recall_memory calls.
-                origin_route=engagement.origin.get("_origin_route"),
-                origin_clearance=engagement.origin.get("_origin_clearance"),
-            )
+            # #369: the record is live and the clamp monotonic — if a
+            # downgrade lands while the recall is suspended, the result was
+            # filtered at a clearance the engagement no longer holds. Re-read
+            # the markers after the await and re-run at the new floor; the
+            # loop is bounded by the (few, one-way) tiers.
+            from sensitivity import TIERS as _ALL_TIERS
+            for _ in range(len(_ALL_TIERS)):
+                _q_clearance = engagement.origin.get("_origin_clearance")
+                context = await delegated_recall(
+                    sem, query=question,
+                    origin_channel=str(engagement.origin.get("channel", "")),
+                    max_tokens=2000, path="query_engager",
+                    # #336 (Sol, review r3): the engager-side context is read
+                    # on behalf of THIS engagement, so it is filtered at the
+                    # clearance of the turn that created it — the record's own
+                    # persisted markers, exactly like its recall_memory calls.
+                    origin_route=engagement.origin.get("_origin_route"),
+                    origin_clearance=_q_clearance,
+                )
+                if engagement.origin.get("_origin_clearance") == _q_clearance:
+                    break
         except RecallUnavailable:
             # Distinct from status=unknown (a genuine zero-hit): the engager's
             # memory could not be checked at all.
@@ -7566,11 +7693,50 @@ async def query_engager(args: dict) -> dict:
                 "unavailable). Do not conclude the information doesn't exist."
             ),
         })
+    # #472: "unknown" is a statement about the READABLE slice only — the
+    # recall's tags filter drops above-clearance entries server-side, so an
+    # empty context cannot distinguish "never told" from "not readable at
+    # this engagement's clearance". Say so, or the executor asserts absence.
+    _unknown_note = (
+        "The engager's readable memory returned nothing for this question. "
+        "NOT proof of absence: entries above this engagement's clearance "
+        "are never searched. Do not conclude the information doesn't exist."
+    )
     if not context:
-        return _result({"status": "unknown", "text": ""})
-    answer = await _synthesize_answer(question, context, max_tokens)
+        return _result({"status": "unknown", "text": "", "message": _unknown_note})
+    # #369: synthesis awaits too — a downgrade landing mid-synthesis means the
+    # answer was drawn from context above the engagement's new floor. Discard
+    # and re-run recall+synthesis at the current markers (bounded: the clamp
+    # is one-way over a handful of tiers).
+    from sensitivity import TIERS as _ALL_TIERS_SYN
+    answer = ""
+    for _ in range(len(_ALL_TIERS_SYN)):
+        answer = await _synthesize_answer(question, context, max_tokens)
+        if engagement.origin.get("_origin_clearance") == _q_clearance:
+            break
+        _q_clearance = engagement.origin.get("_origin_clearance")
+        try:
+            context = await delegated_recall(
+                sem, query=question,
+                origin_channel=str(engagement.origin.get("channel", "")),
+                max_tokens=2000, path="query_engager",
+                origin_route=engagement.origin.get("_origin_route"),
+                origin_clearance=_q_clearance,
+            )
+        except RecallUnavailable:
+            return _result({
+                "status": "unavailable", "text": "",
+                "message": (
+                    "The engager's memory could not be checked (backend "
+                    "unavailable). Do not conclude the information doesn't "
+                    "exist."
+                ),
+            })
+        if not context:
+            return _result(
+                {"status": "unknown", "text": "", "message": _unknown_note})
     if answer.strip().upper().startswith("UNKNOWN"):
-        return _result({"status": "unknown", "text": ""})
+        return _result({"status": "unknown", "text": "", "message": _unknown_note})
     return _result({"status": "ok", "text": answer})
 
 
