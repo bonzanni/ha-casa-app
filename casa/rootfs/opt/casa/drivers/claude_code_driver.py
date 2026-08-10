@@ -1400,6 +1400,25 @@ class ClaudeCodeDriver(DriverProtocol):
                 != expected_generation)
         ):
             from drivers.driver_protocol import StaleLaunchError
+            # Terra diff-gate r4: this gate sits AFTER service start and
+            # outside the Bug-13 rollback scope — raising alone would leave a
+            # live service supervising a CLI whose workspace CLAUDE.md was
+            # rendered from pre-clamp materials. Tear the service and the
+            # in-memory machinery down first (best-effort on the stop: the
+            # errored record refuses delivery either way, and the rebuild
+            # path re-verifies extinction before any fresh start).
+            try:
+                await s6_rc.ensure_service_down(engagement_id=engagement.id)
+            except Exception:  # noqa: BLE001 — best-effort; logged
+                logger.warning(
+                    "stale-launch teardown: ensure_service_down failed for "
+                    "%s", engagement.id[:8], exc_info=True)
+            try:
+                await self.cancel(engagement)
+            except Exception:  # noqa: BLE001 — best-effort; logged
+                logger.warning(
+                    "stale-launch teardown: driver cancel failed for %s",
+                    engagement.id[:8], exc_info=True)
             raise StaleLaunchError(
                 f"engagement {engagement.id[:8]} was clearance-clamped "
                 "during launch; aborting the pre-clamp prompt")
