@@ -33,8 +33,14 @@ deliberately released before any entry lock is awaited, and a per-entry lock for
 client itself. The engagement registry mutates and persists under one registry lock
 (reads take nothing). Reload holds a per-scope lock plus a global read-write lock in which
 a full reload is the writer excluding every other scope (INV-CFG-002). Plugin mutations
-share one tool-level lock (INV-TOOL-003). The specialist lifecycle serializes under the
-materialize lock. Agents keep a small first-publication lock for their plugin-resolution
+share one tool-level lock (INV-TOOL-003); the full-reload entry points take it through a
+task-reentrant guard, because a full reload that includes the environment refresh reaches
+the plugin-env handler's health block, which serializes on the same lock — one logical
+operation, one acquisition, while distinct tasks still exclude each other (a task spawned
+inside the guarded region does not inherit the hold). The specialist lifecycle serializes
+under the materialize lock, and a bundle rollback's tuple-and-symlink restoration takes
+that same lock so a concurrent reconcile cannot re-materialize what the rollback just
+removed. Agents keep a small first-publication lock for their plugin-resolution
 snapshot — it does not serialize turns. The Telegram channel re-imposes ordering per scope
 above the bus: a per-topic handler lock for engagement topics and a per-chat lock
 serializing `/new` with same-chat enqueue (both documented in the Telegram map). Two
