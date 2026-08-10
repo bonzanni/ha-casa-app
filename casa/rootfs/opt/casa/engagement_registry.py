@@ -210,6 +210,21 @@ class EngagementRecord:
     # replay renders --plugin-dir flags from THESE recorded paths, never a
     # re-resolution of current assignments. Preserved by every rewrite.
     plugin_artifacts: tuple[dict, ...] = ()
+    # #369: set (durably, in the same strict write as the clearance clamp)
+    # when a downgrade invalidates this engagement's session context. While
+    # True, every resume path refuses to resume the recorded session and the
+    # tool choke points refuse to bind the record — the flag clears only once
+    # a fresh session has been established at the clamped floor. One-way per
+    # downgrade: a crash between clamp and rebuild leaves a record that
+    # refuses resume, never one that resurrects the pre-clamp transcript.
+    context_rebuild_pending: bool = False
+    # #369 (Terra diff-gate r2): monotonic generation, bumped by every clamp
+    # that moves the record. The boolean above cannot protect a launch that
+    # was suspended across a full clamp→rebuild→flag-clear cycle — the stale
+    # launch resumes, sees False, and delivers its pre-clamp prompt. A
+    # launcher captures this at prompt-source time and the drivers compare it
+    # immediately before the initial enqueue; any change aborts the launch.
+    context_generation: int = 0
     # W2/Sol B9 (Task 7): observational turn-taking state. "" (default) =
     # not interaction-required (most engagements). Interaction-required
     # engagements start at "first_contact_required" (set by engage_executor
@@ -388,6 +403,10 @@ class EngagementRegistry:
                     summary_revision=int(row.get("summary_revision", 0) or 0),
                     topic_title=row.get("topic_title", "") or "",
                     allocated_uid=int(row.get("allocated_uid", UNALLOCATED_UID)),
+                    context_rebuild_pending=bool(
+                        row.get("context_rebuild_pending", False)),
+                    context_generation=int(
+                        row.get("context_generation", 0) or 0),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("Skipping malformed engagement row: %s", exc)
@@ -540,6 +559,8 @@ class EngagementRegistry:
                 "summary_revision": rec.summary_revision,
                 "topic_title": rec.topic_title,
                 "allocated_uid": rec.allocated_uid,
+                "context_rebuild_pending": rec.context_rebuild_pending,
+                "context_generation": rec.context_generation,
             })
         try:
             await asyncio.to_thread(self._write_tombstone, snapshot)
@@ -939,9 +960,31 @@ class EngagementRegistry:
             if TIERS.index(clearance) >= TIERS.index(current):
                 return False          # already at or below this floor
             rec.origin["_origin_clearance"] = clearance
+            # #369: the clamp gates future READS, but the session's transcript
+            # and launch-injected archive were built at the old tier — mark the
+            # context for rebuild in the SAME step, so the two facts ("reads
+            # lowered" and "old context must not be resumed") can never be
+            # persisted apart.
+            rec.context_rebuild_pending = True
+            rec.context_generation += 1
+            # And withhold the LAUNCH MATERIALS on the record itself: task,
+            # brief, context and world-state were authored at the creating
+            # turn's clearance, and every later render — boot-replay CLAUDE.md
+            # refresh, the session rebuild, resume options — re-derives from
+            # the record. Evicting the session while the record still carries
+            # them would just re-import them into the fresh floor session
+            # (Sol, #369 design review r2).
+            rec.task = (
+                "[The original task description is withheld: this "
+                "engagement's clearance was lowered after it started. "
+                "Continue from the conversation in the topic.]"
+            )
+            for key in ("brief", "context", "world_state_summary"):
+                rec.origin.pop(key, None)
             logger.info(
                 "engagement %s read-clearance lowered %s→%s (steered by a "
-                "lower-clearance sender)", engagement_id[:8], current, clearance,
+                "lower-clearance sender); session context marked for rebuild",
+                engagement_id[:8], current, clearance,
             )
             # The IN-MEMORY clamp is what gates every read from here on, and it
             # is applied above regardless of what disk does — a persistence
@@ -1020,6 +1063,40 @@ class EngagementRegistry:
                 raise cancelled
             if task.exception() is not None:
                 raise task.exception()
+
+    async def clear_session_id(self, engagement_id: str) -> None:
+        """#369: durably drop the resume pointer after a clearance downgrade
+        invalidated the session — a restart must start fresh, never resume the
+        pre-clamp transcript. In-memory first: like the clamp itself, a
+        persistence failure must never leave THIS process able to resume, so
+        the field stays cleared even when the write fails (logged; the
+        still-set ``context_rebuild_pending`` refuses resume durably)."""
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                return
+            rec.sdk_session_id = None
+            try:
+                await self._write_tombstone_locked(strict=True)
+            except Exception as exc:  # noqa: BLE001 — in-memory clear stands
+                logger.warning(
+                    "engagement %s session pointer cleared in memory but the "
+                    "write failed (%s) — context_rebuild_pending still blocks "
+                    "a restart resume", engagement_id[:8], exc,
+                )
+
+    async def clear_context_rebuild_pending(self, engagement_id: str) -> None:
+        """#369: mark the context rebuild COMPLETE — called only once a fresh
+        session at the clamped floor is established. STRICT: if this cannot be
+        persisted the caller must know, because an un-persisted clear would
+        make a restart demand a rebuild that already happened (safe but
+        surprising), while the in-memory flag governs this process either way."""
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                return
+            rec.context_rebuild_pending = False
+            await self._write_tombstone_locked(strict=True)
 
     async def backfill_allocated_uid(self, engagement_id: str) -> int:
         """Containment Stage 2 (Task 10): allocate + persist an OS uid for a

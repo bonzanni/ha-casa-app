@@ -601,6 +601,19 @@ class TelegramChannel(Channel):
         # writer — a notice can never land BELOW live narration. Wired by
         # casa_core; None-safe (falls back to a direct send).
         self._driver_post_notice = None
+        # #369: clearance-downgrade context revocation seams, wired by
+        # casa_core per driver; None-safe for tests. ``invalidate_session``
+        # tears the live session down (in_casa: close the client; claude_code:
+        # stop the service + drop the control-dir session pointer);
+        # ``context_rebuilder(rec) -> str`` establishes a FRESH session at the
+        # record's (clamped) markers and returns the preamble to prepend to
+        # the next delivered turn.
+        self._driver_invalidate_session = None
+        self._engagement_context_rebuilder = None
+        # Preamble stash, keyed by engagement id: in-memory only — losing it
+        # to a crash loses a courtesy note, never the rebuild itself (the
+        # durable flag is what refuses the old session).
+        self._rebuild_preambles: dict[str, str] = {}
         self._engagement_driver = None
         self._finalize_cancel = None
         self._finalize_complete_user = None
@@ -1498,8 +1511,31 @@ class TelegramChannel(Channel):
                 # person who has steered it. Monotonic: it only ever lowers,
                 # so it is safe under concurrent steerers and idempotent for
                 # the ordinary operator-only case (where it no-ops).
-                await self._engagement_registry.lower_origin_clearance(
+                moved = await self._engagement_registry.lower_origin_clearance(
                     rec.id, self._origin_clearance_for_user_id(user_id))
+                if moved:
+                    # #369: the clamp gates future reads, but the live session
+                    # still HOLDS what it fetched at the old tier — transcript
+                    # and launch-injected archive — and this steerer could
+                    # simply ask it to restate them. Tear the session down NOW
+                    # (under this same lock, before the turn is delivered) and
+                    # durably drop the resume pointer; _resume_and_ready's
+                    # rebuild branch establishes the fresh floor-context this
+                    # turn will be delivered into. Teardown failure is logged
+                    # and does not skip the pointer drop — the persisted
+                    # context_rebuild_pending flag (set by the clamp itself)
+                    # is what refuses the old session either way.
+                    if self._driver_invalidate_session is not None:
+                        try:
+                            await self._driver_invalidate_session(rec)
+                        except Exception:  # noqa: BLE001 — flag fails closed
+                            logger.warning(
+                                "engagement %s session invalidation failed "
+                                "after clearance downgrade (rebuild flag "
+                                "still blocks resume)", rec.id[:8],
+                                exc_info=True,
+                            )
+                    await self._engagement_registry.clear_session_id(rec.id)
 
                 # R5 (v0.89.0): record this operator message as the react
                 # target — SYNCHRONOUSLY, from the TRUSTED msg.message_id and
@@ -1761,6 +1797,11 @@ class TelegramChannel(Channel):
                 except Exception:  # noqa: BLE001
                     logger.debug("release_inbound failed", exc_info=True)
 
+        # #369: a just-rebuilt context gets its preamble (context-reset note +
+        # floor-refetched archive) prepended to the first delivered turn.
+        preamble = self._rebuild_preambles.pop(rec.id, None)
+        if preamble:
+            text = f"{preamble}\n\n{text}"
         try:
             disposition = await self._driver_send_user_turn(
                 rec, text, tg_message_id=tg_message_id)
@@ -1835,6 +1876,38 @@ class TelegramChannel(Channel):
             if latest is None or latest.status not in ("active", "idle"):
                 return False
             rec = latest
+
+        # #369: a clearance downgrade marked this engagement's context for
+        # rebuild — REFUSE to resume the recorded session (it holds transcript
+        # + archive fetched above the record's clamped floor) and establish a
+        # fresh one at the current markers instead. Runs before the resume
+        # block below so the stale sid is never handed to the driver; ordered
+        # for every caller (steering turn, system turn, post-crash next turn).
+        # Fail closed: if the rebuild cannot be established, the turn is not
+        # delivered and the flag stays set for the next attempt.
+        if getattr(rec, "context_rebuild_pending", False):
+            if self._engagement_context_rebuilder is None:
+                logger.warning(
+                    "engagement %s needs a context rebuild but no rebuilder "
+                    "is wired — refusing delivery", rec.id[:8])
+                return False
+            try:
+                preamble = await self._engagement_context_rebuilder(rec)
+            except Exception as exc:  # noqa: BLE001 — fail closed, retry next turn
+                logger.warning(
+                    "engagement %s context rebuild failed: %s — refusing "
+                    "delivery (will retry on the next turn)", rec.id[:8], exc,
+                )
+                await self._post_engagement_notice(
+                    rec, "This engagement is re-establishing its context — "
+                         "please resend in a moment.")
+                return False
+            if preamble:
+                self._rebuild_preambles[rec.id] = preamble
+            if reg is not None:
+                await reg.clear_context_rebuild_pending(rec.id)
+            else:
+                rec.context_rebuild_pending = False
 
         # Resume suspended client if needed (in_casa driver only — the
         # claude_code driver has s6 keeping the subprocess alive across Casa

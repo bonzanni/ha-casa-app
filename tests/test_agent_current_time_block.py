@@ -23,17 +23,12 @@ pytestmark = pytest.mark.unit
 
 
 def _compose_query_prefix(user_text: str, tz):
-    """Mirror of the per-turn prompt_text prefix built in agent.py::_process."""
+    """The per-turn prompt_text prefix agent.py::_process builds — now the
+    REAL composer (#471 moved it to timekeeping), not a hand-kept mirror."""
     from datetime import datetime
-    now = datetime.now(tz)
-    return (
-        f"<current_time>\n"
-        f"{now.isoformat(timespec='seconds')} "
-        f"({now.strftime('%A').lower()} {now.strftime('%p').lower()}, "
-        f"week {now.isocalendar().week})\n"
-        f"</current_time>\n\n"
-        f"{user_text}"
-    )
+
+    from timekeeping import compose_time_envelope
+    return compose_time_envelope(datetime.now(tz)) + user_text
 
 
 class TestCurrentTimeBlock:

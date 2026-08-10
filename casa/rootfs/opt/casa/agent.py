@@ -42,7 +42,7 @@ from log_cid import cid_var
 import sdk_logging
 from mcp_registry import McpServerRegistry
 from channel_trust import channel_trust_display
-from timekeeping import resolve_tz
+from timekeeping import compose_time_envelope, resolve_tz
 from hindsight_ids import bank_id
 from sensitivity import clearance_for_origin, readable_tiers
 from personality_types import SpeakerProvenance
@@ -1039,15 +1039,10 @@ class Agent:
             # system prompt) so the agent still knows the wall-clock time to
             # second precision without busting prompt caching (M27). user_text
             # itself stays raw (it also feeds origin_var + the recall query).
-            _now = datetime.now(resolve_tz())
+            # Composed via timekeeping so retention's strip_time_envelope
+            # (#471) can never drift from what is actually prepended here.
             prompt_text = (
-                f"<current_time>\n"
-                f"{_now.isoformat(timespec='seconds')} "
-                f"({_now.strftime('%A').lower()} "
-                f"{_now.strftime('%p').lower()}, "
-                f"week {_now.isocalendar().week})\n"
-                f"</current_time>\n\n"
-                f"{user_text}"
+                compose_time_envelope(datetime.now(resolve_tz())) + user_text
             )
 
             # Eligibility gate (spec §4, AR-6/AR-7): a pooled warm turn iff the

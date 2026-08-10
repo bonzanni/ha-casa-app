@@ -174,6 +174,26 @@ def _make_internal_tools_call_handler(
                                    "message": "engagement_auth_failed: "
                                               "invalid engagement token"}}
                     )
+                # #369: while a clearance downgrade's context rebuild is
+                # pending, the OLD in-flight process may still be issuing
+                # calls — refuse them all (fail closed) rather than let it
+                # launch new work (delegate/engage children inherit its
+                # above-floor task text verbatim) or read on its behalf.
+                # Terminal-binding tools stay reachable: a completion's
+                # output is in-flight-turn residual, and its idempotency
+                # check needs the record.
+                if (getattr(rec, "context_rebuild_pending", False)
+                        and name not in _TERMINAL_BINDING_TOOLS):
+                    logger.warning(
+                        "internal /tools/call: refused %r for engagement %s: "
+                        "context rebuild pending after clearance downgrade",
+                        name, str(eng_id)[:8],
+                    )
+                    return web.json_response(
+                        {"error": {"code": -32005,
+                                   "message": "engagement_context_rebuilding: "
+                                              "retry shortly"}}
+                    )
                 if (getattr(rec, "status", None) == "active"
                         or name in _TERMINAL_BINDING_TOOLS):
                     engagement = rec

@@ -920,8 +920,13 @@ class ClaudeCodeDriver(DriverProtocol):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         reanchor_retry_sleep: Callable[[float], Awaitable[None]] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        executor_defn_lookup: Callable[[str], Any] | None = None,
     ) -> None:
         self._engagements_root = engagements_root
+        # #369: (executor_type) -> definition | None, wired by casa_core to
+        # executor_registry.definition_any — rebuild_fresh_context re-renders
+        # CLAUDE.md after a clearance downgrade and needs the defn's template.
+        self._executor_defn_lookup = executor_defn_lookup
         # F3 (whole-branch gate): injectable monotonic clock for the force-suspend
         # re-arm cooldown (tests advance it deterministically; never patch a
         # shared module attribute).
@@ -1118,6 +1123,7 @@ class ClaudeCodeDriver(DriverProtocol):
 
     async def start(
         self, engagement: EngagementRecord, prompt: str, options: Any,
+        expected_generation: int | None = None,
     ) -> None:
         """options is the ExecutorDefinition — see DriverProtocol.start docstring.
 
@@ -1149,6 +1155,13 @@ class ClaudeCodeDriver(DriverProtocol):
                         task=engagement.task,
                         origin_channel=engagement.origin.get("channel", "telegram"),
                         token_budget=defn.memory.token_budget,
+                        # #369/#336: filter at the record's own markers, as the
+                        # in_casa launch does — omitting them fell through to
+                        # channel-keyed clearance (telegram ⇒ private), handing
+                        # a low-clearance creator the operator's private tier.
+                        origin_route=engagement.origin.get("_origin_route"),
+                        origin_clearance=engagement.origin.get(
+                            "_origin_clearance"),
                     )
 
                 # §3.3: a workspace-template/ (e.g. plugin-developer) selects
@@ -1365,6 +1378,55 @@ class ClaudeCodeDriver(DriverProtocol):
                         )
                 raise
 
+        # #369 (Sol design r2): LAST-instant gate — a clearance clamp landing
+        # during the service-start awaits above means `prompt` was rendered
+        # from pre-clamp materials and must not reach the fresh process.
+        # Ordered BEFORE _spawn_background_tasks (Sol+Terra diff-gate r6): a
+        # stale launch spawning its own task/spool set would OVERWRITE the
+        # rebuilt engagement's tracked machinery, orphaning the live tasks.
+        _lookup = getattr(self._registry, "get", None)
+        latest = _lookup(engagement.id) if callable(_lookup) else None
+        # Terra diff-gate r2: the pending flag alone cannot see a clamp→
+        # rebuild cycle that COMPLETED while the service-start awaits above
+        # were suspended (the rebuild cleared it) — the monotonic generation
+        # captured at prompt-source time is compared too.
+        if latest is not None and (
+            getattr(latest, "context_rebuild_pending", False)
+            or (expected_generation is not None
+                and getattr(latest, "context_generation", 0)
+                != expected_generation)
+        ):
+            from drivers.driver_protocol import StaleLaunchError
+            # Terra diff-gate r4: this gate sits AFTER service start and
+            # outside the Bug-13 rollback scope — raising alone would leave a
+            # live service supervising a CLI whose workspace CLAUDE.md was
+            # rendered from pre-clamp materials. Tear the service and the
+            # in-memory machinery down first — but ONLY while the rebuild is
+            # still pending (Terra r5): the s6 service is shared by
+            # engagement id, so once a rebuild has completed (pending
+            # cleared, generation-only mismatch) the running service is the
+            # REBUILT floor one and must be left alone; this launch then
+            # aborts without touching it.
+            if getattr(latest, "context_rebuild_pending", False):
+                try:
+                    await s6_rc.ensure_service_down(
+                        engagement_id=engagement.id)
+                except Exception:  # noqa: BLE001 — best-effort; logged
+                    logger.warning(
+                        "stale-launch teardown: ensure_service_down failed "
+                        "for %s", engagement.id[:8], exc_info=True)
+                try:
+                    await self.cancel(engagement)
+                except Exception:  # noqa: BLE001 — best-effort; logged
+                    logger.warning(
+                        "stale-launch teardown: driver cancel failed for %s",
+                        engagement.id[:8], exc_info=True)
+            raise StaleLaunchError(
+                f"engagement {engagement.id[:8]} was clearance-clamped "
+                "during launch; aborting the pre-clamp prompt",
+                record_live=not getattr(
+                    latest, "context_rebuild_pending", False))
+
         # 4. Kick off the background tasks (outside lock): respawn poller,
         #    session-id capture, and (at DEBUG) the log relay.
         self._spawn_background_tasks(engagement)
@@ -1397,6 +1459,72 @@ class ClaudeCodeDriver(DriverProtocol):
             return await spool.enqueue(text, tg_message_id=tg_message_id)
         await self._write_to_fifo(engagement, text)
         return None
+
+    async def invalidate_session(self, engagement: EngagementRecord) -> None:
+        """#369: tear down a session whose clearance was downgraded — the live
+        CLI process (whose in-memory conversation holds pre-clamp context) is
+        stopped, the control-dir session pointer is removed (the run template
+        starts a FRESH session when it is absent), the cached executor-memory
+        archive is blanked (it was fetched at the old tier and boot-replay's
+        CLAUDE.md refresh would otherwise re-render it), and the media outbox
+        is re-provisioned empty. The service is left DOWN;
+        :meth:`rebuild_fresh_context` brings it back up. Raises on the
+        teardown steps that matter — the caller fails closed on the durable
+        ``context_rebuild_pending`` flag either way."""
+        from drivers.workspace import executor_memory_path, session_id_path
+        import plugin_outbox
+
+        # Sol diff-gate r1: ensure_service_down REPORTS success — a False
+        # means the old process may still be alive with its pre-clamp
+        # conversation in memory, and proceeding would let the rebuild clear
+        # the fence around a surviving session. Raise; the flag stays set and
+        # every delivery keeps being refused until a later attempt confirms
+        # extinction.
+        if not await s6_rc.ensure_service_down(engagement_id=engagement.id):
+            raise RuntimeError(
+                f"engagement {engagement.id[:8]}: service did not confirm "
+                "down — old session may survive; rebuild refused")
+        # In-memory spool/task state for the old process.
+        for t in self._tasks.pop(engagement.id, []):
+            t.cancel()
+        self._inbound.pop(engagement.id, None)
+        self._epoch_pending.pop(engagement.id, None)
+        self._turn_running.pop(engagement.id, None)
+        mem_path = Path(executor_memory_path(engagement.id))
+        if mem_path.is_file():
+            mem_path.write_text("", encoding="utf-8")
+        Path(session_id_path(engagement.id)).unlink(missing_ok=True)
+        real_uid = owner_uid_or_none(engagement.allocated_uid)
+        if real_uid is not None:
+            plugin_outbox.provision_engagement_outbox(real_uid, fresh=True)
+
+    async def rebuild_fresh_context(self, engagement: EngagementRecord) -> None:
+        """#369: establish the post-downgrade FLOOR context — re-render the
+        workspace CLAUDE.md from the (now clearance-withheld) record and the
+        (now blank) archive cache, then start the service, which spawns a
+        fresh session (no ``.session_id``). Raises on failure so the caller
+        keeps ``context_rebuild_pending`` set and refuses delivery."""
+        from drivers.workspace import refresh_claude_md
+
+        # Sol diff-gate r1: re-run the (idempotent) invalidation first — this
+        # path is also reached with a crash-recovered pending flag whose
+        # teardown never ran, and a rebuild must never proceed over a live
+        # pre-clamp process or a surviving session pointer. Raises on
+        # unconfirmed teardown, keeping the flag set.
+        await self.invalidate_session(engagement)
+        defn = (
+            self._executor_defn_lookup(engagement.role_or_type)
+            if self._executor_defn_lookup is not None else None
+        )
+        if defn is None:
+            raise RuntimeError(
+                f"cannot rebuild engagement {engagement.id[:8]}: executor "
+                f"definition {engagement.role_or_type!r} unavailable")
+        ws_path = str(Path(self._engagements_root) / engagement.id)
+        await asyncio.to_thread(
+            refresh_claude_md, ws_path, defn=defn, rec=engagement)
+        await s6_rc.start_service(engagement_id=engagement.id)
+        self._spawn_background_tasks(engagement)
 
     async def cancel(self, engagement: EngagementRecord) -> None:
         """Teardown for a terminal transition (cancelled or completed).

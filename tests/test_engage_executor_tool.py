@@ -905,7 +905,8 @@ class TestCancelledLaunchAfterRecordCompensates:
 
         started = asyncio.Event()
 
-        async def _hanging_start(rec, *, prompt, options):
+        async def _hanging_start(rec, *, prompt, options,
+                                 expected_generation=None):
             started.set()
             await asyncio.Event().wait()
 

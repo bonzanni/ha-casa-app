@@ -486,6 +486,10 @@ async def replay_undergoing_engagements(
     # refused resume — and MUST be excluded from the start_service and
     # background-task loops below, not merely skipped during rendering.
     refused_ids: set[str] = set()
+    # #369 (Sol diff-gate r2): records whose clearance-downgrade context
+    # reset ran this boot — their durable rebuild flag clears only AFTER
+    # their service start succeeds; every refusal path leaves it set.
+    pending_rebuild_started_ids: set[str] = set()
 
     # v0.83.0 (§A3(b), Sol r6-3/r7-3/4): the BOOT open-question reconciliation
     # owner. Take a PRE-SERVICE snapshot of every claude_code record that has
@@ -989,6 +993,57 @@ async def replay_undergoing_engagements(
                              "not resolvable (definition_any → None)",
                     )
                     continue
+
+                # #369: a crash between a clearance clamp and its context
+                # rebuild leaves context_rebuild_pending set — the recorded
+                # session and the cached executor-memory archive were built
+                # ABOVE the record's clamped floor. Blank the archive cache
+                # and drop the control-dir session pointer BEFORE any refresh
+                # or service start: the run template then spawns a FRESH
+                # session, the CLAUDE.md refresh below renders from the
+                # (clamp-withheld) record, and the replayed engagement comes
+                # up at the floor — which IS the rebuild, so clear the flag.
+                if getattr(rec, "context_rebuild_pending", False):
+                    from drivers.workspace import (
+                        executor_memory_path, session_id_path,
+                    )
+                    try:
+                        _mem = Path(executor_memory_path(rec.id))
+                        if _mem.is_file():
+                            _mem.write_text("", encoding="utf-8")
+                        Path(session_id_path(rec.id)).unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning(
+                            "boot replay: engagement %s context reset failed "
+                            "(%s) — refusing resume (flag stays set)",
+                            rec.id[:8], exc)
+                        refused_ids.add(rec.id)
+                        continue
+                    # Force the CLAUDE.md re-render here: the clamp popped
+                    # origin["brief"], so the brief-gated refresh below will
+                    # NOT run for this record, yet the workspace still holds
+                    # the pre-clamp task text.
+                    try:
+                        refresh_claude_md(
+                            os.path.join(engagements_root, rec.id),
+                            defn=defn_any, rec=rec)
+                    except Exception as exc:  # noqa: BLE001 — fail-closed
+                        logger.warning(
+                            "boot replay: engagement %s floor CLAUDE.md "
+                            "re-render failed (%s) — refusing resume",
+                            rec.id[:8], exc)
+                        refused_ids.add(rec.id)
+                        continue
+                    # Sol diff-gate r2: the flag clears only once THIS
+                    # record's service has actually started (below) — a
+                    # durable clear here, followed by any later refusal,
+                    # would leave a live unflagged record whose next turn
+                    # skips the rebuild it still needs.
+                    pending_rebuild_started_ids.add(rec.id)
+                    logger.info(
+                        "boot replay: engagement %s context reset at the "
+                        "clamped floor (fresh session, archive cleared); "
+                        "flag clears after service start", rec.id[:8])
 
                 # W3 (r8-B5/r9-B5): re-render the workspace CLAUDE.md from the
                 # VERBATIM origin["brief"] for EVERY resumed brief-bearing
@@ -1556,6 +1611,18 @@ async def replay_undergoing_engagements(
                     continue
             try:
                 await s6_rc.start_service(engagement_id=rec.id)
+                # #369 (Sol diff-gate r2): the rebuild is complete only now —
+                # fresh session, floor workspace, running service. Best-effort
+                # here: a failed strict clear leaves the flag set, and the
+                # first turn's rebuild branch (idempotent) clears it then.
+                if rec.id in pending_rebuild_started_ids:
+                    try:
+                        await registry.clear_context_rebuild_pending(rec.id)
+                    except Exception:  # noqa: BLE001 — turn-path clears later
+                        logger.warning(
+                            "boot replay: rebuild-flag clear failed for %s "
+                            "(first turn will rebuild again)", rec.id[:8],
+                            exc_info=True)
             except Exception as exc:  # noqa: BLE001
                 # #342: refuse — the background loop below must not build
                 # spool/relay/summary machinery for an engagement whose
@@ -3785,6 +3852,9 @@ async def main() -> None:
         topic_stream_factory=_topic_stream_factory,
         persist_session_id=engagement_registry.persist_session_id,
         result_observer=_specialist_result_observer,
+        # #369: last-instant launch gate — start() re-reads the live record
+        # before delivering the initial prompt.
+        record_lookup=engagement_registry.get,
     )
 
     # claude_code driver: send_to_topic doubles as the live TopicStreamRelay's
@@ -3908,6 +3978,9 @@ async def main() -> None:
         # capture; this hook keeps EngagementRecord.sdk_session_id in
         # lockstep with the on-disk file the run script reads on resume.
         persist_session_id=engagement_registry.persist_session_id,
+        # #369: rebuild_fresh_context re-renders CLAUDE.md after a clearance
+        # downgrade — resolve the defn the same way boot replay does.
+        executor_defn_lookup=executor_registry.definition_any,
     )
 
     # Wire bus sink so subprocess_respawn events reach the observer.
@@ -3987,6 +4060,41 @@ async def main() -> None:
             await engagement_driver.send_user_turn(rec, text)
             return None
         telegram_channel._driver_send_user_turn = _driver_send_user_turn
+
+        # #369: clearance-downgrade context revocation. ``invalidate`` tears
+        # the pre-clamp session down (the durable context_rebuild_pending flag,
+        # set by the clamp itself, is what refuses resume if any step fails);
+        # ``rebuild`` establishes a fresh session at the clamped floor and
+        # returns the preamble prepended to the next delivered turn. The
+        # rebuilt session deliberately re-imports NOTHING from the launch —
+        # the record's task/brief/context were withheld by the clamp, and
+        # memory stays reachable through clearance-gated recall.
+        _REBUILD_NOTE = (
+            "[Context reset: this engagement's earlier working context is no "
+            "longer available. Continue from the messages in this topic; use "
+            "recall_memory if you need prior facts.]"
+        )
+
+        async def _driver_invalidate_session(rec):
+            if rec.driver == "claude_code":
+                await claude_code_driver.invalidate_session(rec)
+            else:
+                await engagement_driver.invalidate_session(rec)
+
+        async def _engagement_context_rebuilder(rec) -> str:
+            # Sol diff-gate r1: both branches RE-VERIFY teardown before
+            # opening anything fresh (invalidate is idempotent) — the flag is
+            # cleared by the caller only after this returns, so a rebuild can
+            # never bless a session whose predecessor was not confirmed gone.
+            if rec.driver == "claude_code":
+                await claude_code_driver.rebuild_fresh_context(rec)
+            else:
+                await engagement_driver.invalidate_session(rec)
+                await engagement_driver.open_fresh(rec)
+            return _REBUILD_NOTE
+        telegram_channel._driver_invalidate_session = _driver_invalidate_session
+        telegram_channel._engagement_context_rebuilder = (
+            _engagement_context_rebuilder)
 
         # v0.83.0 (§A3, Sol r7-1): the answered-RESERVATION seam. reserve is
         # SYNCHRONOUS (set in the handler's same section as the high-water

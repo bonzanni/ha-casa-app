@@ -44,7 +44,8 @@ async def delegated_recall(
     budget: str = "mid", surface: Surface = "text",
     path: RecallPath = "delegated", current_speaker: SpeakerProvenance | None = None,
     origin_route: str | None = None, origin_clearance: str | None = None,
-) -> str:
+    with_stats: bool = False,
+) -> str | tuple[str, int]:
     """Recall the shared bank at the ORIGINATING context's read-clearance,
     returning an ATTRIBUTED digest (personality Task 11).
 
@@ -53,6 +54,11 @@ async def delegated_recall(
     not be checked — the two must never be conflated, or the delegated agent
     denies knowledge Casa actually has. Call sites decide how to degrade
     (typically: proceed with no memory block, without claiming absence).
+
+    ``with_stats=True`` returns ``(digest, hit_count)`` instead (#472, Sol
+    diff-gate r1): a rendered ``""`` alone cannot distinguish "zero readable
+    hits" from "readable hits that exceeded the render budget", and a caller
+    that words emptiness as absence needs the count to avoid the overclaim.
 
     A blank ``query`` is a fourth thing — an invalid call, not a result — and
     raises :class:`ValueError` (#201). It cannot be reported as '' without
@@ -127,10 +133,13 @@ async def delegated_recall(
             origin_channel, type(exc).__name__,
         )
         raise RecallUnavailable("backend_error") from exc
-    return render_recall(
+    digest = render_recall(
         hits, current_speaker=current_speaker, surface=surface,
         clearance=clearance, token_budget=max_tokens,
     )
+    if with_stats:
+        return digest, len(hits)
+    return digest
 
 
 async def retain_delegated(

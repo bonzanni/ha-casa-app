@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-01
+last_reviewed: 2026-08-10
 ---
 
 # Memory and recall
@@ -37,6 +37,16 @@ exceed the token budget, and if the *first* entry is already too large, nothing 
 So a rendered `""` may mean no hits, or may mean hits that did not fit. Code that treats an
 empty render as evidence of absence is making a claim the render cannot support.
 
+**And an empty result does not prove absence, at any clearance.** The recall request carries
+the caller's readable tiers as a server-side tag filter, so a hit above the caller's clearance
+is dropped *by the backend* and a clearance-blocked search returns the same well-formed empty
+as a genuine miss. Even at the highest clearance, server-side token truncation and the types
+filter can hide content. The recall tool therefore never hands the model a bare empty: a
+zero-hit result carries guidance that absence is unknowable and must not be asserted, and a
+result whose readable hits exist but did not fit the render budget says so and asks for a
+narrower query — the one existence claim an empty render *can* support, since those hits
+already passed the clearance filter.
+
 **Auto-recall is not "every turn".** It happens when a turn's options are built, which is a
 fresh non-voice session only — a warm reused client skips that path entirely, and voice never
 auto-recalls. Both can still recall explicitly through the tool. "The agent remembers
@@ -73,15 +83,32 @@ least-privileged person who has taken part in it". The clamp is deliberately one
 people steering concurrently can only drive it further down, and the operator returning to
 their own engagement does not restore what a lower-clearance participant has already seen.
 
-Read the clamp's scope precisely, because three things it does not do are easy to assume.
-It gates *future* reads: content already recalled into a live session's transcript stays
-there, and a tool call that resolved its clearance before the clamp landed completes at the
-old tier — so a steering turn does not retroactively censor an answer already in flight for
-someone else's question. It is applied in memory first and persisted best-effort, so a failed
-write leaves this process correctly clamped while a restart would restore the higher tier
-(the failure is logged as security-relevant). And it only moves a record that carries a
-stamped clearance: an engagement that was already running before per-sender markers existed
-has none, so it keeps channel-keyed clearance — on Telegram, private — until it finishes.
+A clamp that moves the record does not stop at future reads — it evicts what the session
+already holds. The transcript and the launch-injected archive were built at the old tier, and
+a lower-clearance steerer could simply ask the engagement to restate them, so the same locked
+ingress pass that lowers the record also: durably marks the context for rebuild (the flag and
+the clamp persist in one write, so a crash between them cannot happen), withholds the
+record's own launch materials (task, brief, context, world-state — every later render
+re-derives from the record, and evicting the session while the record still carried them
+would re-import them), tears the live session down, and drops the resume pointer. Every
+resume path — the steering turn itself, a system continuation, boot replay — refuses to
+resume while the rebuild is pending and establishes a fresh session at the clamped floor
+instead; while it is pending, the old process's tool calls are refused at both dispatch
+choke points (the internal socket and the in-process fence), so it cannot read or launch
+children carrying its pre-clamp task. A read already in flight when the clamp lands is
+re-filtered at the new clearance after it returns, and a launch caught mid-start aborts
+rather than deliver a prompt rendered from pre-clamp materials.
+
+What the eviction deliberately does not do: content already posted to the topic stays
+posted, and a turn already running at clamp time may still complete into the topic —
+engagement topics are readable by every supergroup member regardless, so both are
+disclosures the topic already carried. A nested engagement spawned before the clamp keeps
+its own record's clearance (steering its topic clamps it the same way). The clamp is
+applied in memory first, so a failed persist leaves this process correctly clamped while a
+restart would restore the higher tier (logged as security-relevant). And it only moves a
+record that carries a stamped clearance: an engagement running before per-sender markers
+existed has none, so it keeps channel-keyed clearance — on Telegram, private — until it
+finishes.
 
 **Writing is narrower than reading.** Only write-trusted channels retain to the shared bank.
 A channel that can recall is not thereby able to store.
@@ -92,6 +119,14 @@ environment-tunable (`FRESHNESS_VOICE_MINUTES`, default 30; `FRESHNESS_TELEGRAM_
 default 12). Retained facts are content-addressed, so the same speaker saying the same
 thing across sessions collapses to one stored document — and agent-side deduplication
 ignores persona version, so a persona upgrade does not mint duplicate memories.
+
+Content addressing only holds because the hash input is the utterance and nothing else.
+Every sent user turn carries a per-turn time envelope, and the transcript echoes it back —
+hashed as-is, that second-precision timestamp would mint a fresh document for the same
+sentence in every session. Retention therefore splits the envelope off user turns at the
+transcript-readback boundary: stored text and document id are both envelope-free, and the
+turn's wall-clock time survives out-of-band as the retain item's timestamp. The composer
+and splitter are a pinned pair, so the envelope's shape cannot drift from what is stripped.
 
 **Mental-model overlays cannot be tier-filtered at all**, because they are bank-wide
 summaries rather than individually tagged facts. That is why they are exposed only at the
@@ -107,11 +142,12 @@ malformed envelopes, and the no-op implementation raises rather than returning e
 backend is configured.
 
 What it does not cover: **individual call sites may still collapse the distinction after the
-fact**, and at least one does. `query_engager()` reports an empty rendered digest as "searched
-and found nothing relevant" — and because rendering emits nothing when the first hit exceeds
-the token budget, hits that exist but did not fit are reported as absence. The invariant holds
-at the seam, for typed recall, not at every consumer. Check the call site you care about
-rather than assuming it propagates.
+fact.** The two model-facing consumers no longer do — `recall_memory` and `query_engager`
+scope their empty results explicitly (INV-MEM-010) — but the invariant holds at the seam,
+for typed recall, not at every consumer. A prompt-assembly caller that renders an empty
+digest as silence (the executor archive slot) is making no claim, which is fine; a new
+consumer that words emptiness as absence would reintroduce the defect. Check the call site
+you care about rather than assuming it propagates.
 
 **INV-MEM-002**: A typed hit is readable only when its tags carry exactly one recognised tier at or below the caller's clearance; if every hit is dropped, the result is unavailable rather than empty.
 
@@ -189,6 +225,40 @@ What it does not cover: a record carrying no markers falls back to channel-keyed
 which on Telegram is private — so this tightens what a *newly* stamped origin can reach, and
 does not retroactively downgrade engagements created before the markers existed. The clamp
 also cannot un-share what was already disclosed before a lower-clearance sender arrived.
+
+**INV-MEM-009**: The per-turn time envelope never reaches the content-addressed document id or the stored memory text — an identical utterance retained from any session collapses to one document — and the turn's wall-clock time is carried out-of-band on the retain item.
+
+Enforced at the transcript-readback boundary, which splits a single leading envelope off each
+user turn before the retain-item builder hashes or stores it. The envelope's composer and
+splitter are a pinned pair; a round-trip test fails the moment the composed shape drifts from
+what the splitter recognises.
+
+What it does not cover: documents retained before the split existed keep their enveloped text
+and stale ids — the bank converges only as facts are re-said. Writers that bypass the
+transcript readback (delegated retains) never carried the envelope in the first place.
+
+**INV-MEM-010**: An empty recall result never asserts non-existence: the model-facing recall tools scope their empty and unknown results at every clearance tier, and readable hits that did not fit the render budget are reported as existing rather than absent.
+
+Enforced in the recall tool's empty-digest arms and the engager-query tool's unknown arm, which
+attach explicit do-not-assert-absence guidance in place of a bare empty result.
+
+What it does not cover: it is a statement about what the tool result *says*, not what a model
+does with it — prompt-level honesty remains the model's job. Prompt-assembly consumers that
+render emptiness as silence are outside it, deliberately: absence of a block is not a claim
+of absence.
+
+**INV-MEM-011**: A clearance downgrade durably invalidates the engagement's session context in the same write that lowers the record — until a fresh session is established at the clamped floor, no path resumes the old session and the record's tool calls are refused at both dispatch choke points.
+
+Enforced by the clamp setting the rebuild flag and withholding the record's launch materials
+under one strict persist; by the resume core and boot replay routing a flagged record to a
+fresh-session rebuild instead of a resume; by the internal-socket handler and the in-process
+tool fence refusing a flagged record; and by the post-await re-filter and the drivers'
+last-instant launch gates, which close the calls already in flight when the clamp lands.
+
+What it does not cover: output of a turn already running at clamp time, content already
+posted to the (group-readable) topic, and a pre-clamp nested child's own record — the
+deliberate residuals listed above. The completion tool stays reachable while the rebuild is
+pending, its output being in-flight-turn residual.
 
 **INV-MEM-007**: A tier-classifier reply parses only when it is exactly one tier token; any reply containing other words yields no tier and the item falls to the private default.
 
@@ -286,6 +356,8 @@ once.
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
 - `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
 - `casa/rootfs/opt/casa/memory_provenance.py::build_retain_items`
+- `casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope`
+- `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/session_saver.py::save_session`
@@ -302,6 +374,8 @@ once.
 - `tests/test_agent_auto_recall_unavailable.py`
 - `tests/test_session_saver.py`
 - `tests/test_freshness_reaper.py`
+- `tests/test_time_envelope.py`
+- `tests/test_recall_empty_verdict.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

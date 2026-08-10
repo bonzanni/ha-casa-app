@@ -19,7 +19,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from drivers.driver_protocol import DriverProtocol
+from drivers.driver_protocol import DriverProtocol, StaleLaunchError
 from engagement_registry import EngagementRecord
 import sdk_logging
 
@@ -88,11 +88,17 @@ class InCasaDriver(DriverProtocol):
         topic_stream_factory: TopicStreamFactory,
         persist_session_id: SessionIdPersister | None = None,
         result_observer: "ResultObserver | None" = None,
+        record_lookup: Callable[[str], Any] | None = None,
     ) -> None:
         self._topic_stream_factory = topic_stream_factory
         self._persist_session_id = persist_session_id
         # Task 6 (spec §4.6): optional per-turn cost/usage observer.
         self._result_observer = result_observer
+        # #369: live registry lookup (engagement_id -> record | None) consulted
+        # at the LAST suspension point before the initial prompt is delivered —
+        # a clearance clamp can land during __aenter__, after the launcher's
+        # own checks. None-safe for tests and legacy wiring.
+        self._record_lookup = record_lookup
         self._clients: dict[str, ClaudeSDKClient] = {}
         self._ctx_stack: dict[str, Any] = {}
         # Per-engagement asyncio.Lock guards query/receive_response sequencing:
@@ -113,6 +119,7 @@ class InCasaDriver(DriverProtocol):
         engagement: EngagementRecord,
         prompt: str,
         options: ClaudeAgentOptions,
+        expected_generation: int | None = None,
     ) -> None:
         # E-E (v0.29.0): bind engagement_var BEFORE ClaudeSDKClient.__aenter__
         # so the SDK's inner Query._read_task — created via loop.create_task
@@ -138,6 +145,44 @@ class InCasaDriver(DriverProtocol):
         try:
             ctx = client.__aenter__()
             entered = await ctx if asyncio.iscoroutine(ctx) else ctx
+            # #369 (Sol design r2 + Terra diff-gate r2): LAST-instant gate,
+            # BEFORE this launch registers anything — a clearance clamp that
+            # landed while __aenter__ was suspended means `prompt` was
+            # rendered from pre-clamp materials, and a clamp→rebuild cycle
+            # that COMPLETED in that window has already registered a fresh
+            # floor client that this stale launch must not overwrite. The
+            # pending flag alone cannot see the completed cycle (the rebuild
+            # cleared it), so the monotonic generation captured at
+            # prompt-source time is compared too. Stale → close the just-
+            # entered client directly, touching no driver state.
+            latest = (
+                self._record_lookup(engagement.id)
+                if self._record_lookup is not None else None
+            )
+            stale = latest is not None and (
+                getattr(latest, "context_rebuild_pending", False)
+                or (expected_generation is not None
+                    and getattr(latest, "context_generation", 0)
+                    != expected_generation)
+            )
+            if stale:
+                try:
+                    if hasattr(entered or client, "close"):
+                        await (entered or client).close()
+                    else:
+                        await client.__aexit__(None, None, None)
+                except Exception:  # noqa: BLE001 — best-effort close of a
+                    logger.warning(  # client that never carried state
+                        "stale-launch client close failed for %s",
+                        engagement.id[:8], exc_info=True)
+                raise StaleLaunchError(
+                    f"engagement {engagement.id[:8]} was clearance-clamped "
+                    "during launch; aborting the pre-clamp prompt",
+                    # Terra r5: pending cleared + generation moved = a rebuild
+                    # COMPLETED while we were suspended — the engagement is
+                    # alive on its floor client and must not be errored.
+                    record_live=not getattr(
+                        latest, "context_rebuild_pending", False))
             self._clients[engagement.id] = entered or client
             self._ctx_stack[engagement.id] = client  # for __aexit__
             self._locks[engagement.id] = asyncio.Lock()
@@ -252,6 +297,63 @@ class InCasaDriver(DriverProtocol):
             logger.info(
                 "Engagement %s resumed (session=%s)",
                 engagement.id[:8], session_id,
+            )
+        finally:
+            engagement_var.reset(token)
+
+    async def invalidate_session(self, engagement: EngagementRecord) -> None:
+        """#369 (Sol diff-gate r1+r2): teardown for a clearance downgrade —
+        unlike :meth:`cancel` (terminal path, best-effort close), a FAILED
+        client close here PROPAGATES, and the stale client is RETAINED in the
+        maps until the close succeeds: popping first would make the retry see
+        an empty map and report teardown "confirmed" over a surviving
+        subprocess. Deliveries into the retained client are refused meanwhile
+        by the context_rebuild_pending fence, which is set before any caller
+        reaches this method."""
+        client = self._clients.get(engagement.id)
+        ctx = self._ctx_stack.get(engagement.id)
+        if client is not None or ctx is not None:
+            if client is not None and hasattr(client, "close"):
+                await client.close()
+            elif ctx is not None and hasattr(ctx, "__aexit__"):
+                await ctx.__aexit__(None, None, None)
+        self._clients.pop(engagement.id, None)
+        self._ctx_stack.pop(engagement.id, None)
+        self._locks.pop(engagement.id, None)
+        self._session_ids.pop(engagement.id, None)
+
+    async def open_fresh(self, engagement: EngagementRecord) -> None:
+        """#369: open a NEW session for an engagement whose context was
+        invalidated by a clearance downgrade — the same fully-restricted
+        option set as :meth:`resume`, but with no ``resume=`` sid, so the
+        CLI starts a fresh conversation holding nothing fetched at the old
+        tier. Raises on failure (the caller fails closed and retries on the
+        next turn)."""
+        from tools import build_engagement_resume_options, engagement_var
+
+        if self.is_alive(engagement):
+            logger.warning(
+                "open_fresh() called on engagement %s that is already alive",
+                engagement.id[:8],
+            )
+            return
+        options = await asyncio.to_thread(
+            build_engagement_resume_options, engagement, None,
+        )
+        client = ClaudeSDKClient(
+            sdk_logging.with_stderr_callback(
+                options, engagement_id=engagement.id[:8],
+            ),
+        )
+        token = engagement_var.set(engagement)
+        try:
+            entered = await client.__aenter__()
+            self._clients[engagement.id] = entered or client
+            self._ctx_stack[engagement.id] = client
+            self._locks[engagement.id] = asyncio.Lock()
+            logger.info(
+                "Engagement %s reopened FRESH after clearance downgrade",
+                engagement.id[:8],
             )
         finally:
             engagement_var.reset(token)

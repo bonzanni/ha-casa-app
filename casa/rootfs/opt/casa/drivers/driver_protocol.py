@@ -13,6 +13,24 @@ from typing import Any
 from engagement_registry import EngagementRecord
 
 
+class StaleLaunchError(RuntimeError):
+    """#369: raised by a driver's ``start()`` when, at the last suspension
+    point before the initial prompt is enqueued, the engagement record turns
+    out to have been clearance-clamped — the prompt in hand was rendered from
+    pre-clamp materials and MUST NOT reach the fresh process.
+
+    ``record_live`` (Terra diff-gate r5) tells the launcher what to do with
+    the record: False = the clamp is still pending, nothing rebuilt, the
+    launcher errors the record and aborts the topic; True = a clamp→rebuild
+    cycle COMPLETED while this launch was suspended, the engagement is alive
+    on its rebuilt floor session, and the launcher must abort only its own
+    stale prompt — never the living engagement."""
+
+    def __init__(self, message: str, *, record_live: bool = False) -> None:
+        super().__init__(message)
+        self.record_live = record_live
+
+
 class DriverProtocol(ABC):
     """Lifecycle interface all engagement drivers must honour."""
 

@@ -23,11 +23,12 @@ enforcement point. Where one does not, the agent's judgement is the control.
 ## The rules, and what each rests on
 
 **Never assert absence from silence.** If a recall returns nothing, that may mean nothing was
-found, or that memory could not be consulted, or that a result existed and did not fit the
-rendering budget. These are different, and the difference reaches you unevenly — the seam
-distinguishes them, individual call sites sometimes do not. Say "I did not find" rather than
-"there is no", and say "I could not check" when that is what happened. See
-`architecture/memory.md`.
+found, nothing was *readable from your surface*, memory could not be consulted, or a result
+existed and did not fit the rendering budget. The recall tools now say which of these they
+can establish — an empty result arrives with explicit guidance, and readable matches that
+did not fit are reported as existing (INV-MEM-010) — but no empty result, at any clearance,
+proves absence. Say "I did not find" or "nothing I can share here" rather than "there is
+no", and say "I could not check" when that is what happened. See `architecture/memory.md`.
 
 **A protected-tool approval covers one action with one argument set.** That authorization is
 single-use and bound to the exact canonical arguments. If a call is denied and you change
