@@ -1438,7 +1438,16 @@ class ClaudeCodeDriver(DriverProtocol):
         from drivers.workspace import executor_memory_path, session_id_path
         import plugin_outbox
 
-        await s6_rc.ensure_service_down(engagement_id=engagement.id)
+        # Sol diff-gate r1: ensure_service_down REPORTS success — a False
+        # means the old process may still be alive with its pre-clamp
+        # conversation in memory, and proceeding would let the rebuild clear
+        # the fence around a surviving session. Raise; the flag stays set and
+        # every delivery keeps being refused until a later attempt confirms
+        # extinction.
+        if not await s6_rc.ensure_service_down(engagement_id=engagement.id):
+            raise RuntimeError(
+                f"engagement {engagement.id[:8]}: service did not confirm "
+                "down — old session may survive; rebuild refused")
         # In-memory spool/task state for the old process.
         for t in self._tasks.pop(engagement.id, []):
             t.cancel()
@@ -1461,6 +1470,12 @@ class ClaudeCodeDriver(DriverProtocol):
         keeps ``context_rebuild_pending`` set and refuses delivery."""
         from drivers.workspace import refresh_claude_md
 
+        # Sol diff-gate r1: re-run the (idempotent) invalidation first — this
+        # path is also reached with a crash-recovered pending flag whose
+        # teardown never ran, and a rebuild must never proceed over a live
+        # pre-clamp process or a surviving session pointer. Raises on
+        # unconfirmed teardown, keeping the flag set.
+        await self.invalidate_session(engagement)
         defn = (
             self._executor_defn_lookup(engagement.role_or_type)
             if self._executor_defn_lookup is not None else None

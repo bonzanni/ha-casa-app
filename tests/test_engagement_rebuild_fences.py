@@ -202,6 +202,45 @@ class TestInFlightReFilter:
         assert "bins go out tuesday" in out
 
 
+class TestVerifiedTeardown:
+    """Sol diff-gate r1: a rebuild must never clear the fence around a session
+    whose teardown was not CONFIRMED."""
+
+    async def test_in_casa_invalidate_propagates_a_failed_close(self):
+        from drivers.in_casa_driver import InCasaDriver
+
+        rec = SimpleNamespace(id="e-td", topic_id=7)
+        driver = InCasaDriver(topic_stream_factory=lambda tid: None)
+
+        class _StuckClient:
+            async def close(self):
+                raise RuntimeError("subprocess did not exit")
+
+        driver._clients[rec.id] = _StuckClient()
+        driver._ctx_stack[rec.id] = object()
+        with pytest.raises(RuntimeError, match="did not exit"):
+            await driver.invalidate_session(rec)
+        # State is popped either way — the old client can never be re-used.
+        assert not driver.is_alive(rec)
+
+    async def test_claude_code_invalidate_refuses_unconfirmed_down(
+        self, monkeypatch, tmp_path,
+    ):
+        import drivers.claude_code_driver as ccd
+
+        async def _never_down(*, engagement_id, attempts=3):
+            return False
+        monkeypatch.setattr(ccd.s6_rc, "ensure_service_down", _never_down)
+        driver = ccd.ClaudeCodeDriver(
+            engagements_root=str(tmp_path),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://x",
+        )
+        rec = SimpleNamespace(id="e-cc", allocated_uid=0)
+        with pytest.raises(RuntimeError, match="did not confirm down"):
+            await driver.invalidate_session(rec)
+
+
 class TestInCasaLaunchGate:
     async def test_clamp_during_client_open_aborts_the_stale_prompt(self):
         from drivers.driver_protocol import StaleLaunchError

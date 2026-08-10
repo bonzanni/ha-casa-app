@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-07-31
+last_reviewed: 2026-08-10
 ---
 
 # Engagements and delegation
@@ -48,10 +48,8 @@ suspends a live session after a day idle and posts recurring idle reminders (thr
 a specialist, seven for an executor, refiring weekly); terminal tombstones age out after
 thirty days, bounding duplicate-task protection. Separately, an observer watches engagement
 events and may post a bounded LLM interjection into the resident chat — capped at three per
-engagement and suppressible with `/silent`. The cap holds under the bus's concurrent
-dispatch: a budget slot is reserved before evaluation and handed back if nothing is posted,
-so simultaneous events can neither overshoot the cap nor burn budget on declined
-evaluations.
+engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
+budget slot is reserved before evaluation and returned if nothing is posted.
 
 **The depth cap is narrower than it sounds.** It stops an ephemerally delegated agent —
 resident or specialist alike — from delegating onwards. It is read in one place and stamped
@@ -79,9 +77,8 @@ error mutator reports whether it won, and only a winner cleans up).
 
 What it does not cover: exclusivity covers the *post-transition* side effects only: the pre-close
 inbound spool drain runs before the win/lose transition, so a caller that goes on to lose the
-race may already have flushed pending receipts and eviction notices externally. The drain is
-idempotent, which is why running it ahead of the gate is tolerated — but "does nothing" is
-not what a losing finalizer does.
+race may already have flushed pending receipts and eviction notices externally; the drain is
+idempotent, which is why running it ahead of the gate is tolerated.
 
 **INV-ENG-002**: A strict terminal transition never leaves the persisted and in-memory records disagreeing; on a write failure it restores the prior state and raises.
 
@@ -99,9 +96,8 @@ around it, since a cancellation lands at whichever await is pending and ordinary
 already-opened topic; after it exists but before the driver is confirmed live, the
 compensation also marks the record errored and runs the driver's own terminal teardown —
 necessary because a driver can be *partly* live (the claude-code driver starts its supervised
-service before its final awaits). The compensation is scheduled, not awaited, since a
-cancelled task cannot await network round-trips; its steps then run in order inside that
-background task.
+service before its final awaits). The compensation is scheduled, not awaited (a cancelled
+task cannot await network round-trips); its steps run in order in that background task.
 
 What it does not cover: the other non-strict registry mutations (status touches, channel
 state, counters) warn and continue if their write fails, so the no-disagreement guarantee
@@ -137,15 +133,13 @@ again", not "agent-created work cannot chain".
 
 The delegation tool accepts either a delegate's role id or its persona display name, because
 Casa advertises both to the model. The block renders each entry as `role (Display Name)`,
-collapsing to the bare role when an agent has no persona name distinct from it — the role
-first, because that is the value the tool is actually keyed on, and rendering the persona
-first is what taught the model to address delegates by a name the ACL then refused.
-The display name stays visible because the model still has to map "ask Tina to…" onto a
-role; it is the parenthetical rather than the lead. This is also the form the
-specialist-side renderer has always used, which emits role ids alone.
+collapsing to the bare role when no distinct persona name exists — role first, because that
+is what the tool is keyed on; rendering the persona first is what taught the model to
+address delegates by a name the ACL then refused. The display name stays as the
+parenthetical so the model can still map "ask Tina to…" onto a role.
 
-Resolution is scoped: the candidate set is built from the
-*caller's own* declared delegates, so every value it can produce is already inside the ACL.
+Resolution is scoped: the candidate set is the *caller's own* declared delegates, so every
+value it can produce is already inside the ACL.
 An exact role id is matched first, so a delegate whose display name happens to be another
 delegate's role id cannot shadow it. A name matching two declared delegates is refused with
 its own kind rather than resolved to either.
@@ -182,23 +176,20 @@ tools module was never initialized — so the live directory reports that state 
 rather than empty, and "nobody is dispatchable" is never mistaken for "nothing is wired
 yet".
 
-Reading it at build time is only half of it — the half easy to mistake for the whole.
-Options are assembled on a **cold** pool connect; a warm client is reused without rebuilding
-them, and a per-role reload closes only the reloaded role's own pool. So the reload paths
-additionally drop the warm clients of agents whose block would now render differently, which
-is what carries a rename into a conversation already in progress. That drop is scoped by an
-actual diff of the directory, since a cold reconnect costs seconds and a fresh prompt-cache
-prefix and most reloads change nothing anyone else advertises; and it is *scheduled*, never
-awaited, since a reload runs inside a caller's own turn and the invalidation waits on that
-turn's lock. Every reload scope that commits an agent config does this, including the policy
+Reading it at build time is only half of it. Options are assembled on a **cold** pool
+connect; a warm client is reused without rebuilding them, and a per-role reload closes only
+the reloaded role's own pool. So the reload paths additionally drop the warm clients of
+agents whose block would now render differently — what carries a rename into a conversation
+already in progress. The drop is scoped by an actual diff of the directory (a cold reconnect
+costs seconds and a fresh prompt-cache prefix), and *scheduled*, never awaited, since a
+reload runs inside a caller's own turn and the invalidation waits on that turn's lock. Every reload scope that commits an agent config does this, including the policy
 cascade — which swaps every role without any per-role reload requested, reached by a
 config-sync run *after* its own agents sweep.
 
-What it does not cover, and the boundary is the word *builds*: a block is a snapshot of the
-map when assembled, and the model calls the tool later. A reload landing in between leaves
-that turn holding a prompt older than the ACL — the alias degrades to the ordinary
-undeclared refusal, enumerating the current delegates, and the following turn is consistent
-again. Two further gaps predate this rule: concurrent per-role reloads can publish a briefly
+What it does not cover, and the boundary is the word *builds*: a block is a snapshot taken
+when assembled, and the model calls the tool later. A reload landing in between degrades the
+alias to the ordinary undeclared refusal, enumerating the current delegates; the next turn
+is consistent again. Two further gaps predate this rule: concurrent per-role reloads can publish a briefly
 partial role map, since the specialist registry is cleared and refilled in place off-loop
 while another reload snapshots it; and *tier* lookups still read a boot-time registry global
 no reload refreshes.
@@ -336,12 +327,19 @@ before the intact-service fast path, so an ordinary restart cannot start a servi
 script would exit-and-respawn forever — and a missing definition is skipped with a warning.
 A failed stdin-FIFO recreation and a failed service start are refusals of the same kind:
 the record is marked errored and no background spool/relay machinery attaches, rather than
-accepting operator messages into an engagement with no consumer (or starting one that
-would crash-loop under its supervisor).
+accepting operator messages into an engagement with no consumer (or starting one that would
+crash-loop under its supervisor). A record still owing a clearance-downgrade context
+rebuild (INV-MEM-011) is never *resumed*: replay drops its session pointer and archive
+cache and re-renders the workspace at the clamped floor first, refusing the same way if
+that fails.
 
 ## Extension points
 
-**A new driver** implements the driver protocol: start, send, cancel, resume, liveness.
+**A new driver** implements the driver protocol: start, send, cancel, resume, liveness —
+plus the downgrade-recovery seams (invalidate the live session with confirmed teardown;
+rebuild fresh at the record's current clearance). `start()` may raise `StaleLaunchError`
+at its last suspension point; the launcher then aborts rather than deliver a prompt
+rendered from pre-downgrade materials.
 
 **A new terminal path** should go through the shared finalize funnel to inherit the
 single-winner transition, teardown, notification and retention. Setting a terminal status

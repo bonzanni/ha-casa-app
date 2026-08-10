@@ -280,6 +280,24 @@ class InCasaDriver(DriverProtocol):
         finally:
             engagement_var.reset(token)
 
+    async def invalidate_session(self, engagement: EngagementRecord) -> None:
+        """#369 (Sol diff-gate r1): teardown for a clearance downgrade —
+        unlike :meth:`cancel` (terminal path, best-effort close), a FAILED
+        client close here PROPAGATES: the rebuild that follows must not clear
+        the fence around a client whose subprocess may have survived. State
+        is popped first either way, so the driver never re-delivers into the
+        old client object."""
+        client = self._clients.pop(engagement.id, None)
+        ctx = self._ctx_stack.pop(engagement.id, None)
+        self._locks.pop(engagement.id, None)
+        self._session_ids.pop(engagement.id, None)
+        if client is None and ctx is None:
+            return
+        if client is not None and hasattr(client, "close"):
+            await client.close()
+        elif ctx is not None and hasattr(ctx, "__aexit__"):
+            await ctx.__aexit__(None, None, None)
+
     async def open_fresh(self, engagement: EngagementRecord) -> None:
         """#369: open a NEW session for an engagement whose context was
         invalidated by a clearance downgrade — the same fully-restricted

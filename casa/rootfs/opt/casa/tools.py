@@ -351,9 +351,6 @@ async def send_media(args: dict) -> dict:
         # 1. Resolve target chat — NO default fallback. Active engagement first
         #    (HTTP engagement handlers bind engagement_var, not origin_var); a
         #    delegated specialist turn carries the origin via origin_var.
-        fenced = _engagement_rebuild_fence()
-        if fenced is not None:
-            return _result(fenced)
         eng = engagement_var.get(None)
         # #369: mirror `react`'s live status re-check — media produced by a
         # terminal (or torn-down) engagement must not still reach the origin
@@ -3912,13 +3909,6 @@ async def delegate_to_agent(args: dict) -> dict:
     # Import lazily — matches the `agent.py` origin_var ContextVar.
     import agent as agent_mod
 
-    # #369: a caller still running inside a downgraded engagement's OLD
-    # session must not launch new work — the delegation prompt would carry
-    # its above-floor task/context verbatim into a child.
-    _fenced = _engagement_rebuild_fence()
-    if _fenced is not None:
-        return _result(_fenced)
-
     # TOTAL over arbitrary JSON, exactly as the `mode` coercion below is and
     # for the same reason: `args` can carry any type on the paths that don't
     # run the schema validator first. A non-string target must reach the
@@ -5003,11 +4993,6 @@ async def recall_memory(args: dict) -> dict:
     if not query:
         return _result({"status": "error", "kind": "empty_query",
                         "message": "Error: query is required"})
-    # #369: a downgraded engagement's old session must not read at all until
-    # its context is rebuilt at the clamped floor.
-    _fenced = _engagement_rebuild_fence()
-    if _fenced is not None:
-        return _result(_fenced)
     sem = getattr(agent_mod, "active_semantic_memory", None)
     if sem is None:
         # No backend wired: memory CANNOT be checked — never a fake zero-hit.
@@ -5931,11 +5916,6 @@ async def _fetch_executor_archive(
 )
 async def engage_executor(args: dict) -> dict:
     import agent as agent_mod
-    # #369: same fence as delegate_to_agent — a downgraded parent's stale
-    # session must not spawn children carrying its above-floor task text.
-    _fenced = _engagement_rebuild_fence()
-    if _fenced is not None:
-        return _result(_fenced)
     # AR-2: snapshot at entry — this handler awaits extensively (topic
     # creation, engagement-registry create, driver dispatch) and reads
     # `origin` well after those awaits; a pooled client's holder rewrite
@@ -7600,9 +7580,10 @@ async def _synthesize_answer(
     "synthesized from the engager's clearance-filtered memory; status=unknown "
     "means the search of readable memory found nothing — NOT proof of "
     "absence, since entries above this engagement's clearance are never "
-    "searched; status=unavailable means memory could not be checked (do not "
-    "conclude the information doesn't exist). Callable only from inside an "
-    "active engagement.",
+    "searched; status=too_broad means readable matches EXIST but exceeded "
+    "the render budget — ask a narrower question; status=unavailable means "
+    "memory could not be checked (do not conclude the information doesn't "
+    "exist). Callable only from inside an active engagement.",
     {"question": str, "max_tokens": int},
 )
 async def query_engager(args: dict) -> dict:
@@ -7610,10 +7591,6 @@ async def query_engager(args: dict) -> dict:
     if engagement is None:
         return _result({"status": "error", "kind": "not_in_engagement",
                         "message": "query_engager called outside an engagement"})
-    # #369: a downgraded engagement's old session must not read until rebuilt.
-    _fenced = _engagement_rebuild_fence()
-    if _fenced is not None:
-        return _result(_fenced)
     question = args.get("question", "") or ""
     # #201 (Sol + Terra, Blocking): a blank question performed no search, yet
     # fell through to `status=unknown` — which this tool's own description
@@ -7648,9 +7625,10 @@ async def query_engager(args: dict) -> dict:
             # the markers after the await and re-run at the new floor; the
             # loop is bounded by the (few, one-way) tiers.
             from sensitivity import TIERS as _ALL_TIERS
+            _n_hits = 0
             for _ in range(len(_ALL_TIERS)):
                 _q_clearance = engagement.origin.get("_origin_clearance")
-                context = await delegated_recall(
+                context, _n_hits = await delegated_recall(
                     sem, query=question,
                     origin_channel=str(engagement.origin.get("channel", "")),
                     max_tokens=2000, path="query_engager",
@@ -7660,6 +7638,7 @@ async def query_engager(args: dict) -> dict:
                     # persisted markers, exactly like its recall_memory calls.
                     origin_route=engagement.origin.get("_origin_route"),
                     origin_clearance=_q_clearance,
+                    with_stats=True,
                 )
                 if engagement.origin.get("_origin_clearance") == _q_clearance:
                     break
@@ -7702,7 +7681,17 @@ async def query_engager(args: dict) -> dict:
         "NOT proof of absence: entries above this engagement's clearance "
         "are never searched. Do not conclude the information doesn't exist."
     )
+    # #472 (Sol diff-gate r1): a rendered "" with a NON-ZERO hit count means
+    # readable matches exist but exceeded the render budget — reporting that
+    # as "unknown" would deny memories this clearance can read.
+    _too_broad = (
+        "Readable matching memories exist but exceeded the render budget — "
+        "ask a narrower, more specific question."
+    )
     if not context:
+        if _n_hits > 0:
+            return _result(
+                {"status": "too_broad", "text": "", "message": _too_broad})
         return _result({"status": "unknown", "text": "", "message": _unknown_note})
     # #369: synthesis awaits too — a downgrade landing mid-synthesis means the
     # answer was drawn from context above the engagement's new floor. Discard
@@ -7716,12 +7705,13 @@ async def query_engager(args: dict) -> dict:
             break
         _q_clearance = engagement.origin.get("_origin_clearance")
         try:
-            context = await delegated_recall(
+            context, _n_hits = await delegated_recall(
                 sem, query=question,
                 origin_channel=str(engagement.origin.get("channel", "")),
                 max_tokens=2000, path="query_engager",
                 origin_route=engagement.origin.get("_origin_route"),
                 origin_clearance=_q_clearance,
+                with_stats=True,
             )
         except RecallUnavailable:
             return _result({
@@ -7733,6 +7723,9 @@ async def query_engager(args: dict) -> dict:
                 ),
             })
         if not context:
+            if _n_hits > 0:
+                return _result(
+                    {"status": "too_broad", "text": "", "message": _too_broad})
             return _result(
                 {"status": "unknown", "text": "", "message": _unknown_note})
     if answer.strip().upper().startswith("UNKNOWN"):
@@ -11486,6 +11479,36 @@ CASA_TOOLS: tuple = (
     persona_install_commit,
     persona_apply,
 )
+
+
+# #369 (Terra diff-gate r1): the context-rebuild fence is enforced CENTRALLY,
+# by wrapping every Casa tool handler at registry definition — not by
+# per-tool calls a new (or overlooked) tool can silently omit. Both
+# transports iterate CASA_TOOLS (create_casa_tools for the in-process SDK
+# path, mcp_bridge for the HTTP bridge), so one wrap covers both; the
+# internal-socket handler's own refusal stays as defense-in-depth. Only the
+# terminal-binding completion tool is exempt — its output is in-flight-turn
+# residual and its idempotency check needs the record.
+_REBUILD_FENCE_EXEMPT = frozenset({"emit_completion"})
+
+
+def _fence_wrapped(tool_obj) -> None:
+    inner = tool_obj.handler
+
+    async def fenced(args: dict) -> dict:
+        refusal = _engagement_rebuild_fence()
+        if refusal is not None:
+            return _result(refusal)
+        return await inner(args)
+
+    fenced.__name__ = getattr(inner, "__name__", tool_obj.name)
+    tool_obj.handler = fenced
+
+
+for _tool_obj in CASA_TOOLS:
+    if _tool_obj.name not in _REBUILD_FENCE_EXEMPT:
+        _fence_wrapped(_tool_obj)
+del _tool_obj
 
 
 def select_casa_tools(

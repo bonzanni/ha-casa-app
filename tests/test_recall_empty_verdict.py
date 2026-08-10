@@ -110,8 +110,8 @@ class TestQueryEngagerUnknownIsNotAbsence:
         )
         token = tools.engagement_var.set(rec)
         try:
-            async def fake_recall(*a, **kw):
-                return ""
+            async def fake_recall(*a, with_stats=False, **kw):
+                return ("", 0) if with_stats else ""
             monkeypatch.setattr(tools, "delegated_recall", fake_recall)
             import agent as agent_mod
             monkeypatch.setattr(
@@ -124,6 +124,40 @@ class TestQueryEngagerUnknownIsNotAbsence:
         assert '"unknown"' in low or "unknown" in low
         assert "not proof" in low or "do not" in low
         assert "readable" in low or "clearance" in low
+
+    async def test_hits_that_did_not_fit_report_too_broad_not_unknown(
+        self, monkeypatch,
+    ):
+        """Sol diff-gate r1: a rendered '' with a non-zero hit count means
+        readable matches EXIST — denying them as 'unknown' is the same
+        overclaim #472 fixed on recall_memory."""
+        import tools
+        from engagement_registry import EngagementRecord
+
+        rec = EngagementRecord(
+            id="e-2", kind="executor", role_or_type="configurator",
+            driver="in_casa", status="active", topic_id=7, started_at=0.0,
+            last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+            sdk_session_id=None,
+            origin={"channel": "telegram", "_origin_route": "telegram_dm",
+                    "_origin_clearance": "friends"},
+            task="t",
+        )
+        token = tools.engagement_var.set(rec)
+        try:
+            async def fake_recall(*a, with_stats=False, **kw):
+                return ("", 3) if with_stats else ""
+            monkeypatch.setattr(tools, "delegated_recall", fake_recall)
+            import agent as agent_mod
+            monkeypatch.setattr(
+                agent_mod, "active_semantic_memory", AsyncMock(), raising=False)
+            res = await tools.query_engager.handler({"question": "everything?"})
+        finally:
+            tools.engagement_var.reset(token)
+        out = _text(res)
+        assert "too_broad" in out
+        assert "narrower" in out.lower()
+        assert "unknown" not in out.split("too_broad")[0]
 
     def test_tool_description_no_longer_claims_holds_nothing_relevant(self):
         import tools

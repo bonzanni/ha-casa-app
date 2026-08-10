@@ -4058,15 +4058,17 @@ async def main() -> None:
             if rec.driver == "claude_code":
                 await claude_code_driver.invalidate_session(rec)
             else:
-                await engagement_driver.cancel(rec)
+                await engagement_driver.invalidate_session(rec)
 
         async def _engagement_context_rebuilder(rec) -> str:
+            # Sol diff-gate r1: both branches RE-VERIFY teardown before
+            # opening anything fresh (invalidate is idempotent) — the flag is
+            # cleared by the caller only after this returns, so a rebuild can
+            # never bless a session whose predecessor was not confirmed gone.
             if rec.driver == "claude_code":
                 await claude_code_driver.rebuild_fresh_context(rec)
             else:
-                # Idempotent teardown first: the invalidate step normally ran,
-                # but a crash-recovered pending flag reaches here directly.
-                await engagement_driver.cancel(rec)
+                await engagement_driver.invalidate_session(rec)
                 await engagement_driver.open_fresh(rec)
             return _REBUILD_NOTE
         telegram_channel._driver_invalidate_session = _driver_invalidate_session
