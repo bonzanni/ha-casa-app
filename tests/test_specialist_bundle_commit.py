@@ -5,6 +5,7 @@ Checkpoint 2a covers the two self-contained primitives (sidecar triple +
 apply_owned_swap); the lifecycle-integration slices (2b-2d) follow."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -1035,3 +1036,22 @@ def test_uninstall_begin_failure_restores_retired_acks(
 
     # The retired ack was restored — the failed uninstall left the ledger intact.
     assert len(ctx.acks.snapshot_slug("mtg")) == 1
+
+
+def test_bundle_install_rollback_removes_fresh_op_symlink(tmp_path: Path, monkeypatch) -> None:
+    """#490 end-to-end (+ Sol/Terra design r1): the lifecycle must hand its
+    OWN agents_specialists_dir to the BundleTxn, and rolling back a fresh
+    install must remove the op-symlink materialized during the commit — a
+    rollback that cleans only the default path leaves the live symlink to
+    poison every later reload."""
+    ctx = _prep(tmp_path, monkeypatch)
+    instance, txn = specialist_install.commit_specialist_install(**ctx.kw)
+    assert instance.state == "active"
+    link = tmp_path / "agents" / "mtg"
+    assert link.is_symlink()                     # materialized during commit
+    target_name = os.readlink(link)
+
+    txn.rollback_disk()
+
+    assert not link.is_symlink() and not link.exists()
+    assert not (tmp_path / "agents" / target_name).exists()

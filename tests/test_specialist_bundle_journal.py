@@ -763,3 +763,101 @@ def test_journal_snapshots_and_restores_the_rollback_tmp(tmp_path):
     )
     txn2.rollback_disk()
     assert not (slug_dir / "active.yaml.rollback-tmp").exists()
+
+
+# --------------------------------------------------------------------------
+# #490: fresh-install rollback must remove the op-symlink materialization
+# created — otherwise every later reload re-discovers the slug through it,
+# attempts the load, and fails (role overlay rebuilt WITHOUT the slug).
+# --------------------------------------------------------------------------
+
+def _mk_op_symlink(agents_dir, slug="mtg"):
+    """A materialized operational dir exactly as materialize writes it:
+    `.{slug}.material-<32hex>` content dir + `<slug>` symlink at the top."""
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    content = agents_dir / f".{slug}.material-{'c' * 32}"
+    content.mkdir()
+    (content / "runtime.yaml").write_text("role: mtg\n", encoding="utf-8")
+    (agents_dir / slug).symlink_to(content.name)
+    return content
+
+
+def test_bundletxn_rollback_disk_fresh_install_removes_op_symlink(tmp_path):
+    """#490: before-state with NO active.yaml (fresh install) — rollback
+    removes the op-symlink AND its contained content dir."""
+    registry_path = tmp_path / "registry.json"
+    agents_dir = tmp_path / "agents"
+    _write_registry(registry_path, [])
+    content = _mk_op_symlink(agents_dir)
+
+    txn = journal.BundleTxn(
+        journal_path=tmp_path / "unused.json",
+        slug="mtg",
+        before_entries=[],
+        before_tuple_files={"active.yaml": None},
+        ack_records=[],
+        registry_path=registry_path,
+        specialists_dir=tmp_path / "spec",
+        acks_path=tmp_path / "acks.json",
+        agents_specialists_dir=agents_dir,
+    )
+    txn.rollback_disk()
+
+    link = agents_dir / "mtg"
+    assert not link.is_symlink() and not link.exists()
+    assert not content.exists()
+
+
+def test_bundletxn_rollback_disk_upgrade_keeps_op_symlink(tmp_path):
+    """Converse: an upgrade rollback (before-state HAD an active.yaml — the
+    specialist stays installed) must NOT touch the op-symlink; the self-heal
+    reconcile re-materializes it from the restored active tuple."""
+    registry_path = tmp_path / "registry.json"
+    agents_dir = tmp_path / "agents"
+    _write_registry(registry_path, [])
+    content = _mk_op_symlink(agents_dir)
+
+    txn = journal.BundleTxn(
+        journal_path=tmp_path / "unused.json",
+        slug="mtg",
+        before_entries=[],
+        before_tuple_files={"active.yaml": "id: specialist:mtg\n"},
+        ack_records=[],
+        registry_path=registry_path,
+        specialists_dir=tmp_path / "spec",
+        acks_path=tmp_path / "acks.json",
+        agents_specialists_dir=agents_dir,
+    )
+    txn.rollback_disk()
+
+    assert (agents_dir / "mtg").is_symlink()
+    assert content.is_dir()
+
+
+def test_bundletxn_rollback_disk_noncontained_symlink_target_survives(tmp_path):
+    """F2 containment discipline carried over: a cross-pointed/out-of-tree
+    symlink target is NEVER rmtree'd — the symlink alone is unlinked."""
+    registry_path = tmp_path / "registry.json"
+    agents_dir = tmp_path / "agents"
+    _write_registry(registry_path, [])
+    agents_dir.mkdir(parents=True)
+    outside = tmp_path / "outside-tree"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("live data", encoding="utf-8")
+    (agents_dir / "mtg").symlink_to(outside)
+
+    txn = journal.BundleTxn(
+        journal_path=tmp_path / "unused.json",
+        slug="mtg",
+        before_entries=[],
+        before_tuple_files={"active.yaml": None},
+        ack_records=[],
+        registry_path=registry_path,
+        specialists_dir=tmp_path / "spec",
+        acks_path=tmp_path / "acks.json",
+        agents_specialists_dir=agents_dir,
+    )
+    txn.rollback_disk()
+
+    assert not (agents_dir / "mtg").exists()
+    assert (outside / "keep.txt").is_file()   # out-of-tree target untouched

@@ -316,9 +316,9 @@ async def test_compensate_fresh_install_runs_uninstall_shaped_sweep(monkeypatch)
         slug="mtg", new_artifact_ids=("NEWAID",), journal_path="/tmp/j.json",
         before_tuple_files={"active.yaml": None},   # NOT installed before
         rollback_disk=lambda: None)
-    ok = await tools_mod._bundle_compensate(txn)
+    res = await tools_mod._bundle_compensate(txn)
 
-    assert ok is True
+    assert res == {"disk_ok": True, "runtime_ok": True}
     assert captured["targets_removed"] == ["specialist:mtg"]   # evict sweep
     assert captured["removed"] == ["NEWAID"]                    # un-publish the new set
     assert completed == ["/tmp/j.json"]                        # journal completed
@@ -1406,3 +1406,217 @@ async def test_specialist_upgrade_rechecks_the_receipt_under_the_lock(
     assert payload["ok"] is False
     assert payload["kind"] == "receipt_required"
     assert calls["n"] >= 2, "the receipt must be re-loaded under the lock"
+
+
+# ---------------------------------------------------------------------------
+# #488: setup_env_unprovisioned must not block the bundle gate.
+# #491: a compensated failure must SAY it rolled back, and log the verdict.
+# ---------------------------------------------------------------------------
+
+
+def test_binding_blocked_exempts_setup_env_unprovisioned() -> None:
+    """#488: `setup_env_unprovisioned` is the documented "loads, reports
+    unprovisioned, setup tool runs next" state (#429) — on a fresh install of
+    a `casa.setupProvides` plugin it is the NORMAL state, and it must not be
+    read as an integrity failure at either the top level or the row level."""
+    import tools as tools_mod
+
+    v = {"reasons": ["setup_env_unprovisioned"],
+         "targets": [{"target": "specialist:mtg", "ready": False,
+                      "reasons": ["setup_env_unprovisioned"]}]}
+    assert tools_mod._bundle_binding_blocked(v) is False
+
+    # A genuine integrity code alongside it still blocks — at both levels.
+    assert tools_mod._bundle_binding_blocked(
+        {"reasons": ["setup_env_unprovisioned", "artifact_invalid"],
+         "targets": []}) is True
+    assert tools_mod._bundle_binding_blocked(
+        {"reasons": [],
+         "targets": [{"target": "specialist:mtg", "ready": False,
+                      "reasons": ["setup_env_unprovisioned",
+                                  "reload_required"]}]}) is True
+
+
+@pytest.mark.asyncio
+async def test_sequencer_passes_setup_provides_unprovisioned_real_verify(
+    monkeypatch, tmp_path,
+) -> None:
+    """#488: fresh install of a bundled plugin declaring `casa.setupProvides`
+    — the REAL verify reports top-level `setup_env_unprovisioned` (only the
+    plugin's own setup tool can provision it, and it cannot run until the
+    plugin is installed), and the REAL bundle sequencer must NOT compensate.
+    Mirrors test_sequencer_passes_env_pending_owned_plugin_real_verify: only
+    the reload/agent/health I/O seams are stubbed."""
+    import agent as agent_mod
+    import plugin_registry
+    import tools as tools_mod
+    import system_requirements.manifest as mani
+    import plugin_env_conf as pec
+    from plugin_fixtures import entry, mk_artifact
+    from plugin_store import content_checksum, write_metadata
+
+    store = tmp_path / "store"
+    reg_path = tmp_path / "registry.json"
+    e = entry("mtg.mtg", ["specialist:mtg"])
+    e["owner"] = "specialist:mtg"
+    e["manifest_name"] = "mtg"
+    root = mk_artifact(
+        store, "mtg.mtg", e["artifact_id"], manifest_name="mtg",
+        mcp_servers={"s": {"env": {"K": "${CASA_PLUGIN_MTG_KEY}"}}},
+        extra_manifest={"casa": {"setupTool": "setup_mtg",
+                                 "setupProvides": ["CASA_PLUGIN_MTG_KEY"]}})
+    write_metadata(root, name="mtg.mtg", repo="o/r", ref="v1",
+                   revision="git:" + "a" * 40, subdir="", artifact_id=e["artifact_id"],
+                   version="1.0.0", checksum=content_checksum(root), manifest_name="mtg")
+    reg_path.write_text(
+        json.dumps({"schema_version": 1, "plugins": [e]}), encoding="utf-8")
+
+    real_load = plugin_registry.load_registry
+    monkeypatch.setattr(plugin_registry, "load_registry",
+                        lambda path=reg_path: real_load(path))
+    monkeypatch.setattr(plugin_registry, "STORE_ROOT", store)
+    monkeypatch.setattr(mani, "MANIFEST_PATH", tmp_path / "sysreq.yaml")
+    monkeypatch.setattr(pec, "PLUGIN_ENV_CONF_PATH", tmp_path / "plugin-env.conf")
+    monkeypatch.delenv("CASA_PLUGIN_MTG_KEY", raising=False)
+
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    monkeypatch.setattr(plugin_registry, "reload_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", lambda issues: None)
+
+    async def _notify():
+        return None
+
+    monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible", _notify)
+    monkeypatch.setattr(tools_mod, "_invalidate_lifecycle", lambda **k: None)
+
+    seq = await tools_mod._bundle_reload_and_verify(
+        "mtg", removed_artifact_ids=[], targets_removed=[])
+
+    v = seq["verify"]["mtg.mtg"]
+    assert v["ready"] is False                             # still not ready…
+    assert "setup_env_unprovisioned" in v["reasons"]       # …for exactly this reason
+    row = next(s for s in v["secrets"] if s["var"] == "CASA_PLUGIN_MTG_KEY")
+    assert row["status"] == "unprovisioned"
+    # …yet the sequencer does NOT compensate: the plugin must load
+    # unprovisioned for its setup tool to ever run (#429).
+    assert seq["not_ready"] == []
+    assert seq["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_seq_failure_successful_compensation_tags_rolled_back(
+    monkeypatch,
+) -> None:
+    """#491: a SUCCESSFUL compensation must be stated in the envelope —
+    `rolled_back: true` plus a human-readable outcome — so the caller can
+    tell "your install was undone" from "your install exists but is not
+    ready". (Pre-fix, only a FAILED compensation was marked.)"""
+    from types import SimpleNamespace
+    import tools as tools_mod
+    import specialist_bundle_journal
+
+    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+        return {"ok": True, "reloaded": [], "verify": {}}
+
+    monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq)
+    monkeypatch.setattr(specialist_bundle_journal, "complete", lambda p: None)
+
+    txn = SimpleNamespace(
+        slug="mtg", new_artifact_ids=("NEWAID",), journal_path="/tmp/j.json",
+        before_tuple_files={"active.yaml": None},
+        rollback_disk=lambda: None)
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"kind": "postcondition_failed", "not_ready": ["mtg.mtg"]},
+        slug="mtg")
+
+    assert env["ok"] is False
+    assert env["rolled_back"] is True
+    assert "rolled back" in env["outcome"]
+    assert "compensation_failed" not in env
+    assert "runtime_compensation_incomplete" not in env
+
+
+@pytest.mark.asyncio
+async def test_seq_failure_incomplete_runtime_compensation_is_disclosed(
+    monkeypatch,
+) -> None:
+    """#491 (Sol design r1): the disk rollback succeeding while the
+    compensating SEQUENCER fails (e.g. the just-created agent could not be
+    evicted) must not read as "prior state fully restored" — the envelope
+    carries `rolled_back` (the disk state IS rolled back) plus
+    `runtime_compensation_incomplete`."""
+    from types import SimpleNamespace
+    import tools as tools_mod
+    import specialist_bundle_journal
+
+    async def _seq_fail(slug, *, removed_artifact_ids, targets_removed):
+        return {"ok": False, "kind": "reload_failed",
+                "reload_errors": [{"target": "specialist:mtg"}]}
+
+    monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq_fail)
+    monkeypatch.setattr(specialist_bundle_journal, "complete", lambda p: None)
+
+    txn = SimpleNamespace(
+        slug="mtg", new_artifact_ids=("NEWAID",), journal_path="/tmp/j.json",
+        before_tuple_files={"active.yaml": None},
+        rollback_disk=lambda: None)
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"kind": "postcondition_failed"}, slug="mtg")
+
+    assert env["rolled_back"] is True
+    assert env["runtime_compensation_incomplete"] is True
+    assert "compensation_failed" not in env
+
+    # A RAISING compensating sequencer grades the same way.
+    async def _seq_raise(slug, *, removed_artifact_ids, targets_removed):
+        raise RuntimeError("agent eviction blew up")
+
+    monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq_raise)
+    env2 = await tools_mod._bundle_seq_failure(
+        txn, {"kind": "postcondition_failed"}, slug="mtg")
+    assert env2["rolled_back"] is True
+    assert env2["runtime_compensation_incomplete"] is True
+
+
+@pytest.mark.asyncio
+async def test_bundle_sequencer_failure_logs_warning(
+    monkeypatch, caplog,
+) -> None:
+    """#491: the blocking verify verdict must be diagnosable from logs —
+    pre-fix, a failing sequencer returned ok:false with no log line and the
+    verdict existed solely inside the tool result."""
+    from types import SimpleNamespace
+    import agent as agent_mod
+    import plugin_registry
+    import reload as reload_mod
+    import tools as tools_mod
+
+    async def _dispatch(scope, *, runtime, role=None):
+        return {"status": "ok"}
+
+    monkeypatch.setattr(reload_mod, "dispatch", _dispatch)
+    monkeypatch.setattr(plugin_registry, "reload_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(plugin_registry, "owned_entries_for", lambda slug, reg: [])
+    monkeypatch.setattr(plugin_registry, "resolve_for",
+                        lambda t: SimpleNamespace(plugins=[]))
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", lambda issues: None)
+
+    async def _notify():
+        return None
+
+    monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible", _notify)
+    monkeypatch.setattr(tools_mod, "_invalidate_lifecycle", lambda **k: None)
+
+    # Uninstall sweep with the agent STILL registered -> absent violation.
+    monkeypatch.setattr(agent_mod, "active_runtime",
+                        SimpleNamespace(agents={"mtg": object()}, agents_dir=None),
+                        raising=False)
+    with caplog.at_level("WARNING"):
+        seq = await tools_mod._bundle_reload_and_verify(
+            "mtg", removed_artifact_ids=[], targets_removed=["specialist:mtg"])
+    assert seq["ok"] is False
+    rec = next(r for r in caplog.records
+               if r.levelname == "WARNING" and "mtg" in r.getMessage()
+               and "agent:mtg" in r.getMessage())
+    assert "postcondition_failed" in rec.getMessage()

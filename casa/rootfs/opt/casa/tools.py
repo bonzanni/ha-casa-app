@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -5693,8 +5693,10 @@ async def casa_reload(args: dict) -> dict:
     # global writer/reader lock, which the bundle op's dispatch("agent") already
     # takes on the reader side while holding _PLUGIN_TOOLS_LOCK). Global lock
     # order everywhere: _PLUGIN_TOOLS_LOCK -> reload writer/reader lock.
+    # #489: the GUARD, not the raw lock — reload_full's include_env arm reaches
+    # the plugin_env handler, whose health block re-enters via the same guard.
     if scope == "full":
-        async with _PLUGIN_TOOLS_LOCK:
+        async with _plugin_tools_guard():
             result = await dispatch(
                 scope, runtime=runtime, role=role, include_env=include_env)
     else:
@@ -8479,6 +8481,42 @@ async def cleanup_engagement_topics(args: dict) -> dict:
 # marketplace-file / manifest writes. Read-only vault helpers don't take it.
 _PLUGIN_TOOLS_LOCK = asyncio.Lock()
 
+# #489: the full-reload entry points hold _PLUGIN_TOOLS_LOCK across
+# dispatch("full"), and reload_full's include_env arm reaches the plugin_env
+# handler, whose health block serializes on the SAME lock (Sol r4-2) — with a
+# plain non-reentrant Lock that nesting deadlocked the reload, the calling
+# engagement, and (via the never-released reload writer lock) every later
+# reload and plugin mutation. The guard makes the nesting legal for ONE
+# logical operation, keyed on TASK IDENTITY: dispatch runs its handler
+# inline, so the re-entering plugin_env health block is the same asyncio
+# task that acquired at the entry point. Deliberately NOT a contextvar:
+# `asyncio.create_task` COPIES the caller's context, so a contextvar
+# "already held" flag would leak into tasks spawned inside the guarded
+# region and let them skip the lock entirely (pinned by
+# test_plugin_tools_guard_excludes_other_tasks). Cross-task semantics are
+# the raw lock's, both directions (a guard queues behind a raw acquire and
+# vice versa). Raw `async with _PLUGIN_TOOLS_LOCK:` stays correct for every
+# path that cannot re-enter (the mutation sequences dispatch only
+# agent/agents scopes, which never touch this lock).
+_PLUGIN_TOOLS_LOCK_OWNER: "asyncio.Task | None" = None
+
+
+@asynccontextmanager
+async def _plugin_tools_guard():
+    """Acquire `_PLUGIN_TOOLS_LOCK` unless the CURRENT TASK already holds it
+    via this guard (see the #489 note above). Reads the module attributes at
+    call time so tests that rebind the lock per event loop keep working."""
+    global _PLUGIN_TOOLS_LOCK_OWNER
+    if _PLUGIN_TOOLS_LOCK_OWNER is asyncio.current_task():
+        yield
+        return
+    async with _PLUGIN_TOOLS_LOCK:
+        _PLUGIN_TOOLS_LOCK_OWNER = asyncio.current_task()
+        try:
+            yield
+        finally:
+            _PLUGIN_TOOLS_LOCK_OWNER = None
+
 # ---------------------------------------------------------------------------
 # Unified plugin architecture (§3.9/§3.13): registry-mutating tools.
 # ---------------------------------------------------------------------------
@@ -8923,6 +8961,9 @@ async def _reload_and_verify_targets(name: str, targets: list,
     return result
 
 
+_BUNDLE_NONBLOCKING_REASONS = frozenset({"not_ready", "setup_env_unprovisioned"})
+
+
 def _bundle_binding_blocked(v: dict) -> bool:
     """P1-3: True iff a `_tool_verify_plugin_state` result shows a genuine
     integrity/binding failure that must roll a bundle commit back — as opposed
@@ -8930,18 +8971,23 @@ def _bundle_binding_blocked(v: dict) -> bool:
     bins), which is a verified-legal terminal state (spec §3.2) and must NOT
     trigger compensation.
 
-    verify's top-level `reasons` list carries ONLY integrity/binding codes
+    verify's top-level `reasons` list carries the integrity/binding codes
     (registry_invalid / not_registered / entry-issue reason codes /
     artifact_missing / artifact_invalid / corrupt_artifact / mcp_invalid /
     mcp_command_missing / mcp_reserved_env) — never secrets/tools readiness,
-    which surface separately as the generic 'not_ready' row fallback. So a
-    non-empty top-level `reasons` is always blocking; a per-target row blocks
-    only on a code OTHER than 'not_ready' (reload_required / verify_unstable /
-    authorization_missing)."""
-    if v.get("reasons"):
+    which surface separately as the generic 'not_ready' row fallback — PLUS
+    one readiness code, `setup_env_unprovisioned` (#488): on a fresh install
+    of a `casa.setupProvides` plugin, unprovisioned is the documented normal
+    state (#429 — the plugin must load unprovisioned for its own setup tool
+    to ever run), so it must not block the bundle at either level. The rows
+    copy the top-level reasons, so both levels share one exemption set;
+    everything outside it blocks."""
+    if any(code not in _BUNDLE_NONBLOCKING_REASONS
+           for code in (v.get("reasons") or [])):
         return True
     for row in v.get("targets") or []:
-        if any(code != "not_ready" for code in (row.get("reasons") or [])):
+        if any(code not in _BUNDLE_NONBLOCKING_REASONS
+               for code in (row.get("reasons") or [])):
             return True
     return False
 
@@ -9040,10 +9086,27 @@ async def _bundle_reload_and_verify(
     await _notify_plugin_health_if_possible()
 
     ok = not reload_errors and not not_ready and not absent_violations
+    kind = (None if ok else "reload_failed" if reload_errors
+            else "postcondition_failed")
+    if not ok:
+        # #491: the blocking verdict must be diagnosable from logs — the
+        # caller compensates on this result, and pre-fix the decisive reason
+        # existed solely inside the tool envelope.
+        blocking = {
+            name: sorted({code for code in (verify.get(name, {}).get("reasons") or [])
+                          if code not in _BUNDLE_NONBLOCKING_REASONS}
+                         | {code for row in (verify.get(name, {}).get("targets") or [])
+                            for code in (row.get("reasons") or [])
+                            if code not in _BUNDLE_NONBLOCKING_REASONS})
+            for name in not_ready}
+        logger.warning(
+            "bundle sequencer failed for %s: kind=%s not_ready=%s "
+            "blocking_reasons=%s reload_errors=%s absent_violations=%s",
+            slug, kind, not_ready, blocking,
+            [e.get("target") for e in reload_errors], absent_violations)
     return {
         "ok": ok,
-        "kind": (None if ok else "reload_failed" if reload_errors
-                 else "postcondition_failed"),
+        "kind": kind,
         "reloaded": reloaded, "reload_errors": reload_errors,
         "not_ready": not_ready, "absent_violations": absent_violations,
         "verify": verify, "removed_artifact_ids": list(removed_artifact_ids),
@@ -9072,7 +9135,14 @@ async def _bundle_compensate(txn) -> bool:
     the just-created live agent must be EVICTED and verified absent
     (uninstall-shaped sweep); otherwise the prior generation's agent is
     reconstructed (install-shaped). Reusing the forward install-shaped call
-    left a fresh-install rollback's live agent reachable."""
+    left a fresh-install rollback's live agent reachable.
+
+    #491 (Sol design r1): the compensating sequencer's own outcome is graded,
+    not discarded — a disk rollback that succeeded while the runtime sweep
+    failed is NOT "prior state fully restored", and the envelope must be able
+    to say so. Returns {"disk_ok": bool, "runtime_ok": bool}; journal
+    semantics are unchanged (completed exactly when the disk rollback
+    succeeded)."""
     import specialist_bundle_journal
     try:
         await asyncio.to_thread(txn.rollback_disk)
@@ -9080,7 +9150,7 @@ async def _bundle_compensate(txn) -> bool:
         logger.warning(
             "bundle disk rollback failed for %s; leaving the in-progress "
             "journal for boot reconciliation", txn.slug, exc_info=True)
-        return False
+        return {"disk_ok": False, "runtime_ok": False}
     # Direction from the restored before-state: an absent prior active.yaml
     # means the specialist should NOT exist after compensation → evict + verify
     # absent; a present one means a prior generation is being restored →
@@ -9088,31 +9158,54 @@ async def _bundle_compensate(txn) -> bool:
     before_tuple_files = getattr(txn, "before_tuple_files", None) or {}
     installed_before = before_tuple_files.get("active.yaml") is not None
     comp_targets = [] if installed_before else [f"specialist:{txn.slug}"]
+    runtime_ok = False
     try:
-        await _bundle_reload_and_verify(
+        comp_seq = await _bundle_reload_and_verify(
             txn.slug, removed_artifact_ids=list(txn.new_artifact_ids),
             targets_removed=comp_targets)
+        runtime_ok = bool(comp_seq.get("ok"))
     except Exception:  # noqa: BLE001 — best-effort; boot is the backstop
         logger.warning("bundle compensating sequencer failed for %s", txn.slug,
                        exc_info=True)
     await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
-    return True
+    return {"disk_ok": True, "runtime_ok": runtime_ok}
 
 
 async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
     """Whole-branch B: a sequencer that returned ok:false — compensate and
     build the ok:false envelope. P1-1: when the disk rollback could not
-    complete (`_bundle_compensate` returns False, journal left in-progress for
-    boot reconciliation), tag the envelope `compensation_failed` so the caller
-    surfaces that the runtime state may be inconsistent until the next boot."""
+    complete (journal left in-progress for boot reconciliation), tag the
+    envelope `compensation_failed` so the caller surfaces that the runtime
+    state may be inconsistent until the next boot.
+
+    #491: a SUCCESSFUL compensation is stated just as loudly — `rolled_back:
+    true` plus a human-readable `outcome` — because the remaining fields
+    (`not_ready`, per-variable verify rows) read naturally as a description
+    of a present-but-degraded install, and a caller without out-of-band
+    knowledge of the compensation contract reported exactly that (a
+    rolled-back install as committed). When the disk rolled back but the
+    runtime sweep did not converge, `runtime_compensation_incomplete` says
+    so rather than overclaiming a full restore (Sol design r1)."""
     compensated = await _bundle_compensate(txn)
     env = {"ok": False, "kind": seq.get("kind") or "bundle_sequence_failed",
            "slug": slug, "reload_errors": seq.get("reload_errors"),
            "not_ready": seq.get("not_ready"),
            "absent_violations": seq.get("absent_violations"),
            "verify": seq.get("verify")}
-    if not compensated:
+    if not compensated["disk_ok"]:
         env["compensation_failed"] = True
+        return env
+    env["rolled_back"] = True
+    if compensated["runtime_ok"]:
+        env["outcome"] = (
+            "the mutation was rolled back; the prior state was restored and "
+            "the requested change is NOT in effect")
+    else:
+        env["runtime_compensation_incomplete"] = True
+        env["outcome"] = (
+            "the mutation was rolled back on disk (the requested change is "
+            "NOT in effect), but the runtime did not fully converge to the "
+            "restored state; the next reload or restart converges it")
     return env
 
 

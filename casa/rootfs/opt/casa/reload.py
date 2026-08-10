@@ -1258,10 +1258,13 @@ async def reload_plugin_env(runtime: Any, *, role: str | None = None) -> list[st
         # Sol r4-2: serialize with §3.9 registry mutations — both paths do
         # regenerate → notify → mark_notified against shared state; unlocked
         # interleaving allows stale-red last-writer-wins and a mark_notified
-        # race that suppresses a later genuine notification. (Mutations hold
-        # this same lock for their whole sequence; no mutation dispatches
-        # scope=plugin_env while holding it, so this cannot deadlock.)
-        async with tools_mod._PLUGIN_TOOLS_LOCK:
+        # race that suppresses a later genuine notification. #489: this is
+        # the GUARD, not the raw lock — a full-scope reload with include_env
+        # reaches here while its entry point already holds the lock (the
+        # arm the r4-2 comment's "no mutation dispatches scope=plugin_env"
+        # argument missed), and the raw re-acquire self-deadlocked the
+        # reload and everything behind the reload writer lock.
+        async with tools_mod._plugin_tools_guard():
             await asyncio.to_thread(tools_mod._regenerate_plugin_health, [])
             await tools_mod._notify_plugin_health_if_possible()
         actions.append("plugin_health_regenerated")

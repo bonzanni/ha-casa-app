@@ -93,7 +93,11 @@ setup makes). The specialist that requires such a plugin is gated off with it.
 withhold exemption. It says *my setup tool provisions this*: the plugin loads so setup can
 run, but still verifies **not ready** with reason `setup_env_unprovisioned` until the value
 actually lands, so a setup run that never happened stays loud rather than passing as
-configured on empty credentials. Declaring it without a `casa.setupTool` is refused —
+configured on empty credentials. The reason grades as readiness, not integrity: the
+bundle install gate treats it as config-pending, so a fresh install of a declaring
+plugin commits and stays installed — the only state in which its setup tool can
+finally run — rather than being rolled back for exhibiting the documented normal
+fresh-install state. Declaring it without a `casa.setupTool` is refused —
 there would be nothing to be unprovisioned by.
 
 A merely *optional* variable needs no declaration at all, and Casa deliberately offers none
