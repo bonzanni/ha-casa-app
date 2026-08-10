@@ -32,6 +32,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Mode for state that only root may read. Pass it explicitly — the ``mode=None``
+#: default below is deliberately world-readable and must stay that way, because
+#: the same helper writes ``/config`` artifacts (the plugin registry and store)
+#: that a uid-dropped engagement has to load. See ``private_state`` for the
+#: inventory of which paths are private and GHSA-569r-7crq-xr43 for why.
+PRIVATE = 0o600
+
 
 def fsync_directory(directory: str | os.PathLike[str]) -> None:
     """Best-effort fsync of *directory* so a just-committed rename in it is

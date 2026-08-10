@@ -54,6 +54,7 @@ from ha_mcp_facade import HomeAssistantFacade
 from mcp_registry import McpServerRegistry
 from semantic_memory import SemanticMemory
 from policies import load_policies
+import private_state
 from provenance import sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
@@ -730,6 +731,67 @@ async def replay_undergoing_engagements(
                     logger.warning(
                         "boot replay: mark_error(refuse_pre_migration_down_"
                         "failed) for %s failed: %s", _svc_eid[:8], exc,
+                    )
+
+        # 0a. Private-state mode repair — GHSA-569r-7crq-xr43. Placed HERE, and
+        # not earlier in boot, because ordering is the whole point: step 0 above
+        # has just driven every existing engagement service to a CONFIRMED down,
+        # so at this instant no uid-dropped process exists and the repair cannot
+        # race a reader. (Running it before replay would leave a real interval —
+        # a casa-main-only respawn leaves the previous generation's engagement
+        # longrun wanted-up and running until step 0 downs it.) It is also before
+        # the compile lock's fast-path return below, so it runs on EVERY boot,
+        # including one with zero records.
+        #
+        # This pass, not the write sites, is what repairs an already-deployed
+        # install: every affected file already exists at 0644 and atomic_io
+        # preserves an existing file's mode, so a file whose next write is days
+        # away would otherwise stay exposed.
+        _ps_report = private_state.enforce()
+        if _ps_report.changed:
+            logger.info(
+                "private-state: repaired %d path mode(s) on this boot",
+                len(_ps_report.changed),
+            )
+
+        # 0c. Credential-exposure gate — the same shape as 0b below. A
+        # credential-class repair that FAILED means Casa cannot honour the
+        # guarantee the uid drop exists for, so no uid-dropped engagement runs
+        # this boot; the services are already down from step 0, so this keeps
+        # them down rather than starting something that can read a Supervisor
+        # bearer token. Deliberately NOT boot-fatal (both design reviewers):
+        # Telegram, the resident agents and specialist engagements stay up, so a
+        # read-only /run or a restored backup degrades rather than bricking.
+        # Re-stated from the filesystem rather than from _ps_report, so this
+        # decides on what is true now.
+        _cred_offenders = private_state.credential_modes_ok()
+        if undergoing and _cred_offenders:
+            logger.critical(
+                "boot replay: %d credential path(s) are still readable beyond "
+                "root (%s) — refusing ALL %d claude_code engagement resume(s) "
+                "this boot (kept down by the pre-migration sweep). Fix the file "
+                "modes and restart to resume.",
+                len(_cred_offenders), ", ".join(_cred_offenders),
+                len(undergoing),
+            )
+            for rec in undergoing:
+                if rec.id in refused_ids:
+                    continue
+                refused_ids.add(rec.id)
+                try:
+                    await registry.mark_error(
+                        rec.id,
+                        kind="refuse_private_state_exposed",
+                        message=(
+                            "private runtime state is readable beyond root "
+                            f"({', '.join(_cred_offenders)}); refusing to start "
+                            "a uid-dropped engagement"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort mark
+                    logger.warning(
+                        "boot replay: mark_error(refuse_private_state_exposed) "
+                        "for %s failed: %s", rec.id[:8], exc,
                     )
 
         # 0b. setpriv presence gate — Containment Stage 2 (design §5, §6(g)

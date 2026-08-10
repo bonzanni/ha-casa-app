@@ -27,17 +27,25 @@
     - casa/rootfs/opt/casa/topic_ledger.py
     - casa/rootfs/opt/casa/explanation_store.py
     - casa/rootfs/opt/casa/config_git.py::init_repo
+    - casa/rootfs/opt/casa/private_state.py::enforce
+    - casa/rootfs/opt/casa/private_state.py::credential_modes_ok
   tests:
     - tests/test_atomic_io.py
     - tests/test_session_registry.py
     - tests/test_explanation_store_concurrency.py
+    - tests/test_private_state.py
+    - tests/test_private_state_refusal.py
+    - tests/test_private_state_write_sites.py
+    - tests/test_private_state_dropped_uid.py
+    - tests/test_boot_replay.py
   related: [architecture/configuration.md, architecture/engagements.md, architecture/memory.md]
-  defines_invariants: [INV-STATE-001, INV-STATE-002, INV-STATE-003, INV-STATE-004]
+  defines_invariants: [INV-STATE-001, INV-STATE-002, INV-STATE-003, INV-STATE-004, INV-STATE-005]
   invariant_tests:
     INV-STATE-001: [tests/test_pin_g5_invariants.py::test_pin_inv_state_001_only_whitelist_admitted]
     INV-STATE-002: [tests/test_pin_g5_invariants.py::test_pin_inv_state_002_missing_is_empty_corrupt_is_per_loader]
     INV-STATE-003: [tests/test_topic_ledger.py::test_append_writes_through_atomic_write_json]
     INV-STATE-004: [tests/test_job_registry.py::test_failed_snapshot_write_does_not_publish_memory_mutation]
+    INV-STATE-005: [tests/test_private_state.py::test_inventory_pins_every_path_the_advisory_named, tests/test_private_state.py::test_enforce_repairs_a_preexisting_world_readable_file, tests/test_private_state.py::test_enforce_repairs_directories_without_recursing, tests/test_private_state.py::test_enforce_covers_the_quarantine_alias_shape, tests/test_private_state.py::test_traversal_roots_are_never_declared, tests/test_private_state.py::test_config_sync_report_stays_group_and_world_readable, tests/test_private_state.py::test_enforce_refuses_to_chmod_through_a_symlink, tests/test_private_state_refusal.py::test_uid_allocation_refuses_while_a_credential_is_exposed, tests/test_private_state_refusal.py::test_preflight_refuses_a_fresh_launch_while_a_credential_is_exposed, tests/test_private_state_refusal.py::test_absent_credential_paths_refuse_nothing, tests/test_private_state_refusal.py::test_a_private_only_failure_refuses_nothing, tests/test_private_state_write_sites.py::test_atomic_io_default_is_still_world_readable, tests/test_private_state_dropped_uid.py::test_no_declared_private_file_is_readable, tests/test_private_state_dropped_uid.py::test_the_control_set_is_still_readable, tests/test_boot_replay.py::test_exposed_credential_refuses_all_resumes, tests/test_boot_replay.py::test_exposed_credential_refuses_a_complete_pair_fast_path, tests/test_boot_replay.py::test_healthy_modes_do_not_refuse_resumes]
 
 - doc: architecture/personality.md
   summary: What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.

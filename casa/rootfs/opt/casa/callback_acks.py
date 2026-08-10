@@ -153,12 +153,13 @@ class CallbackAckStore:
         ONLY afterwards — a failed write raises with the in-memory view
         unchanged, so a racing reconcile can never route (or drop) state
         that would revert on reboot."""
-        from atomic_io import atomic_write_text
+        from atomic_io import PRIVATE, atomic_write_text
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
             self.path,
             json.dumps({"schema_version": _SCHEMA_VERSION, "acks": candidate},
                        indent=2, sort_keys=True) + "\n",
+            mode=PRIVATE,
         )
 
     # -- queries -------------------------------------------------------------

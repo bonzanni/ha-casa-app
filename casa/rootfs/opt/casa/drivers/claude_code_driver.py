@@ -31,6 +31,7 @@ from drivers.workspace import (
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
 from engagement_uids import UID_BASE, owner_uid_or_none, prune_identity
 import plugin_outbox
+import private_state
 from safe_fs import SymlinkRefused, list_dir_beneath, open_beneath
 from settle_gate import confirmed_settle_edit
 
@@ -824,6 +825,20 @@ def _preflight_uid_drop(rec: EngagementRecord, ws: str) -> None:
     """
     if shutil.which("setpriv") is None:
         raise UidDropRefused("setpriv not found on PATH — cannot drop uid")
+
+    # GHSA-569r-7crq-xr43: dropping to a uid that can then read a Supervisor
+    # bearer token is worse than not dropping at all — it hands the engagement
+    # every add-on's stored secrets. Checked HERE, at the point of use, and
+    # re-stated from the filesystem on every launch rather than read from a
+    # boot-time latch: a fresh launch happens long after boot, and a latch would
+    # have to be carried, cleared, and consulted by every future start path.
+    offenders = private_state.credential_modes_ok()
+    if offenders:
+        raise UidDropRefused(
+            "private runtime state is readable beyond root ("
+            + ", ".join(offenders)
+            + ") — refusing to start a uid-dropped engagement"
+        )
 
     uid = rec.allocated_uid
     if uid < UID_BASE:

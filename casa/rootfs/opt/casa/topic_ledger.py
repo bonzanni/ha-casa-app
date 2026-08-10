@@ -29,7 +29,7 @@ import os
 import time
 from typing import Any
 
-from atomic_io import atomic_write_json
+from atomic_io import PRIVATE, atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def _read_entries(target: str) -> list[dict[str, Any]]:
 
 
 def _write_entries(target: str, entries: list[dict[str, Any]]) -> None:
-    atomic_write_json(target, entries, indent=2)
+    atomic_write_json(target, entries, indent=2, mode=PRIVATE)
 
 
 async def append(

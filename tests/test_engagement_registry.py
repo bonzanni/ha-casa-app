@@ -98,8 +98,13 @@ class TestBackfillAllocatedUid:
         d = tmp_path / "uidalloc"; d.mkdir()
         passwd = str(d / "passwd"); group = str(d / "group")
         open(passwd, "w").close(); open(group, "w").close()
+        # proc_scanner: deterministic, don't scan the real /proc. Without it
+        # reconstruct() folds the HOST's live uids, and any uid >= UID_BASE on
+        # the machine running the suite (snap services sit in the 500000s) reads
+        # as "a uid was already allocated" and poisons the allocator.
         alloc = UidAllocator(
-            str(d / "c.json"), passwd_path=passwd, group_path=group)
+            str(d / "c.json"), passwd_path=passwd, group_path=group,
+            proc_scanner=lambda: set())
         alloc.reconstruct(known_uids=[], dir_owner_uids=[])
         return alloc
 
@@ -1471,7 +1476,8 @@ class TestAllocatedUid:
     def _make_allocator(tmp_path):
         from engagement_uids import UidAllocator
 
-        alloc = UidAllocator(counter_path=str(tmp_path / "uid_counter.json"))
+        alloc = UidAllocator(counter_path=str(tmp_path / "uid_counter.json"),
+                             proc_scanner=lambda: set())  # see above
         alloc.reconstruct(known_uids=[], dir_owner_uids=[])
         return alloc
 

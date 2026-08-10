@@ -186,6 +186,14 @@ USER_SECRET=$(bashio::config 'webhook_secret')
 if [ "$USER_SECRET" = "null" ]; then
     USER_SECRET=""
 fi
+# GHSA-569r-7crq-xr43: both branches below wrote this file at the 0022 umask
+# default (0644), so every per-engagement uid could read the global HMAC secret
+# and forge signed /invoke/* requests. umask 077 covers the CREATE; the chmod
+# after the block repairs a file that already exists from an earlier version
+# (a redirection into an existing path does not change its mode). Casa's own
+# private_state.enforce() also repairs it on every boot — this is the earliest
+# point it can be right, since setup-configs runs before casa-core.
+umask 077
 if [ -n "$USER_SECRET" ]; then
     printf '%s' "$USER_SECRET" > "$SECRET_FILE"
 elif [ ! -s "$SECRET_FILE" ] || \
@@ -207,6 +215,27 @@ elif [ ! -s "$SECRET_FILE" ] || \
     fi
     unset _secret_tmp
 fi
+umask 022
+if [ -e "$SECRET_FILE" ]; then
+    chmod 0600 "$SECRET_FILE" \
+        || bashio::log.error "failed to tighten $SECRET_FILE — engagements will refuse to start"
+fi
+
+# GHSA-569r-7crq-xr43: s6-overlay materialises the add-on's environment into
+# /run/s6/container_environment/<NAME> at 0644, and SUPERVISOR_TOKEN/HASSIO_TOKEN
+# are Supervisor API bearers — the Supervisor API returns every add-on's stored
+# options, so a readable token transitively exposes the Claude OAuth token, the
+# GitHub PAT and the 1Password service-account token. The engagement run template
+# `unset`s both from the environment; that is theatre while the backing files are
+# world-readable. The GITHUB_TOKEN / CLAUDE_CODE_OAUTH_TOKEN blocks below already
+# write theirs under `umask 077`; these two are not ours to write, only to tighten.
+for _tokfile in SUPERVISOR_TOKEN HASSIO_TOKEN; do
+    if [ -f "/run/s6/container_environment/$_tokfile" ]; then
+        chmod 0600 "/run/s6/container_environment/$_tokfile" \
+            || bashio::log.error "failed to tighten $_tokfile — engagements will refuse to start"
+    fi
+done
+unset _tokfile
 
 # Publish Casa's authenticated endpoint to the companion integration through
 # Supervisor discovery. The publisher owns only the returned UUID in /data;

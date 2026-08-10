@@ -3008,3 +3008,228 @@ async def test_missing_setpriv_refuses_all_resumes_not_crashloop(
     assert "keep1" in down_ids
     assert reg.get("keep1").status == "error"
     assert reg.get("keep1").origin["error_kind"] == "refuse_uid_drop_failed"
+
+
+# ---------------------------------------------------------------------------
+# GHSA-569r-7crq-xr43 — the boot-replay half of the credential gate.
+# ---------------------------------------------------------------------------
+# Sol diff-gate S2: the rest of the release's refusal tests drive uid allocation
+# and the fresh-launch preflight, so DELETING casa_core's boot-replay gate left
+# every one of them green — while replay's complete-pair fast path reaches
+# start_service() without calling either. These three close that, and they drive
+# the real chain (a chmod that genuinely fails), never a hand-set flag.
+
+
+def _expose_unrepairable_token(tmp_path, monkeypatch):
+    """A credential path that is world-readable AND cannot be chmod'ed."""
+    import private_state
+
+    token = tmp_path / "run/s6/container_environment/SUPERVISOR_TOKEN"
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text("bearer", encoding="utf-8")
+    os.chmod(token, 0o644)
+
+    real_chmod = os.chmod
+
+    def boom(path, mode, *args, **kwargs):
+        if str(path) == str(token):
+            raise PermissionError("read-only file system")
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(private_state.os, "chmod", boom)
+    monkeypatch.setattr(
+        private_state, "_resolve",
+        lambda root, declared: os.path.join(
+            str(tmp_path), declared.lstrip("/")))
+    return token
+
+
+
+def _allocated_rec(eid):
+    """A claude_code record that ALREADY has its uid, so replay neither
+    allocates nor backfills one — the state in which the complete-pair resume
+    path touches neither the allocator nor the fresh-launch preflight."""
+    rec = _rec(eid)
+    rec.allocated_uid = 200001
+    return rec
+
+def _point_private_state_at(tmp_path, monkeypatch):
+    """Healthy tree: nothing exposed, nothing to repair."""
+    import private_state
+
+    monkeypatch.setattr(
+        private_state, "_resolve",
+        lambda root, declared: os.path.join(
+            str(tmp_path / "empty"), declared.lstrip("/")))
+
+
+async def test_exposed_credential_refuses_all_resumes(monkeypatch, tmp_path):
+    """A Supervisor-token file that could not be made root-only ⇒ every
+    claude_code resume is refused, kept down by step 0, and marked error. Never
+    started: an engagement that can read that token gets every add-on's stored
+    secrets, which is worse than not running at all."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    (svc_root / "engagement-keep1").mkdir()
+    (svc_root / "engagement-keep1" / "type").write_text("longrun\n")
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    write_ids: list[str] = []
+    monkeypatch.setattr(
+        s6_rc, "write_service_dir",
+        lambda **kw: write_ids.append(kw["engagement_id"]))
+    down_ids: list[str] = []
+    async def fake_down(*, engagement_id, **kw):
+        down_ids.append(engagement_id)
+        return True
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+
+    _expose_unrepairable_token(tmp_path, monkeypatch)
+
+    reg = await _make_registry([_rec("keep1")])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    assert started == [], "no engagement may start while a bearer token is exposed"
+    assert write_ids == []
+    assert "keep1" in down_ids, "step 0 must still have driven it down"
+    assert reg.get("keep1").status == "error"
+    assert reg.get("keep1").origin["error_kind"] == "refuse_private_state_exposed"
+
+
+async def test_exposed_credential_refuses_a_complete_pair_fast_path(
+    monkeypatch, tmp_path,
+):
+    """The path Sol named: a COMPLETE, non-stale pair resumes WITHOUT being
+    re-planted, so it never touches uid allocation or the fresh-launch preflight
+    — the two places the rest of the suite checks. Only the boot-level gate
+    stands between it and start_service()."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    # A CURRENT pair (streaming markers + the uid-drop exec) → not stale, so
+    # replay takes the fast path and re-plants nothing.
+    s6_rc.write_service_dir(
+        svc_root=str(svc_root), engagement_id="keep1",
+        run_script=(
+            "#!/command/with-contenv bash\nset -e\n"
+            'printf \'{"casa_control": "spawn"}\\n\'\n'
+            "exec setpriv --reuid 200001 --regid 200001 --clear-groups"
+            " --bounding-set -all -- claude --print --output-format stream-json\n"
+        ),
+        depends_on=["init-setup-configs"],
+        log_run_script="#!/command/with-contenv sh\nexec s6-log n20 s1000000 /x\n",
+    )
+    assert s6_rc.service_pair_complete(
+        svc_root=str(svc_root), engagement_id="keep1")
+    assert not s6_rc.run_script_is_stale(
+        svc_root=str(svc_root), engagement_id="keep1"), (
+        "fixture must be a CURRENT pair or this exercises the re-plant path "
+        "instead of the fast path it is named for")
+
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    async def fake_down(*, engagement_id, **kw): return True
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+
+    # ALREADY-ALLOCATED (Sol diff-r2 S1): with allocated_uid still the
+    # UNALLOCATED sentinel, replay backfills a uid first and the ALLOCATOR
+    # refuses — the test would then pass for the wrong reason and the
+    # resume-without-allocation path it is named for would stay uncovered. A real
+    # uid means nothing allocates and nothing re-plants.
+    #
+    # Root's no-follow accessor then also demands the workspace be OWNED by that
+    # uid, which an unprivileged test process cannot arrange, so that unrelated
+    # guard is stubbed out — otherwise it, not step 0c, is what stops the resume.
+    # The positive control below is what proves the isolation is real: with the
+    # same stub and healthy modes, the engagement DOES start.
+    monkeypatch.setattr("casa_core.owner_uid_or_none", lambda uid: None)
+
+    reg = await _make_registry([_allocated_rec("keep1")])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    # Positive control FIRST, on a healthy tree: proves this fixture actually
+    # reaches start_service() when nothing is exposed, so the refusal below is
+    # attributable to the gate and not to some other guard failing quietly.
+    _point_private_state_at(tmp_path, monkeypatch)
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+    assert started == ["keep1"], (
+        "fixture never reaches start_service even when nothing is exposed — the "
+        "refusal assertion below would prove nothing")
+
+    # Now the same fixture with an unrepairable credential path.
+    started.clear()
+    _expose_unrepairable_token(tmp_path, monkeypatch)
+    reg2 = await _make_registry([_allocated_rec("keep1")])
+
+    await replay_undergoing_engagements(
+        registry=reg2, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    assert started == [], (
+        "the complete-pair fast path reached start_service with a bearer token "
+        "still world-readable")
+    assert reg2.get("keep1").origin["error_kind"] == (
+        "refuse_private_state_exposed")
+
+
+async def test_healthy_modes_do_not_refuse_resumes(monkeypatch, tmp_path):
+    """The mirror case. Without it a gate that refused unconditionally would
+    pass both tests above and take every executor engagement down on a healthy
+    install — the failure direction that is worse than the exposure."""
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    s6_rc.write_service_dir(
+        svc_root=str(svc_root), engagement_id="keep1",
+        run_script=(
+            "#!/command/with-contenv bash\nset -e\n"
+            'printf \'{"casa_control": "spawn"}\\n\'\n'
+            "exec setpriv --reuid 200001 --regid 200001 --clear-groups"
+            " --bounding-set -all -- claude --print --output-format stream-json\n"
+        ),
+        depends_on=["init-setup-configs"],
+        log_run_script="#!/command/with-contenv sh\nexec s6-log n20 s1000000 /x\n",
+    )
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    async def fake_down(*, engagement_id, **kw): return True
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+
+    _point_private_state_at(tmp_path, monkeypatch)
+
+    reg = await _make_registry([_rec("keep1")])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    assert started == ["keep1"], (
+        "a healthy install must resume its engagement; the gate fired wrongly")
+    assert reg.get("keep1").origin.get("error_kind") != (
+        "refuse_private_state_exposed")

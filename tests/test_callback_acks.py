@@ -338,7 +338,7 @@ def test_record_publishes_only_after_durable_write(tmp_path, monkeypatch):
     on reboot (mirrors trigger_acks.py's identical pin)."""
     store = CallbackAckStore(path=tmp_path / "acks.json")
 
-    def _boom(path, text):
+    def _boom(path, text, **kwargs):   # **kwargs: the store passes mode=PRIVATE
         raise OSError("disk full")
 
     import atomic_io
@@ -356,7 +356,7 @@ def test_revoke_publishes_only_after_durable_write(tmp_path, monkeypatch):
     store.record("elevenlabs", "plg-elevenlabs--oauth", "digest-1")
     identity = ack_identity("elevenlabs", "plg-elevenlabs--oauth", "digest-1")
 
-    def _boom(path, text):
+    def _boom(path, text, **kwargs):   # **kwargs: the store passes mode=PRIVATE
         raise OSError("disk full")
 
     import atomic_io
