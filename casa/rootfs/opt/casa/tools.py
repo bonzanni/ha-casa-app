@@ -6218,6 +6218,11 @@ async def engage_executor(args: dict) -> dict:
                 return _result({
                     "status": "error", "kind": "record_persist_failed",
                     "message": str(exc)})
+            # #369 (Terra diff-gate r2): capture the record's context
+            # generation at PROMPT-SOURCE time — the prompt below derives
+            # from materials current now; the drivers compare this right
+            # before the initial enqueue and abort if any clamp moved it.
+            _ctx_gen0 = rec.context_generation
     except asyncio.CancelledError:
         _abort_topic_on_cancel(channel, "engage-abort", topic_id)
         raise
@@ -6315,7 +6320,9 @@ async def engage_executor(args: dict) -> dict:
                 })
             from drivers.driver_protocol import StaleLaunchError
             try:
-                await driver.start(rec, prompt=prompt, options=defn)
+                await driver.start(
+                    rec, prompt=prompt, options=defn,
+                    expected_generation=_ctx_gen0)
             except StaleLaunchError as exc:
                 # #369: a clearance clamp landed during launch — the prompt in
                 # hand was rendered from pre-clamp materials. Abort cleanly;
@@ -6365,7 +6372,9 @@ async def engage_executor(args: dict) -> dict:
                 })
             from drivers.driver_protocol import StaleLaunchError
             try:
-                await driver.start(rec, prompt=prompt, options=options)
+                await driver.start(
+                    rec, prompt=prompt, options=options,
+                    expected_generation=_ctx_gen0)
             except StaleLaunchError as exc:
                 # #369: see the claude_code branch above.
                 await _engagement_registry.mark_error(

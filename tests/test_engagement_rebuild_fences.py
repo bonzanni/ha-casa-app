@@ -220,8 +220,13 @@ class TestVerifiedTeardown:
         driver._ctx_stack[rec.id] = object()
         with pytest.raises(RuntimeError, match="did not exit"):
             await driver.invalidate_session(rec)
-        # State is popped either way — the old client can never be re-used.
-        assert not driver.is_alive(rec)
+        # Sol diff-gate r2: the stale client is RETAINED until a close
+        # succeeds — popping first would make the retry see an empty map and
+        # report teardown "confirmed" over a surviving subprocess. (Deliveries
+        # are refused meanwhile by the rebuild-pending fence.)
+        assert driver.is_alive(rec)
+        with pytest.raises(RuntimeError, match="did not exit"):
+            await driver.invalidate_session(rec)  # retry still refuses
 
     async def test_claude_code_invalidate_refuses_unconfirmed_down(
         self, monkeypatch, tmp_path,
@@ -280,3 +285,52 @@ class TestInCasaLaunchGate:
             mod.ClaudeSDKClient = orig
         assert "text" not in delivered          # never enqueued
         assert not driver.is_alive(rec)         # client rolled back
+
+    async def test_completed_rebuild_cycle_aborts_stale_launch_by_generation(self):
+        """Terra diff-gate r2: a clamp→rebuild cycle COMPLETING while the old
+        launch is suspended clears the pending flag — only the generation
+        comparison can still see it, and the stale launch must not overwrite
+        the fresh client the rebuild registered."""
+        from drivers.driver_protocol import StaleLaunchError
+        from drivers.in_casa_driver import InCasaDriver
+
+        rec = SimpleNamespace(
+            id="e-gen", topic_id=7, kind="executor",
+            context_rebuild_pending=False,   # rebuild already cleared it
+            context_generation=1,            # ...but the clamp bumped this
+            sdk_session_id=None, origin={})
+        driver = InCasaDriver(
+            topic_stream_factory=lambda tid: None,
+            record_lookup=lambda eid: rec,
+        )
+        fresh = object()                     # the rebuild's floor client
+        driver._clients[rec.id] = fresh
+        delivered = {}
+
+        class _FakeClient:
+            def __init__(self, options):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def close(self):
+                pass
+
+            async def query(self, text):
+                delivered["text"] = text
+
+        import drivers.in_casa_driver as mod
+        orig = mod.ClaudeSDKClient
+        mod.ClaudeSDKClient = _FakeClient
+        try:
+            from claude_agent_sdk import ClaudeAgentOptions
+            with pytest.raises(StaleLaunchError):
+                await driver.start(
+                    rec, "pre-clamp prompt", options=ClaudeAgentOptions(),
+                    expected_generation=0)
+        finally:
+            mod.ClaudeSDKClient = orig
+        assert "text" not in delivered
+        # The fresh floor client the rebuild registered is untouched.
+        assert driver._clients[rec.id] is fresh

@@ -218,6 +218,13 @@ class EngagementRecord:
     # downgrade: a crash between clamp and rebuild leaves a record that
     # refuses resume, never one that resurrects the pre-clamp transcript.
     context_rebuild_pending: bool = False
+    # #369 (Terra diff-gate r2): monotonic generation, bumped by every clamp
+    # that moves the record. The boolean above cannot protect a launch that
+    # was suspended across a full clamp→rebuild→flag-clear cycle — the stale
+    # launch resumes, sees False, and delivers its pre-clamp prompt. A
+    # launcher captures this at prompt-source time and the drivers compare it
+    # immediately before the initial enqueue; any change aborts the launch.
+    context_generation: int = 0
     # W2/Sol B9 (Task 7): observational turn-taking state. "" (default) =
     # not interaction-required (most engagements). Interaction-required
     # engagements start at "first_contact_required" (set by engage_executor
@@ -398,6 +405,8 @@ class EngagementRegistry:
                     allocated_uid=int(row.get("allocated_uid", UNALLOCATED_UID)),
                     context_rebuild_pending=bool(
                         row.get("context_rebuild_pending", False)),
+                    context_generation=int(
+                        row.get("context_generation", 0) or 0),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("Skipping malformed engagement row: %s", exc)
@@ -551,6 +560,7 @@ class EngagementRegistry:
                 "topic_title": rec.topic_title,
                 "allocated_uid": rec.allocated_uid,
                 "context_rebuild_pending": rec.context_rebuild_pending,
+                "context_generation": rec.context_generation,
             })
         try:
             await asyncio.to_thread(self._write_tombstone, snapshot)
@@ -956,6 +966,7 @@ class EngagementRegistry:
             # lowered" and "old context must not be resumed") can never be
             # persisted apart.
             rec.context_rebuild_pending = True
+            rec.context_generation += 1
             # And withhold the LAUNCH MATERIALS on the record itself: task,
             # brief, context and world-state were authored at the creating
             # turn's clearance, and every later render — boot-replay CLAUDE.md

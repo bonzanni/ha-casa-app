@@ -486,6 +486,10 @@ async def replay_undergoing_engagements(
     # refused resume — and MUST be excluded from the start_service and
     # background-task loops below, not merely skipped during rendering.
     refused_ids: set[str] = set()
+    # #369 (Sol diff-gate r2): records whose clearance-downgrade context
+    # reset ran this boot — their durable rebuild flag clears only AFTER
+    # their service start succeeds; every refusal path leaves it set.
+    pending_rebuild_started_ids: set[str] = set()
 
     # v0.83.0 (§A3(b), Sol r6-3/r7-3/4): the BOOT open-question reconciliation
     # owner. Take a PRE-SERVICE snapshot of every claude_code record that has
@@ -1030,11 +1034,16 @@ async def replay_undergoing_engagements(
                             rec.id[:8], exc)
                         refused_ids.add(rec.id)
                         continue
-                    await registry.clear_context_rebuild_pending(rec.id)
+                    # Sol diff-gate r2: the flag clears only once THIS
+                    # record's service has actually started (below) — a
+                    # durable clear here, followed by any later refusal,
+                    # would leave a live unflagged record whose next turn
+                    # skips the rebuild it still needs.
+                    pending_rebuild_started_ids.add(rec.id)
                     logger.info(
-                        "boot replay: engagement %s context rebuilt at the "
-                        "clamped floor (fresh session, archive cleared)",
-                        rec.id[:8])
+                        "boot replay: engagement %s context reset at the "
+                        "clamped floor (fresh session, archive cleared); "
+                        "flag clears after service start", rec.id[:8])
 
                 # W3 (r8-B5/r9-B5): re-render the workspace CLAUDE.md from the
                 # VERBATIM origin["brief"] for EVERY resumed brief-bearing
@@ -1602,6 +1611,18 @@ async def replay_undergoing_engagements(
                     continue
             try:
                 await s6_rc.start_service(engagement_id=rec.id)
+                # #369 (Sol diff-gate r2): the rebuild is complete only now —
+                # fresh session, floor workspace, running service. Best-effort
+                # here: a failed strict clear leaves the flag set, and the
+                # first turn's rebuild branch (idempotent) clears it then.
+                if rec.id in pending_rebuild_started_ids:
+                    try:
+                        await registry.clear_context_rebuild_pending(rec.id)
+                    except Exception:  # noqa: BLE001 — turn-path clears later
+                        logger.warning(
+                            "boot replay: rebuild-flag clear failed for %s "
+                            "(first turn will rebuild again)", rec.id[:8],
+                            exc_info=True)
             except Exception as exc:  # noqa: BLE001
                 # #342: refuse — the background loop below must not build
                 # spool/relay/summary machinery for an engagement whose

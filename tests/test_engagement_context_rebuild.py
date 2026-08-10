@@ -43,6 +43,21 @@ class TestClampSetsRebuildPending:
         assert reg2.get(rec.id).context_rebuild_pending is True
         assert reg2.get(rec.id).origin["_origin_clearance"] == "public"
 
+    async def test_clamp_bumps_the_context_generation_durably(self, tmp_path):
+        """Terra diff-gate r2: the boolean flag cannot see a clamp→rebuild
+        cycle that completed while a launch was suspended — the monotonic
+        generation is what a stale launch's captured value is compared to."""
+        reg, rec = await _make(tmp_path)
+        assert rec.context_generation == 0
+        await reg.lower_origin_clearance(rec.id, "friends")
+        assert rec.context_generation == 1
+        await reg.clear_context_rebuild_pending(rec.id)
+        await reg.lower_origin_clearance(rec.id, "public")
+        assert rec.context_generation == 2   # never reset by a rebuild
+        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        await reg2.load()
+        assert reg2.get(rec.id).context_generation == 2
+
     async def test_clamp_withholds_the_launch_materials(self, tmp_path):
         """The task/brief/context/world-state were authored at the CREATING
         turn's clearance — after a downgrade every later render (boot-replay

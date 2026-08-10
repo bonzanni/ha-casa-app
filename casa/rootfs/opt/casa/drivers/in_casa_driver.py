@@ -119,6 +119,7 @@ class InCasaDriver(DriverProtocol):
         engagement: EngagementRecord,
         prompt: str,
         options: ClaudeAgentOptions,
+        expected_generation: int | None = None,
     ) -> None:
         # E-E (v0.29.0): bind engagement_var BEFORE ClaudeSDKClient.__aenter__
         # so the SDK's inner Query._read_task — created via loop.create_task
@@ -144,6 +145,39 @@ class InCasaDriver(DriverProtocol):
         try:
             ctx = client.__aenter__()
             entered = await ctx if asyncio.iscoroutine(ctx) else ctx
+            # #369 (Sol design r2 + Terra diff-gate r2): LAST-instant gate,
+            # BEFORE this launch registers anything — a clearance clamp that
+            # landed while __aenter__ was suspended means `prompt` was
+            # rendered from pre-clamp materials, and a clamp→rebuild cycle
+            # that COMPLETED in that window has already registered a fresh
+            # floor client that this stale launch must not overwrite. The
+            # pending flag alone cannot see the completed cycle (the rebuild
+            # cleared it), so the monotonic generation captured at
+            # prompt-source time is compared too. Stale → close the just-
+            # entered client directly, touching no driver state.
+            latest = (
+                self._record_lookup(engagement.id)
+                if self._record_lookup is not None else None
+            )
+            stale = latest is not None and (
+                getattr(latest, "context_rebuild_pending", False)
+                or (expected_generation is not None
+                    and getattr(latest, "context_generation", 0)
+                    != expected_generation)
+            )
+            if stale:
+                try:
+                    if hasattr(entered or client, "close"):
+                        await (entered or client).close()
+                    else:
+                        await client.__aexit__(None, None, None)
+                except Exception:  # noqa: BLE001 — best-effort close of a
+                    logger.warning(  # client that never carried state
+                        "stale-launch client close failed for %s",
+                        engagement.id[:8], exc_info=True)
+                raise StaleLaunchError(
+                    f"engagement {engagement.id[:8]} was clearance-clamped "
+                    "during launch; aborting the pre-clamp prompt")
             self._clients[engagement.id] = entered or client
             self._ctx_stack[engagement.id] = client  # for __aexit__
             self._locks[engagement.id] = asyncio.Lock()
@@ -151,24 +185,6 @@ class InCasaDriver(DriverProtocol):
                 "Engagement %s driver=in_casa client opened",
                 engagement.id[:8],
             )
-            # #369 (Sol design r2): LAST-instant gate — a clearance clamp that
-            # landed while __aenter__ was suspended means `prompt` was rendered
-            # from pre-clamp materials. Abort (rolling the client back) rather
-            # than deliver it into the fresh process.
-            latest = (
-                self._record_lookup(engagement.id)
-                if self._record_lookup is not None else None
-            )
-            if latest is not None and getattr(
-                    latest, "context_rebuild_pending", False):
-                cleanup = asyncio.ensure_future(self.cancel(engagement))
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    pass
-                raise StaleLaunchError(
-                    f"engagement {engagement.id[:8]} was clearance-clamped "
-                    "during launch; aborting the pre-clamp prompt")
             try:
                 await self._deliver_turn(engagement, prompt)
             except BaseException:
@@ -281,22 +297,25 @@ class InCasaDriver(DriverProtocol):
             engagement_var.reset(token)
 
     async def invalidate_session(self, engagement: EngagementRecord) -> None:
-        """#369 (Sol diff-gate r1): teardown for a clearance downgrade —
+        """#369 (Sol diff-gate r1+r2): teardown for a clearance downgrade —
         unlike :meth:`cancel` (terminal path, best-effort close), a FAILED
-        client close here PROPAGATES: the rebuild that follows must not clear
-        the fence around a client whose subprocess may have survived. State
-        is popped first either way, so the driver never re-delivers into the
-        old client object."""
-        client = self._clients.pop(engagement.id, None)
-        ctx = self._ctx_stack.pop(engagement.id, None)
+        client close here PROPAGATES, and the stale client is RETAINED in the
+        maps until the close succeeds: popping first would make the retry see
+        an empty map and report teardown "confirmed" over a surviving
+        subprocess. Deliveries into the retained client are refused meanwhile
+        by the context_rebuild_pending fence, which is set before any caller
+        reaches this method."""
+        client = self._clients.get(engagement.id)
+        ctx = self._ctx_stack.get(engagement.id)
+        if client is not None or ctx is not None:
+            if client is not None and hasattr(client, "close"):
+                await client.close()
+            elif ctx is not None and hasattr(ctx, "__aexit__"):
+                await ctx.__aexit__(None, None, None)
+        self._clients.pop(engagement.id, None)
+        self._ctx_stack.pop(engagement.id, None)
         self._locks.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
-        if client is None and ctx is None:
-            return
-        if client is not None and hasattr(client, "close"):
-            await client.close()
-        elif ctx is not None and hasattr(ctx, "__aexit__"):
-            await ctx.__aexit__(None, None, None)
 
     async def open_fresh(self, engagement: EngagementRecord) -> None:
         """#369: open a NEW session for an engagement whose context was

@@ -1123,6 +1123,7 @@ class ClaudeCodeDriver(DriverProtocol):
 
     async def start(
         self, engagement: EngagementRecord, prompt: str, options: Any,
+        expected_generation: int | None = None,
     ) -> None:
         """options is the ExecutorDefinition — see DriverProtocol.start docstring.
 
@@ -1388,8 +1389,16 @@ class ClaudeCodeDriver(DriverProtocol):
         # the engagement back.
         _lookup = getattr(self._registry, "get", None)
         latest = _lookup(engagement.id) if callable(_lookup) else None
-        if latest is not None and getattr(
-                latest, "context_rebuild_pending", False):
+        # Terra diff-gate r2: the pending flag alone cannot see a clamp→
+        # rebuild cycle that COMPLETED while the service-start awaits above
+        # were suspended (the rebuild cleared it) — the monotonic generation
+        # captured at prompt-source time is compared too.
+        if latest is not None and (
+            getattr(latest, "context_rebuild_pending", False)
+            or (expected_generation is not None
+                and getattr(latest, "context_generation", 0)
+                != expected_generation)
+        ):
             from drivers.driver_protocol import StaleLaunchError
             raise StaleLaunchError(
                 f"engagement {engagement.id[:8]} was clearance-clamped "
