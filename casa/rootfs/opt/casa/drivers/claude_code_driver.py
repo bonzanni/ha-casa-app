@@ -1378,15 +1378,12 @@ class ClaudeCodeDriver(DriverProtocol):
                         )
                 raise
 
-        # 4. Kick off the background tasks (outside lock): respawn poller,
-        #    session-id capture, and (at DEBUG) the log relay.
-        self._spawn_background_tasks(engagement)
-
-        # #369 (Sol design r2): LAST-instant gate before the initial prompt is
-        # enqueued — a clearance clamp landing during the service-start awaits
-        # above means `prompt` was rendered from pre-clamp materials and must
-        # not reach the fresh process. Abort; the launcher's error path rolls
-        # the engagement back.
+        # #369 (Sol design r2): LAST-instant gate — a clearance clamp landing
+        # during the service-start awaits above means `prompt` was rendered
+        # from pre-clamp materials and must not reach the fresh process.
+        # Ordered BEFORE _spawn_background_tasks (Sol+Terra diff-gate r6): a
+        # stale launch spawning its own task/spool set would OVERWRITE the
+        # rebuilt engagement's tracked machinery, orphaning the live tasks.
         _lookup = getattr(self._registry, "get", None)
         latest = _lookup(engagement.id) if callable(_lookup) else None
         # Terra diff-gate r2: the pending flag alone cannot see a clamp→
@@ -1429,6 +1426,10 @@ class ClaudeCodeDriver(DriverProtocol):
                 "during launch; aborting the pre-clamp prompt",
                 record_live=not getattr(
                     latest, "context_rebuild_pending", False))
+
+        # 4. Kick off the background tasks (outside lock): respawn poller,
+        #    session-id capture, and (at DEBUG) the log relay.
+        self._spawn_background_tasks(engagement)
 
         # 5. Enqueue the initial prompt (is_initial=True) — the first spawn
         #    arms the reader and delivers it. Enqueue is instant while the

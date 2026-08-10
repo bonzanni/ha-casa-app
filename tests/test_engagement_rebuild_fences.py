@@ -246,6 +246,86 @@ class TestVerifiedTeardown:
             await driver.invalidate_session(rec)
 
 
+class TestClaudeCodeStaleLaunch:
+    """Sol+Terra diff-gate r6: the stale gate must run BEFORE the launch
+    installs its background task/spool set — a stale launch spawning them
+    would overwrite the rebuilt engagement's tracked machinery, orphaning
+    the live tasks."""
+
+    def _harness(self, monkeypatch, tmp_path, order):
+        from drivers import s6_rc
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from test_claude_code_driver import _patch_uid_drop_ok
+
+        _patch_uid_drop_ok(monkeypatch)
+
+        async def fake_cau():
+            return None
+
+        async def fake_start_kw(*, engagement_id):
+            order.append("start_service")
+
+        async def fake_down(*, engagement_id, attempts=3):
+            order.append("ensure_down")
+            return True
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked", fake_cau)
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_kw)
+        monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+        monkeypatch.setattr(
+            s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc-root"))
+        (tmp_path / "svc-root").mkdir()
+        monkeypatch.setattr(
+            ClaudeCodeDriver, "_spawn_background_tasks",
+            lambda self, engagement: order.append("spawn_bg"))
+
+        async def _noop_write(self, engagement, text):
+            order.append("fifo_write")
+        monkeypatch.setattr(ClaudeCodeDriver, "_write_to_fifo", _noop_write)
+
+    async def test_completed_rebuild_interleaving_aborts_before_spawn(
+        self, monkeypatch, tmp_path,
+    ):
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers.driver_protocol import StaleLaunchError
+        from test_claude_code_driver import _make_defn, _make_record
+
+        order: list[str] = []
+        self._harness(monkeypatch, tmp_path, order)
+
+        rec = _make_record(allocated_uid=200005)
+        # The registry's live record: a clamp→rebuild cycle COMPLETED while
+        # this launch was suspended — flag cleared, generation moved.
+        latest = SimpleNamespace(
+            context_rebuild_pending=False, context_generation=1)
+
+        class FakeReg:
+            def get(self, eid):
+                return latest
+
+        async def send(topic_id, text, **kw):
+            return 4242
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=send,
+            casa_framework_mcp_url="http://x",
+            registry=FakeReg(),
+        )
+        (tmp_path / "engagements").mkdir()
+
+        with pytest.raises(StaleLaunchError) as exc_info:
+            await drv.start(
+                rec, prompt="pre-clamp prompt",
+                options=_make_defn(tmp_path), expected_generation=0)
+
+        assert exc_info.value.record_live is True
+        # The stale launch installed NO machinery over the rebuilt
+        # engagement's, delivered nothing, and left its service alone.
+        assert "spawn_bg" not in order
+        assert "fifo_write" not in order
+        assert "ensure_down" not in order
+
+
 class TestInCasaLaunchGate:
     async def test_clamp_during_client_open_aborts_the_stale_prompt(self):
         from drivers.driver_protocol import StaleLaunchError
