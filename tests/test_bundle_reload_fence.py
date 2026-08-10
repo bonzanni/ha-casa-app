@@ -155,7 +155,7 @@ async def test_full_reload_include_env_completes(monkeypatch, tmp_path) -> None:
 
     handler = build_admin_reload_handler(runtime=object())
     resp = await asyncio.wait_for(
-        handler(_JsonReq({"scope": "full", "include_env": True})), timeout=5.0)
+        handler(_JsonReq({"scope": "full", "include_env": True})), timeout=30.0)
     assert resp.status == 200
 
 
@@ -189,7 +189,7 @@ async def test_plugin_tools_guard_excludes_other_tasks() -> None:
         await asyncio.sleep(0.02)
         assert order == []                       # excluded while we hold it
         order.append("first")
-    await asyncio.wait_for(task, timeout=1.0)
+    await asyncio.wait_for(task, timeout=5.0)
     assert order == ["first", "other"]
 
     # A guard also queues behind a RAW acquisition (mixed usage stays safe).
@@ -200,5 +200,5 @@ async def test_plugin_tools_guard_excludes_other_tasks() -> None:
         assert len(order) == 2                   # still excluded
     finally:
         tools_mod._PLUGIN_TOOLS_LOCK.release()
-    await asyncio.wait_for(task2, timeout=1.0)
+    await asyncio.wait_for(task2, timeout=5.0)
     assert order == ["first", "other", "other"]

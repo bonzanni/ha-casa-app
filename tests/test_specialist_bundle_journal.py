@@ -861,3 +861,50 @@ def test_bundletxn_rollback_disk_noncontained_symlink_target_survives(tmp_path):
 
     assert not (agents_dir / "mtg").exists()
     assert (outside / "keep.txt").is_file()   # out-of-tree target untouched
+
+
+def test_bundletxn_rollback_disk_serializes_behind_materialize_lock(tmp_path):
+    """Sol diff r1 (#490): rollback's tuple/symlink restoration must hold
+    MATERIALIZE_LOCK — unlocked, a concurrent reconcile that re-read a
+    still-present active tuple could re-materialize the symlink AFTER the
+    rollback removed it, resurrecting the orphan the fix exists to prevent.
+    Serialized, either order converges (reconcile re-reads active under the
+    lock; rollback deletes under the lock)."""
+    import threading
+    from personality_binding import MATERIALIZE_LOCK
+
+    registry_path = tmp_path / "registry.json"
+    agents_dir = tmp_path / "agents"
+    _write_registry(registry_path, [])
+    content = _mk_op_symlink(agents_dir)
+
+    txn = journal.BundleTxn(
+        journal_path=tmp_path / "unused.json",
+        slug="mtg",
+        before_entries=[],
+        before_tuple_files={"active.yaml": None},
+        ack_records=[],
+        registry_path=registry_path,
+        specialists_dir=tmp_path / "spec",
+        acks_path=tmp_path / "acks.json",
+        agents_specialists_dir=agents_dir,
+    )
+
+    done = threading.Event()
+
+    def _run():
+        txn.rollback_disk()
+        done.set()
+
+    assert MATERIALIZE_LOCK.acquire(timeout=5)
+    try:
+        t = threading.Thread(target=_run)
+        t.start()
+        # The restore phase must queue behind the held lock.
+        assert not done.wait(0.3)
+    finally:
+        MATERIALIZE_LOCK.release()
+    assert done.wait(5)
+    t.join(5)
+    assert not (agents_dir / "mtg").exists()
+    assert not content.exists()
