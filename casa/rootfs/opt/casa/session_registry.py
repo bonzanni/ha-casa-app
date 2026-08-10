@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from atomic_io import atomic_write_json
+from atomic_io import PRIVATE, atomic_write_json
 from personality_types import SpeakerProvenance
 from speaker_provenance import provenance_mapping, validate_speaker_provenance
 
@@ -376,7 +376,7 @@ class SessionRegistry:
         crash mid-write can never leave a truncated sessions.json — a corrupt
         file used to crash-stop the add-on on boot (H12).
         """
-        atomic_write_json(self._path, data, indent=2)
+        atomic_write_json(self._path, data, indent=2, mode=PRIVATE)
 
     def all_entries(self) -> dict[str, dict[str, Any]]:
         """Return a shallow copy of all entries."""

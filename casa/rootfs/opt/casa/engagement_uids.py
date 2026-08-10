@@ -27,6 +27,7 @@ import threading
 from typing import Iterable
 
 from atomic_io import atomic_write_json
+import private_state
 
 UID_BASE = 200000
 UNALLOCATED_UID = -1
@@ -525,6 +526,17 @@ class UidAllocator:
         persist failure here also poisons, so the returned uid is always one
         that reached disk.
         """
+        # GHSA-569r-7crq-xr43: the earliest honest refusal. Handing out a uid
+        # whose engagement would then be able to read a Supervisor bearer token
+        # defeats the point of allocating one, so this refuses before any state
+        # moves. Checked at the point of use (a stat of three files), NOT read
+        # from a boot-time latch — see private_state's module docstring.
+        offenders = private_state.credential_modes_ok()
+        if offenders:
+            raise UidStateError(
+                "private runtime state is readable beyond root ("
+                + ", ".join(offenders)
+                + ") — refusing to allocate a uid for a dropped engagement")
         with self._lock:
             if self._hw is None or self._poisoned:
                 raise UidStateError(

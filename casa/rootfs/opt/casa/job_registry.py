@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Awaitable, Callable, Mapping
 
-from atomic_io import atomic_write_json
+from atomic_io import PRIVATE, atomic_write_json
 from personality_types import SpeakerProvenance
 from speaker_provenance import provenance_from_mapping, provenance_mapping
 
@@ -1294,6 +1294,7 @@ class JobRegistry:
         ]
         await asyncio.to_thread(
             atomic_write_json, self._path, snapshot, indent=2,
+            mode=PRIVATE,
         )
 
     async def _commit_snapshot_locked(

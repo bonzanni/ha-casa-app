@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.171.0] - 2026-08-10
+
+### Security
+
+- **Casa's private runtime state is no longer readable by the isolated users
+  its executor engagements run as.** Since the isolated-engagement release each
+  executor engagement runs under its own restricted OS user, but several files
+  Casa writes for itself were still created readable by everyone in the
+  container. That included the two access tokens Casa uses to talk to the
+  Supervisor — which can read every app's saved settings, so the tokens
+  indirectly exposed the Claude, GitHub and 1Password credentials stored
+  there — the webhook signing secret, up to ~21 MB of *another* engagement's
+  captured output, the resident agent's own conversation home, and the
+  `/config` snapshot history. Casa now declares every private path with the
+  permissions it should have, repairs them on every start (so upgrading an
+  existing install fixes files already on disk, not just newly written ones),
+  and creates them correctly in the first place. If Casa cannot make one of the
+  access-token files private, it refuses to start executor engagements at all
+  rather than run one that could read it — Telegram, the resident agents and
+  specialist engagements keep working. Two paths are deliberately left readable
+  because engagements legitimately need them: the config-sync report the
+  configurator reads, and installed plugin artifacts.
+
 ## [0.170.2] - 2026-08-09
 
 ### Fixed

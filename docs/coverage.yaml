@@ -169,6 +169,8 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/prompt_compiler.py
   doc: architecture/personality.md
+- item: casa/rootfs/opt/casa/private_state.py
+  doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/provenance.py
   doc: architecture/http-surface.md
 - item: casa/rootfs/opt/casa/rate_limit.py

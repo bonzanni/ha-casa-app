@@ -101,6 +101,11 @@ class TestRenderRunScript:
         assert script.startswith("#!/command/with-contenv sh\n")
         assert "mkdir -p /var/log/casa-engagement-xxxxxxxxxxxxxxxx" in script
         assert "exec s6-log n20 s1000000 /var/log/casa-engagement-xxxxxxxxxxxxxxxx" in script
+        # GHSA-569r-7crq-xr43: the umask must precede the mkdir, or the dir is
+        # created 0755 and only later-rotated files are private. Asserting the
+        # ORDER, not merely the presence of the line.
+        assert script.index("umask 077") < script.index("mkdir -p")
+        assert script.index("umask 077") < script.index("exec s6-log")
 
     def test_engagement_log_dir_helper(self):
         """v0.64.0: one owner for the per-engagement log location — the

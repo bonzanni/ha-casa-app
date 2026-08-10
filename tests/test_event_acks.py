@@ -523,7 +523,7 @@ def test_record_publishes_only_after_durable_write(tmp_path, monkeypatch):
     on reboot."""
     store = EventAckStore(path=tmp_path / "acks.json")
 
-    def _boom(path, text):
+    def _boom(path, text, **kwargs):   # **kwargs: the store passes mode=PRIVATE
         raise OSError("disk full")
 
     import atomic_io
@@ -541,7 +541,7 @@ def test_revoke_publishes_only_after_durable_write(tmp_path, monkeypatch):
     store.record("finance", "art-1", "gmail", "new-mail", "digest-1",
                 ["resident:assistant"], 1000.0)
 
-    def _boom(path, text):
+    def _boom(path, text, **kwargs):   # **kwargs: the store passes mode=PRIVATE
         raise OSError("disk full")
 
     import atomic_io

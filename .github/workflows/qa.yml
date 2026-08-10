@@ -45,6 +45,20 @@ jobs:
       - run: pip install -r casa/requirements.txt pytest pytest-asyncio pytest-xdist anyio pyflakes
       - name: Unit pytest (opt-out gate — everything except docker/slow)
         run: python -m pytest tests/ -m "not docker and not slow" -v -n auto --maxprocesses=12 --dist loadfile --tb=short
+      # GHSA-569r-7crq-xr43's guarantee is about what an unprivileged uid can
+      # READ, so the pinning test forks and setuid()s to check it for real
+      # instead of asserting mode bits. That needs to start as root, which this
+      # runner is not — and the test skips itself when it cannot drop privilege,
+      # so without an explicitly root lane it would silently never execute
+      # anywhere. Its own first assertion is that the probe CAN read a
+      # deliberately world-readable file, so a broken harness fails loudly
+      # rather than reporting everything as protected.
+      - name: Private-state inventory, verified as a dropped uid (root lane)
+        run: |
+          docker run --rm -v "$PWD":/w -w /w -u 0:0 python:3.11-slim sh -c '
+            pip install -q pytest pytest-asyncio &&
+            PYTHONPATH=casa/rootfs/opt/casa python -m pytest \
+              tests/test_private_state_dropped_uid.py -v --tb=short -p no:cacheprovider'
       - name: Build image
         run: docker build -f test-local/Dockerfile.test -t casa-test .
       - name: Invoke sessions

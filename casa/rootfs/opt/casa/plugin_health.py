@@ -111,10 +111,11 @@ def _boot_reconcile_actions() -> list:
 
 
 def _atomic_write(path: Path, report: dict) -> None:
-    from atomic_io import atomic_write_text
+    from atomic_io import PRIVATE, atomic_write_text
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(Path(path),
-                      json.dumps(report, indent=2, sort_keys=True) + "\n")
+                      json.dumps(report, indent=2, sort_keys=True) + "\n",
+                      mode=PRIVATE)
 
 
 def load_report(path: Path = HEALTH_PATH) -> dict | None:

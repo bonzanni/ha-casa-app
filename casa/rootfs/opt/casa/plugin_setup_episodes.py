@@ -318,9 +318,12 @@ def _normalize(data: dict) -> None:
 
 
 def _save(data: dict) -> None:
-    tmp = STORE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
-    os.replace(tmp, STORE_PATH)
+    # GHSA-569r-7crq-xr43: was a hand-rolled temp-file replace, which landed the
+    # file at the umask default (0644) and so let every engagement uid read the
+    # plugin setup transcripts. Routed through atomic_io both to get the private
+    # mode and to gain the fsync/rename durability this path never had.
+    from atomic_io import PRIVATE, atomic_write_json
+    atomic_write_json(STORE_PATH, data, indent=1, mode=PRIVATE)
 
 
 def episodes(status: str | None = None) -> list[dict]:

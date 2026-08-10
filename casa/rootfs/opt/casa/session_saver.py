@@ -13,7 +13,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from atomic_io import atomic_write_json
+from atomic_io import PRIVATE, atomic_write_json
 from channel_policy import writes_to_bank
 from claude_agent_sdk import get_session_messages
 from hindsight_ids import bank_id
@@ -205,7 +205,10 @@ def _spool_cold_retain(
                 attempts = int(json.loads(path.read_text(encoding="utf-8")).get("attempts", 0))
             except (OSError, ValueError, TypeError, AttributeError):
                 attempts = 0
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # 0o700: the retry records carry SDK session ids, transcript dirs and
+        # speaker provenance (GHSA-569r-7crq-xr43). Tightening the directory is
+        # what makes them unreachable; private_state repairs an existing one.
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         atomic_write_json(str(path), {
             "sdk_session_id": old.sdk_session_id,
             "directory": directory,
@@ -213,7 +216,7 @@ def _spool_cold_retain(
             "speaker_provenance": provenance_mapping(old.speaker_provenance),
             "user_provenance": provenance_mapping(old.user_provenance),
             "attempts": attempts,
-        })
+        }, mode=PRIVATE)
     except Exception:  # noqa: BLE001 — spooling is best-effort
         logger.warning(
             "cold-retain retry: failed to spool sid=%s", old.sdk_session_id,
@@ -270,7 +273,7 @@ async def retry_spooled_cold_retains(
                 continue
             record["attempts"] = attempts
             try:
-                atomic_write_json(str(path), record)
+                atomic_write_json(str(path), record, mode=PRIVATE)
             except OSError:
                 logger.warning(
                     "cold-retain retry: failed to update attempts for sid=%s", sid)

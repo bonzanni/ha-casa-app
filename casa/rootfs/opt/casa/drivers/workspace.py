@@ -410,6 +410,15 @@ def render_log_run_script(*, engagement_id: str) -> str:
     return (
         "#!/command/with-contenv sh\n"
         "set -e\n"
+        # GHSA-569r-7crq-xr43: the container umask is 0022, so `mkdir -p` landed
+        # this dir at 0755 and s6-log's `current` at 0644 — one engagement uid
+        # could read up to ~21 MB of a SIBLING engagement's stdout, which is the
+        # exact boundary containment Stage 2 exists to create. A scoped umask
+        # here fixes the directory AND every file s6-log rotates inside it;
+        # private_state repairs dirs that already exist. Deliberately NOT a
+        # process-wide umask for casa-core, which also materialises the plugin
+        # store artifacts a dropped uid must be able to read.
+        "umask 077\n"
         f"mkdir -p {log_dir}\n"
         f"exec s6-log n20 s1000000 {log_dir}\n"
     )

@@ -85,6 +85,28 @@ legacy direct status mutators write their tombstone non-strictly — a failed wr
 swallowed with a warning, leaving memory terminal while disk is not. Where disk-leads
 matters, check which of the three shapes the path you are on actually has.
 
+**INV-STATE-005**: Private runtime state has one declared inventory of paths and modes, is repaired to it on every boot before any privilege-dropped engagement can start, and a bearer-credential path that cannot be made root-only refuses such an engagement rather than running one that could read it.
+
+The inventory is the only thing that decides which paths are private; it names each path, its
+mode, and what is exposed if the entry regresses. Individual files are tightened under the
+private root, which itself stays traversable; directories are tightened at the top only,
+because without execute permission for others nothing beneath is reachable by name, so the
+pass never recurses. Repair runs after boot replay has confirmed every existing engagement
+service down, so nothing privilege-dropped is alive while modes move, and before that
+function's fast-path return, so a boot with no records still repairs. Repair, not the write
+sites, is what fixes an already-deployed install — its files already exist world-readable, and
+an atomic write with no explicit mode preserves an existing file's mode, so a store whose next
+write is days away would otherwise stay exposed. The credential subset is re-read from the
+filesystem at each point that can start such an engagement, rather than latched once at boot.
+
+What it does not cover: the two roots themselves stay traversable, because a dropped uid
+reaches its own workspace and its assigned artifacts through them — this is a per-path mode
+boundary, not a filesystem namespace boundary. Non-credential repair failures are logged and
+stop nothing, an already-open file descriptor is unaffected by a mode change, and one report
+file is deliberately left world-readable because a shipped executor recipe reads it. The
+default mode of the shared atomic writer stays world-readable on purpose: the same helper
+writes the artifacts a dropped engagement must load, so private call sites opt in explicitly.
+
 ## Failure behavior
 
 **A state file is absent.** Almost always treated as empty, and often created on first write.
@@ -134,11 +156,18 @@ the code writes.
 - `casa/rootfs/opt/casa/topic_ledger.py`
 - `casa/rootfs/opt/casa/explanation_store.py`
 - `casa/rootfs/opt/casa/config_git.py::init_repo`
+- `casa/rootfs/opt/casa/private_state.py::enforce`
+- `casa/rootfs/opt/casa/private_state.py::credential_modes_ok`
 
 **Tests**
 - `tests/test_atomic_io.py`
 - `tests/test_session_registry.py`
 - `tests/test_explanation_store_concurrency.py`
+- `tests/test_private_state.py`
+- `tests/test_private_state_refusal.py`
+- `tests/test_private_state_write_sites.py`
+- `tests/test_private_state_dropped_uid.py`
+- `tests/test_boot_replay.py`
 
 **Related**
 - [`architecture/configuration.md`](../architecture/configuration.md)

@@ -161,12 +161,13 @@ class PersonaInstallAckStore:
         return out
 
     def _persist_locked(self, candidate: dict[str, dict[str, Any]]) -> None:
-        from atomic_io import atomic_write_text
+        from atomic_io import PRIVATE, atomic_write_text
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
             self.path,
             json.dumps({"schema_version": _SCHEMA_VERSION, "acks": candidate},
                        indent=2, sort_keys=True) + "\n",
+            mode=PRIVATE,
         )
 
     def is_acked(self, identity: str) -> bool:
