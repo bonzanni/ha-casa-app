@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.174.0] - 2026-08-11
+
+### Fixed
+
+- **Approving a plugin consent now always goes somewhere.** When a consent
+  prompt (the DM keyboard that opens a plugin's webhook, authorization
+  callback, or event subscription) expired or was missed, agents had no way
+  to re-issue it — and would relay the question as an ordinary button ask
+  instead, which accepts the Approve tap and records nothing, silently
+  wedging the plugin's setup until a full reload. A new `consent_reprompt`
+  tool re-posts the real, committing keyboard on demand; the agents are
+  instructed to use it and never to relay a consent as a plain question.
+  It reports actual delivery (a keyboard that could not be posted is a
+  loud, typed failure, never a silent success), never re-asks a consent
+  you explicitly denied (a new plugin change or reload still does), and an
+  approval that arrives after an earlier prompt expired now re-arms the
+  plugin's pending setup step, so the promised "approving will run setup"
+  holds on this path too. (#494)
+
 ## [0.173.0] - 2026-08-11
 
 ### Fixed

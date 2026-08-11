@@ -589,6 +589,100 @@ def kick() -> None:
         _kick.set()
 
 
+def open_member_nonce(plugin: str, identity: str) -> str:
+    """READ-ONLY: the current OPEN round member's nonce for this consent, or
+    ``""`` (no round, round for another artifact's identity set, member
+    absent, or member already terminal).
+
+    #494: the on-demand re-prompt path (`consent_reprompt` → each
+    reconciler's ``reprompt_pending``) re-posts a keyboard for a consent the
+    LAST lifecycle reconcile already sealed. Threading the SEALED member's
+    own nonce into that keyboard keeps the stale-decision fence intact — the
+    fresh keyboard decides exactly the member the reconciler opened. A
+    ``""`` return degrades exactly to today's superseded-keyboard semantics:
+    the keyboard can still Approve (approvals are ack-backed ground truth),
+    but its deny/expiry decides no member. Mutates nothing; never raises."""
+    try:
+        data = _load()
+        rnd = data["rounds"].get(plugin)
+        if not isinstance(rnd, dict):
+            return ""
+        member = rnd.get("members", {}).get(identity)
+        if isinstance(member, dict) and member.get("state") == "open":
+            return str(member.get("nonce") or "")
+        return ""
+    except Exception:  # noqa: BLE001 — a read helper must never raise
+        logger.exception("open-member nonce read failed (plugin=%s)", plugin)
+        return ""
+
+
+def _rearm_refused_locked(data: dict, plugin: str, artifact_id: str) -> bool:
+    """#494 (design r3/r4): an approval landing AFTER the round that refused
+    this artifact's obligation was consumed (expired keyboard → member denied
+    → ``status="refused"``; then an on-demand re-prompt's keyboard approves)
+    must re-arm the obligation — the refusal note promised "Approving the
+    consent will run it", and ``ensure_obligation`` cannot re-arm on its own
+    once the ack exists (``consent_pending`` is False from then on).
+
+    Narrow by design: ``refused`` rows only (``failed``/``stale`` keep their
+    existing recovery paths), for THIS exact artifact, and only while the
+    plugin still RESOLVES in the registry — an approval racing a
+    ``plugin_remove`` must not mint a ``pending`` row nothing can ever seal
+    or release (a ``pending`` row never decays out of health). An
+    unresolvable registry (``resolved_ok=False``) also declines: declining is
+    the fail-safe direction, since the next lifecycle reconcile re-arms via
+    ``ensure_obligation`` whenever a consent is genuinely pending again.
+
+    Release still requires a fresh AUTHORITATIVE union seal — the approve
+    path's reconcile_cb runs one immediately.
+
+    Mutates ``data`` (caller saves). Returns True when it re-armed."""
+    row = _row_for(data, plugin, artifact_id)
+    if row is None or row.get("status") != "refused":
+        return False
+    resolved_ok, entry = _resolve_entry(plugin)
+    if not resolved_ok or not isinstance(entry, dict):
+        logger.info("approve-time re-arm declined (plugin=%s): plugin does "
+                    "not resolve", plugin)
+        return False
+    gen = int(row.get("gen") or 0) + 1
+    fresh = _new_row(plugin, artifact_id, gen)
+    fresh["created_ts"] = row.get("created_ts") or fresh["created_ts"]
+    data["episodes"] = [e for e in data["episodes"]
+                        if e.get("plugin") != plugin]
+    data["episodes"].append(fresh)
+    logger.info("setup obligation re-armed on approval (plugin=%s gen=%d): "
+                "a refused round's consent was approved", plugin, gen)
+    return True
+
+
+def retire_for_removed(plugin: str) -> None:
+    """Durable setup-obligation teardown for a REMOVED plugin: mark its
+    obligation row ``stale`` (which decays out of health, unlike ``pending``)
+    and drop its round. Closes the approve-racing-removal window (#494 design
+    r4, Terra): a re-armed ``pending`` row for a plugin the registry no
+    longer resolves can never be sealed or released, so nothing may leave one
+    behind. Best-effort; never raises."""
+    try:
+        data = _load()
+        changed = False
+        for e in data["episodes"]:
+            if (e.get("plugin") == plugin
+                    and e.get("status") in ("pending", "dispatched")):
+                e.update({"status": "stale", "updated_ts": _now(),
+                          "last_error": "plugin removed"})
+                changed = True
+        if plugin in data["rounds"]:
+            del data["rounds"][plugin]
+            changed = True
+        if changed:
+            _save(data)
+            logger.info("setup obligation retired (plugin=%s): plugin "
+                        "removed", plugin)
+    except Exception:  # noqa: BLE001 — removal teardown must never raise
+        logger.exception("setup obligation retire failed (plugin=%s)", plugin)
+
+
 def record_approval_sync(*, plugin: str, artifact_id: str, identity: str,
                          gen: str) -> None:
     """Record an approval DURABLY in the same yield-free commit step that
@@ -610,6 +704,10 @@ def record_approval_sync(*, plugin: str, artifact_id: str, identity: str,
         member = rnd["members"].get(identity) or {}
         member.update({"state": "approved", "gen": gen})
         rnd["members"][identity] = member
+        # #494: this same yield-free step re-arms a refused obligation, so a
+        # crash between the ack write and the async feed cannot strand the
+        # "approved but refused-forever" state.
+        _rearm_refused_locked(data, plugin, artifact_id)
         _save(data)
     except Exception:  # noqa: BLE001 — commit callback must never see a raise
         logger.exception("sync approval record failed (plugin=%s)", plugin)
@@ -675,6 +773,11 @@ async def on_consent_decision(*, plugin: str, artifact_id: str,
                 if approval_gen or not m.get("gen"):
                     m["gen"] = approval_gen
                 rnd["members"][identity] = m
+                # #494: idempotent mirror of record_approval_sync's re-arm,
+                # for a feed whose sync commit step failed (the row is
+                # already `pending` after a successful sync step, so this
+                # no-ops there).
+                _rearm_refused_locked(data, plugin, artifact_id)
             else:
                 # Nonce fence (impl r3): a deny/expiry from a SUPERSEDED
                 # keyboard (mismatching nonce) must not decide the current

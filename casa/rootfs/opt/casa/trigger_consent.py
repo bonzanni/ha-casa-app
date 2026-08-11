@@ -123,7 +123,14 @@ def prompt_trigger_consent(
         # exception here is swallowed+logged by the callback; ``acked`` stays
         # absent and the finish hook edits the internal-error text — a
         # consent that failed to persist must never activate a route.
+        import consent_denials
+        if idx != 0:
+            # #494: latest decision is a Deny — commit-ordered record so the
+            # on-demand re-prompt path never nags past it (expiry records
+            # nothing; the finish hook owns that path).
+            consent_denials.record(consent_denials.key("trigger", identity))
         if idx == 0:
+            consent_denials.clear(consent_denials.key("trigger", identity))
             acks.record(identity=identity, plugin=plugin,
                         artifact_id=artifact_id, effective=effective,
                         target=target, auth=auth)

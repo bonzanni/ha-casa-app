@@ -99,8 +99,14 @@ def prompt_callback_consent(
         # exception here is swallowed+logged by the callback; ``acked`` stays
         # absent and the finish hook edits the internal-error text — a consent
         # that failed to persist must never open an endpoint.
+        import consent_denials
         if idx != 0:
+            # #494: the operator's latest decision is a Deny — recorded in
+            # this same commit-ordered step so the on-demand re-prompt path
+            # can never nag past it. Expiry records nothing (finish hook).
+            consent_denials.record(consent_denials.key("callback", identity))
             return
+        consent_denials.clear(consent_denials.key("callback", identity))
         rec = acks.record(plugin=plugin, effective=effective,
                           declaration_digest=declaration_digest)
         meta["acked"] = True

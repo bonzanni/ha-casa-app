@@ -162,6 +162,22 @@ tool-level face).
 both transports, which is why the addition is also a security decision; grant filtering and
 the coverage ledger pick it up from there.
 
+**An expired or missed plugin-consent DM is recovered by `consent_reprompt`** — the
+on-demand, prompt-only re-issue for all three consent kinds (trigger, callback, event), and
+the only way to re-surface a committing consent keyboard outside a plugin mutation or
+reload: a consent question relayed any other way (`ask_user`, an engagement ask) accepts the
+tap, acks it, and commits nothing. The tool never reconciles — no overlay swap, no
+setup-round sealing or re-arming — it recomputes each kind's pending set under that kind's
+reconcile lock, re-reads the ack store per row (a concurrent Approve earns no fresh
+keyboard), threads the sealed setup-round member's nonce back in read-only, and reports
+delivery from each keyboard's actual settled post outcome, never from pending rows: when
+keyboards were needed and none could be delivered, the result is a typed
+`delivery_failed`, not success. Consents the operator explicitly *denied* on a keyboard are
+skipped and reported `denied` rather than re-asked — the in-process `consent_denials`
+registry records the latest decision in the same synchronous commit step that persists the
+ack (Approve clears, Deny records, expiry writes nothing), so agent-driven re-issue can
+never nag past a Deny while mutations and reloads re-ask as they always did.
+
 **A new plugin lifecycle operation** follows the established split: synchronous
 disk-and-registry ordering in a core, then the async wrapper that takes the lock, reloads,
 verifies and pins the envelope.

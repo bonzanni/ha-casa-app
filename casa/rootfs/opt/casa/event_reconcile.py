@@ -619,6 +619,81 @@ async def reconcile_plugin_events(
     return desired.issues
 
 
+async def reprompt_pending(
+    runtime: Any, *, report: list, acks: Any = None,
+    resolver: "Callable[[str | None], Any] | None" = None,
+    entries: "Callable[[], list[dict]] | None" = None,
+) -> None:
+    """#494 — on-demand PROMPT-ONLY repost of pending event-subscription
+    consents.
+
+    The event half of the `consent_reprompt` tool; see
+    ``callback_reconcile.reprompt_pending`` for the full contract (this is
+    its structural mirror: prompt-only — no routing-map publish, no ack
+    prune, no worker kick — under ``_RECONCILE_LOCK``, with the
+    denial-registry skip and the synchronous ack re-read). Event consents
+    live OUTSIDE the plugin-setup round ledger, so there is no nonce to
+    thread. Appends ``{"kind","plugin","name","status"|"handle"}`` rows to
+    ``report``. Never raises."""
+    import authz_grants
+    import consent_denials
+    import event_consent
+
+    if runtime is None:
+        return
+    channel_manager = getattr(runtime, "channel_manager", None)
+    channel = channel_manager.get("telegram") if channel_manager else None
+    if channel is None:
+        return
+    op = event_consent.operator_identity(channel)
+    if op is None:
+        return
+    chat_id, operator_id = op
+    role_configs = getattr(runtime, "role_configs", None) or {}
+    acks = acks if acks is not None else _default_acks()
+
+    async def _reconcile_again() -> None:
+        # SOL-P2a discipline: live-runtime lookup at approve time.
+        import agent as agent_mod
+        live = getattr(agent_mod, "active_runtime", None)
+        if live is None:
+            return
+        await reconcile_plugin_events(live, prompt=False)
+
+    async with _RECONCILE_LOCK:
+        try:
+            desired = await asyncio.to_thread(
+                compute_desired, role_configs=role_configs, acks=acks,
+                resolver=resolver, entries=entries)
+        except Exception:  # noqa: BLE001 — a compute failure reposts nothing
+            logger.exception("event reprompt compute failed")
+            return
+        for p in desired.consent_needed:
+            row = {"kind": "event", "plugin": p["subscriber"],
+                   "name": f"{p['emitter']}:{p['event']}"}
+            if consent_denials.denied(
+                    consent_denials.key("event", p["identity"])):
+                report.append(dict(row, status="denied"))
+                continue
+            if acks.get(p["identity"]) is not None:
+                report.append(dict(row, status="already_acked"))
+                continue
+            try:
+                handle = event_consent.prompt_event_consent(
+                    coordinator=authz_grants.CHALLENGES, channel=channel,
+                    chat_id=chat_id, operator_id=operator_id,
+                    subscriber=p["subscriber"], artifact_id=p["artifact_id"],
+                    emitter=p["emitter"], event=p["event"],
+                    digest=p["digest"], targets=p["targets"], acks=acks,
+                    reconcile_cb=_reconcile_again)
+                report.append(dict(row, handle=handle))
+            except Exception:  # noqa: BLE001 — one prompt failure must not
+                # abort the remaining rows
+                logger.exception("event reprompt failed (subscriber=%s)",
+                                 p.get("subscriber"))
+                report.append(dict(row, status="error"))
+
+
 def current_issues() -> "list[dict]":
     """Fresh, side-effect-free event issues for health regeneration —
     recomputed on EVERY health pass so they survive unrelated refreshes

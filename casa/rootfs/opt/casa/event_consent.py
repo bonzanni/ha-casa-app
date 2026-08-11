@@ -133,8 +133,14 @@ def prompt_event_consent(
         # exception here is swallowed+logged by the callback; ``acked`` stays
         # absent and the finish hook edits the internal-error text — a
         # consent that failed to persist must never start delivery.
+        import consent_denials
         if idx != 0:
+            # #494: latest decision is a Deny — commit-ordered record so the
+            # on-demand re-prompt path never nags past it (expiry records
+            # nothing; the finish hook owns that path).
+            consent_denials.record(consent_denials.key("event", identity))
             return
+        consent_denials.clear(consent_denials.key("event", identity))
         acks.record(subscriber, artifact_id, emitter, event, digest, targets,
                    time.time())
         meta["acked"] = True

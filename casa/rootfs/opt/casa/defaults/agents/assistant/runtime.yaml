@@ -24,6 +24,10 @@ tools:
     # every nudge would stall to budget exhaustion since ack_event could
     # never actually run.
     - mcp__casa-framework__ack_event
+    # #494 — on-demand re-issue of an expired/missed plugin-consent DM.
+    # Router-compatible: it triggers a server-posted keyboard, the ONLY
+    # surface whose Approve commits; never relay a consent via ask_user.
+    - mcp__casa-framework__consent_reprompt
     - mcp__casa-framework__recall_memory
     - mcp__casa-framework__send_message
     - mcp__casa-framework__send_media

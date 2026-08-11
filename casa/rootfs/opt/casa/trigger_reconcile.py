@@ -827,6 +827,88 @@ async def reconcile_from_runtime(runtime: Any, *, prompt: bool = True) -> list:
         prompt=prompt)
 
 
+async def reprompt_pending(
+    runtime: Any, *, report: list, acks: Any = None,
+    resolver: "Callable[[str | None], Any] | None" = None,
+    global_secret_ok: "Callable[[], bool] | None" = None,
+) -> None:
+    """#494 — on-demand PROMPT-ONLY repost of pending trigger consents.
+
+    The trigger half of the `consent_reprompt` tool; see
+    ``callback_reconcile.reprompt_pending`` for the full contract (this is
+    its structural mirror: prompt-only — no overlay swap, no secret mint, no
+    setup-round sealing/re-arming — under ``_RECONCILE_LOCK``, with the
+    denial-registry skip, the synchronous ack re-read, and the read-only
+    open-member nonce). Appends ``{"kind","plugin","name",
+    "status"|"handle"}`` rows to ``report``. Never raises."""
+    import authz_grants
+    import consent_denials
+    import plugin_setup_episodes
+    import trigger_consent
+
+    if runtime is None:
+        return
+    channel_manager = getattr(runtime, "channel_manager", None)
+    channel = channel_manager.get("telegram") if channel_manager else None
+    if channel is None:
+        return
+    op = trigger_consent.operator_identity(channel)
+    if op is None:
+        return
+    chat_id, operator_id = op
+    role_configs = getattr(runtime, "role_configs", None) or {}
+    acks = acks if acks is not None else _default_acks()
+
+    async def _reconcile_again() -> None:
+        import agent as agent_mod
+        live = getattr(agent_mod, "active_runtime", None)
+        if live is None or getattr(live, "trigger_registry", None) is None:
+            return
+        await reconcile_plugin_triggers(
+            trigger_registry=live.trigger_registry,
+            role_configs=getattr(live, "role_configs", None) or {},
+            channel_manager=getattr(live, "channel_manager", None),
+            prompt=False, regen_health=True)
+
+    async with _RECONCILE_LOCK:
+        try:
+            desired = await asyncio.to_thread(
+                compute_desired, role_configs=role_configs, acks=acks,
+                resolver=resolver, global_secret_ok=global_secret_ok)
+        except Exception:  # noqa: BLE001 — a compute failure reposts nothing
+            logger.exception("trigger reprompt compute failed")
+            return
+        for p in desired.pending:
+            row = {"kind": "trigger", "plugin": p["plugin"],
+                   "name": p["effective"]}
+            identity = ack_identity(
+                plugin=p["plugin"], artifact_id=p["artifact_id"],
+                effective=p["effective"], target=p["target"], auth=p["auth"])
+            if consent_denials.denied(
+                    consent_denials.key("trigger", identity)):
+                report.append(dict(row, status="denied"))
+                continue
+            if acks.get(identity) is not None:
+                report.append(dict(row, status="already_acked"))
+                continue
+            nonce = plugin_setup_episodes.open_member_nonce(
+                p["plugin"], identity)
+            try:
+                handle = trigger_consent.prompt_trigger_consent(
+                    coordinator=authz_grants.CHALLENGES, channel=channel,
+                    chat_id=chat_id, operator_id=operator_id, acks=acks,
+                    reconcile_cb=_reconcile_again, setup_nonce=nonce,
+                    plugin=p["plugin"], artifact_id=p["artifact_id"],
+                    effective=p["effective"], target=p["target"],
+                    auth=p["auth"], clearance=p.get("clearance", "public"))
+                report.append(dict(row, handle=handle))
+            except Exception:  # noqa: BLE001 — one prompt failure must not
+                # abort the remaining rows
+                logger.exception("trigger reprompt failed (plugin=%s)",
+                                 p.get("plugin"))
+                report.append(dict(row, status="error"))
+
+
 class IssueState(NamedTuple):
     """``(ok, issues, observed)`` — see :func:`issue_state`.
 

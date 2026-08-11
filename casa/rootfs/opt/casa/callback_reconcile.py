@@ -892,6 +892,107 @@ async def reconcile_from_runtime(runtime: Any, *, prompt: bool = True) -> list:
         prompt=prompt)
 
 
+async def reprompt_pending(
+    runtime: Any, *, report: list, acks: Any = None,
+    resolver: "Callable[[str | None], Any] | None" = None,
+    entries: "Callable[[], list[dict]] | None" = None,
+) -> None:
+    """#494 — on-demand PROMPT-ONLY repost of pending callback consents.
+
+    The `consent_reprompt` tool's callback half. Deliberately NOT a
+    reconcile pass: no overlay swap, no marker writes, no ack prune, no
+    ``seal_setup_state`` / ``ensure_obligation`` / ``open_round``, no worker
+    kick — whatever the last lifecycle reconcile sealed stays exactly as
+    sealed (design rounds 2–3: an on-demand pass that reseals re-opens
+    members its own denial filter then refuses to prompt, wedging setup).
+
+    Runs under ``_RECONCILE_LOCK`` so a revoke's post-reconcile
+    ``cancel_matching`` provably catches any keyboard registered here (the
+    same serialization argument the mutation-time prompts rely on). For each
+    pending consent it:
+
+    * skips identities the operator DENIED on a live keyboard
+      (:mod:`consent_denials` — agent-driven re-issue must not nag past a
+      Deny; mutations/reloads re-prompt as always),
+    * re-reads the ack store synchronously (design r3: the worker-thread
+      compute can race a concurrent Approve — a freshly-acked identity gets
+      no new keyboard),
+    * threads the CURRENT open round member's nonce in READ-ONLY
+      (:func:`plugin_setup_episodes.open_member_nonce`) so the fresh
+      keyboard decides exactly the member the last reconcile sealed,
+    * registers the keyboard via the ordinary committing prompt.
+
+    Appends one row per pending consent to ``report``:
+    ``{"kind","plugin","name", "status"|"handle"}`` — ``handle`` rows carry
+    the coordinator's ``ChallengeHandle`` for the caller to classify via
+    ``settled_post()`` AFTER this lock is released. Never raises."""
+    import authz_grants
+    import callback_consent
+    import consent_denials
+    import plugin_setup_episodes
+
+    if runtime is None:
+        return
+    channel_manager = getattr(runtime, "channel_manager", None)
+    channel = channel_manager.get("telegram") if channel_manager else None
+    if channel is None:
+        return
+    op = callback_consent.operator_identity(channel)
+    if op is None:
+        return
+    chat_id, operator_id = op
+    role_configs = getattr(runtime, "role_configs", None) or {}
+    acks = acks if acks is not None else _default_acks()
+
+    async def _reconcile_again() -> None:
+        # Approve-time reconcile: live-runtime lookup (the event-reconciler
+        # discipline) — the tap may land long after this repost.
+        import agent as agent_mod
+        live = getattr(agent_mod, "active_runtime", None)
+        if live is None or getattr(live, "trigger_registry", None) is None:
+            return
+        await reconcile_plugin_callbacks(
+            trigger_registry=live.trigger_registry,
+            role_configs=getattr(live, "role_configs", None) or {},
+            channel_manager=getattr(live, "channel_manager", None),
+            prompt=False, regen_health=True)
+
+    async with _RECONCILE_LOCK:
+        try:
+            desired = await asyncio.to_thread(
+                compute_desired, role_configs=role_configs, acks=acks,
+                resolver=resolver, entries=entries)
+        except Exception:  # noqa: BLE001 — a compute failure reposts nothing
+            logger.exception("callback reprompt compute failed")
+            return
+        for p in desired.pending:
+            row = {"kind": "callback", "plugin": p["plugin"],
+                   "name": p["effective"]}
+            if consent_denials.denied(
+                    consent_denials.key("callback", p["identity"])):
+                report.append(dict(row, status="denied"))
+                continue
+            if acks.get(p["identity"]) is not None:
+                report.append(dict(row, status="already_acked"))
+                continue
+            nonce = plugin_setup_episodes.open_member_nonce(
+                p["plugin"], p["identity"])
+            try:
+                handle = callback_consent.prompt_callback_consent(
+                    coordinator=authz_grants.CHALLENGES, channel=channel,
+                    chat_id=chat_id, operator_id=operator_id, acks=acks,
+                    reconcile_cb=_reconcile_again, setup_nonce=nonce,
+                    plugin=p["plugin"], artifact_id=p["artifact_id"],
+                    declared=p["declared"], effective=p["effective"],
+                    declaration_digest=p["declaration_digest"])
+                report.append(dict(row, handle=handle))
+            except Exception:  # noqa: BLE001 — one prompt failure must not
+                # abort the remaining rows
+                logger.exception("callback reprompt failed (plugin=%s)",
+                                 p.get("plugin"))
+                report.append(dict(row, status="error"))
+
+
 def issue_state(resolver: Any = None) -> "IssueState":
     """``(ok, issues, observed)`` — the callback gaps, whether they could be
     computed AT ALL, and which plugins the computation actually saw. The mirror
