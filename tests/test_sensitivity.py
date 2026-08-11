@@ -185,6 +185,33 @@ def test_parse_tier_multiple_answer_lines_are_ambiguous():
     assert parse_tier("Tier: private\nsome hedging\nTier: public") is None
 
 
+def test_parse_tier_whole_reply_arm_never_spans_newlines():
+    # Review r2 (Sol+Terra S1): _TIER_REPLY_RE's [\W_] separator classes
+    # matched newlines, so a decorated token SPREAD ACROSS LINES sneaked in
+    # through the whole-reply arm, bypassing the strict multi-line contract.
+    assert parse_tier("---\npublic") is None
+    assert parse_tier("Tier:\npublic") is None
+    assert parse_tier("Tier\npublic") is None
+    assert parse_tier("Tier---\npublic") is None
+    assert parse_tier("**\nfamily\n**") is None
+    # Blank padding around ONE real line is still the single-line form.
+    assert parse_tier("\n  family  \n") == "family"
+
+
+def test_parse_tier_malformed_label_line_before_the_answer_is_a_conflict():
+    # Review r2 (Sol S1): "Tier: private." fails the strict answer regex, so
+    # an exact-match count ignored it and the later line won — a conflicting
+    # answer the user's model DID give. Any earlier line opening with a Tier
+    # label is ambiguity.
+    assert parse_tier("Tier: private.\nTier: public") is None
+    assert parse_tier("**Tier: private**\nTier: public") is None
+    assert parse_tier("tier assignment below:\nTier: public") is None
+    # Prose merely starting with a "tier"-prefixed WORD is not a label…
+    assert parse_tier("Tiering this is easy.\nTier: friends") == "friends"
+    # …and prose containing "tier" mid-line is not either.
+    assert parse_tier("The right tier is clear.\nTier: friends") == "friends"
+
+
 def test_parse_tier_answer_line_must_be_exactly_one_token_and_final():
     assert parse_tier("reasoning\nTier: family or private") is None
     assert parse_tier("reasoning\nTier: public would be wrong") is None

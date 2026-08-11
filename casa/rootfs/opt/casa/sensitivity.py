@@ -143,31 +143,42 @@ _TIER_ANSWER_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Review r2 (Sol S1): a MALFORMED label line before the answer line
+# ("Tier: private." then "Tier: public") is a conflict the exact-match count
+# missed — the strict answer regex ignores it, silently letting the later
+# line win. Any earlier line that so much as OPENS with a Tier label makes
+# the reply ambiguous. \b keeps prose starting with words like "Tiering"
+# out of scope; prose lines merely CONTAINING "tier" are not labels.
+_TIER_LABELISH_RE = re.compile(r"^[\W_]*tier\b", re.IGNORECASE)
+
 
 def parse_tier(text: str | None) -> str | None:
     """Parse an LLM/agent reply that should name a single tier. Returns the
-    lowercased tier only when either (a) the whole reply is exactly one tier
-    token (modulo an optional "Tier:" label and surrounding punctuation /
-    whitespace), or (b) the reply is multi-line and contains exactly ONE
-    literal ``Tier: <word>`` answer line, in FINAL non-empty position (#497 —
-    the declared-answer line the prompt mandates for any reply that is not
-    the bare word; multiple or conflicting answer lines are ambiguity, Sol
-    r1). None otherwise — including when tier words appear inside a longer
-    sentence (#350) or an unlabeled multi-line reply. The caller applies
+    lowercased tier only when either (a) the reply is a SINGLE non-empty line
+    that is exactly one tier token (modulo an optional "Tier:" label and
+    surrounding punctuation / whitespace), or (b) the reply is multi-line,
+    its FINAL non-empty line is the literal ``Tier: <word>`` answer line
+    (#497 — the declared-answer line the prompt mandates), and no earlier
+    line opens with a Tier label (review r2: a malformed or conflicting
+    label line is ambiguity). None otherwise — including when tier words
+    appear inside a longer sentence (#350), an unlabeled multi-line reply,
+    or a decorated token spread across lines (review r2: the whole-reply
+    arm's separator classes must never span newlines). The caller applies
     DEFAULT_TIER on None."""
     if not isinstance(text, str):
         return None
-    m = _TIER_REPLY_RE.match(text)
-    if m:
-        return m.group(1).lower()
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if len(lines) < 2:
-        # A single-line reply already had its one chance above.
+    if not lines:
         return None
-    answers = [m for m in (_TIER_ANSWER_LINE_RE.match(ln) for ln in lines) if m]
-    if len(answers) != 1 or not _TIER_ANSWER_LINE_RE.match(lines[-1]):
+    if len(lines) == 1:
+        m = _TIER_REPLY_RE.match(lines[0])
+        return m.group(1).lower() if m else None
+    m = _TIER_ANSWER_LINE_RE.match(lines[-1])
+    if not m:
         return None
-    return answers[0].group(1).lower()
+    if any(_TIER_LABELISH_RE.match(ln) for ln in lines[:-1]):
+        return None
+    return m.group(1).lower()
 
 
 # Classification prompt — converged with the maintainer via the eval session (2026-06-03).

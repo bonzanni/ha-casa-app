@@ -262,10 +262,10 @@ pending, its output being in-flight-turn residual.
 
 **INV-MEM-012**: A tier-classifier reply yields a tier only when the whole reply is exactly one tier token, or when a multi-line reply's sole literal `Tier: <word>` answer line is its final non-empty line; tier words in prose, decorated or unlabeled lines, and multiple answer lines yield no tier and the item falls to the private default.
 
-Enforced in `parse_tier`: the whole-reply arm full-matches a single decorated token
-rather than searching for the leftmost tier word (the search let a chatty reply mis-tag
-a family fact as public); the answer-line arm accepts only the sole, literal line the
-prompt mandates. The id replaces retired MEM 007, whose statement the
+Enforced in `parse_tier`: the single-line arm full-matches one decorated token, never
+searching for the leftmost tier word and never spanning lines; the answer-line arm
+accepts only the literal final line the prompt mandates, with no earlier label-opening
+line. The id replaces retired MEM 007, whose statement the
 answer-line arm falsifies.
 
 What it does not cover: a classifier confidently declaring the wrong tier is believed —
