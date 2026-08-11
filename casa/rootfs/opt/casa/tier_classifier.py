@@ -45,7 +45,12 @@ async def classify_tier(content: str) -> str:
 
     opts = sdk.ClaudeAgentOptions(
         cli_path=CLAUDE_CLI_PATH,
-        system_prompt=SENSITIVITY_PROMPT, max_turns=1, allowed_tools=[],
+        # max_turns=2 (#497): on 0.174.0 the runtime sometimes errored with
+        # "Reached maximum number of turns (1)" instead of returning any text
+        # (turn 1 apparently spent on preamble/thinking). One spare turn is
+        # harmless headroom — allowed_tools=[] means there is nothing agentic
+        # a second turn could do except finish emitting text.
+        system_prompt=SENSITIVITY_PROMPT, max_turns=2, allowed_tools=[],
         # NOT bypassPermissions: that makes the SDK pass
         # ``--dangerously-skip-permissions`` to the bundled ``claude`` CLI, which
         # refuses to run as root/sudo — and HA add-ons run as root, so the call
@@ -85,9 +90,14 @@ async def classify_tier(content: str) -> str:
             return tier
         # A garbled reply used to default SILENTLY — indistinguishable from a
         # correct ``private`` classification when auditing tiering accuracy.
+        # #497: length alone made the failure undiagnosable (the raw replies
+        # were never captured); log a bounded head of the reply too. The
+        # snippet is the CLASSIFIER'S words, may paraphrase the item, and goes
+        # through the app's redaction pipeline like every other log line.
         logger.warning(
-            "tier classification reply unparseable (%d chars); defaulting to %s",
-            len(reply), DEFAULT_TIER,
+            "tier classification reply unparseable (%d chars, head=%r); "
+            "defaulting to %s",
+            len(reply), reply[:200], DEFAULT_TIER,
         )
         return DEFAULT_TIER
     return DEFAULT_TIER  # pragma: no cover — loop always returns

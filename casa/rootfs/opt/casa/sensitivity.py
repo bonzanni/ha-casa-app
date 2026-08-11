@@ -126,16 +126,42 @@ _TIER_REPLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# #497: the bundled CLI/model started replying verbosely (286–803 chars), so
+# the whole-reply match above never fired and 100% of retentions defaulted to
+# ``private`` — the tier system was effectively disabled. The prompt now
+# mandates that a non-single-word reply END with a line of exactly
+# ``Tier: <word>``; this pattern accepts that FINAL non-empty line only. The
+# label is REQUIRED here (unlike the whole-reply form): a bare tier word that
+# merely ends a chatty reply stays ambiguous and falls to the default, so the
+# #350 guarantee — tier words inside prose never parse — is preserved. The
+# line itself must still be exactly one labeled token: "Tier: family or
+# private" and "Tier: public would be wrong" do not match.
+_TIER_FINAL_LINE_RE = re.compile(
+    r"^[\W_]*tier[\W_]+(private|family|friends|public)[\W_]*$",
+    re.IGNORECASE,
+)
+
 
 def parse_tier(text: str | None) -> str | None:
-    """Parse an LLM/agent reply that should be a single tier word. Returns the
-    lowercased tier only when the reply is exactly one tier token (modulo an
-    optional "Tier:" label and surrounding punctuation/whitespace); None
-    otherwise — including when tier words appear inside a longer sentence
-    (#350). The caller applies DEFAULT_TIER on None."""
+    """Parse an LLM/agent reply that should name a single tier. Returns the
+    lowercased tier only when either (a) the whole reply is exactly one tier
+    token (modulo an optional "Tier:" label and surrounding punctuation /
+    whitespace), or (b) the reply's FINAL non-empty line is exactly a
+    ``Tier: <word>``-labeled token (#497 — the declared-answer line the prompt
+    mandates for any reply that is not the bare word). None otherwise —
+    including when tier words appear inside a longer sentence (#350) or an
+    unlabeled multi-line reply. The caller applies DEFAULT_TIER on None."""
     if not isinstance(text, str):
         return None
     m = _TIER_REPLY_RE.match(text)
+    if m:
+        return m.group(1).lower()
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        # A single-line reply already had its one chance above: retrying the
+        # same line with the label REQUIRED could never accept anything new.
+        return None
+    m = _TIER_FINAL_LINE_RE.match(lines[-1])
     return m.group(1).lower() if m else None
 
 
@@ -188,5 +214,10 @@ Rules:
    tier (a leak is worse than forgetting).
 
 Respond with ONLY the single tier word: private, family, friends, or public.
+Do not explain, hedge, or add anything else. If you nonetheless write anything besides the
+single word, your reply MUST end with a final line of exactly:
+Tier: <word>
+where <word> is one of: private, family, friends, public. A reply without that final line
+is discarded and the fact is filed at the most restrictive tier.
 Fact:
 """

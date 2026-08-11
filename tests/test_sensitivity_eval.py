@@ -40,7 +40,9 @@ async def _classify_one(fact: str) -> str | None:
     from sensitivity import SENSITIVITY_PROMPT, parse_tier
 
     opts = sdk.ClaudeAgentOptions(
-        system_prompt=SENSITIVITY_PROMPT, max_turns=1, allowed_tools=[],
+        # max_turns=2 mirrors the production classifier (#497) so the eval
+        # measures the shipped configuration.
+        system_prompt=SENSITIVITY_PROMPT, max_turns=2, allowed_tools=[],
         permission_mode="bypassPermissions",
     )
     text = ""

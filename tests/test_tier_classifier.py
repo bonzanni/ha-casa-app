@@ -71,6 +71,32 @@ async def test_classify_chatty_reply_with_tier_words_defaults_private(monkeypatc
     assert await tier_classifier.classify_tier("the home alarm code is 4712") == DEFAULT_TIER
 
 
+async def test_classify_verbose_reply_with_labeled_final_line_parses(monkeypatch):
+    # #497 end-to-end: the measured failure shape — a multi-hundred-char
+    # verbose reply — classifies when it ends with the mandated answer line.
+    _install_fake_sdk(
+        monkeypatch,
+        reply=(
+            "Holiday plans are ordinary, socially shareable facts; anyone the "
+            "user talks to in the home is friends-or-closer.\n"
+            "Tier: friends"
+        ),
+    )
+    assert await tier_classifier.classify_tier(
+        "the family flies to Lisbon on the 14th") == "friends"
+
+
+async def test_classify_allows_a_spare_turn_for_the_reply(monkeypatch):
+    """#497: 1 of 8 measured failures was the SDK erroring with "Reached
+    maximum number of turns (1)" and returning no text at all. With
+    allowed_tools=[] a second turn can only finish emitting text, so the
+    classifier grants exactly one spare turn."""
+    captured: dict = {}
+    _install_fake_sdk(monkeypatch, reply="family", capture=captured)
+    await tier_classifier.classify_tier("the alarm code is 4712")
+    assert captured.get("max_turns") == 2
+
+
 async def test_classify_defaults_private_on_error(monkeypatch):
     monkeypatch.setattr(tier_classifier, "_RETRY_BACKOFF_S", 0)  # D-5 retry path
     _install_fake_sdk(monkeypatch, raise_exc=RuntimeError("sdk boom"))
@@ -167,4 +193,22 @@ async def test_unparseable_reply_logs_the_reply_shape(monkeypatch, caplog):
     _install_fake_sdk(monkeypatch, reply="I am not sure")
     with caplog.at_level(_logging.WARNING):
         assert await tier_classifier.classify_tier("ambiguous") == DEFAULT_TIER
-    assert any("unparseable" in r.getMessage().lower() for r in caplog.records)
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("unparseable" in m.lower() for m in msgs)
+    # #497: length alone made the failure undiagnosable — the WARN carries a
+    # bounded head of the reply itself.
+    assert any("I am not sure" in m for m in msgs)
+
+
+async def test_unparseable_reply_snippet_is_bounded(monkeypatch, caplog):
+    """#497: the logged reply head is capped so a runaway reply cannot flood
+    the logs (replies measured up to 803 chars; cap is 200)."""
+    import logging as _logging
+
+    _install_fake_sdk(monkeypatch, reply="x" * 5000)
+    with caplog.at_level(_logging.WARNING):
+        assert await tier_classifier.classify_tier("anything") == DEFAULT_TIER
+    warn = next(r.getMessage() for r in caplog.records
+                if "unparseable" in r.getMessage().lower())
+    assert "5000 chars" in warn
+    assert len(warn) < 500

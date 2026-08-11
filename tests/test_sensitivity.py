@@ -140,6 +140,44 @@ def test_parse_tier_accepts_decorated_single_token_replies():
     assert parse_tier("`friends`") == "friends"
 
 
+def test_parse_tier_accepts_labeled_final_line_after_verbose_reply():
+    # #497: the bundled model started replying verbosely (286–803 chars) and
+    # 100% of retentions fell to the private default. The prompt now mandates
+    # a final line of exactly "Tier: <word>" for any non-single-word reply,
+    # and the parser accepts that declared-answer line.
+    assert parse_tier(
+        "Travel plans are ordinary shareable facts, so friends fits.\n"
+        "Tier: friends"
+    ) == "friends"
+    assert parse_tier(
+        "The alarm code protects a shared space.\n\n**Tier: family**"
+    ) == "family"
+    assert parse_tier("Money is involved here.\ntier private") == "private"
+
+
+def test_parse_tier_final_line_without_the_label_stays_ambiguous():
+    # #350 preserved: a bare tier word merely ENDING a chatty reply is not a
+    # declared answer — only the labeled final-line form parses.
+    assert parse_tier("This is clearly shareable.\nfriends") is None
+    assert parse_tier("Some reasoning first.\nfamily") is None
+
+
+def test_parse_tier_final_line_must_be_exactly_one_labeled_token():
+    assert parse_tier("reasoning\nTier: family or private") is None
+    assert parse_tier("reasoning\nTier: public would be wrong") is None
+    # The label line must be FINAL — trailing prose voids it.
+    assert parse_tier("Tier: public\nbut on reflection it is private") is None
+    # Sol r1's separator rule holds on the final-line form too.
+    assert parse_tier("reasoning\ntierpublic") is None
+
+
 def test_prompt_names_all_four_tiers():
     for tier in ("public", "friends", "family", "private"):
         assert tier in SENSITIVITY_PROMPT
+
+
+def test_prompt_mandates_the_labeled_final_line_contract():
+    # #497: prompt and parser form one contract — the prompt must keep naming
+    # the exact "Tier: <word>" final-line shape the fallback parser accepts.
+    assert "Tier: <word>" in SENSITIVITY_PROMPT
+    assert "end with a final line" in SENSITIVITY_PROMPT.lower()
