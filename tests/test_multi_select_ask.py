@@ -628,7 +628,10 @@ class TestHandlerEndToEnd:
             "timeout_s": 60, "multi": True,
         }
         task = asyncio.ensure_future(wired.ask(_HandlerRequest(payload)))
-        await asyncio.sleep(0.02)
+        # Await the observable itself (CI flake on a loaded runner: the fixed
+        # 0.02 s sleep lost to the handler's real awaits and keyboards[-1]
+        # raised IndexError before the post landed).
+        await _wait_until(lambda: wired.ch.keyboards)
         # keyboard posted with multi=True.
         assert wired.ch.keyboards[-1]["multi"] is True
 
@@ -661,7 +664,11 @@ class TestHandlerEndToEnd:
             "timeout_s": 60, "multi": True,
         }
         task = asyncio.ensure_future(wired.ask(_HandlerRequest(payload)))
-        await asyncio.sleep(0.02)
+        # Cancel only once the request is durably live in the broker — a
+        # cancel racing registration would no-op and the task would hang to
+        # the real 60 s deadline (same boundary as test_multi_timeout_no_answer).
+        await _wait_until(lambda: wired.broker.is_live_unclaimed(
+            namespace="engagement_ask", scope=wired.rec.id, request_id="h2"))
         wired.broker.cancel(
             namespace="engagement_ask", scope=wired.rec.id, request_id="h2",
             reason="superseded_by_text")
