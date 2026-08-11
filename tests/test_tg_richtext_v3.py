@@ -310,3 +310,35 @@ def test_never_raises_on_nasty_inputs():
         assert isinstance(display, str)
         for text, ents in render_paged(src):
             assert isinstance(text, str)
+
+
+# --------------------------------------------------------------------------
+# Diff-review round 1 red cases (Sol + Terra, reproduced)
+# --------------------------------------------------------------------------
+
+def test_nested_link_tokens_make_line_literal():
+    # Sol S1: adversarial pairing can emit a link inside a link label —
+    # Telegram rejects nested TEXT_LINKs, so the line must stay literal.
+    src = "[`[x](https://inner.test)`x`](https://outer.test)"
+    assert parse_markdown(src) == (src, [])
+
+
+def test_even_backslash_run_is_unescaped_image():
+    # Sol/Terra S2: "\\\\![" is a literal backslash + image marker — literal.
+    src = "\\\\![x](https://e.test)"
+    assert parse_markdown(src) == (src, [])
+
+
+def test_even_backslash_run_before_pipe_is_structural():
+    # Sol S1: "a\\\\|" ends with a LITERAL backslash; the pipe splits cells.
+    display, spans = parse_markdown(
+        "| a\\\\| b | c |\n|---|---|---|\n| d | e | f |"
+    )
+    assert display == "| a\\ | b | c |\n| d  | e | f |"
+    assert spans == [(0, len(display), "pre")]
+
+
+def test_odd_backslash_pipe_still_cell_content():
+    display, spans = parse_markdown("| a\\|b | c |\n|---|---|\n| d | e |")
+    assert display == "| a|b | c |\n| d   | e |"
+    assert spans == [(0, 23, "pre")]

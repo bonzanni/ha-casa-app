@@ -193,10 +193,20 @@ def _split_fenced(src: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+def _backslash_run_before(s: str, i: int) -> int:
+    j = i
+    while j > 0 and s[j - 1] == "\\":
+        j -= 1
+    return i - j
+
+
 def _has_unescaped_image_marker(body: str) -> bool:
+    # Escaped only under ODD backslash parity: in "\\![…" the backslashes
+    # pair to a literal backslash and the image marker is live (diff-review
+    # round 1, Sol + Terra).
     i = body.find("![")
     while i != -1:
-        if i == 0 or body[i - 1] != "\\":
+        if _backslash_run_before(body, i) % 2 == 0:
             return True
         i = body.find("![", i + 1)
     return False
@@ -256,6 +266,8 @@ def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
             elif not link_stack:  # inside a label: span suppressed
                 emph_spans.append((start, n, kind))
         elif t == "link_open":
+            if link_stack:  # nested TEXT_LINKs are Bot-API-invalid
+                return None
             href = str(c.attrs.get("href", ""))
             if not href.lower().startswith(("http://", "https://")):
                 return None
@@ -346,17 +358,28 @@ _TABLE_SEP_CELL_RE = re.compile(r"\s*:?-{3,}:?\s*")
 
 
 def _split_cells(stripped_row: str) -> list[str]:
-    """Cells of a bordered row: split on UNESCAPED pipes; ``\\|`` stays cell
-    content (the inline escape pass later renders it as a literal ``|``)."""
+    """Cells of a bordered row: split on UNESCAPED pipes. A pipe is escaped
+    only when preceded by an ODD run of backslashes — ``\\|`` is cell
+    content, ``\\\\|`` is a literal backslash then a structural pipe
+    (diff-review round 1). Escapes stay in the cell source; the inline
+    escape pass renders them."""
     inner = stripped_row[1:-1]
     cells: list[str] = []
     cur: list[str] = []
     i = 0
     while i < len(inner):
         ch = inner[i]
-        if ch == "\\" and i + 1 < len(inner) and inner[i + 1] == "|":
-            cur.append("\\|")
-            i += 2
+        if ch == "\\":
+            j = i
+            while j < len(inner) and inner[j] == "\\":
+                j += 1
+            run = j - i
+            if j < len(inner) and inner[j] == "|" and run % 2 == 1:
+                cur.append(inner[i:j + 1])  # escaped pipe is cell content
+                i = j + 1
+            else:
+                cur.append(inner[i:j])
+                i = j
         elif ch == "|":
             cells.append("".join(cur))
             cur = []
@@ -417,7 +440,8 @@ def _split_tables(text: str) -> list[tuple[str, object]]:
                 len(stripped) >= 2
                 and stripped.startswith("|")
                 and stripped.endswith("|")
-                and not stripped.endswith("\\|")
+                # a closing border is escaped only under ODD backslash parity
+                and _backslash_run_before(stripped, len(stripped) - 1) % 2 == 0
             ):
                 j += 1
             else:
