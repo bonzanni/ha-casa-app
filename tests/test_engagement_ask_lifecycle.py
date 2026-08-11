@@ -14,7 +14,7 @@ import json
 from typing import Any
 
 import pytest
-from broker_helpers import deliver
+from broker_helpers import deliver, wait_until
 from aiohttp import web
 
 import agent as agent_mod
@@ -283,9 +283,16 @@ async def test_expired_settles_with_hourglass_and_clears_keyboard(env, monkeypat
     # Fire the timeout immediately.
     task = asyncio.ensure_future(env["ask"](
         _FakeRequest(_ask_payload(engagement_id=eid, engagement_token=tok, request_id="e1", timeout_s=30))))
-    await asyncio.sleep(0.02)
+    # Fire the synthetic timeout only once the keyboard post has landed (CI
+    # flake on a loaded runner: a fixed 0.02 s sleep lost to the handler's
+    # real awaits, the _on_timeout no-opped on a not-yet-live key, and the
+    # task only settled at the real 30 s deadline — TimeoutError). The POST
+    # is the boundary, not broker registration: registration strictly
+    # precedes it, and the expiry settle edits the posted message — firing
+    # between the two would settle with no message to edit.
+    await wait_until(lambda: env["ch"].options_keyboards)
     env["broker"]._on_timeout(("engagement_ask", eid, "e1"))
-    resp = await asyncio.wait_for(task, timeout=1.0)
+    resp = await asyncio.wait_for(task, timeout=10.0)
     await env["broker"].drain_hooks()
 
     assert _body(resp) == {"ok": True, "outcome": "no_answer"}
@@ -304,11 +311,14 @@ async def test_canonical_qnumber_prepends_verbatim(env):
     # longer strips an agent-authored leading "Q<digits>:".
     task = asyncio.ensure_future(env["ask"](_FakeRequest(_ask_payload(
         engagement_id=eid, engagement_token=tok, request_id="c1", question="Q7: Which DB?"))))
-    await asyncio.sleep(0.02)
+    # Await the observable (keyboard actually posted), not a fixed sleep.
+    await wait_until(lambda: env["ch"].options_keyboards)
     posted_q = env["ch"].options_keyboards[-1]["question"]
     assert posted_q == "Q1: Q7: Which DB?\n\n1. A\n2. B"
-    # open_questions ledger + summary accessor agree with the message.
-    assert env["reg"].open_question_numbers(eid) == [1]
+    # open_questions ledger + summary accessor agree with the message. The
+    # ledger write is a separate awaited step after the post — wait for it
+    # too before delivering, or the settle-close races the open-write.
+    await wait_until(lambda: env["reg"].open_question_numbers(eid) == [1])
     deliver(env["broker"], 
         namespace="engagement_ask", scope=eid, request_id="c1",
         option_index=0, actor_id=555)
