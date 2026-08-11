@@ -1620,3 +1620,61 @@ async def test_bundle_sequencer_failure_logs_warning(
                if r.levelname == "WARNING" and "mtg" in r.getMessage()
                and "agent:mtg" in r.getMessage())
     assert "postcondition_failed" in rec.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
+    monkeypatch, tmp_path,
+) -> None:
+    """#499: the install flow left bundled plugins' declared env vars unwired,
+    guaranteeing a requires-gate refusal on the specialist's first tool call
+    and a second configurator engagement. The commit result now mirrors
+    plugin_add's `required_env_vars` (per bundled plugin, from the consented
+    receipt rows) so the install recipe wires them in the SAME engagement.
+    Plugins declaring no env vars are omitted."""
+    from types import SimpleNamespace
+    from test_specialist_install import _write_component
+    from specialist_component import load_specialist_component
+    from specialist_install import compute_install_root_digest, resolve_dependency_closure
+    import specialist_install
+    import specialist_bundle_journal
+    import tools as tools_mod
+    from tools import specialist_install_commit
+
+    staged = _write_component(tmp_path / "staged", slug="mtg")
+    component = load_specialist_component(staged, staged / "manifest.json")
+    deps = resolve_dependency_closure(component, staged)
+    root_digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+    _inject_fake_receipt(monkeypatch, plugins=(
+        SimpleNamespace(scoped_name="mtg.bankfeed", manifest_name="bankfeed",
+                        env_names=("BANKFEED_OP_VAULT",)),
+        SimpleNamespace(scoped_name="mtg.mtg", manifest_name="mtg",
+                        env_names=()),
+    ))
+    _stub_bundle_sequencer(monkeypatch)
+
+    txn = SimpleNamespace(slug="mtg", removed_artifact_ids=(),
+                          new_artifact_ids=("NEWAID",),
+                          journal_path="/tmp/j.json",
+                          rollback_disk=lambda: None)
+    monkeypatch.setattr(
+        specialist_install, "commit_specialist_install",
+        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active"), txn))
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree",
+                        lambda p: None)
+
+    result = await specialist_install_commit.handler({
+        "component_id": component.component_id, "version": component.version,
+        "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
+        "receipt_id": "a" * 32,
+    })
+    payload = _payload(result)
+    assert payload["ok"] is True
+    # Keyed by the SCOPED registry name (review r1): the identity
+    # set_plugin_env_reference / verify_plugin_state take for an owned
+    # plugin — the bare manifest_name is not_registered there. Env-less
+    # plugins omitted.
+    assert payload["required_env_vars"] == {
+        "mtg.bankfeed": ["BANKFEED_OP_VAULT"]}
