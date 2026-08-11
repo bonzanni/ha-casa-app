@@ -60,7 +60,8 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    for each value or 1Password reference you cannot derive (e.g. a vault name is the installer's
    choice — never guess it), `set_plugin_env_reference(plugin="<slug>.<plugin>", ...)` once per
    var, then `casa_reload(scope="plugin_env")`, and confirm via
-   `verify_plugin_state("<slug>.<plugin>")` that no `secrets[*].status: unresolved` remains. An unresolved required var withholds the plugin from
+   `verify_plugin_state(plugin_name="<slug>.<plugin>")` that no `secrets[*].status: unresolved`
+   remains. An unresolved required var withholds the plugin from
    session builds entirely: the specialist's very first tool call would be refused with
    "required env unresolved", costing the operator a second configurator engagement (#499).
    A plugin with empty `env_names` needs nothing here.
