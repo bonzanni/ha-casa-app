@@ -58,9 +58,29 @@ async def test_webhook_duplicate_update_id_dropped(monkeypatch):
         "channels.telegram.Update",
         MagicMock(de_json=MagicMock(return_value=upd)),
     )
-    await ch.process_webhook_update({"update_id": 99})
-    await ch.process_webhook_update({"update_id": 99})  # Telegram redelivery
+    first = await ch.process_webhook_update({"update_id": 99})
+    second = await ch.process_webhook_update({"update_id": 99})  # redelivery
     assert app.update_queue.qsize() == 1                # retry deduped
+    # #428: the two outcomes must be distinguishable by the caller.
+    assert first == "accepted"
+    assert second == "duplicate"
+
+
+async def test_webhook_outcome_ignored_when_not_started(monkeypatch):
+    # #428: the silent early exits (channel not started, unparseable payload)
+    # report "ignored" rather than masquerading as accepted.
+    from channels.telegram import TelegramChannel
+
+    ch = TelegramChannel(bot_token="t", chat_id="1")
+    ch._app = None
+    assert await ch.process_webhook_update({"update_id": 1}) == "ignored"
+
+    ch2, _app = _channel_with_fake_app()
+    monkeypatch.setattr(
+        "channels.telegram.Update",
+        MagicMock(de_json=MagicMock(return_value=None)),
+    )
+    assert await ch2.process_webhook_update({"bogus": True}) == "ignored"
 
 
 async def test_webhook_distinct_update_ids_both_queued(monkeypatch):

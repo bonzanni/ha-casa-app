@@ -28,9 +28,9 @@ async def _client(secret: str, channel):
     return client
 
 
-def _channel():
+def _channel(outcome: str = "accepted"):
     ch = MagicMock()
-    ch.process_webhook_update = AsyncMock()
+    ch.process_webhook_update = AsyncMock(return_value=outcome)
     return ch
 
 
@@ -56,6 +56,22 @@ async def test_correct_token_200():
     assert resp.status == 200
     ch.process_webhook_update.assert_awaited_once()
     await client.close()
+
+
+async def test_outcome_header_reflects_channel_outcome():
+    # #428: same 200 + empty body either way (Telegram's contract), but the
+    # X-Casa-Update header tells a programmatic caller queued from deduped.
+    for outcome in ("accepted", "duplicate", "ignored"):
+        ch = _channel(outcome)
+        client = await _client("s3cret", ch)
+        resp = await client.post(
+            "/telegram/update", json={"update_id": 7},
+            headers={"X-Telegram-Bot-Api-Secret-Token": "s3cret"},
+        )
+        assert resp.status == 200
+        assert resp.headers["X-Casa-Update"] == outcome
+        assert await resp.read() == b""
+        await client.close()
 
 
 async def test_non_ascii_token_is_403_not_500():

@@ -154,7 +154,11 @@ uses polling.
 
 **A duplicate update arrives.** A webhook redelivery is absorbed by a bounded, process-local
 recent-update cache consulted on the webhook path only. Polling updates never pass that
-cache, and no equivalent deduplication is established for them here.
+cache, and no equivalent deduplication is established for them here. The route still
+answers 200 with an empty body either way — Telegram's contract — but an `X-Casa-Update`
+response header distinguishes the outcomes for programmatic callers: `accepted` (queued),
+`duplicate` (absorbed), or `ignored` (channel not started, or the payload did not parse as
+an update).
 
 **A message arrives from an unconfigured chat.** Logged and dropped. Note that leaving the
 chat id empty accepts other chats — the check is only as narrow as the configuration.

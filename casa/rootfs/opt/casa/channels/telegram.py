@@ -1001,8 +1001,13 @@ class TelegramChannel(Channel):
         if exc is not None:
             logger.warning("Telegram handler error (not retryable): %s", exc)
 
-    async def process_webhook_update(self, payload: dict) -> None:
+    async def process_webhook_update(self, payload: dict) -> str:
         """Enqueue a webhook update payload for PTB's fetcher (fast ACK).
+
+        Returns the outcome — ``"accepted"`` (queued), ``"duplicate"``
+        (redelivery absorbed by the LRU), or ``"ignored"`` (channel not
+        started, or payload not parseable as an update) — which the webhook
+        route surfaces as the ``X-Casa-Update`` response header (#428).
 
         H5 (v0.52.0): pre-fix this awaited ``Application.process_update``,
         which (default block=True handlers) ran the ENTIRE engagement SDK
@@ -1015,19 +1020,20 @@ class TelegramChannel(Channel):
         already in flight before the first ACK landed.
         """
         if self._app is None:
-            return
+            return "ignored"
         update = Update.de_json(payload, self._app.bot)
         if not update:
-            return
+            return "ignored"
         uid = getattr(update, "update_id", None)
         if uid is not None:
             if uid in self._seen_update_ids:
                 logger.info("Dropping duplicate webhook update_id=%s", uid)
-                return
+                return "duplicate"
             self._seen_update_ids[uid] = None
             while len(self._seen_update_ids) > 256:
                 self._seen_update_ids.popitem(last=False)
         await self._app.update_queue.put(update)
+        return "accepted"
 
     # ------------------------------------------------------------------
     # Typing indicator (with 401 backoff)

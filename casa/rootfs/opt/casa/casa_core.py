@@ -2387,8 +2387,11 @@ def _make_telegram_update_handler(*, get_telegram_channel, webhook_secret: str):
         ):
             return web.Response(status=403)
         payload = await request.json()
-        await telegram_channel.process_webhook_update(payload)
-        return web.Response(status=200)
+        outcome = await telegram_channel.process_webhook_update(payload)
+        # #428: keep the bare 200 (Telegram's redelivery contract; the body is
+        # reserved for invoking a Bot API method) but tell programmatic
+        # callers whether the update was queued, deduped, or ignored.
+        return web.Response(status=200, headers={"X-Casa-Update": outcome})
 
     return telegram_update_handler
 
