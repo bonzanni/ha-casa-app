@@ -1526,3 +1526,26 @@ class TestChallengeSizeGateUtf16:
         assert handle.refused == "args_too_large"
         assert key not in coord._entries
         assert channel.posts == []
+
+
+class TestChallengeTTL:
+    def test_challenge_ttl_matches_the_consent_ask_class(self):
+        """#498: the tool-authorization ask lived 120 s while consent asks
+        lived 600 s — two minutes assumed the operator was watching the chat
+        the moment the keyboard landed, and a missed window forced a fresh
+        chat turn to re-mint the ask. Both ask classes are the same human
+        decision on a phone and neither holds a turn open (the challenge is
+        detached), so they share one TTL. The grant minted on approval keeps
+        its own, shorter single-use TTL.
+
+        Red case demonstrated: restoring ``_CHALLENGE_TTL_S = 120.0`` fails
+        this test."""
+        import authz_grants
+        import trigger_consent
+
+        assert authz_grants._CHALLENGE_TTL_S == 600.0
+        assert (authz_grants._CHALLENGE_TTL_S
+                == trigger_consent.TRIGGER_CONSENT_TTL_S)
+        # The approval grant stays short-lived and single-use — the raise
+        # widens the DECISION window, not the blast radius of an approval.
+        assert authz_grants.DEFAULT_GRANT_TTL_S == 300.0

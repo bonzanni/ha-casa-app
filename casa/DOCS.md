@@ -750,7 +750,9 @@ mints a grant that is:
 - **time-limited** — a grant you never act on expires after 5 minutes.
 
 You'll see this for actions a plugin author has flagged as consequential.
-Deny leaves the call refused with no grant issued.
+Deny leaves the call refused with no grant issued. An approval keyboard you
+never answer expires after 10 minutes (the message says so when it does);
+asking the agent to retry the action posts a fresh one.
 
 A plugin author can also upgrade the approval prompt's headline to a
 plain-language action sentence (the exact arguments and tool id always

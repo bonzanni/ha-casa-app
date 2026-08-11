@@ -27,10 +27,10 @@ from plugin_triggers import ack_identity
 
 logger = logging.getLogger(__name__)
 
-# Consent TTL: longer than the 120 s authz-challenge TTL — a consent decision
-# follows an operator-driven plugin mutation but is not turn-scoped; give the
-# operator ten minutes before the keyboard expires (re-prompted on the next
-# reconcile-with-prompt, e.g. any plugin lifecycle mutation).
+# Consent TTL: ten minutes before the keyboard expires (re-prompted on the
+# next reconcile-with-prompt, e.g. any plugin lifecycle mutation). Since #498
+# the authz-challenge TTL matches this value — every operator ask class lives
+# 600 s (a human on a phone; no turn blocks on either keyboard).
 TRIGGER_CONSENT_TTL_S = 600.0
 
 

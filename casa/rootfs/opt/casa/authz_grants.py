@@ -240,8 +240,16 @@ GRANTS = GrantStore()
 # + envelope). #328: measured in UTF-16 units via ``text_util.utf16_len``.
 _CHALLENGE_MAX_CHARS = 3900
 
-# Challenge TTL (plan Global Constraints): 120 s.
-_CHALLENGE_TTL_S = 120.0
+# Challenge TTL. Was 120 s (plan Global Constraints); raised to 600 s (#498):
+# two minutes assumed the operator was watching the chat when the ask landed —
+# a missed keyboard forced a fresh chat turn to re-run the delegation and mint
+# a new ask. The challenge is DETACHED (no turn blocks on it; approval
+# dispatches a continuation / resumes the engagement), so a longer window
+# holds nothing open. 600 s gives ask-class parity with trigger/callback
+# consent (trigger_consent.TRIGGER_CONSENT_TTL_S) — both are operator
+# decisions on a phone, and the asymmetry read as broken. The GRANT minted on
+# approval keeps its own 300 s single-use TTL (DEFAULT_GRANT_TTL_S).
+_CHALLENGE_TTL_S = 600.0
 
 
 def short_tool_name(tool_name: str) -> str:
