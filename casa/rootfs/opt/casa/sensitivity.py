@@ -130,14 +130,16 @@ _TIER_REPLY_RE = re.compile(
 # the whole-reply match above never fired and 100% of retentions defaulted to
 # ``private`` — the tier system was effectively disabled. The prompt now
 # mandates that a non-single-word reply END with a line of exactly
-# ``Tier: <word>``; this pattern accepts that FINAL non-empty line only. The
-# label is REQUIRED here (unlike the whole-reply form): a bare tier word that
-# merely ends a chatty reply stays ambiguous and falls to the default, so the
-# #350 guarantee — tier words inside prose never parse — is preserved. The
-# line itself must still be exactly one labeled token: "Tier: family or
-# private" and "Tier: public would be wrong" do not match.
-_TIER_FINAL_LINE_RE = re.compile(
-    r"^[\W_]*tier[\W_]+(private|family|friends|public)[\W_]*$",
+# ``Tier: <word>``; this pattern accepts that answer line and nothing looser
+# (review r1, Sol+Terra): the LITERAL, undecorated form only — the colon is
+# mandatory and immediately follows the label, so ``tier public``,
+# ``Tier-public``, ``Tier---public``, markdown-wrapped and quoted variants
+# all stay ambiguous. A bare tier word that merely ends a chatty reply stays
+# ambiguous too, preserving the #350 guarantee that tier words inside prose
+# never parse. "Tier: family or private" and "Tier: public would be wrong"
+# do not match.
+_TIER_ANSWER_LINE_RE = re.compile(
+    r"^tier:\s+(private|family|friends|public)$",
     re.IGNORECASE,
 )
 
@@ -146,23 +148,26 @@ def parse_tier(text: str | None) -> str | None:
     """Parse an LLM/agent reply that should name a single tier. Returns the
     lowercased tier only when either (a) the whole reply is exactly one tier
     token (modulo an optional "Tier:" label and surrounding punctuation /
-    whitespace), or (b) the reply's FINAL non-empty line is exactly a
-    ``Tier: <word>``-labeled token (#497 — the declared-answer line the prompt
-    mandates for any reply that is not the bare word). None otherwise —
-    including when tier words appear inside a longer sentence (#350) or an
-    unlabeled multi-line reply. The caller applies DEFAULT_TIER on None."""
+    whitespace), or (b) the reply is multi-line and contains exactly ONE
+    literal ``Tier: <word>`` answer line, in FINAL non-empty position (#497 —
+    the declared-answer line the prompt mandates for any reply that is not
+    the bare word; multiple or conflicting answer lines are ambiguity, Sol
+    r1). None otherwise — including when tier words appear inside a longer
+    sentence (#350) or an unlabeled multi-line reply. The caller applies
+    DEFAULT_TIER on None."""
     if not isinstance(text, str):
         return None
     m = _TIER_REPLY_RE.match(text)
     if m:
         return m.group(1).lower()
-    lines = [ln for ln in text.splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if len(lines) < 2:
-        # A single-line reply already had its one chance above: retrying the
-        # same line with the label REQUIRED could never accept anything new.
+        # A single-line reply already had its one chance above.
         return None
-    m = _TIER_FINAL_LINE_RE.match(lines[-1])
-    return m.group(1).lower() if m else None
+    answers = [m for m in (_TIER_ANSWER_LINE_RE.match(ln) for ln in lines) if m]
+    if len(answers) != 1 or not _TIER_ANSWER_LINE_RE.match(lines[-1]):
+        return None
+    return answers[0].group(1).lower()
 
 
 # Classification prompt — converged with the maintainer via the eval session (2026-06-03).

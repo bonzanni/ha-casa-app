@@ -195,14 +195,32 @@ async def test_unparseable_reply_logs_the_reply_shape(monkeypatch, caplog):
         assert await tier_classifier.classify_tier("ambiguous") == DEFAULT_TIER
     msgs = [r.getMessage() for r in caplog.records]
     assert any("unparseable" in m.lower() for m in msgs)
-    # #497: length alone made the failure undiagnosable — the WARN carries a
-    # bounded head of the reply itself.
-    assert any("I am not sure" in m for m in msgs)
 
 
-async def test_unparseable_reply_snippet_is_bounded(monkeypatch, caplog):
-    """#497: the logged reply head is capped so a runaway reply cannot flood
-    the logs (replies measured up to 803 chars; cap is 200)."""
+async def test_unparseable_warn_is_content_free_but_structural(monkeypatch, caplog):
+    """#497 + review r1 (Sol+Terra): the diagnostic must carry enough
+    structure to distinguish failure shapes (length, line count, whether a
+    Tier: label appeared) while NEVER logging the reply text — the
+    classifier's words paraphrase the retained item, and this module's
+    doctrine is leak-safety."""
+    import logging as _logging
+
+    reply = "The user's salary details suggest money.\nTier: public would be wrong"
+    _install_fake_sdk(monkeypatch, reply=reply)
+    with caplog.at_level(_logging.WARNING):
+        assert await tier_classifier.classify_tier("salary is 5000") == DEFAULT_TIER
+    warn = next(r.getMessage() for r in caplog.records
+                if "unparseable" in r.getMessage().lower())
+    # Structural metadata present…
+    assert f"{len(reply)} chars" in warn
+    assert "2 lines" in warn
+    assert "tier label present" in warn
+    # …reply content absent, and the line stays bounded however long the reply.
+    assert "salary" not in warn
+    assert len(warn) < 200
+
+
+async def test_unparseable_warn_reports_absent_label(monkeypatch, caplog):
     import logging as _logging
 
     _install_fake_sdk(monkeypatch, reply="x" * 5000)
@@ -211,4 +229,6 @@ async def test_unparseable_reply_snippet_is_bounded(monkeypatch, caplog):
     warn = next(r.getMessage() for r in caplog.records
                 if "unparseable" in r.getMessage().lower())
     assert "5000 chars" in warn
-    assert len(warn) < 500
+    assert "tier label absent" in warn
+    assert "x" * 20 not in warn
+    assert len(warn) < 200

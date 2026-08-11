@@ -150,9 +150,23 @@ def test_parse_tier_accepts_labeled_final_line_after_verbose_reply():
         "Tier: friends"
     ) == "friends"
     assert parse_tier(
-        "The alarm code protects a shared space.\n\n**Tier: family**"
+        "The alarm code protects a shared space.\n\nTier: family"
     ) == "family"
-    assert parse_tier("Money is involved here.\ntier private") == "private"
+    assert parse_tier("Money is involved here.\n  tier: private  ") == "private"
+
+
+def test_parse_tier_answer_line_is_the_literal_labeled_form_only():
+    # Review r1 (Sol+Terra S1): the answer line must be the LITERAL,
+    # undecorated "Tier: <word>" — colon mandatory, no separator lookalikes,
+    # no markdown/quoting. Anything looser is ambiguity -> private default.
+    assert parse_tier("reasoning\ntier public") is None
+    assert parse_tier("reasoning\ntier private") is None
+    assert parse_tier("reasoning\nTier-public") is None
+    assert parse_tier("reasoning\nTier---public") is None
+    assert parse_tier("reasoning\n**Tier: family**") is None
+    assert parse_tier('reasoning\n"Tier: public"') is None
+    assert parse_tier("reasoning\ntierpublic") is None
+    assert parse_tier("reasoning\nTier: public.") is None
 
 
 def test_parse_tier_final_line_without_the_label_stays_ambiguous():
@@ -162,13 +176,20 @@ def test_parse_tier_final_line_without_the_label_stays_ambiguous():
     assert parse_tier("Some reasoning first.\nfamily") is None
 
 
-def test_parse_tier_final_line_must_be_exactly_one_labeled_token():
+def test_parse_tier_multiple_answer_lines_are_ambiguous():
+    # Sol r1 S1: more than one labeled answer line — above all when they
+    # CONFLICT — is ambiguity, never "last one wins"; #350's guarantee is
+    # that ambiguity always falls to the private default.
+    assert parse_tier("Tier: private\nTier: public") is None
+    assert parse_tier("Tier: public\nTier: public") is None
+    assert parse_tier("Tier: private\nsome hedging\nTier: public") is None
+
+
+def test_parse_tier_answer_line_must_be_exactly_one_token_and_final():
     assert parse_tier("reasoning\nTier: family or private") is None
     assert parse_tier("reasoning\nTier: public would be wrong") is None
-    # The label line must be FINAL — trailing prose voids it.
+    # The answer line must be FINAL — trailing prose voids it.
     assert parse_tier("Tier: public\nbut on reflection it is private") is None
-    # Sol r1's separator rule holds on the final-line form too.
-    assert parse_tier("reasoning\ntierpublic") is None
 
 
 def test_prompt_names_all_four_tiers():

@@ -260,17 +260,16 @@ posted to the (group-readable) topic, and a pre-clamp nested child's own record 
 deliberate residuals listed above. The completion tool stays reachable while the rebuild is
 pending, its output being in-flight-turn residual.
 
-**INV-MEM-012**: A tier-classifier reply yields a tier only when the whole reply is exactly one tier token, or when its final non-empty line is exactly a `Tier:`-labeled token; a tier word in prose or ending an unlabeled multi-line reply yields no tier and the item falls to the private default.
+**INV-MEM-012**: A tier-classifier reply yields a tier only when the whole reply is exactly one tier token, or when a multi-line reply's sole literal `Tier: <word>` answer line is its final non-empty line; tier words in prose, decorated or unlabeled lines, and multiple answer lines yield no tier and the item falls to the private default.
 
-Enforced in the reply parser (`parse_tier`): the whole-reply arm full-matches a single
-decorated token rather than searching for the leftmost tier word (the search let a chatty
-reply mis-tag a family fact as public); the final-line arm accepts only the labeled
-answer line the prompt mandates. The id replaces retired MEM 007, whose narrower
-statement the final-line arm falsifies.
+Enforced in `parse_tier`: the whole-reply arm full-matches a single decorated token
+rather than searching for the leftmost tier word (the search let a chatty reply mis-tag
+a family fact as public); the answer-line arm accepts only the sole, literal line the
+prompt mandates. The id replaces retired MEM 007, whose statement the
+answer-line arm falsifies.
 
-What it does not cover: a classifier that *confidently declares the wrong tier* is
-believed — a parser contract, not an accuracy guarantee; the eval set
-owns accuracy.
+What it does not cover: a classifier confidently declaring the wrong tier is believed —
+a parser contract, not an accuracy guarantee; the eval set owns accuracy.
 
 ## Failure behavior
 
@@ -298,8 +297,8 @@ and reset it; only unavailability counts as failure.
 
 **Tier classification fails.** Retention classifies each item's sensitivity with a bounded
 LLM pass; a failed or unparseable classification retries once and then assigns *private*,
-with only a log warning to show for it. "Unparseable" is strict: only a bare tier word or
-a final line of exactly `Tier: <word>` parses. A tier word inside a longer sentence
+with only a log warning to show for it. "Unparseable" is strict: only a bare tier word
+or a sole final `Tier: <word>` line parses. A tier word inside a longer sentence
 ("this is not public; it is family") or ending an unlabeled multi-line reply is ambiguity,
 not an answer, and falls to the private default. The write is not lost — but the fact
 becomes invisible below the highest clearance, which reads as absence on voice and

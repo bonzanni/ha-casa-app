@@ -90,14 +90,20 @@ async def classify_tier(content: str) -> str:
             return tier
         # A garbled reply used to default SILENTLY — indistinguishable from a
         # correct ``private`` classification when auditing tiering accuracy.
-        # #497: length alone made the failure undiagnosable (the raw replies
-        # were never captured); log a bounded head of the reply too. The
-        # snippet is the CLASSIFIER'S words, may paraphrase the item, and goes
-        # through the app's redaction pipeline like every other log line.
+        # #497: length alone made the failure undiagnosable, but the reply
+        # TEXT must never reach the logs (review r1, Sol+Terra): the
+        # classifier's words paraphrase the retained item, and this module's
+        # own doctrine is leak-safety. Log bounded STRUCTURAL metadata only —
+        # enough to tell "verbose prose, no answer line" from "answer line
+        # present but malformed" without carrying content.
+        lines = [ln for ln in reply.splitlines() if ln.strip()]
+        has_label = any(
+            ln.strip().lower().startswith("tier:") for ln in lines)
         logger.warning(
-            "tier classification reply unparseable (%d chars, head=%r); "
-            "defaulting to %s",
-            len(reply), reply[:200], DEFAULT_TIER,
+            "tier classification reply unparseable (%d chars, %d lines, "
+            "tier label %s); defaulting to %s",
+            len(reply), len(lines),
+            "present" if has_label else "absent", DEFAULT_TIER,
         )
         return DEFAULT_TIER
     return DEFAULT_TIER  # pragma: no cover — loop always returns
