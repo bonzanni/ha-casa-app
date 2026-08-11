@@ -447,7 +447,7 @@ def _split_tables(text: str) -> list[tuple[str, object]]:
         j = i
         while j < len(lines):
             stripped = lines[j].rstrip("\r\n").strip()
-            if len(stripped) >= 2 and stripped.startswith("|"):
+            if stripped.startswith("|"):  # even a bare "|" joins the run
                 j += 1
             else:
                 break

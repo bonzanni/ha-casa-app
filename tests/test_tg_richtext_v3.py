@@ -364,3 +364,11 @@ def test_all_empty_data_rows_never_render_empty():
     )
     display, spans = parse_markdown(src)
     assert "This header is deliberately wider than forty characters" in display
+
+
+def test_bare_pipe_line_joins_and_poisons_the_run():
+    # Diff-review r3 (Sol): a lone "|" is part of the contiguous pipe run
+    # and, lacking a closing border, rejects the whole run as text.
+    display, spans = parse_markdown("| H | V |\n|---|---|\n| a | b |\n|")
+    assert not any(k == "pre" for _, _, k in spans)
+    assert "|---|---|" in display
