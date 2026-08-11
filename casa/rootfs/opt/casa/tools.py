@@ -9964,9 +9964,13 @@ async def specialist_install_commit(args: dict) -> dict:
                      # install recipe wires them in THIS engagement instead of
                      # leaving the first use to hit the requires gate. Names
                      # come from the consented receipt rows (the same rows the
-                     # inspect payload and consent DM enumerate).
+                     # inspect payload and consent DM enumerate). Keyed by the
+                     # SCOPED name (`<slug>.<plugin>`) — the registry identity
+                     # that set_plugin_env_reference / verify_plugin_state
+                     # take for an owned plugin (review r1, Sol+Terra: the
+                     # bare manifest_name returns not_registered there).
                      "required_env_vars": {
-                         row.manifest_name: list(row.env_names)
+                         row.scoped_name: list(row.env_names)
                          for row in receipt.plugins if row.env_names
                      }})
 

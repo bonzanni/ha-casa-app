@@ -1647,9 +1647,10 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
     root_digest = compute_install_root_digest(
         component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
     _inject_fake_receipt(monkeypatch, plugins=(
-        SimpleNamespace(manifest_name="bankfeed",
+        SimpleNamespace(scoped_name="mtg.bankfeed", manifest_name="bankfeed",
                         env_names=("BANKFEED_OP_VAULT",)),
-        SimpleNamespace(manifest_name="mtg", env_names=()),
+        SimpleNamespace(scoped_name="mtg.mtg", manifest_name="mtg",
+                        env_names=()),
     ))
     _stub_bundle_sequencer(monkeypatch)
 
@@ -1671,5 +1672,9 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
     })
     payload = _payload(result)
     assert payload["ok"] is True
+    # Keyed by the SCOPED registry name (review r1): the identity
+    # set_plugin_env_reference / verify_plugin_state take for an owned
+    # plugin — the bare manifest_name is not_registered there. Env-less
+    # plugins omitted.
     assert payload["required_env_vars"] == {
-        "bankfeed": ["BANKFEED_OP_VAULT"]}  # env-less plugins omitted
+        "mtg.bankfeed": ["BANKFEED_OP_VAULT"]}
