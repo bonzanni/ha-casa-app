@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import importlib
 import json
 import logging
 import math
@@ -626,7 +627,9 @@ def _ask_user_validate(args: dict) -> tuple[str | None, list[str] | None, float 
     "ask_user",
     "Ask the operator a multiple-choice question with tappable buttons in "
     "their DM. Two-turn: returns awaiting_user immediately; the answer "
-    "arrives as the user's next message. NOT an authorization mechanism.",
+    "arrives as the user's next message. NOT an authorization mechanism: an "
+    "Approve tapped here commits NO consent, however the question is "
+    "worded — to re-surface a plugin-consent DM use consent_reprompt.",
     ASK_USER_SCHEMA,
 )
 async def ask_user(args: dict) -> dict:
@@ -10576,6 +10579,21 @@ async def plugin_remove(args: dict) -> dict:
         # the spool dir so a later reinstall starts clean instead of inheriting
         # stale results/claims.
         await _remove_plugin_callbacks(core["name"])
+        # #494: retire the plugin's setup obligation + round durably. Without
+        # this, an approval racing this removal could re-arm a `pending`
+        # obligation nothing can ever seal or release (a `pending` row never
+        # decays out of health). Called SYNCHRONOUSLY on the event loop —
+        # never via to_thread — so it serializes with the loop-confined
+        # episode-store writers (consent commit steps, the decision feed); a
+        # threaded retire could interleave a feed's load/save and let the
+        # feed's stale `pending` snapshot overwrite the retirement (Sol
+        # diff-gate r1).
+        try:
+            import plugin_setup_episodes
+            plugin_setup_episodes.retire_for_removed(core["name"])
+        except Exception:  # noqa: BLE001 — teardown must never fail removal
+            logger.warning("plugin_remove: setup-obligation retire failed "
+                           "(%s)", core["name"], exc_info=True)
         return _result(core)
 
 
@@ -10803,6 +10821,118 @@ async def event_ack_revoke(args: dict) -> dict:
             "revoked": len(removed),
             "pairs": pairs,
         })
+
+
+@tool(
+    "consent_reprompt",
+    "Re-issue the operator's pending plugin-consent DM keyboards (trigger, "
+    "callback, and event consents) whose original prompt expired or was "
+    "missed. This is the ONLY way to re-surface a consent on demand — a "
+    "question asked any other way (ask_user, an engagement ask) commits "
+    "nothing however it is answered. Posts nothing for consents the "
+    "operator explicitly DENIED (those re-prompt only on the next plugin "
+    "mutation or casa_reload) and reports each pending consent's outcome.",
+    {"type": "object", "properties": {}},
+)
+async def consent_reprompt(args: dict) -> dict:
+    """#494 — the committing recovery for a missed/expired consent DM.
+
+    Prompt-only by design (design rounds 2–4): each kind's
+    ``reprompt_pending`` runs under its own reconcile lock but performs NO
+    reconcile — no overlay swap, no setup-round sealing or re-arming — so an
+    on-demand call can never reopen a setup-round member its own denial
+    filter refuses to prompt. Delivery is reported from the keyboards'
+    actual settled post outcomes (``ChallengeHandle.settled_post``), never
+    inferred from pending rows."""
+    async with _PLUGIN_TOOLS_LOCK:
+        import agent as agent_mod
+        runtime = getattr(agent_mod, "active_runtime", None)
+        if runtime is None:
+            return _result({"ok": False, "kind": "runtime_unavailable",
+                            "message": "runtime not ready"})
+        channel_manager = getattr(runtime, "channel_manager", None)
+        channel = channel_manager.get("telegram") if channel_manager else None
+        import trigger_consent
+        if channel is None or trigger_consent.operator_identity(channel) is None:
+            return _result({
+                "ok": False, "kind": "dm_unreachable",
+                "message": ("no operator DM is reachable — a consent "
+                            "keyboard cannot be posted"),
+            })
+        report: list = []
+        for mod_name in ("trigger_reconcile", "callback_reconcile",
+                         "event_reconcile"):
+            try:
+                mod = importlib.import_module(mod_name)
+                await mod.reprompt_pending(runtime, report=report)
+            except Exception:  # noqa: BLE001 — one kind's failure must not
+                # silence the other kinds' rows
+                logger.exception("consent reprompt failed (%s)", mod_name)
+                report.append({"kind": mod_name.partition("_")[0],
+                               "plugin": "", "name": "", "status": "error"})
+    # Locks released — classify DELIVERY from the settled post outcome
+    # (design r1, Sol+Terra: pending rows are intent, not delivery; a
+    # background post can fail and unregister). Settled outcome FIRST,
+    # `created` second (design r3, Sol: a deduped handle's shared driver can
+    # still fail).
+    rows: list[dict] = []
+    posted = 0
+    attempted = 0
+    reachable = 0
+    for r in report:
+        handle = r.pop("handle", None)
+        if handle is None:
+            rows.append(r)
+            continue
+        attempted += 1
+        if getattr(handle, "refused", None):
+            r["status"] = "refused"
+        else:
+            settled = await handle.settled_post()
+            if settled == "posted":
+                reachable += 1
+                if handle.created:
+                    posted += 1
+                    r["status"] = "posted"
+                else:
+                    r["status"] = "already_pending"
+            else:
+                r["status"] = settled  # delivery_failed | inactive
+        rows.append(r)
+    await asyncio.to_thread(_regenerate_plugin_health, [])
+    # Sol/Terra diff-gate r1: a kind that FAILED (compute raised, a prompt
+    # registration raised, or the whole reprompt_pending call raised) must
+    # never read as "nothing pending" — its pending state could not be
+    # evaluated, so the result is a typed failure even when other kinds'
+    # keyboards posted (their rows still say so).
+    if any(r.get("status") == "error" for r in rows):
+        return _result({
+            "ok": False, "kind": "reprompt_failed", "rows": rows,
+            "message": ("a consent kind could not be re-evaluated — its "
+                        "pending consents (if any) were NOT re-issued; see "
+                        "rows, check logs, and retry"),
+        })
+    if attempted and reachable == 0:
+        return _result({
+            "ok": False, "kind": "delivery_failed", "rows": rows,
+            "message": ("consent keyboards were needed but none could be "
+                        "delivered to the operator DM — retry once the "
+                        "channel recovers"),
+        })
+    denied = [r for r in rows if r.get("status") == "denied"]
+    message = (
+        f"{posted} consent keyboard(s) (re)posted to the operator DM"
+        if posted else
+        ("a consent keyboard is already open in the operator DM"
+         if any(r.get("status") == "already_pending" for r in rows)
+         else "no consent is pending — nothing to re-issue"))
+    if denied:
+        message += (
+            f"; {len(denied)} consent(s) were DENIED by the operator and "
+            "were NOT re-issued — a new plugin mutation or casa_reload "
+            "re-asks")
+    return _result({"ok": True, "reprompted": posted, "rows": rows,
+                    "message": message})
 
 
 @tool(
@@ -11599,6 +11729,7 @@ CASA_TOOLS: tuple = (
     trigger_ack_revoke,            # Release B — plugin-trigger consent off-switch
     callback_ack_revoke,           # plugin-callback consent off-switch
     event_ack_revoke,              # #419 — plugin-event consent off-switch
+    consent_reprompt,              # #494 — on-demand consent-DM re-issue
     plugin_list,
     verify_plugin_state,
     verify_plugin_secrets,

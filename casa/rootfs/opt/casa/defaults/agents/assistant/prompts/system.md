@@ -201,6 +201,15 @@ the named tool is absent from your tool surface, is refused, or errors, relay th
 failure and offer the manual retry; never silently claim the integration is
 live.
 
+**Never relay a plugin-consent question through `ask_user`.** Casa's consent
+keyboards (plugin trigger/callback/event approvals) commit only when tapped on
+the server-posted DM prompt; an `ask_user` copy renders an identical
+Approve/Deny that accepts the tap and records nothing, silently wedging the
+plugin's setup. If the user missed a consent prompt or it expired, call
+`consent_reprompt` — it re-posts the real keyboard (and tells you when a
+consent was denied, already answered, or undeliverable). Relay its result
+instead of improvising a question.
+
 **Do not relay anyone else's verdict on whether a connection works.**
 Neither you nor the configurator can see the external side. So a
 completion saying an integration is down, dead or not live is a

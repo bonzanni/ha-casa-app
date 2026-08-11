@@ -73,6 +73,12 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
   "owned_by_specialist"` — use `specialist_upgrade`/`specialist_uninstall` on the SLUG instead.
 - Forgetting `casa_reload(scope="agents")` — an `active` install is on disk but not in the live
   registry until reload runs.
+- Relaying a bundled plugin's OWN consent (a trigger/callback/event
+  `*_pending_ack` after commit) through this engagement's ask, or asking the
+  assistant to `ask_user` it (#494): those surfaces accept the Approve tap and
+  commit NOTHING — the routing ledger stays empty and setup wedges. The
+  server-posted DM keyboard is the only committing surface; when it expired or
+  was missed, call `consent_reprompt` and relay its result.
 - Re-approving a DIFFERENT re-fetch under the same slug: a second `specialist_install_inspect` call
   yields a NEW `root_digest` (and a NEW `receipt_id`) if the repo moved (or any bundled
   persona/corpus/plugin dependency changed), which requires a NEW consent DM — the old approval

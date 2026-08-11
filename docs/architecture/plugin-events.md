@@ -265,7 +265,9 @@ malformed entry darkens the whole block.
 `emitter`/`event` are omitted — from the published map before deleting its ack record,
 under the same dispatch-admission lock the pre-send gate uses, so no dispatch can be
 admitted for it once the call returns. A later re-approval re-consents; the consent DM
-re-prompts on the next reconcile.
+re-prompts on the next reconcile, or on demand via the `consent_reprompt` tool — the
+prompt-only re-issue shared by all three consent kinds (documented with the callback
+facility), which skips subscriptions the operator explicitly denied.
 
 **Explicitly out of scope** (future hardening, not present today): casa-brokered emission
 (nothing yet lets casa compose or filter an emission on its way through), per-plugin

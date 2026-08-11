@@ -95,6 +95,18 @@ dispatches its own turn to one of them; the operator hears the setup outcome in
 a separate message. The `plugin_add` result reports the declared `setup_tool` so
 you can say what is queued.
 
+**A trigger/callback/event consent DM that expired or was missed is re-issued
+ONLY by `consent_reprompt`** (#494). The server-posted DM keyboard is the sole
+surface whose Approve commits; a consent question relayed through an ask (this
+engagement's ask facility, or the assistant's `ask_user`) renders an identical
+Approve/Deny, accepts the tap, acks it — and commits NOTHING, wedging setup
+behind a consent the operator believes they gave. So NEVER re-ask a consent
+yourself: when health shows `*_pending_ack` and no keyboard is live, call
+`consent_reprompt` and relay its result. It reports consents the operator
+explicitly DENIED without re-asking them (a new mutation or `casa_reload`
+re-asks) and fails typed (`delivery_failed`) when no keyboard could actually
+be delivered — do not report success it does not claim.
+
 So: emit NO `next_steps` entry for setup, do not ask an agent to run it, and
 do not ask the operator to. Your completion `text` says that setup is queued
 and that its own result is what to go on. Make no claim of your

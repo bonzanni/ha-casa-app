@@ -123,7 +123,25 @@ def prompt_trigger_consent(
         # exception here is swallowed+logged by the callback; ``acked`` stays
         # absent and the finish hook edits the internal-error text — a
         # consent that failed to persist must never activate a route.
+        import consent_denials
+        if idx != 0:
+            # #494: latest decision is a Deny — commit-ordered record so the
+            # on-demand re-prompt path never nags past it (expiry records
+            # nothing; the finish hook owns that path).
+            consent_denials.record(consent_denials.key("trigger", identity))
         if idx == 0:
+            consent_denials.clear(consent_denials.key("trigger", identity))
+            # #494: re-arm a refused setup obligation BEFORE persisting the
+            # ack — the order is the crash contract (rearm_refused_sync). A
+            # FAILED required re-arm aborts the whole commit (coordinator
+            # swallows the raise, ``acked`` stays absent → internal-error
+            # text): recording the ack anyway would recreate the no-exit
+            # refused-forever window (Sol diff-gate r2).
+            import plugin_setup_episodes
+            if not plugin_setup_episodes.rearm_refused_sync(
+                    plugin=plugin, artifact_id=artifact_id):
+                raise RuntimeError(
+                    "pre-ack setup re-arm failed — consent not recorded")
             acks.record(identity=identity, plugin=plugin,
                         artifact_id=artifact_id, effective=effective,
                         target=target, auth=auth)

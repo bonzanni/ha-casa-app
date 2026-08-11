@@ -17,6 +17,8 @@
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_consent.py
   doc: architecture/callbacks.md
+- item: casa/rootfs/opt/casa/consent_denials.py
+  doc: architecture/tools-interface.md
 - item: casa/rootfs/opt/casa/callback_episodes.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_http.py
@@ -334,6 +336,8 @@
 - item: tool:cleanup_engagement_topics
   doc: architecture/tools-interface.md
 - item: tool:config_git_commit
+  doc: architecture/tools-interface.md
+- item: tool:consent_reprompt
   doc: architecture/tools-interface.md
 - item: tool:config_trigger_upsert
   doc: architecture/triggers.md
