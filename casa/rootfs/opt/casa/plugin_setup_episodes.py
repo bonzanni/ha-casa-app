@@ -683,7 +683,7 @@ def retire_for_removed(plugin: str) -> None:
         logger.exception("setup obligation retire failed (plugin=%s)", plugin)
 
 
-def rearm_refused_sync(*, plugin: str, artifact_id: str) -> None:
+def rearm_refused_sync(*, plugin: str, artifact_id: str) -> bool:
     """#494 (Sol diff-gate r1): the approve-commit's re-arm, as its own
     yield-free step run BEFORE the ack is persisted. The re-arm and the ack
     live in different files, so their order is the crash contract:
@@ -698,13 +698,21 @@ def rearm_refused_sync(*, plugin: str, artifact_id: str) -> None:
 
     Re-arming AFTER the ack had a window with no exit: ack durable, obligation
     still ``refused``, and ``ensure_obligation`` unable to re-arm because no
-    consent is pending anymore. Never raises."""
+    consent is pending anymore.
+
+    Returns True when nothing was required or the required re-arm is durable;
+    False ONLY when a REQUIRED re-arm failed to persist (Sol diff-gate r2) —
+    the caller must then ABORT the commit before the ack write: proceeding
+    would recreate exactly the no-exit window above (ack durable, obligation
+    refused, no pending consent left to re-arm through). Never raises."""
     try:
         data = _load()
         if _rearm_refused_locked(data, plugin, artifact_id):
             _save(data)
+        return True
     except Exception:  # noqa: BLE001 — commit callback must never see a raise
         logger.exception("pre-ack re-arm failed (plugin=%s)", plugin)
+        return False
 
 
 def record_approval_sync(*, plugin: str, artifact_id: str, identity: str,

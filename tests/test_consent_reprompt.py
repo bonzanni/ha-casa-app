@@ -567,7 +567,7 @@ def test_rearm_runs_before_ack_persist(tmp_path, episodes_store, monkeypatch):
     coord = _CaptureCoordinator()
     seq = []
     monkeypatch.setattr(pse, "rearm_refused_sync",
-                        lambda **kw: seq.append("rearm"))
+                        lambda **kw: (seq.append("rearm"), True)[1])
 
     class _SeqAcks:
         def record(self, **kw):
@@ -596,7 +596,7 @@ def test_trigger_rearm_runs_before_ack_persist(tmp_path, episodes_store,
     coord = _CaptureCoordinator()
     seq = []
     monkeypatch.setattr(pse, "rearm_refused_sync",
-                        lambda **kw: seq.append("rearm"))
+                        lambda **kw: (seq.append("rearm"), True)[1])
 
     class _SeqAcks:
         def record(self, **kw):
@@ -613,6 +613,40 @@ def test_trigger_rearm_runs_before_ack_persist(tmp_path, episodes_store,
     hook = _commit_hook_for_callback(coord.calls)
     hook(0, {})
     assert seq[:2] == ["rearm", "ack"]
+
+
+def test_failed_required_rearm_aborts_the_commit(tmp_path, episodes_store,
+                                                 monkeypatch):
+    """Sol diff r2: a REQUIRED re-arm whose save fails must abort the commit
+    BEFORE the ack write — recording the ack anyway recreates the no-exit
+    refused-forever window. The raise lands in the coordinator's documented
+    swallow; `acked` stays absent, so the finish hook shows internal-error."""
+    import callback_consent
+    # A refused row makes the re-arm REQUIRED; the failing save fails it.
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    data = pse._load()
+    pse._row_for(data, "gmail").update({"status": "refused"})
+    pse._save(data)
+    monkeypatch.setattr(pse, "_save",
+                        lambda d: (_ for _ in ()).throw(OSError("disk")))
+    assert pse.rearm_refused_sync(plugin="gmail", artifact_id="art-1") is False
+
+    coord = _CaptureCoordinator()
+    acks = CallbackAckStore(path=tmp_path / "acks.json")
+    effective = "plg-gmail--authorize"
+    digest = declaration_digest({"declared": "authorize",
+                                 "effective": effective})
+    callback_consent.prompt_callback_consent(
+        coordinator=coord, channel=_FakeTelegram(), chat_id=100,
+        operator_id=100, plugin="gmail", artifact_id="art-1",
+        declared="authorize", effective=effective,
+        declaration_digest=digest, acks=acks)
+    hook = _commit_hook_for_callback(coord.calls)
+    meta = {}
+    with pytest.raises(RuntimeError):
+        hook(0, meta)
+    assert "acked" not in meta
+    assert acks.get(ack_identity("gmail", effective, digest)) is None
 
 
 def test_rearm_refused_sync_rearms_durably(episodes_store):
