@@ -342,3 +342,25 @@ def test_odd_backslash_pipe_still_cell_content():
     display, spans = parse_markdown("| a\\|b | c |\n|---|---|\n| d | e |")
     assert display == "| a|b | c |\n| d   | e |"
     assert spans == [(0, 23, "pre")]
+
+
+# --------------------------------------------------------------------------
+# Diff-review round 2 red cases (Sol, reproduced)
+# --------------------------------------------------------------------------
+
+def test_escaped_border_row_rejects_whole_run():
+    # A pipe-starting row without an unescaped closing border poisons the
+    # WHOLE contiguous pipe run — no valid-prefix table may form from it.
+    display, spans = parse_markdown("| H | V |\n|---|---|\n| a | b\\|")
+    assert not any(k == "pre" for _, _, k in spans)
+    assert "|---|---|" in display
+
+
+def test_all_empty_data_rows_never_render_empty():
+    src = (
+        "| This header is deliberately wider than forty characters | B |\n"
+        "|---|---|\n"
+        "|   |   |"
+    )
+    display, spans = parse_markdown(src)
+    assert "This header is deliberately wider than forty characters" in display

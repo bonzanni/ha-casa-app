@@ -431,29 +431,41 @@ def _split_tables(text: str) -> list[tuple[str, object]]:
             blocks.append(("text", "".join(text_buf)))
             text_buf.clear()
 
+    def bordered(stripped: str) -> bool:
+        return (
+            len(stripped) >= 2
+            and stripped.endswith("|")
+            # a closing border is escaped only under ODD backslash parity
+            and _backslash_run_before(stripped, len(stripped) - 1) % 2 == 0
+        )
+
     i = 0
     while i < len(lines):
+        # The candidate group is the run of CONSECUTIVE pipe-starting lines;
+        # one row without an unescaped closing border poisons the WHOLE run
+        # (diff-review round 2: no valid-prefix table may form from it).
         j = i
         while j < len(lines):
             stripped = lines[j].rstrip("\r\n").strip()
-            if (
-                len(stripped) >= 2
-                and stripped.startswith("|")
-                and stripped.endswith("|")
-                # a closing border is escaped only under ODD backslash parity
-                and _backslash_run_before(stripped, len(stripped) - 1) % 2 == 0
-            ):
+            if len(stripped) >= 2 and stripped.startswith("|"):
                 j += 1
             else:
                 break
         rows = [lines[k].rstrip("\r\n").strip() for k in range(i, j)]
-        shape = _table_shape(rows) if j - i >= 2 else None
+        shape = (
+            _table_shape(rows)
+            if j - i >= 2 and all(bordered(r) for r in rows)
+            else None
+        )
         if shape:
             flush()
             blocks.append(("table", _render_table(rows, shape == "sep")))
             ending = lines[j - 1][len(lines[j - 1].rstrip("\r\n")):]
             if ending:
                 text_buf.append(ending)
+            i = j
+        elif j > i:
+            text_buf.extend(lines[i:j])  # rejected run stays text, whole
             i = j
         else:
             text_buf.append(lines[i])
@@ -512,6 +524,9 @@ def _render_table(
     header_ok = (
         separatored
         and data
+        # >= 1 non-empty rendered value, or the stanza would emit an empty
+        # message (diff-review round 2)
+        and any(v[0].strip() for row in data for v in row)
         and all(h[0].strip() for h in header)
         and not any(
             k.startswith(_LINK_KIND) for _, sp in header for _, _, k in sp
