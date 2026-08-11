@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.177.0] - 2026-08-11
+
+### Fixed
+
+- **Memory sensitivity tiers stopped falling to `private` when the model
+  agrees with itself.** The bundled model's most common reply to the
+  tier-classification prompt turned out to obey both prompt instructions at
+  once — the bare tier word *and* the mandated final `Tier: <word>` line.
+  The 0.176.0 parser treated that earlier answer-shaped line as ambiguity
+  and defaulted the item to `private`, which in practice re-created the
+  original #497 blindness for most retained facts. The parser now accepts
+  an earlier answer line exactly when it names the *same* tier as the final
+  line; genuine conflicts, prose-buried tier words and unlabeled multi-line
+  replies still fall to `private`. The classifier also gets real turn
+  headroom (the cap is a runaway backstop now, not a budget) with its
+  turns made genuinely inert — no tools, no subagents — so "maximum number
+  of turns" exhaustion no longer eats classifications either. (#497)
+
 ## [0.176.0] - 2026-08-11
 
 ### Fixed
