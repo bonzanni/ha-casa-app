@@ -86,15 +86,52 @@ async def test_classify_verbose_reply_with_labeled_final_line_parses(monkeypatch
         "the family flies to Lisbon on the 14th") == "friends"
 
 
-async def test_classify_allows_a_spare_turn_for_the_reply(monkeypatch):
-    """#497: 1 of 8 measured failures was the SDK erroring with "Reached
-    maximum number of turns (1)" and returning no text at all. With
-    allowed_tools=[] a second turn can only finish emitting text, so the
-    classifier grants exactly one spare turn."""
+async def test_classify_grants_turn_headroom_for_the_reply(monkeypatch):
+    """#497 reopen: 0.174.0 hit "Reached maximum number of turns (1)";
+    0.176.0's single spare turn still hit "Reached maximum number of turns
+    (2)" live (2 of 24 retentions, retries exhausted too, both items lost to
+    the private default). Operator ruling 2026-08-11: on internal background
+    calls the turn cap is a runaway backstop, never an efficiency device —
+    exhaustion must be rare and terminal, not routine. With allowed_tools=[]
+    the spare turns are inert (nothing agentic to do but finish emitting
+    text), so the floor pinned here is generous."""
     captured: dict = {}
     _install_fake_sdk(monkeypatch, reply="family", capture=captured)
     await tier_classifier.classify_tier("the alarm code is 4712")
-    assert captured.get("max_turns") == 2
+    assert captured.get("max_turns") >= 8
+
+
+async def test_classify_turns_are_genuinely_inert(monkeypatch):
+    """Sol r1 S1 (#497 reopen review): ``allowed_tools=[]`` alone is only
+    auto-approval — built-in tools stay reachable and acceptEdits would
+    auto-approve edits, so generous turn headroom would hand the classifier
+    agentic rounds over retained-item text. Built-ins must be REMOVED
+    (``tools=[]``), with Agent/Task denied (they bypass ``allowed_tools``)
+    and Bash belt-and-braces — the restricted-webhook containment shape."""
+    captured: dict = {}
+    _install_fake_sdk(monkeypatch, reply="family", capture=captured)
+    await tier_classifier.classify_tier("the alarm code is 4712")
+    assert captured.get("tools") == []
+    assert captured.get("allowed_tools") == []
+    assert set(captured.get("disallowed_tools") or ()) >= {"Bash", "Task", "Agent"}
+
+
+async def test_classify_word_plus_answer_line_parses(monkeypatch):
+    """#497 reopen end-to-end: the dominant live failure shape on v0.176.0 —
+    the model emits the bare tier word AND the mandated answer line
+    ("private\\nTier: private\\n", 22 chars, 2 lines, label present; 8 of 24
+    retentions in one session). Agreement must classify, not default."""
+    _install_fake_sdk(monkeypatch, reply="private\nTier: private\n")
+    assert await tier_classifier.classify_tier(
+        "Nicola's salary is 5000 EUR") == "private"
+
+
+async def test_classify_conflicting_answer_lines_still_default(monkeypatch):
+    # The agreement carve-out must not reopen "last one wins": a conflicting
+    # prior answer stays ambiguous and falls to the leak-safe default.
+    _install_fake_sdk(monkeypatch, reply="private\nTier: public")
+    assert await tier_classifier.classify_tier(
+        "Nicola's salary is 5000 EUR") == DEFAULT_TIER
 
 
 async def test_classify_defaults_private_on_error(monkeypatch):

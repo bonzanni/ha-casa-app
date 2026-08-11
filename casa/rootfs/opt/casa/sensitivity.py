@@ -147,11 +147,23 @@ _TIER_ANSWER_LINE_RE = re.compile(
 # ("Tier: private." then "Tier: public") is a conflict the exact-match count
 # missed — the strict answer regex ignores it, silently letting the later
 # line win. Any earlier line that so much as OPENS with a Tier label makes
-# the reply ambiguous. The label boundary is explicit (r3, Sol S1): ``\b``
+# the reply suspect. The label boundary is explicit (r3, Sol S1): ``\b``
 # treats ``_`` as a word character, so "_Tier_: private" slipped past it —
 # anything in ``[\W_]`` (or end-of-line) terminates the label, while a
 # letter/digit ("Tiering …") keeps prose out of scope. Lines merely
 # CONTAINING "tier" are not labels.
+#
+# #497 reopen (2026-08-11, measured live on v0.176.0): the r3 rule treated
+# ANY prior answer-shaped line as ambiguity — but the live model's dominant
+# reply shape obeys BOTH prompt instructions at once, emitting the bare tier
+# word AND the mandated final answer line ("private\nTier: private", the
+# 22-char/2-line/"tier label present" WARN, 8 of 24 retentions in one
+# session). Agreement is not ambiguity: an earlier answer-shaped line is now
+# tolerated exactly when it resolves (via _TIER_REPLY_RE) to the SAME tier
+# as the final answer line. A conflicting prior answer ("private" then
+# "Tier: public") and a label-opening line that carries no extractable
+# single token ("Tier: family or private", "tier assignment below:") remain
+# ambiguity — there is still never a "last one wins".
 _TIER_LABELISH_RE = re.compile(r"^[\W_]*tier(?:[\W_]|$)", re.IGNORECASE)
 
 
@@ -161,13 +173,15 @@ def parse_tier(text: str | None) -> str | None:
     that is exactly one tier token (modulo an optional "Tier:" label and
     surrounding punctuation / whitespace), or (b) the reply is multi-line,
     its FINAL non-empty line is the literal ``Tier: <word>`` answer line
-    (#497 — the declared-answer line the prompt mandates), and no earlier
-    line is a tier token or opens with a Tier label (reviews r2/r3: a
-    malformed, bare, or conflicting prior answer line is ambiguity). None otherwise — including when tier words
-    appear inside a longer sentence (#350), an unlabeled multi-line reply,
-    or a decorated token spread across lines (review r2: the whole-reply
-    arm's separator classes must never span newlines). The caller applies
-    DEFAULT_TIER on None."""
+    (#497 — the declared-answer line the prompt mandates), and every earlier
+    line that is itself answer-shaped (a tier token or a Tier-label opener)
+    resolves to that SAME tier (#497 reopen: agreement is not ambiguity;
+    reviews r2/r3 preserved: a conflicting or unresolvable prior answer
+    line is ambiguity, never "last one wins"). None otherwise — including
+    when tier words appear inside a longer sentence (#350), an unlabeled
+    multi-line reply, or a decorated token spread across lines (review r2:
+    the whole-reply arm's separator classes must never span newlines). The
+    caller applies DEFAULT_TIER on None."""
     if not isinstance(text, str):
         return None
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -179,15 +193,22 @@ def parse_tier(text: str | None) -> str | None:
     m = _TIER_ANSWER_LINE_RE.match(lines[-1])
     if not m:
         return None
-    # Reject when ANY earlier line is itself a tier answer in either accepted
-    # shape: label-opening ("Tier: private.", "_Tier_: private") or a bare /
-    # decorated tier token ("private", "**private**") — review r3, Terra S1:
-    # a prior answer contradicted by the final line is ambiguity, never
-    # "last one wins".
-    if any(_TIER_LABELISH_RE.match(ln) or _TIER_REPLY_RE.match(ln)
-           for ln in lines[:-1]):
-        return None
-    return m.group(1).lower()
+    tier = m.group(1).lower()
+    # Earlier answer-shaped lines — label-opening ("Tier: private.",
+    # "_Tier_: private") or a bare / decorated tier token ("private",
+    # "**private**") — must AGREE with the final answer line (#497 reopen:
+    # the live model's dominant shape is the word plus the mandated line).
+    # A prior answer resolving to a DIFFERENT tier, or a label-opening line
+    # with no extractable single token, is ambiguity (reviews r2/r3) and
+    # falls to the caller's private default.
+    for ln in lines[:-1]:
+        prior = _TIER_REPLY_RE.match(ln)
+        if prior is not None:
+            if prior.group(1).lower() != tier:
+                return None
+        elif _TIER_LABELISH_RE.match(ln):
+            return None
+    return tier
 
 
 # Classification prompt — converged with the maintainer via the eval session (2026-06-03).
