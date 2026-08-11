@@ -649,6 +649,40 @@ def test_failed_required_rearm_aborts_the_commit(tmp_path, episodes_store,
     assert acks.get(ack_identity("gmail", effective, digest)) is None
 
 
+def test_failed_required_rearm_aborts_the_trigger_commit(
+        tmp_path, episodes_store, monkeypatch):
+    """Terra diff r3: the trigger hook carries the identical guard — pin it
+    independently so a trigger-side revert cannot hide behind the callback
+    test."""
+    import trigger_consent
+    from trigger_acks import TriggerAckStore
+    import plugin_triggers
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    data = pse._load()
+    pse._row_for(data, "gmail").update({"status": "refused"})
+    pse._save(data)
+    monkeypatch.setattr(pse, "_save",
+                        lambda d: (_ for _ in ()).throw(OSError("disk")))
+
+    coord = _CaptureCoordinator()
+    acks = TriggerAckStore(path=tmp_path / "t.json")
+    auth = {"mode": "none"}
+    trigger_consent.prompt_trigger_consent(
+        coordinator=coord, channel=_FakeTelegram(), chat_id=100,
+        operator_id=100, plugin="gmail", artifact_id="art-1",
+        effective="plg-gmail--hook", target="resident:assistant",
+        auth=auth, acks=acks)
+    hook = _commit_hook_for_callback(coord.calls)
+    meta = {}
+    with pytest.raises(RuntimeError):
+        hook(0, meta)
+    assert "acked" not in meta
+    ident = plugin_triggers.ack_identity(
+        plugin="gmail", artifact_id="art-1", effective="plg-gmail--hook",
+        target="resident:assistant", auth=auth)
+    assert acks.get(ident) is None
+
+
 def test_rearm_refused_sync_rearms_durably(episodes_store):
     assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
     data = pse._load()
