@@ -78,6 +78,19 @@ permission format — but actionability is bounded by process memory: a callback
 while its request lives in the current process's broker, so buttons from before a restart
 are rejected as expired however well their format parses.
 
+**Rendering recognizes a small, deliberate grammar, and fails literal.** Agent output is
+markdown-ish; the rich renderer recognizes fenced code, inline code, asterisk bold/italic,
+ATX headings, labelled `[text](url)` links (http/https only — any other scheme leaves its
+whole line untouched), and confident markdown tables — nothing else. Block structure
+(fences, table runs) is segmented by casa's own line-based scanner, so an unclosed fence
+keeps its remainder byte-for-byte; inline semantics run through a CommonMark engine one
+line at a time, with the deliberate exception that underscores are never emphasis (tool
+and identifier names carry them). A confident table is re-emitted from its parsed cells
+in one of three forms — a padded monospace box when narrow and link-free, per-record
+`Header: value` stanzas when wide or link-bearing under a real header, or plain rows with
+their formatting intact otherwise — chosen so cell content and link destinations are never
+silently dropped. Anything ambiguous stays literal rather than rendering wrongly.
+
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
 paginator, the plain splitter and streaming edits, and the authorization-challenge size gate

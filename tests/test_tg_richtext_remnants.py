@@ -100,16 +100,19 @@ def test_unmatched_emphasis_keeps_code_entity():
     assert not any(k in ("bold", "italic") for _, _, k in spans)
 
 
-def test_odd_backtick_line_is_fully_literal():
-    # D2 (Sol+Terra ACK): odd isolated-backtick count ⇒ the ENTIRE line is
-    # inline-literal — no code, no emphasis, no heading transformation
-    src = "a ` b **bold**"
-    assert parse_markdown(src) == (src, [])
+def test_odd_backtick_no_longer_poisons_line():
+    # v3 flip (CommonMark): an unmatched backtick is literal by itself; the
+    # rest of the line still renders (was: whole line inline-literal).
+    display, spans = parse_markdown("a ` b **bold**")
+    assert display == "a ` b bold"
+    assert spans == [(6, 10, "bold")]
 
 
-def test_odd_backtick_heading_line_stays_literal():
-    src = "## a ` b"
-    assert parse_markdown(src) == (src, [])
+def test_odd_backtick_heading_line_now_renders():
+    # v3 flip: the heading renders; the unmatched backtick stays literal.
+    display, spans = parse_markdown("## a ` b")
+    assert display == "a ` b"
+    assert spans == [(0, 5, "bold")]
 
 
 def test_emphasis_is_per_line_scoped():
@@ -123,13 +126,14 @@ def test_emphasis_is_per_line_scoped():
     assert (10, 15, "bold") in spans
 
 
-def test_code_pair_rules_unchanged():
-    # RC1 rework must not regress the fail-literal code rules
+def test_code_pair_rules():
+    # v3: a lone backtick stays literal; pairing never crosses a newline;
+    # double-backtick code renders (CommonMark flip).
     src = "a ` b"
     assert parse_markdown(src) == (src, [])
-    src2 = "before `bad\nclose` after `good`"
-    assert parse_markdown(src2) == (src2, [])
-    assert parse_markdown("``x``") == ("``x``", [])
+    display, spans = parse_markdown("before `bad\nclose` after `good`")
+    assert display.startswith("before `bad\n")  # line 1 untouched
+    assert parse_markdown("``x``") == ("x", [(0, 1, "code")])
 
 
 # --------------------------------------------------------------------------
@@ -203,22 +207,23 @@ def test_seven_hashes_stay_literal():
 # --------------------------------------------------------------------------
 
 def test_plain_table_renders_as_pre():
+    # v3 (#506): reflowed — separator row dropped, cells padded per column.
     src = "before\n| # | Item |\n|---|---|\n| 1 | first |\n| 2 | second |\nafter"
     display, spans = parse_markdown(src)
-    table = "| # | Item |\n|---|---|\n| 1 | first |\n| 2 | second |"
+    table = "| # | Item   |\n| 1 | first  |\n| 2 | second |"
     assert table in display
     s = display.find(table)
     assert (s, s + len(table), "pre") in spans
 
 
-def test_table_with_markers_in_cells_stays_inline():
-    # a cell containing ** or ` would resurrect literal markers inside PRE —
-    # such blocks stay with the inline pass (bold renders, pipes literal)
+def test_table_with_markers_in_cells_reflows_to_pre():
+    # v3 (#506 mode-A fix): markers no longer reject the table — cells are
+    # parsed and re-emitted marker-stripped inside the padded PRE box.
     src = "| # | Item |\n|---|---|\n| 1 | **bold** thing |"
     display, spans = parse_markdown(src)
-    assert not any(k == "pre" for _, _, k in spans)
-    assert "**" not in display                       # inline pass consumed it
-    assert any(k == "bold" for _, _, k in spans)
+    assert any(k == "pre" for _, _, k in spans)
+    assert "**" not in display                       # markers stripped
+    assert "bold thing" in display
 
 
 def test_pipe_lines_without_separator_stay_literal():
