@@ -176,13 +176,30 @@ def test_parse_tier_final_line_without_the_label_stays_ambiguous():
     assert parse_tier("Some reasoning first.\nfamily") is None
 
 
-def test_parse_tier_multiple_answer_lines_are_ambiguous():
-    # Sol r1 S1: more than one labeled answer line — above all when they
-    # CONFLICT — is ambiguity, never "last one wins"; #350's guarantee is
-    # that ambiguity always falls to the private default.
+def test_parse_tier_conflicting_answer_lines_are_ambiguous():
+    # Sol r1 S1: CONFLICTING answer lines are ambiguity, never "last one
+    # wins"; #350's guarantee is that ambiguity always falls to the private
+    # default. (#497 reopen narrowed the rule to conflicts: AGREEING
+    # duplicates parse — see the agreement test below.)
     assert parse_tier("Tier: private\nTier: public") is None
-    assert parse_tier("Tier: public\nTier: public") is None
     assert parse_tier("Tier: private\nsome hedging\nTier: public") is None
+    assert parse_tier("Tier: family\nTier: friends") is None
+
+
+def test_parse_tier_agreeing_prior_answer_lines_parse():
+    # #497 reopen (measured live, v0.176.0, 2026-08-11): the model's dominant
+    # reply shape obeys BOTH prompt instructions at once — the bare tier word
+    # AND the mandated final answer line. 8 of 24 retentions in one session
+    # were this exact 22-char/2-line/"tier label present" shape, each
+    # wrongly defaulting to private. Agreement is not ambiguity.
+    assert parse_tier("private\nTier: private\n") == "private"  # the live 22-char shape
+    assert parse_tier("friends\nTier: friends") == "friends"
+    assert parse_tier("Tier: public\nTier: public") == "public"
+    # Decorated but same-tier prior answers agree too…
+    assert parse_tier("**family**\nTier: family") == "family"
+    assert parse_tier("Tier: private.\nTier: private") == "private"
+    # …and agreement plus interleaved prose still resolves to the one tier.
+    assert parse_tier("public\nA brand name is not personal.\nTier: public") == "public"
 
 
 def test_parse_tier_whole_reply_arm_never_spans_newlines():
@@ -201,11 +218,16 @@ def test_parse_tier_whole_reply_arm_never_spans_newlines():
 def test_parse_tier_malformed_label_line_before_the_answer_is_a_conflict():
     # Review r2 (Sol S1): "Tier: private." fails the strict answer regex, so
     # an exact-match count ignored it and the later line won — a conflicting
-    # answer the user's model DID give. Any earlier line opening with a Tier
-    # label is ambiguity.
+    # answer the user's model DID give. An earlier Tier-label line that
+    # resolves to a DIFFERENT tier, or resolves to no single token at all,
+    # is ambiguity.
     assert parse_tier("Tier: private.\nTier: public") is None
     assert parse_tier("**Tier: private**\nTier: public") is None
     assert parse_tier("tier assignment below:\nTier: public") is None
+    # A hedging label line resolves to NO single token — ambiguity even when
+    # one of its words matches the final line (#497 reopen: agreement is
+    # only ever between RESOLVED single-token answers).
+    assert parse_tier("Tier: family or private\nTier: private") is None
     # r3 (Sol S1): underscores are word chars, so \b missed "_Tier_" —
     # the label boundary must treat [\W_] (or line end) as terminating.
     assert parse_tier("_Tier_: private\nTier: public") is None

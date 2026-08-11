@@ -260,16 +260,16 @@ posted to the (group-readable) topic, and a pre-clamp nested child's own record 
 deliberate residuals listed above. The completion tool stays reachable while the rebuild is
 pending, its output being in-flight-turn residual.
 
-**INV-MEM-012**: A tier-classifier reply yields a tier only when it is a single line holding one (possibly decorated) tier token, or when a multi-line reply's final non-empty line is the literal `Tier: <word>` answer line with no earlier tier-token or Tier-label line; tier words in prose and conflicting answers yield no tier; the item takes the private default.
+**INV-MEM-012**: A tier-classifier reply yields a tier only when it is a single line holding one (possibly decorated) tier token, or when a multi-line reply's final non-empty line is the literal `Tier: <word>` answer line whose earlier tier-token or Tier-label lines all resolve to the same tier; prose tier words, conflicts, and unresolvable labels yield no tier; the item defaults to private.
 
 Enforced in `parse_tier`: the single-line arm full-matches one decorated token, never
-searching for the leftmost tier word and never spanning lines; the answer-line arm
-accepts only the literal final line the prompt mandates, with no earlier answer-like
-line. The id replaces retired MEM 007, whose statement the
-answer-line arm falsifies.
+searching leftmost and never spanning lines; the answer-line arm accepts only the
+literal final line the prompt mandates, and an earlier answer-like line only when it
+resolves to the same tier — never "last one wins". Replaces retired MEM 007,
+whose statement the answer-line arm falsifies.
 
 What it does not cover: a classifier confidently declaring the wrong tier is believed —
-a parser contract, not an accuracy guarantee; the eval set owns accuracy.
+a parser contract, not accuracy; the eval set owns accuracy.
 
 ## Failure behavior
 
@@ -281,28 +281,27 @@ single connection retry.
 tags, or nothing readable at the caller's clearance. The seam raises `RecallProtocolError`.
 This is deliberately not an empty result.
 
-**No backend is configured.** Recall raises with a reason naming that condition, the overlay
+**No backend is configured.** Recall raises with a reason naming it, the overlay
 comes back empty, and **writes silently succeed without persisting anything**. The write side
 fails quietly here while the read side does not.
 
 **Auto-recall fails.** The turn absorbs it: no memory block is injected and the turn proceeds
-without memory. Repeated failures open a per-agent breaker that skips the attempt entirely.
+without memory. Repeated failures open a per-agent breaker that skips the attempt.
 The model is not told that recall was skipped, so an agent cannot distinguish "no memory
-matched" from "memory was not consulted" — which is precisely why an agent should not assert
-absence from silence.
+matched" from "memory was not consulted" — so an agent should not assert absence from
+silence.
 
 **A recall path fails repeatedly.** A circuit breaker fast-fails subsequent calls with a
 dedicated reason rather than calling the backend. Genuine zero-hit results count as successes
 and reset it; only unavailability counts as failure.
 
-**Tier classification fails.** Retention classifies each item's sensitivity with a bounded
-LLM pass; a backend error retries once; an unparseable reply falls to
-*private*, with only a log warning to show for it. "Unparseable" is strict: only a
-single-line (possibly decorated) tier token or a final `Tier: <word>` line parses. A tier
-word inside a longer sentence ("this is not public; it is family") or an unlabeled
-multi-line reply is ambiguity and takes the private default. The write is not lost — but
-the fact becomes invisible below the highest clearance, which reads as absence on voice
-and friends surfaces.
+**Tier classification fails.** Retention classifies each item with a bounded LLM pass; a backend error retries once; an unparseable reply falls to
+*private* with only a log warning. "Unparseable" is strict: only a
+single-line (possibly decorated) tier token or a final `Tier: <word>` line parses; earlier
+lines carrying the same answer agree. A tier word in prose, an unlabeled multi-line
+reply, or an earlier answer naming a different tier is ambiguity and defaults to
+private. The write is not lost, but the fact
+becomes invisible below the highest clearance — absence on voice and friends surfaces.
 
 **Saving a session fails.** The save is abandoned, its claim is released — including when the
 failure is a cancellation at shutdown — and the entry stays for a later sweep to retry. An

@@ -45,12 +45,26 @@ async def classify_tier(content: str) -> str:
 
     opts = sdk.ClaudeAgentOptions(
         cli_path=CLAUDE_CLI_PATH,
-        # max_turns=2 (#497): on 0.174.0 the runtime sometimes errored with
-        # "Reached maximum number of turns (1)" instead of returning any text
-        # (turn 1 apparently spent on preamble/thinking). One spare turn is
-        # harmless headroom — allowed_tools=[] means there is nothing agentic
-        # a second turn could do except finish emitting text.
-        system_prompt=SENSITIVITY_PROMPT, max_turns=2, allowed_tools=[],
+        # max_turns=8 (#497 reopen + operator ruling 2026-08-11): on 0.174.0
+        # the runtime errored with "Reached maximum number of turns (1)"; the
+        # 0.176.0 fix granted one spare turn and the live session still hit
+        # "Reached maximum number of turns (2)" on 2 of 24 retentions (both
+        # retries also exhausted, so both items defaulted to private). Turn
+        # accounting is the runtime's, not ours, and a missed answer costs
+        # far more than a spare turn — so the cap is sized as a RUNAWAY
+        # BACKSTOP only, never an efficiency device: exhaustion must be a
+        # rare terminal state, not a routine one.
+        #
+        # tools=[] + disallowed Bash/Task/Agent (Sol r1 S1): the turns must
+        # be genuinely inert. ``allowed_tools=[]`` alone is only
+        # auto-approval — built-in tools stay reachable, and acceptEdits
+        # would auto-approve edits — so built-ins are REMOVED outright,
+        # with Agent/Task denied (they bypass allowed_tools) and Bash
+        # belt-and-braces, mirroring the restricted-webhook containment
+        # doctrine (agent.py).
+        system_prompt=SENSITIVITY_PROMPT, max_turns=8,
+        tools=[], allowed_tools=[],
+        disallowed_tools=["Bash", "Task", "Agent"],
         # NOT bypassPermissions: that makes the SDK pass
         # ``--dangerously-skip-permissions`` to the bundled ``claude`` CLI, which
         # refuses to run as root/sudo — and HA add-ons run as root, so the call
