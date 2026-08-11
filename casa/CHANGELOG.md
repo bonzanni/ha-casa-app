@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.176.0] - 2026-08-11
+
+### Fixed
+
+- **Memory sensitivity tiers work again.** Since the bundled model began
+  answering the tier-classification prompt with a short explanation instead
+  of the single word the parser demanded, every remembered fact fell to the
+  fail-safe `private` tier — nothing leaked, but voice and friends-level
+  recall silently went blind to everything retained. The classifier prompt
+  now pins an exact answer format (a final `Tier: <word>` line), the parser
+  accepts precisely that — a tier word buried in prose, a decorated or
+  conflicting answer, still falls to `private` — and the classifier gets a
+  spare model turn for the reply shapes that previously errored out. An
+  unparseable reply now logs its shape (length, line count, whether an
+  answer label was present) without ever logging the reply text. (#497)
+
+### Changed
+
+- **Approval buttons now wait for you.** The Approve/Deny button posted when
+  an agent wants to run a protected tool used to expire after two minutes —
+  fine if you were watching the chat, otherwise a missed window and a whole
+  re-run of the request. It now stays live for ten minutes, the same as
+  consent prompts. The approval you grant is unchanged: still single-use,
+  still bound to the exact action and arguments, still expiring five minutes
+  after it is granted. (#498)
+- **Installing a specialist now sets up its plugins' secrets in the same
+  conversation.** A specialist whose bundled plugin needs configuration
+  values (an API key, a vault name) used to install "successfully" and then
+  refuse its first real action, sending you back for a second configuration
+  session to wire what the installer already knew was needed. The install
+  flow now asks for and wires those values before it reports done, and the
+  install result lists exactly which variables each bundled plugin
+  requires. (#499)
+
 ## [0.175.0] - 2026-08-11
 
 ### Fixed

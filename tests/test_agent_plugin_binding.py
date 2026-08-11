@@ -189,6 +189,13 @@ def test_specialist_options_resolve_with_role(tmp_path, monkeypatch):
                       mcp_servers={"finplug": {}})
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+    # Pin the TIER fallback ('specialist') too: _build_specialist_options
+    # consults the module-global _agent_registry for tier_for_role, and a
+    # previous module on the same xdist worker leaves one bound via
+    # init_tools (a MagicMock registry returns a truthy junk tier, so the
+    # resolve targets '<junk>:finance' and every plugin vanishes — the
+    # release-PR CI failure shape). Reset it like _mcp_registry.
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
     assert opts.plugins == [{"type": "local", "path": str(art)}]
     assert "mcp__plugin_finplug_finplug" in opts.allowed_tools
@@ -208,6 +215,7 @@ def test_specialist_options_withhold_env_unresolved_plugin(tmp_path,
                 mcp_servers={"finplug": {"env": {"K": "${FIN_API_KEY}"}}})
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
     monkeypatch.delenv("FIN_API_KEY", raising=False)
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
     assert opts.plugins == []
@@ -227,6 +235,7 @@ def test_specialist_project_scope_no_longer_dropped(tmp_path, monkeypatch):
     mk_artifact(store, "finplug", e["artifact_id"])
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
     assert len(opts.plugins) == 1                 # NOT dropped
 
@@ -381,6 +390,7 @@ def test_specialist_and_executor_options_inject_plugins_guard(tmp_path,
     mk_artifact(store, "p", e["artifact_id"])
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
 
     def _has_guard(opts):
         pre = (opts.hooks or {}).get("PreToolUse", [])
@@ -569,6 +579,7 @@ def _bankfeed_registry(tmp_path, monkeypatch, targets):
                       extra_manifest=_BANKFEED_CASA)
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
     for var in ("CASA_PLUGIN_BANKFEED_PRIVATE_KEY", "CASA_PLUGIN_BANKFEED_CP_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     # The only var the operator is genuinely expected to supply.
@@ -636,6 +647,7 @@ def test_specialist_options_undeclared_plugin_gets_no_env_overlay(
                 mcp_servers={"finplug": {"env": {"K": "${FIN_API_KEY}"}}})
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
     monkeypatch.setenv("FIN_API_KEY", "resolved")
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
     assert len(opts.plugins) == 1
