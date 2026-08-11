@@ -1,55 +1,71 @@
-"""Fail-literal Markdown → Telegram-entity parser (v2, 2026-07-19 rework).
+"""Fail-literal Markdown → Telegram-entity renderer (v3, 2026-08-12 rework).
 
-Recognizes exactly five constructs and nothing else:
+Hybrid architecture, converged with Sol + Terra over three design rounds:
+
+* BLOCK segmentation is casa's own line-based scanner — fenced code blocks
+  (an UNCLOSED fence keeps its whole remainder byte-literal, bypassing every
+  other pass) and confident table runs. Byte-fidelity doctrine lives here.
+* INLINE semantics run through markdown-it-py (already a casa dependency),
+  invoked PER LINE with a restricted rule set (backticks, escape, emphasis,
+  link). Construct scope stays one line; a fail-literal cutoff never leaks
+  past its line.
+
+Rendered constructs:
   - fenced code blocks  ```` ``` ````            → PRE  (verbatim monospace box)
-  - inline code         `code`                   → CODE (isolated single backticks only)
-  - bold                **bold**                 → BOLD
-  - italic              *italic*                 → ITALIC
+  - inline code         `code` / ``code``        → CODE
+  - bold / italic       **b** / *i*  (asterisks) → BOLD / ITALIC
   - ATX headings        ## Heading               → BOLD line (hashes stripped)
+  - labelled links      [label](https://…)       → TEXT_LINK (#404)
+  - markdown tables     | a | b |                → padded PRE box, per-record
+                                                   stanza, or inline rows (#506)
 
-Asterisks only — underscores are ALWAYS literal (protects ``mcp__tool__names`` and
-snake_case). Emits ``display_text`` with markers removed plus non-crossing spans in
-**display-codepoint** offsets. Anything unclosed / ambiguous / unsupported stays
-byte-for-byte literal. The parser NEVER raises.
+Doctrine (pinned):
+  - Underscores are ALWAYS literal (protects ``mcp__tool__names`` and
+    snake_case): ``_x_`` / ``__x__`` re-emit their markers byte-for-byte.
+  - Link URLs are http(s) only. A line containing a link with any other
+    scheme, an empty label, or image syntax (unescaped ``![``) renders
+    FULLY LITERAL — titles and all (round-3 rule; nothing is dropped).
+  - Bot API nesting: BOLD/ITALIC never contain or intersect CODE or
+    TEXT_LINK — emphasis is SPLIT AROUND those atoms at emission. Inside a
+    link label, inner constructs render as plain text (a link entity never
+    nests another entity). No entity is ever emitted inside PRE.
+  - The parser NEVER raises; anything ambiguous or unsupported degrades to
+    literal text, and any entity-conversion failure degrades to plain.
 
-v2 (converged with Sol + Terra against the 2026-07-19 prod-leak replay)
-replaces the v1 per-code-segment emphasis scan, whose segment-edge flanking
-made emphasis adjacent to inline code unmatchable (the dominant literal-``**``
-leak):
-
-* ONE emphasis scan per LINE with inline-code regions as opaque atoms —
-  delimiters inside code are literal, a code atom is a non-space neighbor for
-  flanking, and pairs may enclose code atoms. Emphasis scope is PER-LINE
-  (intentional v2 compatibility change — bounds the fail-literal cutoff to one
-  line and makes line-boundary page cuts span-safe).
-* A line with an ODD isolated-backtick count is FULLY inline-literal — no
-  code, no emphasis, no heading (ambiguous ⇒ byte-for-byte literal).
-* Bot API nesting rule: bold/italic must NOT contain or intersect CODE/PRE, so
-  emphasis and heading spans are SPLIT AROUND code intervals at emission.
-* ATX headings (CommonMark-ish): 0-3 leading spaces, 1-6 hashes, then
-  whitespace and non-empty content; trailing hash run stripped only when
-  whitespace-separated. Anything else (``##foo``, 7+ hashes, 4-space indent,
-  bare ``##``) stays literal. Never recognized inside fenced PRE.
+Tables (#506): a confident table (separatored, or separator-less with >= 3
+consistent rows — v0.109 shape) is re-emitted from parsed cells (``\\|`` is
+cell content; unescaped pipes split, even inside backticks — GFM rule).
+Three forms, chosen so content and URLs are NEVER dropped: a padded PRE box
+(narrow, link-free), a per-record ``Header: value`` stanza (wide or
+link-bearing, real non-empty link-free header, >= 1 data row), or inline
+rows with entities intact (every remaining case). Ragged runs stay text.
 
 ``render()`` returns one message; ``render_paged()`` is the delivery planner —
 it parses ONCE, cuts the display at preferred boundaries (paragraph → line →
 space → hard), clips/rebases spans per page (a span crossing a cut becomes one
-entity per page; PRE included), and enforces BOTH the 4096 UTF-16-unit length
-budget AND the 100-entity budget per page.
+entity per page; PRE included, and a split TEXT_LINK carries its URL on every
+page), and enforces BOTH the 4096 UTF-16-unit length budget AND the
+100-entity budget per page.
 """
 from __future__ import annotations
 
 import bisect
 import re
 
+from markdown_it import MarkdownIt
 from telegram import MessageEntity
 
 from text_util import utf16_len, utf16_prefix_end
 
-Span = tuple[int, int, str]  # (start, end, kind); kind in pre/code/bold/italic
+# kind: pre/code/bold/italic, or "link:<url>" (URL rides in the kind so the
+# pagination clip/rebase logic carries it across page cuts unchanged).
+Span = tuple[int, int, str]
 
 MAX_LEN = 4096
 MAX_ENTITIES = 100
+
+_LINK_KIND = "link:"
+_TABLE_PRE_MAX_WIDTH = 40  # padded monospace wider than a phone → stanza
 
 _KIND = {
     "pre": MessageEntity.PRE,
@@ -62,6 +78,14 @@ _HEADING_RE = re.compile(
     r"^(?P<indent> {0,3})(?P<hashes>#{1,6})(?P<gap>[ \t]+)(?P<rest>.*)$")
 _TRAILING_HASH_RE = re.compile(r"[ \t]+#+[ \t]*$")
 
+# Inline-only markdown-it: block rules never run (block structure is casa's
+# scanner); image/autolink/entity/linkify/strikethrough stay disabled, so
+# their syntax stays literal. "zero" + this list is the WHOLE grammar.
+_MD = MarkdownIt("zero").enable(
+    ["backticks", "escape", "emphasis", "link",
+     "balance_pairs", "fragments_join"]
+)
+
 
 def parse_markdown(src: str) -> tuple[str, list[Span]]:
     """Return (display_text, spans). Never raises."""
@@ -73,34 +97,44 @@ def parse_markdown(src: str) -> tuple[str, list[Span]]:
             display_parts.append(content)
             spans.append((pos, pos + len(content), "pre"))
             pos += len(content)
-        else:
-            text, inline = _parse_inline(content)
+        elif kind == "literal":
+            display_parts.append(content)
+            pos += len(content)
+        elif kind == "table":
+            text, tspans = content
             display_parts.append(text)
-            for s, e, k in inline:
-                spans.append((pos + s, pos + e, k))
+            spans.extend((pos + s, pos + e, k) for s, e, k in tspans)
+            pos += len(text)
+        else:
+            text, inline = _parse_text(content)
+            display_parts.append(text)
+            spans.extend((pos + s, pos + e, k) for s, e, k in inline)
             pos += len(text)
     spans.sort(key=lambda x: (x[0], -x[1], x[2]))
     return "".join(display_parts), spans
 
 
-def _split_blocks(src: str) -> list[tuple[str, str]]:
+def _split_blocks(src: str):
     """Fence split, then confident-table split inside the text blocks."""
-    blocks: list[tuple[str, str]] = []
+    blocks = []
     for kind, content in _split_fenced(src):
-        if kind == "pre":
-            blocks.append((kind, content))
-        else:
+        if kind == "text":
             blocks.extend(_split_tables(content))
+        else:
+            blocks.append((kind, content))
     return blocks
 
 
 def _split_fenced(src: str) -> list[tuple[str, str]]:
-    """Split into ('pre', inner) and ('text', chunk) blocks, line-based.
+    """Split into ('pre', inner), ('literal', chunk) and ('text', chunk)
+    blocks, line-based.
 
     A fence opens on a line whose stripped text is ``` optionally followed by a
     language token (no spaces, no backticks) and closes on a line whose stripped
-    text is exactly ```. An unclosed fence keeps the opener and remainder literal.
-    Separator newlines are preserved as ordinary text, never part of the PRE span.
+    text is exactly ```. An UNCLOSED fence keeps the opener and remainder as a
+    'literal' block — byte-for-byte, and exempt from table detection and the
+    inline pass (round-3 rule). Separator newlines are preserved as ordinary
+    text, never part of the PRE span.
     """
     lines = src.splitlines(keepends=True)
     blocks: list[tuple[str, str]] = []
@@ -141,8 +175,9 @@ def _split_fenced(src: str) -> list[tuple[str, str]]:
         while close < len(lines) and body(lines[close]).strip() != "```":
             close += 1
         if close == len(lines):
-            text_buf.extend(lines[i:])  # unclosed → literal remainder
-            break
+            flush_text()  # unclosed → the whole remainder is literal
+            blocks.append(("literal", "".join(lines[i:])))
+            return blocks
         flush_text()
         blocks.append(("pre", strip_one_eol("".join(lines[i + 1:close]))))
         if close + 1 < len(lines):
@@ -153,61 +188,242 @@ def _split_fenced(src: str) -> list[tuple[str, str]]:
     return blocks
 
 
+# ---------------------------------------------------------------------------
+# Inline pass: one markdown-it parseInline per line.
+# ---------------------------------------------------------------------------
+
+
+def _backslash_run_before(s: str, i: int) -> int:
+    j = i
+    while j > 0 and s[j - 1] == "\\":
+        j -= 1
+    return i - j
+
+
+def _has_unescaped_image_marker(body: str) -> bool:
+    # Escaped only under ODD backslash parity: in "\\![…" the backslashes
+    # pair to a literal backslash and the image marker is live (diff-review
+    # round 1, Sol + Terra).
+    i = body.find("![")
+    while i != -1:
+        if _backslash_run_before(body, i) % 2 == 0:
+            return True
+        i = body.find("![", i + 1)
+    return False
+
+
+def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
+    """Render ONE line's inline constructs → (display, spans), or ``None``
+    when the line must stay fully literal (image syntax, a link with a
+    disallowed scheme or an empty label, or any walk surprise). Spans are in
+    line-local display coordinates. Never raises."""
+    if not body:
+        return body, []
+    if _has_unescaped_image_marker(body):
+        return None
+    try:
+        tokens = _MD.parseInline(body, {})
+        children = tokens[0].children if tokens else None
+    except Exception:  # noqa: BLE001 — fail-literal, never raise
+        return None
+    if children is None:
+        return None
+
+    out: list[str] = []
+    n = 0  # display cursor
+    emph_stack: list[tuple[str | None, int]] = []
+    link_stack: list[tuple[int, str]] = []
+    code_spans: list[tuple[int, int]] = []
+    link_spans: list[Span] = []
+    emph_spans: list[Span] = []
+
+    for c in children:
+        t = c.type
+        if t == "text":
+            out.append(c.content)
+            n += len(c.content)
+        elif t == "code_inline":
+            start = n
+            out.append(c.content)
+            n += len(c.content)
+            if not link_stack:  # inside a label: plain text, span suppressed
+                code_spans.append((start, n))
+        elif t in ("em_open", "strong_open"):
+            if c.markup in ("*", "**"):
+                kind = "bold" if c.markup == "**" else "italic"
+                emph_stack.append((kind, n))
+            else:  # underscore doctrine: markers are literal, re-emitted
+                out.append(c.markup)
+                n += len(c.markup)
+                emph_stack.append((None, n))
+        elif t in ("em_close", "strong_close"):
+            if not emph_stack:
+                return None
+            kind, start = emph_stack.pop()
+            if kind is None:
+                out.append(c.markup)
+                n += len(c.markup)
+            elif not link_stack:  # inside a label: span suppressed
+                emph_spans.append((start, n, kind))
+        elif t == "link_open":
+            if link_stack:  # nested TEXT_LINKs are Bot-API-invalid
+                return None
+            href = str(c.attrs.get("href", ""))
+            if not href.lower().startswith(("http://", "https://")):
+                return None
+            link_stack.append((n, href))
+        elif t == "link_close":
+            if not link_stack:
+                return None
+            start, href = link_stack.pop()
+            link_spans.append((start, n, _LINK_KIND + href))
+        elif t in ("softbreak", "hardbreak"):
+            out.append("\n")
+            n += 1
+        else:  # unexpected token type ⇒ the whole line stays literal
+            return None
+
+    if emph_stack or link_stack:
+        return None
+    display = "".join(out)
+    for s, e, _ in link_spans:
+        if not display[s:e].strip():  # empty/blank label: URL must stay visible
+            return None
+
+    holes = sorted(code_spans + [(s, e) for s, e, _ in link_spans])
+    spans: list[Span] = [(s, e, "code") for s, e in code_spans]
+    spans.extend(link_spans)
+    for s, e, kind in emph_spans:
+        spans.extend(
+            (x, y, kind) for x, y in _subtract_intervals(s, e, holes)
+        )
+    return display, [sp for sp in spans if sp[1] > sp[0]]
+
+
+def _parse_text(text: str) -> tuple[str, list[Span]]:
+    """Line-oriented pass: headings + the markdown-it inline walk per line.
+
+    A line the walker refuses (``_inline_line`` → ``None``) is emitted
+    byte-for-byte with no spans — including its heading hashes."""
+    parts: list[str] = []
+    raw_spans: list[Span] = []
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+
+        heading_prefix = None
+        content = body
+        m = _HEADING_RE.match(body)
+        if m and m.group("rest").strip():
+            rest = m.group("rest")
+            content_end = len(rest)
+            tm = _TRAILING_HASH_RE.search(rest)
+            if tm and rest[: tm.start()].strip():
+                content_end = tm.start()
+            heading_prefix = m.end("gap")
+            content = rest[:content_end]
+
+        rendered = _inline_line(content)
+        if rendered is None:
+            parts.append(body)
+            pos += len(body)
+        else:
+            disp, ispans = rendered
+            parts.append(disp)
+            raw_spans.extend((pos + s, pos + e, k) for s, e, k in ispans)
+            if heading_prefix is not None:
+                holes = sorted(
+                    (s, e) for s, e, k in ispans
+                    if k == "code" or k.startswith(_LINK_KIND)
+                )
+                raw_spans.extend(
+                    (pos + s, pos + e, "bold")
+                    for s, e in _subtract_intervals(0, len(disp), holes)
+                )
+            pos += len(disp)
+        parts.append(ending)
+        pos += len(ending)
+
+    emph = [sp for sp in raw_spans if sp[2] in ("bold", "italic")]
+    rest = [sp for sp in raw_spans if sp[2] not in ("bold", "italic")]
+    return "".join(parts), rest + _merge_same_kind(emph)
+
+
+# ---------------------------------------------------------------------------
+# Tables (#506).
+# ---------------------------------------------------------------------------
+
 _TABLE_SEP_CELL_RE = re.compile(r"\s*:?-{3,}:?\s*")
 
 
-def _is_table_block(stripped_rows: list[str]) -> bool:
-    """CONFIDENT markdown table, two accepted shapes. Both require NO markers
-    inside cells (a backtick, asterisk, or escaped pipe makes the block
-    ambiguous — rendering it verbatim as PRE would resurrect literal markers,
-    so it stays with the inline pass). Candidate rows already start AND end
-    with ``|`` (enforced by ``_split_tables``).
+def _split_cells(stripped_row: str) -> list[str]:
+    """Cells of a bordered row: split on UNESCAPED pipes. A pipe is escaped
+    only when preceded by an ODD run of backslashes — ``\\|`` is cell
+    content, ``\\\\|`` is a literal backslash then a structural pipe
+    (diff-review round 1). Escapes stay in the cell source; the inline
+    escape pass renders them."""
+    inner = stripped_row[1:-1]
+    cells: list[str] = []
+    cur: list[str] = []
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "\\":
+            j = i
+            while j < len(inner) and inner[j] == "\\":
+                j += 1
+            run = j - i
+            if j < len(inner) and inner[j] == "|" and run % 2 == 1:
+                cur.append(inner[i:j + 1])  # escaped pipe is cell content
+                i = j + 1
+            else:
+                cur.append(inner[i:j])
+                i = j
+        elif ch == "|":
+            cells.append("".join(cur))
+            cur = []
+            i += 1
+        else:
+            cur.append(ch)
+            i += 1
+    cells.append("".join(cur))
+    return cells
 
-    1. Separatored (v0.94.0): header + ``|---|``-style separator row,
-       consistent column counts.
-    2. Separator-less (v0.109.0, deliberately NARROW — Sol+Terra design
-       round): agents often emit bordered tables without the separator row.
-       Accepted only with ALL of: >= 3 rows, consistent column count, >= 2
-       columns, and every row containing at least one non-empty cell. Prose
-       almost never yields 3+ consecutive fully-piped consistent lines; a
-       2-row run or ragged columns stays literal.
-    """
+
+def _table_shape(stripped_rows: list[str]) -> "str | None":
+    """CONFIDENT markdown table shape: 'sep' (header + ``|---|`` separator
+    row, consistent columns), 'nosep' (v0.109, deliberately NARROW: >= 3
+    rows, consistent counts, >= 2 columns, every row non-empty), or None.
+    Markers inside cells no longer disqualify — cells are re-emitted from a
+    parse, not passed through verbatim (#506 mode-A fix)."""
     if len(stripped_rows) < 2:
-        return False
-    for row in stripped_rows:
-        if "\\|" in row or "`" in row or "*" in row:
-            return False
-
-    def cells(row: str) -> list[str]:
-        return row[1:-1].split("|")
-
-    ncols = len(cells(stripped_rows[0]))
-    sep = cells(stripped_rows[1])
+        return None
+    ncols = len(_split_cells(stripped_rows[0]))
+    sep = _split_cells(stripped_rows[1])
     if all(_TABLE_SEP_CELL_RE.fullmatch(c) for c in sep):
-        if len(sep) != ncols:
-            return False
-        return all(len(cells(row)) == ncols for row in stripped_rows)
-    # Separator-less shape.
+        if len(sep) == ncols and all(
+            len(_split_cells(row)) == ncols for row in stripped_rows
+        ):
+            return "sep"
+        return None
     if len(stripped_rows) < 3 or ncols < 2:
-        return False
-    return all(
-        len(cells(row)) == ncols and any(c.strip() for c in cells(row))
-        for row in stripped_rows
+        return None
+    ok = all(
+        len(cells) == ncols and any(c.strip() for c in cells)
+        for cells in map(_split_cells, stripped_rows)
     )
+    return "nosep" if ok else None
 
 
-def _split_tables(text: str) -> list[tuple[str, str]]:
-    """Split ('text', chunk) blocks around confident table blocks → PRE.
-
-    A candidate block is >=2 CONTIGUOUS lines that (stripped) start AND end
-    with ``|``; it must pass ``_is_table_block`` or the lines stay ordinary
-    text (fail-literal — the inline pass still renders markers inside rows).
-    The table renders VERBATIM (no cell reflow) as one PRE span; monospace
-    preserves the column alignment Telegram's proportional font destroys.
-    The last row's line ending stays ordinary text (mirrors the fence rule).
-    """
+def _split_tables(text: str) -> list[tuple[str, object]]:
+    """Split ('text', chunk) blocks around confident table blocks, each
+    pre-rendered to ('table', (display, spans)). A candidate block is >= 2
+    CONTIGUOUS lines that (stripped) start AND end with an unescaped ``|``;
+    it must match a ``_table_shape`` or the lines stay ordinary text
+    (fail-literal). The last row's line ending stays ordinary text."""
     lines = text.splitlines(keepends=True)
-    blocks: list[tuple[str, str]] = []
+    blocks: list[tuple[str, object]] = []
     text_buf: list[str] = []
 
     def flush() -> None:
@@ -215,23 +431,41 @@ def _split_tables(text: str) -> list[tuple[str, str]]:
             blocks.append(("text", "".join(text_buf)))
             text_buf.clear()
 
+    def bordered(stripped: str) -> bool:
+        return (
+            len(stripped) >= 2
+            and stripped.endswith("|")
+            # a closing border is escaped only under ODD backslash parity
+            and _backslash_run_before(stripped, len(stripped) - 1) % 2 == 0
+        )
+
     i = 0
     while i < len(lines):
+        # The candidate group is the run of CONSECUTIVE pipe-starting lines;
+        # one row without an unescaped closing border poisons the WHOLE run
+        # (diff-review round 2: no valid-prefix table may form from it).
         j = i
         while j < len(lines):
             stripped = lines[j].rstrip("\r\n").strip()
-            if len(stripped) >= 2 and stripped.startswith("|") and stripped.endswith("|"):
+            if stripped.startswith("|"):  # even a bare "|" joins the run
                 j += 1
             else:
                 break
         rows = [lines[k].rstrip("\r\n").strip() for k in range(i, j)]
-        if j - i >= 2 and _is_table_block(rows):
+        shape = (
+            _table_shape(rows)
+            if j - i >= 2 and all(bordered(r) for r in rows)
+            else None
+        )
+        if shape:
             flush()
-            last_body = lines[j - 1].rstrip("\r\n")
-            blocks.append(("pre", "".join(lines[i:j - 1]) + last_body))
-            ending = lines[j - 1][len(last_body):]
+            blocks.append(("table", _render_table(rows, shape == "sep")))
+            ending = lines[j - 1][len(lines[j - 1].rstrip("\r\n")):]
             if ending:
                 text_buf.append(ending)
+            i = j
+        elif j > i:
+            text_buf.extend(lines[i:j])  # rejected run stays text, whole
             i = j
         else:
             text_buf.append(lines[i])
@@ -241,74 +475,118 @@ def _split_tables(text: str) -> list[tuple[str, str]]:
     return blocks
 
 
-def _isolated_backticks(body: str) -> list[int]:
-    """Positions of isolated single backticks (a backtick in a run of >=2 is
-    literal and yields no positions)."""
-    isolated: list[int] = []
-    i = 0
-    while i < len(body):
-        if body[i] != "`":
-            i += 1
-            continue
-        run_end = i + 1
-        while run_end < len(body) and body[run_end] == "`":
-            run_end += 1
-        if run_end - i == 1:
-            isolated.append(i)
-        i = run_end
-    return isolated
+def _render_table(
+    rows: list[str], separatored: bool,
+) -> tuple[str, list[Span]]:
+    """Re-emit a confident table in ONE of three forms — chosen so cell
+    content and link URLs are NEVER dropped (design rounds 1-3):
 
-
-def _scan_emphasis_line(
-    body: str, code_regions: list[tuple[int, int]],
-) -> list[tuple[int, int, str]]:
-    """Match **bold** / *italic* on ONE line with code regions opaque.
-
-    *code_regions* are tick-to-tick source intervals ``(open_tick, close_tick)``
-    (inclusive); no delimiter is recognized inside them, but their boundary
-    backticks count as non-space flanking context. Runs of >=3 asterisks are
-    literal. An unmatched opener makes matches at/after it literal (line-scoped
-    fail-literal cutoff). Returns (opening, closing, delim) tuples in line
-    coordinates. Never raises.
+    1. padded PRE box: link-free AND padded width <= 40 (cell entity spans
+       are discarded — the Bot API forbids entities inside PRE; the
+       marker-stripped monospace box is the honest render);
+    2. per-record ``Header: value`` stanza: wide or link-bearing, and the
+       header is REAL (separatored), non-empty, link-free, with >= 1 data
+       row — values keep their entity spans, the bold header label splits
+       around header CODE spans;
+    3. inline rows: every remaining case — cells re-emitted between literal
+       pipes with their entity spans intact.
     """
-    stack: list[tuple[str, int]] = []
-    pairs: list[tuple[int, int, str]] = []
-    n = len(body)
-    region_idx = 0
-    i = 0
-    while i < n:
-        while region_idx < len(code_regions) and i > code_regions[region_idx][1]:
-            region_idx += 1
-        if (
-            region_idx < len(code_regions)
-            and code_regions[region_idx][0] <= i <= code_regions[region_idx][1]
-        ):
-            i = code_regions[region_idx][1] + 1
-            continue
-        if body[i] != "*":
-            i += 1
-            continue
-        j = i + 1
-        while j < n and body[j] == "*":
-            j += 1
-        delim = body[i:j]
-        if len(delim) not in (1, 2):
-            i = j
-            continue
-        prev = body[i - 1] if i else ""
-        nxt = body[j] if j < n else ""
-        can_open = bool(nxt) and not nxt.isspace()
-        can_close = bool(prev) and not prev.isspace()
-        if can_close and stack and stack[-1][0] == delim:
-            _, opening = stack.pop()
-            pairs.append((opening, i, delim))
-        elif can_open:
-            stack.append((delim, i))
-        i = j
-    if stack:
-        cutoff = min(p for _, p in stack)
-        pairs = [p for p in pairs if p[0] < cutoff and p[1] < cutoff]
-    return pairs
+    src_cells = [_split_cells(r) for r in rows]
+    body_cells = (
+        [src_cells[0]] + src_cells[2:] if separatored else src_cells
+    )
+    rendered: list[list[tuple[str, list[Span]]]] = []
+    for row in body_cells:
+        rrow = []
+        for cell in row:
+            r = _inline_line(cell.strip())
+            rrow.append(r if r is not None else (cell.strip(), []))
+        rendered.append(rrow)
+
+    ncols = len(rendered[0])
+    widths = [max(len(row[c][0]) for row in rendered) for c in range(ncols)]
+    has_link = any(
+        k.startswith(_LINK_KIND)
+        for row in rendered for _, sp in row for _, _, k in sp
+    )
+    padded_width = sum(widths) + 3 * (ncols - 1) + 4
+
+    if not has_link and padded_width <= _TABLE_PRE_MAX_WIDTH:
+        text = "\n".join(
+            "| " + " | ".join(
+                row[c][0].ljust(widths[c]) for c in range(ncols)
+            ) + " |"
+            for row in rendered
+        )
+        return text, [(0, len(text), "pre")]
+
+    header, data = rendered[0], rendered[1:]
+    header_ok = (
+        separatored
+        and data
+        # >= 1 non-empty rendered value, or the stanza would emit an empty
+        # message (diff-review round 2)
+        and any(v[0].strip() for row in data for v in row)
+        and all(h[0].strip() for h in header)
+        and not any(
+            k.startswith(_LINK_KIND) for _, sp in header for _, _, k in sp
+        )
+    )
+    if header_ok:
+        return _render_stanza(header, data)
+
+    parts: list[str] = []
+    spans: list[Span] = []
+    pos = 0
+    for row in rendered:
+        line_cells: list[str] = []
+        cursor = pos + 2  # "| "
+        for c in range(ncols):
+            disp, csp = row[c]
+            spans.extend((cursor + s, cursor + e, k) for s, e, k in csp)
+            line_cells.append(disp)
+            cursor += len(disp) + 3  # " | "
+        parts.append("| " + " | ".join(line_cells) + " |")
+        pos += len(parts[-1]) + 1  # "\n"
+    return "\n".join(parts), spans
+
+
+def _render_stanza(
+    header: list[tuple[str, list[Span]]],
+    data: list[list[tuple[str, list[Span]]]],
+) -> tuple[str, list[Span]]:
+    parts: list[str] = []
+    spans: list[Span] = []
+    pos = 0
+    first_record = True
+    for row in data:
+        lines_of_record: list[str] = []
+        for c, (vdisp, vspans) in enumerate(row):
+            hdisp, hspans = header[c]
+            if not vdisp.strip():
+                continue
+            if not lines_of_record and not first_record:
+                parts.append("\n")
+                pos += 1
+            line = hdisp + ": " + vdisp
+            label_end = len(hdisp) + 1  # includes the colon
+            holes = sorted((s, e) for s, e, k in hspans if k == "code")
+            spans.extend((pos + s, pos + e, "code") for s, e in holes)
+            spans.extend(
+                (pos + s, pos + e, "bold")
+                for s, e in _subtract_intervals(0, label_end, holes)
+            )
+            vbase = pos + label_end + 1
+            spans.extend((vbase + s, vbase + e, k) for s, e, k in vspans)
+            parts.append(line + "\n")
+            pos += len(line) + 1
+            lines_of_record.append(line)
+        if lines_of_record:
+            first_record = False
+    text = "".join(parts)
+    if text.endswith("\n"):  # the block's own line ending is emitted outside
+        text = text[:-1]
+    return text, [sp for sp in spans if sp[1] <= len(text)]
 
 
 def _subtract_intervals(
@@ -354,85 +632,6 @@ def _merge_same_kind(spans: list[Span]) -> list[Span]:
     return out
 
 
-def _parse_inline(text: str) -> tuple[str, list[Span]]:
-    """Line-oriented inline pass: headings + inline code + per-line emphasis.
-
-    Marker positions (backtick delimiters, emphasis delimiters, heading
-    hashes/indent/trailing run) are collected into a removal set; spans are
-    computed in source coordinates and mapped to display coordinates at the
-    end. Emphasis/heading spans are split around code intervals (Bot API: a
-    bold/italic entity must never contain or intersect CODE).
-    """
-    removed: set[int] = set()
-    code_src: list[tuple[int, int]] = []       # content intervals, source coords
-    emph_src: list[tuple[int, int, str]] = []  # content intervals, source coords
-    heading_src: list[tuple[int, int]] = []    # content intervals, source coords
-
-    pos = 0
-    for line in text.splitlines(keepends=True):
-        body = line.rstrip("\r\n")
-        isolated = _isolated_backticks(body)
-        if len(isolated) % 2:
-            pos += len(line)  # ambiguous backticks ⇒ whole line inline-literal
-            continue
-
-        code_regions = [
-            (isolated[k], isolated[k + 1]) for k in range(0, len(isolated), 2)
-        ]
-        for o, c in code_regions:
-            removed.add(pos + o)
-            removed.add(pos + c)
-            code_src.append((pos + o + 1, pos + c))
-
-        m = _HEADING_RE.match(body)
-        if m and m.group("rest").strip():
-            rest = m.group("rest")
-            content_end = len(rest)
-            tm = _TRAILING_HASH_RE.search(rest)
-            if tm and rest[: tm.start()].strip():
-                content_end = tm.start()
-            prefix = m.end("gap")
-            removed.update(range(pos, pos + prefix))
-            removed.update(range(pos + prefix + content_end, pos + len(body)))
-            heading_src.append((pos + prefix, pos + prefix + content_end))
-
-        for opening, closing, delim in _scan_emphasis_line(body, code_regions):
-            removed.update(range(pos + opening, pos + opening + len(delim)))
-            removed.update(range(pos + closing, pos + closing + len(delim)))
-            emph_src.append((
-                pos + opening + len(delim), pos + closing,
-                "bold" if delim == "**" else "italic",
-            ))
-        pos += len(line)
-
-    if not removed:
-        return text, []
-
-    # Source → display mapping (prefix sums over kept positions).
-    prefix = [0] * (len(text) + 1)
-    for i, ch in enumerate(text):
-        prefix[i + 1] = prefix[i] + (0 if i in removed else 1)
-    display = "".join(ch for i, ch in enumerate(text) if i not in removed)
-
-    spans: list[Span] = []
-    code_disp = sorted(
-        (prefix[a], prefix[b]) for a, b in code_src if prefix[b] > prefix[a]
-    )
-    spans.extend((a, b, "code") for a, b in code_disp)
-
-    emph_disp: list[Span] = [
-        (prefix[a], prefix[b], kind) for a, b, kind in emph_src
-    ]
-    emph_disp.extend((prefix[a], prefix[b], "bold") for a, b in heading_src)
-    split: list[Span] = []
-    for a, b, kind in emph_disp:
-        split.extend(
-            (x, y, kind) for x, y in _subtract_intervals(a, b, code_disp)
-        )
-    spans.extend(_merge_same_kind(split))
-    return display, spans
-
-
 # ---------------------------------------------------------------------------
 # Delivery: single-message render + the paged delivery planner.
 # ---------------------------------------------------------------------------
@@ -448,13 +647,25 @@ def _spans_to_entities(
     display: str, spans: list[Span],
 ) -> "list[MessageEntity] | None":
     """Validate spans against *display* and convert to UTF-16 entities;
-    ``None`` on any invalid offset or conversion failure (never raises)."""
-    ents: list[MessageEntity] = []
-    for start, end, kind in spans:
-        if end <= start or start < 0 or end > len(display):
-            return None
-        ents.append(MessageEntity(type=_KIND[kind], offset=start, length=end - start))
+    ``None`` on any invalid offset, unknown kind, empty link URL, or
+    conversion failure (never raises)."""
     try:
+        ents: list[MessageEntity] = []
+        for start, end, kind in spans:
+            if end <= start or start < 0 or end > len(display):
+                return None
+            if kind.startswith(_LINK_KIND):
+                url = kind[len(_LINK_KIND):]
+                if not url:
+                    return None
+                ents.append(MessageEntity(
+                    type=MessageEntity.TEXT_LINK,
+                    offset=start, length=end - start, url=url,
+                ))
+            else:
+                ents.append(MessageEntity(
+                    type=_KIND[kind], offset=start, length=end - start,
+                ))
         return MessageEntity.adjust_message_entities_to_utf_16(display, ents)
     except Exception:  # noqa: BLE001 — e.g. an unpaired surrogate breaks UTF-16
         # "never raises": any offset-conversion failure degrades to plain text.

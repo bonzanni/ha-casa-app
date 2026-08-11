@@ -52,12 +52,16 @@ def test_no_emphasis_inside_pre_or_code():
 # --- Sol re-review #2: inline-code must be fully fail-literal ---
 
 def test_crossline_backticks_cannot_be_reused():
-    src = "before `bad\nclose` after `good`"
-    assert parse_markdown(src) == (src, [])
+    # v3: backticks still never pair across a newline; each line is scoped
+    # independently (line 1 unmatched → literal; line 2 pairs internally).
+    display, spans = parse_markdown("before `bad\nclose` after `good`")
+    assert display.startswith("before `bad\n")
+    assert all(s >= len("before `bad\n") for s, _, _ in spans)
 
 
-def test_multi_backtick_runs_are_literal():
-    assert parse_markdown("``x``") == ("``x``", [])
+def test_multi_backtick_code_renders():
+    # v3 flip (CommonMark): a double-backtick run is a valid code delimiter.
+    assert parse_markdown("``x``") == ("x", [(0, 1, "code")])
 
 
 def test_two_inline_code_spans_offsets_in_display():
@@ -91,8 +95,11 @@ def test_bold_not_opened_by_space_flank():
     assert parse_markdown("a ** b ** c") == ("a ** b ** c", [])
 
 
-def test_triple_asterisk_is_literal():
-    assert parse_markdown("***x***") == ("***x***", [])
+def test_triple_asterisk_bold_italic():
+    # v3 flip (CommonMark): ***x*** is nested strong+em.
+    display, spans = parse_markdown("***x***")
+    assert display == "x"
+    assert set(spans) == {(0, 1, "bold"), (0, 1, "italic")}
 
 
 def test_nested_bold_then_italic():

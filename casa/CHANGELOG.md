@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.178.0] - 2026-08-12
+
+### Added
+
+- **Agents can send labelled hyperlinks.** `[label](url)` in agent output
+  now renders as a real Telegram hyperlink (http/https destinations), so a
+  long OAuth or dashboard URL no longer dominates the message as a wall of
+  text. Links inside table cells survive too. A link with any other scheme,
+  an empty label, or image syntax leaves its whole line untouched rather
+  than guessing. (#404)
+
+### Changed
+
+- **Markdown tables finally render well on a phone.** Tables that used to
+  arrive as raw `| pipe | rows |` (any cell containing code or bold
+  markers) or as a ragged monospace box now re-render from their parsed
+  cells: narrow tables become a properly padded monospace box, wide or
+  link-bearing tables become per-record `Header: value` stanzas with bold
+  field names, and anything the renderer cannot classify with confidence
+  stays as plain readable rows — cell content and link destinations are
+  never dropped. (#506)
+- **Inline rendering now follows CommonMark.** The renderer's inline pass
+  (code, bold/italic, escapes, links) runs on a CommonMark engine instead
+  of a bespoke scanner: ``double-backtick code``, `***bold italic***`,
+  intraword bold and backslash escapes now render as written. Underscores
+  are still never emphasis — tool and identifier names stay literal — and
+  an unclosed code fence still keeps everything after it untouched.
+
 ## [0.177.0] - 2026-08-11
 
 ### Fixed

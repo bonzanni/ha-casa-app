@@ -204,12 +204,14 @@ def test_separatorless_bordered_table_becomes_pre():
 
 
 def test_separatored_table_content_fidelity():
+    # v3 (#506): reflowed fidelity — every CELL survives; the separator row
+    # is syntax and is dropped, cells are padded to their column width.
     txt = "| h1 | h2 |\n|---|---|\n| a | b |"
     display, pres = _pre_spans(txt)
     assert len(pres) == 1
     pre = pres[0]
     covered = display[pre.offset:pre.offset + pre.length]
-    assert covered == "| h1 | h2 |\n|---|---|\n| a | b |"
+    assert covered == "| h1 | h2 |\n| a  | b  |"
 
 
 def test_separatorless_two_rows_stay_literal():
@@ -236,9 +238,11 @@ def test_separatored_table_still_pre():
     assert len(pres) == 1
 
 
-def test_table_with_markers_stays_with_inline_pass():
-    # An asterisk in a cell keeps the block OUT of PRE (fail-literal contract:
-    # PRE would resurrect literal markers) — the inline pass renders it.
+def test_table_with_markers_reflows_marker_free():
+    # v3 (#506 mode-A fix): markers in cells no longer reject the block —
+    # the table reflows to a PRE box with the markers stripped, never a
+    # literal-pipe soup.
     txt = "| **a** | b |\n| c | d |\n| e | f |"
     display, entities = render(txt)
-    assert all(e.type != MessageEntity.PRE for e in (entities or []))
+    assert any(e.type == MessageEntity.PRE for e in (entities or []))
+    assert "**" not in display

@@ -134,11 +134,13 @@ class _FakeMessageEntity:
     ITALIC = "italic"
     CODE = "code"
     PRE = "pre"
+    TEXT_LINK = "text_link"
 
-    def __init__(self, type, offset, length, **kwargs):
+    def __init__(self, type, offset, length, url=None, **kwargs):
         self.type = type
         self.offset = offset
         self.length = length
+        self.url = url
 
     def __eq__(self, other):
         return (
@@ -156,7 +158,7 @@ class _FakeMessageEntity:
         for e in entities:
             off16 = len(text[:e.offset].encode("utf-16-le")) // 2
             len16 = len(text[e.offset:e.offset + e.length].encode("utf-16-le")) // 2
-            out.append(_FakeMessageEntity(e.type, off16, len16))
+            out.append(_FakeMessageEntity(e.type, off16, len16, url=e.url))
         return out
 
 
