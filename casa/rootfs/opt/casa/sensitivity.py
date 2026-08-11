@@ -147,9 +147,12 @@ _TIER_ANSWER_LINE_RE = re.compile(
 # ("Tier: private." then "Tier: public") is a conflict the exact-match count
 # missed — the strict answer regex ignores it, silently letting the later
 # line win. Any earlier line that so much as OPENS with a Tier label makes
-# the reply ambiguous. \b keeps prose starting with words like "Tiering"
-# out of scope; prose lines merely CONTAINING "tier" are not labels.
-_TIER_LABELISH_RE = re.compile(r"^[\W_]*tier\b", re.IGNORECASE)
+# the reply ambiguous. The label boundary is explicit (r3, Sol S1): ``\b``
+# treats ``_`` as a word character, so "_Tier_: private" slipped past it —
+# anything in ``[\W_]`` (or end-of-line) terminates the label, while a
+# letter/digit ("Tiering …") keeps prose out of scope. Lines merely
+# CONTAINING "tier" are not labels.
+_TIER_LABELISH_RE = re.compile(r"^[\W_]*tier(?:[\W_]|$)", re.IGNORECASE)
 
 
 def parse_tier(text: str | None) -> str | None:
@@ -159,8 +162,8 @@ def parse_tier(text: str | None) -> str | None:
     surrounding punctuation / whitespace), or (b) the reply is multi-line,
     its FINAL non-empty line is the literal ``Tier: <word>`` answer line
     (#497 — the declared-answer line the prompt mandates), and no earlier
-    line opens with a Tier label (review r2: a malformed or conflicting
-    label line is ambiguity). None otherwise — including when tier words
+    line is a tier token or opens with a Tier label (reviews r2/r3: a
+    malformed, bare, or conflicting prior answer line is ambiguity). None otherwise — including when tier words
     appear inside a longer sentence (#350), an unlabeled multi-line reply,
     or a decorated token spread across lines (review r2: the whole-reply
     arm's separator classes must never span newlines). The caller applies
@@ -176,7 +179,13 @@ def parse_tier(text: str | None) -> str | None:
     m = _TIER_ANSWER_LINE_RE.match(lines[-1])
     if not m:
         return None
-    if any(_TIER_LABELISH_RE.match(ln) for ln in lines[:-1]):
+    # Reject when ANY earlier line is itself a tier answer in either accepted
+    # shape: label-opening ("Tier: private.", "_Tier_: private") or a bare /
+    # decorated tier token ("private", "**private**") — review r3, Terra S1:
+    # a prior answer contradicted by the final line is ambiguity, never
+    # "last one wins".
+    if any(_TIER_LABELISH_RE.match(ln) or _TIER_REPLY_RE.match(ln)
+           for ln in lines[:-1]):
         return None
     return m.group(1).lower()
 

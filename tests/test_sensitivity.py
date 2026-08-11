@@ -206,6 +206,20 @@ def test_parse_tier_malformed_label_line_before_the_answer_is_a_conflict():
     assert parse_tier("Tier: private.\nTier: public") is None
     assert parse_tier("**Tier: private**\nTier: public") is None
     assert parse_tier("tier assignment below:\nTier: public") is None
+    # r3 (Sol S1): underscores are word chars, so \b missed "_Tier_" —
+    # the label boundary must treat [\W_] (or line end) as terminating.
+    assert parse_tier("_Tier_: private\nTier: public") is None
+    assert parse_tier("tier\nTier: public") is None
+
+
+def test_parse_tier_prior_bare_tier_token_line_is_a_conflict():
+    # r3 (Terra S1): a prior line that is itself a bare/decorated tier
+    # answer, contradicted by the final labeled line, must not let the
+    # final line win — a downgrade path ("private" then "Tier: public")
+    # would leak the fact at public clearance later.
+    assert parse_tier("private\nTier: public") is None
+    assert parse_tier("**private**\nTier: public") is None
+    assert parse_tier("- family -\nTier: friends") is None
     # Prose merely starting with a "tier"-prefixed WORD is not a label…
     assert parse_tier("Tiering this is easy.\nTier: friends") == "friends"
     # …and prose containing "tier" mid-line is not either.

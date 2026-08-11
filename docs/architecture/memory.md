@@ -260,11 +260,11 @@ posted to the (group-readable) topic, and a pre-clamp nested child's own record 
 deliberate residuals listed above. The completion tool stays reachable while the rebuild is
 pending, its output being in-flight-turn residual.
 
-**INV-MEM-012**: A tier-classifier reply yields a tier only when the whole reply is exactly one tier token, or when a multi-line reply's sole literal `Tier: <word>` answer line is its final non-empty line; tier words in prose, decorated or unlabeled lines, and multiple answer lines yield no tier and the item falls to the private default.
+**INV-MEM-012**: A tier-classifier reply yields a tier only when it is a single line holding one (possibly decorated) tier token, or when a multi-line reply's final non-empty line is the literal `Tier: <word>` answer line with no earlier tier-token or Tier-label line; tier words in prose and conflicting answers yield no tier; the item takes the private default.
 
 Enforced in `parse_tier`: the single-line arm full-matches one decorated token, never
 searching for the leftmost tier word and never spanning lines; the answer-line arm
-accepts only the literal final line the prompt mandates, with no earlier label-opening
+accepts only the literal final line the prompt mandates, with no earlier answer-like
 line. The id replaces retired MEM 007, whose statement the
 answer-line arm falsifies.
 
@@ -297,9 +297,9 @@ and reset it; only unavailability counts as failure.
 
 **Tier classification fails.** Retention classifies each item's sensitivity with a bounded
 LLM pass; a failed or unparseable classification retries once and then assigns *private*,
-with only a log warning to show for it. "Unparseable" is strict: only a bare tier word
-or a sole final `Tier: <word>` line parses. A tier word inside a longer sentence
-("this is not public; it is family") or ending an unlabeled multi-line reply is ambiguity,
+with only a log warning to show for it. "Unparseable" is strict: only a bare tier
+word or a final `Tier: <word>` line parses. A tier word inside a longer sentence
+("this is not public; it is family") or an unlabeled multi-line reply is ambiguity,
 not an answer, and falls to the private default. The write is not lost — but the fact
 becomes invisible below the highest clearance, which reads as absence on voice and
 friends surfaces.
