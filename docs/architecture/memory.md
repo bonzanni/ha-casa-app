@@ -296,13 +296,13 @@ dedicated reason rather than calling the backend. Genuine zero-hit results count
 and reset it; only unavailability counts as failure.
 
 **Tier classification fails.** Retention classifies each item's sensitivity with a bounded
-LLM pass; a failed or unparseable classification retries once and then assigns *private*,
-with only a log warning to show for it. "Unparseable" is strict: only a bare tier
-word or a final `Tier: <word>` line parses. A tier word inside a longer sentence
-("this is not public; it is family") or an unlabeled multi-line reply is ambiguity,
-not an answer, and falls to the private default. The write is not lost — but the fact
-becomes invisible below the highest clearance, which reads as absence on voice and
-friends surfaces.
+LLM pass; a backend error retries once; an unparseable reply falls to
+*private*, with only a log warning to show for it. "Unparseable" is strict: only a
+single-line (possibly decorated) tier token or a final `Tier: <word>` line parses. A tier
+word inside a longer sentence ("this is not public; it is family") or an unlabeled
+multi-line reply is ambiguity and takes the private default. The write is not lost — but
+the fact becomes invisible below the highest clearance, which reads as absence on voice
+and friends surfaces.
 
 **Saving a session fails.** The save is abandoned, its claim is released — including when the
 failure is a cancellation at shutdown — and the entry stays for a later sweep to retry. An
