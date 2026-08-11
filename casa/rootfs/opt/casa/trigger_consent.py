@@ -131,6 +131,14 @@ def prompt_trigger_consent(
             consent_denials.record(consent_denials.key("trigger", identity))
         if idx == 0:
             consent_denials.clear(consent_denials.key("trigger", identity))
+            # #494: re-arm a refused setup obligation BEFORE persisting the
+            # ack — the order is the crash contract (rearm_refused_sync).
+            try:
+                import plugin_setup_episodes
+                plugin_setup_episodes.rearm_refused_sync(
+                    plugin=plugin, artifact_id=artifact_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("pre-ack re-arm failed (plugin=%s)", plugin)
             acks.record(identity=identity, plugin=plugin,
                         artifact_id=artifact_id, effective=effective,
                         target=target, auth=auth)

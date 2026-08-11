@@ -107,6 +107,14 @@ def prompt_callback_consent(
             consent_denials.record(consent_denials.key("callback", identity))
             return
         consent_denials.clear(consent_denials.key("callback", identity))
+        # #494: re-arm a refused setup obligation BEFORE persisting the ack —
+        # the order is the crash contract (see rearm_refused_sync).
+        try:
+            import plugin_setup_episodes
+            plugin_setup_episodes.rearm_refused_sync(
+                plugin=plugin, artifact_id=artifact_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("pre-ack re-arm failed (plugin=%s)", plugin)
         rec = acks.record(plugin=plugin, effective=effective,
                           declaration_digest=declaration_digest)
         meta["acked"] = True

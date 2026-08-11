@@ -875,8 +875,12 @@ async def reprompt_pending(
             desired = await asyncio.to_thread(
                 compute_desired, role_configs=role_configs, acks=acks,
                 resolver=resolver, global_secret_ok=global_secret_ok)
-        except Exception:  # noqa: BLE001 — a compute failure reposts nothing
+        except Exception:  # noqa: BLE001 — a compute failure reposts nothing,
+            # but must be VISIBLE to the caller (Sol/Terra diff-gate r1: a
+            # swallowed compute failure read as "no consent is pending").
             logger.exception("trigger reprompt compute failed")
+            report.append({"kind": "trigger", "plugin": "", "name": "",
+                           "status": "error"})
             return
         for p in desired.pending:
             row = {"kind": "trigger", "plugin": p["plugin"],

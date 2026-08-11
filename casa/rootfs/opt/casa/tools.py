@@ -10582,11 +10582,15 @@ async def plugin_remove(args: dict) -> dict:
         # #494: retire the plugin's setup obligation + round durably. Without
         # this, an approval racing this removal could re-arm a `pending`
         # obligation nothing can ever seal or release (a `pending` row never
-        # decays out of health).
+        # decays out of health). Called SYNCHRONOUSLY on the event loop —
+        # never via to_thread — so it serializes with the loop-confined
+        # episode-store writers (consent commit steps, the decision feed); a
+        # threaded retire could interleave a feed's load/save and let the
+        # feed's stale `pending` snapshot overwrite the retirement (Sol
+        # diff-gate r1).
         try:
             import plugin_setup_episodes
-            await asyncio.to_thread(
-                plugin_setup_episodes.retire_for_removed, core["name"])
+            plugin_setup_episodes.retire_for_removed(core["name"])
         except Exception:  # noqa: BLE001 — teardown must never fail removal
             logger.warning("plugin_remove: setup-obligation retire failed "
                            "(%s)", core["name"], exc_info=True)
@@ -10896,6 +10900,18 @@ async def consent_reprompt(args: dict) -> dict:
                 r["status"] = settled  # delivery_failed | inactive
         rows.append(r)
     await asyncio.to_thread(_regenerate_plugin_health, [])
+    # Sol/Terra diff-gate r1: a kind that FAILED (compute raised, a prompt
+    # registration raised, or the whole reprompt_pending call raised) must
+    # never read as "nothing pending" — its pending state could not be
+    # evaluated, so the result is a typed failure even when other kinds'
+    # keyboards posted (their rows still say so).
+    if any(r.get("status") == "error" for r in rows):
+        return _result({
+            "ok": False, "kind": "reprompt_failed", "rows": rows,
+            "message": ("a consent kind could not be re-evaluated — its "
+                        "pending consents (if any) were NOT re-issued; see "
+                        "rows, check logs, and retry"),
+        })
     if attempted and reachable == 0:
         return _result({
             "ok": False, "kind": "delivery_failed", "rows": rows,

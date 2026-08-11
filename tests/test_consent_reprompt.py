@@ -553,6 +553,161 @@ async def test_tool_dm_unreachable_posts_nothing(monkeypatch):
     assert called == []
 
 
+# ---------------------------------------------------------------------------
+# diff-gate round 1 fixes (Sol/Terra)
+# ---------------------------------------------------------------------------
+
+
+def test_rearm_runs_before_ack_persist(tmp_path, episodes_store, monkeypatch):
+    """Sol diff r1 S2: the re-arm and the ack live in different files, so
+    their ORDER is the crash contract — re-arm first. A crash after the
+    re-arm but before the ack leaves the consent pending (re-prompted later);
+    the reverse order left an approved consent's obligation refused forever."""
+    import callback_consent
+    coord = _CaptureCoordinator()
+    seq = []
+    monkeypatch.setattr(pse, "rearm_refused_sync",
+                        lambda **kw: seq.append("rearm"))
+
+    class _SeqAcks:
+        def record(self, **kw):
+            seq.append("ack")
+            return {"gen": 1}
+
+        def get(self, identity):
+            return {"gen": 1}
+
+    effective = "plg-gmail--authorize"
+    digest = declaration_digest({"declared": "authorize",
+                                 "effective": effective})
+    callback_consent.prompt_callback_consent(
+        coordinator=coord, channel=_FakeTelegram(), chat_id=100,
+        operator_id=100, plugin="gmail", artifact_id="art-1",
+        declared="authorize", effective=effective,
+        declaration_digest=digest, acks=_SeqAcks())
+    hook = _commit_hook_for_callback(coord.calls)
+    hook(0, {})
+    assert seq[:2] == ["rearm", "ack"]
+
+
+def test_trigger_rearm_runs_before_ack_persist(tmp_path, episodes_store,
+                                               monkeypatch):
+    import trigger_consent
+    coord = _CaptureCoordinator()
+    seq = []
+    monkeypatch.setattr(pse, "rearm_refused_sync",
+                        lambda **kw: seq.append("rearm"))
+
+    class _SeqAcks:
+        def record(self, **kw):
+            seq.append("ack")
+
+        def get(self, identity):
+            return {"gen": 1}
+
+    trigger_consent.prompt_trigger_consent(
+        coordinator=coord, channel=_FakeTelegram(), chat_id=100,
+        operator_id=100, plugin="gmail", artifact_id="art-1",
+        effective="plg-gmail--hook", target="resident:assistant",
+        auth={"mode": "none"}, acks=_SeqAcks())
+    hook = _commit_hook_for_callback(coord.calls)
+    hook(0, {})
+    assert seq[:2] == ["rearm", "ack"]
+
+
+def test_rearm_refused_sync_rearms_durably(episodes_store):
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    data = pse._load()
+    pse._row_for(data, "gmail").update({"status": "refused"})
+    pse._save(data)
+    pse.rearm_refused_sync(plugin="gmail", artifact_id="art-1")
+    row = pse._row_for(pse._load(), "gmail")
+    assert row["status"] == "pending" and row["gate"] == "awaiting_verdict"
+
+
+async def test_plugin_remove_retires_setup_obligation_on_the_loop(
+        episodes_store, monkeypatch):
+    """Sol diff r1 S1: the retire must run SYNCHRONOUSLY on the event loop —
+    a threaded retire can interleave a loop-confined feed's load/save and be
+    overwritten by its stale `pending` snapshot."""
+    import tools
+    seen = {}
+
+    def spying_retire(plugin):
+        # get_running_loop() raises in a to_thread worker — this is the pin.
+        asyncio.get_running_loop()
+        seen["plugin"] = plugin
+
+    monkeypatch.setattr(pse, "retire_for_removed", spying_retire)
+    monkeypatch.setattr(
+        tools, "_plugin_remove_sync",
+        lambda name: {"ok": True, "name": name, "artifact_id": "art-1",
+                      "targets": []})
+    monkeypatch.setattr(tools, "_invalidate_lifecycle",
+                        lambda **kw: None)
+
+    async def fake_seq(name, targets, expect):
+        return {}
+
+    async def fake_remove_cbs(name):
+        return None
+
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", fake_seq)
+    monkeypatch.setattr(tools, "_remove_plugin_callbacks", fake_remove_cbs)
+    res = await tools.plugin_remove.handler({"name": "gmail"})
+    payload = json.loads(res["content"][0]["text"])
+    assert payload["ok"] is True
+    assert seen == {"plugin": "gmail"}
+
+
+async def test_reprompt_compute_failure_is_a_visible_error_row(
+        tmp_path, episodes_store, monkeypatch):
+    """Sol/Terra diff r1: a compute failure must never read as "nothing
+    pending" — it appends an error row the tool turns into a typed failure."""
+    def boom(**kwargs):
+        raise RuntimeError("synthetic compute failure")
+
+    monkeypatch.setattr(cr, "compute_desired", boom)
+    acks = CallbackAckStore(path=tmp_path / "acks.json")
+    report = []
+    await cr.reprompt_pending(_runtime(_FakeTelegram()), report=report,
+                              acks=acks)
+    assert report == [{"kind": "callback", "plugin": "", "name": "",
+                       "status": "error"}]
+
+
+async def test_tool_error_row_yields_typed_failure(monkeypatch):
+    tools = _tool_env(monkeypatch, _FakeTelegram())
+    _patch_kind(monkeypatch, "trigger_reconcile", [
+        {"kind": "trigger", "plugin": "", "name": "", "status": "error"}])
+    _patch_kind(monkeypatch, "callback_reconcile", [
+        {"kind": "callback", "plugin": "gmail", "name": "x",
+         "handle": _handle("posted")}])
+    _patch_kind(monkeypatch, "event_reconcile", [])
+    payload = await _run_tool(tools)
+    assert payload["ok"] is False
+    assert payload["kind"] == "reprompt_failed"
+    # The kind that DID post still reports it in rows — nothing hidden.
+    assert {"kind": "callback", "plugin": "gmail", "name": "x",
+            "status": "posted"} in payload["rows"]
+
+
+async def test_tool_kind_raise_yields_typed_failure(monkeypatch):
+    tools = _tool_env(monkeypatch, _FakeTelegram())
+    import importlib
+    mod = importlib.import_module("trigger_reconcile")
+
+    async def boom(runtime, *, report, **kwargs):
+        raise RuntimeError("synthetic kind failure")
+
+    monkeypatch.setattr(mod, "reprompt_pending", boom)
+    _patch_kind(monkeypatch, "callback_reconcile", [])
+    _patch_kind(monkeypatch, "event_reconcile", [])
+    payload = await _run_tool(tools)
+    assert payload["ok"] is False
+    assert payload["kind"] == "reprompt_failed"
+
+
 def test_tool_registered_and_granted():
     import tools
     names = {t.name for t in tools.CASA_TOOLS}
