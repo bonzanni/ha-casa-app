@@ -9958,7 +9958,17 @@ async def specialist_install_commit(args: dict) -> dict:
             specialist_install_mod.reclaim_staging_tree(staged_dir)
     return _result({"ok": True, "slug": instance.slug, "state": instance.state,
                      "activation_committed": instance.state == "active",
-                     "reloaded": seq["reloaded"], "verify": seq["verify"]})
+                     "reloaded": seq["reloaded"], "verify": seq["verify"],
+                     # #499: parity with plugin_add's required_env_vars — the
+                     # bundled plugins' declared env names, per plugin, so the
+                     # install recipe wires them in THIS engagement instead of
+                     # leaving the first use to hit the requires gate. Names
+                     # come from the consented receipt rows (the same rows the
+                     # inspect payload and consent DM enumerate).
+                     "required_env_vars": {
+                         row.manifest_name: list(row.env_names)
+                         for row in receipt.plugins if row.env_names
+                     }})
 
 
 @tool(

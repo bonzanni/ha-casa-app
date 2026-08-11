@@ -53,11 +53,21 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    delegate tool is allowed). Do NOT run wire.md's own commit/reload/emit_completion
    — steps 7–9 below perform the single commit + reload + completion for the
    whole install.
-7. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")`.
-8. `casa_reload(scope="agents")` (mandatory — see `completion.md`; an `active` install is on disk
+7. **Wire bundled plugins' env vars — part of THIS install, not a follow-up.** For each bundled
+   plugin the inspection listed with a non-empty `env_names` (mirrored as `required_env_vars` in
+   the commit result), run the `recipes/plugin/secrets.md` flow now: ask the operator for each
+   value or 1Password reference you cannot derive (e.g. a vault name is the installer's choice —
+   never guess it), `set_plugin_env_reference(...)` once per var, then
+   `casa_reload(scope="plugin_env")`, and confirm via `verify_plugin_state(<plugin>)` that no
+   `secrets[*].status: unresolved` remains. An unresolved required var withholds the plugin from
+   session builds entirely: the specialist's very first tool call would be refused with
+   "required env unresolved", costing the operator a second configurator engagement (#499).
+   A plugin with empty `env_names` needs nothing here.
+8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")`.
+9. `casa_reload(scope="agents")` (mandatory — see `completion.md`; an `active` install is on disk
    but not in the live registry until reload runs).
-9. `emit_completion(status="ok", text="Installed specialist <slug> from <repo>@<ref>; reloaded and
-   wired for delegation.")`.
+10. `emit_completion(status="ok", text="Installed specialist <slug> from <repo>@<ref>; reloaded and
+    wired for delegation.")`.
 
 ## Common mistakes
 
@@ -73,6 +83,10 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
   "owned_by_specialist"` — use `specialist_upgrade`/`specialist_uninstall` on the SLUG instead.
 - Forgetting `casa_reload(scope="agents")` — an `active` install is on disk but not in the live
   registry until reload runs.
+- Completing the engagement with a bundled plugin's `env_names` unwired (#499) — the install
+  reports success, but the unresolved var keeps the plugin withheld and the specialist's first
+  use hits the requires gate. Do not describe such a var as something the specialist's own setup
+  tool will provision: a var in `env_names` is the installer's to wire, in step 7, here.
 - Relaying a bundled plugin's OWN consent (a trigger/callback/event
   `*_pending_ack` after commit) through this engagement's ask, or asking the
   assistant to `ask_user` it (#494): those surfaces accept the Approve tap and
