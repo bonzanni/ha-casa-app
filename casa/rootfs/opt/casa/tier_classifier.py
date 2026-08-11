@@ -45,7 +45,12 @@ async def classify_tier(content: str) -> str:
 
     opts = sdk.ClaudeAgentOptions(
         cli_path=CLAUDE_CLI_PATH,
-        system_prompt=SENSITIVITY_PROMPT, max_turns=1, allowed_tools=[],
+        # max_turns=2 (#497): on 0.174.0 the runtime sometimes errored with
+        # "Reached maximum number of turns (1)" instead of returning any text
+        # (turn 1 apparently spent on preamble/thinking). One spare turn is
+        # harmless headroom — allowed_tools=[] means there is nothing agentic
+        # a second turn could do except finish emitting text.
+        system_prompt=SENSITIVITY_PROMPT, max_turns=2, allowed_tools=[],
         # NOT bypassPermissions: that makes the SDK pass
         # ``--dangerously-skip-permissions`` to the bundled ``claude`` CLI, which
         # refuses to run as root/sudo — and HA add-ons run as root, so the call
@@ -85,9 +90,20 @@ async def classify_tier(content: str) -> str:
             return tier
         # A garbled reply used to default SILENTLY — indistinguishable from a
         # correct ``private`` classification when auditing tiering accuracy.
+        # #497: length alone made the failure undiagnosable, but the reply
+        # TEXT must never reach the logs (review r1, Sol+Terra): the
+        # classifier's words paraphrase the retained item, and this module's
+        # own doctrine is leak-safety. Log bounded STRUCTURAL metadata only —
+        # enough to tell "verbose prose, no answer line" from "answer line
+        # present but malformed" without carrying content.
+        lines = [ln for ln in reply.splitlines() if ln.strip()]
+        has_label = any(
+            ln.strip().lower().startswith("tier:") for ln in lines)
         logger.warning(
-            "tier classification reply unparseable (%d chars); defaulting to %s",
-            len(reply), DEFAULT_TIER,
+            "tier classification reply unparseable (%d chars, %d lines, "
+            "tier label %s); defaulting to %s",
+            len(reply), len(lines),
+            "present" if has_label else "absent", DEFAULT_TIER,
         )
         return DEFAULT_TIER
     return DEFAULT_TIER  # pragma: no cover — loop always returns

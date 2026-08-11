@@ -308,7 +308,7 @@
     - tests/test_time_envelope.py
     - tests/test_recall_empty_verdict.py
   related: [architecture/overview.md, architecture/turn-loop.md]
-  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-003, INV-MEM-004, INV-MEM-005, INV-MEM-006, INV-MEM-007, INV-MEM-008, INV-MEM-009, INV-MEM-010, INV-MEM-011]
+  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-003, INV-MEM-004, INV-MEM-005, INV-MEM-006, INV-MEM-008, INV-MEM-009, INV-MEM-010, INV-MEM-011, INV-MEM-012]
   invariant_tests:
     INV-MEM-001: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_001_failures_raise_never_return_empty, tests/test_hindsight_memory.py::test_recall_unrenderable_results_are_unavailable_not_zero_hits]
     INV-MEM-002: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_002_exactly_one_readable_tier]
@@ -316,7 +316,7 @@
     INV-MEM-004: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_004_reserved_tags_refused_before_io]
     INV-MEM-005: [tests/test_delegated_memory.py::test_retain_delegated_voice_writes_nothing]
     INV-MEM-006: [tests/test_session_saver.py::test_save_session_expected_sid_mismatch_releases_claim, tests/test_session_saver.py::test_reset_channel_trailing_remove_spares_follow_up_session, tests/test_session_registry.py::test_remove_with_stale_expected_sid_spares_newer_session, tests/test_freshness_reaper.py::test_sweep_passes_cold_snapshot_sid_to_save]
-    INV-MEM-007: [tests/test_sensitivity.py::test_parse_tier_rejects_a_tier_word_inside_a_chatty_reply, tests/test_tier_classifier.py::test_classify_chatty_reply_with_tier_words_defaults_private]
+    INV-MEM-012: [tests/test_sensitivity.py::test_parse_tier_rejects_a_tier_word_inside_a_chatty_reply, tests/test_sensitivity.py::test_parse_tier_accepts_labeled_final_line_after_verbose_reply, tests/test_sensitivity.py::test_parse_tier_answer_line_is_the_literal_labeled_form_only, tests/test_sensitivity.py::test_parse_tier_multiple_answer_lines_are_ambiguous, tests/test_tier_classifier.py::test_classify_chatty_reply_with_tier_words_defaults_private, tests/test_tier_classifier.py::test_classify_verbose_reply_with_labeled_final_line_parses]
     INV-MEM-008: [tests/test_recall_memory_tool_tiers.py::test_engagement_started_by_a_non_operator_recalls_public_only, tests/test_telegram_sender_identity.py::test_a_lowered_engagement_recalls_at_the_lower_tier]
     INV-MEM-009: [tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_same_utterance_two_timestamps_is_one_document, tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_timestamp_survives_out_of_band, tests/test_time_envelope.py::TestComposeStripPair::test_round_trip_is_identity_on_the_raw_text]
     INV-MEM-010: [tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_zero_hits_below_top_clearance_scopes_the_claim, tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_hits_that_did_not_fit_are_reported_as_existing, tests/test_recall_empty_verdict.py::TestQueryEngagerUnknownIsNotAbsence::test_unknown_carries_do_not_assert_guidance]

@@ -126,17 +126,68 @@ _TIER_REPLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# #497: the bundled CLI/model started replying verbosely (286–803 chars), so
+# the whole-reply match above never fired and 100% of retentions defaulted to
+# ``private`` — the tier system was effectively disabled. The prompt now
+# mandates that a non-single-word reply END with a line of exactly
+# ``Tier: <word>``; this pattern accepts that answer line and nothing looser
+# (review r1, Sol+Terra): the LITERAL, undecorated form only — the colon is
+# mandatory and immediately follows the label, so ``tier public``,
+# ``Tier-public``, ``Tier---public``, markdown-wrapped and quoted variants
+# all stay ambiguous. A bare tier word that merely ends a chatty reply stays
+# ambiguous too, preserving the #350 guarantee that tier words inside prose
+# never parse. "Tier: family or private" and "Tier: public would be wrong"
+# do not match.
+_TIER_ANSWER_LINE_RE = re.compile(
+    r"^tier:\s+(private|family|friends|public)$",
+    re.IGNORECASE,
+)
+
+# Review r2 (Sol S1): a MALFORMED label line before the answer line
+# ("Tier: private." then "Tier: public") is a conflict the exact-match count
+# missed — the strict answer regex ignores it, silently letting the later
+# line win. Any earlier line that so much as OPENS with a Tier label makes
+# the reply ambiguous. The label boundary is explicit (r3, Sol S1): ``\b``
+# treats ``_`` as a word character, so "_Tier_: private" slipped past it —
+# anything in ``[\W_]`` (or end-of-line) terminates the label, while a
+# letter/digit ("Tiering …") keeps prose out of scope. Lines merely
+# CONTAINING "tier" are not labels.
+_TIER_LABELISH_RE = re.compile(r"^[\W_]*tier(?:[\W_]|$)", re.IGNORECASE)
+
 
 def parse_tier(text: str | None) -> str | None:
-    """Parse an LLM/agent reply that should be a single tier word. Returns the
-    lowercased tier only when the reply is exactly one tier token (modulo an
-    optional "Tier:" label and surrounding punctuation/whitespace); None
-    otherwise — including when tier words appear inside a longer sentence
-    (#350). The caller applies DEFAULT_TIER on None."""
+    """Parse an LLM/agent reply that should name a single tier. Returns the
+    lowercased tier only when either (a) the reply is a SINGLE non-empty line
+    that is exactly one tier token (modulo an optional "Tier:" label and
+    surrounding punctuation / whitespace), or (b) the reply is multi-line,
+    its FINAL non-empty line is the literal ``Tier: <word>`` answer line
+    (#497 — the declared-answer line the prompt mandates), and no earlier
+    line is a tier token or opens with a Tier label (reviews r2/r3: a
+    malformed, bare, or conflicting prior answer line is ambiguity). None otherwise — including when tier words
+    appear inside a longer sentence (#350), an unlabeled multi-line reply,
+    or a decorated token spread across lines (review r2: the whole-reply
+    arm's separator classes must never span newlines). The caller applies
+    DEFAULT_TIER on None."""
     if not isinstance(text, str):
         return None
-    m = _TIER_REPLY_RE.match(text)
-    return m.group(1).lower() if m else None
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    if len(lines) == 1:
+        m = _TIER_REPLY_RE.match(lines[0])
+        return m.group(1).lower() if m else None
+    m = _TIER_ANSWER_LINE_RE.match(lines[-1])
+    if not m:
+        return None
+    # Reject when ANY earlier line is itself a tier answer in either accepted
+    # shape: label-opening ("Tier: private.", "_Tier_: private") or a bare /
+    # decorated tier token ("private", "**private**") — review r3, Terra S1:
+    # a prior answer contradicted by the final line is ambiguity, never
+    # "last one wins".
+    if any(_TIER_LABELISH_RE.match(ln) or _TIER_REPLY_RE.match(ln)
+           for ln in lines[:-1]):
+        return None
+    return m.group(1).lower()
 
 
 # Classification prompt — converged with the maintainer via the eval session (2026-06-03).
@@ -188,5 +239,10 @@ Rules:
    tier (a leak is worse than forgetting).
 
 Respond with ONLY the single tier word: private, family, friends, or public.
+Do not explain, hedge, or add anything else. If you nonetheless write anything besides the
+single word, your reply MUST end with a final line of exactly:
+Tier: <word>
+where <word> is one of: private, family, friends, public. A reply without that final line
+is discarded and the fact is filed at the most restrictive tier.
 Fact:
 """
