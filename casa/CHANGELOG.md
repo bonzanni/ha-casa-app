@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.175.0] - 2026-08-11
+
+### Fixed
+
+- **The Telegram webhook route now says what it did.** `/telegram/update`
+  used to answer the same bare 200 whether the update was queued for the
+  agent or silently discarded as a redelivered duplicate, so test harnesses
+  and diagnostic tooling driving the route could not tell the two apart
+  without container log access. The response now carries an `X-Casa-Update`
+  header — `accepted`, `duplicate`, or `ignored` (channel not started or
+  unparseable payload) — while the status stays 200 with an empty body, as
+  Telegram's redelivery contract requires. (#428)
+
 ## [0.174.0] - 2026-08-11
 
 ### Fixed
