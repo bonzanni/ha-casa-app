@@ -783,7 +783,7 @@ def _create(coord, channel, key=None, *, chat_id=100, operator_id=7,
             target_role="finance-full", tool_name="invoice_reset",
             canonical_json='{"amount":10,"id":"INV-1"}',
             enforcement_role="finance", summary=None, display_name=None,
-            engagement_id=""):
+            engagement_id="", grants=None):
     if key is None:
         key = _key(chat_id=chat_id, enforcement_role=enforcement_role,
                    tool_name=tool_name, args_hash=canonical_args_hash({"x": 1}),
@@ -794,6 +794,7 @@ def _create(coord, channel, key=None, *, chat_id=100, operator_id=7,
         enforcement_role=enforcement_role, channel=channel,
         summary=summary, display_name=display_name,
         engagement_id=engagement_id,
+        grants=GrantStore() if grants is None else grants,
     )
     return key, handle
 
@@ -1025,15 +1026,47 @@ class TestPrePostAndShutdownTerminal:
 
 
 class TestAuthzFinishHook:
+    async def test_approval_mints_into_injected_store_not_module_global(
+        self, monkeypatch,
+    ):
+        """#311: the approval used to mint into the module-global GRANTS even
+        when the coordinator's caller injected its own store (the documented
+        AuthzDeps seam) — the injected store never saw the approval and the
+        continuation re-challenged. The mint must land in the store passed to
+        get_or_create, and ONLY there."""
+        import authz_grants
+
+        class _Boom:
+            def mint(self, key, **kw):  # pragma: no cover — the red case
+                raise AssertionError(
+                    "approval minted into the module-global GRANTS, "
+                    "not the injected store"
+                )
+
+        monkeypatch.setattr(authz_grants, "GRANTS", _Boom())
+        log: list = []
+        injected = _SpyGrants(log)
+        broker, coord, channel = _fresh_env(monkeypatch, log=log)
+        key, handle = _create(coord, channel, grants=injected)
+        assert await handle.settled_post() == "posted"
+        ch = coord._entries[key]
+        _tap(broker, ch, 0)
+        await _settle()
+
+        assert log[0] == ("mint", key)
+        # The grant is really IN the injected store (single-use consume).
+        assert injected.consume(key) is True
+        assert [e[0] for e in log if e[0] == "mint"] == ["mint"]
+
     async def test_approve_event_order_mint_edit_dispatch_verbatim(
         self, monkeypatch,
     ):
-        import authz_grants
         log: list = []
-        monkeypatch.setattr(authz_grants, "GRANTS", _SpyGrants(log))
+        spy = _SpyGrants(log)
         broker, coord, channel = _fresh_env(monkeypatch, log=log)
         canonical = '{"amount":10,"id":"INV-1"}'
-        key, handle = _create(coord, channel, canonical_json=canonical)
+        key, handle = _create(coord, channel, canonical_json=canonical,
+                              grants=spy)
         assert await handle.settled_post() == "posted"
         ch = coord._entries[key]
         _tap(broker, ch, 0)
@@ -1057,9 +1090,8 @@ class TestAuthzFinishHook:
         (via _dispatch_engagement_continuation) on approval — NOT the resident
         bus-role button continuation — carrying the same verbatim approval text,
         and mints the engagement-bound key."""
-        import authz_grants
         log: list = []
-        monkeypatch.setattr(authz_grants, "GRANTS", _SpyGrants(log))
+        spy = _SpyGrants(log)
         broker, coord, channel = _fresh_env(monkeypatch, log=log)
         canonical = '{"amount":10,"id":"INV-1"}'
         eng_key = _key(
@@ -1068,7 +1100,7 @@ class TestAuthzFinishHook:
         )
         key, handle = _create(
             coord, channel, eng_key, canonical_json=canonical,
-            engagement_id="eng-123",
+            engagement_id="eng-123", grants=spy,
         )
         assert await handle.settled_post() == "posted"
         ch = coord._entries[key]
@@ -1088,16 +1120,15 @@ class TestAuthzFinishHook:
     async def test_engagement_deny_resumes_engagement_no_mint(self, monkeypatch):
         """#400: denying an engagement-origin challenge resumes the engagement
         with the denial text and mints NOTHING."""
-        import authz_grants
         log: list = []
-        monkeypatch.setattr(authz_grants, "GRANTS", _SpyGrants(log))
+        spy = _SpyGrants(log)
         broker, coord, channel = _fresh_env(monkeypatch, log=log)
         eng_key = _key(
             chat_id=100, enforcement_role="finance", tool_name="invoice_reset",
             args_hash=canonical_args_hash({"x": 1}), engagement_id="eng-9",
         )
         key, handle = _create(
-            coord, channel, eng_key, engagement_id="eng-9",
+            coord, channel, eng_key, engagement_id="eng-9", grants=spy,
         )
         await handle.settled_post()
         ch = coord._entries[key]
@@ -1111,11 +1142,10 @@ class TestAuthzFinishHook:
         assert "[authorization denied]" in channel.eng_dispatches[0]["text"]
 
     async def test_deny_no_mint_edit_then_dispatch(self, monkeypatch):
-        import authz_grants
         log: list = []
-        monkeypatch.setattr(authz_grants, "GRANTS", _SpyGrants(log))
+        spy = _SpyGrants(log)
         broker, coord, channel = _fresh_env(monkeypatch, log=log)
-        key, handle = _create(coord, channel)
+        key, handle = _create(coord, channel, grants=spy)
         await handle.settled_post()
         ch = coord._entries[key]
         _tap(broker, ch, 1)

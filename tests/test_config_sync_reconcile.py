@@ -293,6 +293,56 @@ def test_real_git_snapshot_fails_closed_on_stale_index_lock(tmp_path: Path) -> N
     assert g.snapshot("snap") is None  # must not return the stale pre-edit HEAD
 
 
+# --- #311: deletion-respecting seed arm (absence-valid paths only) ----------
+
+
+def test_deleted_delegates_stays_deleted_when_image_unchanged(tmp_path: Path) -> None:
+    """#311: an operator-deleted agents/*/delegates.yaml (tracked, image copy
+    unchanged since baseline) is a deliberate deletion — the seed arm must
+    NOT resurrect it every boot."""
+    rel = "agents/butler/delegates.yaml"
+    _write(tmp_path / "defaults", rel, "SAME")
+    _write(tmp_path / "baseline", rel, "SAME")
+    # live: absent — the operator deleted the tracked file.
+    report = _run(tmp_path)
+    assert not (tmp_path / "live" / rel).exists()
+    assert rel not in report.updated
+
+
+def test_deleted_delegates_reseeded_when_image_changes(tmp_path: Path) -> None:
+    """The deletion is honored only while the image is unchanged: a new image
+    copy reintroduces the file (image change wins, same as the edit rules)."""
+    rel = "agents/butler/delegates.yaml"
+    _write(tmp_path / "defaults", rel, "NEW")
+    _write(tmp_path / "baseline", rel, "OLD")
+    report = _run(tmp_path)
+    assert (tmp_path / "live" / rel).read_text() == "NEW"
+    assert rel in report.updated
+
+
+def test_deleted_required_file_is_still_reseeded(tmp_path: Path) -> None:
+    """Design r2 (Sol S2): deletion-wins is scoped to absence-valid paths.
+    A deleted REQUIRED file (runtime.yaml — boot fatals without it) must
+    keep being reseeded even when the image is unchanged."""
+    rel = "agents/butler/runtime.yaml"
+    _write(tmp_path / "defaults", rel, "SAME")
+    _write(tmp_path / "baseline", rel, "SAME")
+    report = _run(tmp_path)
+    assert (tmp_path / "live" / rel).read_text() == "SAME"
+    assert rel in report.updated
+
+
+def test_specialist_delegates_deletion_also_honored(tmp_path: Path) -> None:
+    """The absence-valid class is agents/<any-role>/delegates.yaml, not a
+    hardcoded resident list."""
+    rel = "agents/finance/delegates.yaml"
+    _write(tmp_path / "defaults", rel, "SAME")
+    _write(tmp_path / "baseline", rel, "SAME")
+    report = _run(tmp_path)
+    assert not (tmp_path / "live" / rel).exists()
+    assert rel not in report.updated
+
+
 # --- Finding 2: post-sync boot-parity backstop -------------------------------
 
 def _run_with_repo(tmp_path: Path, validate_repo, *, git=None):
@@ -328,6 +378,37 @@ def test_post_sync_heals_reinjected_delegates(tmp_path: Path) -> None:
     assert rel in report.post_sync_healed
     assert report.post_sync_errors == []
     assert not (live / rel).exists(), "re-injected delegates.yaml must be removed"
+
+
+def test_heal_is_stable_on_the_next_boot(tmp_path: Path) -> None:
+    """#311 end-to-end: boot 1 seeds the image-owned delegates.yaml, the
+    backstop heals it away, the baseline mirrors the image. Boot 2 must be a
+    NOOP — no reseed, no re-heal, no `changed` report, no git snapshot —
+    instead of re-seeding and re-healing the same file forever."""
+    rel = "agents/assistant/delegates.yaml"
+    _write(tmp_path / "defaults", rel, "DEFAULT")
+    live = tmp_path / "live"
+
+    def validate_repo() -> list[str]:
+        if (live / rel).exists():
+            return ["agent 'assistant': delegates.yaml is non-empty but "
+                    "runtime.yaml tools.allowed is missing "
+                    "'mcp__casa-framework__delegate_to_agent'"]
+        return []
+
+    git = _FakeGit()
+    report1 = _run_with_repo(tmp_path, validate_repo, git=git)
+    assert rel in report1.post_sync_healed
+    snapshots_after_boot1 = len(git.snapshots)
+
+    report2 = _run_with_repo(tmp_path, validate_repo, git=git)
+    assert not (live / rel).exists()
+    assert report2.updated == []
+    assert report2.post_sync_healed == []
+    assert len(git.snapshots) == snapshots_after_boot1, (
+        "boot 2 recorded a snapshot for a byte-identical tree — the "
+        "seed→heal loop is still alive"
+    )
 
 
 def test_post_sync_does_not_delete_genuine_user_delegates(tmp_path: Path) -> None:

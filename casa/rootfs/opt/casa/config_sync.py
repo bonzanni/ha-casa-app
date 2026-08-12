@@ -610,6 +610,14 @@ def _archive_casabak(config_dir: Path, rel: str, report: SyncReport) -> None:
 _DELEGATE_MISMATCH_RE = re.compile(
     r"agent '([^']+)': delegates\.yaml is non-empty but")
 
+# #311: the seed arm honors an operator's deletion ONLY for paths whose
+# absence is boot-valid — today exactly the per-agent delegates.yaml
+# (optional in agent_loader's file contract, and the one file the post-sync
+# heal deletes). Everything else missing from /config is unconditionally
+# reseeded: the reseed is what repairs a deleted REQUIRED file before the
+# boot loader fatals on it.
+_ABSENCE_VALID_RE = re.compile(r"agents/[^/]+/delegates\.yaml")
+
 
 def _post_sync_validate_and_heal(
     *, config_dir: Path, defaults_dir: Path, report: SyncReport,
@@ -1076,8 +1084,24 @@ def _reconcile_impl(*, defaults_dir, config_dir, baseline_dir,
         live_ex = rel in live_files
 
         if not live_ex:
-            if new_ex:
-                _copy(defaults_dir, rel, config_dir)      # create / seed
+            if new_ex and not (
+                base_ex
+                and _ABSENCE_VALID_RE.fullmatch(rel)
+                and _bytes_equal(defaults_dir / rel, baseline_dir / rel)
+            ):
+                # create / seed. #311: a tracked absence-valid file the
+                # operator deleted (baseline has it, image copy unchanged)
+                # is a DELIBERATE deletion and stays deleted — pre-fix the
+                # unconditional reseed resurrected the image-owned
+                # delegates.yaml every boot, the post-sync heal deleted it
+                # again, and every reconcile reported `changed` for a
+                # byte-identical tree. An image CHANGE still wins (reseeds
+                # once; the mirrored baseline makes the next boot stable),
+                # mirroring the edited-file doctrine below. Scoped to
+                # absence-valid paths (design r2): a deleted REQUIRED file
+                # (e.g. runtime.yaml, boot-fatal when missing) must keep
+                # being repaired by the reseed.
+                _copy(defaults_dir, rel, config_dir)
                 report.updated.append(rel)
             continue                                       # baseline-only & gone: baseline rewrite drops it
 

@@ -454,6 +454,28 @@ async def test_zero_wire_hits_is_the_only_empty_tuple_case(memory) -> None:
     assert hits == ()
 
 
+@pytest.mark.parametrize("bad_metadata", [["unexpected"], "text", 5, True])
+async def test_recall_items_non_mapping_metadata_is_protocol_error(
+    memory, bad_metadata,
+) -> None:
+    """#311: a non-mapping `metadata` used to escape the failure contract as
+    a raw ValueError/TypeError out of freeze_metadata; the wire-contract
+    violation must surface as RecallProtocolError like its siblings
+    (result_not_object / result_text_invalid / result_tags_invalid)."""
+    from semantic_memory import RecallProtocolError
+
+    memory._request = AsyncMock(return_value={
+        "results": [{
+            "id": "b1", "text": "fact", "type": "world",
+            "tags": ["friends"], "metadata": bad_metadata,
+        }],
+    })
+    with pytest.raises(RecallProtocolError):
+        await memory.recall_items(
+            "casa", "query", tags=["friends"], max_tokens=100, clearance="friends",
+        )
+
+
 async def test_all_hits_dropped_by_clearance_is_protocol_error_not_empty(memory) -> None:
     from semantic_memory import RecallProtocolError
 

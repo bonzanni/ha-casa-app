@@ -626,7 +626,7 @@ class ChallengeCoordinator:
     def get_or_create(
         self, key: GrantKey, *, chat_id: int, operator_id: int,
         target_role: str, tool_name: str, canonical_json: str,
-        enforcement_role: str, channel: Any,
+        enforcement_role: str, channel: Any, grants: "GrantStore",
         summary: "str | None" = None, display_name: "str | None" = None,
         engagement_id: str = "",
     ) -> ChallengeHandle:
@@ -648,8 +648,12 @@ class ChallengeCoordinator:
         def _on_commit_sync(idx: int, meta: dict, _key: GrantKey = key) -> None:
             # Runs in the Telegram callback IMMEDIATELY after a successful
             # commit (no await between): idx 0 -> mint + record; idx 1 -> no-op.
+            # #311: mint into the CALLER'S store (deps.grants in production —
+            # the same store the enforcement hook consumes from), never the
+            # module-global GRANTS, or an injected store never sees the
+            # approval and the continuation re-challenges.
             if idx == 0:
-                GRANTS.mint(_key)
+                grants.mint(_key)
                 meta["minted"] = True
 
         def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
@@ -1052,7 +1056,7 @@ def make_resident_authz_hook(
                     key, chat_id=chat_id, operator_id=operator_id,
                     target_role=target_role, tool_name=tool_name,
                     canonical_json=canonical_json, enforcement_role=role,
-                    channel=deps.channel,
+                    channel=deps.channel, grants=deps.grants,
                     summary=protected[tool_name].get("summary"),
                     display_name=deps.display_name,
                     engagement_id=engagement_id,

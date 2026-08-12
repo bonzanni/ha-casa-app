@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.183.0] - 2026-08-12
+
+### Fixed
+
+- Config reconcile no longer re-seeds (and then re-heals) a deliberately
+  deleted per-agent `delegates.yaml` on every boot — each boot was reporting
+  a phantom `changed` and recording a git snapshot of an identical tree. The
+  deletion now sticks while the image copy is unchanged; a changed image
+  still reintroduces the file once. Every other missing tracked file keeps
+  being re-seeded, since that reseed is what repairs a deleted required file
+  before boot fails on it. (#311)
+- A pending full reload can no longer be starved by a steady stream of
+  smaller reloads (nor the reverse): reload lock admission is now
+  first-in-first-out. (#311)
+- Topic-retention sweeps are serialized and record each deleted topic
+  immediately, so concurrent or interrupted sweeps no longer double-issue
+  Telegram topic deletions or double-count results. (#311)
+- Approving a protected tool call now records the grant in the store the
+  caller injected (the documented dependency seam) rather than always the
+  process-wide one; production wiring is unchanged. (#311)
+- A memory-recall hit with malformed metadata now surfaces as the documented
+  recall protocol error instead of an unhandled exception. (#311)
+
 ## [0.182.1] - 2026-08-12
 
 ### Fixed

@@ -277,8 +277,8 @@ a parser contract, not accuracy; the eval set owns accuracy.
 carrying a reason slug that names the class of failure. There is no HTTP-level retry beyond a
 single connection retry.
 
-**The backend returns something malformed** — a bad envelope, a hit with unusable text or
-tags, or nothing readable at the caller's clearance. The seam raises `RecallProtocolError`.
+**The backend returns something malformed** — a bad envelope, unusable hit
+text/tags/metadata, or nothing readable at the caller's clearance. The seam raises `RecallProtocolError`.
 This is deliberately not an empty result.
 
 **No backend is configured.** Recall raises with a reason naming it, the overlay

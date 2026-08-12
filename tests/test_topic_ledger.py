@@ -74,6 +74,9 @@ def _fresh_module_state(monkeypatch, tmp_path):
     loop) and a tmp default LEDGER_PATH so nothing can ever touch /data."""
     monkeypatch.setattr(topic_ledger, "_LOCK", asyncio.Lock())
     monkeypatch.setattr(
+        topic_ledger, "_SWEEP_LOCK", asyncio.Lock(), raising=False,
+    )
+    monkeypatch.setattr(
         topic_ledger, "LEDGER_PATH", str(tmp_path / "default-topic-ledger.json")
     )
 
@@ -936,3 +939,140 @@ async def test_sweep_counters_partition_the_ledger(tmp_path, recorded_sleeps):
     ) == 7
     remaining = {e["engagement_id"] for e in await topic_ledger.load(path=str(path))}
     assert remaining == {"future", "no-chat", "denied"}
+
+
+# ---------------------------------------------------------------------------
+# #311: sweep serialization + per-entry checkpointing
+# ---------------------------------------------------------------------------
+
+
+class _GatedChannel:
+    """delete_topic parks on an event so a second sweep can be interleaved
+    deterministically while the first is mid-delete."""
+
+    def __init__(self):
+        self.calls: list[int] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def delete_topic(self, thread_id):
+        self.calls.append(thread_id)
+        self.entered.set()
+        await self.release.wait()
+
+
+async def test_concurrent_sweeps_do_not_double_delete(tmp_path):
+    """#311: the scheduled sweep and the configurator sweep tool could both
+    load the same due entry before either removed it, double-issuing the
+    Telegram deletion (the loser folded into `deleted` as not_found). Sweeps
+    must be serialized: one delete_topic call per topic, ever."""
+    path = tmp_path / "ledger.json"
+    _seed(path, [_entry("dup", topic_id=613, delete_after=NOW - 1)])
+    channel = _GatedChannel()
+
+    sweep1 = asyncio.ensure_future(topic_ledger.sweep_topics(
+        channel, chat_id=CHAT, now=NOW, path=str(path),
+    ))
+    await asyncio.wait_for(channel.entered.wait(), 1)  # sweep1 mid-delete
+    sweep2 = asyncio.ensure_future(topic_ledger.sweep_topics(
+        channel, chat_id=CHAT, now=NOW, path=str(path),
+    ))
+    for _ in range(10):
+        await asyncio.sleep(0)  # give sweep2 every chance to (wrongly) load
+    channel.release.set()
+    r1, r2 = await asyncio.gather(sweep1, sweep2)
+
+    assert channel.calls == [613], (
+        f"the same topic was deleted {len(channel.calls)} times: "
+        f"{channel.calls!r}"
+    )
+    assert r1["deleted"] + r2["deleted"] == 1
+    assert await topic_ledger.load(path=str(path)) == []
+
+
+async def test_cancelled_sweep_checkpoints_completed_deletions(tmp_path):
+    """#311 (design r1): a sweep cancelled mid-run must not forget deletions
+    it already performed — each resolved entry is removed from the ledger
+    before the next cancellable await, so the next sweep re-issues at most
+    the single in-flight entry."""
+    path = tmp_path / "ledger.json"
+    _seed(path, [
+        _entry("done", topic_id=613, delete_after=NOW - 1),
+        _entry("in-flight", topic_id=614, delete_after=NOW - 1),
+    ])
+
+    class _SecondCallParks:
+        def __init__(self):
+            self.calls: list[int] = []
+            self.second_entered = asyncio.Event()
+
+        async def delete_topic(self, thread_id):
+            self.calls.append(thread_id)
+            if len(self.calls) >= 2:
+                self.second_entered.set()
+                await asyncio.Event().wait()  # park forever
+
+    channel = _SecondCallParks()
+    task = asyncio.ensure_future(topic_ledger.sweep_topics(
+        channel, chat_id=CHAT, now=NOW, path=str(path),
+    ))
+    await asyncio.wait_for(channel.second_entered.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    remaining = {
+        e["engagement_id"] for e in await topic_ledger.load(path=str(path))
+    }
+    assert remaining == {"in-flight"}, (
+        "the completed deletion was not checkpointed before cancellation: "
+        f"ledger still holds {remaining!r}"
+    )
+
+
+async def test_cancelled_remove_cannot_clobber_concurrent_append(
+    tmp_path, monkeypatch,
+):
+    """Diff-gate S1 (Terra): cancelling remove() mid-write used to release
+    _LOCK while the to_thread worker still held a stale snapshot; a
+    concurrent append then landed and the stale write clobbered it. The RMW
+    must hold _LOCK until the threaded write actually completes."""
+    import threading
+
+    path = str(tmp_path / "ledger.json")
+    _seed(Path(path), [_entry("old", topic_id=613)])
+
+    gate = threading.Event()
+    writes: list[list] = []
+    real_write = topic_ledger._write_entries
+
+    def parked_first_write(target, entries):
+        writes.append(list(entries))
+        if len(writes) == 1:
+            gate.wait(5)  # park the remove()'s write in the worker thread
+        real_write(target, entries)
+
+    monkeypatch.setattr(topic_ledger, "_write_entries", parked_first_write)
+
+    remover = asyncio.ensure_future(topic_ledger.remove({"old"}, path=path))
+    for _ in range(500):
+        if writes:
+            break
+        await asyncio.sleep(0.01)
+    assert writes, "remove() never reached its write"
+
+    remover.cancel()
+    appender = asyncio.ensure_future(topic_ledger.append(
+        engagement_id="new", chat_id=CHAT, topic_id=614, outcome="completed",
+        path=path,
+    ))
+    await asyncio.sleep(0.05)  # give the append every chance to interleave
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await remover
+    await asyncio.wait_for(appender, 5)
+
+    ids = {e["engagement_id"] for e in await topic_ledger.load(path=path)}
+    assert ids == {"new"}, (
+        f"concurrent append was lost to a stale post-cancel write: {ids!r}"
+    )

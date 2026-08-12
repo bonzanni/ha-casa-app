@@ -257,6 +257,12 @@ class HindsightSemanticMemory(SemanticMemory):
                 raise RecallProtocolError("result_text_invalid")
             if not isinstance(raw_tags, list) or not all(isinstance(t, str) for t in raw_tags):
                 raise RecallProtocolError("result_tags_invalid")
+            raw_metadata = result.get("metadata")
+            if raw_metadata is not None and not isinstance(raw_metadata, dict):
+                # #311: a non-mapping metadata used to escape as a raw
+                # ValueError/TypeError out of freeze_metadata, outside the
+                # documented failure contract.
+                raise RecallProtocolError("result_metadata_invalid")
             wire_tags = tuple(raw_tags)
             sensitivity = _decode_sensitivity(wire_tags, clearance=clearance)
             if sensitivity is None:
@@ -281,7 +287,7 @@ class HindsightSemanticMemory(SemanticMemory):
                 document_id=result.get("document_id") or None,
                 chunk_id=result.get("chunk_id") or None,
                 source_fact_ids=source_fact_ids,
-                metadata=RecallHit.freeze_metadata(result.get("metadata")),
+                metadata=RecallHit.freeze_metadata(raw_metadata),
                 context=result.get("context") or None, score=score,
             ))
         if not hits:

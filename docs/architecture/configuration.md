@@ -47,8 +47,13 @@ it is duplicated in the boot script — both must agree.
 operator never touched follows the image — updated in place, deleted if upstream removed
 it. An operator-edited file that conflicts with a changed default, or that fails its
 schema, is *overwritten by the image* with the prior content preserved as a recovery
-artifact. A live file the image does not know is adopted, not deleted. Predicting which of
-your edits survive means knowing which of the three cases each file is in.
+artifact. A live file the image does not know is adopted, not deleted. A tracked file the
+operator *deleted* is re-seeded from the image — except for paths whose absence is
+boot-valid (today exactly the per-agent `delegates.yaml`), where the deletion is honored
+while the image copy is unchanged and an image change reintroduces the file; for every
+other path the unconditional reseed is what repairs a deleted required file before boot
+fatals on it. Predicting which of your edits survive means knowing which of these cases
+each file is in.
 
 **Three files resolve per entry rather than per file, and that changes the answer for
 them.** A small explicit set — the trigger, delegate and executor lists under each agent —
