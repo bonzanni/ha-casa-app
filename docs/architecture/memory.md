@@ -198,13 +198,13 @@ point releases a claim that landed on a different session, `finish_save` and
 removal declines the same way — as do the reaper's direct removals of unusable and
 recall-only entries (a snapshot without a session id guards on that absence).
 
-The guard is deliberately session-scoped, not registration-scoped, and each path has its own
-reason that suffices. A *reset* that removes a same-id re-registration is executing its
-contract: the id names exactly the conversation the user asked to reset, whoever refreshed
-the pointer meanwhile. The *reaper* cannot meet a same-id re-registration from a racing
-turn at all: resuming stamps `last_active` before the turn runs and a past-freshness
-session is never resumed, so any turn racing a cold sweep registers a *fresh* id — which
-this guard catches.
+Where the id cannot distinguish, the guards also accept a *registration generation*:
+a process-local monotonic token stamped per registration, never persisted (a loaded entry
+reads "no generation", which no live one reproduces). Passing the snapshotted generation
+makes each conditional mutation — claim placement included — decline once any
+registration moved it, even same-id. Stale-resume recovery and the reaper pass it; a
+*reset* does not: the id names the conversation being reset, so removing a same-id
+re-registration is its contract.
 
 What it does not cover: a caller that passes no expected id gets the unconditional
 behavior; and a turn still running on the *same* session when a reset saves it can have its

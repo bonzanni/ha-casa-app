@@ -185,3 +185,50 @@ async def test_sweep_processes_the_cold_retain_retry_spool(tmp_path, monkeypatch
     )
     await reaper.sweep_once()
     assert calls and calls[0][0] is sem
+
+
+async def test_stale_claim_release_declines_after_reregistration(tmp_path):
+    """#526 (Terra diff-r1): staleness is judged from the sweep's STALE entry
+    copy. A re-registration (same sid included) that lands a FRESH claim
+    between the copy and the release must keep that claim — the generation
+    guard declines the unconditional clear the pre-fix code issued."""
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
+    await reg.register("telegram-stale", "assistant", "sid-b", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
+    reg._data["telegram-stale"]["last_active"] = (now - timedelta(hours=13)).isoformat()
+    reg._data["telegram-stale"]["consolidated_at"] = (now - timedelta(hours=5)).isoformat()
+
+    saved = []
+
+    async def racing_save(key, *a, **k):
+        saved.append(key)
+        return True
+
+    reaper = FreshnessReaper(registry=reg, semantic_memory=AsyncMock(),
+        directory_for=lambda r: "/h", now=lambda: now, save_fn=racing_save,
+        interval_s=3600.0)
+
+    # Simulate the race: after sweep_once() captured its entry+generation
+    # copy but before the per-key body runs, a same-sid turn re-registers and
+    # a new saver claims. Patch clear_save_claim's entry hook via a wrapper
+    # that performs the re-registration+claim FIRST, exactly once.
+    from session_registry import _UNCONDITIONAL
+
+    real_clear = reg.clear_save_claim
+    raced = {"done": False}
+
+    # Transparent wrapper: forward EXACTLY what the reaper passed (default
+    # _UNCONDITIONAL, matching the real signature — a None default would
+    # itself act as a guard and mask an unguarded caller).
+    async def racing_clear(key, sid=None, *, expected_generation=_UNCONDITIONAL):
+        if not raced["done"]:
+            raced["done"] = True
+            await reg.register("telegram-stale", "assistant", "sid-b", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
+            reg._data["telegram-stale"]["consolidated_at"] = now.isoformat()
+        await real_clear(key, sid, expected_generation=expected_generation)
+
+    reg.clear_save_claim = racing_clear
+    await reaper.sweep_once()
+
+    # The fresh claim survived the stale-claim release (generation moved).
+    assert reg.get("telegram-stale").get("consolidated_at") == now.isoformat()

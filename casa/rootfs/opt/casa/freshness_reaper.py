@@ -67,7 +67,13 @@ class FreshnessReaper:
 
     async def sweep_once(self) -> None:
         now = self._now()
-        for key, entry in list(self._reg.all_entries().items()):
+        entries = list(self._reg.all_entries().items())
+        # #526: capture registration generations in the SAME no-await block as
+        # the entry copy — the per-key guards below must compare against the
+        # generation of the entry THIS sweep judged, not whatever registered
+        # during the awaits between keys.
+        generations = {key: self._reg.generation(key) for key, _ in entries}
+        for key, entry in entries:
             try:
                 channel = key.partition("-")[0]
                 if channel not in _CONVERSATIONAL:
@@ -85,7 +91,13 @@ class FreshnessReaper:
                 if claimed:
                     if self._is_stale_claim(claimed, now):
                         logger.warning("freshness reaper: releasing stale save-claim for %s", key)
-                        await self._reg.clear_save_claim(key)
+                        # #526 (Terra diff-r1): staleness was judged from the
+                        # sweep's STALE entry copy — a re-registration (same
+                        # sid included) may have landed a FRESH claim since;
+                        # the generation guard declines the release then.
+                        await self._reg.clear_save_claim(
+                            key, expected_generation=generations[key],
+                        )
                     else:
                         continue  # a save is genuinely in-flight → let it finish
                 # Task 10: decode the entry into an immutable snapshot. A legacy
@@ -111,6 +123,7 @@ class FreshnessReaper:
                 ):
                     await self._reg.remove(
                         key, expected_sid=entry.get("sdk_session_id"),
+                        expected_generation=generations[key],
                     )
                     continue
                 if not writes_to_bank(channel):
@@ -118,6 +131,7 @@ class FreshnessReaper:
                     # pointer so the registry does not accumulate dead voice entries.
                     await self._reg.remove(
                         key, expected_sid=snapshot.sdk_session_id,
+                        expected_generation=generations[key],
                     )
                     continue
                 # The reduced save_session reads speaker/user provenance from the
@@ -129,6 +143,7 @@ class FreshnessReaper:
                     key, self._reg, self._sem,
                     directory=self._dir_for(snapshot.agent), channel=channel,
                     expected_sid=snapshot.sdk_session_id,
+                    expected_generation=generations[key],
                 )
             except asyncio.CancelledError:
                 raise

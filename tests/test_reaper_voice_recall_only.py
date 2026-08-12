@@ -27,16 +27,19 @@ class _Reg:
     def all_entries(self):
         return dict(self._e)
 
-    async def remove(self, key, expected_sid=None):
+    def generation(self, key):
+        return None
+
+    async def remove(self, key, expected_sid=None, *, expected_generation=None):
         self.removed.append(key)
         self._e.pop(key, None)
 
-    async def clear_save_claim(self, key, sid=None):
+    async def clear_save_claim(self, key, sid=None, *, expected_generation=None):
         self.cleared_claims.append(key)
         self._e.get(key, {}).pop("consolidated_at", None)
 
 
-async def _save_fn(key, reg, sem, *, directory, channel, expected_sid=None):
+async def _save_fn(key, reg, sem, *, directory, channel, expected_sid=None, expected_generation=None):
     reg.saved.append((key, channel))
     return True
 

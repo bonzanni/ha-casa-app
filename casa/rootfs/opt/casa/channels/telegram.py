@@ -3506,9 +3506,20 @@ class TelegramChannel(Channel):
         Reuses the existing role_or_type + ``task`` stored on the
         ``EngagementRecord``. Idempotent — when ``new_state`` is identical to
         the persisted ``current_state_emoji`` it's a no-op. Unknown
-        ``new_state`` values are also no-ops (defensive). Persistence of the
-        new emoji happens after a successful edit_forum_topic so a transient
-        Telegram failure doesn't desync the record from what's on the wire.
+        ``new_state`` values are also no-ops (defensive).
+
+        #529 sentinel scheme: the persisted emoji is made UNCERTAIN (``""``,
+        strict write-ahead) BEFORE the wire await and settled to the real
+        value only after it. A cancellation landing anywhere between the two
+        persists therefore leaves a value the no-op guard above can never
+        match — the next serialized paint (any state, including the one that
+        was persisted before the cancel) goes through and re-converges the
+        wire. The pre-#529 order (persist only after a successful edit) left
+        wire=new/persisted=old on a cancel in the window, and the guard then
+        swallowed every paint requesting the persisted state: a PERMANENT
+        divergence. An identical-title ``"not modified"`` rejection counts as
+        wire success (the desired title already holds — the landed-but-
+        unpersisted case) so the sentinel converges instead of looping.
         """
         from channels.state_emoji import (
             STATE_EMOJI, compose_topic_title, concise_task,
@@ -3558,26 +3569,55 @@ class TelegramChannel(Channel):
             )
             if not self.engagement_supergroup_id:
                 return
+            # #529 step 1: durable uncertainty BEFORE the wire. Strict — a
+            # swallowed write failure would proceed to the wire with a record
+            # a restart reloads as the OLD emoji (the original stuck state).
+            # On failure the registry rolled the in-memory field back; never
+            # touch the wire with an unpersistable record.
+            try:
+                await self._engagement_registry.set_channel_state(
+                    engagement_id, current_state_emoji="", strict=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "U3 update_topic_state sentinel persist failed "
+                    "(engagement=%s state=%s): %s — skipping wire edit",
+                    engagement_id[:8], new_state, exc,
+                )
+                return
             try:
                 await self.bot.edit_forum_topic(
                     chat_id=self.engagement_supergroup_id,
                     message_thread_id=rec.topic_id,
                     name=title,
                 )
+            except asyncio.CancelledError:
+                raise  # wire state unknown; the sentinel stays (self-heals)
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "U3 update_topic_state edit_forum_topic failed "
-                    "(engagement=%s state=%s): %s",
-                    engagement_id[:8], new_state, exc,
-                )
-                return
+                if "not modified" not in str(exc).lower():
+                    logger.warning(
+                        "U3 update_topic_state edit_forum_topic failed "
+                        "(engagement=%s state=%s): %s",
+                        engagement_id[:8], new_state, exc,
+                    )
+                    return  # sentinel stays; the next paint retries
+                # "not modified": the wire already carries this title —
+                # treat as success and settle the real emoji below.
+            # #529 step 2: settle the real value. Strict so a failed write
+            # rolls the in-memory field back to the sentinel (memory=new with
+            # disk="" would re-arm the no-op guard against the repair paint).
             try:
                 await self._engagement_registry.set_channel_state(
-                    engagement_id, current_state_emoji=new_emoji,
+                    engagement_id, current_state_emoji=new_emoji, strict=True,
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "U3 set_channel_state(%s, %s) failed: %s",
+                    "U3 set_channel_state(%s, %s) failed: %s — sentinel "
+                    "kept; next paint re-converges",
                     engagement_id[:8], new_emoji, exc,
                 )
 

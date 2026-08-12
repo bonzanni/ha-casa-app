@@ -91,8 +91,11 @@ class FakeRegistry:
     def __init__(self):
         self.data = {}
         self.touched = []
+        self.generations = {}
     def get(self, key):
         return self.data.get(key)
+    def generation(self, key):
+        return self.generations.get(key)
     async def touch(self, key):
         self.touched.append(key)
 
@@ -417,14 +420,17 @@ async def test_on_decision_fires_on_cold_connect_and_warm_reuse():
     build_options loses visibility into warm-reuse turns."""
     reg = FakeRegistry()
     reg.data["voice-s1"] = {"sdk_session_id": "sid-0", "last_active": "x"}
+    # #526: on_decision also carries the entry's registration generation,
+    # captured in the same under-lock block as the decision's snapshot.
+    reg.generations["voice-s1"] = 7
     pool = _mk_pool(reg)
     made = []
     pool._make_client = lambda opts: made.append(ScriptedClient(opts)) or made[-1]
     async def build_options(is_fresh, resume_sid): return {}
     async def on_message(m): pass
     decisions = []
-    def on_decision(resume_sid, is_fresh):
-        decisions.append((resume_sid, is_fresh))
+    def on_decision(resume_sid, is_fresh, generation):
+        decisions.append((resume_sid, is_fresh, generation))
     async def go():
         return await pool.turn(channel_key="voice-s1", channel="voice",
                                prompt="hi", origin={}, cid="c",
@@ -436,13 +442,13 @@ async def test_on_decision_fires_on_cold_connect_and_warm_reuse():
     t = asyncio.create_task(go()); await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("sid-0")]]
     await t
-    assert decisions == [("sid-0", False)]
+    assert decisions == [("sid-0", False, 7)]
     # Turn 2 — warm reuse: same client, no new construction, but on_decision
     # must still fire with the same resume sid.
     made[0].script = [[_mk_result("sid-0")]]
     await go()
     assert len(made) == 1                       # confirms this WAS a warm reuse
-    assert decisions == [("sid-0", False), ("sid-0", False)]
+    assert decisions == [("sid-0", False, 7), ("sid-0", False, 7)]
 
 
 async def test_decision_new_closes_old_awaits_disconnect_then_stale_cb():

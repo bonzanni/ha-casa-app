@@ -335,3 +335,145 @@ class TestSidGuardedRemove:
         await reg.register("telegram-r2", "assistant", "sid-live", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
         await reg.remove("telegram-r2", expected_sid=None)
         assert reg.get("telegram-r2") is not None  # real session spared
+
+
+class TestRegistrationGeneration:
+    """#526: sid-only conditional guards have a same-sid ABA — a concurrent
+    turn that re-registers the SAME sid between a caller's snapshot and its
+    conditional mutation still matches ``expected_sid`` and loses that
+    session's continuity/retention. Every ``register()`` stamps a process-local
+    monotonic generation (NEVER persisted — a restart must not be able to
+    collide with a generation loaded from disk); the whole conditional family
+    (``clear_sdk_session``/``remove``/``finish_save``/``clear_save_claim``/
+    ``try_begin_save``) declines when the entry's generation moved past the
+    caller's snapshot."""
+
+    async def _register(self, reg, key, sid):
+        await reg.register(
+            key, "assistant", sid, binding_digest=STUB_BINDING_DIGEST,
+            speaker_provenance=STUB_SPEAKER_PROV,
+            user_provenance=STUB_USER_PROV)
+
+    async def test_generation_none_before_register_then_monotonic(self, tmp_path):
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        assert reg.generation("telegram-g1") is None
+        await self._register(reg, "telegram-g1", "sid-A")
+        g1 = reg.generation("telegram-g1")
+        assert isinstance(g1, int)
+        await self._register(reg, "telegram-g1", "sid-A")
+        g2 = reg.generation("telegram-g1")
+        assert g2 > g1
+
+    async def test_generation_never_persisted(self, tmp_path):
+        """The persisted entry must not carry the generation: a restarted
+        process's counter restarts, so any persisted value could collide."""
+        path = str(tmp_path / "s.json")
+        reg = SessionRegistry(path)
+        await self._register(reg, "telegram-g1", "sid-A")
+        with open(path, encoding="utf-8") as fh:
+            on_disk = json.load(fh)
+        assert "registration_generation" not in on_disk["telegram-g1"]
+        assert not any("generation" in k for k in on_disk["telegram-g1"])
+        # A fresh instance over the same file reads generation None.
+        reg2 = SessionRegistry(path)
+        assert reg2.get("telegram-g1") is not None
+        assert reg2.generation("telegram-g1") is None
+
+    async def test_clear_declines_after_same_sid_reregistration(self, tmp_path):
+        """The #526 interleaving: T1 snapshots (sid-A, g1); T2 re-registers the
+        SAME sid-A (g2); T1's conditional clear must decline."""
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "voice-g1", "sid-A")
+        g1 = reg.generation("voice-g1")
+        await self._register(reg, "voice-g1", "sid-A")  # T2 same-sid resume
+        await reg.clear_sdk_session(
+            "voice-g1", expected_sid="sid-A", expected_generation=g1)
+        assert reg.get("voice-g1")["sdk_session_id"] == "sid-A"  # spared
+
+    async def test_clear_proceeds_on_matching_generation(self, tmp_path):
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "voice-g1", "sid-A")
+        g1 = reg.generation("voice-g1")
+        await reg.clear_sdk_session(
+            "voice-g1", expected_sid="sid-A", expected_generation=g1)
+        assert "sdk_session_id" not in reg.get("voice-g1")
+
+    async def test_loaded_entry_clear_with_none_generation(self, tmp_path):
+        """Restart semantics: a loaded pre-restart entry has generation None.
+        A caller that snapshotted it clears while untouched, and declines the
+        moment any post-restart registration lands (even the same sid)."""
+        path = str(tmp_path / "s.json")
+        r1 = SessionRegistry(path)
+        await self._register(r1, "telegram-g1", "sid-A")
+        await self._register(r1, "telegram-g2", "sid-B")
+
+        r2 = SessionRegistry(path)  # restart
+        # Untouched loaded entry: None == None, clear proceeds.
+        await r2.clear_sdk_session(
+            "telegram-g1", expected_sid="sid-A", expected_generation=None)
+        assert "sdk_session_id" not in r2.get("telegram-g1")
+        # Re-registered after restart (same sid): generation moved, decline.
+        await self._register(r2, "telegram-g2", "sid-B")
+        await r2.clear_sdk_session(
+            "telegram-g2", expected_sid="sid-B", expected_generation=None)
+        assert r2.get("telegram-g2")["sdk_session_id"] == "sid-B"
+
+    async def test_remove_declines_after_same_sid_reregistration(self, tmp_path):
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "telegram-g1", "sid-A")
+        g1 = reg.generation("telegram-g1")
+        await self._register(reg, "telegram-g1", "sid-A")
+        await reg.remove(
+            "telegram-g1", expected_sid="sid-A", expected_generation=g1)
+        assert reg.get("telegram-g1") is not None
+
+    async def test_generation_dropped_on_entry_deletion(self, tmp_path):
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "telegram-g1", "sid-A")
+        await reg.remove("telegram-g1")
+        assert reg.generation("telegram-g1") is None
+
+    async def test_try_begin_save_declines_on_newer_generation(self, tmp_path):
+        """Sol design-r2: an unguarded claim can land on a NEWER registration
+        (whose sid mismatch is only detected downstream), and the guarded
+        clear/remove then decline forever — the claim must be generation-gated
+        BEFORE it mutates."""
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "telegram-g1", "sid-A")
+        g1 = reg.generation("telegram-g1")
+        await self._register(reg, "telegram-g1", "sid-B")  # newer session
+        assert await reg.try_begin_save(
+            "telegram-g1", expected_generation=g1) is False
+        assert "consolidated_at" not in reg.get("telegram-g1")
+
+    async def test_try_begin_save_proceeds_on_matching_generation(self, tmp_path):
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "telegram-g1", "sid-A")
+        g1 = reg.generation("telegram-g1")
+        assert await reg.try_begin_save(
+            "telegram-g1", expected_generation=g1) is True
+        assert "consolidated_at" in reg.get("telegram-g1")
+
+    async def test_finish_save_declines_after_same_sid_reregistration(self, tmp_path):
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "telegram-g1", "sid-A")
+        g1 = reg.generation("telegram-g1")
+        assert await reg.try_begin_save("telegram-g1", expected_generation=g1)
+        await self._register(reg, "telegram-g1", "sid-A")  # mid-save re-register
+        await reg.finish_save(
+            "telegram-g1", "sid-A", expected_generation=g1)
+        assert reg.get("telegram-g1") is not None  # fresh registration spared
+
+    async def test_clear_save_claim_declines_after_same_sid_reregistration(
+            self, tmp_path):
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        await self._register(reg, "telegram-g1", "sid-A")
+        g1 = reg.generation("telegram-g1")
+        assert await reg.try_begin_save("telegram-g1", expected_generation=g1)
+        await self._register(reg, "telegram-g1", "sid-A")
+        # register() already wiped the claim; a stale saver's guarded release
+        # must not touch the fresh entry (idempotent decline).
+        entry_before = dict(reg.get("telegram-g1"))
+        await reg.clear_save_claim(
+            "telegram-g1", "sid-A", expected_generation=g1)
+        assert reg.get("telegram-g1") == entry_before

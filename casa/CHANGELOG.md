@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.189.0] - 2026-08-12
+
+### Fixed
+
+- Engagement topic relay: a crash landing between a turn's closing narration
+  edit and its checkpoint no longer reposts the throttled closing suffix as a
+  duplicate message after restart — the relay records the landed edit's
+  high-water and replays through it; a crash *before* the edit still delivers
+  the suffix (at-least-once, unchanged). (#523)
+- Session continuity: a transient resume failure racing a concurrent turn
+  that had successfully resumed the *same* session could clear that live
+  session's registration, losing conversation continuity and its save-time
+  retention. Conditional session-registry mutations now also check a
+  per-registration generation, so a same-id re-registration survives. (#526)
+- Engagement topic state: a cancellation between the topic-title wire edit
+  and the state-emoji persistence could permanently strand the topic on the
+  old visual state. The persisted emoji is now explicitly uncertain across
+  the wire call and settled after it, so an interrupted repaint self-heals on
+  the next state change; an identical-title re-edit counts as success, and
+  launch-time state initialization can no longer overwrite a terminal or
+  in-flight state. (#529)
+- Test suite: two async tests that failed only under parallel load now pin
+  their preconditions deterministically instead of polling. (#418)
+
 ## [0.188.1] - 2026-08-12
 
 ### Fixed

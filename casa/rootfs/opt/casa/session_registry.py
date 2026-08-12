@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -26,6 +27,15 @@ _SESSION_KEY_MAX = 100  # mirrors the server-side max_length from the former ups
 # "remove only while the entry still has NO session id" (explicit None) —
 # needed because a guarded caller's snapshot may itself lack a sid (#353).
 _UNCONDITIONAL = object()
+
+# #526: process-local registration-generation allocator. Generations are
+# NEVER persisted — a restarted process's counter restarts, so a persisted
+# value could collide with a fresh allocation and re-open the same-sid ABA
+# this closes. An entry loaded from disk therefore reads generation ``None``
+# (see :meth:`SessionRegistry.generation`), which no live ``register()`` can
+# ever re-produce. Module-level so every registry instance in a process
+# allocates from one strictly-increasing sequence.
+_GENERATION_COUNTER = itertools.count(1)
 
 # v2 scoped-key schema (spec A2): channel-role-scope identity, collision-safe
 # across residents sharing a device/channel. See build_scoped_session_key.
@@ -128,6 +138,9 @@ class SessionRegistry:
         self._data: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._reset_listeners: list = []
+        # #526: in-memory only — an entry loaded from disk has NO generation
+        # (reads ``None``), and no live registration can allocate ``None``.
+        self._generations: dict[str, int] = {}
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as fh:
@@ -218,6 +231,10 @@ class SessionRegistry:
             else:
                 entry["scope_class"] = scope_class
             self._data[channel_key] = entry
+            # #526: stamp a fresh registration generation (in-memory only —
+            # never serialized) so the conditional guards below can tell a
+            # same-sid re-registration from the snapshot their caller took.
+            self._generations[channel_key] = next(_GENERATION_COUNTER)
             await self._save_locked()
 
     def purge_webhook_sessions(self) -> int:
@@ -234,12 +251,24 @@ class SessionRegistry:
         for key in list(self._data):
             if key.startswith("webhook-"):
                 self._data.pop(key)
+                self._generations.pop(key, None)
                 dropped += 1
         return dropped
 
     def get(self, channel_key: str) -> dict[str, Any] | None:
         """Return the entry for *channel_key*, or ``None``."""
         return self._data.get(channel_key)
+
+    def generation(self, channel_key: str) -> int | None:
+        """Return the entry's registration generation (#526).
+
+        ``None`` for a missing key AND for an entry loaded from disk that no
+        in-process ``register()`` has touched — generations are process-local
+        and never persisted, so "no generation" is itself meaningful: a
+        guarded caller that snapshotted ``None`` declines the moment any real
+        registration lands. Read this in the SAME no-await block as the
+        :meth:`get` snapshot it accompanies."""
+        return self._generations.get(channel_key)
 
     async def touch(self, channel_key: str) -> None:
         """Update ``last_active`` for an existing entry and persist."""
@@ -249,8 +278,21 @@ class SessionRegistry:
                 entry["last_active"] = datetime.now(timezone.utc).isoformat()
                 await self._save_locked()
 
+    def _generation_moved(
+        self, channel_key: str, expected_generation: object,
+    ) -> bool:
+        """#526 shared guard: True when the caller supplied a generation and
+        the entry's current generation differs — i.e. a registration landed
+        after the caller's snapshot (even one carrying the SAME sid, the ABA
+        the sid guards cannot see). Caller must hold ``self._lock``."""
+        return (
+            expected_generation is not _UNCONDITIONAL
+            and self._generations.get(channel_key) != expected_generation
+        )
+
     async def remove(
         self, channel_key: str, expected_sid: object = _UNCONDITIONAL,
+        *, expected_generation: object = _UNCONDITIONAL,
     ) -> None:
         """Remove an entry and persist.
 
@@ -260,17 +302,23 @@ class SessionRegistry:
         this call) is left intact instead of being silently deleted (#317,
         #353). ``expected_sid=None`` means the snapshotted entry had NO
         session id, so the removal declines once any real session registers.
-        Omitting the argument keeps the unconditional behavior."""
+        ``expected_generation`` (#526) additionally declines when ANY
+        registration — same sid included — landed after the caller's
+        snapshot. Omitting either argument keeps that guard unconditional."""
         async with self._lock:
+            if self._generation_moved(channel_key, expected_generation):
+                return  # re-registered after the snapshot; leave it alone
             if expected_sid is not _UNCONDITIONAL:
                 entry = self._data.get(channel_key)
                 if entry is None or entry.get("sdk_session_id") != expected_sid:
                     return  # re-registered by a newer session; leave it alone
             self._data.pop(channel_key, None)
+            self._generations.pop(channel_key, None)
             await self._save_locked()
 
     async def clear_sdk_session(
         self, channel_key: str, expected_sid: object = _UNCONDITIONAL,
+        *, expected_generation: object = _UNCONDITIONAL,
     ) -> None:
         """Drop the ``sdk_session_id`` field for a key; keep other metadata.
 
@@ -285,13 +333,18 @@ class SessionRegistry:
         session id — like ``remove``, a newer registration (a concurrent
         same-key turn that landed between the resume failure and this call)
         is left intact instead of being silently dropped (#349, same
-        check-then-act family as #317/#353). Omitting the argument keeps the
-        unconditional behavior.
+        check-then-act family as #317/#353). ``expected_generation`` (#526)
+        closes the residual that guard could not: a concurrent turn that
+        re-registered the SAME sid still moved the generation, so the clear
+        declines and that session's continuity + save-time consolidation
+        survive. Omitting an argument keeps that guard unconditional.
 
         No-op when the key does not exist, or when the entry has no
         ``sdk_session_id`` field (idempotent).
         """
         async with self._lock:
+            if self._generation_moved(channel_key, expected_generation):
+                return  # re-registered after the snapshot; leave it alone
             entry = self._data.get(channel_key)
             if entry is None:
                 return
@@ -304,15 +357,26 @@ class SessionRegistry:
                 entry.pop("sdk_session_id", None)
                 await self._save_locked()
 
-    async def try_begin_save(self, channel_key: str) -> bool:
+    async def try_begin_save(
+        self, channel_key: str,
+        *, expected_generation: object = _UNCONDITIONAL,
+    ) -> bool:
         """Atomically claim a session for saving. Returns True for the first
         caller (sets ``consolidated_at``), False if missing or already claimed.
         The ``consolidated_at`` marker persists (it is saved to disk); a save
         that crashes after claiming but before ``finish_save`` leaves the marker
         set — the FreshnessReaper's stale-claim recovery (a later task) detects a
         marker older than its retry window and re-opens the claim. ``finish_save``
-        removes the entry only on success."""
+        removes the entry only on success.
+
+        ``expected_generation`` (#526, Sol design-r2): the claim must be
+        generation-gated BEFORE it mutates — an unguarded claim can land on a
+        registration NEWER than the caller's snapshot, and the guarded
+        clear/remove downstream would then decline forever, stranding the
+        fresh entry claimed until stale-claim recovery."""
         async with self._lock:
+            if self._generation_moved(channel_key, expected_generation):
+                return False  # re-registered after the snapshot; don't claim
             entry = self._data.get(channel_key)
             if entry is None or entry.get("consolidated_at"):
                 return False
@@ -322,15 +386,20 @@ class SessionRegistry:
 
     async def finish_save(
         self, channel_key: str, sdk_session_id: str | None = None,
+        *, expected_generation: object = _UNCONDITIONAL,
     ) -> None:
         """Remove the entry after a successful retain (the session is now
         long-term) — but only if it still belongs to the session that was
         saved. If register() replaced the entry with a NEW sid mid-save (a
         user turn landed during a slow reaper save), leave the new
         registration intact; otherwise we would silently delete a fresh
-        session's pointer (M24). Passing ``sdk_session_id=None`` preserves the
-        old unconditional behavior. Idempotent."""
+        session's pointer (M24). ``expected_generation`` (#526) extends that
+        to a mid-save re-registration of the SAME sid. Passing
+        ``sdk_session_id=None`` preserves the old unconditional behavior.
+        Idempotent."""
         async with self._lock:
+            if self._generation_moved(channel_key, expected_generation):
+                return  # re-registered after the snapshot; leave it alone
             entry = self._data.get(channel_key)
             if entry is None:
                 return
@@ -340,17 +409,22 @@ class SessionRegistry:
             ):
                 return  # re-registered by a newer session; leave it alone
             self._data.pop(channel_key, None)
+            self._generations.pop(channel_key, None)
             await self._save_locked()
 
     async def clear_save_claim(
         self, channel_key: str, sdk_session_id: str | None = None,
+        *, expected_generation: object = _UNCONDITIONAL,
     ) -> None:
         """Release a save claim after a FAILED retain so the next reaper cycle
         retries. Keeps the entry. Like ``finish_save``, only clears the claim
         if the entry still belongs to the saved session — a newer
         registration (which already wiped ``consolidated_at``) is left
-        untouched (M24)."""
+        untouched (M24); ``expected_generation`` (#526) extends that to a
+        same-sid re-registration."""
         async with self._lock:
+            if self._generation_moved(channel_key, expected_generation):
+                return  # re-registered after the snapshot; leave it alone
             entry = self._data.get(channel_key)
             if entry is None or "consolidated_at" not in entry:
                 return

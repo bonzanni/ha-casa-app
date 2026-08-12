@@ -1088,7 +1088,12 @@ class Agent:
             # The pool decides the resume sid internally (AR-3), but the
             # ProcessError fallback below needs to know whether the failed
             # attempt was resuming. Both attempt closures record it here.
-            last_resume: dict[str, str | None] = {"sid": None}
+            # #526: "gen" carries the registration generation captured with
+            # the SAME registry snapshot the resume decision read, so the
+            # ProcessError recovery below can decline against a concurrent
+            # turn that re-registered the SAME sid (which the sid guard alone
+            # cannot see).
+            last_resume: dict[str, str | int | None] = {"sid": None, "gen": None}
 
             async def _attempt_pooled_turn():
                 session_published = False
@@ -1151,8 +1156,8 @@ class Agent:
                     # skips on warm reuse — so a non-retryable failure on a
                     # warm-reuse turn still leaves last_resume["sid"]
                     # populated for the ProcessError fallback below.
-                    on_decision=lambda resume_sid, is_fresh: (
-                        last_resume.__setitem__("sid", resume_sid)
+                    on_decision=lambda resume_sid, is_fresh, generation: (
+                        last_resume.update(sid=resume_sid, gen=generation)
                     ),
                 )
                 last_resume["sid"] = result.resume_sid
@@ -1171,6 +1176,11 @@ class Agent:
                     else None
                 )
                 existing = self._session_registry.get(channel_key)
+                # #526: same no-await block as the entry snapshot (see the
+                # pooled path's on_decision).
+                existing_generation = self._session_registry.generation(
+                    channel_key,
+                )
                 decision = _resume_decision(
                     msg.channel, existing, datetime.now(timezone.utc),
                     role_id=self.config.role_id,
@@ -1179,7 +1189,7 @@ class Agent:
                 resume_sid = (
                     decision.resume_sid if decision.action == "resume" else None
                 )
-                last_resume["sid"] = resume_sid
+                last_resume.update(sid=resume_sid, gen=existing_generation)
                 if decision.action == "resume":
                     await self._session_registry.touch(channel_key)
                 elif decision.retain_old and decision.old is not None:
@@ -1254,12 +1264,14 @@ class Agent:
                 # runs, so a concurrent same-key turn may have registered a
                 # valid newer session, and the retry below should resume THAT
                 # (the pool/bypass re-derive the decision from the registry).
-                # Residual (accepted): a concurrent turn that re-registered
-                # the SAME sid after successfully resuming it is still
-                # cleared; the CLI rejected that sid moments ago, so the cost
-                # is one fresh session, never a split conversation.
+                # #526: the generation guard closes the #349 residual — a
+                # concurrent turn that re-registered the SAME sid moved the
+                # generation past this attempt's snapshot, so the clear
+                # declines and that session's continuity and save-time
+                # consolidation both survive.
                 await self._session_registry.clear_sdk_session(
                     channel_key, expected_sid=last_resume["sid"],
+                    expected_generation=last_resume["gen"],
                 )
                 response_text, sdk_session_id, usage, used_resume, \
                     session_published = \

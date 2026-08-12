@@ -1592,3 +1592,113 @@ class TestAllocatedUid:
             driver="claude_code", task="t", origin={}, topic_id=1,
         )
         assert rec.allocated_uid == UNALLOCATED_UID
+
+
+class TestChannelStateStrictAndInitial:
+    """#529: the topic-state sentinel scheme needs (a) a STRICT
+    ``set_channel_state`` whose persistence failure propagates and rolls the
+    in-memory field back (memory must never claim what disk refused — the
+    telegram no-op guard reads the live record), (b) a tombstone write that
+    SETTLES before a cancellation propagates (a detached ``to_thread`` write
+    could land a stale snapshot over a newer one after the lock released),
+    and (c) launch-time initial-emoji writers that cannot clobber a settled
+    terminal emoji or an in-flight paint's sentinel."""
+
+    async def _mk(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+        )
+        rec = await reg.create(
+            kind="executor", role_or_type="plugin-developer",
+            driver="claude_code", task="t", origin={}, topic_id=42,
+        )
+        return reg, rec
+
+    async def test_strict_write_failure_propagates_and_rolls_back(
+            self, tmp_path, monkeypatch):
+        reg, rec = await self._mk(tmp_path)
+        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
+
+        def boom(snapshot):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(reg, "_write_tombstone", boom)
+        with pytest.raises(OSError):
+            await reg.set_channel_state(
+                rec.id, current_state_emoji="", strict=True,
+            )
+        assert rec.current_state_emoji == "🟢"  # rolled back
+
+    async def test_non_strict_write_failure_keeps_todays_semantics(
+            self, tmp_path, monkeypatch):
+        reg, rec = await self._mk(tmp_path)
+        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
+
+        def boom(snapshot):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(reg, "_write_tombstone", boom)
+        # Best-effort caller: swallowed, and the in-memory value KEEPS the
+        # mutation (unchanged pre-#529 behavior).
+        await reg.set_channel_state(rec.id, current_state_emoji="🟡")
+        assert rec.current_state_emoji == "🟡"
+
+    async def test_cancelled_tombstone_write_settles_before_raising(
+            self, tmp_path, monkeypatch):
+        """Cancellation landing while the to_thread write is in flight must
+        not abandon the thread: the write settles first, THEN CancelledError
+        propagates — so a later writer can never be overtaken by a detached
+        stale ``os.replace``."""
+        import threading
+        reg, rec = await self._mk(tmp_path)
+        release = threading.Event()
+        done = threading.Event()
+        real_write = reg._write_tombstone
+
+        def slow_write(snapshot):
+            release.wait(timeout=10)
+            real_write(snapshot)
+            done.set()
+
+        monkeypatch.setattr(reg, "_write_tombstone", slow_write)
+        task = asyncio.ensure_future(
+            reg.set_channel_state(rec.id, current_state_emoji="🟡"))
+        await asyncio.sleep(0.05)      # write is blocked in the thread
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()         # cancel absorbed until the write settles
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert done.is_set()           # the write ran to completion first
+
+    async def test_initial_emoji_declines_when_any_state_established(
+            self, tmp_path):
+        reg, rec = await self._mk(tmp_path)
+        # Fresh record: sets.
+        await reg.set_initial_state_emoji(rec.id, "🟢")
+        assert rec.current_state_emoji == "🟢"
+        # Established state (a terminal paint's emoji): declines.
+        await reg.set_channel_state(rec.id, current_state_emoji="✅")
+        await reg.set_initial_state_emoji(rec.id, "🟢")
+        assert rec.current_state_emoji == "✅"
+
+    async def test_initial_emoji_declines_over_sentinel_and_terminal(
+            self, tmp_path):
+        reg, rec = await self._mk(tmp_path)
+        # An in-flight paint's uncertain sentinel must survive (a launch-path
+        # overwrite would re-arm the wrongful no-op the sentinel exists to
+        # break).
+        await reg.set_channel_state(rec.id, current_state_emoji="")
+        await reg.set_initial_state_emoji(rec.id, "🟢")
+        assert rec.current_state_emoji == ""
+        # Terminal record: declines even with no emoji at all.
+        reg2, rec2 = await self._mk(tmp_path)
+        await reg2.mark_completed(rec2.id, time.time())
+        await reg2.set_initial_state_emoji(rec2.id, "🟢")
+        assert rec2.current_state_emoji is None
+
+    async def test_initial_emoji_unknown_engagement_is_noop(self, tmp_path):
+        reg, _rec = await self._mk(tmp_path)
+        await reg.set_initial_state_emoji("nope", "🟢")  # no boom

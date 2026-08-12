@@ -518,11 +518,24 @@ class EngagementRegistry:
         the file.
 
         ``strict`` (B3, Sol r1): when True, a persistence failure PROPAGATES
-        instead of being swallowed — used only by
-        ``advance_interaction_state``, where returning the new state while the
-        authorization never reached disk lets the telegram callback commit an
-        ask that a restart would then un-authorize. All other callers keep the
-        best-effort warn-and-continue semantics (strict=False).
+        instead of being swallowed — used by ``advance_interaction_state``,
+        where returning the new state while the authorization never reached
+        disk lets the telegram callback commit an ask that a restart would
+        then un-authorize, and by ``set_channel_state(strict=True)`` (#529),
+        whose sentinel scheme needs a durable write-ahead barrier. All other
+        callers keep the best-effort warn-and-continue semantics
+        (strict=False).
+
+        #529 settle-on-cancel: the ``to_thread`` write cannot be interrupted,
+        only abandoned — and an abandoned write's ``os.replace`` can land a
+        STALE snapshot over a newer writer's after this caller's lock
+        releases. A cancellation arriving while the write is in flight is
+        therefore absorbed until the write SETTLES, then re-raised.
+        ``self._last_tombstone_ok`` records whether the settled write
+        committed (True) or failed (False) so a strict caller unwinding on
+        CancelledError knows whether its in-memory mutation matches disk;
+        callers hold ``self._lock``, so the flag cannot be clobbered between
+        this return/raise and their read.
         """
         cutoff = time.time() - _TERMINAL_RETENTION_DAYS * 86400
         snapshot = []
@@ -562,11 +575,25 @@ class EngagementRegistry:
                 "context_rebuild_pending": rec.context_rebuild_pending,
                 "context_generation": rec.context_generation,
             })
-        try:
-            await asyncio.to_thread(self._write_tombstone, snapshot)
-        except Exception as exc:
+        self._last_tombstone_ok = False
+        write = asyncio.ensure_future(
+            asyncio.to_thread(self._write_tombstone, snapshot),
+        )
+        cancelled: asyncio.CancelledError | None = None
+        while not write.done():
+            try:
+                await asyncio.shield(write)
+            except asyncio.CancelledError as exc:
+                cancelled = exc          # absorbed; keep waiting for settle
+            except Exception:  # noqa: BLE001 — retrieved below
+                break
+        exc = None if write.cancelled() else write.exception()
+        self._last_tombstone_ok = exc is None
+        if cancelled is not None:
+            raise cancelled
+        if exc is not None:
             if strict:
-                raise
+                raise exc
             logger.warning("Failed to persist engagement tombstone: %s", exc)
 
     def _write_tombstone(self, snapshot: list[dict[str, Any]]) -> None:
@@ -1162,23 +1189,66 @@ class EngagementRegistry:
         pinned_message_id: int | None = None,
         progress_message_id: int | None = None,
         current_state_emoji: str | None = None,
+        strict: bool = False,
     ) -> None:
         """E-12 (v0.37.0): update the channel-state subset on a record.
 
         Each kwarg is applied only if not None; omitting an arg leaves the
         current value untouched. Unknown ``engagement_id`` is a no-op (matches
         the other mutators' tolerance for stale callers).
+
+        ``strict`` (#529): a persistence failure PROPAGATES and the in-memory
+        fields ROLL BACK to their prior values — memory must never claim what
+        disk refused, because ``update_topic_state``'s no-op guard reads the
+        live record and a restart reloads the disk truth. The rollback also
+        runs when a cancellation propagated with the settled write FAILED
+        (``_last_tombstone_ok`` False); a cancellation whose settled write
+        committed keeps the mutation (memory and disk agree).
         """
         async with self._lock:
             rec = self._records.get(engagement_id)
             if rec is None:
                 return
+            prior = (
+                rec.pinned_message_id, rec.progress_message_id,
+                rec.current_state_emoji,
+            )
             if pinned_message_id is not None:
                 rec.pinned_message_id = pinned_message_id
             if progress_message_id is not None:
                 rec.progress_message_id = progress_message_id
             if current_state_emoji is not None:
                 rec.current_state_emoji = current_state_emoji
+            try:
+                await self._write_tombstone_locked(strict=strict)
+            except BaseException:
+                if strict and not self._last_tombstone_ok:
+                    (
+                        rec.pinned_message_id, rec.progress_message_id,
+                        rec.current_state_emoji,
+                    ) = prior
+                raise
+
+    async def set_initial_state_emoji(
+        self, engagement_id: str, emoji: str,
+    ) -> None:
+        """#529 (Terra design-r2): launch-time initial-emoji publication —
+        sets ``current_state_emoji`` ONLY when the record is non-terminal and
+        no emoji state exists yet (``None``). An unconditional launch-path
+        write could overwrite a settled terminal paint's emoji (disk says
+        active on a closed topic, with no later repaint to repair it) or an
+        in-flight paint's uncertain ``""`` sentinel (re-arming the wrongful
+        no-op the sentinel exists to break). Best-effort persistence, like
+        the launch paths it serves."""
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                return
+            if rec.status in ("completed", "cancelled", "error"):
+                return
+            if rec.current_state_emoji is not None:
+                return
+            rec.current_state_emoji = emoji
             await self._write_tombstone_locked()
 
     async def advance_interaction_state(
