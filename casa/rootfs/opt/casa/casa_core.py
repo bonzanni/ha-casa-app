@@ -2467,7 +2467,12 @@ def _make_invoke_handler(
         context = payload.get("context")
         if not isinstance(context, dict):
             context = {}
-        context["cid"] = request["cid"]
+        # #324: caller-supplied cid wins (build_invoke_message's documented
+        # contract) — stamp the middleware request cid only when the caller
+        # provided none, so external systems can thread their own trace ids.
+        caller_cid = context.get("cid")
+        if not (isinstance(caller_cid, str) and caller_cid.strip()):
+            context["cid"] = request["cid"]
         payload["context"] = context
         msg = build_invoke_message(agent_role, prompt, payload)
         try:
