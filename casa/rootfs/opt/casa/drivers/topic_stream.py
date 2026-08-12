@@ -41,6 +41,7 @@ Design invariants pinned here (Sol adversarial review, §W1):
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
@@ -893,27 +894,48 @@ class TopicStreamRelay:
             return False
         return self._seg_rank(st) < self._seg_rank(tseg)
 
-    def _latch_discard_range(self, seg, off_after: int) -> None:
-        """#538 (Sol r2): POSITIONAL entry into the tombstoned held range.
+    def _latch_discard_range(self, seg, off_after: int, frame) -> None:
+        """#538 (Sol r2/r3): POSITIONAL entry into the tombstoned held range.
         The frame scan is chronological, so the latch flips exactly when the
         scan reaches the tombstone's ``from`` coordinate — never by coordinate
         COMPARISON (``_coord_le``'s absent-segment rule ranks a frame whose
         source archive was unlinked mid-recovery at infinity, which would
         misclassify a chronologically EARLIER frame as dead and lose unposted
-        pre-anchor prose). A ``from`` the scan never reaches (e.g. its segment
-        rotated out) leaves the latch unfired and the prose resurfaces —
-        failing toward a bounded duplicate, never toward loss. Called for
-        EVERY frame at ``_handle_frame`` entry; dies with ``_replay_discard``
-        at the recovered turn's boundary."""
+        pre-anchor prose). And a coordinate alone cannot prove IDENTITY (Sol
+        r3): ``(dev, ino)`` is reusable after unlink, so a retention jump plus
+        inode reuse can present an unrelated frame at the same coordinate —
+        the latch therefore also demands the tombstone's text fingerprint,
+        and a coordinate match with the wrong content ABANDONS the tombstone
+        for this recovery (in-memory; the durable fields clear at the turn
+        boundary as usual). A ``from`` the scan never reaches, or one whose
+        identity fails, resurfaces the prose — failing toward a bounded
+        duplicate, never toward loss or muting. Called for EVERY frame at
+        ``_handle_frame`` entry; dies with ``_replay_discard`` at the
+        recovered turn's boundary."""
         rd = self._replay_discard
         if rd is None or self._discard_latched:
             return
         fr = rd.get("from") or {}
         if (
-            tuple(seg) == tuple(fr.get("segment", (0, 0)))
-            and off_after == int(fr.get("offset", 0))
+            tuple(seg) != tuple(fr.get("segment", (0, 0)))
+            or off_after != int(fr.get("offset", 0))
         ):
+            return
+        narr = extract_narration(frame) if frame is not None else None
+        text = narr.text if narr is not None and narr.text else ""
+        sha = hashlib.sha256(
+            text.encode("utf-8", "replace")
+        ).hexdigest()[:16]
+        if sha == rd.get("text_sha"):
             self._discard_latched = True
+            return
+        logger.warning(
+            "topic stream for engagement %s: discard tombstone coordinate "
+            "matched but the frame content did not (segment reuse?) — "
+            "abandoning the tombstone; the held prose resurfaces instead",
+            self.engagement_id,
+        )
+        self._replay_discard = None
 
     def _in_discarded_range(self, seg, off_after: int) -> bool:
         """#538: is this frame inside the tombstoned (result-time DISCARDED)
@@ -1995,8 +2017,12 @@ class TopicStreamRelay:
                 # Held-buffer DISCARD (anchor still open, or terminal): the held
                 # prose never posts — clear the buffer AND any pending separators.
                 # (#538: capture the dead range's start — the FIRST held frame's
-                # coordinate — before the buffer goes away.)
-                held_from = (self._anchor_buffer[0][1], self._anchor_buffer[0][2])
+                # coordinate and text — before the buffer goes away.)
+                held_from = (
+                    self._anchor_buffer[0][1],
+                    self._anchor_buffer[0][2],
+                    self._anchor_buffer[0][0],
+                )
                 self._anchor_buffer = []
                 self._seps_clear()
                 # #538: write-ahead the DISCARD tombstone BEFORE the awaits
@@ -2005,14 +2031,22 @@ class TopicStreamRelay:
                 # disarmed catch-up RESURFACED the held frames — the one case
                 # where resurfacing is wrong (the sign-off the discard killed
                 # posted after all). The tombstone carries the FIRST held
-                # frame's coordinate so recovery drops exactly the dead range;
-                # both fields clear atomically in the closed-turn save below.
+                # frame's coordinate AND a fingerprint of its text (Sol r3:
+                # a ``(dev, ino)`` tuple is reusable after unlink, so a bare
+                # coordinate cannot prove identity — the latch demands both,
+                # and a coordinate match with the wrong content ABANDONS the
+                # tombstone, failing open toward bounded resurface). Recovery
+                # drops exactly the dead range; both fields clear atomically
+                # in the closed-turn save below.
                 _first_held = held_from
                 self.cursor.hold_discarded = {
                     "from": {
                         "segment": list(_first_held[0]),
                         "offset": int(_first_held[1]),
                     },
+                    "text_sha": hashlib.sha256(
+                        _first_held[2].encode("utf-8", "replace")
+                    ).hexdigest()[:16],
                 }
                 self._save()
         coord = {"segment": list(seg), "offset": off_after}
@@ -2346,9 +2380,9 @@ class TopicStreamRelay:
 
     async def _handle_frame(self, seg, off_after: int, raw: bytes) -> None:
         frame = parse_frame(raw)
-        # #538 (Sol r2): positional dead-range entry — checked for EVERY frame
-        # in scan order, before any dispatch branch consults the latch.
-        self._latch_discard_range(seg, off_after)
+        # #538 (Sol r2/r3): positional dead-range entry — checked for EVERY
+        # frame in scan order, before any dispatch branch consults the latch.
+        self._latch_discard_range(seg, off_after, frame)
 
         if not self._live:
             # REPLAY: rebuild visible-text state ONLY; suppress all side effects.

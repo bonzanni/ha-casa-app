@@ -1544,3 +1544,53 @@ async def test_discard_range_is_positional_not_coordinate_compared(tmp_path):
     done = StreamCursor.load(cursor)
     assert done.hold_pending is False
     assert done.hold_discarded is None
+
+
+async def test_tombstone_abandons_on_content_mismatch_at_from(tmp_path):
+    """Sol diff-r3 S2: a ``(dev, ino)`` tuple is reusable after unlink, so a
+    coordinate match alone cannot prove the scan reached the ORIGINAL held
+    frame. Model the reuse by rewriting the frame at the tombstone's ``from``
+    coordinate with same-length different content: the latch must ABANDON the
+    tombstone (fail open — the prose resurfaces) instead of muting unrelated
+    narration until a boundary."""
+    _write_current(tmp_path, [
+        _init(), _anchor_ask("Q?"), _text("DEAD SIGNOFF"), _result(),
+    ])
+    cursor = tmp_path / ".stream_cursor.json"
+
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+
+    async def _boom():
+        raise RuntimeError("crash inside the finalize window")
+
+    seq1.drain_and_prune_turn = _boom
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    with pytest.raises(RuntimeError):
+        await relay1.run()
+    assert StreamCursor.load(cursor).hold_discarded is not None
+
+    # "Inode reuse": the file at the same (dev, ino) now carries an unrelated
+    # frame ending at the SAME offset (same byte length, different content).
+    path = os.path.join(str(tmp_path), "current")
+    raw = open(path, "rb").read()
+    assert b"DEAD SIGNOFF" in raw
+    open(path, "wb").write(raw.replace(b"DEAD SIGNOFF", b"LIVE PROSE!!"))
+
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: None,   # unrelated turn: no open anchor
+    )
+    await relay2.run()
+
+    # The tombstone was abandoned: the unrelated prose POSTED (not muted), and
+    # the recovered turn still closed cleanly.
+    assert _narration_sends(rec2) == ["LIVE PROSE!!"]
+    done = StreamCursor.load(cursor)
+    assert done.hold_pending is False
+    assert done.hold_discarded is None
