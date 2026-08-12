@@ -1506,6 +1506,39 @@ class TelegramChannel(Channel):
                     await self.send_to_topic(thread_id, "No active engagement in this topic.")
                     return
 
+                # #324: engagement-topic turns consult the same inbound rate
+                # limit as the DM route (previously they spooled unthrottled).
+                # Keyed per TOPIC — one topic is one conversation; a
+                # supergroup-wide key would let one busy topic starve the
+                # others. Commands are EXEMPT (mirroring /new-before-limiter
+                # in the DM route): a /cancel must never be refused by
+                # throttling, or a runaway engagement could not be stopped.
+                # Checked before ANY side effect (clearance clamp, inbound
+                # reservation, high-water advance) so a dropped message
+                # leaves no state behind; the ordering cost is only cosmetic
+                # (later narration may land below the dropped message).
+                if (self._rate_limiter is not None
+                        and self._rate_limiter.enabled
+                        and not text.startswith("/")):
+                    decision = self._rate_limiter.check(
+                        f"{chat_id}:{thread_id}")
+                    if not decision.allowed:
+                        if decision.should_notify:
+                            logger.info(
+                                "Telegram rate limit hit for engagement "
+                                "topic %s (chat_id=%s); replying with "
+                                "one-shot notice", thread_id, chat_id,
+                            )
+                            try:
+                                await self._post_engagement_notice(
+                                    rec, _RATE_LIMIT_REPLY)
+                            except Exception:  # noqa: BLE001 — advisory
+                                logger.warning(
+                                    "rate-limit notice to topic %s failed",
+                                    thread_id, exc_info=True,
+                                )
+                        return
+
                 # #336 (Terra, review r4): an engagement reads at the
                 # clearance of the turn that CREATED it — but any member of
                 # the engagement supergroup can steer it by messaging its

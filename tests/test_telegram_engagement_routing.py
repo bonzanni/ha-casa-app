@@ -83,6 +83,90 @@ class TestSupergroupRouting:
         ch._driver_send_user_turn.assert_not_called()
 
 
+class TestEngagementTopicRateLimit:
+    """#324: engagement-topic messages must consult TELEGRAM_RATE_PER_MIN —
+    the limiter was only wired into the DM route, so every topic message
+    spooled unthrottled."""
+
+    def _channel(self, fake_telegram_bot, registry, *, capacity=1):
+        from channels.telegram import TelegramChannel
+        from rate_limit import RateLimiter
+
+        ch = TelegramChannel(
+            bot=fake_telegram_bot, chat_id=100,
+            engagement_supergroup_id=-1001,
+            rate_limiter=RateLimiter(capacity=capacity, window_s=60.0),
+        )
+        ch._driver_send_user_turn = AsyncMock()
+        ch._engagement_registry = registry
+        ch.send_to_topic_rich = AsyncMock()
+        ch.send_to_topic = AsyncMock()
+        return ch
+
+    async def test_second_topic_message_is_rate_limited_with_one_notice(
+        self, fake_telegram_bot, engagement_fixture,
+    ):
+        ch = self._channel(fake_telegram_bot, engagement_fixture.registry)
+        rec = engagement_fixture.active_record
+
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="first", thread_id=rec.topic_id))
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="second", thread_id=rec.topic_id))
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="third", thread_id=rec.topic_id))
+        await _drain_turns(ch)
+
+        ch._driver_send_user_turn.assert_awaited_once()
+        assert ch._driver_send_user_turn.await_args.args[1] == "first"
+        # One-shot notice per reject streak, through the sequencer seam.
+        notices = [c.args[1] for c in ch.send_to_topic_rich.await_args_list]
+        assert sum("slow down" in n.lower() for n in notices) == 1
+
+    async def test_commands_are_exempt_from_the_rate_limit(
+        self, fake_telegram_bot, engagement_fixture,
+    ):
+        """A /cancel must never be refused by throttling (it may be the only
+        way to stop a runaway engagement). Probe with a NON-originator
+        /cancel: its refusal reply proves the command was processed."""
+        reg = engagement_fixture.registry
+        rec2 = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t", origin={"role": "assistant", "user_id": 123},
+            topic_id=556,
+        )
+        ch = self._channel(fake_telegram_bot, reg)
+
+        # Exhaust this topic's bucket.
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="first", thread_id=556, user_id=77))
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="/cancel", thread_id=556, user_id=77))
+        await _drain_turns(ch)
+
+        notices = [c.args[1] for c in ch.send_to_topic_rich.await_args_list]
+        assert any("originator" in n for n in notices), notices
+
+    async def test_distinct_topics_have_distinct_buckets(
+        self, fake_telegram_bot, engagement_fixture,
+    ):
+        reg = engagement_fixture.registry
+        rec1 = engagement_fixture.active_record
+        rec2 = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t", origin={"role": "assistant"}, topic_id=556,
+        )
+        ch = self._channel(fake_telegram_bot, reg)
+
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="to-one", thread_id=rec1.topic_id))
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="to-two", thread_id=rec2.topic_id))
+        await _drain_turns(ch)
+
+        assert ch._driver_send_user_turn.await_count == 2
+
+
 class TestPTBDispatchContract:
     """E-A regression (v0.22.0..v0.28.0): PTB ``MessageHandler`` invokes
     its callback as ``await callback(update, context)``. Pre-fix
