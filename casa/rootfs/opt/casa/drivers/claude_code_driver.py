@@ -519,7 +519,7 @@ class _InboundSpool:
         """
         is_redirect = (not is_initial) and _is_redirect(text)
         evicted_tg: int | None = None
-        evicted = False
+        evicted_env: _Envelope | None = None
         if is_redirect:
             if self._priority_count() >= _PRIORITY_LANE_CAP:
                 await self._record_drop_notice(_PRIORITY_CAP_COPY, tg_message_id)
@@ -532,7 +532,7 @@ class _InboundSpool:
                 if victim is not None:
                     victim.notice = "pending"       # retained for its notice
                     evicted_tg = victim.tg_message_id
-                    evicted = True
+                    evicted_env = victim
         elif self._ordinary_count() >= _ORDINARY_LANE_CAP:
             await self._record_drop_notice(_ORDINARY_FULL_COPY, tg_message_id)
             return "dropped_full"
@@ -558,11 +558,11 @@ class _InboundSpool:
                 self._engagement_id[:8], exc,
             )
             self._envelopes.pop()               # roll the in-memory add back
-            if evicted:                         # un-evict the victim we touched
-                for e in self._envelopes:
-                    if e.tg_message_id == evicted_tg and e.notice == "pending":
-                        e.notice = "none"
-                        break
+            # #324: un-evict by IDENTITY — the held reference, never an
+            # attribute search (two None-id pending-notice envelopes are
+            # indistinguishable by (tg_message_id, notice)).
+            if evicted_env is not None:
+                evicted_env.notice = "none"
             await self._send_notice(_SPOOL_FAIL_COPY, tg_message_id)
             return "error"
 
@@ -605,7 +605,7 @@ class _InboundSpool:
 
         await self._flush_pending()
         await self._pump()
-        if evicted:
+        if evicted_env is not None:
             return f"evicted_other({evicted_tg})"
         return "queued"
 
