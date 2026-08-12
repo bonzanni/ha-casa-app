@@ -167,6 +167,26 @@ _TIER_ANSWER_LINE_RE = re.compile(
 _TIER_LABELISH_RE = re.compile(r"^[\W_]*tier(?:[\W_]|$)", re.IGNORECASE)
 
 
+def tier_evidence(text: str | None) -> list[str]:
+    """Answer-shaped tier tokens found on individual lines of an (otherwise
+    unparseable) reply (#508 review r1, Sol S1). NOT a parse and never used to
+    store a tier directly — the classifier uses it only as a sensitivity FLOOR
+    for the re-ask, so it can only ever move the outcome TOWARD private.
+    #350 stays intact: a tier word inside prose still matches nothing here —
+    only a whole line that is itself a (possibly decorated / Tier-labeled)
+    single tier token counts as evidence."""
+    if not isinstance(text, str):
+        return []
+    out: list[str] = []
+    for ln in (raw.strip() for raw in text.splitlines()):
+        if not ln:
+            continue
+        m = _TIER_REPLY_RE.match(ln)
+        if m:
+            out.append(m.group(1).lower())
+    return out
+
+
 def parse_tier(text: str | None) -> str | None:
     """Parse an LLM/agent reply that should name a single tier. Returns the
     lowercased tier only when either (a) the reply is a SINGLE non-empty line
@@ -267,3 +287,15 @@ where <word> is one of: private, family, friends, public. A reply without that f
 is discarded and the fact is filed at the most restrictive tier.
 Fact:
 """
+
+# #508: appended to the re-ask prompt (after the fact text) when the first
+# reply failed parse_tier — live on v0.177.0, ~12% of calls in a 48-item save
+# omitted the mandated answer line entirely and defaulted to private first
+# strike. The re-ask restates ONLY the output format; the tier rubric is
+# unchanged (it rides in again via SENSITIVITY_PROMPT as the system prompt).
+TIER_FORMAT_REMINDER = """\
+(Format reminder: your previous reply was discarded because it did not follow the required
+format. Respond with ONLY the single tier word: private, family, friends, or public. If you
+write anything else, your reply MUST end with a final line of exactly:
+Tier: <word>
+where <word> is one of: private, family, friends, public.)"""

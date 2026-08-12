@@ -257,6 +257,162 @@ async def test_unparseable_warn_is_content_free_but_structural(monkeypatch, capl
     assert len(warn) < 200
 
 
+def _install_sequenced_sdk(monkeypatch, *, replies: list[str],
+                           raise_from: int | None = None):
+    """Fake SDK whose query() yields replies[i] on the i-th call (the last
+    reply repeats past the end) and records every prompt. Calls numbered from
+    1; ``raise_from`` makes that call and all later ones raise instead."""
+    fake = types.ModuleType("claude_agent_sdk")
+    state = {"calls": 0, "prompts": []}
+
+    class ClaudeAgentOptions:  # noqa: N801
+        def __init__(self, **kw):
+            self.kw = kw
+
+    fake.ClaudeAgentOptions = ClaudeAgentOptions
+    fake.AssistantMessage = _FakeAssistant
+
+    async def query(*, prompt, options):  # noqa: ANN001
+        state["calls"] += 1
+        state["prompts"].append(prompt)
+        if raise_from is not None and state["calls"] >= raise_from:
+            raise RuntimeError("sdk boom")
+        yield _FakeAssistant(replies[min(state["calls"] - 1, len(replies) - 1)])
+
+    fake.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+    return state
+
+
+async def test_unparseable_reply_is_reasked_once_then_classifies(monkeypatch):
+    """#508: the exception ladder never covered a reply the parser refuses —
+    it defaulted to private FIRST STRIKE, silently, at a measured ~12% of
+    calls on a 48-item save (v0.177.0). One re-ask with the format restated
+    must recover the compliant answer instead of defaulting."""
+    state = _install_sequenced_sdk(monkeypatch, replies=[
+        "This concerns household finances.\nIt should not be shared.\nprivate",
+        "Tier: private",
+    ])
+    assert await tier_classifier.classify_tier("salary is 5000 EUR") == "private"
+    assert state["calls"] == 2
+
+
+async def test_reask_prompt_restates_the_answer_line_mandate(monkeypatch):
+    """The re-ask must carry the fact again plus the format reminder — the
+    stricter restatement of the answer-line mandate, not a bare repeat."""
+    state = _install_sequenced_sdk(monkeypatch, replies=[
+        "I would not want to commit to a tier here.",
+        "Tier: friends",
+    ])
+    assert await tier_classifier.classify_tier("dinner is at seven") == "friends"
+    first, second = state["prompts"]
+    assert first == "dinner is at seven"
+    assert second.startswith("dinner is at seven")
+    assert "Tier: <word>" in second
+    assert "private, family, friends, or public" in second
+
+
+async def test_reask_still_unparseable_defaults_after_exactly_two_asks(
+        monkeypatch, caplog):
+    """Exactly ONE re-ask — then the leak-safe default, never a third ask.
+    Both structural warnings land: the re-ask announcement and the final
+    default."""
+    import logging as _logging
+
+    state = _install_sequenced_sdk(monkeypatch, replies=[
+        "chatty non-answer", "still a chatty non-answer",
+    ])
+    with caplog.at_level(_logging.WARNING):
+        assert await tier_classifier.classify_tier("anything") == DEFAULT_TIER
+    assert state["calls"] == 2
+    warns = [r.getMessage() for r in caplog.records
+             if "unparseable" in r.getMessage().lower()]
+    assert len(warns) == 2
+    assert "re-asking once" in warns[0]
+    assert f"defaulting to {DEFAULT_TIER}" in warns[1]
+
+
+async def test_reask_exception_ladder_then_default(monkeypatch):
+    """An unparseable first reply followed by a broken backend on the re-ask
+    still lands on the default: the re-ask gets its own D-5 exception retry
+    (calls 2 and 3), then private."""
+    monkeypatch.setattr(tier_classifier, "_RETRY_BACKOFF_S", 0)
+    state = _install_sequenced_sdk(
+        monkeypatch, replies=["chatty non-answer"], raise_from=2)
+    assert await tier_classifier.classify_tier("anything") == DEFAULT_TIER
+    assert state["calls"] == 3
+
+
+async def test_reask_cannot_downgrade_below_discarded_evidence(monkeypatch):
+    """Review r1 (Sol S1): the re-ask is a fresh stateless sample — a second
+    opinion of ``public`` must not overrule a discarded first reply whose only
+    answer-shaped line said ``private``. Evidence is a floor; a re-ask below
+    it is a cross-ask conflict and takes the leak-safe default."""
+    state = _install_sequenced_sdk(monkeypatch, replies=[
+        "This must be kept confidential.\nprivate",
+        "public",
+    ])
+    with tier_classifier.classify_stats() as stats:
+        assert await tier_classifier.classify_tier(
+            "salary is 5000 EUR") == DEFAULT_TIER
+    assert state["calls"] == 2
+    assert stats.defaulted == 1
+
+
+async def test_reask_at_or_above_evidence_floor_is_accepted(monkeypatch):
+    state = _install_sequenced_sdk(monkeypatch, replies=[
+        "Some ungrammatical multi-line reply.\nfriends",
+        "Tier: family",
+    ])
+    assert await tier_classifier.classify_tier(
+        "the alarm code is 4712") == "family"
+    assert state["calls"] == 2
+    state = _install_sequenced_sdk(monkeypatch, replies=[
+        "Some ungrammatical multi-line reply.\nfriends",
+        "friends",
+    ])
+    assert await tier_classifier.classify_tier("dinner at seven") == "friends"
+
+
+async def test_prose_tier_words_create_no_evidence_floor(monkeypatch):
+    """#350 boundary holds for the floor too: a tier word INSIDE prose is not
+    evidence — only a whole answer-shaped line is. The re-ask answer stands."""
+    state = _install_sequenced_sdk(monkeypatch, replies=[
+        "This is not about the public; nor family matters, to be honest",
+        "Tier: public",
+    ])
+    assert await tier_classifier.classify_tier("bin day is Tuesday") == "public"
+    assert state["calls"] == 2
+
+
+async def test_classify_stats_counts_failure_defaults_only(monkeypatch):
+    """#508: a counting scope sees N-defaulted-of-M across a batch. A genuine
+    ``private`` classification is NOT a default — only failure paths count."""
+    with tier_classifier.classify_stats() as stats:
+        _install_fake_sdk(monkeypatch, reply="private")
+        assert await tier_classifier.classify_tier("salary is 5000") == "private"
+        _install_fake_sdk(monkeypatch, reply="chatty non-answer")
+        assert await tier_classifier.classify_tier("ambiguous") == DEFAULT_TIER
+    assert stats.total == 2
+    assert stats.defaulted == 1
+
+
+async def test_classify_stats_counts_exception_defaults(monkeypatch):
+    monkeypatch.setattr(tier_classifier, "_RETRY_BACKOFF_S", 0)
+    _install_fake_sdk(monkeypatch, raise_exc=RuntimeError("sdk boom"))
+    with tier_classifier.classify_stats() as stats:
+        assert await tier_classifier.classify_tier("anything") == DEFAULT_TIER
+    assert stats.total == 1
+    assert stats.defaulted == 1
+
+
+async def test_classify_without_a_stats_scope_still_works(monkeypatch):
+    """No scope open (e.g. a direct caller outside the save path): counting
+    is simply inert."""
+    _install_fake_sdk(monkeypatch, reply="family")
+    assert await tier_classifier.classify_tier("dinner at seven") == "family"
+
+
 async def test_unparseable_warn_reports_absent_label(monkeypatch, caplog):
     import logging as _logging
 

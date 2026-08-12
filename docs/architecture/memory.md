@@ -295,13 +295,13 @@ silence.
 dedicated reason rather than calling the backend. Genuine zero-hit results count as successes
 and reset it; only unavailability counts as failure.
 
-**Tier classification fails.** Retention classifies each item with a bounded LLM pass; a backend error retries once; an unparseable reply falls to
-*private* with only a log warning. "Unparseable" is strict: only a
-single-line (possibly decorated) tier token or a final `Tier: <word>` line parses; earlier
-lines carrying the same answer agree. A tier word in prose, an unlabeled multi-line
-reply, or an earlier answer naming a different tier is ambiguity and defaults to
-private. The write is not lost, but the fact
-becomes invisible below the highest clearance — absence on voice and friends surfaces.
+**Tier classification fails.** Retention classifies each item with a bounded LLM pass; a
+backend error retries once; an unparseable reply is re-asked once with the format mandate
+restated, then falls to *private* with a log warning, and the save logs one aggregate
+N-defaulted-of-M line. "Unparseable" is strict: only a single-line (possibly decorated)
+tier token or a final `Tier: <word>` line with agreeing earlier answers parses —
+anything else (prose, conflicts) is ambiguity. The write is not lost, but the fact
+goes invisible below the highest clearance — absence on voice and friends surfaces.
 
 **Saving a session fails.** The save is abandoned, its claim is released — including when the
 failure is a cancellation at shutdown — and the entry stays for a later sweep to retry. An
