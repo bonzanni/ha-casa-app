@@ -764,6 +764,48 @@ class TestConcurrentRelayTopicState:
         # No pending relays remain: the topic must end 'active'.
         assert tg.state_calls[-1] == (eid, "active"), tg.state_calls
 
+    async def test_second_cancel_during_exit_paint_still_lands_active(self):
+        """Sol diff-r3 S2: serialization orders paints but does not guarantee
+        completion — a (second) cancellation aborting the FINAL exit paint
+        mid-await stranded the topic 'awaiting'. The paint runs shielded and
+        completes even when the hook task is cancelled during it."""
+        from hooks import make_engagement_permission_relay
+        eid = "e5" * 16
+        reg = _FakeRegistry({eid: _FakeRecord()})
+
+        class _SlowActiveChannel(_FakeTelegramChannel):
+            def __init__(self):
+                super().__init__()
+                self.release_active = asyncio.Event()
+                self.active_entered = asyncio.Event()
+
+            async def update_topic_state(self, *, engagement_id, new_state):
+                if new_state == "active":
+                    self.active_entered.set()
+                    await self.release_active.wait()
+                self.state_calls.append((engagement_id, new_state))
+
+        tg = _SlowActiveChannel()
+        hook = make_engagement_permission_relay(
+            engagement_registry=reg, telegram_channel=tg, timeout_s=5.0,
+        )
+        task = asyncio.create_task(hook(
+            {"tool_name": "Bash", "tool_input": {"command": "x"},
+             "cwd": f"/data/engagements/{eid}", "tool_use_id": "rid-2c"},
+            None, {"casa_engagement_id": eid},
+        ))
+        await asyncio.sleep(0.05)          # registered, awaiting verdict
+        task.cancel()                      # first cancel → finally → exit paint
+        await asyncio.wait_for(tg.active_entered.wait(), timeout=1.0)
+        task.cancel()                      # second cancel, mid exit paint
+        await asyncio.sleep(0.05)
+        tg.release_active.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.1)           # let the shielded paint finish
+
+        assert (eid, "active") in tg.state_calls, tg.state_calls
+
     async def test_cancel_during_initial_awaiting_edit_does_not_strand(self):
         from hooks import make_engagement_permission_relay
         eid = "b2" * 16

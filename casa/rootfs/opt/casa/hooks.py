@@ -3115,8 +3115,12 @@ def make_engagement_permission_relay(
     # (mirrors telegram's per-topic handler locks; popping one while a
     # waiter holds it would fork the serialization domain).
     _state_paint_locks: dict[str, asyncio.Lock] = {}
+    # Strong refs to in-flight shielded paints (broker _setup_tasks pattern):
+    # a caller-cancelled paint continues in the background and must not be
+    # garbage-collected mid-flight.
+    _paint_tasks: set = set()
 
-    async def _paint_topic_state(eng_id: str) -> None:
+    async def _do_paint(eng_id: str) -> None:
         lock = _state_paint_locks.setdefault(eng_id, asyncio.Lock())
         async with lock:
             state = (
@@ -3132,6 +3136,24 @@ def make_engagement_permission_relay(
             await telegram_channel.update_topic_state(
                 engagement_id=eng_id, new_state=state,
             )
+
+    async def _paint_topic_state(eng_id: str, *, shielded: bool) -> None:
+        # Sol diff-r3 (#324): serialization orders paints but does not
+        # guarantee completion — a cancellation aborting the FINAL exit
+        # paint mid-await would strand the topic 'awaiting'. The EXIT paint
+        # therefore runs as a SHIELDED task (never cancelled itself; the
+        # caller's cancellation propagates while the paint completes in the
+        # background). The ENTRY paint stays cancellable ON PURPOSE: it is
+        # always healed by the shielded exit paint, and shielding it would
+        # let one wedged wire edit hold the serialization lock uncancellably
+        # and wedge every later paint for the engagement.
+        if not shielded:
+            await _do_paint(eng_id)
+            return
+        task = asyncio.ensure_future(_do_paint(eng_id))
+        _paint_tasks.add(task)
+        task.add_done_callback(_paint_tasks.discard)
+        await asyncio.shield(task)
 
     async def _hook(
         input_data: dict[str, Any],
@@ -3203,7 +3225,7 @@ def make_engagement_permission_relay(
         _pending_relays[eng_id] = _pending_relays.get(eng_id, 0) + 1
         outcome: dict[str, Any] = {}
         try:  # r7-B3 + #324: whole lifecycle guarded, awaiting paint included
-            await _paint_topic_state(eng_id)
+            await _paint_topic_state(eng_id, shielded=False)
             # STATIC meta seeded ATOMICALLY at registration (F1 Sol r3 pattern —
             # whichever party wins a same-request_id create race installs the
             # complete metadata; register() only seeds meta on creation).
@@ -3320,7 +3342,7 @@ def make_engagement_permission_relay(
                 _pending_relays.pop(eng_id, None)
             else:
                 _pending_relays[eng_id] = _remaining
-            await _paint_topic_state(eng_id)
+            await _paint_topic_state(eng_id, shielded=True)
         o = outcome.get("outcome")
         if o == "answered" and outcome.get("option_index") == 0:
             return {}
