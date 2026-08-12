@@ -702,6 +702,68 @@ class TestConcurrentRelayTopicState:
         assert await asyncio.wait_for(t2, timeout=1.0) == {}
         assert tg.state_calls[-1] == (eid, "active")
 
+    async def test_delayed_awaiting_paint_cannot_outlive_the_last_active(
+        self, _fresh_broker,
+    ):
+        """Sol diff-r2 S2: an 'awaiting' paint delayed in flight must not land
+        after the LAST relay's final 'active' repaint (a stranded-awaiting
+        topic with no live keyboard). State edits are serialized so the final
+        paint always reflects the final tally."""
+        from hooks import make_engagement_permission_relay
+        eid = "d4" * 16
+        reg = _FakeRegistry({eid: _FakeRecord()})
+
+        class _ReorderingChannel(_FakeTelegramChannel):
+            def __init__(self):
+                super().__init__()
+                self.release_active = asyncio.Event()
+                self.release_awaiting3 = asyncio.Event()
+                self._active_blocked_once = False
+                self._awaiting_seen = 0
+
+            async def update_topic_state(self, *, engagement_id, new_state):
+                if new_state == "active" and not self._active_blocked_once:
+                    self._active_blocked_once = True
+                    await self.release_active.wait()
+                if new_state == "awaiting":
+                    self._awaiting_seen += 1
+                    if self._awaiting_seen == 3:
+                        await self.release_awaiting3.wait()
+                self.state_calls.append((engagement_id, new_state))
+
+        tg = _ReorderingChannel()
+        hook = make_engagement_permission_relay(
+            engagement_registry=reg, telegram_channel=tg, timeout_s=2.0,
+        )
+        def _input(rid):
+            return ({"tool_name": "Bash", "tool_input": {"command": rid},
+                     "cwd": f"/data/engagements/{eid}", "tool_use_id": rid},
+                    None, {"casa_engagement_id": eid})
+        t1 = asyncio.create_task(hook(*_input("rid-A")))
+        await asyncio.sleep(0.05)
+        assert deliver(_fresh_broker,
+            namespace="permission", scope=eid, request_id="rid-A",
+            option_index=0, actor_id=999,
+        ) == "delivered"
+        await asyncio.sleep(0.05)     # t1 parked in its 'active' edit
+
+        t2 = asyncio.create_task(hook(*_input("rid-B")))
+        await asyncio.sleep(0.05)
+        tg.release_active.set()       # A's 'active' lands; any late 'awaiting'
+        await asyncio.sleep(0.05)     # for rid-B may still be in flight
+        assert deliver(_fresh_broker,
+            namespace="permission", scope=eid, request_id="rid-B",
+            option_index=0, actor_id=999,
+        ) == "delivered"
+        await asyncio.sleep(0.05)     # rid-B's exit paint lands first
+        tg.release_awaiting3.set()    # a delayed third paint (if any) lands last
+        assert await asyncio.wait_for(t1, timeout=1.0) == {}
+        assert await asyncio.wait_for(t2, timeout=1.0) == {}
+        await asyncio.sleep(0.1)
+
+        # No pending relays remain: the topic must end 'active'.
+        assert tg.state_calls[-1] == (eid, "active"), tg.state_calls
+
     async def test_cancel_during_initial_awaiting_edit_does_not_strand(self):
         from hooks import make_engagement_permission_relay
         eid = "b2" * 16

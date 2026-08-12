@@ -3104,6 +3104,34 @@ def make_engagement_permission_relay(
     # the first exit's r7-B3 restore must not repaint 'active' while the
     # sibling's keyboard is still live. Entries are deleted at zero.
     _pending_relays: dict[str, int] = {}
+    # Sol diff-r1/r2 (#324): unserialized state edits lose to wire ordering —
+    # whichever edit LANDS last wins, regardless of which tally state it was
+    # painted for (r1: a stale 'active' after a new relay's 'awaiting'; r2:
+    # the one-shot corrective 'awaiting' after the last exit's 'active').
+    # Cut the mechanism instead of sharpening it: every paint SERIALIZES on a
+    # per-engagement lock and reads the CURRENT tally under it, so the
+    # last-serialized paint always reflects the final tally and no
+    # corrective repaints exist. Locks are retained for the process lifetime
+    # (mirrors telegram's per-topic handler locks; popping one while a
+    # waiter holds it would fork the serialization domain).
+    _state_paint_locks: dict[str, asyncio.Lock] = {}
+
+    async def _paint_topic_state(eng_id: str) -> None:
+        lock = _state_paint_locks.setdefault(eng_id, asyncio.Lock())
+        async with lock:
+            state = (
+                "awaiting" if _pending_relays.get(eng_id, 0) > 0 else "active"
+            )
+            # Terra r3 (#347): FRESH status read — an engagement that
+            # terminalized mid-hook must not be repainted; that edit could
+            # land after the terminal-state edit and leave a closed topic
+            # showing green (or amber).
+            rec_now = engagement_registry.get(eng_id)
+            if getattr(rec_now, "status", None) != "active":
+                return
+            await telegram_channel.update_topic_state(
+                engagement_id=eng_id, new_state=state,
+            )
 
     async def _hook(
         input_data: dict[str, Any],
@@ -3166,19 +3194,16 @@ def make_engagement_permission_relay(
         from verdict_broker import BROKER
 
         # #324: count this request BEFORE any await, and open the guarded
-        # block BEFORE the 'awaiting' edit — a cancel landing inside that
+        # block BEFORE the 'awaiting' paint — a cancel landing inside that
         # edit previously ran no cleanup and stranded the topic 'awaiting'
-        # forever. Every request paints 'awaiting' itself (an idempotent
-        # edit; a 0->1-only paint would skip the corrective paint when an
-        # earlier sibling is cancelled before its own edit lands), but only
-        # the LAST exit (tally back to zero, in the finally) repaints
-        # 'active'.
+        # forever. Every request paints via the serialized painter (an
+        # idempotent edit; a 0->1-only paint would skip the paint when an
+        # earlier sibling is cancelled before its own edit lands); the
+        # painter itself decides awaiting/active from the CURRENT tally.
         _pending_relays[eng_id] = _pending_relays.get(eng_id, 0) + 1
         outcome: dict[str, Any] = {}
-        try:  # r7-B3 + #324: whole lifecycle guarded, awaiting edit included
-            await telegram_channel.update_topic_state(
-                engagement_id=eng_id, new_state="awaiting",
-            )
+        try:  # r7-B3 + #324: whole lifecycle guarded, awaiting paint included
+            await _paint_topic_state(eng_id)
             # STATIC meta seeded ATOMICALLY at registration (F1 Sol r3 pattern —
             # whichever party wins a same-request_id create race installs the
             # complete metadata; register() only seeds meta on creation).
@@ -3286,34 +3311,16 @@ def make_engagement_permission_relay(
         finally:
             # r7-B3: restore topic state on EVERY exit — post failure,
             # cancellation during post or await, or normal completion.
-            # #324: only when this was the LAST pending relay request for
-            # the engagement — a sibling keyboard still awaiting its verdict
-            # keeps the topic 'awaiting'.
-            # Terra r3 (#347): gated on a FRESH status read — an engagement
-            # that terminalized mid-hook (the TERMINAL_REGISTRATION deny, or
-            # any exit racing the terminal sweep) must not be repainted
-            # ``active``; that edit could land AFTER the terminal-state edit
-            # and leave a closed topic showing green.
+            # #324: drop this request from the tally, then paint through the
+            # serialized painter — it reads the post-decrement tally under
+            # the lock, so a sibling keyboard still awaiting its verdict
+            # keeps the topic 'awaiting' and the last exit paints 'active'.
             _remaining = _pending_relays.get(eng_id, 1) - 1
             if _remaining <= 0:
                 _pending_relays.pop(eng_id, None)
             else:
                 _pending_relays[eng_id] = _remaining
-            if _remaining <= 0:
-                _rec_now = engagement_registry.get(eng_id)
-                if getattr(_rec_now, "status", None) == "active":
-                    await telegram_channel.update_topic_state(
-                        engagement_id=eng_id, new_state="active",
-                    )
-                    # Sol diff-r1 (#324): a relay that STARTED while the edit
-                    # above was in flight already painted 'awaiting' — this
-                    # exit's stale 'active' may have landed after it, leaving
-                    # the topic green under a live keyboard. Recheck the
-                    # tally and repaint.
-                    if _pending_relays.get(eng_id, 0) > 0:
-                        await telegram_channel.update_topic_state(
-                            engagement_id=eng_id, new_state="awaiting",
-                        )
+            await _paint_topic_state(eng_id)
         o = outcome.get("outcome")
         if o == "answered" and outcome.get("option_index") == 0:
             return {}
