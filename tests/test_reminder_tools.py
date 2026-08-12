@@ -152,6 +152,22 @@ async def test_the_prompt_is_imperative(env):
     assert "Bins." in prompt
 
 
+async def test_the_prompt_suppresses_closing_narration(env):
+    """#511: the scheduled turn's own final text is ALSO delivered, so without
+    the `<silent/>` convention every fire costs a second message ("Sent.").
+    The prompt keeps the imperative send (delivery stays deterministic — the
+    v0.132.0 lesson) and additionally instructs the silence sentinel for the
+    turn's closing output."""
+    from tools import set_reminder
+
+    out = _payload(await set_reminder.handler({"at": FUTURE, "text": "Bins."}))
+    prompt = _find(env.path, out["name"])["prompt"]
+    assert "<silent/>" in prompt
+    # The send instruction must survive — silence applies to the narration,
+    # never to the delivery itself.
+    assert prompt.lower().startswith("send this exact message")
+
+
 async def test_weekly_writes_a_cron_entry_with_a_day_name(env):
     from tools import set_reminder
 

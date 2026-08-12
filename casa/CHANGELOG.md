@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.180.0] - 2026-08-12
+
+### Fixed
+
+- **Reminders no longer arrive with a stray "Sent." follow-up message.**
+  A fired reminder's delivery turn now closes with the silence sentinel
+  instead of narrating, so each reminder is one message, not two. Applies
+  to reminders set from now on; existing ones keep their stored prompt
+  until re-created. (#511)
+- **A specialist's boot capability line no longer misreports it as
+  tool-less.** The boot `agent_capabilities` line reports the role's
+  *declaration* and now says so (`declared_tools=…`); the tools a
+  specialist actually receives — including its own plugin's server grants
+  — are logged per delegation as `agent_capabilities_effective`, so
+  post-install verification finally has an oracle that matches reality.
+  (#459)
+
 ## [0.179.0] - 2026-08-12
 
 ### Fixed
