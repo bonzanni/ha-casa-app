@@ -113,9 +113,18 @@ class ExplanationStore:
             # clobber each other's staging file mid-flight. `.tmp`-suffixed, so
             # prune's `*.json` glob never sees it.
             temporary = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.tmp")
-            temporary.write_text(encoded + "\n", encoding="utf-8")
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, path)
+            try:
+                temporary.write_text(encoded + "\n", encoding="utf-8")
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, path)
+            except BaseException:
+                # GH #356: a failure between staging and publish must not
+                # leave the temp file behind — it carries the full sensitive
+                # record (system_prompt/memory_text) and the prune sweep is
+                # what bounds this directory. After a successful os.replace
+                # the temp no longer exists and this unlink is a no-op.
+                temporary.unlink(missing_ok=True)
+                raise
             # TTL/prune read the file's mtime as the record's age. Force it to
             # the injectable `now` (not whatever the real OS clock says) so a
             # test-supplied `now` callable drives TTL/prune deterministically —
@@ -149,6 +158,13 @@ class ExplanationStore:
         deadlock-free — never re-acquire here)."""
         if not self._root.is_dir():
             return
+        # GH #356: sweep orphaned staging files. All writers stage under
+        # ``self._lock`` and publish (os.replace) or unlink before releasing
+        # it, so any ``*.tmp`` visible while HOLDING the lock is an orphan —
+        # a crashed process or a pre-fix failure — carrying sensitive
+        # content: delete immediately, no TTL grace.
+        for orphan in self._root.glob("*.tmp"):
+            orphan.unlink(missing_ok=True)
         files = sorted(self._root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         cutoff = self._now() - EXPLANATION_TTL_SECONDS
         for index, path in enumerate(files):

@@ -118,6 +118,16 @@ async def observed_recall(
             int((time.monotonic() - started) * 1000), 0,
         ))
         raise
+    except BaseException:
+        # GH #356: cancellation (or a non-RecallUnavailable bug exception)
+        # while awaiting a HALF-OPEN probe used to leave `_probe_in_flight`
+        # set forever — every later call fast-failed `circuit_open` until
+        # restart. Abandon the probe: clear the flag WITHOUT counting a
+        # failure (a cancelled probe says nothing about backend health) and
+        # without a telemetry event (no outcome occurred — the three-outcome
+        # discipline stays intact).
+        breaker.abandon()
+        raise
     breaker.success()
     telemetry.record(RecallTelemetryEvent(
         path, "hits" if hits else "zero_hits", "ok",
@@ -162,6 +172,16 @@ class RecallCircuitBreaker:
     def success(self) -> None:
         self._failures = 0
         self._opened_at = None
+        self._probe_in_flight = False
+
+    def abandon(self) -> None:
+        """Release a half-open probe slot with NO outcome recorded (GH #356).
+
+        Called when the probe was cancelled (or died on a non-recall bug
+        exception) before producing evidence either way: the flag is cleared
+        so the next caller can probe, failures are not incremented, and an
+        open breaker stays open on its existing clock. In the closed state
+        the flag is already False — harmless no-op."""
         self._probe_in_flight = False
 
     def failure(self) -> None:

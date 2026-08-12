@@ -520,6 +520,11 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
     # the live baseline on this path.
     if role in runtime.role_configs:
         runtime.role_configs[role] = cfg
+        # GH #356: rebind the four personality maps in the same synchronous
+        # stretch as the mutation (identity is guarded fixed here, so the
+        # maps cannot actually change content — but sharing the one rule
+        # "every role_configs write refreshes" keeps the invariant auditable).
+        runtime.refresh_personality_maps()
     else:
         try:
             await asyncio.to_thread(runtime.specialist_registry.load, roles_dir=roles_dir)
@@ -704,6 +709,16 @@ def _refresh_role_map(runtime: Any, *, context: str) -> list[str]:
     """
     before = _delegate_directory()
     actions: list[str] = []
+    # GH #356: reconciliation pass over the four personality maps. Every
+    # role_configs mutation site already refreshes synchronously in place;
+    # this catch-all keeps the maps honest for any future mutation path that
+    # forgets, and runs BEFORE (independent of) the role-map try below so a
+    # sync_agent_role_map failure can never skip it. Pure in-memory
+    # derivation, but guarded log-don't-fail like the rest of this helper.
+    try:
+        runtime.refresh_personality_maps()
+    except Exception as exc:  # noqa: BLE001 — log but don't fail the caller
+        logger.warning("personality-map refresh failed (%s): %s", context, exc)
     try:
         from tools import sync_agent_role_map
         sync_agent_role_map(runtime)
@@ -1026,6 +1041,10 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
     _invalidate_role_grants(role)
     if tier == "resident":
         runtime.role_configs[role] = new_cfg
+        # GH #356: rebind the personality maps synchronously with the swap —
+        # `casactl persona inspect/render/diff` must describe the config the
+        # now-live agent runs, not the pre-reload one, with no await between.
+        runtime.refresh_personality_maps()
     runtime.agents[role] = new_agent
     # Publish the SAME overlay registry the agent was constructed with
     # (Sol r5-1): rebuilding from post-load state here could publish a
@@ -1152,6 +1171,10 @@ async def _reload_role_after_policies(runtime: Any, role: str) -> None:
     _invalidate_role_grants(role)
     if tier == "resident":
         runtime.role_configs[role] = new_cfg
+        # GH #356: rebind the personality maps before any await, so an admin
+        # inspect/render racing this cascade never sees the maps describe a
+        # config the just-swapped agent does not run.
+        runtime.refresh_personality_maps()
     runtime.agents[role] = new_agent
     runtime.bus.register(role, new_agent.handle_message)
     _start_bus_loop(runtime, role)
@@ -1386,6 +1409,11 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # (re)constructed agent becomes dispatchable.
         _invalidate_role_grants(r)
         runtime.role_configs[r] = new_cfg
+        # GH #356: refresh in the same synchronous stretch as the add — the
+        # end-of-sweep reconciliation below (line ~1560) is too late: trigger
+        # registration awaits in between, and an admin render in that window
+        # would 404 for a resident that is already dispatchable.
+        runtime.refresh_personality_maps()
         runtime.agents[r] = new_agent
         runtime.bus.register(r, new_agent.handle_message)
         # H10: without a consumer the new resident's queue is write-only
@@ -1424,6 +1452,9 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # Deletion-only baseline write: eviction, not activation — see the
         # role_configs mutation audit on _resident_identity_changed.
         runtime.role_configs.pop(r, None)
+        # GH #356: drop the evicted role from the personality maps before the
+        # teardown awaits — an evicted resident must not stay inspectable.
+        runtime.refresh_personality_maps()
         old_agent = runtime.agents.pop(r, None)  # AR-7: capture before drop
         _schedule_agent_close(old_agent)  # F12
         await _teardown_role(runtime, r)
