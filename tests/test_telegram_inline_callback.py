@@ -1911,3 +1911,128 @@ class TestDeliverSystemTurn:
         spy.assert_awaited_once()
         assert spy.await_args.args[0].id == rec.id
         ch._driver_send_user_turn.assert_awaited_once()
+
+
+class TestUpdateTopicStateSentinel:
+    """#529: a cancellation between the title wire edit and the emoji
+    persistence used to leave wire=new / persisted=old, and the persisted-emoji
+    no-op guard then swallowed the next paint requesting the persisted state —
+    a PERMANENT visual divergence. The fix persists an UNCERTAIN sentinel
+    (``""``) before the wire await and the real emoji only after it, so a
+    cancellation anywhere in the window leaves a value no real paint can
+    no-op against."""
+
+    async def _mk(self, fake_telegram_bot, engagement_fixture):
+        from channels.telegram import TelegramChannel
+        await fake_telegram_bot.create_forum_topic(chat_id=-1001, name="🟢 t")
+        rec = engagement_fixture.active_record
+        rec.topic_id = 1001
+        ch = TelegramChannel(
+            bot=fake_telegram_bot, chat_id=100, engagement_supergroup_id=-1001,
+        )
+        ch._engagement_registry = engagement_fixture.registry
+        return ch, rec
+
+    async def test_sentinel_is_persisted_before_the_wire_edit(
+        self, fake_telegram_bot, engagement_fixture, monkeypatch,
+    ):
+        ch, rec = await self._mk(fake_telegram_bot, engagement_fixture)
+        await engagement_fixture.registry.set_channel_state(
+            rec.id, current_state_emoji="🟢")
+        seen_at_wire = []
+        real_edit = fake_telegram_bot.edit_forum_topic
+
+        async def spying_edit(**kw):
+            seen_at_wire.append(rec.current_state_emoji)
+            return await real_edit(**kw)
+
+        monkeypatch.setattr(fake_telegram_bot, "edit_forum_topic", spying_edit)
+        await ch.update_topic_state(engagement_id=rec.id, new_state="awaiting")
+        assert seen_at_wire == [""]          # uncertain across the wire await
+        assert rec.current_state_emoji == "🟡"  # settled after success
+
+    async def test_cancel_in_wire_window_self_heals_on_next_paint(
+        self, fake_telegram_bot, engagement_fixture, monkeypatch,
+    ):
+        """THE #529 repro: cancel lands in the wire await (title may have
+        landed); persisted must be the sentinel, and the next paint — even one
+        requesting the PRE-CANCEL persisted state — must go through."""
+        ch, rec = await self._mk(fake_telegram_bot, engagement_fixture)
+        await engagement_fixture.registry.set_channel_state(
+            rec.id, current_state_emoji="🟢")
+        real_edit = fake_telegram_bot.edit_forum_topic
+        calls = []
+
+        async def cancelled_edit(**kw):
+            calls.append(kw)
+            await real_edit(**kw)            # the wire ACCEPTED the title...
+            raise asyncio.CancelledError     # ...then the task was cancelled
+
+        monkeypatch.setattr(
+            fake_telegram_bot, "edit_forum_topic", cancelled_edit)
+        with pytest.raises(asyncio.CancelledError):
+            await ch.update_topic_state(
+                engagement_id=rec.id, new_state="awaiting")
+        assert rec.current_state_emoji == ""     # uncertain, never stale-🟢
+
+        # Next serialized paint requests 'active' — the state whose emoji was
+        # persisted BEFORE the cancel. Pre-fix the guard saw 🟢==🟢 and
+        # returned; the topic stayed amber forever.
+        monkeypatch.setattr(fake_telegram_bot, "edit_forum_topic", real_edit)
+        await ch.update_topic_state(engagement_id=rec.id, new_state="active")
+        sg = fake_telegram_bot._supergroups[-1001]
+        assert sg.topics[1001].name.startswith("🟢")
+        assert rec.current_state_emoji == "🟢"
+
+    async def test_not_modified_bad_request_converges_the_sentinel(
+        self, fake_telegram_bot, engagement_fixture, monkeypatch,
+    ):
+        """A landed-but-unpersisted edit leaves the wire ALREADY at the target
+        title; Telegram then rejects the identical re-edit with 'message is
+        not modified'. That must count as wire success so the real emoji
+        persists — otherwise the sentinel loops forever."""
+        ch, rec = await self._mk(fake_telegram_bot, engagement_fixture)
+        await engagement_fixture.registry.set_channel_state(
+            rec.id, current_state_emoji="")
+
+        async def not_modified_edit(**kw):
+            raise Exception("Bad Request: message is not modified")
+
+        monkeypatch.setattr(
+            fake_telegram_bot, "edit_forum_topic", not_modified_edit)
+        await ch.update_topic_state(engagement_id=rec.id, new_state="awaiting")
+        assert rec.current_state_emoji == "🟡"
+
+    async def test_wire_failure_keeps_sentinel_for_retry(
+        self, fake_telegram_bot, engagement_fixture, monkeypatch,
+    ):
+        ch, rec = await self._mk(fake_telegram_bot, engagement_fixture)
+        await engagement_fixture.registry.set_channel_state(
+            rec.id, current_state_emoji="🟢")
+
+        async def failing_edit(**kw):
+            raise Exception("Bad Gateway")
+
+        monkeypatch.setattr(fake_telegram_bot, "edit_forum_topic", failing_edit)
+        await ch.update_topic_state(engagement_id=rec.id, new_state="awaiting")
+        # Wire failed AFTER the sentinel persisted: uncertain is the truth
+        # (self-heals on the next paint); pre-fix this path kept 🟢, which was
+        # also fine — the sentinel must simply never be the REAL old emoji.
+        assert rec.current_state_emoji == ""
+
+    async def test_sentinel_persist_failure_aborts_before_the_wire(
+        self, fake_telegram_bot, engagement_fixture, monkeypatch,
+    ):
+        ch, rec = await self._mk(fake_telegram_bot, engagement_fixture)
+        reg = engagement_fixture.registry
+        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
+        ef = AsyncMock()
+        monkeypatch.setattr(fake_telegram_bot, "edit_forum_topic", ef)
+
+        def boom(snapshot):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(reg, "_write_tombstone", boom)
+        await ch.update_topic_state(engagement_id=rec.id, new_state="awaiting")
+        ef.assert_not_awaited()                  # never touch the wire
+        assert rec.current_state_emoji == "🟢"   # rolled back, not ""

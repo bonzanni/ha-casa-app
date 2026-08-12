@@ -293,6 +293,19 @@ class StreamCursor:
     # drivers already tolerate (spawn replay has the same contract).
     # Absent-tolerated → ``None`` (older checkpoints predate the field).
     result_event_pending: dict | None = None
+    # #523: qualified wire high-water marker, written (with its own ``_save``)
+    # the moment ``_finalize``'s closing narration edit lands APPLIED and
+    # cleared atomically with the closed-turn checkpoint. Shape:
+    # ``{"coord": {"segment": [...], "offset": int}, "len": int}`` — "the last
+    # narration message's on-wire text has length ``len``, valid for frames at
+    # or below ``coord`` (the result frame)". A crash between the closing edit
+    # and the closed-turn save used to repost the throttled closing suffix on
+    # cold replay (the suffix frames lie PAST the persisted ``current``, so
+    # they replayed LIVE against a conservatively sealed message); with the
+    # marker, replay reconstructs them text-only and adopts ``len`` at
+    # ``coord`` — no repost, and a crash BEFORE the edit (no marker) keeps
+    # today's at-least-once delivery. Absent-tolerated → ``None``.
+    wire_hw: dict | None = None
 
     def __post_init__(self) -> None:
         # P2: NORMALIZE sep_stripped parallel to message_ids at EVERY
@@ -335,6 +348,11 @@ class StreamCursor:
                 if isinstance(data.get("result_event_pending"), dict)
                 else None
             ),
+            wire_hw=(
+                data.get("wire_hw")
+                if isinstance(data.get("wire_hw"), dict)
+                else None
+            ),
         )
 
     def save(self, path: str | os.PathLike[str]) -> None:
@@ -357,6 +375,7 @@ class StreamCursor:
                 "dropped_through": self.dropped_through,
                 "hold_pending": self.hold_pending,
                 "result_event_pending": self.result_event_pending,
+                "wire_hw": self.wire_hw,
             },
         )
 
@@ -986,6 +1005,15 @@ class TopicStreamRelay:
         assert not self._pending_seps, (
             "pending separator descriptors leaked into replay→live transition"
         )
+        # #523: a persisted wire-high-water marker means the turn's CLOSING
+        # edit landed — nothing was lost-before-persist on this message, and
+        # the reconstruction here is necessarily BEHIND the wire (the suffix
+        # frames past ``current`` have not replayed yet). Editing the wire
+        # down to the reconstruction would TRUNCATE the landed suffix; skip
+        # entirely and let the marker's adoption (``_handle_frame``) converge
+        # the high-waters at the recorded coordinate.
+        if self.cursor.wire_hw is not None:
+            return
         if not (self.cursor.message_ids and self._per_message_text):
             return
         try:
@@ -1892,6 +1920,22 @@ class TopicStreamRelay:
             res = await self._apply_seq_edit(
                 self.cursor.message_ids[-1], self._per_message_text,
             )
+            if res == "applied":
+                # #523: the closing edit LANDED — durably record the wire
+                # high-water it established, qualified by the result frame's
+                # coordinate, BEFORE the closed-turn mutations below. A crash
+                # in the window then replays convergently: frames at/below
+                # ``coord`` reconstruct text-only (the wire already carries
+                # them) and the re-run finalize's edit computes an empty
+                # increment — no reposted suffix. The SEALED branch
+                # deliberately writes NO marker (its repost path already owns
+                # the at-least-once duplicate; a seal+crash double fault
+                # keeps today's contract), as do drop/discard.
+                self.cursor.wire_hw = {
+                    "coord": dict(coord),
+                    "len": len(self._per_message_text),
+                }
+                self._save()
             if res == "sealed":
                 # §2(c) / W-R4 (Sol r1-3): the narration message was SEALED (a
                 # discrete posted below it), so it can no longer be edited. Post
@@ -1921,6 +1965,10 @@ class TopicStreamRelay:
         # P2: clear all three message lists together (parallel-list lifecycle).
         self._reset_message_lists()
         self.cursor.last_posted_len = 0
+        # #523: the closed-turn checkpoint advances past the closing edit's
+        # coordinate — the wire high-water marker has served its purpose and
+        # clears atomically in this same save.
+        self.cursor.wire_hw = None
         # §D5 r3-2 (C3): ``result`` is a held-frames boundary — the buffer was
         # just FLUSHED (answer arrived) or DISCARDED (anchor still open), and a
         # cold-recovery catch-up reaches its ``result`` with the prose already
@@ -2060,6 +2108,12 @@ class TopicStreamRelay:
                         )
                         self.cursor.hold_pending = False
                         self._save()
+                    # #523: the marker's source frames rotated out with the
+                    # gap — its coordinate can never be reached again, so it
+                    # would linger forever (harmless to correctness via the
+                    # ``_coord_le`` absence rule, but stale state). Clear it;
+                    # durable on the next checkpoint save.
+                    self.cursor.wire_hw = None
                     self._live = True
                     self._reconciled = True
                     self._reset_message_lists()
@@ -2173,6 +2227,32 @@ class TopicStreamRelay:
                     self._replay_text(narr.text, narr.message_id)
             return
 
+        # #523: LIVE frames at/below a persisted wire-high-water coordinate
+        # were fully handled before the crash (the marker exists only because
+        # the turn REACHED its closing edit): reconstruct their narration
+        # text-only — the wire already carries it — and suppress re-execution.
+        # At exactly the recorded coordinate (the result frame), adopt the
+        # landed high-water FIRST (Sol design-r2: adopting only after passing
+        # the coordinate would let the re-run finalize repost the suffix via
+        # the sealed path), then dispatch the frame normally so the result
+        # event and closed-turn checkpoint re-run as today.
+        hw = self.cursor.wire_hw
+        if hw is not None:
+            hw_coord = hw.get("coord") or {}
+            if (
+                tuple(seg) == tuple(hw_coord.get("segment", (0, 0)))
+                and off_after == int(hw_coord.get("offset", 0))
+            ):
+                self._posted_len = int(hw.get("len") or 0)
+                self.cursor.last_posted_len = self._posted_len
+                self.cursor.wire_hw = None  # durably cleared by finalize
+            elif self._coord_le(seg, off_after, hw_coord):
+                if frame is not None:
+                    narr = extract_narration(frame)
+                    if narr is not None and narr.text:
+                        self._replay_text(narr.text, narr.message_id)
+                return
+
         if frame is None:
             logger.debug(
                 "topic stream: skipping non-JSON line for engagement %s",
@@ -2237,6 +2317,10 @@ class TopicStreamRelay:
             self.cursor.turn_start = {"segment": list(seg), "offset": off_before}
             self._reset_message_lists()
             self.cursor.last_posted_len = 0
+            # #523: a new turn begins — any leftover wire-high-water marker
+            # (its result frame never replayed, e.g. adoption raced a crash)
+            # belongs to the previous turn and must not qualify frames here.
+            self.cursor.wire_hw = None
             self._reset_turn_state()
             await _maybe_await(
                 self.on_turn_event(

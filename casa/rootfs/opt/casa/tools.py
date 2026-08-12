@@ -4195,13 +4195,16 @@ async def delegate_to_agent(args: dict) -> dict:
             # client startup awaits must abort this launch at the driver gate.
             _ctx_gen0 = rec.context_generation
             # Persist initial state emoji so update_topic_state knows
-            # whether it needs to edit the title (no-op when state didn't change).
+            # whether it needs to edit the title (no-op when state didn't
+            # change). #529: conditional — a delayed launch path must not
+            # overwrite a terminal paint's settled emoji or an in-flight
+            # paint's uncertain sentinel.
             try:
-                await _engagement_registry.set_channel_state(
-                    rec.id, current_state_emoji=STATE_EMOJI["active"],
+                await _engagement_registry.set_initial_state_emoji(
+                    rec.id, STATE_EMOJI["active"],
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("set_channel_state(active) failed: %s", exc)
+                logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
             # Build options + start driver (off-loop: registry resolve is file IO).
             options = await asyncio.to_thread(
@@ -6342,12 +6345,14 @@ async def engage_executor(args: dict) -> dict:
 
         # Persist the initial state emoji so Task 23 ``update_topic_state`` knows
         # whether it needs to edit the title (no-op when state didn't change).
+        # #529: conditional — a delayed launch path must not overwrite a
+        # terminal paint's settled emoji or an in-flight paint's sentinel.
         try:
-            await _engagement_registry.set_channel_state(
-                rec.id, current_state_emoji=STATE_EMOJI["active"],
+            await _engagement_registry.set_initial_state_emoji(
+                rec.id, STATE_EMOJI["active"],
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("set_channel_state(active) failed: %s", exc)
+            logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
         # Read + interpolate prompt template (needed by both driver paths —
         # in_casa: options.system_prompt; claude_code: CLAUDE.md body).

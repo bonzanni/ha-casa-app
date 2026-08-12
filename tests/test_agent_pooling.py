@@ -334,23 +334,32 @@ async def test_pooled_session_publish_failure_drops_unpublished_generation(
 
 
 async def test_cancelled_pooled_session_publish_drops_unpublished_generation(
-    agent_fixture, scripted_factory,
+    agent_fixture, scripted_factory, monkeypatch,
 ):
+    """#418: the old precondition polled ``state == "warm"`` on a 5s
+    wall-clock budget and FELL THROUGH silently when a loaded xdist worker
+    starved the loop — the test then failed downstream on asserts it never
+    earned (``clients[0]`` on an empty list). Replace the poll with a
+    deterministic barrier: ``register()`` signals on ENTRY, then blocks on
+    the registry lock the test holds — cancellation is pinned INSIDE
+    publication by construction, and a missed precondition fails loudly."""
     agent, send_turn = agent_fixture
     registry = agent._session_registry
+    entered_publish = asyncio.Event()
+    real_register = registry.register
+
+    async def signaled_register(*args, **kwargs):
+        entered_publish.set()
+        return await real_register(*args, **kwargs)  # blocks on the held lock
+
+    monkeypatch.setattr(registry, "register", signaled_register)
     await registry._lock.acquire()
     task = asyncio.create_task(send_turn("hello"))
     try:
-        # Wall-clock-bounded precondition wait (deflake rule): a fixed tick
-        # count under a loaded xdist worker intermittently missed "warm".
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            await asyncio.sleep(0.001)
-            if (
-                scripted_factory.clients
-                and next(iter(agent._pool._entries.values())).state == "warm"
-            ):
-                break
+        try:
+            await asyncio.wait_for(entered_publish.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            pytest.fail("turn never reached session publication within 30s")
         assert not task.done()
 
         task.cancel()
@@ -720,3 +729,75 @@ def test_claude_agent_options_fields_all_classified():
         "field appeared — classify it static/connect-time/query-borne in the "
         "pooling spec §Q6 before extending this set"
     )
+
+
+async def test_process_error_clear_declines_after_same_sid_reregistration(
+    agent_fixture, monkeypatch,
+):
+    """#526: a concurrent turn that re-registered the SAME sid between this
+    turn's resume decision and its ProcessError recovery moved the entry's
+    registration GENERATION — the recovery's conditional clear must decline,
+    and the retry must then RESUME that live session (pre-fix the sid-only
+    guard matched, the entry was cleared, and the retry started fresh:
+    continuity lost, and the cleared session was never consolidated)."""
+    from claude_agent_sdk import ProcessError
+
+    agent, send_turn = agent_fixture
+    registry = agent._session_registry
+    recorded_register: dict = {}
+    real_register = registry.register
+
+    async def recording_register(*args, **kwargs):
+        recorded_register["args"] = args
+        recorded_register["kwargs"] = kwargs
+        await real_register(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "register", recording_register)
+
+    class FlakyClient(ScriptedClient):
+        def __init__(self, options, sid: str) -> None:
+            super().__init__(options, sid=sid)
+            self.query_count = 0
+
+        async def query(self, prompt, session_id="default"):
+            self.query_count += 1
+            if self.query_count == 2:
+                # Simulate T2: a concurrent same-key turn re-registers the
+                # SAME sid (a successful resume of it) before T1's recovery
+                # arm runs, then T1's attempt dies non-retryably.
+                await real_register(
+                    *recorded_register["args"], **recorded_register["kwargs"],
+                )
+                raise ProcessError("boom", exit_code=1)
+            await super().query(prompt, session_id=session_id)
+
+    class FlakyFactory:
+        def __init__(self) -> None:
+            self.constructed = 0
+            self.clients: list[FlakyClient] = []
+
+        def __call__(self, options) -> FlakyClient:
+            self.constructed += 1
+            c = FlakyClient(options, sid="sid-stable")
+            self.clients.append(c)
+            return c
+
+    factory = FlakyFactory()
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+
+    reply1 = await send_turn("hello")
+    assert reply1 is not None and reply1.content.endswith("hello")
+    channel_key = build_scoped_session_key("telegram", "assistant", "42")
+    assert registry.get(channel_key)["sdk_session_id"] == "sid-stable"
+
+    # Turn 2: warm reuse fails with ProcessError AFTER the same-sid
+    # re-registration landed. The recovery clear must DECLINE.
+    reply2 = await send_turn("again")
+    assert reply2 is not None and reply2.content.endswith("again")
+
+    # The retry saw the registry entry intact and RESUMED sid-stable —
+    # pre-fix the clear emptied the entry and this reconnect was fresh
+    # (options.resume None).
+    assert factory.constructed == 2
+    assert factory.clients[1].options.resume == "sid-stable"
+    assert registry.get(channel_key)["sdk_session_id"] == "sid-stable"

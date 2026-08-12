@@ -538,3 +538,117 @@ async def test_warm_throttled_hold_flushes_no_reread_duplication(tmp_path):
     assert relay._per_message_text == "AAABBBCCCDDD"  # not "AAABBBCCCCCCDDD"
     assert rec.edits[-1] == (42, 1, "AAABBBCCCDDD")
     assert [t for _tp, t in rec.sends] == ["AAA"]  # no re-send / duplication
+
+
+# ---------------------------------------------------------------------------
+# #523: crash between the closing narration edit and the closed-turn save.
+# ---------------------------------------------------------------------------
+
+
+async def test_wire_hw_marker_prevents_suffix_repost_after_crash(tmp_path):
+    """#523 (the fix): the closing edit LANDED (wire carries "hello suffix")
+    and the wire-high-water marker was saved, but the process died before the
+    closed-turn checkpoint. Cold recovery must repost NOTHING: the suffix
+    frame (past the persisted ``current``) reconstructs text-only, the marker
+    adopts the landed high-water at the result frame, and the re-run
+    finalize's sealed re-plan computes an empty tail."""
+    rec, events = Recorder(), []
+    offs = _write_current(tmp_path, [
+        _init(), _text("hello"), _text(" suffix"), _result(),
+    ])
+    cur_path = tmp_path / ".stream_cursor.json"
+    seg = _ident(os.path.join(str(tmp_path), "current"))
+    StreamCursor(
+        turn_start={"segment": seg, "offset": 0},
+        current={"segment": seg, "offset": offs[1]},   # through "hello"
+        message_ids=[7],
+        message_text_lens=[len("hello")],
+        last_posted_len=len("hello"),                  # suffix was throttled
+        wire_hw={
+            "coord": {"segment": seg, "offset": offs[3]},
+            "len": len("hello suffix"),
+        },
+    ).save(cur_path)
+
+    relay = _make_relay(tmp_path, cur_path, rec, events)
+    await relay.run()
+
+    assert rec.sends == []                      # the #523 dup was a send here
+    assert all(mid != 7 for _t, mid, _x in rec.edits)
+    assert ("result", {"subtype": "success"}) in events  # finalize re-ran
+    cur = StreamCursor.load(cur_path)
+    assert cur.wire_hw is None                  # cleared with the closed turn
+    assert cur.message_ids == []                # closed-turn checkpoint saved
+
+
+async def test_no_marker_keeps_at_least_once_suffix_delivery(tmp_path):
+    """#523 contrast (crash BEFORE the closing edit landed): no marker, so
+    the suffix must still be DELIVERED — the at-least-once contract; loss
+    would be worse than the duplicate (§2(d))."""
+    rec, events = Recorder(), []
+    offs = _write_current(tmp_path, [
+        _init(), _text("hello"), _text(" suffix"), _result(),
+    ])
+    cur_path = tmp_path / ".stream_cursor.json"
+    seg = _ident(os.path.join(str(tmp_path), "current"))
+    StreamCursor(
+        turn_start={"segment": seg, "offset": 0},
+        current={"segment": seg, "offset": offs[1]},
+        message_ids=[7],
+        message_text_lens=[len("hello")],
+        last_posted_len=len("hello"),
+    ).save(cur_path)
+
+    await _make_relay(tmp_path, cur_path, rec, events).run()
+
+    # The suffix reaches the wire (as a new message past the sealed 7).
+    assert " suffix" in "".join(t for _tp, t in rec.sends)
+
+
+async def test_finalize_persists_wire_hw_before_closed_turn_save(tmp_path):
+    """#523 writer side, end-to-end: kill the run between the closing edit
+    and the closed-turn save (drain_and_prune_turn raises) and verify the
+    marker is durable with the landed length + the result coordinate — then
+    verify a fresh relay recovers with NO duplicate posts."""
+    rec, events = Recorder(), []
+    offs = _write_current(tmp_path, [
+        _init(), _text("hello"), _text(" suffix"), _result(),
+    ])
+    cur_path = tmp_path / ".stream_cursor.json"
+
+    relay = _make_relay(tmp_path, cur_path, rec, events)
+    real_drain = relay.sequencer.drain_and_prune_turn
+
+    async def crashing_drain():
+        raise RuntimeError("crash in the #523 window")
+
+    relay.sequencer.drain_and_prune_turn = crashing_drain
+    try:
+        await relay.run()
+    except RuntimeError:
+        pass
+
+    seg = _ident(os.path.join(str(tmp_path), "current"))
+    cur = StreamCursor.load(cur_path)
+    assert cur.wire_hw is not None
+    assert cur.wire_hw["len"] == len("hello suffix")
+    assert cur.wire_hw["coord"] == {"segment": seg, "offset": offs[3]}
+    assert cur.message_ids == [1]               # closed-turn save never ran
+
+    # Recovery: a FRESH relay object over the same state.
+    sends_before = list(rec.sends)
+    relay2 = _make_relay(tmp_path, cur_path, rec, events)
+    await relay2.run()
+    assert rec.sends == sends_before            # nothing reposted
+    cur2 = StreamCursor.load(cur_path)
+    assert cur2.wire_hw is None
+    assert cur2.message_ids == []
+
+
+async def test_stream_cursor_wire_hw_round_trip(tmp_path):
+    p = tmp_path / "c.json"
+    hw = {"coord": {"segment": [1, 2], "offset": 33}, "len": 12}
+    StreamCursor(wire_hw=hw).save(p)
+    assert StreamCursor.load(p).wire_hw == hw
+    StreamCursor().save(p)
+    assert StreamCursor.load(p).wire_hw is None

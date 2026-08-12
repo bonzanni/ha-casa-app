@@ -290,7 +290,7 @@ class SdkClientPool:
                    origin: dict, cid: str, build_options, on_stale_old,
                    on_message,
                    on_success: Callable[[str], Awaitable[None]] | None = None,
-                   on_decision: Callable[[str | None, bool], None] | None = None,
+                   on_decision: Callable[[str | None, bool, int | None], None] | None = None,
                    binding_digest: str = "",
                    ) -> PoolTurnResult:
         """Run one serialized turn and publish its returned session id.
@@ -319,6 +319,10 @@ class SdkClientPool:
                     continue
                 # --- decision UNDER the entry lock (AR-3) ---
                 reg_entry = self._registry.get(channel_key)
+                # #526: the registration generation belonging to exactly this
+                # entry snapshot — same no-await block, so a caller's guarded
+                # clear can tell a later (even same-sid) re-registration apart.
+                reg_generation = self._registry.generation(channel_key)
                 decision = self._decide(
                     channel, reg_entry, self._wall_now(),
                 )
@@ -333,7 +337,7 @@ class SdkClientPool:
                 # non-retryable failure on one can't tell the stale-resume
                 # fallback which sid was in play.
                 if on_decision is not None:
-                    on_decision(resume_sid, is_fresh)
+                    on_decision(resume_sid, is_fresh, reg_generation)
                 # Task 9: a warm client is reusable only when the incoming
                 # turn's binding_digest matches the identity it was built for —
                 # defense-in-depth on top of the registry-level resume gate.

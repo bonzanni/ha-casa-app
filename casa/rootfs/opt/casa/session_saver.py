@@ -19,6 +19,10 @@ from claude_agent_sdk import get_session_messages
 from hindsight_ids import bank_id
 from memory_provenance import build_retain_items
 from personality_types import RetainedTurn, SpeakerProvenance
+# #526: the "guard unconditionally" sentinel — save_session's
+# ``expected_generation`` default must forward "omitted" (not None, which
+# means "snapshotted a pre-restart entry with no live generation").
+from session_registry import _UNCONDITIONAL as _GEN_UNCONDITIONAL
 from speaker_provenance import provenance_from_mapping, provenance_mapping
 from sensitivity import DEFAULT_TIER
 from tier_classifier import classify_stats, classify_tier
@@ -140,6 +144,7 @@ async def transcript_to_items(
 async def save_session(
     channel_key: str, registry, semantic_memory, *, directory: str, channel: str,
     expected_sid: str | None = None,
+    expected_generation: object = _GEN_UNCONDITIONAL,
 ) -> bool:
     """Idempotently retain an ended session to long-term memory (design §4.2; tier
     model §2.4; personality Task 10). Channels that fail write-trust (voice —
@@ -155,27 +160,40 @@ async def save_session(
     reset's snapshot) pass the sid they judged. If a new turn re-registered the
     key in that window, the claim just placed on the NEW session is released
     and nothing is retained — otherwise the save would snapshot the active
-    session and ``finish_save`` would remove its live resume pointer."""
+    session and ``finish_save`` would remove its live resume pointer.
+
+    ``expected_generation`` (#526): the registration generation the caller
+    captured with its entry snapshot. Guards the claim itself (Sol design-r2:
+    an unguarded claim can land on a NEWER registration and then be
+    unreleasable once the downstream guards decline) and every conditional
+    mutation below against a re-registration of the SAME sid, which
+    ``expected_sid`` cannot see."""
     from agent import snapshot_session_entry
 
     if not writes_to_bank(channel):
         return False  # recall-only channel (e.g. voice): never persists facts
-    if not await registry.try_begin_save(channel_key):
-        return False  # missing or already being saved (reaper/next-turn race)
+    if not await registry.try_begin_save(
+        channel_key, expected_generation=expected_generation,
+    ):
+        return False  # missing/claimed/re-registered (reaper/next-turn race)
     snapshot = snapshot_session_entry(registry.get(channel_key))
     if snapshot is None or snapshot.speaker_provenance is None or snapshot.user_provenance is None:
         logger.debug(
             "save_session: %s has no usable provenance snapshot — releasing claim",
             channel_key,
         )
-        await registry.clear_save_claim(channel_key)
+        await registry.clear_save_claim(
+            channel_key, expected_generation=expected_generation,
+        )
         return False
     if expected_sid is not None and snapshot.sdk_session_id != expected_sid:
         logger.debug(
             "save_session: %s re-registered under a newer session — releasing claim",
             channel_key,
         )
-        await registry.clear_save_claim(channel_key)
+        await registry.clear_save_claim(
+            channel_key, expected_generation=expected_generation,
+        )
         return False
     sid = snapshot.sdk_session_id
     try:
@@ -187,8 +205,11 @@ async def save_session(
         if items:
             await semantic_memory.retain(bank_id("casa"), items, async_=True)
         # Pass the saved sid so a user turn that re-registered this channel
-        # mid-save (slow multi-minute reaper retain) is not clobbered (M24).
-        await registry.finish_save(channel_key, sid)
+        # mid-save (slow multi-minute reaper retain) is not clobbered (M24);
+        # the generation guard (#526) extends that to a same-sid re-register.
+        await registry.finish_save(
+            channel_key, sid, expected_generation=expected_generation,
+        )
         return True
     except asyncio.CancelledError:
         # #345: a cancel (shutdown, task teardown) bypassed the Exception arm
@@ -199,7 +220,9 @@ async def save_session(
         # only be abandoned, never cancelled — re-shield until it settles even
         # if further cancels land, then re-raise. Best-effort: if the clear
         # itself fails, C3 recovery remains the backstop.
-        settle = asyncio.ensure_future(registry.clear_save_claim(channel_key, sid))
+        settle = asyncio.ensure_future(registry.clear_save_claim(
+            channel_key, sid, expected_generation=expected_generation,
+        ))
         while not settle.done():
             try:
                 await asyncio.shield(settle)
@@ -210,7 +233,9 @@ async def save_session(
         raise
     except Exception as exc:  # noqa: BLE001 — never crash a save; reaper retries
         logger.warning("save_session failed for %s: %s — will retry", channel_key, exc)
-        await registry.clear_save_claim(channel_key, sid)
+        await registry.clear_save_claim(
+            channel_key, sid, expected_generation=expected_generation,
+        )
         return False
 
 
@@ -388,6 +413,11 @@ async def reset_channel(
     # was a no-op (nothing to retain). Both carry the snapshot's sid (#317):
     # a follow-up turn that re-registered this key mid-save keeps its fresh
     # session instead of having it retained or its pointer deleted.
+    # #526 deliberately NOT generation-guarded here: the reset's contract
+    # (INV-MEM-006) is to retain-and-drop exactly the conversation the sid
+    # names — a same-sid re-registration IS that conversation, whoever
+    # refreshed the pointer, so removing it is the reset executing its
+    # contract, not the ABA the generation guard exists to stop.
     await save_session(
         channel_key, registry, semantic_memory,
         directory=directory, channel=channel,

@@ -157,10 +157,10 @@ async def test_save_session_skips_voice():
             retained.append(bank)
 
     class _Reg:
-        async def try_begin_save(self, k): return True
+        async def try_begin_save(self, k, *, expected_generation=None): return True
         def get(self, k): return {"sdk_session_id": "s1"}
-        async def clear_save_claim(self, k, sid=None): pass
-        async def finish_save(self, k, sid=None): pass
+        async def clear_save_claim(self, k, sid=None, *, expected_generation=None): pass
+        async def finish_save(self, k, sid=None, *, expected_generation=None): pass
 
     ok = await session_saver.save_session(
         "voice-abc", _Reg(), _Sem(), directory="/tmp", channel="voice",
@@ -187,7 +187,7 @@ async def test_save_session_retains_telegram_to_shared_bank(monkeypatch):
     from speaker_provenance import provenance_mapping
 
     class _Reg:
-        async def try_begin_save(self, k): return True
+        async def try_begin_save(self, k, *, expected_generation=None): return True
         def get(self, k):
             # Task 10: save_session reads speaker/user provenance from the entry.
             return {
@@ -195,8 +195,8 @@ async def test_save_session_retains_telegram_to_shared_bank(monkeypatch):
                 "speaker_provenance": provenance_mapping(STUB_SPEAKER_PROV),
                 "user_provenance": provenance_mapping(STUB_USER_PROV),
             }
-        async def finish_save(self, k, sid=None): pass
-        async def clear_save_claim(self, k, sid=None): pass
+        async def finish_save(self, k, sid=None, *, expected_generation=None): pass
+        async def clear_save_claim(self, k, sid=None, *, expected_generation=None): pass
 
     ok = await session_saver.save_session(
         "telegram-1", _Reg(), _Sem(), directory="/tmp", channel="telegram",

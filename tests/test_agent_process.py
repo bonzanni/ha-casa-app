@@ -1120,7 +1120,22 @@ class TestCorrelationId:
         agent = _make_agent(tmp_path, role="assistant")
 
         bus = MessageBus()
-        bus.register("assistant", agent.handle_message)
+        # #418 (2nd load-flake in this test): scope the assertion to records
+        # the turn OWNS. Module-name filtering could not tell the turn's own
+        # ``agent``/``retry``/``bus`` records from a background task's (pool
+        # sweeper, cold retain, ...) emitted with no cid inside the window —
+        # under xdist load such interleavings are likely. Capture the dispatch
+        # task's name from INSIDE the handler (the bus awaits the handler in
+        # its dispatch task, so bus/agent/retry records of this turn all carry
+        # it as ``taskName``) and filter on it: ownership by construction, not
+        # by timing.
+        turn_task_names: set[str | None] = set()
+
+        async def capturing_handle(m):
+            turn_task_names.add(asyncio.current_task().get_name())
+            return await agent.handle_message(m)
+
+        bus.register("assistant", capturing_handle)
 
         caplog.set_level(logging.INFO)
 
@@ -1162,12 +1177,15 @@ class TestCorrelationId:
 
         assert "pong" in str(result.content)
 
-        # Every record emitted during the dispatch window must carry
-        # the cid. We scope to records from Casa modules (avoid pytest's
-        # own handler records).
+        # Every record emitted during the dispatch window BY THE TURN'S OWN
+        # TASK must carry the cid. Scoped to Casa modules (avoid pytest's own
+        # handler records) AND to the dispatch task (see capturing_handle
+        # above) — records other tasks emit in the window are not this test's
+        # to judge.
         relevant = [
             r for r in during_dispatch
             if r.name in {"agent", "retry", "bus"}
+            and getattr(r, "taskName", None) in turn_task_names
         ]
         # At least one record should have been emitted — the agent log
         # line "SDK session for 'assistant': sess-..." is unconditional

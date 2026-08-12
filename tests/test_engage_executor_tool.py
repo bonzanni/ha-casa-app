@@ -413,6 +413,7 @@ class TestEngageExecutorReal:
         er.create = AsyncMock(return_value=rec)
         er.mark_error = AsyncMock()
         er.set_channel_state = AsyncMock()
+        er.set_initial_state_emoji = AsyncMock()
         channel = await _setup(reg, tmp_path=tmp_path)
         cm = MagicMock()
         cm.get = MagicMock(return_value=channel)
@@ -989,6 +990,7 @@ class TestU3TopicTitle:
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
         er.set_channel_state = AsyncMock()
+        er.set_initial_state_emoji = AsyncMock()
 
         channel = await _setup(reg, tmp_path=tmp_path)
         cm = MagicMock()
@@ -1030,11 +1032,11 @@ class TestU3TopicTitle:
         # Role is passed as a kwarg (resolves to numeric custom_emoji_id
         # inside open_engagement_topic).
         assert kwargs["role"] == "plugin-developer"
-        # 2. set_channel_state(current_state_emoji="🟢") persisted.
-        er.set_channel_state.assert_awaited()
+        # 2. the initial 🟢 persisted via the conditional launch-time
+        # initializer (#529 — must not clobber a terminal/sentinel state).
+        er.set_initial_state_emoji.assert_awaited()
         emoji_calls = [
-            kw.get("current_state_emoji")
-            for _, kw in er.set_channel_state.await_args_list
+            args[1] for args, _ in er.set_initial_state_emoji.await_args_list
         ]
         assert "🟢" in emoji_calls
 
@@ -1058,6 +1060,7 @@ class TestU3TopicTitle:
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
         er.set_channel_state = AsyncMock()
+        er.set_initial_state_emoji = AsyncMock()
 
         channel = await _setup(reg, tmp_path=tmp_path)
         cm = MagicMock()
@@ -1267,6 +1270,7 @@ class TestFailedStartClosesTopic:
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
         er.set_channel_state = AsyncMock()
+        er.set_initial_state_emoji = AsyncMock()
         er.recent_for_origin = MagicMock(return_value=None)
 
         channel = await _setup(reg, tmp_path=tmp_path)
@@ -1326,6 +1330,7 @@ class TestFailedStartClosesTopic:
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
         er.set_channel_state = AsyncMock()
+        er.set_initial_state_emoji = AsyncMock()
         er.recent_for_origin = MagicMock(return_value=None)
 
         channel = await _setup(reg, tmp_path=None)
@@ -1524,6 +1529,7 @@ class TestEngageExecutorPluginGate:
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
         er.set_channel_state = AsyncMock()
+        er.set_initial_state_emoji = AsyncMock()
         er.recent_for_origin = MagicMock(return_value=None)
 
         old = ResolvedPlugin(name="p", artifact_id="a" * 64,
