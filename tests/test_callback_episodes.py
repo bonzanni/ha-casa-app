@@ -487,6 +487,37 @@ async def test_removal_note_failure_leaves_it_unnoted_and_retries(wired):
     assert _removal_records(wired.spool)[0][1]["noted"] is True
 
 
+async def test_removal_note_send_success_mark_failure_never_resends(
+        wired, monkeypatch):
+    """#532 (Sol diff r1): a DM that SENT whose mark keeps failing must
+    retry only the mark — with un-noted records now never age-pruned, an
+    ignored mark failure would otherwise resend the same DM on every pass
+    forever, without a crash."""
+    wired.seed_result()
+    assert wired.spool.remove_plugin(PLUGIN) is True
+
+    fail = {"on": True}
+    real_mark = wired.spool.mark_removal_noted
+
+    def flaky_mark(*args, **kwargs):
+        if fail["on"]:
+            return False
+        return real_mark(*args, **kwargs)
+
+    monkeypatch.setattr(wired.spool, "mark_removal_noted", flaky_mark)
+    await ce._worker_pass()
+    assert len(wired.notes) == 1                      # sent once
+    assert _removal_records(wired.spool)[0][1]["noted"] is False
+
+    await ce._worker_pass()                           # mark retried, no resend
+    assert len(wired.notes) == 1
+
+    fail["on"] = False
+    await ce._worker_pass()
+    assert _removal_records(wired.spool)[0][1]["noted"] is True
+    assert len(wired.notes) == 1
+
+
 async def test_removal_note_without_a_notifier_is_never_marked(wired):
     wired.seed_result()
     assert wired.spool.remove_plugin(PLUGIN) is True

@@ -97,6 +97,11 @@ _next_due: float | None = None
 # the backstop — so a hint lost to a crash converges on the next pass.
 _pending_hints: set[tuple[str, str]] = set()
 
+# #532: removal-note filenames whose DM was SENT but whose durable mark then
+# failed — later passes retry only the mark (see _process_removal_records).
+# Cleared only on a confirmed mark; lost to a crash = one duplicate DM.
+_removal_sent_unmarked: "set[str]" = set()
+
 
 def configure(*, dispatch, resolve_registry_entry, get_spool,
               notify_operator=None, sleep=asyncio.sleep) -> None:
@@ -114,6 +119,9 @@ def configure(*, dispatch, resolve_registry_entry, get_spool,
     _get_spool = get_spool
     _sleep = sleep
     _next_due = None
+    # #532: per-wiring state — a fresh boot's empty set costs at most the
+    # documented one-duplicate-per-crash, never a lost notice.
+    _removal_sent_unmarked.clear()
     if _kick is None:
         _kick = asyncio.Event()
 
@@ -467,7 +475,13 @@ async def _process_removal_records(spool: Any) -> None:
     leaves the record un-noted for a later pass, and only a confirmed send
     marks it. Notify-then-mark is at-least-once on purpose: a crash in the
     window costs one duplicate DM for a rare event, whereas a lost note here
-    would be silent once the record prunes."""
+    would be silent once the record prunes. A note that SENT but whose mark
+    then failed (False return or exception) is keyed in
+    :data:`_removal_sent_unmarked` — later passes retry ONLY the mark
+    (#532, Sol diff r1: with un-noted records never age-pruned, an ignored
+    mark failure would otherwise resend the same DM every pass, forever,
+    without a crash). A key clears only on a confirmed mark; in-memory on
+    purpose, so a crash costs the documented one duplicate."""
     try:
         records = await asyncio.to_thread(spool.list_removal_records)
     except asyncio.CancelledError:
@@ -477,23 +491,30 @@ async def _process_removal_records(spool: Any) -> None:
         records = []
     for filename, rec in records:
         if rec.get("noted"):
+            _removal_sent_unmarked.discard(filename)
             continue
-        if _notify_operator is None:
-            continue                      # undeliverable: leave it un-noted
+        if filename not in _removal_sent_unmarked:
+            if _notify_operator is None:
+                continue                  # undeliverable: leave it un-noted
+            try:
+                await _notify_operator(_removal_text(rec))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — un-noted, retried next pass
+                logger.exception("callback removal note failed")
+                continue
         try:
-            await _notify_operator(_removal_text(rec))
+            marked = await asyncio.to_thread(spool.mark_removal_noted,
+                                             filename, now=_now())
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — un-noted, retried next pass
-            logger.exception("callback removal note failed")
-            continue
-        try:
-            await asyncio.to_thread(spool.mark_removal_noted, filename,
-                                    now=_now())
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — one duplicate DM, never a lost one
+        except Exception:  # noqa: BLE001 — sent; only the mark is retried
             logger.exception("callback removal record mark failed")
+            marked = False
+        if marked:
+            _removal_sent_unmarked.discard(filename)
+        else:
+            _removal_sent_unmarked.add(filename)
     try:
         await asyncio.to_thread(spool.prune_removal_records, now=_now())
     except asyncio.CancelledError:
