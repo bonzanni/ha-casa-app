@@ -3305,6 +3305,15 @@ def make_engagement_permission_relay(
                     await telegram_channel.update_topic_state(
                         engagement_id=eng_id, new_state="active",
                     )
+                    # Sol diff-r1 (#324): a relay that STARTED while the edit
+                    # above was in flight already painted 'awaiting' — this
+                    # exit's stale 'active' may have landed after it, leaving
+                    # the topic green under a live keyboard. Recheck the
+                    # tally and repaint.
+                    if _pending_relays.get(eng_id, 0) > 0:
+                        await telegram_channel.update_topic_state(
+                            engagement_id=eng_id, new_state="awaiting",
+                        )
         o = outcome.get("outcome")
         if o == "answered" and outcome.get("option_index") == 0:
             return {}
