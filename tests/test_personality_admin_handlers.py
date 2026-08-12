@@ -622,15 +622,49 @@ async def test_render_no_binding_409(tmp_path) -> None:
         assert (await resp.json())["bound_persona"] is None
 
 
-async def test_render_missing_or_empty_persona_400(tmp_path) -> None:
+async def test_render_without_persona_renders_the_bound_persona(tmp_path) -> None:
+    """v0.188.1 (main-red fix): `persona` is OPTIONAL — the ref check only
+    applies when a ref is supplied. The tier2 e2e (and any caller asking
+    "render whatever is bound") sends only {role, projection}; v0.187.0's
+    required-field reading of the #356 fix broke that contract and the unit
+    pin agreed with the code instead of the caller."""
+    runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
+    runtime.compiled_prompt_bundles["concierge"] = _bundle_for()
+    runtime.bindings["concierge"] = _binding_record()
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/personality/render",
+            json={"role": "concierge", "projection": "text"},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["digest"] == "digest-abc"
+
+
+async def test_render_without_persona_needs_no_binding_record(tmp_path) -> None:
+    """The ref-less form must keep working where it worked before v0.187.0 —
+    including a role with a compiled bundle but no binding record visible to
+    the admin runtime view."""
+    runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
+    runtime.compiled_prompt_bundles["concierge"] = _bundle_for()
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/personality/render",
+            json={"role": "concierge", "projection": "text"},
+        )
+        assert resp.status == 200
+
+
+async def test_render_empty_or_non_string_persona_400(tmp_path) -> None:
     runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
     runtime.compiled_prompt_bundles["concierge"] = _bundle_for()
     runtime.bindings["concierge"] = _binding_record()
     app = _make_app(runtime)
     async with TestClient(TestServer(app)) as client:
         for payload in (
-            {"role": "concierge", "projection": "text"},
             {"persona": "", "role": "concierge", "projection": "text"},
+            {"persona": 7, "role": "concierge", "projection": "text"},
         ):
             resp = await client.post("/admin/personality/render", json=payload)
             assert resp.status == 400

@@ -73,28 +73,34 @@ def register_personality_admin_routes(
     async def _render(request: "web.Request") -> "web.Response":
         body = await request.json()
         role_id, projection = body.get("role"), body.get("projection")
+        # v0.188.1 (main-red fix): ``persona`` is OPTIONAL. Absent means
+        # "render whatever is bound" (the pre-v0.187.0 contract the tier2
+        # e2e exercises); the #356 ref-vs-binding check applies only when a
+        # ref is actually supplied — a gate may only demand what the caller
+        # writes. Present-but-empty/non-string is still refused.
         ref = body.get("persona")
-        if not isinstance(ref, str) or not ref:
+        if ref is not None and (not isinstance(ref, str) or not ref):
             return web.json_response({"error": "invalid_persona_ref"}, status=400)
         bundle = runtime.compiled_prompt_bundles.get(role_id)
         if bundle is None or projection not in {"text", "voice", "restricted_webhook"}:
             return web.json_response({"error": "not_found"}, status=404)
-        # GH #356: the requested ref must name the persona actually bound to
+        # GH #356: a SUPPLIED ref must name the persona actually bound to
         # this role — previously the field was ignored and `casactl persona
         # render <ref>` could return a different persona's compiled prompt
         # than the one named. Accept the bare persona id or the full
         # "<id>@<version>" ref (ids cannot contain "@", so bare-id is
         # unambiguous against the single active binding).
-        binding = runtime.bindings.get(role_id)
-        bound_id = getattr(binding, "persona_id", None)
-        bound_ref = (
-            f"{bound_id}@{binding.persona_version}" if bound_id else None
-        )
-        if ref not in {bound_id, bound_ref} or bound_id is None:
-            return web.json_response(
-                {"error": "persona_mismatch", "bound_persona": bound_ref},
-                status=409,
+        if ref is not None:
+            binding = runtime.bindings.get(role_id)
+            bound_id = getattr(binding, "persona_id", None)
+            bound_ref = (
+                f"{bound_id}@{binding.persona_version}" if bound_id else None
             )
+            if ref not in {bound_id, bound_ref} or bound_id is None:
+                return web.json_response(
+                    {"error": "persona_mismatch", "bound_persona": bound_ref},
+                    status=409,
+                )
         selected = getattr(bundle, projection)
         return web.json_response({
             "digest": selected.digest,
