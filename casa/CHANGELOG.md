@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.188.1] - 2026-08-12
+
+### Fixed
+
+- `casactl persona render` support endpoint: the `persona` field is optional
+  again — omitting it renders the persona actually bound to the role, as
+  before v0.187.0. The v0.187.0 ref-vs-binding check (a supplied ref must
+  name the bound persona) still applies whenever a ref is given, and an
+  explicit `null` or empty ref is refused. v0.187.0 had made the field
+  required, which broke ref-less admin callers and left CI red on `main`.
+
 ## [0.188.0] - 2026-08-12
 
 ### Fixed
