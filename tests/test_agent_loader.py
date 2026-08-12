@@ -90,6 +90,28 @@ def _seed_resident(base: Path, role: str = "assistant") -> Path:
     return d
 
 
+
+def _seed_remaining_residents(repo, roles_dir=None):
+    """#324: validate_config_repo now enforces the FULL fixed resident set
+    (boot parity with load_all_agents Step 9). Fixtures probing unrelated
+    gate paths seed butler+concierge so the tree stays bootable. With a
+    custom roles_dir (which replaces the default tree entirely), the two
+    role artifacts are seeded too and the runtimes matched to the fixture
+    artifacts' fixed-sonnet model shape."""
+    for slot in ("butler", "concierge"):
+        d = _seed_resident(repo / "agents", slot)
+        if roles_dir is not None:
+            _seed_role_artifact(roles_dir, "resident", slot)
+            _w(d / "runtime.yaml", """\
+                schema_version: 1
+                kind: resident
+                model: {source: fixed, value: sonnet}
+                tools:
+                  allowed: [Read, Write]
+                channels: [telegram]
+            """)
+
+
 def _seed_specialist(base: Path, role: str = "finance") -> Path:
     d = base / role
     _w(d / "character.yaml", f"""\
@@ -944,6 +966,8 @@ class TestValidateConfigRepo:
             channels: [telegram]
         """)
 
+        _seed_remaining_residents(repo, roles_dir)
+
         errors = validate_config_repo(str(repo), roles_dir=str(roles_dir))
         assert errors == []
 
@@ -983,6 +1007,8 @@ class TestValidateConfigRepo:
                 deflection_patterns:
                   household_shared: "private."
         """)
+
+        _seed_remaining_residents(repo)
 
         errors = validate_config_repo(str(repo))
         assert errors == [], (
@@ -1040,6 +1066,8 @@ class TestValidateConfigRepo:
             TRAIT: greets warmly but keeps replies efficient.
         """)
 
+        _seed_remaining_residents(repo)
+
         errors = validate_config_repo(str(repo))
         assert len(errors) == 1
         assert "character.yaml" in errors[0]
@@ -1059,6 +1087,7 @@ class TestValidateConfigRepo:
         _w(repo / "doctrine.md", "free-form notes\n")
         # README inside policies/ is not a schema-bearing file.
         _w(repo / "policies" / "README.md", "free-form policy notes\n")
+        _seed_remaining_residents(repo)
 
         errors = validate_config_repo(str(repo))
         assert errors == []
@@ -1075,6 +1104,7 @@ class TestValidateConfigRepo:
         # Write a file inside agents/.git that would FAIL validation if visited.
         _w(repo / "agents" / ".git" / "objects" / "character.yaml",
            "TRAIT: garbage\n")
+        _seed_remaining_residents(repo)
 
         errors = validate_config_repo(str(repo))
         assert errors == []
@@ -1120,6 +1150,8 @@ class TestValidateConfigRepo:
               allowed: [Read, Write]
             channels: [telegram]
         """)
+
+        _seed_remaining_residents(repo, roles_dir)
 
         errors = validate_config_repo(str(repo), roles_dir=str(roles_dir))
         assert len(errors) == 2
@@ -1298,6 +1330,7 @@ class TestValidateConfigRepoBootParity:
 
         repo = tmp_path / "cfg"
         _seed_resident(repo / "agents", "assistant")
+        _seed_remaining_residents(repo)
         self._policies(repo)
 
         errors = validate_config_repo(str(repo))
@@ -1481,6 +1514,29 @@ class TestValidateConfigRepoBootParity:
         errors = validate_config_repo(str(repo))
         assert any("primary assistant" in e for e in errors), errors
 
+    def test_missing_non_assistant_resident_slot_refused(self, tmp_path):
+        """#324: the gate must enforce the FULL fixed resident set, not just
+        the assistant — a committed tree missing agents/butler/ passed the
+        gate while boot's load_all_agents raises LoadError on it (a warm
+        `agents` reload then fails until restore/config-sync)."""
+        from agent_loader import validate_config_repo, load_all_agents, LoadError
+        from policies import load_policies
+
+        repo = tmp_path / "cfg"
+        _seed_resident(repo / "agents", "assistant")
+        _seed_resident(repo / "agents", "concierge")   # butler missing
+        self._policies(repo)
+
+        # Boot parity: load_all_agents refuses this tree.
+        policy_lib = load_policies(str(repo / "policies" / "disclosure.yaml"))
+        with pytest.raises(LoadError, match="fixed slots"):
+            load_all_agents(str(repo / "agents"), policies=policy_lib)
+
+        errors = validate_config_repo(str(repo))
+        assert any("agents/butler/" in e for e in errors), errors
+        # No derivative noise about the slots that ARE present.
+        assert not any("agents/concierge/" in e for e in errors), errors
+
     def test_no_primary_assistant_empty_agents_dir_refused(self, tmp_path):
         """M5 gate-bypass: an existing but EMPTY agents/ dir (no resident
         subdirs) passes the per-file walk trivially, yet boot's load_all_agents
@@ -1652,6 +1708,7 @@ class TestValidateConfigRepoWalkScope:
             schema_version: 1
             model: {source: fixed, value: sonnet}
         """)
+        _seed_remaining_residents(repo)
 
         errors = validate_config_repo(str(repo))
         assert errors == [], errors
@@ -1673,6 +1730,7 @@ class TestValidateConfigRepoWalkScope:
             model: {source: fixed, value: sonnet}
         """)
         os.symlink(content, spec_root / "demo")
+        _seed_remaining_residents(repo)
 
         errors = validate_config_repo(str(repo))
         assert errors == [], errors
@@ -1711,6 +1769,7 @@ class TestValidateConfigRepoWalkScope:
             schema_version: 1
             BOGUS_HOOK_KEY: true
         """)
+        _seed_remaining_residents(repo)
 
         errors = validate_config_repo(str(repo))
         assert len(errors) == 1, errors
@@ -1819,6 +1878,7 @@ class TestValidateConfigRepoExecutorGrantGuard:
             ]),
         )
         _w(repo / "agents" / "executors" / "task" / "prompt.md", "Hi.")
+        _seed_remaining_residents(repo)
 
         errors = validate_config_repo(str(repo))
         assert errors == [], errors
@@ -2064,6 +2124,7 @@ class TestValidateConfigRepoIssue338:
               allowed: [Read, Write]
             channels: [telegram]
         """)
+        _seed_remaining_residents(repo, roles_dir)
         return repo, resident_dir, roles_dir
 
     def test_duplicate_trigger_names_are_refused_by_the_gate(self, tmp_path):

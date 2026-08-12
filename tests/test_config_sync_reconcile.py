@@ -472,10 +472,13 @@ def test_post_sync_real_validator_ignores_stale_specialist_material_dir(
     lacks ``kind`` must leave post_sync_errors empty — the exact prod
     symptom on config-sync-report.json this issue closes."""
     from agent_loader import validate_config_repo
-    from test_agent_loader import _policies_file, _seed_resident
+    from test_agent_loader import (
+        _policies_file, _seed_remaining_residents, _seed_resident,
+    )
 
     live = tmp_path / "live"
     _seed_resident(live / "agents", "assistant")
+    _seed_remaining_residents(live)
     _policies_file(live / "policies")
     content = f".demo.material-{'0' * 32}"
     _write(live, f"agents/specialists/{content}/runtime.yaml",
