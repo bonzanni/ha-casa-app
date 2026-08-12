@@ -962,9 +962,13 @@ async def test_report_specialist_row_is_noop(wired):
 
 @pytest.mark.asyncio
 async def test_report_non_dispatched_row_is_noop(wired):
+    # Sol diff r1 hardening: give the pending row an expected_tool so this
+    # pins the STATUS guard specifically — without it, dropping the guard
+    # would still no-op on the (dispatch-only) expected_tool being absent.
     _prompt()
     await _decide()
     ep = _released()[0]
+    pse._update_episode(ep["id"], expected_tool=_NS)
     pse.report_dispatch_outcome(
         ep["id"], tools_used_ok=set(), tools_attempted=set(),
         available_tools=set())

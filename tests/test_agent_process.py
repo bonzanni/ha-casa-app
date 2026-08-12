@@ -2368,6 +2368,25 @@ class TestSetupOutcomeReport:
         # Evidence collected before the cancel still counts (tool DID run).
         assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
 
+    async def test_bypass_path_turn_reports_evidence(self, tmp_path):
+        # Sol diff r1 hardening: the per-turn BYPASS path (SCHEDULED turns
+        # never pool) must feed the same evidence accumulator — pins the
+        # bypass closure's turn_state["states"] append.
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_init("sid-h", [_SETUP_NS]),
+            _mk_tool_use("t1", _SETUP_NS),
+            _mk_tool_result("t1", is_error=False, text="wired"),
+            _mk_assistant("done"),
+            _mk_result("sid-h"),
+        ])
+        msg = _setup_msg("op-9")
+        msg.type = MessageType.SCHEDULED
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            await agent._process(msg)
+        assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
+
     async def test_evidence_aggregates_across_sdk_attempts(self, tmp_path):
         # Terra design r1 S2: the tool can run in an attempt that then
         # fails retryably; the successful later attempt has no evidence.

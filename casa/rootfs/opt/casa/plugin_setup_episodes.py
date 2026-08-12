@@ -1255,8 +1255,9 @@ async def _run_episode(ep: dict) -> bool:
         # `last_error=""` clears a stale gate-hold message ("waiting for
         # live trigger route") that used to survive into the terminal row.
         exec_tier, _ = plugin_dispatch.execution_target(entry)
-        expected_tool = (f"{sorted(entry.get('granted_tools'))[0]}__{tool}"
-                         if exec_tier == "resident" else "")
+        expected_tool = (
+            f"{sorted(entry.get('granted_tools') or [])[0]}__{tool}"
+            if exec_tier == "resident" else "")
         _update_episode(ep["id"], status="dispatched", attempts=attempts,
                         last_error="", expected_tool=expected_tool)
     else:
