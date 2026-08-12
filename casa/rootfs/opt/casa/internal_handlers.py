@@ -36,11 +36,92 @@ from __future__ import annotations
 import hmac
 import logging
 import re as _re
+import socket as _socket
+import struct as _struct
 from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# #467 — caller-identity gate for /admin/* on the internal Unix socket
+# ---------------------------------------------------------------------------
+#
+# The internal socket serves both the engagement-forwarded family
+# (/internal/tools/call, /internal/hooks/resolve, /internal/channel/*) and the
+# operator-only /admin/* family (casactl reload + the personality-admin
+# inspection routes). The forwarded family is authenticated per-engagement one
+# layer up (the svc-casa-mcp bridge grant-gate) and MUST stay reachable by the
+# non-root forwarder; the /admin/* family has exactly one legitimate caller —
+# casactl, always run by the operator as root. The 8100 MCP forwarder never
+# forwards /admin/* (it is not in its route allowlist), and the casa_reload
+# tool dispatches through /internal/tools/call, so no non-root path reaches
+# /admin/* legitimately.
+#
+# SO_PEERCRED reports the connecting peer's credentials as recorded by the
+# kernel at connect() time on an AF_UNIX stream socket; an unprivileged client
+# cannot forge it. We reject any /admin/* request whose peer is not uid 0, and
+# fail CLOSED when the credentials cannot be read (no transport, no socket, or
+# getsockopt error) — an unreadable identity is not a root identity.
+
+# struct ucred is {pid_t pid; uid_t uid; gid_t gid;} — three native ints.
+_UCRED_FMT = "3i"
+_UCRED_SIZE = _struct.calcsize(_UCRED_FMT)
+
+
+def _peer_uid(request: web.Request) -> int | None:
+    """Return the connecting peer's uid via SO_PEERCRED, or None if unknown.
+
+    None signals "identity unavailable" and is treated as non-root by the
+    gate (fail-closed). Only meaningful for AF_UNIX stream sockets.
+    """
+    transport = request.transport
+    if transport is None:
+        return None
+    sock = transport.get_extra_info("socket")
+    if sock is None:
+        return None
+    try:
+        raw = sock.getsockopt(
+            _socket.SOL_SOCKET, _socket.SO_PEERCRED, _UCRED_SIZE)
+    except (OSError, AttributeError, ValueError):
+        return None
+    try:
+        _pid, uid, _gid = _struct.unpack(_UCRED_FMT, raw)
+    except _struct.error:
+        return None
+    return uid
+
+
+@web.middleware
+async def admin_peercred_middleware(
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+) -> web.StreamResponse:
+    """Gate /admin/* on the internal socket to a root (uid 0) peer.
+
+    Non-/admin/* routes pass through untouched — the forwarded family is
+    authorized per-engagement elsewhere and its forwarder is not root. Only a
+    genuinely-matched admin route is gated: an unmatched /admin/* path keeps
+    its 404 (the route table is public, so there is nothing to hide, and a
+    stray 403 would only mask a real not-found).
+    """
+    matched = getattr(request.match_info, "http_exception", None) is None
+    if matched and request.path.startswith("/admin/"):
+        uid = _peer_uid(request)
+        if uid != 0:
+            logger.warning(
+                "internal socket: refusing %s %s from peer uid=%r "
+                "(root required)", request.method, request.path, uid,
+            )
+            return web.json_response(
+                {"status": "error", "kind": "forbidden",
+                 "message": "admin routes require a root caller"},
+                status=403,
+            )
+    return await handler(request)
 
 
 def engagement_auth_ok(rec: Any, presented: Any) -> bool:

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.181.0] - 2026-08-12
+
+### Security
+
+- **The web terminal is no longer reachable by anything but the ingress
+  panel.** When `enable_terminal` is on, the terminal (an unauthenticated
+  root shell) now binds a root-restricted internal socket instead of a
+  container-loopback network port, so only the front-door proxy — and never
+  another in-container process — can reach it. A default install (terminal
+  off) is unaffected. (#514)
+- **Config-reload requests over the internal control socket now require a
+  root caller.** The `/admin/*` control routes verify the connecting
+  process's identity (`SO_PEERCRED`) and refuse anyone who is not root,
+  adding a caller-identity check on top of the socket's file permissions.
+  (#467)
+
 ## [0.180.0] - 2026-08-12
 
 ### Fixed

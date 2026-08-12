@@ -30,7 +30,12 @@ authority and it changes.
 The **internal app** carries routes intended for other processes in the container to call —
 admin reload, personality and specialist endpoints, and a family of internal channel routes.
 Its listener configuration, not its route table, is what makes it internal; check the runner
-setup before assuming reachability either way.
+setup before assuming reachability either way. The `/admin/*` family carries a second gate on
+top of the socket's filesystem permissions: a middleware reads the connecting peer's uid via
+`SO_PEERCRED` and refuses anyone who is not root, so a same-container non-root identity that
+reached the socket still cannot drive a reload — the channel-forwarding `/internal/*` routes
+are deliberately *not* gated this way, because their forwarder is not root and they are
+authorized per-engagement one layer up (INV-HTTP-007).
 
 **nginx runs two listeners with different security postures, and conflating them is the
 easiest way to be badly wrong here.** The Home Assistant ingress listener carries a
@@ -171,6 +176,24 @@ the namespace check bound what a *peer already recorded in memory* means: peers 
 key `content_document_id` hashes, so changing how a sender is named re-keys that sender's
 documents rather than migrating them.
 
+**INV-HTTP-007**: On the internal socket, `/admin/*` requests are refused unless the connecting peer is uid 0; an unreadable peer identity is refused, not admitted.
+
+The gate exists because the socket's own filesystem permissions answer "who outside the
+container" but not "which identity *inside* it": the container drops per-engagement work to a
+non-root uid, and an in-container non-root process that reached the socket would otherwise
+inherit the full admin surface. `SO_PEERCRED` reports the kernel-recorded credentials of the
+peer at connect time on an `AF_UNIX` stream — an unprivileged client cannot forge it — and the
+middleware fails **closed**: no transport, no socket, or a `getsockopt` error is treated as
+non-root, because an identity that cannot be read is not proof of root. The gate is scoped to
+the `/admin/*` prefix; the `/internal/*` forwarding routes pass through it untouched, since the
+legitimate forwarder runs non-root and those routes carry their own per-engagement
+authorization. `casactl`, the only legitimate `/admin/*` caller, runs as root and passes.
+
+The related exposure worth holding next to this: the optional web terminal (`svc-ttyd`) is an
+unauthenticated, writable **root** shell. It is bound to a root-restricted UNIX socket, not TCP
+loopback, precisely so a dropped-uid engagement cannot reach it by connecting past nginx — see
+"Failure behavior" and `architecture/overview.md` for the terminal's own boundary.
+
 ## Failure behavior
 
 **A signature is absent, malformed, out of tolerance, or wrong.** `verify` returns false in
@@ -223,6 +246,7 @@ this document establishes; check the call sites for the one you care about.
 - `casa/rootfs/opt/casa/ingress_identity.py::validate_ingress_identity_table`
 - `casa/rootfs/opt/casa/ingress_identity.py::ingress_identity`
 - `casa/rootfs/opt/casa/provenance.py::sanitize_external_context`
+- `casa/rootfs/opt/casa/internal_handlers.py::admin_peercred_middleware`
 - `casa/rootfs/etc/s6-overlay/scripts/setup-nginx.sh`
 - `casa/config.yaml::ports`
 
@@ -232,6 +256,8 @@ this document establishes; check the call sites for the one you care about.
 - `tests/test_webhook_auth.py::test_hmac_body_missing_header_fails`
 - `tests/test_webhook_origin_containment.py`
 - `tests/test_setup_nginx_ingress.py`
+- `tests/test_admin_peercred_gate.py`
+- `tests/test_svc_ttyd_socket.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
