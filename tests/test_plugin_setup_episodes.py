@@ -839,3 +839,180 @@ async def test_settlement_never_defers_on_an_unavailable_registry(wired):
     assert pse._load()["rounds"] == {}
     assert "settle_deferrals" not in json.dumps(pse._load())
     assert len(_released()) == 1
+
+
+# ---------------------------------------------------------------------------
+# #521 — execution-outcome correlation
+# ---------------------------------------------------------------------------
+
+_NS = "mcp__plugin_elevenlabs_elevenlabs__setup_elevenlabs_voicemail"
+
+
+async def _dispatched(wired):
+    """Settle + dispatch one resident-target episode; return its row."""
+    _prompt()
+    await _decide()
+    await _drain_pending(wired)
+    ep = pse.episodes()[0]
+    assert ep["status"] == "dispatched"
+    return ep
+
+
+@pytest.mark.asyncio
+async def test_dispatched_write_clears_last_error_and_binds_expected_tool(
+        wired):
+    # Issue #521 ask 2: the row used to carry a stale gate-hold message
+    # ("waiting for live trigger route") into its terminal dispatched state.
+    _prompt()
+    await _decide()
+    ep = _released()[0]
+    pse._update_episode(ep["id"], last_error="waiting for live trigger route")
+    await _drain_pending(wired)
+    row = pse.episodes()[0]
+    assert row["status"] == "dispatched"
+    assert row["last_error"] == ""
+    # Resident execution target: the dispatched session itself must carry
+    # this exact namespaced tool — recorded for the outcome correlation.
+    assert row["expected_tool"] == _NS
+
+
+@pytest.mark.asyncio
+async def test_specialist_dispatch_binds_no_expected_tool(wired):
+    # The assistant is only a delegation COURIER for a specialist target;
+    # its own session never carries the tool, so no availability claim can
+    # be made about the dispatched session (delivery-only semantics stand).
+    wired["entry"]["targets"] = ["specialist:finance"]
+    await _dispatched(wired)
+    assert pse.episodes()[0]["expected_tool"] == ""
+
+
+@pytest.mark.asyncio
+async def test_report_tool_ran_keeps_episode_consumed(wired):
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_NS}, tools_attempted={_NS},
+        available_tools={_NS})
+    assert pse.episodes()[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_report_tool_available_unattempted_keeps_episode_consumed(
+        wired):
+    # The invariant is "consumed ⇒ the tool was available to the turn" —
+    # an available tool the agent chose not to call is the agent's own
+    # reply's business, not a dispatch failure.
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools={_NS, "Read"})
+    assert pse.episodes()[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_report_tool_absent_marks_retryable(wired):
+    # The observed live failure (#521): cold-connect session after agent
+    # reconstruction, plugin MCP server absent — the turn ends with zero
+    # tool uses and an init list without the tool.
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools={"Read"})
+    row = pse.episodes()[0]
+    assert row["status"] == "pending"
+    assert row["gate"] == "released"        # verdict already earned — kept
+    assert row["execution_retries"] == 1
+    assert row["attempts"] == 0             # bus-retry budget restored
+    assert "setup tool" in row["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_report_all_errors_overrides_availability(wired):
+    # Sol design r1: a tool the init LISTS can still be categorically
+    # uncallable in the turn (denied / erroring server). An attempted call
+    # whose every observed result is an error outranks the availability
+    # listing — the turn did not run the tool.
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted={_NS},
+        available_tools={_NS})
+    assert pse.episodes()[0]["status"] == "pending"
+    assert pse.episodes()[0]["execution_retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_report_unknown_availability_unattempted_marks_retryable(wired):
+    # Warm-reuse session: no init replay, no attempt — availability UNKNOWN.
+    # Fail toward the invariant (bounded), never toward silent consumption.
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools=None)
+    assert pse.episodes()[0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_report_specialist_row_is_noop(wired):
+    wired["entry"]["targets"] = ["specialist:finance"]
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools=set())
+    assert pse.episodes()[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_report_non_dispatched_row_is_noop(wired):
+    _prompt()
+    await _decide()
+    ep = _released()[0]
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools=set())
+    assert pse.episodes()[0]["status"] == "pending"
+    assert "execution_retries" not in pse.episodes()[0]
+
+
+@pytest.mark.asyncio
+async def test_report_unknown_episode_is_noop(wired):
+    await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        "no-such-id", tools_used_ok=set(), tools_attempted=set(),
+        available_tools=set())
+    assert pse.episodes()[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_retryable_row_redispatches_and_keeps_counter(wired):
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools=set())
+    assert pse.episodes()[0]["execution_retries"] == 1
+    await _drain_pending(wired)             # the next kick re-dispatches
+    row = pse.episodes()[0]
+    assert row["status"] == "dispatched"
+    assert row["id"] == ep["id"]            # same obligation, not a re-arm
+    assert row["execution_retries"] == 1    # dispatch write must not reset it
+    assert len(wired["dispatches"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_execution_retries_exhaust_to_failed_with_note(wired):
+    import asyncio
+    ep = await _dispatched(wired)
+    for i in range(1, 3):
+        pse.report_dispatch_outcome(
+            ep["id"], tools_used_ok=set(), tools_attempted=set(),
+            available_tools=set())
+        assert pse.episodes()[0]["status"] == "pending"
+        assert pse.episodes()[0]["execution_retries"] == i
+        await _drain_pending(wired)
+        assert pse.episodes()[0]["status"] == "dispatched"
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools=set())
+    row = pse.episodes()[0]
+    assert row["status"] == "failed"
+    assert row["execution_retries"] == 3
+    await asyncio.sleep(0)                  # note is scheduled, not awaited
+    assert any("manually" in n for n in wired["notes"])

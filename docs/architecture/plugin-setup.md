@@ -43,6 +43,8 @@ generation had removed.
 
 **INV-PLUG-010**: A plugin's declared setup tool is dispatched by Casa alone — no tool result, completion or prompt routes it to an agent — and an artifact's setup obligation dispatches only after a consent verdict has been positively sealed for that exact artifact and settled with no denial; the absence of a sealed verdict never permits a dispatch, and a verdict asserting that an artifact needs no consent is sealed only when the pending-consent computes for both trigger and callback consents succeeded.
 
+**INV-PLUG-012**: A resident-execution setup obligation rests consumed (`dispatched`) only when its dispatched turn positively evidenced the setup tool — the tool produced a non-error result, or the session's init listed it and no attempted call erred without one; a turn with no such evidence (including one that raised or was cancelled) returns the obligation to `pending` with its released verdict intact, boundedly, and past the bound it fails with an operator note rather than being silently spent.
+
 **A plugin's declared setup tool is run by Casa and by nothing else — released only by a
 positively sealed consent verdict for that exact artifact, and then only once its trigger
 **and callback** routes are live — the gate rejects any outstanding issue of either kind,
@@ -197,10 +199,27 @@ registry, so a release can never be lost this way.
 to exactly one server grant fails with that reason rather than guessing a namespace;
 verification blocks such plugins upstream.
 
-**The dispatch is accepted but the tool fails.** Delivery is what the obligation
-guarantees, not execution: `dispatched` means the bus accepted the turn, and the executing
-agent reports the tool's own outcome to the operator. Casa makes no claim of its own about
-whether the integration works — it cannot see the external side (INV-TOOL-005).
+**The dispatch is accepted but the session cannot run the tool.** Bus acceptance marks the
+obligation `dispatched` before the turn runs, and until v0.184.0 that was terminal even
+when the turn then had no setup tool to call — observed live when a just-published
+artifact's MCP server failed to come up in a session built moments after an agent
+reconstruction, so the one automatic run was silently spent. Now the turn itself reports
+back (INV-PLUG-012): the agent correlates the episode marker on the dispatched turn with
+what the turn actually evidenced — a non-error result from the tool consumes the
+obligation; a session whose init listed the tool consumes it too (an available tool the
+agent chose not to call is its reply's business); anything else — the tool absent,
+availability unknown, every attempted call an error, the turn raising or cancelled —
+returns the row to `pending` with its released verdict kept, and the next reload or
+reconcile kick re-dispatches. Deliberately no immediate retry: the broken session is
+usually a warm one that would fail identically, and the healer in practice is the next
+agent reload. The budget is bounded; exhausting it fails the obligation with a note naming
+the manual run. A specialist-target dispatch stays delivery-only — the assistant is just
+the delegation courier there, and its own session says nothing about the specialist's.
+
+**The dispatch is accepted and the tool runs, but the integration is broken.** Delivery
+and in-session execution are what the obligation tracks; the executing agent reports the
+tool's own outcome to the operator. Casa makes no claim of its own about whether the
+integration works — it cannot see the external side (INV-TOOL-005).
 
 ## Extension points
 

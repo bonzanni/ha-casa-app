@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.184.0] - 2026-08-12
+
+### Fixed
+
+- A plugin's one automatic setup run is no longer silently spent when the
+  dispatched agent session turns out not to carry the setup tool (seen live
+  when a just-updated plugin's MCP server failed to start in a session built
+  right after an agent reload). The turn now reports back whether the tool
+  was actually runnable; if not, the setup obligation returns to pending and
+  the next agent reload re-dispatches it, bounded at three attempts before
+  failing visibly with a note to run setup manually. (#521)
+- A dispatched setup obligation no longer carries a stale "waiting for live
+  trigger route" message from an earlier gate hold into its final state. (#521)
+
 ## [0.183.0] - 2026-08-12
 
 ### Fixed
