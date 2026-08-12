@@ -8,6 +8,8 @@ own `_RecallBreaker`. Monotonic time is injected — never patch asyncio.sleep.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from personality_types import RecallHit
@@ -169,3 +171,79 @@ def test_breaker_success_resets_failure_count() -> None:
     br.try_acquire(); br.failure()
     br.try_acquire(); br.failure()
     assert br.state == "closed"      # only 2 consecutive since the reset
+
+
+# ---------------------------------------------------------------------------
+# GH #356: a cancelled (or bug-exception) half-open probe must not wedge the
+# breaker — before the fix `_probe_in_flight` stayed True forever and every
+# later call fast-failed `circuit_open` until restart.
+# ---------------------------------------------------------------------------
+
+
+def test_breaker_abandon_releases_probe_without_outcome() -> None:
+    from recall_health import RecallCircuitBreaker
+
+    clock = {"now": 0.0}
+    br = RecallCircuitBreaker(
+        failure_threshold=2, recovery_seconds=10.0, monotonic=lambda: clock["now"],
+    )
+    br.failure(); br.failure()
+    assert br.state == "open"
+    clock["now"] += 11.0
+    assert br.state == "half_open"
+    assert br.try_acquire() is True          # probe slot taken
+    assert br.try_acquire() is False         # probe in flight
+    br.abandon()
+    # Slot released, no failure counted, breaker not re-opened: the NEXT
+    # caller can probe immediately (still half_open on the same clock).
+    assert br.state == "half_open"
+    assert br.try_acquire() is True
+
+
+@pytest.mark.parametrize("exc_type", [asyncio.CancelledError, RuntimeError])
+async def test_cancelled_half_open_probe_does_not_wedge(exc_type) -> None:
+    """Red case for GH #356: drive the per-path breaker to half-open, cancel
+    the probe mid-await, then verify the path is probe-able again instead of
+    fast-failing circuit_open forever."""
+    import recall_health as rh
+    from recall_health import RecallTelemetry, observed_recall
+
+    rh.reset_recall_breakers()
+    try:
+        clock = {"now": 0.0}
+        # Install a clock-driven breaker for the path under test.
+        br = rh.RecallCircuitBreaker(monotonic=lambda: clock["now"])
+        rh._PATH_BREAKERS["direct_tool"] = br
+        tel = RecallTelemetry()
+
+        async def _down():
+            raise RecallUnavailable("backend_down")
+
+        for _ in range(rh.RECALL_BREAKER_FAILURE_THRESHOLD):
+            with pytest.raises(RecallUnavailable):
+                await observed_recall(
+                    path="direct_tool", telemetry=tel, operation=_down)
+        assert br.state == "open"
+        clock["now"] += rh.RECALL_BREAKER_RECOVERY_SECONDS + 1
+        assert br.state == "half_open"
+
+        async def _interrupted():
+            raise exc_type("probe interrupted")
+
+        with pytest.raises(exc_type):
+            await observed_recall(
+                path="direct_tool", telemetry=tel, operation=_interrupted)
+
+        # The probe slot is free again: a healthy probe now closes the breaker.
+        async def _ok():
+            return (_hit(),)
+
+        hits = await observed_recall(
+            path="direct_tool", telemetry=tel, operation=_ok)
+        assert hits and br.state == "closed"
+        # The interruption produced NO telemetry outcome (no fabricated
+        # unavailable/zero-hit): threshold failures + the final hit only.
+        outcomes = [e.outcome for e in tel.snapshot()]
+        assert outcomes == ["unavailable"] * rh.RECALL_BREAKER_FAILURE_THRESHOLD + ["hits"]
+    finally:
+        rh.reset_recall_breakers()

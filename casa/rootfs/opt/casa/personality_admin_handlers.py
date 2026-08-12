@@ -73,9 +73,28 @@ def register_personality_admin_routes(
     async def _render(request: "web.Request") -> "web.Response":
         body = await request.json()
         role_id, projection = body.get("role"), body.get("projection")
+        ref = body.get("persona")
+        if not isinstance(ref, str) or not ref:
+            return web.json_response({"error": "invalid_persona_ref"}, status=400)
         bundle = runtime.compiled_prompt_bundles.get(role_id)
         if bundle is None or projection not in {"text", "voice", "restricted_webhook"}:
             return web.json_response({"error": "not_found"}, status=404)
+        # GH #356: the requested ref must name the persona actually bound to
+        # this role — previously the field was ignored and `casactl persona
+        # render <ref>` could return a different persona's compiled prompt
+        # than the one named. Accept the bare persona id or the full
+        # "<id>@<version>" ref (ids cannot contain "@", so bare-id is
+        # unambiguous against the single active binding).
+        binding = runtime.bindings.get(role_id)
+        bound_id = getattr(binding, "persona_id", None)
+        bound_ref = (
+            f"{bound_id}@{binding.persona_version}" if bound_id else None
+        )
+        if ref not in {bound_id, bound_ref} or bound_id is None:
+            return web.json_response(
+                {"error": "persona_mismatch", "bound_persona": bound_ref},
+                status=409,
+            )
         selected = getattr(bundle, projection)
         return web.json_response({
             "digest": selected.digest,
@@ -108,8 +127,14 @@ def register_personality_admin_routes(
     async def _explain(request: "web.Request") -> "web.Response":
         body = await request.json()
         cid = body.get("correlation_id")
-        show_sensitive = bool(body.get("show_sensitive"))
-        confirmed = bool(body.get("confirmed"))
+        # GH #356: the confirmation gate requires JSON booleans — `bool()`
+        # coercion let any truthy value ("false", "no", a non-empty list)
+        # pass the documented `confirmed=true` gate and disclose the full
+        # system_prompt/memory_text. casactl sends real booleans.
+        show_sensitive = body.get("show_sensitive", False)
+        confirmed = body.get("confirmed", False)
+        if not isinstance(show_sensitive, bool) or not isinstance(confirmed, bool):
+            return web.json_response({"error": "invalid_args"}, status=400)
         if show_sensitive and not confirmed:
             return web.json_response({"error": "confirmation_required"}, status=400)
         if not isinstance(cid, str) or not cid:

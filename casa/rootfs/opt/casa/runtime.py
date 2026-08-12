@@ -47,6 +47,11 @@ class CasaRuntime:
       (atomic-swap of role keys).
     - Registry attrs (``agent_registry``, ``policy_lib``) are
       REPLACED by reload handlers (rebind).
+    - The four personality maps (``role_slots``, ``persona_packs``,
+      ``bindings``, ``compiled_prompt_bundles``) are REPLACED (rebound as
+      fresh read-only views) by :meth:`refresh_personality_maps`, which
+      reload handlers call synchronously after every ``role_configs``
+      mutation (GH #356).
     - Channel/bus/driver attrs are read-only after boot.
     - Path attrs (``config_dir``, ``agents_dir``, ``home_root``,
       ``defaults_root``) are read-only after boot.
@@ -123,3 +128,52 @@ class CasaRuntime:
     # compiling; a None map means "no boot map to refresh" and reload skips
     # the rebuild. MUST stay the final field (dataclass-ordering rule).
     executor_cc_policies: dict | None = None
+
+    def refresh_personality_maps(self) -> None:
+        """Re-derive the four personality maps from ``role_configs`` and
+        REBIND them as fresh read-only views (GH #356).
+
+        Single source of truth for the derivation: boot (casa_core) calls
+        this right after constructing the runtime, and every reload path
+        calls it synchronously after mutating ``role_configs`` — otherwise
+        a hot-added resident is dispatchable while ``casactl persona
+        inspect/render/diff`` 404s for its role until restart (and an
+        evicted one stays inspectable).
+
+        Pure in-memory derivation — no I/O, no await point — so callers on
+        the event loop can invoke it between a ``role_configs`` mutation
+        and their next await without opening a stale-map window. Each attr
+        is rebound atomically; readers fetch the attrs per request and
+        never hold them across an await, so no torn view is observable
+        (Sol/Terra design round 1, 2026-08-12).
+        """
+        from types import MappingProxyType
+
+        role_slots: dict = {}
+        persona_packs: dict = {}
+        bindings: dict = {}
+        compiled_prompt_bundles: dict = {}
+        # getattr-with-default: production AgentConfig always carries these
+        # fields; the default tolerates the narrow SimpleNamespace stand-ins
+        # test harnesses seed role_configs with (same "absent → skip"
+        # semantics either way).
+        for cfg in self.role_configs.values():
+            role_slot = getattr(cfg, "role_slot", None)
+            if role_slot is None:
+                continue
+            role_slots[cfg.role_id] = role_slot
+            persona_pack = getattr(cfg, "persona_pack", None)
+            if persona_pack is not None:
+                persona_packs[
+                    f"{persona_pack.persona_id}@{persona_pack.version}"
+                ] = persona_pack
+            binding = getattr(cfg, "binding", None)
+            if binding is not None:
+                bindings[cfg.role_id] = binding
+            bundle = getattr(cfg, "compiled_prompt_bundle", None)
+            if bundle is not None:
+                compiled_prompt_bundles[cfg.role_id] = bundle
+        self.role_slots = MappingProxyType(role_slots)
+        self.persona_packs = MappingProxyType(persona_packs)
+        self.bindings = MappingProxyType(bindings)
+        self.compiled_prompt_bundles = MappingProxyType(compiled_prompt_bundles)

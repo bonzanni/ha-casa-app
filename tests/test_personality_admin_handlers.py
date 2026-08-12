@@ -357,6 +357,9 @@ async def test_render_returns_digest_and_estimated_tokens(tmp_path) -> None:
     )
     runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
     runtime.compiled_prompt_bundles["concierge"] = bundle
+    # GH #356: render now validates the requested ref against the active
+    # binding, so the fake runtime must carry one (gary@1).
+    runtime.bindings["concierge"] = _binding_record()
     app = _make_app(runtime)
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
@@ -502,3 +505,164 @@ async def test_explain_unknown_correlation_id_404(tmp_path) -> None:
             "/admin/explain", json={"correlation_id": "cid-never-recorded"},
         )
         assert resp.status == 404
+
+
+# ---------------------------------------------------------------------------
+# GH #356: explain confirmation requires JSON booleans (not truthy coercion)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("payload_extra", [
+    {"show_sensitive": True, "confirmed": "false"},
+    {"show_sensitive": True, "confirmed": "no"},
+    {"show_sensitive": True, "confirmed": [1]},
+    {"show_sensitive": "true", "confirmed": True},
+    {"show_sensitive": 1, "confirmed": True},
+])
+async def test_explain_nonboolean_gate_values_rejected_400(
+    tmp_path, record, payload_extra,
+) -> None:
+    """GH #356: `bool()` coercion let any truthy value ("false", "no", a
+    non-empty list) pass the documented `confirmed=true` gate and disclose
+    the full system_prompt/memory_text. The gate now requires JSON booleans
+    and refuses everything else with 400 — before touching the store."""
+    store = ExplanationStore(tmp_path / "explanations")
+    store.record(record)
+    runtime = _FakeRuntime(explanation_store=store)
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/explain",
+            json={"correlation_id": record.correlation_id, **payload_extra},
+        )
+        assert resp.status == 400
+        body = await resp.json()
+        assert "SENSITIVE" not in json.dumps(body)
+
+
+async def test_explain_boolean_gate_still_serves_sensitive(tmp_path, record) -> None:
+    store = ExplanationStore(tmp_path / "explanations")
+    store.record(record)
+    runtime = _FakeRuntime(explanation_store=store)
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/explain",
+            json={"correlation_id": record.correlation_id,
+                  "show_sensitive": True, "confirmed": True},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["system_prompt"] == record.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# GH #356: render validates the requested persona ref against the binding
+# ---------------------------------------------------------------------------
+
+
+def _bundle_for(role_id: str = "concierge"):
+    from prompt_compiler import CompiledProjection, CompiledPromptBundle
+
+    projection = CompiledProjection(
+        system_prompt="<compiled prompt>", digest="digest-abc", estimated_tokens=42,
+    )
+    return CompiledPromptBundle(
+        role_id=role_id, resolved_model="claude-sonnet",
+        text=projection, voice=projection, restricted_webhook=projection,
+        binding_digest="bd-concierge",
+    )
+
+
+@pytest.mark.parametrize("ref", ["gary", "gary@1"])
+async def test_render_accepts_bare_id_and_full_ref_of_bound_persona(
+    tmp_path, ref,
+) -> None:
+    runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
+    runtime.compiled_prompt_bundles["concierge"] = _bundle_for()
+    runtime.bindings["concierge"] = _binding_record()  # gary@1
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/personality/render",
+            json={"persona": ref, "role": "concierge", "projection": "text"},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["digest"] == "digest-abc"
+
+
+async def test_render_mismatched_ref_409_names_bound_persona(tmp_path) -> None:
+    """GH #356: `casactl persona render <ref>` used to ignore <ref> entirely
+    and could return a different persona's compiled prompt than requested."""
+    runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
+    runtime.compiled_prompt_bundles["concierge"] = _bundle_for()
+    runtime.bindings["concierge"] = _binding_record()  # gary@1
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/personality/render",
+            json={"persona": "olga@3", "role": "concierge", "projection": "text"},
+        )
+        assert resp.status == 409
+        body = await resp.json()
+        assert body["error"] == "persona_mismatch"
+        assert body["bound_persona"] == "gary@1"
+        assert "system_prompt" not in body
+
+
+async def test_render_no_binding_409(tmp_path) -> None:
+    runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
+    runtime.compiled_prompt_bundles["concierge"] = _bundle_for()
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/personality/render",
+            json={"persona": "gary@1", "role": "concierge", "projection": "text"},
+        )
+        assert resp.status == 409
+        assert (await resp.json())["bound_persona"] is None
+
+
+async def test_render_missing_or_empty_persona_400(tmp_path) -> None:
+    runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
+    runtime.compiled_prompt_bundles["concierge"] = _bundle_for()
+    runtime.bindings["concierge"] = _binding_record()
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        for payload in (
+            {"role": "concierge", "projection": "text"},
+            {"persona": "", "role": "concierge", "projection": "text"},
+        ):
+            resp = await client.post("/admin/personality/render", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "invalid_persona_ref"
+
+
+# ---------------------------------------------------------------------------
+# GH #356: failed record() cleans its temp file; prune sweeps orphan *.tmp
+# ---------------------------------------------------------------------------
+
+
+def test_record_failure_leaves_no_temp_file(store, record, monkeypatch) -> None:
+    """GH #356: a failure between staging and publish (chmod/replace) used to
+    strand `<cid>.<uuid>.tmp` — full sensitive content — which the `*.json`
+    prune glob never swept."""
+    import explanation_store as es_mod
+
+    def _boom(*a, **kw):
+        raise OSError("disk says no")
+
+    monkeypatch.setattr(es_mod.os, "replace", _boom)
+    with pytest.raises(OSError):
+        store.record(record)
+    assert list(store._root.glob("*.tmp")) == []
+    assert list(store._root.glob("*.json")) == []
+
+
+def test_prune_sweeps_orphaned_tmp_files(store, record) -> None:
+    store.record(record)
+    orphan = store._root / "cid-dead.0123abcd.tmp"
+    orphan.write_text("{\"system_prompt\": \"leftover sensitive\"}", encoding="utf-8")
+    store.prune()
+    assert not orphan.exists()
+    # Published records are untouched by the tmp sweep.
+    assert (store._root / f"{record.correlation_id}.json").exists()

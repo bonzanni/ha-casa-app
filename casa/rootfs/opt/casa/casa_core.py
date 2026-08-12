@@ -3564,31 +3564,6 @@ async def main() -> None:
         load_all_agents, agents_dir, policies=policy_lib,
     )
 
-    # Personality Phase A, Task 8: derive the read-only persona/binding
-    # registries from the loaded resident configs. Residents are the only
-    # source of role_slot/binding/compiled_prompt_bundle in Plan 1;
-    # specialists/executors carry a role_slot too (for lookups) but no
-    # binding/bundle.
-    from types import MappingProxyType as _MappingProxyType
-    _role_slots: dict = {}
-    _persona_packs: dict = {}
-    _bindings: dict = {}
-    _compiled_prompt_bundles: dict = {}
-    for cfg in role_configs.values():
-        if cfg.role_slot is None:
-            continue
-        _role_slots[cfg.role_id] = cfg.role_slot
-        if cfg.persona_pack is not None:
-            _persona_packs[f"{cfg.persona_pack.persona_id}@{cfg.persona_pack.version}"] = cfg.persona_pack
-        if cfg.binding is not None:
-            _bindings[cfg.role_id] = cfg.binding
-        if cfg.compiled_prompt_bundle is not None:
-            _compiled_prompt_bundles[cfg.role_id] = cfg.compiled_prompt_bundle
-    _role_slots = _MappingProxyType(_role_slots)
-    _persona_packs = _MappingProxyType(_persona_packs)
-    _bindings = _MappingProxyType(_bindings)
-    _compiled_prompt_bundles = _MappingProxyType(_compiled_prompt_bundles)
-
     specialist_configs = specialist_registry.all_configs()
     from agent_registry import AgentRegistry
     agent_registry = AgentRegistry.build(
@@ -3622,12 +3597,14 @@ async def main() -> None:
         defaults_root="/opt/casa",
         semantic_memory=semantic_memory,
         job_registry=job_registry,
-        role_slots=_role_slots,
-        persona_packs=_persona_packs,
-        bindings=_bindings,
-        compiled_prompt_bundles=_compiled_prompt_bundles,
         explanation_store=explanation_store,
     )
+    # Personality Phase A, Task 8 / GH #356: derive the four read-only
+    # persona/binding maps from the loaded resident configs. The SAME method
+    # reload handlers call after every role_configs mutation — boot and
+    # reload share one derivation, so a hot-added resident's maps can never
+    # drift from what a restart would build.
+    runtime.refresh_personality_maps()
     # Task 6 (spec §4.6): specialist concurrency cap + per-role cost
     # telemetry. `specialist_max_concurrency` bounds delegations in flight
     # fleet-wide; the per-scope cap (exactly 1) is hard-coded inside

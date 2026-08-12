@@ -3230,3 +3230,151 @@ class TestOverlayConsumptionRetry:
             await reload_mod._load_agent_with_overlay_retry(
                 SimpleNamespace(), "agents/butler", policies=None, tier="resident")
         assert calls["load"] == 1
+
+
+class TestPersonalityMapRefresh:
+    """GH #356: every role_configs mutation must synchronously rebind the four
+    personality maps (role_slots / persona_packs / bindings /
+    compiled_prompt_bundles) — before the fix they were boot-built
+    MappingProxyType views no reload path ever refreshed, so a hot-added
+    resident was dispatchable while `casactl persona inspect/render/diff`
+    404d for its role until restart (and an evicted one stayed inspectable)."""
+
+    @staticmethod
+    def _personality_cfg(role: str):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            role=role, role_id=role,
+            character=SimpleNamespace(name=role.title(), card=""),
+            triggers=[], channels=[],
+            memory=SimpleNamespace(read_strategy="per_turn"),
+            role_slot=SimpleNamespace(role_id=role),
+            persona_pack=SimpleNamespace(persona_id=f"p-{role}", version="1"),
+            binding=SimpleNamespace(persona_id=f"p-{role}", persona_version="1"),
+            compiled_prompt_bundle=SimpleNamespace(role_id=role),
+        )
+
+    async def test_refresh_derives_and_rebinds_read_only_views(self):
+        runtime = _make_runtime()
+        cfg = self._personality_cfg("ellen")
+        runtime.role_configs["ellen"] = cfg
+        runtime.refresh_personality_maps()
+        assert runtime.role_slots["ellen"] is cfg.role_slot
+        assert runtime.persona_packs["p-ellen@1"] is cfg.persona_pack
+        assert runtime.bindings["ellen"] is cfg.binding
+        assert runtime.compiled_prompt_bundles["ellen"] is cfg.compiled_prompt_bundle
+        # Views are read-only (MappingProxyType) — reload replaces, never mutates.
+        with pytest.raises(TypeError):
+            runtime.role_slots["x"] = object()
+        # Evict + refresh drops every trace of the role.
+        runtime.role_configs.pop("ellen")
+        runtime.refresh_personality_maps()
+        assert "ellen" not in runtime.role_slots
+        assert "p-ellen@1" not in runtime.persona_packs
+        assert "ellen" not in runtime.bindings
+        assert "ellen" not in runtime.compiled_prompt_bundles
+
+    async def test_refresh_tolerates_narrow_configs_without_personality_fields(self):
+        from types import SimpleNamespace
+        runtime = _make_runtime()
+        runtime.role_configs["bare"] = SimpleNamespace(triggers=[])
+        runtime.refresh_personality_maps()  # must not raise
+        assert "bare" not in runtime.role_slots
+
+    async def test_agents_sweep_add_populates_maps_before_return(
+        self, tmp_path, monkeypatch,
+    ):
+        from reload import dispatch, register_handler, reload_agents
+        register_handler("agents", reload_agents)
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "newcomer").mkdir()
+
+        new_cfg = self._personality_cfg("newcomer")
+        monkeypatch.setattr("agent_loader.load_agent_from_dir",
+                            lambda *a, **kw: new_cfg)
+        monkeypatch.setattr("policies.load_policies",
+                            lambda *a, **kw: MagicMock())
+        monkeypatch.setattr("agent_home.provision_agent_home",
+                            lambda **kw: None)
+        import reload as reload_mod
+        monkeypatch.setattr(reload_mod, "_construct_agent",
+                            lambda **kw: MagicMock())
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        runtime.specialist_registry.all_configs = lambda: {}
+
+        result = await dispatch("agents", runtime=runtime)
+        assert result["status"] == "ok"
+        assert runtime.role_slots["newcomer"] is new_cfg.role_slot
+        assert runtime.bindings["newcomer"] is new_cfg.binding
+        assert runtime.compiled_prompt_bundles["newcomer"] is new_cfg.compiled_prompt_bundle
+
+    async def test_agents_sweep_evict_drops_maps(self, tmp_path, monkeypatch):
+        from bus import MessageBus
+        from reload import dispatch, register_handler, reload_agents
+        register_handler("agents", reload_agents)
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()  # tina's dir gone → evict
+
+        monkeypatch.setattr("policies.load_policies",
+                            lambda *a, **kw: MagicMock())
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        bus = MessageBus()
+        bus.register("tina", MagicMock())
+        runtime.bus = bus
+        runtime.role_configs = {"tina": self._personality_cfg("tina")}
+        tina_agent = MagicMock()
+        tina_agent.aclose = AsyncMock()
+        runtime.agents = {"tina": tina_agent}
+        runtime.specialist_registry.all_configs = lambda: {}
+        runtime.refresh_personality_maps()
+        assert "tina" in runtime.role_slots  # precondition
+
+        result = await dispatch("agents", runtime=runtime)
+        assert result["status"] == "ok"
+        assert "tina" not in runtime.role_slots
+        assert "tina" not in runtime.bindings
+        assert "tina" not in runtime.compiled_prompt_bundles
+        assert "p-tina@1" not in runtime.persona_packs
+
+    async def test_per_role_swap_rebinds_maps(self, tmp_path, monkeypatch):
+        from reload import dispatch, register_handler, reload_agent
+        register_handler("agent", reload_agent)
+
+        agents_dir = tmp_path / "agents"
+        (agents_dir / "ellen").mkdir(parents=True)
+
+        new_cfg = self._personality_cfg("ellen")
+        monkeypatch.setattr("agent_loader.load_agent_from_dir",
+                            lambda *a, **kw: new_cfg)
+        monkeypatch.setattr("policies.load_policies",
+                            lambda *a, **kw: MagicMock())
+        import reload as reload_mod
+        new_agent = MagicMock()
+        monkeypatch.setattr(reload_mod, "_construct_agent",
+                            lambda *a, **kw: new_agent)
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        old_cfg = self._personality_cfg("ellen")
+        runtime.role_configs["ellen"] = old_cfg
+        old_agent = MagicMock()
+        old_agent.aclose = AsyncMock()
+        runtime.agents["ellen"] = old_agent
+        runtime.refresh_personality_maps()
+        assert runtime.compiled_prompt_bundles["ellen"] is old_cfg.compiled_prompt_bundle
+
+        result = await dispatch("agent", runtime=runtime, role="ellen")
+        assert result["status"] == "ok"
+        # Maps describe the config the now-live agent runs — not the old one.
+        assert runtime.compiled_prompt_bundles["ellen"] is new_cfg.compiled_prompt_bundle
+        assert runtime.bindings["ellen"] is new_cfg.binding
