@@ -363,6 +363,8 @@ override it.
 
 When `enable_terminal` is enabled, a web terminal is available at the `/terminal/` path in the ingress panel. This gives you shell access to the app container for debugging and manual operations.
 
+The terminal is an unauthenticated **root** shell, so it is reachable only through the Home Assistant ingress panel — it is bound to an internal socket that nothing else in the container can reach, never a network port. Leave `enable_terminal` off unless you are actively debugging.
+
 ## Troubleshooting
 
 - **App won't start**: Check the log for "claude_oauth_token is required". You must set the token before starting.

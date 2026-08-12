@@ -124,9 +124,13 @@ async def start_internal_unix_runner(
         _make_internal_tools_call_handler,
         _make_internal_hooks_resolve_handler,
         build_admin_reload_handler,
+        admin_peercred_middleware,
     )
 
-    internal_app = web.Application()
+    # #467: gate the operator-only /admin/* family to a root peer via
+    # SO_PEERCRED. The forwarded /internal/* family passes through (its
+    # forwarder is non-root and is authorized per-engagement elsewhere).
+    internal_app = web.Application(middlewares=[admin_peercred_middleware])
     internal_app.router.add_post(
         "/internal/tools/call",
         _make_internal_tools_call_handler(

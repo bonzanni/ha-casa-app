@@ -26,7 +26,7 @@ Four services run under s6, each with a single job:
 | `svc-casa` | the main async application — channels, agents, HTTP surface |
 | `svc-casa-mcp` | an MCP bridge, supervised as its own service with its own lifetime |
 | `svc-nginx` | the front door — two listeners: HA ingress (Supervisor-source-restricted) and the published external API port, which has no source restriction and relies on route-level refusals |
-| `svc-ttyd` | an optional terminal, off unless enabled |
+| `svc-ttyd` | an optional terminal, off unless enabled — an unauthenticated root shell, so it binds a root-restricted UNIX socket (not TCP loopback) that only the nginx worker and root can reach, keeping it away from a dropped-uid engagement |
 
 The static service table is not the whole process story: executor engagements compile and
 supervise *dynamic* s6 service/logger pairs of their own — created, recovered and forcibly

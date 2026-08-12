@@ -141,3 +141,32 @@ def test_external_api_server_suppresses_callback_query_from_access_log():
     directive = "access_log /dev/stdout combined if=$casa_cb_log;"
     assert directive in external
     assert external.index(directive) < external.index("location = / {")
+
+
+# ---------------------------------------------------------------------------
+# #514: the web terminal (ttyd) is an unauthenticated root shell. It must be
+# bound to a root-restricted UNIX socket, not TCP loopback, so a dropped-uid
+# engagement cannot reach it by bypassing nginx. nginx proxies /terminal/ over
+# that socket, and its worker identity (www-data) must be pinned so the socket
+# owner can be matched to it.
+# ---------------------------------------------------------------------------
+
+
+def test_nginx_worker_user_pinned_to_www_data():
+    """The worker user must be explicit — the ttyd socket is owned
+    www-data:www-data, and leaving the worker user to nginx's compiled default
+    would silently break the terminal proxy (or the DAC fence) on a base-image
+    change."""
+    text = _SCRIPT.read_text()
+    # http-scope directive, before any server block.
+    assert "\nuser www-data;\n" in text
+    assert text.index("user www-data;") < text.index("# --- Ingress server")
+
+
+def test_terminal_proxies_over_unix_socket_not_tcp():
+    """The enabled /terminal/ location must proxy to the ttyd UNIX socket, and
+    the old TCP 127.0.0.1:7681 target must be gone entirely."""
+    text = _SCRIPT.read_text()
+    assert "proxy_pass http://unix:/run/casa-term/ttyd.sock:/terminal/;" in text
+    assert "7681" not in text, "TCP terminal port 7681 still referenced"
+    assert "127.0.0.1:7681" not in text

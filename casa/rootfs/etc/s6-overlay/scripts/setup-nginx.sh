@@ -10,6 +10,13 @@ worker_processes 1;
 error_log /dev/stdout warn;
 pid /tmp/nginx.pid;
 
+# #514: pin the worker identity explicitly. The master runs as root and binds
+# the listen ports; workers drop to www-data. This is the identity that must be
+# able to reach the ttyd UNIX socket (owned www-data:www-data) while the
+# dropped-uid engagement cannot — so it must not be left to nginx's compiled
+# default.
+user www-data;
+
 events { worker_connections 128; }
 
 http {
@@ -64,7 +71,8 @@ NGINX
 if bashio::config.true 'enable_terminal'; then
     cat >> /etc/nginx/nginx.conf <<NGINX
         location /terminal/ {
-            proxy_pass http://127.0.0.1:7681/terminal/;
+            # #514: ttyd listens on a root-restricted UNIX socket, not TCP.
+            proxy_pass http://unix:/run/casa-term/ttyd.sock:/terminal/;
             proxy_http_version 1.1;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;

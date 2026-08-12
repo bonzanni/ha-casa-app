@@ -8,12 +8,30 @@ if ! bashio::config.true 'enable_terminal'; then
     exec sleep infinity
 fi
 
-bashio::log.info "Starting ttyd web terminal..."
+# #514: ttyd is an unauthenticated, writable ROOT shell. Binding it to TCP
+# 127.0.0.1:7681 (as it once did) exposed that shell to EVERY in-container
+# identity — including a dropped-uid engagement, which reaches container
+# loopback directly, bypassing nginx/HA-ingress auth, and defeats the
+# per-engagement uid boundary entirely. Bind it to a filesystem UNIX socket
+# instead, fenced by DAC:
+#   - the socket lives in a 0700 dir owned by the nginx worker user
+#     (www-data), so an engagement (uid/gid >= 200000, groups cleared — i.e.
+#     "other") cannot even traverse to the socket path; and
+#   - `-U www-data:www-data` makes libwebsockets chown+chmod the socket to
+#     www-data:www-data 0660, so only the nginx worker (and root) can connect.
+# nginx proxies /terminal/ over this socket for the authenticated operator.
+TERM_DIR=/run/casa-term
+TERM_SOCK="${TERM_DIR}/ttyd.sock"
+# install -d sets mode+owner even if the dir already exists, so a pre-existing
+# dir with wrong perms is corrected rather than trusted.
+install -d -m 0700 -o www-data -g www-data "${TERM_DIR}"
+
+bashio::log.info "Starting ttyd web terminal on ${TERM_SOCK}..."
 exec ttyd \
     -d 0 \
     --writable \
-    --interface 127.0.0.1 \
-    --port 7681 \
+    --interface "${TERM_SOCK}" \
+    --socket-owner www-data:www-data \
     --base-path /terminal \
     --cwd /config \
     bash
