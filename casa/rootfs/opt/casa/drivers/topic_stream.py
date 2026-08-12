@@ -759,6 +759,10 @@ class TopicStreamRelay:
         # (``_reset_turn_state`` / abnormal ``spawn``) so a later turn's
         # narration is never muted. In-memory only; ``None`` on warm re-entry.
         self._replay_discard: dict | None = None
+        # #538 (Sol r2): positional latch — True once the chronological scan
+        # has reached the tombstone's ``from`` coordinate (see
+        # ``_latch_discard_range``). Lives and dies with ``_replay_discard``.
+        self._discard_latched = False
 
     # -- persistence helpers ------------------------------------------------
 
@@ -889,22 +893,35 @@ class TopicStreamRelay:
             return False
         return self._seg_rank(st) < self._seg_rank(tseg)
 
-    def _in_discarded_range(self, seg, off_after: int) -> bool:
-        """#538: is this frame inside the tombstoned (result-time DISCARDED)
-        held range — at or past the first held frame's coordinate? Frames
-        BEFORE it (posted or throttled-but-landed pre-anchor narration) stay
-        untouched: they are genuine wire content the reconstruction and the
-        re-run closing edit still need."""
+    def _latch_discard_range(self, seg, off_after: int) -> None:
+        """#538 (Sol r2): POSITIONAL entry into the tombstoned held range.
+        The frame scan is chronological, so the latch flips exactly when the
+        scan reaches the tombstone's ``from`` coordinate — never by coordinate
+        COMPARISON (``_coord_le``'s absent-segment rule ranks a frame whose
+        source archive was unlinked mid-recovery at infinity, which would
+        misclassify a chronologically EARLIER frame as dead and lose unposted
+        pre-anchor prose). A ``from`` the scan never reaches (e.g. its segment
+        rotated out) leaves the latch unfired and the prose resurfaces —
+        failing toward a bounded duplicate, never toward loss. Called for
+        EVERY frame at ``_handle_frame`` entry; dies with ``_replay_discard``
+        at the recovered turn's boundary."""
         rd = self._replay_discard
-        if rd is None:
-            return False
+        if rd is None or self._discard_latched:
+            return
         fr = rd.get("from") or {}
         if (
             tuple(seg) == tuple(fr.get("segment", (0, 0)))
             and off_after == int(fr.get("offset", 0))
         ):
-            return True
-        return not self._coord_le(seg, off_after, fr)
+            self._discard_latched = True
+
+    def _in_discarded_range(self, seg, off_after: int) -> bool:
+        """#538: is this frame inside the tombstoned (result-time DISCARDED)
+        held range? Purely the positional latch — frames scanned BEFORE the
+        ``from`` coordinate (posted or throttled-but-landed pre-anchor
+        narration) are genuine wire content the reconstruction and the re-run
+        closing edit still need."""
+        return self._replay_discard is not None and self._discard_latched
 
     def _update_live(self, seg, off_after: int) -> None:
         """Latch REPLAY→LIVE using monotonic segment order (turn_start<=current)."""
@@ -1917,6 +1934,7 @@ class TopicStreamRelay:
         # #538: the discard latch dies on the SAME boundary — a later turn's
         # narration must never be muted by a recovered turn's tombstone.
         self._replay_discard = None
+        self._discard_latched = False
 
     async def _finalize(
         self, seg, off_after: int, *, subtype: str | None = None,
@@ -2177,6 +2195,7 @@ class TopicStreamRelay:
         self._replay_discard = (
             self.cursor.hold_discarded if self.cursor.hold_pending else None
         )
+        self._discard_latched = False
         gap_seen = False
 
         try:
@@ -2327,6 +2346,9 @@ class TopicStreamRelay:
 
     async def _handle_frame(self, seg, off_after: int, raw: bytes) -> None:
         frame = parse_frame(raw)
+        # #538 (Sol r2): positional dead-range entry — checked for EVERY frame
+        # in scan order, before any dispatch branch consults the latch.
+        self._latch_discard_range(seg, off_after)
 
         if not self._live:
             # REPLAY: rebuild visible-text state ONLY; suppress all side effects.
@@ -2432,6 +2454,7 @@ class TopicStreamRelay:
             self._anchor_candidate = None
             self._replay_disarmed = False
             self._replay_discard = None  # #538: same boundary, same death
+            self._discard_latched = False
             await _maybe_await(
                 self.on_turn_event("spawn", {"epoch": frame.get("epoch")})  # (2)
             )

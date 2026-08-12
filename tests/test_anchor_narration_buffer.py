@@ -1474,3 +1474,73 @@ async def test_discard_recovery_keeps_throttled_pre_anchor_text(tmp_path):
     done = StreamCursor.load(cursor)
     assert done.hold_pending is False
     assert done.hold_discarded is None
+
+
+async def test_discard_range_is_positional_not_coordinate_compared(tmp_path):
+    """Sol diff-r2 S2: dead-range membership must be decided by the scan
+    REACHING the tombstone's ``from`` coordinate, never by ``_coord_le``
+    comparison — the absent-segment rule ranks a frame whose source archive
+    was unlinked mid-recovery at infinity, which would misclassify
+    chronologically EARLIER frames as dead (pre-anchor prose lost). Pin: with
+    ``_coord_le`` forced pathological against the tombstone's ``from`` (the
+    rank-infinity shape), pre-``from`` narration still reconstructs and the
+    dead sign-off still never posts."""
+    _write_current(tmp_path, [
+        _init(), _text("prefix "), _anchor_ask("Q?"),
+        _text("DEAD SIGNOFF"), _result(),
+    ])
+    cursor = tmp_path / ".stream_cursor.json"
+
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+
+    async def _boom():
+        raise RuntimeError("crash inside the finalize window")
+
+    seq1.drain_and_prune_turn = _boom
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    with pytest.raises(RuntimeError):
+        await relay1.run()
+    fr = StreamCursor.load(cursor).hold_discarded["from"]
+
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    # The healthy recovery converges with ZERO wire writes (the identical
+    # closing edit resolves without touching the wire), so the discriminating
+    # observable is the closing-edit CALL: a dropped prefix empties
+    # ``_per_message_text`` and the finalize skips the edit entirely.
+    closing_edits: list[str] = []
+    orig_edit = seq2.edit_narration_if_latest
+
+    async def _capturing_edit(mid, value):
+        closing_edits.append(value)
+        return await orig_edit(mid, value)
+
+    seq2.edit_narration_if_latest = _capturing_edit
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    orig_coord_le = relay2._coord_le
+
+    def _pathological(seg, off_after, target):
+        if target == fr:          # every frame looks "past" the tombstone
+            return False
+        return orig_coord_le(seg, off_after, target)
+
+    relay2._coord_le = _pathological
+    await relay2.run()
+
+    # Pre-``from`` prose survived reconstruction — the re-run closing edit
+    # positively carries it — and the dead sign-off never surfaced anywhere.
+    assert closing_edits, "recovery never re-ran the closing edit"
+    assert all("prefix" in v for v in closing_edits)
+    assert all("DEAD" not in v for v in closing_edits)
+    assert all("DEAD" not in t for _tp, t in rec2.sends)
+    assert all("DEAD" not in e[2] for e in rec2.edits)
+    done = StreamCursor.load(cursor)
+    assert done.hold_pending is False
+    assert done.hold_discarded is None
