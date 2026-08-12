@@ -98,9 +98,12 @@ the channel's own serialization provide.
 limit. A retry hint from the server overrides the computed delay.
 
 **The session id is stale.** The stored session is cleared — but only while the registry
-entry still carries the id that failed, so a concurrent turn's newer registration survives
-and the retry resumes it — and the turn re-enters the normal fresh retry policy — up to the
-standard attempt limit, not a single extra try.
+entry still carries the id that failed *and* no registration has landed since this
+attempt's snapshot: each registration stamps a process-local generation the decision
+captures, so even a concurrent turn that successfully re-resumed the *same* id keeps its
+registration (and its save-time retention). The retry resumes whatever survives — and the
+turn re-enters the normal fresh retry policy — up to the standard attempt limit, not a
+single extra try.
 
 **The pool cannot serve the turn.** It raises, and the turn creates its own client for this
 turn only.
