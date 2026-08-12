@@ -665,6 +665,10 @@ async def test_render_empty_or_non_string_persona_400(tmp_path) -> None:
         for payload in (
             {"persona": "", "role": "concierge", "projection": "text"},
             {"persona": 7, "role": "concierge", "projection": "text"},
+            # Sol+Terra (v0.188.1 review): an EXPLICIT null is a present,
+            # non-string value — body.get() must not conflate it with the
+            # absent-key ref-less form.
+            {"persona": None, "role": "concierge", "projection": "text"},
         ):
             resp = await client.post("/admin/personality/render", json=payload)
             assert resp.status == 400

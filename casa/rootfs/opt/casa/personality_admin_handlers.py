@@ -78,8 +78,13 @@ def register_personality_admin_routes(
         # e2e exercises); the #356 ref-vs-binding check applies only when a
         # ref is actually supplied — a gate may only demand what the caller
         # writes. Present-but-empty/non-string is still refused.
+        # Key PRESENCE decides which contract applies (Sol+Terra, v0.188.1
+        # review): an explicit ``"persona": null`` is a present non-string
+        # value and is refused — ``body.get()`` alone would conflate it with
+        # the absent-key ref-less form.
+        persona_supplied = "persona" in body
         ref = body.get("persona")
-        if ref is not None and (not isinstance(ref, str) or not ref):
+        if persona_supplied and (not isinstance(ref, str) or not ref):
             return web.json_response({"error": "invalid_persona_ref"}, status=400)
         bundle = runtime.compiled_prompt_bundles.get(role_id)
         if bundle is None or projection not in {"text", "voice", "restricted_webhook"}:
@@ -90,7 +95,7 @@ def register_personality_admin_routes(
         # than the one named. Accept the bare persona id or the full
         # "<id>@<version>" ref (ids cannot contain "@", so bare-id is
         # unambiguous against the single active binding).
-        if ref is not None:
+        if persona_supplied:
             binding = runtime.bindings.get(role_id)
             bound_id = getattr(binding, "persona_id", None)
             bound_ref = (
