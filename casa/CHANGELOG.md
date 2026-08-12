@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.187.0] - 2026-08-12
+
+### Fixed
+
+- The `casactl explain` sensitive-disclosure gate now accepts only real JSON
+  booleans: a request carrying `"confirmed": "false"` (or any other
+  non-boolean value) is refused instead of being treated as confirmation. (#356)
+- `casactl persona render <ref>` now verifies that the named persona is the
+  one actually bound to the role, and reports the bound persona on a
+  mismatch instead of silently rendering it. (#356)
+- Residents added or evicted by a warm `agents`/`agent`/`full` reload now
+  appear in (or disappear from) `casactl persona inspect/render/diff`
+  immediately — previously the admin views described the boot-time fleet
+  until restart. (#356)
+- A recall probe interrupted mid-flight no longer wedges that recall path's
+  circuit breaker into permanent fast-fail until restart. (#356)
+- A failed explanation-record write no longer leaves its temporary staging
+  file behind, and any stranded staging files are now cleaned up by the
+  routine sweep. (#356)
+
 ## [0.186.0] - 2026-08-12
 
 ### Fixed
