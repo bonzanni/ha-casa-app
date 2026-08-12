@@ -2012,7 +2012,9 @@ def make_commit_size_guard_hook(*, max_files: int) -> HookCallback:
         # event loop. _git_porcelain_count stays a sync module-level function
         # so existing patch("hooks._git_porcelain_count", ...) tests still work.
         count = await asyncio.to_thread(_git_porcelain_count)
-        if count > max_files:
+        # #324: >= — the docstring's contract. At count == max_files another
+        # write would produce max_files+1 uncommitted files.
+        if count >= max_files:
             return _deny(
                 f"commit_size_guard: {count} files already uncommitted "
                 f"(max={max_files}). Call config_git_commit to stage your "
