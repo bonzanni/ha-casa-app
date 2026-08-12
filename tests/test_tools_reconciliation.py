@@ -104,3 +104,42 @@ def test_dangling_symlink_reports_degraded(tmp_path: Path) -> None:
     assert r.returncode != 0
     data = yaml.safe_load(status.read_text())
     assert data["results"][0]["status"] == "degraded"
+
+
+def test_path_shadow_does_not_mask_missing_managed_install(tmp_path: Path) -> None:
+    """#334: an unrelated same-named executable on the image PATH must not
+    satisfy a plugin requirement whose managed tools/bin entry is gone —
+    every install backend publishes verify_bin into tools/bin, so a missing
+    managed entry always means the install was wiped/rolled back."""
+    tools_root = tmp_path / "tools"
+    tools_bin = tools_root / "bin"
+    tools_bin.mkdir(parents=True)
+    # Managed entry dangling (install_dir wiped), like the M23 case…
+    (tools_bin / "fakebin").symlink_to(tools_root / "face-rec-1.0.0" / "fakebin")
+    # …but an unrelated binary of the same name IS on PATH (the image's).
+    shadow_dir = tmp_path / "imagebin"
+    shadow_dir.mkdir()
+    shadow = shadow_dir / "fakebin"
+    shadow.write_text("#!/bin/sh\n", encoding="utf-8")
+    shadow.chmod(0o755)
+
+    manifest = tmp_path / "m.yaml"
+    _write_manifest(manifest, [{
+        "name": "face-rec",
+        "winning_strategy": "venv",
+        "install_dir": str(tools_root / "face-rec-1.0.0"),
+        "verify_bin": "fakebin",
+        "declared_at": "2026-04-24T00:00:00Z",
+    }])
+    status = tmp_path / "status.yaml"
+
+    r = subprocess.run([sys.executable, str(RECONCILER),
+                        "--manifest", str(manifest),
+                        "--tools-root", str(tools_root),
+                        "--status-file", str(status),
+                        "--log-level", "warning"],
+                       capture_output=True, text=True,
+                       env={"PATH": str(shadow_dir)})
+    assert r.returncode != 0
+    data = yaml.safe_load(status.read_text())
+    assert data["results"][0]["status"] == "degraded"

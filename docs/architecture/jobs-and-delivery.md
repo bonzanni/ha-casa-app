@@ -31,10 +31,12 @@ and the delivery coordinator's per-attempt bookkeeping are process-local and die
 process; what survives is exactly what the snapshot holds.
 
 **A restart reconciles; it never resumes.** Boot converts every persisted accepted or
-running job to a terminal orphaned state — model execution is not resumable — and a
-voice-routed orphan becomes ready so its *failure* can be delivered. In-flight delivery
-leases are retained for one fresh lease rather than revoked, so a device mid-playback is
-not stolen from.
+running job to a terminal state — model execution is not resumable. A job whose durable
+cancellation flag was already set finalizes as cancelled, exactly as the live cancel
+paths would have; every other live job becomes a terminal orphan, and a voice-routed
+orphan becomes ready so its *failure* can be delivered. In-flight delivery leases are
+retained for one fresh lease rather than revoked, so a device mid-playback is not
+stolen from.
 
 **Delivery is leased, attempt-scoped, at-least-once.** An offer is process-local until the
 client claims it; a claim durably records an attempt id and a lease before anything is
@@ -70,9 +72,12 @@ INV-STATE-004.
 What it does not cover: runtime task ownership. The snapshot records job state, not that
 any process is still executing it.
 
-**INV-JOB-002**: A restart never resumes execution — persisted live jobs become terminal orphans at boot, and a voice-routed orphan becomes ready so the failure is deliverable.
+**INV-JOB-002**: A restart never resumes execution — persisted live jobs become terminal at boot (cancelled when a durable cancellation was already pending, orphaned otherwise), and a voice-routed orphan becomes ready so the failure is deliverable.
 
-Enforced by the boot recovery pass, called once at startup.
+Enforced by the boot recovery pass, called once at startup. A cancel-pending job takes
+the live cancel paths' terminal shape — no restart-orphan failure, no fresh delivery
+sequence, no creator notice — so a creator who cancelled before the restart is not told
+their job was "lost".
 
 What it does not cover: delivery. A leased delivery attempt survives recovery with one
 fresh lease instead of being orphaned, precisely so a mid-playback device is not preempted.

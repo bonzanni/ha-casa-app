@@ -1067,6 +1067,36 @@ class JobRegistry:
                     ExecutionState.ACCEPTED,
                     ExecutionState.RUNNING,
                 }:
+                    if current.cancel_pending:
+                        # #334: the creator already cancelled this job before
+                        # the restart (durable flag). Terminalize with the live
+                        # cancel paths' exact shape — never as a restart orphan
+                        # with a "Lost on restart" failure notice or a fresh
+                        # delivery sequence.
+                        updated = replace(
+                            current,
+                            execution_state=ExecutionState.CANCELLED,
+                            terminal_at=now,
+                            expires_at=(
+                                now + self._terminal_result_ttl_seconds(current)
+                            ),
+                            failure=JobFailure(
+                                "cancelled", "Cancelled by creator",
+                            ),
+                            delivery_state=(
+                                DeliveryState.CANCELLED
+                                if current.delivery_state
+                                is not DeliveryState.NONE
+                                else DeliveryState.NONE
+                            ),
+                            delivery_attempt_id=None,
+                            lease_until=None,
+                            cancel_pending=False,
+                            orphan_notification_pending=False,
+                        )
+                        candidate[job_id] = updated
+                        changed = True
+                        continue
                     if current.origin_route_id and current.origin_device_id:
                         next_sequence += 1
                         delivery = DeliveryState.READY

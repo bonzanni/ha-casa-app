@@ -660,6 +660,23 @@ class TestThrottleAndFlush:
         assert c._last_rendered is None   # not cached → a retry will re-attempt
         c.shutdown()
 
+    async def test_failed_edit_does_not_consume_throttle_window(self):
+        """#334: a FAILED edit put nothing on the wire, so it must not start a
+        throttle window — the next non-forced flush is immediately due."""
+        seq = FakeSequencer()
+        clock = Clock()
+        c = _make(seq, clock=clock)
+        await c.note_turn_start()
+        await c.submit_activity("reading files")   # edit #1 lands
+        clock.t = 11.0                             # past the throttle window
+        seq.fail_next = 1
+        await c.submit_activity("running commands")  # attempt FAILS (transient)
+        assert len(seq.edits) == 1
+        clock.t = 12.0                             # only 1s after the failure
+        await c.submit_activity("editing files")   # must retry NOW, not at t=21
+        assert len(seq.edits) == 2
+        c.shutdown()
+
     async def test_no_edit_without_message_id(self):
         seq = FakeSequencer()
         c = _make(seq, message_id=None)

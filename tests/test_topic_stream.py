@@ -1282,3 +1282,101 @@ async def test_replayed_tool_use_is_suppressed(tmp_path):
     await _make_relay(tmp_path, cur_path, rec, events).run()
 
     assert not any(kind == "tool_use" for kind, _p in events)
+
+
+# ---------------------------------------------------------------------------
+# #334: durable result-event delivery (result_event_pending marker).
+# ---------------------------------------------------------------------------
+
+
+class _RaiseOnResult:
+    """Event recorder whose first N "result" deliveries raise (transient)."""
+
+    def __init__(self, fail_results: int = 1) -> None:
+        self.events: list[tuple[str, dict]] = []
+        self.fail_results = fail_results
+
+    def __call__(self, kind: str, payload: dict) -> None:
+        if kind == "result" and self.fail_results > 0:
+            self.fail_results -= 1
+            raise RuntimeError("driver callback boom")
+        self.events.append((kind, payload))
+
+
+async def test_raising_result_callback_is_redelivered_on_next_run(tmp_path):
+    """#334: a transiently-failing ``on_turn_event("result")`` must not lose
+    the turn-end event — the closed-turn checkpoint stays advanced (no
+    narration re-post), the pending marker is durable, and the next cold run
+    delivers the event before touching any frame."""
+    rec = Recorder()
+    handler = _RaiseOnResult(fail_results=1)
+    offs = _write_current(
+        tmp_path, [_spawn(1), _init(), _text("Hello"), _result()]
+    )
+    cur_path = tmp_path / ".stream_cursor.json"
+    relay = _make_relay(tmp_path, cur_path, rec, [])
+    relay.on_turn_event = handler
+
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="driver callback boom"):
+        await relay.run()
+
+    # The closed turn is durable: checkpoint past the result, marker pending.
+    cur = StreamCursor.load(cur_path)
+    assert cur.current["offset"] == offs[-1]
+    assert cur.result_event_pending == {"subtype": "success"}
+    sends_before, edits_before = len(rec.sends), len(rec.edits)
+
+    relay2 = _make_relay(tmp_path, cur_path, rec, [])
+    relay2.on_turn_event = handler
+    await relay2.run()
+
+    # Event delivered on recovery; marker cleared; nothing re-posted.
+    assert ("result", {"subtype": "success"}) in handler.events
+    assert len(rec.sends) == sends_before
+    assert len(rec.edits) == edits_before
+    cur = StreamCursor.load(cur_path)
+    assert cur.result_event_pending is None
+
+
+async def test_result_event_marker_cleared_on_successful_delivery(tmp_path):
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [_spawn(1), _init(), _text("Hi"), _result()])
+    cur_path = tmp_path / ".stream_cursor.json"
+    await _make_relay(tmp_path, cur_path, rec, events).run()
+
+    assert ("result", {"subtype": "success"}) in events
+    assert sum(1 for k, _p in events if k == "result") == 1
+    assert StreamCursor.load(cur_path).result_event_pending is None
+
+
+async def test_pending_result_event_from_crash_delivers_without_replay(tmp_path):
+    """#334 crash window: process died between the closed-turn save (marker
+    set) and delivery. The next cold run delivers exactly the pending event
+    and does not replay the closed turn's narration."""
+    rec, events = Recorder(), []
+    offs = _write_current(tmp_path, [_spawn(1), _init(), _text("Hello"), _result()])
+    cur_path = tmp_path / ".stream_cursor.json"
+    seg = _ident(os.path.join(str(tmp_path), "current"))
+    StreamCursor(
+        turn_start={"segment": seg, "offset": offs[-1]},
+        current={"segment": seg, "offset": offs[-1]},
+        message_ids=[],
+        result_event_pending={"subtype": "success"},
+    ).save(cur_path)
+
+    await _make_relay(tmp_path, cur_path, rec, events).run()
+
+    assert ("result", {"subtype": "success"}) in events
+    assert rec.sends == []  # closed turn: nothing replayed onto the wire
+    assert StreamCursor.load(cur_path).result_event_pending is None
+
+
+def test_stream_cursor_legacy_load_defaults_pending_none(tmp_path):
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({
+        "turn_start": {"segment": [1, 2], "offset": 3},
+        "current": {"segment": [1, 2], "offset": 3},
+        "message_ids": [],
+    }), encoding="utf-8")
+    assert StreamCursor.load(path).result_event_pending is None
