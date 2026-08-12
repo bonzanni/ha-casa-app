@@ -1219,6 +1219,34 @@ def _build_specialist_options(
         mcp_servers = {}
     skills = "all" if getattr(cfg.tools, "skills", "all") == "all" else None
 
+    # Compute the CLI-enforced disallowed set ONCE so the effective log line
+    # below and the returned options cannot drift (Sol r1 S2): a tool that is
+    # both granted and disallowed is denied at the CLI, so the log must not
+    # count it as effectively usable.
+    disallowed_tools = _with_subagent_spawn_disallowed(cfg.tools.disallowed)
+
+    # #459: the boot-time `agent_capabilities` line (specialist_registry.py)
+    # reports only the role.yaml DECLARATION — for a specialist whose tools
+    # arrive via its owned plugin's server-level grant it structurally says
+    # `declared_tool_count=0`, which is indistinguishable from a specialist
+    # that got nothing. The effective set exists only HERE, after grants and
+    # env-withholding are applied, and it is re-resolved fresh per delegation,
+    # so emit it per build. Same never-break contract as the boot line.
+    try:
+        _denied = set(disallowed_tools)
+        effective_tools = sorted(t for t in allowed_tools if t not in _denied)
+        logger.info(
+            "agent_capabilities_effective role=%s model=%s tool_count=%d "
+            "tools=%s mcp_servers=%s plugins=%s",
+            _role, getattr(cfg, "model", "?"),
+            len(effective_tools), effective_tools,
+            sorted(mcp_servers.keys()),
+            sorted(rp.name for rp in resolution.plugins),
+        )
+    except Exception:  # noqa: BLE001 — an observability line must never break the build
+        logger.warning("agent_capabilities_effective log failed for role=%s",
+                       _role, exc_info=True)
+
     # Plan 2, Task N1b Step 22: prefer the compiled prompt bundle (an
     # installed component's activated binding — agent_loader's
     # activate_binding_for_config seam) over the legacy _compose_prompt
@@ -1238,7 +1266,7 @@ def _build_specialist_options(
         cli_path=CLAUDE_CLI_PATH,
         system_prompt=resolved_system_prompt,
         allowed_tools=allowed_tools,
-        disallowed_tools=_with_subagent_spawn_disallowed(cfg.tools.disallowed),
+        disallowed_tools=disallowed_tools,
         permission_mode=cfg.tools.permission_mode or "acceptEdits",
         max_turns=cfg.tools.max_turns,
         mcp_servers=mcp_servers if mcp_servers else {},
@@ -5320,7 +5348,14 @@ async def set_reminder(args: dict) -> dict:
         # Imperative on purpose: a scheduled turn may legitimately produce no
         # output, so delivery must not be left to the model's judgement. This
         # is the morning-briefing silence lesson (v0.132.0) applied.
-        "prompt": f'Send this exact message via {channel}: "{text}"',
+        # #511: the scheduled turn's closing text is ALSO delivered to the
+        # channel (agent.py), so without the `<silent/>` convention every fire
+        # costs a second message ("Sent."). The send stays first and
+        # imperative — worst case on a disobedient model is the old double
+        # message (fail-noisy), never a lost reminder (fail-silent).
+        "prompt": (f'Send this exact message via {channel}: "{text}". '
+                   "After the send, output the sentinel `<silent/>` and "
+                   "nothing else."),
     }
 
     try:

@@ -690,7 +690,14 @@ class TestSpecialistBootCapabilities:
         cap = [r.getMessage() for r in caplog.records
                if "agent_capabilities" in r.getMessage() and "role=finance" in r.getMessage()]
         assert cap, "no agent_capabilities line logged for the enabled specialist at load"
-        assert "model=" in cap[0] and "tool_count=" in cap[0]
+        # #459: the boot line reports the role.yaml DECLARATION, not the
+        # effective set (which is composed per delegation), so its fields must
+        # say so — `tool_count=0` beside `enabled=True` read as a specialist
+        # that got nothing, when its tools arrive via its owned plugin's
+        # server-level grant.
+        assert "model=" in cap[0] and "declared_tool_count=" in cap[0]
+        assert "declared_tools=" in cap[0] and "declared_mcp_servers=" in cap[0]
+        assert " tool_count=" not in cap[0]
 
     async def test_disabled_specialist_gets_no_capabilities_line(self, tmp_path, caplog, monkeypatch):
         import logging

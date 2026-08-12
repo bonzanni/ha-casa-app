@@ -171,11 +171,18 @@ class SpecialistRegistry:
             # log in Agent.__init__ — specialists never build an Agent (they
             # run via _build_specialist_options), so without this they had no
             # boot-time capability oracle for post-install verification.
+            # #459: this line reports the role.yaml DECLARATION only — the
+            # effective set (server-level grants from the owned plugin, env
+            # withholding) is composed per delegation and logged there as
+            # `agent_capabilities_effective` (tools.py). Fields say
+            # `declared_*` so `declared_tool_count=0` cannot be read as "the
+            # specialist got no tools".
             try:
                 allowed = list(getattr(cfg.tools, "allowed", []) or [])
                 logger.info(
-                    "agent_capabilities role=%s model=%s enabled=%s tool_count=%d "
-                    "tools=%s mcp_servers=%s",
+                    "agent_capabilities role=%s model=%s enabled=%s "
+                    "declared_tool_count=%d declared_tools=%s "
+                    "declared_mcp_servers=%s",
                     cfg.role, getattr(cfg, "model", "?"),
                     getattr(cfg, "enabled", "?"),
                     len(allowed), sorted(allowed),
