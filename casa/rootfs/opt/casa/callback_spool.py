@@ -89,9 +89,10 @@ MAX_COLLECT = 64             # consumer-held `.collect-*` inodes per plugin
 REMOVAL_RECORD_PRUNE_S = 7 * 24 * 3600     # a NOTED removal record is kept a
 #                              week (the operator can still ask about it),
 #                              then pruned
-REMOVAL_RECORD_MAX_AGE_S = 30 * 24 * 3600  # hard bound, noted or not: a
-#                              permanently unconfigured notifier must not
-#                              make removal records immortal (spec §10)
+REMOVAL_RECORD_MAX_AGE_S = 30 * 24 * 3600  # hard bound, NOTED records only
+#                              (#532: un-noted = a notice still owed — never
+#                              age-pruned; accumulation is bounded by the
+#                              plugin-removal rate)
 MARKER_STATE_MAX_BYTES = 1 << 16   # a ready.json / index entry read back for
 #                              the reconcile payload compare is tiny (a few
 #                              hundred bytes); anything past this small cap is
@@ -3479,14 +3480,17 @@ class CallbackSpool:
     def prune_removal_records(self, *, now: float) -> int:
         """Retire spent removal records; returns how many were removed.
 
-        Two clocks, both required (spec §10): a NOTED record goes at
-        ``noted_ts + REMOVAL_RECORD_PRUNE_S`` — the operator has had the
-        notice and a week to ask about it — and ANY record goes at
-        ``ts + REMOVAL_RECORD_MAX_AGE_S``, so a permanently unconfigured
-        notifier cannot make un-noted records immortal (that configuration's
-        note is undeliverable by definition). The two are independent: a
-        record created weeks ago but noted yesterday is inside its retention
-        window and stays.
+        Two clocks, NOTED records only (#532, design r2): a noted record
+        goes at ``noted_ts + REMOVAL_RECORD_PRUNE_S`` — the operator has
+        had the notice and a week to ask about it — or at the
+        ``ts + REMOVAL_RECORD_MAX_AGE_S`` hard bound. An UN-noted record
+        is never age-pruned: it is the only evidence an operator notice is
+        still owed, and the honest notify seam means "un-noted" now
+        reflects real non-delivery (a 30-day outage window used to delete
+        the note at boot seconds before the channel came up). Un-noted
+        accumulation is bounded by the plugin-removal rate, an
+        operator-action rate. A record created weeks ago but noted
+        yesterday is inside its retention window and stays.
 
         Staging residue (a crash between stage and rename) ages out here on
         the shared ``TEMP_TTL_S`` clock; it is not counted, being nobody's
@@ -3515,10 +3519,10 @@ class CallbackSpool:
                            if marker.state is MarkerState.PRESENT else None)
                     if rec is None:
                         continue             # not this method's to judge
-                    noted_age = (now - rec["noted_ts"] if rec["noted"]
-                                 else None)
-                    spent = (noted_age is not None
-                             and noted_age > REMOVAL_RECORD_PRUNE_S)
+                    if not rec["noted"]:
+                        continue             # un-noted = a notice still owed
+                    noted_age = now - rec["noted_ts"]
+                    spent = noted_age > REMOVAL_RECORD_PRUNE_S
                     aged = now - rec["ts"] > REMOVAL_RECORD_MAX_AGE_S
                     if not spent and not aged:
                         continue

@@ -119,6 +119,43 @@ def test_verify_missing_secret(tmp_path):
     assert r["secrets"][0]["status"] == "unresolved"
 
 
+def test_verify_unresolved_secret_carries_a_named_reason(tmp_path):
+    """#533: a plainly-unresolved required secret used to append NO named
+    reason, so the target row — and therefore the health report and the
+    operator DM — degraded to the generic `not_ready`. The named
+    `env_unresolved` code is what lets health carry the variable names."""
+    store = tmp_path / "store"
+    e = entry("probe", ["specialist:finance"])
+    mk_artifact(store, "probe", e["artifact_id"],
+                mcp_servers={"s": {"env": {"K": "${MY_API_KEY}"}}})
+    mk_registry(tmp_path, [e])
+    r = _verify(tmp_path)
+    assert r["ready"] is False
+    assert "env_unresolved" in r["reasons"]
+    assert "env_unresolved" in r["targets"][0]["reasons"]
+
+
+def test_env_unresolved_detail_is_bounded_and_names_only_unresolved():
+    """#533: the health detail names the unresolved vars (bounded at 5,
+    like the withhold WARNING) — never resolved or unprovisioned rows,
+    and never a value."""
+    from tools import _env_unresolved_detail
+    verify = {"secrets": [
+        {"var": "A_KEY", "status": "unresolved"},
+        {"var": "B_KEY", "status": "resolved"},
+        {"var": "C_KEY", "status": "unprovisioned"},
+    ]}
+    assert _env_unresolved_detail(verify) == "A_KEY"
+
+    many = {"secrets": [
+        {"var": f"V{i:02d}", "status": "unresolved"} for i in range(7)]}
+    detail = _env_unresolved_detail(many)
+    assert detail == "V00, V01, V02, V03, V04 +2 more"
+
+    assert _env_unresolved_detail({"secrets": []}) is None
+    assert _env_unresolved_detail({}) is None
+
+
 def test_verify_reload_required_is_never_green(tmp_path, monkeypatch):
     """THE incident assertion: a constructed agent still bound to the OLD
     artifact after a registry update must report reload_required — verify can

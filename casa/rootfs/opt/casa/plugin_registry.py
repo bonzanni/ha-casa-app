@@ -97,6 +97,11 @@ class PluginIssue:
     # its targets to an unscopable invalid one). Not part of the health
     # fingerprint (spec 3.10 uses the first five fields only).
     scoped_targets: tuple[str, ...] = ()
+    # #533: free-form, BOUNDED elaboration of reason_code for the health
+    # report and operator DM (e.g. the unresolved env var NAMES — never a
+    # value). Not part of the fingerprint either, so a detail change never
+    # re-alerts.
+    detail: "str | None" = None
 
 
 @dataclass

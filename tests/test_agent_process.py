@@ -2087,6 +2087,31 @@ class TestScheduledSilence:
 
         assert stub.create_on_token.call_count == 1
 
+    async def test_event_wake_does_not_create_on_token(self, tmp_path):
+        """#534 (Sol design r1): an event wake dispatches as CHANNEL_IN, so
+        without this gate its narration STREAMS to the operator chat before
+        the final-text sentinel suppression can run. Event-wake turns are
+        buffered exactly like SCHEDULED ones; the `synthetic` marker is
+        ingress-unforgeable (INV-EV-006)."""
+        agent = _make_agent(tmp_path, role="assistant")
+        stub = _StubChannel()
+        agent._channel_manager.register(stub)
+
+        msg = BusMessage(
+            type=MessageType.CHANNEL_IN,
+            source="telegram",
+            target="assistant",
+            content="wake",
+            channel="telegram",
+            context={"chat_id": "1", "synthetic": "event_wake"},
+        )
+        with patch.object(
+            agent, "_process", AsyncMock(return_value="Event processed."),
+        ):
+            await agent.handle_message(msg)
+
+        assert stub.create_on_token.call_count == 0
+
     async def test_silent_sentinel_suppresses_send(self, tmp_path):
         """Spec §3.2 B.2: text == '<silent/>' (after strip) must
         suppress channel.send / finalize_stream and produce no

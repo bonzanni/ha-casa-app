@@ -285,3 +285,38 @@ def test_concurrent_regeneration_keeps_just_marked_fingerprint(tmp_path, monkeyp
     assert fp_x in (final.get("notified_fingerprints") or []), (
         "a concurrent regeneration must not erase a delivered-notification marker"
     )
+
+
+# ---------------------------------------------------------------------------
+# #533 — issue detail: reported, DM'd, never fingerprinted
+# ---------------------------------------------------------------------------
+
+
+def test_issue_detail_reported_but_never_fingerprinted(tmp_path):
+    """#533: `detail` carries the unresolved var NAMES into the report row.
+    It is additive — §3.10's fingerprint hashes the five structured fields
+    only, so a wording/detail change never re-alerts."""
+    a = PluginIssue("probe", None, "verify", "env_unresolved",
+                    detail="A_KEY, B_KEY")
+    b = PluginIssue("probe", None, "verify", "env_unresolved")
+    assert plugin_health.fingerprint(a) == plugin_health.fingerprint(b)
+
+    rep = plugin_health.write_report(
+        issues=[a], warnings=[], path=tmp_path / "h.json",
+        registry_path=tmp_path / "registry.json")
+    assert rep["issues"][0]["detail"] == "A_KEY, B_KEY"
+
+    rep2 = plugin_health.write_report(
+        issues=[b], warnings=[], path=tmp_path / "h2.json",
+        registry_path=tmp_path / "registry.json")
+    assert "detail" not in rep2["issues"][0]
+
+
+def test_first_contact_notice_names_the_detail(tmp_path):
+    p = tmp_path / "h.json"
+    plugin_health.write_report(
+        issues=[PluginIssue("probe", None, "verify", "env_unresolved",
+                            detail="MY_API_KEY")],
+        warnings=[], path=p, registry_path=tmp_path / "registry.json")
+    notice = plugin_health.first_contact_notice("assistant", path=p)
+    assert notice is not None and "MY_API_KEY" in notice

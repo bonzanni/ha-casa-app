@@ -2971,6 +2971,30 @@ def _setup_ack_lookup_union(identity: str) -> str | None:
     return None
 
 
+async def operator_notify(channel_manager: Any, text: str) -> None:
+    """The operator-notice seam shared by the setup/callback/event episode
+    workers (#532): deliver *text* to the operator DM, or RAISE.
+
+    Pre-fix this was a best-effort closure over ``send_response``, which
+    log-and-drops while the PTB app is not started (`is_ready`,
+    telegram.py) — a FALSE SUCCESS that made every notify-then-mark
+    caller mark a dropped notice as delivered, permanently losing it
+    (observed live: an exhaustion notice dispatched one second after
+    "event-spool initialised", before the channel started). Raising makes
+    delivery OBSERVED: the workers' removal/exhaustion scans leave the
+    record un-noted and retry, and their advisory ``_note`` paths degrade
+    to honest logging."""
+    import trigger_consent as _tc
+    ch = channel_manager.get("telegram") if channel_manager else None
+    if ch is None or not getattr(ch, "is_ready", True):
+        raise RuntimeError("operator notify: telegram channel not ready")
+    # Address the operator DM explicitly (falls back to the channel's
+    # default chat — also the operator — when identity is unresolvable).
+    op = _tc.operator_identity(ch)
+    ctx = {"chat_id": op[0]} if op is not None else {}
+    await ch.send_response(text, ctx)
+
+
 async def notify_plugin_health(
     channel_manager: Any,
     *,
@@ -3002,7 +3026,14 @@ async def notify_plugin_health(
     entries = [e for e in (list(report.get("issues", []))
                            + list(report.get("warnings", [])))
                if e.get("fingerprint") in fp_set]
-    parts = [f"{e.get('name')} ({e.get('reason_code')})" for e in entries[:5]]
+    def _describe(e: dict) -> str:
+        # #533: carry the detail (e.g. the unresolved var names) into the
+        # DM — the 0.153.0 promise is that health NAMES the missing values.
+        if e.get("detail"):
+            return f"{e.get('name')} ({e.get('reason_code')}: {e['detail']})"
+        return f"{e.get('name')} ({e.get('reason_code')})"
+
+    parts = [_describe(e) for e in entries[:5]]
     listed = ", ".join(parts) + (f" +{len(entries) - 5} more"
                                  if len(entries) > 5 else "")
     content = (
@@ -4447,15 +4478,7 @@ async def main() -> None:
         return await bus.send_checked(msg) == "accepted"
 
     async def _setup_notify(text: str) -> None:
-        import trigger_consent as _tc
-        ch = channel_manager.get("telegram") if channel_manager else None
-        if ch is None:
-            return
-        # Address the operator DM explicitly (falls back to the channel's
-        # default chat — also the operator — when identity is unresolvable).
-        op = _tc.operator_identity(ch)
-        ctx = {"chat_id": op[0]} if op is not None else {}
-        await ch.send_response(text, ctx)
+        await operator_notify(channel_manager, text)
 
     def _setup_secrets_ready(plugin: str) -> bool:
         # #423: hold a settled episode until every env var the plugin's
@@ -4604,6 +4627,14 @@ async def main() -> None:
 
     # 12. Start all channels
     await channel_manager.start_all()
+
+    # #532: the event worker's boot pass (13d'' above) ran BEFORE the
+    # channels started, so any operator notice it owed (an exhausted
+    # delivery due at boot, a removal note) failed against a not-yet-ready
+    # channel. Re-kick now that sends can land — prompt delivery on the
+    # common path; the 5-minute event_spool_recovery job is the backstop
+    # for every later unready window (e.g. a supervisor rebuild).
+    _evep.kick_all()
 
     # 12a. E-F (v0.30.0): engagement-feature setup is now wired into
     # TelegramChannel._rebuild() as a final step after `self._app = app`.

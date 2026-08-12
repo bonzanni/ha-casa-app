@@ -119,6 +119,17 @@ _next_due: "float | None" = None
 # on the next pass regardless.
 _pending_hints: "set[tuple[str, str]]" = set()
 
+# #532 (design r1-r3): sent-but-mark-failed keys. A notice whose SEND was
+# confirmed but whose durable ``noted`` mark then failed must never be sent
+# again — later scans retry ONLY the mark. A key clears ONLY on a confirmed
+# successful mark (the enumeration APIs fail closed to empty, so "proven
+# absence" is unprovable — a stale key for a vanished record lingers
+# harmlessly: exhaustion keys carry ``gen`` and removal keys are uuid
+# filenames, so no NEW record is ever blocked). In-memory on purpose: lost
+# to a crash, costing at most one duplicate DM per crash (the contract).
+_exhaustion_sent_unmarked: "set[tuple[str, str, str, int]]" = set()
+_removal_sent_unmarked: "set[str]" = set()
+
 
 def configure(*, dispatch, resolve_registry_entry, get_routed, get_installed,
               get_registry_valid, get_acks, get_spool, get_emitters=None,
@@ -143,6 +154,11 @@ def configure(*, dispatch, resolve_registry_entry, get_routed, get_installed,
     _notify_operator = notify_operator
     _sleep = sleep
     _next_due = None
+    # #532: the sent-keys are per-wiring state (a reconfigure means a new
+    # notify seam — a fresh boot's empty sets cost at most the documented
+    # one-duplicate-per-crash, never a lost notice).
+    _exhaustion_sent_unmarked.clear()
+    _removal_sent_unmarked.clear()
     if _kick is None:
         _kick = asyncio.Event()
 
@@ -205,8 +221,15 @@ def _wake_instruction(emitter: str, event: str, subscriber: str,
     if delegate_ack:
         return (f'"{base} Do NOT call ack_event yourself — the agent '
                 'delegating this task to you handles the ack."')
+    # #534: the reminder-delivery convention (#511) — imperative, so
+    # delivery is never left to the model's judgement; worst case on a
+    # disobedient model is one stray message (fail-noisy), never a lost
+    # result (anything operator-relevant goes through tools, per above).
     return (f"{base} When done, call "
-            f"ack_event(emitter='{emitter}', event='{event}', token='{token}').")
+            f"ack_event(emitter='{emitter}', event='{event}', token='{token}'). "
+            "After the ack, output the sentinel `<silent/>` and nothing "
+            "else — this is a background wake; any other closing text "
+            "lands in the operator's chat.")
 
 
 def _delegated_ack_postscript(emitter: str, event: str, token: str) -> str:
@@ -228,7 +251,9 @@ def _delegated_ack_postscript(emitter: str, event: str, token: str) -> str:
         f"specialist) must call ack_event(emitter='{emitter}', "
         f"event='{event}', token='{token}') yourself — the specialist is "
         "not guaranteed casa-framework tool access, so the ack is your "
-        "responsibility, not theirs.")
+        "responsibility, not theirs. After the ack, output the sentinel "
+        "`<silent/>` and nothing else — this is a background wake; any "
+        "other closing text lands in the operator's chat.")
 
 
 def _is_specialist_only_target(entry: dict) -> bool:
@@ -412,12 +437,17 @@ async def recovery(*, boot: bool = True) -> None:
 
 
 async def _worker_pass() -> None:
-    """One delivery pass: sweep -> fold -> due-scan -> dispatch -> removal
-    notes -> recompute the wake. Under
+    """One delivery pass: sweep -> notice scans -> fold -> due-scan ->
+    dispatch -> notice scans again -> recompute the wake. Under
     :data:`event_spool.ROUTING_UNAVAILABLE` this does part-TTL housekeeping
-    ONLY (via ``sweep``'s own sentinel degrade) and skips fold/due-scan/
-    dispatch entirely — no destructive action of any kind runs against an
-    unauthoritative routed view."""
+    AND the notice scans ONLY (design R3-1: the removal and
+    unnoted-exhaustion scans are notify/mark-only — they read settled
+    records and flip ``noted``, no fold/dispatch/destructive action, so
+    decision 26's sentinel, which bounds DESTRUCTIVE and forward-moving
+    work, deliberately does not gate them: an owed operator notice never
+    waits on routing health) and skips fold/due-scan/dispatch entirely —
+    no destructive action of any kind runs against an unauthoritative
+    routed view."""
     global _next_due
     _pending_hints.clear()
     spool = _get_spool() if _get_spool is not None else None
@@ -443,6 +473,11 @@ async def _worker_pass() -> None:
         raise
     except Exception:  # noqa: BLE001 — one bad emitter must not stop the pass
         logger.exception("event-spool sweep failed")
+
+    # Notice scans run BEFORE the sentinel gate (R3-1) so a boot pass that
+    # finds routing unavailable still delivers the notices already owed.
+    await _process_removal_records(spool)
+    await _process_unnoted_exhaustions(spool)
 
     if routed is event_spool.ROUTING_UNAVAILABLE or not registry_valid:
         # No fold, no due-scan, no dispatch — the sentinel (or an invalid
@@ -477,7 +512,9 @@ async def _worker_pass() -> None:
                 "event nudge failed unexpectedly (emitter=%s event=%s)",
                 emitter, evt)
 
-    await _process_removal_records(spool)
+    # Second exhaustion scan: an exhaustion minted by THIS pass's dispatch
+    # loop is noticed this pass when the channel is up (design R3-1).
+    await _process_unnoted_exhaustions(spool)
 
     try:
         _next_due = await asyncio.to_thread(_scan_next_due, spool)
@@ -731,8 +768,11 @@ async def _accept(emitter: str, event: str, subscriber: str,
                   rec: dict) -> None:
     """Record a bus-ACCEPTED dispatch: one budget unit spent and the next
     slot computed off the ladder, OR — the last unit — a single ATOMIC
-    ``done/exhausted/noted=true`` transition, note sent only after that
-    write is confirmed durable (mark-then-notify, at-most-once). A False
+    ``done/exhausted/noted=false`` transition (#532: terminalize UN-noted;
+    the worker pass's unnoted-exhaustion scan owns the notice,
+    notify-after-mark at-least-once — pre-fix this wrote ``noted=true``
+    and sent through the failure-swallowing ``_note``, so a notice
+    dropped in the boot bring-up window was lost forever). A False
     return (a concurrent ack raced this write) is skipped silently — the
     record stays acked, exactly as it should."""
     spool = _get_spool() if _get_spool is not None else None
@@ -748,18 +788,12 @@ async def _accept(emitter: str, event: str, subscriber: str,
             done["nudges"] = nudges
             done["last_nudge_ts"] = now
             done["deferrals"] = 0
-            done["noted"] = True
+            done["noted"] = False
             return done
 
-        ok = await asyncio.to_thread(
+        await asyncio.to_thread(
             spool.update_delivery_nudge, emitter, event, subscriber,
             rec["gen"], _exhaust)
-        if ok:
-            await _note(
-                f"Subscriber '{subscriber}': the event delivery nudge for "
-                f"'{event}' from '{emitter}' went unanswered after "
-                f"{event_attempts.MAX_NUDGES} attempts. Ask the agent to "
-                "check its pending event deliveries.")
         return
 
     def _advance(r: dict) -> dict:
@@ -798,14 +832,19 @@ async def _defer(emitter: str, event: str, subscriber: str,
 
 
 # ---------------------------------------------------------------------------
-# removal records — NOTIFY-then-mark (at-least-once)
+# notice scans — NOTIFY-then-mark (at-least-once, duplicates bounded by the
+# sent-but-mark-failed keys; see the module-state comment on those sets)
 # ---------------------------------------------------------------------------
 
 
 async def _process_removal_records(spool: Any) -> None:
     """Turn every un-noted removal record into one operator note. NOT
     routed through the failure-swallowing :func:`_note` seam — delivery
-    must be OBSERVED; only a confirmed send marks the record."""
+    must be OBSERVED; only a confirmed send marks the record. A record
+    whose send succeeded but whose mark failed is keyed in
+    :data:`_removal_sent_unmarked`: later passes retry ONLY the mark
+    (design r2: without the key, every 5-minute recovery kick would
+    re-send the same DM for as long as the mark keeps failing)."""
     try:
         records = await asyncio.to_thread(spool.list_removal_records)
     except asyncio.CancelledError:
@@ -815,23 +854,30 @@ async def _process_removal_records(spool: Any) -> None:
         records = []
     for filename, rec in records:
         if rec.get("noted"):
+            _removal_sent_unmarked.discard(filename)
             continue
-        if _notify_operator is None:
-            continue                      # undeliverable: leave it un-noted
+        if filename not in _removal_sent_unmarked:
+            if _notify_operator is None:
+                continue                  # undeliverable: leave it un-noted
+            try:
+                await _notify_operator(_removal_text(rec))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — un-noted, retried next pass
+                logger.exception("event removal note failed")
+                continue
         try:
-            await _notify_operator(_removal_text(rec))
+            marked = await asyncio.to_thread(spool.mark_removal_noted,
+                                             filename, now=_now())
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — un-noted, retried next pass
-            logger.exception("event removal note failed")
-            continue
-        try:
-            await asyncio.to_thread(spool.mark_removal_noted, filename,
-                                    now=_now())
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — one duplicate DM, never a lost one
+        except Exception:  # noqa: BLE001 — sent; only the mark is retried
             logger.exception("event removal record mark failed")
+            marked = False
+        if marked:
+            _removal_sent_unmarked.discard(filename)
+        else:
+            _removal_sent_unmarked.add(filename)
     try:
         await asyncio.to_thread(spool.prune_removal_records, now=_now())
     except asyncio.CancelledError:
@@ -840,10 +886,74 @@ async def _process_removal_records(spool: Any) -> None:
         logger.exception("event removal record prune failed")
 
 
+def _exhaustion_text(emitter: str, event: str, subscriber: str) -> str:
+    return (f"Subscriber '{subscriber}': the event delivery nudge for "
+            f"'{event}' from '{emitter}' went unanswered after "
+            f"{event_attempts.MAX_NUDGES} attempts. Ask the agent to "
+            "check its pending event deliveries.")
+
+
+def _select_unnoted_exhaustions(spool: Any) -> "list[tuple[str, str, str, int]]":
+    """Every ``done/exhausted/noted=False`` delivery record, deterministic
+    order. Blocking (directory scans) — called via ``asyncio.to_thread``."""
+    out: list = []
+    for emitter in spool.emitters():
+        for evt in spool.events(emitter):
+            for subscriber, rec in sorted(spool.list_deliveries(
+                    emitter, evt).items()):
+                if (rec.get("status") == "done"
+                        and rec.get("outcome") == "exhausted"
+                        and rec.get("noted") is False):
+                    out.append((emitter, evt, subscriber, rec["gen"]))
+    return out
+
+
+async def _process_unnoted_exhaustions(spool: Any) -> None:
+    """#532: deliver the budget-exhaustion notice for every terminalized
+    record still owing one, notify-after-mark: ``_accept`` terminalizes
+    ``noted=False``; only a CONFIRMED send flips ``noted`` (via
+    ``mark_delivery_noted``, the done-record carve-out), retried every
+    pass until it lands. A send-succeeded-mark-failed record is keyed in
+    :data:`_exhaustion_sent_unmarked` and only the mark is retried."""
+    try:
+        owed = await asyncio.to_thread(_select_unnoted_exhaustions, spool)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("event exhaustion scan failed")
+        owed = []
+    for emitter, evt, subscriber, gen in owed:
+        key = (emitter, evt, subscriber, gen)
+        if key not in _exhaustion_sent_unmarked:
+            if _notify_operator is None:
+                continue                  # undeliverable: stays owed
+            try:
+                await _notify_operator(_exhaustion_text(emitter, evt,
+                                                        subscriber))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — un-noted, retried next pass
+                logger.exception("event exhaustion note failed")
+                continue
+        try:
+            marked = await asyncio.to_thread(
+                spool.mark_delivery_noted, emitter, evt, subscriber, gen)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — sent; only the mark is retried
+            logger.exception("event exhaustion mark failed")
+            marked = False
+        if marked:
+            _exhaustion_sent_unmarked.discard(key)
+        else:
+            _exhaustion_sent_unmarked.add(key)
+
+
 async def _note(text: str) -> None:
-    """Best-effort operator note — for the ADVISORY notes only (no-target,
-    budget exhaustion). The removal note does NOT come through here: it
-    needs observed delivery."""
+    """Best-effort operator note — for the ADVISORY no-target note only
+    (its durable backstop is the ``event_no_target`` health row). The
+    removal AND exhaustion notes do NOT come through here: they need
+    observed delivery (#532)."""
     if _notify_operator is None:
         return
     try:

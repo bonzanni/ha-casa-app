@@ -474,7 +474,9 @@ async def test_sequencer_passes_env_pending_owned_plugin_real_verify(
     assert v["ready"] is False                       # config-pending (secret unresolved)
     assert v["secrets"][0]["var"] == "MTG_API_KEY"
     assert v["secrets"][0]["status"] == "unresolved"
-    assert v["reasons"] == []                         # NO integrity/binding failure
+    # #533: config-pending now carries its NAMED readiness code — still no
+    # integrity/binding failure code.
+    assert v["reasons"] == ["env_unresolved"]
     # ...yet the sequencer does NOT compensate — pending-config is verified-legal.
     assert seq["not_ready"] == []
     assert seq["ok"] is True

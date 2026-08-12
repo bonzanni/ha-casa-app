@@ -8597,6 +8597,21 @@ async def _plugin_tools_guard():
 _PLUGIN_HEALTH_PATH = "/data/plugin-health.json"
 
 
+def _env_unresolved_detail(verify: dict) -> "str | None":
+    """#533: the BOUNDED unresolved-var-name list for a health issue's
+    detail — first five names (the withhold WARNING's bounding idiom),
+    ``+N more`` beyond that, never a value. ``None`` when nothing is
+    unresolved (unprovisioned rows have their own reason and are not
+    repeated here)."""
+    unresolved = sorted({s.get("var") for s in verify.get("secrets") or []
+                         if s.get("status") == "unresolved" and s.get("var")})
+    if not unresolved:
+        return None
+    shown = unresolved[:5]
+    extra = len(unresolved) - len(shown)
+    return ", ".join(shown) + (f" +{extra} more" if extra > 0 else "")
+
+
 def _regenerate_plugin_health(extra_issues: list) -> None:
     """§3.10/R2-4 + Sol #13 + D2/B3 (v0.74.0): rewrite the health report from
     the CURRENT resolver state PLUS the RUNTIME verify state of EVERY
@@ -8634,12 +8649,13 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
     seen = {(getattr(e, "name", None), getattr(e, "target", None),
              getattr(e, "reason_code", None)) for e in extra_issues}
     runtime_issues: list = []
-    def _add(name, target, reason):
+    def _add(name, target, reason, detail=None):
         key = (name, target, reason)
         if key not in seen:
             seen.add(key)
             runtime_issues.append(PluginIssue(
-                name=name, target=target, stage="verify", reason_code=reason))
+                name=name, target=target, stage="verify", reason_code=reason,
+                detail=detail))
 
     if reg.valid:
         for entry in reg.entries:
@@ -8651,17 +8667,25 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
                 # surface it, never silently drop the plugin from the report.
                 _add(name, None, "verify_exception")
                 continue
+            # #533: the env_unresolved rows carry the var NAMES so the
+            # report and DM can honor the 0.153.0 "names the missing
+            # values" promise.
+            env_detail = _env_unresolved_detail(verify)
             rows = verify.get("targets") or []
             for row in rows:
                 if not row.get("ready"):
-                    _add(name, row.get("target"),
-                         (row.get("reasons") or ["not_ready"])[0])
+                    reason = (row.get("reasons") or ["not_ready"])[0]
+                    _add(name, row.get("target"), reason,
+                         detail=env_detail if reason == "env_unresolved"
+                         else None)
             # Sol round-3 H13: a top-level not-ready with NO target rows (e.g. an
             # unassigned plugin with a missing secret / mcp_invalid) would else be
             # erased — surface it against the plugin itself.
             if verify.get("ready") is not True and not rows:
                 for reason in (verify.get("reasons") or ["not_ready"]):
-                    _add(name, None, reason)
+                    _add(name, None, reason,
+                         detail=env_detail if reason == "env_unresolved"
+                         else None)
     # #211: a registered plugin targeting a NOT-yet-installed specialist is
     # the documented plugin-before-specialist install order — WARNING-class
     # ("target_pending"), never a blocking issue. RECOMPUTABLE like the
@@ -9034,7 +9058,13 @@ async def _reload_and_verify_targets(name: str, targets: list,
     return result
 
 
-_BUNDLE_NONBLOCKING_REASONS = frozenset({"not_ready", "setup_env_unprovisioned"})
+_BUNDLE_NONBLOCKING_REASONS = frozenset({
+    "not_ready", "setup_env_unprovisioned",
+    # #533: the named form of what previously surfaced as the generic
+    # "not_ready" row fallback — an unresolved secret is config-pending
+    # readiness, a verified-legal terminal state, never a rollback cause.
+    "env_unresolved",
+})
 
 
 def _bundle_binding_blocked(v: dict) -> bool:
@@ -9048,7 +9078,8 @@ def _bundle_binding_blocked(v: dict) -> bool:
     (registry_invalid / not_registered / entry-issue reason codes /
     artifact_missing / artifact_invalid / corrupt_artifact / mcp_invalid /
     mcp_command_missing / mcp_reserved_env) — never secrets/tools readiness,
-    which surface separately as the generic 'not_ready' row fallback — PLUS
+    which surface separately as `env_unresolved` (#533; previously the
+    generic 'not_ready' row fallback) — PLUS
     one readiness code, `setup_env_unprovisioned` (#488): on a fresh install
     of a `casa.setupProvides` plugin, unprovisioned is the documented normal
     state (#429 — the plugin must load unprovisioned for its own setup tool
@@ -11321,6 +11352,13 @@ def _tool_verify_plugin_state(
         unprovisioned.append(var)
     if unprovisioned:
         reasons.append("setup_env_unprovisioned")
+    # #533: a plainly-unresolved required secret gets a NAMED reason —
+    # pre-fix nothing was appended here, so the target rows (and therefore
+    # the health report and the operator DM) degraded to the generic
+    # "not_ready" while the variable names sat unread in secrets_status.
+    if any(s["status"] == "unresolved" and s.get("var")
+           for s in secrets_status):
+        reasons.append("env_unresolved")
 
     tools_ready = all(t["status"] == "ready" for t in tools_status)
     # "unprovisioned" deliberately does NOT count as ready.

@@ -51,7 +51,10 @@ and exits successfully whatever it finds. One broken plugin costs that plugin. T
 report's operator-DM dedup (fingerprints already notified) is a read-merge-write over one
 file from both the event loop and worker threads; a process-wide lock serializes it, and the
 regeneration reads the previous report inside that critical section, so a regeneration
-racing a just-delivered notification cannot erase its marker and re-alert.
+racing a just-delivered notification cannot erase its marker and re-alert. A held-back
+plugin's unresolved variables reach the report and the DM by NAME (a bounded `detail` field
+on the issue row — names only, never values, and never part of the dedup fingerprint, so a
+detail change alone never re-alerts).
 
 **Approval is per call, not per install, and it does not survive a restart.** A protected
 tool call by a resident or specialist consumes a single-use grant bound to a specific

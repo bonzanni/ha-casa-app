@@ -701,6 +701,11 @@ class Agent:
         # only the final text is sent. This prevents Telegram leaking
         # acknowledgement-style first tokens into the chat before the
         # prompt's silence check completes (spec 2026-04-28 §3.2 B.1).
+        # #534: event wakes dispatch as CHANNEL_IN, so without the same
+        # buffering their narration streams to the operator chat before
+        # the sentinel gate below can suppress it. The `synthetic` marker
+        # is ingress-unforgeable (INV-EV-006) — external input can never
+        # opt itself out of streaming.
         on_token: OnTokenCallback | None = None
         channel = self._channel_manager.get(msg.channel) if msg.channel else None
 
@@ -708,6 +713,7 @@ class Agent:
             channel is not None
             and hasattr(channel, "create_on_token")
             and msg.type != MessageType.SCHEDULED
+            and (msg.context or {}).get("synthetic") != "event_wake"
         ):
             on_token = channel.create_on_token(msg.context)
 
