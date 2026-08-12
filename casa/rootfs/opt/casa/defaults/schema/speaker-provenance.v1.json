@@ -5,7 +5,7 @@
   "additionalProperties": false,
   "required": ["speaker_kind", "role_id", "persona_id", "persona_version", "display_name", "binding_digest", "user_peer", "user_id"],
   "properties": {
-    "speaker_kind": {"enum": ["user", "resident", "specialist", "executor", "system"]},
+    "speaker_kind": {"enum": ["user", "resident", "specialist", "executor", "system", "automation"]},
     "role_id": {"type": ["string", "null"], "maxLength": 128, "pattern": "^(resident|specialist|executor):[a-z0-9][a-z0-9-]{0,31}$"},
     "persona_id": {"type": ["string", "null"], "maxLength": 192, "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?/[a-z0-9][a-z0-9-]*$"},
     "persona_version": {"type": ["string", "null"], "maxLength": 64, "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
@@ -18,6 +18,7 @@
     {"if": {"properties": {"speaker_kind": {"enum": ["resident", "specialist"]}}}, "then": {"required": ["role_id", "persona_id", "persona_version", "binding_digest"], "properties": {"role_id": {"type": "string"}, "persona_id": {"type": "string"}, "persona_version": {"type": "string"}, "binding_digest": {"type": "string"}, "user_peer": {"type": "null"}, "user_id": {"type": "null"}}}},
     {"if": {"properties": {"speaker_kind": {"const": "executor"}}}, "then": {"properties": {"role_id": {"type": "string", "pattern": "^executor:"}, "persona_id": {"type": "null"}, "persona_version": {"type": "null"}, "binding_digest": {"type": "null"}, "user_peer": {"type": "null"}, "user_id": {"type": "null"}}}},
     {"if": {"properties": {"speaker_kind": {"const": "user"}}}, "then": {"properties": {"role_id": {"type": "null"}, "persona_id": {"type": "null"}, "persona_version": {"type": "null"}, "binding_digest": {"type": "null"}, "user_peer": {"type": "string"}}}},
-    {"if": {"properties": {"speaker_kind": {"const": "system"}}}, "then": {"properties": {"role_id": {"type": "null"}, "persona_id": {"type": "null"}, "persona_version": {"type": "null"}, "binding_digest": {"type": "null"}, "user_peer": {"type": "null"}, "user_id": {"type": "null"}}}}
+    {"if": {"properties": {"speaker_kind": {"const": "system"}}}, "then": {"properties": {"role_id": {"type": "null"}, "persona_id": {"type": "null"}, "persona_version": {"type": "null"}, "binding_digest": {"type": "null"}, "user_peer": {"type": "null"}, "user_id": {"type": "null"}}}},
+    {"if": {"properties": {"speaker_kind": {"const": "automation"}}}, "then": {"properties": {"role_id": {"type": "null"}, "persona_id": {"type": "null"}, "persona_version": {"type": "null"}, "binding_digest": {"type": "null"}, "display_name": {"type": "null"}, "user_peer": {"type": "string"}, "user_id": {"type": "null"}}}}
   ]
 }

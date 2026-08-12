@@ -951,3 +951,33 @@ def test_schema_and_python_validator_agree_on_invalid_mappings() -> None:
         jsonschema.validate(instance=user_with_role_id, schema=schema)
     with pytest.raises(ValueError):
         validate_speaker_provenance(SpeakerProvenance(**user_with_role_id))
+
+
+def test_schema_accepts_automation_provenance() -> None:
+    """#349: `UserProvenance.from_origin` emits speaker_kind="automation" for
+    /invoke and webhook turns; the SHIPPED schema must accept what the runtime
+    validator accepts."""
+    schema = json.loads(_SCHEMA_PATH.read_text())
+    automation = SpeakerProvenance(
+        speaker_kind="automation", user_peer="webhook:github",
+    )
+    jsonschema.validate(instance=provenance_mapping(automation), schema=schema)
+
+
+def test_schema_and_python_validator_agree_on_invalid_automation() -> None:
+    """Automation identifies no person and no agent role: user_id,
+    display_name and the agent fields must be null in BOTH validators."""
+    schema = json.loads(_SCHEMA_PATH.read_text())
+    base = _raw_mapping(speaker_kind="automation", user_peer="webhook:github")
+
+    for field, value in (
+        ("user_id", "tg:12345"),
+        ("display_name", "Nicola"),
+        ("role_id", "resident:butler"),
+    ):
+        bad = dict(base)
+        bad[field] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(instance=bad, schema=schema)
+        with pytest.raises(ValueError):
+            validate_speaker_provenance(SpeakerProvenance(**bad))

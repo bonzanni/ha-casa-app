@@ -777,9 +777,23 @@ class Agent:
         # §3.10 first-contact notice: while plugin-health holds a blocking
         # issue affecting this agent's role, prepend a one-line notice to the
         # FIRST user-visible reply after boot (§3.10). The flag is consumed
-        # ONLY when a notice is actually delivered (Sol F6).
-        if text and channel is not None and self._health_notice_pending:
-            text = await self._maybe_prepend_health_notice(text)
+        # ONLY after the delivery below actually SUCCEEDS (#349) — a raise in
+        # send/finalize leaves it pending so the notice reappears next turn.
+        # Accepted residual: two concurrent first turns can now both prepend
+        # the notice (duplicate-benign beats lost-forever).
+        # A channel that never delivers its final text out-of-band (voice:
+        # `send()` is a documented no-op; the reply reaches the user only via
+        # the token stream, which has already flushed) must not receive —
+        # and must not consume — the notice; it stays pending for a channel
+        # that can actually show it (Sol/Terra diff r1).
+        health_notice_prepended = False
+        if (
+            text and channel is not None and self._health_notice_pending
+            and getattr(channel, "delivers_final_text", True)
+        ):
+            text, health_notice_prepended = (
+                await self._maybe_prepend_health_notice(text)
+            )
 
         if text and channel is not None:
             # Rich-text (v0.70.0) renders only genuine agent responses
@@ -808,6 +822,10 @@ class Agent:
                 await channel.turn_finished(msg.context)
             except Exception:  # noqa: BLE001
                 logger.exception("channel.turn_finished failed")
+
+        # #349: confirmed send — only now is the first-contact notice consumed.
+        if health_notice_prepended:
+            self._health_notice_pending = False
 
         if not text and error_kind is None and msg.type != MessageType.REQUEST:
             return None
@@ -1231,7 +1249,18 @@ class Agent:
                     "SDK resume failed (key=%s sid=%s); clearing and retrying "
                     "fresh", channel_key, last_resume["sid"],
                 )
-                await self._session_registry.clear_sdk_session(channel_key)
+                # #349: clear only while the entry still carries the sid that
+                # FAILED — this task released its per-key lock before this arm
+                # runs, so a concurrent same-key turn may have registered a
+                # valid newer session, and the retry below should resume THAT
+                # (the pool/bypass re-derive the decision from the registry).
+                # Residual (accepted): a concurrent turn that re-registered
+                # the SAME sid after successfully resuming it is still
+                # cleared; the CLI rejected that sid moments ago, so the cost
+                # is one fresh session, never a split conversation.
+                await self._session_registry.clear_sdk_session(
+                    channel_key, expected_sid=last_resume["sid"],
+                )
                 response_text, sdk_session_id, usage, used_resume, \
                     session_published = \
                     await retry_sdk_call(attempt, on_retry=self._log_retry)
@@ -1292,6 +1321,15 @@ class Agent:
                 turn_state=turn_state,
                 explain_draft=explain_draft,
             )
+
+            # #349: commit the memory-budget record only for a turn that
+            # completed END TO END (Sol r1: an SDK success whose registry
+            # persistence then raised is still a failed turn). Failed turns
+            # neither advance nor reset the overrun streak; a warm-reuse pool
+            # turn skipped _build_options and has nothing stashed.
+            _pending_budget = explain_draft.pop("pending_budget_record", None)
+            if _pending_budget is not None:
+                self._budget_tracker.record(*_pending_budget)
 
             return response_text or None
         finally:
@@ -1481,6 +1519,13 @@ class Agent:
         build identical options. Keys the channel-aware memory load on the
         ``is_fresh`` PARAMETER (the pool decides it under the entry lock — AR-3),
         not a locally-recomputed value. Returns the stderr-wrapped options."""
+        # #349: drop any budget stash a FAILED earlier attempt of this same
+        # logical turn left behind — cleared at entry (not at the stash site
+        # below) because the untrusted-webhook branch returns early and would
+        # otherwise carry a stale overrun into the post-success commit.
+        _draft = _explain_draft_var.get(None)
+        if _draft is not None:
+            _draft.pop("pending_budget_record", None)
         agent_home = (
             self.config.cwd
             or f"/config/agent-home/{self.config.role}"
@@ -1614,11 +1659,21 @@ class Agent:
         memory_blocks = "\n".join(parts)
 
         if memory_blocks:
-            self._budget_tracker.record(
+            # #349: recorded at end-of-turn, not here — `_build_options` runs
+            # once per SDK ATTEMPT (retry_sdk_call), and recording per attempt
+            # advanced the consecutive-overrun streak N times for one logical
+            # turn. Stash into the per-turn draft; `_process` commits exactly
+            # one record just before its successful return. When no draft is
+            # bound (a unit test calling this method directly), record now.
+            budget_record = (
                 f"{channel_key}-{self.config.role}",
                 estimate_tokens(memory_blocks),
                 self.config.memory.token_budget,
             )
+            if _draft is not None:
+                _draft["pending_budget_record"] = budget_record
+            else:
+                self._budget_tracker.record(*budget_record)
 
         # 3. System prompt = composed-prompt + runtime-injected blocks. For a
         # resident, the base is the immutable compiled projection selected for
@@ -2009,20 +2064,22 @@ class Agent:
             await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
         await self._pool.aclose()
 
-    async def _maybe_prepend_health_notice(self, text: str) -> str:
-        """§3.10 first-contact: prepend a one-line plugin-health notice (if the
-        report holds a blocking issue for this role) and consume the pending
-        flag ONLY on actual delivery (Sol F6) — a healthy first turn leaves the
-        flag set so a later-appearing issue still surfaces next turn."""
+    async def _maybe_prepend_health_notice(self, text: str) -> tuple[str, bool]:
+        """§3.10 first-contact: prepend a one-line plugin-health notice if the
+        report holds a blocking issue for this role. Returns ``(text,
+        prepended)``; the flag is NOT consumed here — the caller clears it
+        only after the channel delivery actually succeeds (#349: consuming at
+        production time lost the notice forever on a transient send failure).
+        A healthy first turn returns ``prepended=False`` so a later-appearing
+        issue still surfaces next turn (Sol F6)."""
         if not (text and self._health_notice_pending):
-            return text
+            return text, False
         import plugin_health
         notice = await asyncio.to_thread(
             plugin_health.first_contact_notice, self.config.role)
         if notice:
-            self._health_notice_pending = False
-            return f"{notice}\n\n{text}"
-        return text
+            return f"{notice}\n\n{text}", True
+        return text, False
 
     @property
     def plugin_binding_snapshot(self) -> "PluginBindingSnapshot | None":

@@ -323,19 +323,28 @@ def test_executor_resume_uses_recorded_paths_never_resolves(tmp_path,
 
 # --- §3.10 first-contact notice --------------------------------------------
 
-def test_first_contact_prepends_once_then_consumed(tmp_path, monkeypatch):
+def test_first_contact_prepends_and_reports_consumption(tmp_path, monkeypatch):
+    """#349: producing the notice no longer burns the flag — the caller
+    consumes it only after a CONFIRMED delivery. The method reports whether a
+    notice was prepended so the caller knows what to consume."""
     import plugin_health
     monkeypatch.setattr(plugin_health, "first_contact_notice",
                         lambda role: "PLUGIN-DEGRADED x (corrupt_artifact)")
     a = _make_agent(tmp_path)
 
     async def run():
-        out = await a._maybe_prepend_health_notice("hello")
+        out, prepended = await a._maybe_prepend_health_notice("hello")
+        assert prepended is True
         assert out.startswith("PLUGIN-DEGRADED")
         assert out.endswith("hello")
-        assert a._health_notice_pending is False
-        out2 = await a._maybe_prepend_health_notice("again")
-        assert out2 == "again"          # flag consumed → unprefixed
+        # NOT consumed here — delivery hasn't happened yet.
+        assert a._health_notice_pending is True
+        # Once the caller confirms delivery and clears the flag, the next
+        # turn is unprefixed.
+        a._health_notice_pending = False
+        out2, prepended2 = await a._maybe_prepend_health_notice("again")
+        assert prepended2 is False
+        assert out2 == "again"
 
     asyncio.run(run())
 
@@ -350,13 +359,14 @@ def test_first_contact_healthy_turn_leaves_flag_pending(tmp_path, monkeypatch):
     a = _make_agent(tmp_path)
 
     async def run():
-        out = await a._maybe_prepend_health_notice("healthy")
+        out, prepended = await a._maybe_prepend_health_notice("healthy")
         assert out == "healthy"
+        assert prepended is False
         assert a._health_notice_pending is True          # NOT consumed
         state["notice"] = "PLUGIN-DEGRADED y (reload_required)"
-        out2 = await a._maybe_prepend_health_notice("now")
+        out2, prepended2 = await a._maybe_prepend_health_notice("now")
         assert out2.startswith("PLUGIN-DEGRADED")
-        assert a._health_notice_pending is False
+        assert prepended2 is True
 
     asyncio.run(run())
 

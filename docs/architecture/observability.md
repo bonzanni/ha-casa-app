@@ -24,7 +24,9 @@ bytes. A log consumer configured from guesswork parses production output wrong.
 
 **Per-turn token telemetry is the cost signal.** Every SDK turn emits a token summary
 (input, output, cache counters), and a budget tracker warns — once per session — after
-three consecutive turns land above 110% of the memory-envelope budget. Those lines are the
+three consecutive completed turns land above 110% of the memory-envelope budget; a turn
+counts once however many times its SDK call was retried, and a failed turn counts not at
+all. Those lines are the
 principal evidence for cost, cache and context regressions; nothing else reports them.
 
 **Two different ids can describe one request, and a caller can supply one of them.** The
