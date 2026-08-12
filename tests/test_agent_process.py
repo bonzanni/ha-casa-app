@@ -2218,3 +2218,196 @@ async def test_webhook_missing_route_is_restricted_fail_closed(tmp_path):
         origin_var.reset(token)
     assert options.tools == []
     assert options.setting_sources == []
+
+
+# ---------------------------------------------------------------------------
+# #521 — setup-episode execution-outcome correlation
+# ---------------------------------------------------------------------------
+
+_SETUP_NS = "mcp__plugin_gm_gm__setup_gm"
+
+
+def _mk_init(sid: str, tools: list | None):
+    from claude_agent_sdk import SystemMessage as _SDKSystemMessage
+    data = {"session_id": sid}
+    if tools is not None:
+        data["tools"] = tools
+    try:
+        return _SDKSystemMessage(subtype="init", data=data)
+    except TypeError:
+        m = _SDKSystemMessage.__new__(_SDKSystemMessage)
+        m.subtype = "init"          # type: ignore[attr-defined]
+        m.data = data               # type: ignore[attr-defined]
+        return m
+
+
+def _setup_msg(chat_id: str, episode: str = "ep-521") -> BusMessage:
+    m = _msg("telegram", chat_id, text="[casa plugin setup] run it")
+    m.context.update({"synthetic": "plugin_setup", "setup_episode": episode})
+    return m
+
+
+@contextmanager
+def _capture_reports(monkeypatch=None):
+    """Patch plugin_setup_episodes.report_dispatch_outcome, capturing calls."""
+    import plugin_setup_episodes as pse
+    calls: list[tuple[str, dict]] = []
+
+    def _report(episode_id, **kw):
+        calls.append((episode_id, kw))
+
+    with patch.object(pse, "report_dispatch_outcome", _report):
+        yield calls
+
+
+class TestSetupOutcomeReport:
+    async def test_tool_ran_reports_used_ok(self, tmp_path):
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_init("sid-a", ["Read", _SETUP_NS]),
+            _mk_tool_use("t1", _SETUP_NS),
+            _mk_tool_result("t1", is_error=False, text="wired"),
+            _mk_assistant("Setup done."),
+            _mk_result("sid-a"),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            await agent._process(_setup_msg("op-1"))
+        assert calls == [("ep-521", {
+            "tools_used_ok": {_SETUP_NS},
+            "tools_attempted": {_SETUP_NS},
+            "available_tools": {"Read", _SETUP_NS},
+        })]
+
+    async def test_tool_absent_reports_availability_without_it(self, tmp_path):
+        # The observed #521 turn: zero tool uses, init lacking the tool.
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_init("sid-b", ["Read"]),
+            _mk_assistant("I do not seem to have that tool."),
+            _mk_result("sid-b"),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            await agent._process(_setup_msg("op-2"))
+        assert calls == [("ep-521", {
+            "tools_used_ok": set(),
+            "tools_attempted": set(),
+            "available_tools": {"Read"},
+        })]
+
+    async def test_no_init_reports_unknown_availability(self, tmp_path):
+        # Warm-reuse shape: no init replay for the turn.
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_assistant("done?"),
+            _mk_result("sid-c"),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            await agent._process(_setup_msg("op-3"))
+        assert calls[0][1]["available_tools"] is None
+
+    async def test_errored_call_is_attempted_not_used_ok(self, tmp_path):
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_init("sid-d", [_SETUP_NS]),
+            _mk_tool_use("t1", _SETUP_NS),
+            _mk_tool_result("t1", is_error=True, text="denied"),
+            _mk_assistant("It was denied."),
+            _mk_result("sid-d"),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            await agent._process(_setup_msg("op-4"))
+        assert calls[0][1]["tools_used_ok"] == set()
+        assert calls[0][1]["tools_attempted"] == {_SETUP_NS}
+
+    async def test_normal_turn_never_reports(self, tmp_path):
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_assistant("pong"),
+            _mk_result("sid-e"),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            await agent._process(_msg("telegram", "op-5"))
+        assert calls == []
+
+    async def test_raising_turn_still_reports(self, tmp_path):
+        # Terra design r1 S1: a turn whose every SDK attempt raises skips
+        # the tail of _process — the report must still run (finally).
+        agent = _make_agent(tmp_path)
+        boom = type("CLIConnectionError", (RuntimeError,), {})
+        ScriptedToolClient.reset(
+            *[[boom("attempt dead")] for _ in range(6)])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), patch_retry_sleep(), \
+                _capture_reports() as calls:
+            with pytest.raises(Exception):
+                await agent._process(_setup_msg("op-6"))
+        assert len(calls) == 1
+        assert calls[0][1]["tools_used_ok"] == set()
+
+    async def test_cancelled_turn_still_reports(self, tmp_path):
+        # Sol design r1 S1: role teardown cancels in-flight dispatches;
+        # the collected evidence must be reported before the cancel
+        # propagates, or the row rests dispatched with no re-arm path.
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_init("sid-f", [_SETUP_NS]),
+            _mk_tool_use("t1", _SETUP_NS),
+            _mk_tool_result("t1", is_error=False, text="wired"),
+            asyncio.CancelledError(),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            with pytest.raises(asyncio.CancelledError):
+                await agent._process(_setup_msg("op-7"))
+        assert len(calls) == 1
+        # Evidence collected before the cancel still counts (tool DID run).
+        assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
+
+    async def test_bypass_path_turn_reports_evidence(self, tmp_path):
+        # Sol diff r1 hardening: the per-turn BYPASS path (SCHEDULED turns
+        # never pool) must feed the same evidence accumulator — pins the
+        # bypass closure's turn_state["states"] append.
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_init("sid-h", [_SETUP_NS]),
+            _mk_tool_use("t1", _SETUP_NS),
+            _mk_tool_result("t1", is_error=False, text="wired"),
+            _mk_assistant("done"),
+            _mk_result("sid-h"),
+        ])
+        msg = _setup_msg("op-9")
+        msg.type = MessageType.SCHEDULED
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            await agent._process(msg)
+        assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
+
+    async def test_evidence_aggregates_across_sdk_attempts(self, tmp_path):
+        # Terra design r1 S2: the tool can run in an attempt that then
+        # fails retryably; the successful later attempt has no evidence.
+        # Aggregation across attempts must keep the used_ok fact.
+        agent = _make_agent(tmp_path)
+        boom = type("CLIConnectionError", (RuntimeError,), {})
+        ScriptedToolClient.reset(
+            [
+                _mk_init("sid-g", [_SETUP_NS]),
+                _mk_tool_use("t1", _SETUP_NS),
+                _mk_tool_result("t1", is_error=False, text="wired"),
+                boom("stream died"),
+            ],
+            [
+                _mk_assistant("(retried) done"),
+                _mk_result("sid-g2"),
+            ],
+        )
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), patch_retry_sleep(), \
+                _capture_reports() as calls:
+            await agent._process(_setup_msg("op-8"))
+        assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
+        assert calls[0][1]["available_tools"] == {_SETUP_NS}

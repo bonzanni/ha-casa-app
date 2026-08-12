@@ -131,6 +131,13 @@ _HEALTH_DECAY_S = 72 * 3600.0
 # goes stale so it can't retry forever. v0.161.0: settlement no longer resolves
 # the registry at all, so this bounds only the dispatch path.
 _MAX_RESOLVE_DEFERRALS = 10
+# #521: bounded re-dispatch budget for a RESIDENT-execution episode whose
+# dispatched turn produced no positive evidence of the setup tool (not run,
+# not listed by the session init). Each failure returns the row to `pending`
+# (gate stays released) and the next reload/reconcile kick re-dispatches;
+# past the bound the obligation fails with an operator note rather than
+# looping through operator-visible synthetic turns forever.
+_MAX_EXECUTION_RETRIES = 3
 # The only member states a round may carry. Anything else is unreadable, and an
 # unreadable state must never be counted as a DECISION — settlement requires a
 # positive "approved", it does not infer one from "neither open nor denied".
@@ -1236,9 +1243,23 @@ async def _run_episode(ep: dict) -> bool:
             await _sleep(_RETRY_BACKOFF_S[min(attempts - 1,
                                               len(_RETRY_BACKOFF_S) - 1)])
     if ok:
-        # Bus accepted — the agent's own reply reports the setup OUTCOME to
-        # the operator (disclosed: delivery, not result correlation).
-        _update_episode(ep["id"], status="dispatched", attempts=attempts)
+        # Bus accepted — the agent's own reply reports the setup RESULT to
+        # the operator; what Casa now also correlates (#521) is whether the
+        # dispatched session could run the tool at all. For a RESIDENT
+        # execution target the dispatched session itself must carry the
+        # namespaced tool, so record it for `report_dispatch_outcome`; a
+        # SPECIALIST target's courier session never carries it (the
+        # specialist builds options fresh per delegation), so no
+        # availability claim can be made about the dispatched session and
+        # delivery-only semantics stand there, disclosed.
+        # `last_error=""` clears a stale gate-hold message ("waiting for
+        # live trigger route") that used to survive into the terminal row.
+        exec_tier, _ = plugin_dispatch.execution_target(entry)
+        expected_tool = (
+            f"{sorted(entry.get('granted_tools') or [])[0]}__{tool}"
+            if exec_tier == "resident" else "")
+        _update_episode(ep["id"], status="dispatched", attempts=attempts,
+                        last_error="", expected_tool=expected_tool)
     else:
         # #451 r4 (Sol): a rejected dispatch HOLDS; it is not terminal. Bus
         # rejection is transient by nature — the commonest cause is that no
@@ -1254,6 +1275,99 @@ async def _run_episode(ep: dict) -> bool:
         _update_episode(ep["id"], attempts=0,
                         last_error="waiting to reach a target agent "
                         f"(last: {attempts} dispatch attempt(s) not accepted)")
+
+
+def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
+                            tools_attempted: set,
+                            available_tools: "set | None") -> None:
+    """#521: correlate a dispatched setup turn's outcome with its episode.
+
+    Called by the executing agent at the END of the turn that carried the
+    ``setup_episode`` context marker — on success, on a raising turn, and on
+    cancellation alike (the caller reports from a ``finally``). Evidence, in
+    precedence order over the row's recorded ``expected_tool``:
+
+    * ran (``tools_used_ok`` — at least one observed non-error result) ⇒ the
+      episode stays consumed; the agent's own reply reports the result.
+    * attempted with only error results (``tools_attempted`` without a
+      ``used_ok`` entry) ⇒ NOT run, even when the session init listed the
+      tool — a listed tool can still be categorically uncallable in the turn
+      (Sol design r1: a denied protected tool; an erroring server).
+    * not attempted, and the session init POSITIVELY listed the tool
+      (``available_tools``) ⇒ consumed — "consumed ⇒ the tool was available
+      to the turn" is the invariant, and an available tool the agent chose
+      not to call is its reply's business, not a dispatch failure.
+    * anything else — tool absent from the init list, or availability
+      UNKNOWN (``available_tools is None``: a warm-reuse session replays no
+      init; a turn that died before one) ⇒ NOT evidenced.
+
+    A non-evidenced turn returns the row to ``pending`` (its released gate is
+    kept — the verdict was earned) so the next kick re-dispatches: the
+    post-reload kick is the expected healer, exactly the sequence observed
+    live (#521: G-2 forced a ``casa_reload`` seconds after the toolless
+    turn). Deliberately NO self-kick here — an immediate retry would land in
+    the same broken warm session and burn the budget in seconds; the row is
+    meanwhile visible in health (``pending`` never decays). Past
+    :data:`_MAX_EXECUTION_RETRIES` the obligation fails with an operator
+    note (best-effort, scheduled — this function stays synchronous so a
+    cancelled turn's ``finally`` can call it).
+
+    Rows keyed away by id (superseded by a re-arm or a new artifact), rows
+    no longer ``dispatched``, and rows with no ``expected_tool`` (specialist
+    courier) are all no-ops. SYNCHRONOUS + yield-free; never raises."""
+    try:
+        data = _load()
+        row = next((e for e in data["episodes"]
+                    if e.get("id") == episode_id), None)
+        if row is None or row.get("status") != "dispatched":
+            return
+        expected = row.get("expected_tool") or ""
+        if not expected:
+            return
+        if expected in tools_used_ok:
+            return
+        if (expected not in tools_attempted and available_tools is not None
+                and expected in available_tools):
+            return
+        retries = int(row.get("execution_retries") or 0) + 1
+        plugin = row.get("plugin")
+        if retries >= _MAX_EXECUTION_RETRIES:
+            row.update({
+                "status": "failed", "execution_retries": retries,
+                "updated_ts": _now(),
+                "last_error": ("dispatched turn could not run the setup "
+                               f"tool ({retries} execution attempt(s))"),
+            })
+            _save(data)
+            logger.warning(
+                "setup episode %s failed (plugin=%s): no dispatched turn "
+                "evidenced the setup tool in %d attempts", episode_id,
+                plugin, retries)
+            note = (f"Plugin {plugin}: automatic setup was dispatched "
+                    f"{retries} times but the agent's session could not run "
+                    "the setup tool. Run it manually once the plugin's "
+                    "tools load.")
+            try:
+                asyncio.get_running_loop().create_task(_note(note))
+            except RuntimeError:
+                pass
+            return
+        row.update({
+            "status": "pending", "attempts": 0,
+            "execution_retries": retries, "updated_ts": _now(),
+            "last_error": ("dispatched turn could not run the setup tool "
+                           f"(execution retry {retries}/"
+                           f"{_MAX_EXECUTION_RETRIES}); the next agent "
+                           "reload re-dispatches"),
+        })
+        _save(data)
+        logger.info(
+            "setup episode %s returned to pending (plugin=%s): dispatched "
+            "turn did not evidence the setup tool (retry %d/%d)",
+            episode_id, plugin, retries, _MAX_EXECUTION_RETRIES)
+    except Exception:  # noqa: BLE001 — the turn path must never see a raise
+        logger.exception("setup-episode outcome report failed (id=%s)",
+                         episode_id)
 
 
 async def _note(text: str) -> None:

@@ -1084,6 +1084,10 @@ class Agent:
                     on_token, turn_guard,
                 )
                 turn_state["state"] = state
+                # #521: keep EVERY attempt's state — a setup tool can run in
+                # an attempt that then fails retryably, and the outcome
+                # report must aggregate evidence across attempts.
+                turn_state.setdefault("states", []).append(state)
 
                 async def _build(is_fresh, resume_sid):
                     # Recorded HERE too (not just via on_decision below) so a
@@ -1183,6 +1187,7 @@ class Agent:
                     on_token, turn_guard,
                 )
                 turn_state["state"] = state
+                turn_state.setdefault("states", []).append(state)
                 try:
                     await client.open()
                     async with client.lock:
@@ -1290,8 +1295,50 @@ class Agent:
 
             return response_text or None
         finally:
+            # #521: correlate a Casa-dispatched setup turn's outcome with its
+            # episode — in the finally so success, a raising turn, AND a
+            # cancelled one (role teardown cancels in-flight dispatches) all
+            # report. Synchronous + never raises by contract.
+            self._report_setup_outcome(msg, turn_state)
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
+
+    def _report_setup_outcome(self, msg: BusMessage,
+                              turn_state: dict) -> None:
+        """#521: feed a Casa-dispatched plugin-setup turn's tool evidence to
+        ``plugin_setup_episodes.report_dispatch_outcome`` so an episode is
+        never terminally consumed by a session that could not run the setup
+        tool. Evidence is aggregated across every SDK attempt of this bus
+        turn (``turn_state["states"]``): the union of attempted tool names,
+        the subset with at least one observed NON-error result, and the union
+        of init-listed tool surfaces (None when no attempt saw an init — a
+        warm-reuse session replays none, availability UNKNOWN). Runs from
+        ``_process``'s finally: SYNCHRONOUS, fail-safe, never raises."""
+        try:
+            if msg.context.get("synthetic") != "plugin_setup":
+                return
+            episode_id = str(msg.context.get("setup_episode") or "")
+            if not episode_id:
+                return
+            used_ok: set[str] = set()
+            attempted: set[str] = set()
+            available: set[str] | None = None
+            for state in turn_state.get("states") or []:
+                names = state.get("tool_names_by_id") or {}
+                results = state.get("tool_results") or {}
+                attempted.update(n for n in names.values() if n)
+                used_ok.update(
+                    n for i, n in names.items()
+                    if n and i in results and results[i] is not True)
+                tools = state.get("available_tools")
+                if tools is not None:
+                    available = (available or set()) | set(tools)
+            import plugin_setup_episodes
+            plugin_setup_episodes.report_dispatch_outcome(
+                episode_id, tools_used_ok=used_ok,
+                tools_attempted=attempted, available_tools=available)
+        except Exception:  # noqa: BLE001 — the reply is already produced
+            logger.exception("setup-episode outcome report failed")
 
     def _stash_explanation_draft(
         self, *, projection: str, bundle, system_prompt: str,
@@ -1803,6 +1850,12 @@ class Agent:
             "tool_names_by_id": {},
             "partial": "",
             "last_emitted": "",
+            # #521 setup-outcome evidence: the session's init tool list
+            # (None until an init SystemMessage arrives — a warm-reuse turn
+            # replays none, which reads as availability UNKNOWN) and each
+            # observed tool result's is_error, keyed like tool_names_by_id.
+            "available_tools": None,
+            "tool_results": {},
         }
 
         def _cum() -> str:
@@ -1859,6 +1912,16 @@ class Agent:
             try:
                 if isinstance(sdk_msg, SystemMessage):
                     sdk_logging.log_system_init(sdk_msg)
+                    # #521: the init event's `tools` is the session's actual
+                    # tool surface — the availability half of the setup-
+                    # episode outcome evidence. Only a positively parsed
+                    # list counts; anything else leaves UNKNOWN (None).
+                    if getattr(sdk_msg, "subtype", None) == "init":
+                        tools = (getattr(sdk_msg, "data", {}) or {}).get(
+                            "tools")
+                        if isinstance(tools, list):
+                            state["available_tools"] = [
+                                str(t) for t in tools]
                 elif isinstance(sdk_msg, AssistantMessage):
                     state["idx"] += 1
                     sdk_logging.log_assistant_message(sdk_msg, idx=state["idx"])
@@ -1882,6 +1945,12 @@ class Agent:
                                 block, idx=state["idx"],
                                 started_ms=state["started_ms"], name=name,
                             )
+                            # #521: record the result's error flag so the
+                            # setup-outcome report can tell "ran" from
+                            # "attempted but every result errored".
+                            state["tool_results"][
+                                getattr(block, "tool_use_id", "")
+                            ] = getattr(block, "is_error", None)
                 elif isinstance(sdk_msg, ResultMessage):
                     sdk_logging.log_turn_done(
                         sdk_msg, started_ms=state["started_ms"],
