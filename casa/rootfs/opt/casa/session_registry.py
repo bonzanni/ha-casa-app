@@ -269,7 +269,9 @@ class SessionRegistry:
             self._data.pop(channel_key, None)
             await self._save_locked()
 
-    async def clear_sdk_session(self, channel_key: str) -> None:
+    async def clear_sdk_session(
+        self, channel_key: str, expected_sid: object = _UNCONDITIONAL,
+    ) -> None:
         """Drop the ``sdk_session_id`` field for a key; keep other metadata.
 
         Used by the resume-failure recovery path in :mod:`agent` when
@@ -279,6 +281,13 @@ class SessionRegistry:
         age, and subsequent turns on the same key see an entry without
         a session id and start a fresh SDK conversation.
 
+        With ``expected_sid``, clear only while the entry still carries that
+        session id — like ``remove``, a newer registration (a concurrent
+        same-key turn that landed between the resume failure and this call)
+        is left intact instead of being silently dropped (#349, same
+        check-then-act family as #317/#353). Omitting the argument keeps the
+        unconditional behavior.
+
         No-op when the key does not exist, or when the entry has no
         ``sdk_session_id`` field (idempotent).
         """
@@ -286,6 +295,11 @@ class SessionRegistry:
             entry = self._data.get(channel_key)
             if entry is None:
                 return
+            if (
+                expected_sid is not _UNCONDITIONAL
+                and entry.get("sdk_session_id") != expected_sid
+            ):
+                return  # re-registered by a newer session; leave it alone
             if "sdk_session_id" in entry:
                 entry.pop("sdk_session_id", None)
                 await self._save_locked()

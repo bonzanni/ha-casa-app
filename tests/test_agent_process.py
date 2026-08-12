@@ -425,6 +425,114 @@ class TestResponseProvenanceRouting:
         assert stub.finalize_response_stream.call_count == 0
 
 
+class TestHealthNoticeDeliveryConfirmation:
+    """#349: the §3.10 first-contact notice flag is consumed only after the
+    channel delivery SUCCEEDS — a transient send failure must leave the
+    notice pending so it reappears on the next turn."""
+
+    def _agent_with_notice(self, tmp_path, monkeypatch, notice):
+        import plugin_health
+        monkeypatch.setattr(
+            plugin_health, "first_contact_notice", lambda role: notice,
+        )
+        agent = _make_agent(tmp_path, role="assistant")
+        stub = _StubTelegramChannel()
+        agent._channel_manager.register(stub)
+        return agent, stub
+
+    async def test_failed_delivery_keeps_notice_pending(
+        self, tmp_path, monkeypatch,
+    ):
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x (corrupt_artifact)",
+        )
+        stub.finalize_response_stream.side_effect = RuntimeError("channel down")
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            with pytest.raises(RuntimeError):
+                await agent.handle_message(_msg("telegram", "123", "hi"))
+
+        assert agent._health_notice_pending is True
+
+        # Channel recovers: the SAME notice is delivered on the next turn.
+        stub.finalize_response_stream.side_effect = None
+        with patch.object(agent, "_process", AsyncMock(return_value="again")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+
+        delivered = stub.finalize_response_stream.call_args[0][0]
+        assert delivered.startswith("PLUGIN-DEGRADED")
+        assert delivered.endswith("again")
+        assert agent._health_notice_pending is False
+
+    async def test_successful_delivery_consumes_notice_once(
+        self, tmp_path, monkeypatch,
+    ):
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x (corrupt_artifact)",
+        )
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0].startswith(
+            "PLUGIN-DEGRADED",
+        )
+        assert agent._health_notice_pending is False
+
+        with patch.object(agent, "_process", AsyncMock(return_value="second")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0] == "second"
+
+    async def test_healthy_turn_leaves_notice_pending(
+        self, tmp_path, monkeypatch,
+    ):
+        agent, stub = self._agent_with_notice(tmp_path, monkeypatch, None)
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+
+        assert stub.finalize_response_stream.call_args[0][0] == "hello"
+        assert agent._health_notice_pending is True
+
+    async def test_no_final_text_channel_leaves_notice_pending(
+        self, tmp_path, monkeypatch,
+    ):
+        """Sol/Terra diff r1: voice's `send()` is a documented no-op — its
+        final text is never delivered out-of-band, so a channel declaring
+        `delivers_final_text = False` must neither receive the notice nor
+        consume the flag; the notice waits for a deliverable channel."""
+        import plugin_health
+        monkeypatch.setattr(
+            plugin_health, "first_contact_notice",
+            lambda role: "PLUGIN-DEGRADED x (corrupt_artifact)",
+        )
+        agent = _make_agent(tmp_path, role="assistant")
+
+        class _StubVoiceChannel:
+            name = "voice"
+            delivers_final_text = False
+
+            def __init__(self):
+                self.send = AsyncMock()
+
+        stub = _StubVoiceChannel()
+        agent._channel_manager.register(stub)
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("voice", "scope-1", "hi"))
+
+        # Final text still flows (voice relays via the returned RESPONSE),
+        # but unprefixed, and the notice stays pending for a text channel.
+        assert stub.send.call_args[0][0] == "hello"
+        assert agent._health_notice_pending is True
+
+    async def test_real_voice_channel_declares_no_final_text(self):
+        """The gate reads `delivers_final_text` off the channel — pin that the
+        REAL VoiceChannel declares it, not just the test stub."""
+        from channels.voice.channel import VoiceChannel
+
+        assert VoiceChannel.delivers_final_text is False
+
+
 async def test_voice_channel_uses_voice_speaker_peer(tmp_path):
     # §4.3: the per-turn read no longer threads a user_peer (no ensure_session
     # / per-turn add_turn). The voice-speaker peer is carried into save_session
@@ -1227,6 +1335,105 @@ class TestTokenBudgetMonitoring:
         ]
         assert len(rows) == 1, [r.getMessage() for r in rows]
 
+    async def test_retried_turn_records_budget_once(self, tmp_path):
+        """#349: retry_sdk_call re-invokes _build_options per SDK attempt; the
+        budget streak must advance once per LOGICAL turn, not per attempt."""
+        FakeClient.reset()
+        FakeClient.failure_schedule = [asyncio.TimeoutError(), None]
+        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
+        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+
+        observed: list[tuple[str, int, int]] = []
+        agent._budget_tracker.record = (  # type: ignore[method-assign]
+            lambda *a: observed.append(a)
+        )
+
+        with patch("sdk_client_pool._default_make_client", FakeClient), \
+             patch_retry_sleep():
+            await agent._process(_msg("telegram", "123", "hi"))
+
+        assert FakeClient.attempts == 2
+        assert len(observed) == 1
+
+    async def test_failed_turn_records_no_budget(self, tmp_path):
+        """A turn that never succeeds must not advance (or reset) the streak."""
+        FakeClient.reset()
+        FakeClient.failure_schedule = [RuntimeError("non-retryable")]
+        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
+        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+
+        observed: list[tuple[str, int, int]] = []
+        agent._budget_tracker.record = (  # type: ignore[method-assign]
+            lambda *a: observed.append(a)
+        )
+
+        with patch("sdk_client_pool._default_make_client", FakeClient), \
+             patch_retry_sleep():
+            with pytest.raises(RuntimeError):
+                await agent._process(_msg("telegram", "123", "hi"))
+
+        assert observed == []
+
+    async def test_stale_stash_dropped_when_final_attempt_has_no_block(
+        self, tmp_path,
+    ):
+        """Terra r1 S2: attempt 1 assembles an oversized block and fails;
+        attempt 2 assembles NO memory block and succeeds. The successful turn
+        carried no budgeted context, so nothing may be recorded."""
+
+        class _SequenceOverlayMemory(FakeSemanticMemory):
+            def __init__(self, overlays):
+                super().__init__(overlay="", facts="")
+                self._overlays = list(overlays)
+
+            async def profile(self, bank):
+                self.profile_calls.append(bank)
+                return self._overlays.pop(0) if self._overlays else ""
+
+        FakeClient.reset()
+        FakeClient.failure_schedule = [asyncio.TimeoutError(), None]
+        sem = _SequenceOverlayMemory(["x" * 20000, ""])
+        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+
+        observed: list[tuple[str, int, int]] = []
+        agent._budget_tracker.record = (  # type: ignore[method-assign]
+            lambda *a: observed.append(a)
+        )
+
+        with patch("sdk_client_pool._default_make_client", FakeClient), \
+             patch_retry_sleep():
+            await agent._process(_msg("telegram", "123", "hi"))
+
+        assert FakeClient.attempts == 2
+        assert observed == []
+
+    async def test_budget_not_recorded_when_post_success_persist_fails(
+        self, tmp_path,
+    ):
+        """Sol r1 S2: the record commits only when the TURN completes — an SDK
+        success followed by a session-registry persistence failure is still a
+        failed turn and must not advance the streak."""
+        FakeClient.reset()
+        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
+        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+
+        observed: list[tuple[str, int, int]] = []
+        agent._budget_tracker.record = (  # type: ignore[method-assign]
+            lambda *a: observed.append(a)
+        )
+
+        async def _boom(*a, **kw):
+            raise RuntimeError("persist failed")
+
+        agent._session_registry.register = _boom  # type: ignore[method-assign]
+
+        with patch("sdk_client_pool._default_make_client", FakeClient), \
+             patch_retry_sleep():
+            with pytest.raises(RuntimeError):
+                await agent._process(_msg("telegram", "123", "hi"))
+
+        assert observed == []
+
     async def test_turn_tokens_log_carries_usage_fields(
         self, tmp_path, caplog,
     ):
@@ -1510,6 +1717,66 @@ class TestResumeResilience:
         entry = reg.get(build_scoped_session_key("voice", "butler", "probe-scope"))
         assert entry is not None
         assert "sdk_session_id" not in entry
+
+    async def test_recovery_clear_preserves_concurrent_registration(
+        self, tmp_path,
+    ):
+        """#349: the stale-resume recovery must clear the registry entry only
+        while it still carries the sid that FAILED. A concurrent same-key turn
+        that registered a NEW session between the failure and the clear keeps
+        its pointer, and the retry resumes that newer session instead of
+        splitting the conversation with a fresh one."""
+        from claude_agent_sdk import ProcessError
+
+        captured_resumes: list[str | None] = []
+
+        class _CapturingFakeClient(FakeClient):
+            def __init__(self, options):
+                captured_resumes.append(getattr(options, "resume", None))
+                super().__init__(options)
+
+        FakeClient.reset()
+        FakeClient.failure_schedule = [
+            ProcessError("Command failed with exit code 1", exit_code=1),
+            None,
+        ]
+
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        key = build_scoped_session_key("voice", "butler", "probe-scope")
+        await reg.register(
+            key, resident_role_id("butler"), "stale-sid-abc",
+            binding_digest=RESIDENT_DIGEST,
+            speaker_provenance=resident_prov("butler"),
+            user_provenance=STUB_USER_PROV,
+        )
+
+        agent = _make_agent_with_registry(reg, role="butler")
+
+        # Deterministic interleaving: a concurrent turn's register() lands
+        # after the resume failure but before the recovery's clear runs.
+        orig_clear = reg.clear_sdk_session
+
+        async def _racy_clear(channel_key, *args, **kwargs):
+            await reg.register(
+                channel_key, resident_role_id("butler"), "sid-NEW",
+                binding_digest=RESIDENT_DIGEST,
+                speaker_provenance=resident_prov("butler"),
+                user_provenance=STUB_USER_PROV,
+            )
+            await orig_clear(channel_key, *args, **kwargs)
+
+        reg.clear_sdk_session = _racy_clear  # type: ignore[method-assign]
+
+        with patch(
+            "sdk_client_pool._default_make_client", _CapturingFakeClient,
+        ), patch_retry_sleep():
+            text = await agent._process(_msg("voice", "probe-scope", "hi"))
+
+        assert text == "pong"
+        # First attempt resumed the stale sid; the retry after the declined
+        # clear resumes the CONCURRENT registration, not a fresh session.
+        assert captured_resumes[0] == "stale-sid-abc"
+        assert captured_resumes[1] == "sid-NEW"
 
     async def test_fallback_logs_warning(self, tmp_path, caplog):
         """A single WARNING with key + sid fires on fallback."""

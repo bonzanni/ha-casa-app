@@ -97,8 +97,10 @@ the channel's own serialization provide.
 **The model call fails transiently.** Retried with exponential backoff up to a small attempt
 limit. A retry hint from the server overrides the computed delay.
 
-**The session id is stale.** The stored session is cleared and the turn re-enters the normal
-fresh retry policy — up to the standard attempt limit, not a single extra try.
+**The session id is stale.** The stored session is cleared — but only while the registry
+entry still carries the id that failed, so a concurrent turn's newer registration survives
+and the retry resumes it — and the turn re-enters the normal fresh retry policy — up to the
+standard attempt limit, not a single extra try.
 
 **The pool cannot serve the turn.** It raises, and the turn creates its own client for this
 turn only.

@@ -38,6 +38,7 @@ def test_contract_rejects_altered_or_missing_reserved_tags() -> None:
             }
         ],
         "tier_checks": [],
+        "context_probe": {"sent": None, "recalled": None, "byte_equal": True},
     }
     try:
         assert_contract(report)
@@ -45,6 +46,40 @@ def test_contract_rejects_altered_or_missing_reserved_tags() -> None:
         assert "reserved tag changed" in str(exc)
     else:
         raise AssertionError("altered reserved tag was accepted")
+
+
+def test_contract_rejects_context_probe_mismatch() -> None:
+    """#349: `run_contract` records the context round-trip probe but
+    `assert_contract` never enforced it — a backend that drops or rewrites
+    retained context must FAIL the contract."""
+    report = {
+        "require_maximum_cases": False,
+        "items": [],
+        "tier_checks": [],
+        "context_probe": {
+            "sent": {"k": "v"},
+            "recalled": {"k": "rewritten"},
+            "byte_equal": False,
+        },
+    }
+    try:
+        assert_contract(report)
+    except AssertionError as exc:
+        assert "context" in str(exc)
+    else:
+        raise AssertionError("a dropped/rewritten context was accepted")
+
+
+def test_contract_requires_context_probe_present() -> None:
+    """A report missing the probe entirely must not pass silently."""
+    report = {
+        "require_maximum_cases": False,
+        "items": [],
+        "tier_checks": [],
+    }
+    import pytest
+    with pytest.raises((AssertionError, KeyError)):
+        assert_contract(report)
 
 
 def test_fixture_contains_unicode_and_maximum_length_cases() -> None:

@@ -94,6 +94,11 @@ def assert_contract(report: Mapping[str, object]) -> None:
         assert item["expected_tag_bytes"] <= 2746
     for check in report["tier_checks"]:
         assert check["actual_ids"] == check["expected_ids"]
+    # #349: the context round-trip probe was recorded but never enforced — a
+    # backend that drops or rewrites retained context must fail the contract.
+    assert report["context_probe"]["byte_equal"] is True, (
+        "retained context must round-trip byte-equal through recall"
+    )
 
 
 def run_contract(

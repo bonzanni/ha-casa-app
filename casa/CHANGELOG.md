@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.186.0] - 2026-08-12
+
+### Fixed
+
+- Recovering from a rejected session resume no longer discards a session
+  that a concurrent turn on the same conversation registered in the
+  meantime — the retry resumes that newer session instead of splitting the
+  conversation. (#349)
+- The one-time plugin-degradation notice prepended to the first reply after
+  boot is no longer lost when sending that reply fails — it reappears on
+  the next successful reply. (#349)
+- The memory-budget overrun warning ("three turns in a row over budget") is
+  no longer triggered early by transparent SDK retries: one turn now counts
+  once, and only when it completes. (#349)
+- The shipped speaker-provenance schema now accepts the `automation`
+  speaker kind that /invoke and webhook turns are recorded with, matching
+  the runtime validator. (#349)
+- The live Hindsight memory contract now fails when retained context does
+  not round-trip byte-equal through recall, instead of recording the probe
+  without enforcing it. (#349)
+
 ## [0.185.0] - 2026-08-12
 
 ### Fixed

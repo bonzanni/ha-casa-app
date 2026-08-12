@@ -211,6 +211,36 @@ class TestClearSdkSession:
         assert "sdk_session_id" not in data["voice:scope-a"]
         assert data["voice:scope-a"]["agent"] == "butler"
 
+    async def test_expected_sid_mismatch_declines(self, tmp_path):
+        """#349: a clear conditioned on the FAILED sid must leave a newer
+        registration (a concurrent turn's session) intact."""
+        path = str(tmp_path / "sessions.json")
+        reg = SessionRegistry(path)
+        await reg.register("voice:scope-a", "butler", "sid-NEW", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
+
+        await reg.clear_sdk_session("voice:scope-a", expected_sid="sid-OLD")
+
+        assert reg.get("voice:scope-a")["sdk_session_id"] == "sid-NEW"
+
+    async def test_expected_sid_match_clears(self, tmp_path):
+        path = str(tmp_path / "sessions.json")
+        reg = SessionRegistry(path)
+        await reg.register("voice:scope-a", "butler", "sid-123", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
+
+        await reg.clear_sdk_session("voice:scope-a", expected_sid="sid-123")
+
+        entry = reg.get("voice:scope-a")
+        assert entry is not None
+        assert "sdk_session_id" not in entry
+
+    async def test_expected_sid_on_missing_key_is_noop(self, tmp_path):
+        path = str(tmp_path / "sessions.json")
+        reg = SessionRegistry(path)
+
+        await reg.clear_sdk_session("voice:none", expected_sid="sid-1")
+
+        assert reg.get("voice:none") is None
+
 
 # ---------------------------------------------------------------------------
 # TestCrashSafety — H12: atomic write + tolerant load

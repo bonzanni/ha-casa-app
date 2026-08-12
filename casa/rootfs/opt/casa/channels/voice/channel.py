@@ -476,6 +476,12 @@ class VoiceChannel(Channel):
         if self._delivery is not None:
             await self._delivery.stop()
 
+    # Voice never delivers an agent's FINAL text out-of-band (send() below is
+    # a no-op) — agent.handle_message reads this to keep one-shot prepends
+    # (the §3.10 plugin-health notice) pending for a channel that can show
+    # them, instead of counting the no-op as a confirmed delivery (#349).
+    delivers_final_text = False
+
     async def send(self, message: str, context: dict) -> None:
         # Voice has no out-of-band send path — responses are delivered
         # inline on the request's transport. No-op for the ChannelManager's
