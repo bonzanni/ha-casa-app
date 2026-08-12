@@ -161,6 +161,39 @@ async def test_caller_supplied_reserved_keys_are_stripped():
 
 
 @pytest.mark.asyncio
+async def test_caller_supplied_cid_is_honored():
+    """#324: a caller-supplied context.cid must reach the BusMessage (the
+    documented "caller cid wins" contract) instead of being overwritten by
+    the middleware request cid."""
+    bus = _StubBus()
+    app = _make_app(bus)
+    async with TestClient(TestServer(app)) as client:
+        r = await _post_signed(
+            client, "/invoke/assistant",
+            {"prompt": "status", "context": {"cid": "workflow-42"}},
+        )
+        assert r.status == 200
+        assert bus.last_msg.context["cid"] == "workflow-42"
+
+
+@pytest.mark.asyncio
+async def test_blank_or_non_string_cid_falls_back_to_request_cid():
+    """A blank or non-string caller cid is replaced (never dispatched)."""
+    bus = _StubBus()
+    app = _make_app(bus)
+    async with TestClient(TestServer(app)) as client:
+        for bad in ("", "   ", 42, None):
+            r = await _post_signed(
+                client, "/invoke/assistant",
+                {"prompt": "status", "context": {"cid": bad}},
+            )
+            assert r.status == 200
+            cid = bus.last_msg.context.get("cid")
+            assert isinstance(cid, str) and cid.strip(), f"cid={cid!r} for input {bad!r}"
+            assert cid != bad
+
+
+@pytest.mark.asyncio
 async def test_invoke_fail_closed_403_when_no_secret():
     """Release A (spec A1): /invoke with webhook auth disabled (empty secret)
     returns 403 — the route is off, never an open arbitrary-prompt endpoint."""

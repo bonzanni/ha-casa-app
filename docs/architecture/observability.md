@@ -31,12 +31,10 @@ principal evidence for cost, cache and context regressions; nothing else reports
 
 **Two different ids can describe one request, and a caller can supply one of them.** The
 inbound header is validated to a strict shape. A correlation id supplied inside an invocation
-payload is *not* validated — though note that on the HTTP invoke route the ingress
-*overwrites* the payload's id with the request's, so turn and access log share one id there;
-the payload id survives only for callers that build an invocation message off the HTTP
-path, and today no production caller does. Where it survives, the lack of validation is
-deliberate, so an external system can thread its own
-identifier through, and only a missing or empty one is replaced. The consequence is worth
+payload is *not* validated. The lack of validation is deliberate, so an external system can
+thread its own identifier through; only a missing, empty or non-string payload id is
+replaced — on the HTTP invoke route with the request's own id, so turn and access log share
+one id exactly when the caller supplied none. The consequence is worth
 knowing: the value bound for the turn can be arbitrary caller text, and it may differ from
 the one on the HTTP access line for the same request.
 

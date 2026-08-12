@@ -2012,7 +2012,9 @@ def make_commit_size_guard_hook(*, max_files: int) -> HookCallback:
         # event loop. _git_porcelain_count stays a sync module-level function
         # so existing patch("hooks._git_porcelain_count", ...) tests still work.
         count = await asyncio.to_thread(_git_porcelain_count)
-        if count > max_files:
+        # #324: >= — the docstring's contract. At count == max_files another
+        # write would produce max_files+1 uncommitted files.
+        if count >= max_files:
             return _deny(
                 f"commit_size_guard: {count} files already uncommitted "
                 f"(max={max_files}). Call config_git_commit to stage your "
@@ -3097,6 +3099,61 @@ def make_engagement_permission_relay(
             and ``edit_perm_keyboard_outcome(*, topic_id, message_id, outcome)``.
         timeout_s: how long to wait for the operator before treating as deny.
     """
+    # #324: per-engagement tally of relay requests currently holding the
+    # topic 'awaiting'. Two gated tools can await verdicts concurrently;
+    # the first exit's r7-B3 restore must not repaint 'active' while the
+    # sibling's keyboard is still live. Entries are deleted at zero.
+    _pending_relays: dict[str, int] = {}
+    # Sol diff-r1/r2 (#324): unserialized state edits lose to wire ordering —
+    # whichever edit LANDS last wins, regardless of which tally state it was
+    # painted for (r1: a stale 'active' after a new relay's 'awaiting'; r2:
+    # the one-shot corrective 'awaiting' after the last exit's 'active').
+    # Cut the mechanism instead of sharpening it: every paint SERIALIZES on a
+    # per-engagement lock and reads the CURRENT tally under it, so the
+    # last-serialized paint always reflects the final tally and no
+    # corrective repaints exist. Locks are retained for the process lifetime
+    # (mirrors telegram's per-topic handler locks; popping one while a
+    # waiter holds it would fork the serialization domain).
+    _state_paint_locks: dict[str, asyncio.Lock] = {}
+    # Strong refs to in-flight shielded paints (broker _setup_tasks pattern):
+    # a caller-cancelled paint continues in the background and must not be
+    # garbage-collected mid-flight.
+    _paint_tasks: set = set()
+
+    async def _do_paint(eng_id: str) -> None:
+        lock = _state_paint_locks.setdefault(eng_id, asyncio.Lock())
+        async with lock:
+            state = (
+                "awaiting" if _pending_relays.get(eng_id, 0) > 0 else "active"
+            )
+            # Terra r3 (#347): FRESH status read — an engagement that
+            # terminalized mid-hook must not be repainted; that edit could
+            # land after the terminal-state edit and leave a closed topic
+            # showing green (or amber).
+            rec_now = engagement_registry.get(eng_id)
+            if getattr(rec_now, "status", None) != "active":
+                return
+            await telegram_channel.update_topic_state(
+                engagement_id=eng_id, new_state=state,
+            )
+
+    async def _paint_topic_state(eng_id: str, *, shielded: bool) -> None:
+        # Sol diff-r3 (#324): serialization orders paints but does not
+        # guarantee completion — a cancellation aborting the FINAL exit
+        # paint mid-await would strand the topic 'awaiting'. The EXIT paint
+        # therefore runs as a SHIELDED task (never cancelled itself; the
+        # caller's cancellation propagates while the paint completes in the
+        # background). The ENTRY paint stays cancellable ON PURPOSE: it is
+        # always healed by the shielded exit paint, and shielding it would
+        # let one wedged wire edit hold the serialization lock uncancellably
+        # and wedge every later paint for the engagement.
+        if not shielded:
+            await _do_paint(eng_id)
+            return
+        task = asyncio.ensure_future(_do_paint(eng_id))
+        _paint_tasks.add(task)
+        task.add_done_callback(_paint_tasks.discard)
+        await asyncio.shield(task)
 
     async def _hook(
         input_data: dict[str, Any],
@@ -3156,27 +3213,33 @@ def make_engagement_permission_relay(
         tool_name = input_data.get("tool_name", "")
         tool_input = input_data.get("tool_input") or {}
 
-        await telegram_channel.update_topic_state(
-            engagement_id=eng_id, new_state="awaiting",
-        )
         from verdict_broker import BROKER
 
-        # STATIC meta seeded ATOMICALLY at registration (F1 Sol r3 pattern —
-        # whichever party wins a same-request_id create race installs the
-        # complete metadata; register() only seeds meta on creation).
-        # message_id + finish_hook are set by the broker-owned setup task
-        # (r8-B3).
-        req, _created = BROKER.register(
-            namespace="permission", scope=eng_id, request_id=rid,
-            timeout_s=timeout_s,
-            meta={
-                "options": ["allow", "deny"],
-                "topic_id": rec.topic_id,
-                "operator_id": operator_id,
-            },
-        )
+        # #324: count this request BEFORE any await, and open the guarded
+        # block BEFORE the 'awaiting' paint — a cancel landing inside that
+        # edit previously ran no cleanup and stranded the topic 'awaiting'
+        # forever. Every request paints via the serialized painter (an
+        # idempotent edit; a 0->1-only paint would skip the paint when an
+        # earlier sibling is cancelled before its own edit lands); the
+        # painter itself decides awaiting/active from the CURRENT tally.
+        _pending_relays[eng_id] = _pending_relays.get(eng_id, 0) + 1
         outcome: dict[str, Any] = {}
-        try:  # r7-B3: whole lifecycle guarded — restore 'active' on any exit
+        try:  # r7-B3 + #324: whole lifecycle guarded, awaiting paint included
+            await _paint_topic_state(eng_id, shielded=False)
+            # STATIC meta seeded ATOMICALLY at registration (F1 Sol r3 pattern —
+            # whichever party wins a same-request_id create race installs the
+            # complete metadata; register() only seeds meta on creation).
+            # message_id + finish_hook are set by the broker-owned setup task
+            # (r8-B3).
+            req, _created = BROKER.register(
+                namespace="permission", scope=eng_id, request_id=rid,
+                timeout_s=timeout_s,
+                meta={
+                    "options": ["allow", "deny"],
+                    "topic_id": rec.topic_id,
+                    "operator_id": operator_id,
+                },
+            )
 
             # The keyboard post — a broker-owned SHIELDED setup task (r8-B3):
             # cancelling THIS hook never interrupts an in-flight Telegram post
@@ -3270,16 +3333,16 @@ def make_engagement_permission_relay(
         finally:
             # r7-B3: restore topic state on EVERY exit — post failure,
             # cancellation during post or await, or normal completion.
-            # Terra r3 (#347): gated on a FRESH status read — an engagement
-            # that terminalized mid-hook (the TERMINAL_REGISTRATION deny, or
-            # any exit racing the terminal sweep) must not be repainted
-            # ``active``; that edit could land AFTER the terminal-state edit
-            # and leave a closed topic showing green.
-            _rec_now = engagement_registry.get(eng_id)
-            if getattr(_rec_now, "status", None) == "active":
-                await telegram_channel.update_topic_state(
-                    engagement_id=eng_id, new_state="active",
-                )
+            # #324: drop this request from the tally, then paint through the
+            # serialized painter — it reads the post-decrement tally under
+            # the lock, so a sibling keyboard still awaiting its verdict
+            # keeps the topic 'awaiting' and the last exit paints 'active'.
+            _remaining = _pending_relays.get(eng_id, 1) - 1
+            if _remaining <= 0:
+                _pending_relays.pop(eng_id, None)
+            else:
+                _pending_relays[eng_id] = _remaining
+            await _paint_topic_state(eng_id, shielded=True)
         o = outcome.get("outcome")
         if o == "answered" and outcome.get("option_index") == 0:
             return {}

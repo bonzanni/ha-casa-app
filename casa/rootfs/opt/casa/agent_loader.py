@@ -529,12 +529,31 @@ def validate_config_repo(
         # would double-validate the materialized files and false-flag them.
         # executors/ is the deliberate exception and stays in the walk: its
         # hooks.yaml has no other schema gate.
-        if policy_lib is not None and "assistant" not in resident_dir_names:
-            errors.append(
-                "no enabled resident with role 'assistant' — Casa cannot boot "
-                "without a primary assistant (agents/assistant/ must exist and "
-                "declare role: assistant in runtime.yaml)"
-            )
+        if policy_lib is not None:
+            for slot in FIXED_RESIDENT_SLOTS:
+                if slot in resident_dir_names:
+                    continue
+                if slot == "assistant":
+                    errors.append(
+                        "no enabled resident with role 'assistant' — Casa "
+                        "cannot boot without a primary assistant "
+                        "(agents/assistant/ must exist and declare "
+                        "role: assistant in runtime.yaml)"
+                    )
+                else:
+                    # #324: boot's load_all_agents enforces the FULL fixed
+                    # resident set (Step 9) and raises LoadError when a slot
+                    # is missing — a commit deleting agents/butler/ must be
+                    # refused here too, or a warm `agents` reload fails until
+                    # config-sync/restart restores the tree. Stray EXTRA
+                    # resident dirs need no twin check: the replay loop above
+                    # already reports them (validate_role_shape rejects any
+                    # resident slot outside the fixed three).
+                    errors.append(
+                        f"missing resident agents/{slot}/ — boot enforces "
+                        f"the fixed resident set {FIXED_RESIDENT_SLOTS} and "
+                        f"fails to load without it"
+                    )
 
         # #338: boot registers every resident's triggers UNCAUGHT
         # (casa_core step 13b) — TriggerRegistry.register_agent raises

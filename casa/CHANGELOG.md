@@ -1,6 +1,41 @@
 # Changelog
 
-## [0.187.0] - 2026-08-12
+## [0.188.0] - 2026-08-12
+
+### Fixed
+
+- Messages sent into an engagement's Telegram topic now respect the
+  `TELEGRAM_RATE_PER_MIN` inbound rate limit (per topic, with a one-shot
+  "slow down" notice). Commands such as `/cancel` are exempt so a runaway
+  engagement can always be stopped. (#324)
+- The engagement workspace tree listing (`peek_engagement_workspace` with no
+  path) no longer follows symlinks: a link pointing outside the workspace
+  used to leak outside file and directory names. Symlinks are now reported
+  as their own entry type and never expanded. (#324)
+- When a spool write fails during a redirect's eviction, the rollback now
+  restores exactly the envelope that was evicted — previously it could
+  un-mark an unrelated queued notice and leave a spurious eviction notice
+  for a message that was never evicted. (#324)
+- A voice specialist job whose task, context and result are near their size
+  limits can now be continued: the internal continuation envelope is no
+  longer re-checked against the caller-facing context limit (its stored
+  components are bounded individually instead, with oversized prior results
+  truncated). (#324)
+- `/invoke` now honors a caller-supplied `context.cid` for trace
+  continuity, as documented — it was previously always overwritten with the
+  server-generated request id. (#324)
+- The engagement topic's state emoji now stays 🟡 while any permission
+  keyboard is awaiting a verdict: with two concurrent requests, the first
+  verdict no longer flips the topic back to 🟢 early, a cancellation during
+  the state edit no longer strands the topic on 🟡, and concurrent state
+  edits can no longer land out of order. (#324)
+- The commit-size guard now refuses a write at exactly the configured
+  `max_files` uncommitted-files limit, matching its documented contract
+  (the off-by-one allowed one file past the limit). (#324)
+- The pre-commit config validation gate now enforces the full fixed
+  resident set (assistant, butler, concierge), matching boot: a commit
+  deleting a non-assistant resident used to pass the gate and then fail the
+  next warm reload. (#324)
 
 ### Fixed
 

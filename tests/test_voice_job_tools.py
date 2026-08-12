@@ -947,6 +947,63 @@ async def test_continue_job_copies_private_backend_context_without_returning_it(
 
 
 @pytest.mark.asyncio
+async def test_max_size_parent_can_still_be_continued(tool_env):
+    """#324: the awaiting-input continuation wraps parent task+context+result
+    into an internal JSON envelope; re-checking that envelope against the
+    caller-facing 8000-char context bound made a valid near-cap parent
+    uncontinuable (input_too_large on a field the caller never wrote)."""
+    from specialist_limits import _MAX_CONTEXT_CHARS, _MAX_TASK_CHARS
+
+    await tool_env.add_job(
+        "job-big",
+        execution_state=ExecutionState.SUCCEEDED,
+        delivery_state=DeliveryState.READY,
+        terminal_at=time.time(),
+        expires_at=time.time() + 900,
+        task="T" * _MAX_TASK_CHARS,
+        context="C" * _MAX_CONTEXT_CHARS,
+        result=json.dumps(_structured_result(
+            status="needs_clarification",
+            spoken_summary="Which card do you mean?",
+            clarification="Which card do you mean?",
+            answer="A" * _MAX_CONTEXT_CHARS,
+        )),
+        awaiting_input=True,
+        continuable_until=time.time() + 900,
+    )
+
+    payload = tool_payload(await _call(
+        tools.continue_voice_job, voice_origin(), {"input": "the black one"},
+    ))
+    assert payload["status"] == "pending", payload
+
+
+@pytest.mark.asyncio
+async def test_continuation_envelope_truncates_an_oversized_prior_result(tool_env):
+    """The internal envelope skips the caller-facing bound, so its own
+    components must stay bounded: an outsized stored result is truncated
+    rather than shipped whole."""
+    await tool_env.add_job(
+        "job-huge",
+        execution_state=ExecutionState.SUCCEEDED,
+        delivery_state=DeliveryState.READY,
+        terminal_at=time.time(),
+        expires_at=time.time() + 900,
+        result="R" * 200_000,
+        awaiting_input=True,
+        continuable_until=time.time() + 900,
+    )
+
+    payload = tool_payload(await _call(
+        tools.continue_voice_job, voice_origin(), {"input": "go on"},
+    ))
+    assert payload["status"] == "pending", payload
+    child = tool_env.job_registry.get(payload["job_id"])
+    assert len(child.context) < 50_000
+    assert "truncated" in child.context
+
+
+@pytest.mark.asyncio
 async def test_continuation_via_resume_copies_creator_and_recaptures_executor(
     tool_env,
 ):

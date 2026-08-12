@@ -1610,6 +1610,42 @@ class TestRedirectLane:
         assert s._ordinary_count() == 9
         assert s._priority_count() == 1
 
+    async def test_eviction_rollback_restores_the_actual_victim(self, tmp_path):
+        """#324: the spool-write-failure rollback must un-mark the envelope it
+        actually evicted — matching by (tg_message_id, notice) restored the
+        wrong envelope when the victim's tg_message_id was None and an older
+        None-id pending notice existed."""
+        notices = _RecordNotice(ok=False)      # eviction notices fail → stay pending
+        s = _make_spool(tmp_path, notices=notices)
+        # Fill the ordinary lane; the newest (first victim) has no tg id.
+        for i in range(9):
+            await s.enqueue(f"m{i}", tg_message_id=100 + i)
+        await s.enqueue("victim-1", tg_message_id=None)
+        # First redirect evicts victim-1; its notice send fails, so it is
+        # retained EARLY in the list with notice="pending", tg_message_id=None.
+        assert await s.enqueue("STOP\nfirst") == "evicted_other(None)"
+        v1 = next(e for e in s._envelopes if e.text == "victim-1")
+        assert v1.notice == "pending" and v1.tg_message_id is None
+
+        # Refill the freed ordinary slot with a SECOND None-id message (newer).
+        await s.enqueue("victim-2", tg_message_id=None)
+
+        # Second redirect evicts victim-2, but the spool write fails.
+        real_persist = s._persist
+        def _failing_persist():
+            _failing_persist.calls += 1
+            if _failing_persist.calls == 1:
+                raise OSError("disk full")
+            return real_persist()
+        _failing_persist.calls = 0
+        s._persist = _failing_persist
+        assert await s.enqueue("STOP\nsecond") == "error"
+
+        v2 = next(e for e in s._envelopes if e.text == "victim-2")
+        assert v2.notice == "none", "the evicted victim was not rolled back"
+        assert v1.notice == "pending", (
+            "rollback un-marked an earlier envelope still owed its notice")
+
     async def test_priority_cap_drops_with_notice(self, tmp_path):
         from drivers.claude_code_driver import _PRIORITY_CAP_COPY
         notices = _RecordNotice()
