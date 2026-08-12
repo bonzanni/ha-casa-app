@@ -756,6 +756,12 @@ _SYNC_WAIT_TIMEOUT_S: float = 60.0
 # a resident; depth>=1 is a delegated turn. Cap at 1 to prevent chains.
 _MAX_DELEGATION_DEPTH: int = 1
 
+# #324: cap on the `previous_result` slice of the continue_voice_job
+# internal envelope (which is exempt from the caller-facing context bound —
+# see _prelaunch's `internal_context`). Stored results have no size
+# contract of their own, so the envelope bounds this component itself.
+_CONTINUATION_RESULT_CHARS: int = 16_000
+
 # A4: voice turn budget. Voice has no follow-up channel to deliver a LATER
 # completion notification on, so a synchronous specialist wait on voice is
 # bounded by the turn's own deadline (channels/voice/channel.py's
@@ -2704,6 +2710,7 @@ def _log_delegation_denial(caller_role: str, agent_name: str,
 async def _prelaunch(
     agent_name: str, origin: dict, mode: str,
     task_text: str = "", context_text: str = "",
+    internal_context: bool = False,
 ) -> tuple[str, Any, Any, "specialist_limits.Permit | None", dict | None]:
     """The single unified prelaunch pipeline for delegate_to_agent (spec A4).
 
@@ -2881,7 +2888,14 @@ async def _prelaunch(
                 f"{specialist_limits._MAX_TASK_CHARS}-char limit."
             ),
         })
-    if len(context_text) > specialist_limits._MAX_CONTEXT_CHARS:
+    # #324: `internal_context` marks a context Casa built itself from
+    # already-bounded stored fields (the continue_voice_job envelope) — the
+    # caller-facing bound does not apply to it (JSON escaping can expand a
+    # legitimately-bounded envelope past any summed-caps arithmetic; the
+    # builder bounds its own components instead). Caller-supplied context is
+    # always bounded.
+    if not internal_context and (
+            len(context_text) > specialist_limits._MAX_CONTEXT_CHARS):
         if _specialist_telemetry is not None:
             _specialist_telemetry.record_denial(agent_name, kind="input_too_large")
         return None, None, None, None, _result({
@@ -4968,11 +4982,18 @@ async def continue_voice_job(args: dict) -> dict:
 
     # The complete prior case/result travels backend-to-specialist only. The
     # tool result below contains opaque metadata, never this private envelope.
+    # #324: this envelope is internally built and bypasses the caller-facing
+    # context bound (`internal_context=True` below), so its own components
+    # must stay bounded: task/context were bounded at the parent's prelaunch,
+    # but a stored result has no size contract — truncate it here.
+    prev_result = parent.result
+    if isinstance(prev_result, str) and len(prev_result) > _CONTINUATION_RESULT_CHARS:
+        prev_result = prev_result[:_CONTINUATION_RESULT_CHARS] + "\n…[truncated]"
     private_context = json.dumps({
         "parent_job_id": parent.id,
         "original_task": parent.task,
         "original_context": parent.context,
-        "previous_result": parent.result,
+        "previous_result": prev_result,
     }, ensure_ascii=False, separators=(",", ":"))
 
     # #433: the canonical role is discarded here — this path already passes a
@@ -4985,6 +5006,7 @@ async def continue_voice_job(args: dict) -> dict:
         "async",
         continuation_input,
         private_context,
+        internal_context=True,
     )
     if prelaunch_error is not None:
         return prelaunch_error
