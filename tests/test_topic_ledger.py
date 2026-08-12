@@ -1028,3 +1028,51 @@ async def test_cancelled_sweep_checkpoints_completed_deletions(tmp_path):
         "the completed deletion was not checkpointed before cancellation: "
         f"ledger still holds {remaining!r}"
     )
+
+
+async def test_cancelled_remove_cannot_clobber_concurrent_append(
+    tmp_path, monkeypatch,
+):
+    """Diff-gate S1 (Terra): cancelling remove() mid-write used to release
+    _LOCK while the to_thread worker still held a stale snapshot; a
+    concurrent append then landed and the stale write clobbered it. The RMW
+    must hold _LOCK until the threaded write actually completes."""
+    import threading
+
+    path = str(tmp_path / "ledger.json")
+    _seed(Path(path), [_entry("old", topic_id=613)])
+
+    gate = threading.Event()
+    writes: list[list] = []
+    real_write = topic_ledger._write_entries
+
+    def parked_first_write(target, entries):
+        writes.append(list(entries))
+        if len(writes) == 1:
+            gate.wait(5)  # park the remove()'s write in the worker thread
+        real_write(target, entries)
+
+    monkeypatch.setattr(topic_ledger, "_write_entries", parked_first_write)
+
+    remover = asyncio.ensure_future(topic_ledger.remove({"old"}, path=path))
+    for _ in range(500):
+        if writes:
+            break
+        await asyncio.sleep(0.01)
+    assert writes, "remove() never reached its write"
+
+    remover.cancel()
+    appender = asyncio.ensure_future(topic_ledger.append(
+        engagement_id="new", chat_id=CHAT, topic_id=614, outcome="completed",
+        path=path,
+    ))
+    await asyncio.sleep(0.05)  # give the append every chance to interleave
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await remover
+    await asyncio.wait_for(appender, 5)
+
+    ids = {e["engagement_id"] for e in await topic_ledger.load(path=path)}
+    assert ids == {"new"}, (
+        f"concurrent append was lost to a stale post-cancel write: {ids!r}"
+    )

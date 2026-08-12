@@ -121,6 +121,32 @@ def _write_entries(target: str, entries: list[dict[str, Any]]) -> None:
     atomic_write_json(target, entries, indent=2, mode=PRIVATE)
 
 
+async def _to_thread_uncancellable(fn, *args):
+    """Run *fn* in a worker thread; on cancellation, WAIT for the thread to
+    finish before propagating (v0.183.0 diff gate, Terra S1).
+
+    ``await asyncio.to_thread(...)`` cancels the *await*, never the thread —
+    a cancelled read-modify-write under ``_LOCK`` used to release the lock
+    while its stale write was still in flight, clobbering whatever a
+    concurrent ``append``/``remove`` wrote next. Holding the caller (and so
+    ``_LOCK``) until the thread completes makes the RMW atomic under
+    cancellation; the original CancelledError is re-raised, and a late
+    exception from the worker is subordinated to it.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 — the cancellation wins
+                break
+        raise
+
+
 async def append(
     *,
     engagement_id: str,
@@ -148,11 +174,11 @@ async def append(
         "delete_after": ts + TOPIC_RETENTION_DAYS * 86400,
     }
     async with _LOCK:
-        entries = await asyncio.to_thread(_read_entries, target)
+        entries = await _to_thread_uncancellable(_read_entries, target)
         if any(e.get("engagement_id") == engagement_id for e in entries):
             return
         entries.append(entry)
-        await asyncio.to_thread(_write_entries, target, entries)
+        await _to_thread_uncancellable(_write_entries, target, entries)
 
 
 async def load(path: str | None = None) -> list[dict]:
@@ -168,12 +194,12 @@ async def remove(engagement_ids: set[str], path: str | None = None) -> None:
         return
     target = _resolve(path)
     async with _LOCK:
-        entries = await asyncio.to_thread(_read_entries, target)
+        entries = await _to_thread_uncancellable(_read_entries, target)
         remaining = [
             e for e in entries if e.get("engagement_id") not in engagement_ids
         ]
         if len(remaining) != len(entries):
-            await asyncio.to_thread(_write_entries, target, remaining)
+            await _to_thread_uncancellable(_write_entries, target, remaining)
 
 
 def _telegram_error_module() -> Any | None:
