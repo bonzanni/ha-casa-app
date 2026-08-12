@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.182.1] - 2026-08-12
+
+### Fixed
+
+- Test-only: deflaked the one remaining fixed-sleep assertion in the ask
+  body-limit suite (the v0.124.1 deflake class), which went red on a loaded
+  CI worker after the v0.182.0 merge. No runtime changes.
+
 ## [0.182.0] - 2026-08-12
 
 ### Fixed

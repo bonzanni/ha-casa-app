@@ -313,7 +313,20 @@ async def test_near_boundary_single_select_body_passes(
         "question": question, "options": options, "timeout_s": 60,
     }
     task = asyncio.ensure_future(ask(_FakeRequest(payload)))
-    await asyncio.sleep(0.02)
+    # v0.124.1 deflake class (#256): never a fixed sleep before asserting a
+    # transition that happens inside the ask task's first scheduler turn —
+    # poll bounded by wall-clock instead (this was the one fixed sleep this
+    # file kept after test_ask_gates.py was converted; it went red on a
+    # loaded CI worker on 2026-08-12).
+    deadline = asyncio.get_running_loop().time() + 5.0
+    turns = 0
+    while not ch.options_keyboards:
+        if asyncio.get_running_loop().time() > deadline:
+            break
+        # A few free yields first, then back off — never a hot spin
+        # (test_ask_gates._wait_until's shape).
+        await asyncio.sleep(0 if turns < 10 else 0.01)
+        turns += 1
     assert len(ch.options_keyboards) == 1
     assert deliver(broker, 
         namespace="engagement_ask", scope=rec.id, request_id="r3",
