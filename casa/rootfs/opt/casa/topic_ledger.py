@@ -73,6 +73,14 @@ _PERMISSION_SUBSTRINGS = (
 # Telegram sweep can never stall a finalize append.
 _LOCK = asyncio.Lock()
 
+# #311: serializes whole sweeps — the scheduled sweep and the configurator
+# sweep tool could both load the same due entry before either removed it and
+# double-issue the Telegram deletion (the loser folded into `deleted` as
+# not_found, spending flood budget and double-counting). Distinct from _LOCK
+# so a sweep's Telegram calls never stall a finalize append; ordering is
+# strictly _SWEEP_LOCK -> _LOCK, never inverted.
+_SWEEP_LOCK = asyncio.Lock()
+
 
 def _resolve(path: str | None) -> str:
     # Read the module global at call time so tests can monkeypatch it.
@@ -312,7 +320,29 @@ async def sweep_topics(
     - A malformed ``delete_after`` falls back to ``closed_at`` + retention;
       with neither usable the entry is dropped (``dropped_malformed``,
       warned) without a delete attempt.
+    - #311: sweeps are serialized process-wide (``_SWEEP_LOCK``) — a
+      concurrent entrant waits, then sees the ledger the first sweep left.
+      Each resolved entry is checkpointed out of the ledger immediately
+      (before the next cancellable await), so a cancelled sweep forgets at
+      most the single in-flight entry, whose re-delete self-heals as
+      not_found.
     """
+    async with _SWEEP_LOCK:
+        return await _sweep_topics_locked(
+            channel, chat_id=chat_id, scope=scope, dry_run=dry_run,
+            now=now, path=path,
+        )
+
+
+async def _sweep_topics_locked(
+    channel: Any,
+    *,
+    chat_id: int | None,
+    scope: str,
+    dry_run: bool,
+    now: float | None,
+    path: str | None,
+) -> dict:
     target = _resolve(path)
     ts = time.time() if now is None else now
     entries = await load(path=target)
@@ -332,7 +362,10 @@ async def sweep_topics(
         result["kept"] = len(entries)
         return result
 
-    to_remove: set[str] = set()
+    # #311: resolved entries are checkpointed out of the ledger immediately
+    # (per entry, before the next cancellable await) rather than batched into
+    # one remove() at the end — a cancelled sweep must not forget deletions
+    # it already performed.
     null_chat_count = 0
     calls_made = 0
     for entry in entries:
@@ -348,7 +381,7 @@ async def sweep_topics(
             )
             result["dropped_malformed"] += 1
             if not dry_run:
-                to_remove.add(engagement_id)
+                await remove({engagement_id}, path=target)
             continue
         if scope != "all_terminal" and delete_after > ts:
             result["kept"] += 1
@@ -367,7 +400,7 @@ async def sweep_topics(
             )
             result["dropped_mismatched"] += 1
             if not dry_run:
-                to_remove.add(engagement_id)
+                await remove({engagement_id}, path=target)
             continue
         if dry_run:
             result["deleted"] += 1
@@ -386,7 +419,7 @@ async def sweep_topics(
             result["targets"].append(
                 {"engagement_id": engagement_id, "topic_id": topic_id},
             )
-            to_remove.add(engagement_id)
+            await remove({engagement_id}, path=target)
         elif outcome == "not_found":
             logger.info(
                 "topic ledger: topic %s (entry %s) already gone — entry dropped",
@@ -396,7 +429,7 @@ async def sweep_topics(
             result["targets"].append(
                 {"engagement_id": engagement_id, "topic_id": topic_id},
             )
-            to_remove.add(engagement_id)
+            await remove({engagement_id}, path=target)
         elif ts > delete_after + STUCK_ENTRY_MAX_AGE_SECONDS:
             # Bounded retry under permanent failure: still nag for the
             # permission class, then drop the entry — the topic stays in
@@ -411,7 +444,7 @@ async def sweep_topics(
                 STUCK_ENTRY_MAX_AGE_SECONDS // 86400, exc,
             )
             result["dropped_stuck"] += 1
-            to_remove.add(engagement_id)
+            await remove({engagement_id}, path=target)
         elif outcome == "permission":
             logger.warning(
                 "topic ledger: no permission to delete topic %s (entry %s): %s",
@@ -441,6 +474,4 @@ async def sweep_topics(
             "topic ledger: %d entries have no chat_id — kept, never "
             "auto-deleted", null_chat_count,
         )
-    if to_remove:
-        await remove(to_remove, path=target)
     return result

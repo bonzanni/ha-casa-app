@@ -1,6 +1,6 @@
 name: "Casa"
 description: "An always-on fleet of Claude agents — assistant, butler, concierge and specialists you add"
-version: "0.182.1"
+version: "0.183.0"
 slug: casa
 url: https://github.com/bonzanni/ha-casa-app
 image: "ghcr.io/bonzanni/casa"

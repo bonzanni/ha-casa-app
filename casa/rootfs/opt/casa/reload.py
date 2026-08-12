@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger("reload")
@@ -48,6 +49,15 @@ class _RWLock:
 
     Used so the ``full`` scope (writer) excludes every other scope
     (readers), but readers run concurrently for different scope-keys.
+
+    Admission is FIFO (#311): pre-fix, ``acquire_read`` only blocked on an
+    ACTIVE writer, so a steady stream of shared-scope reloads starved a
+    pending ``full`` reload indefinitely. Any queued waiter now bars new
+    entrants; consecutive readers at the head are admitted as a batch, so
+    a writer stream cannot starve readers either. All lock state is mutated
+    only synchronously on the event loop — waiters await their own Event,
+    and admission is decided in ``_admit`` with no await between check and
+    mutation.
     """
 
     def __init__(self) -> None:
@@ -57,32 +67,59 @@ class _RWLock:
         # 'full' reload was mid-flight ran concurrently with its
         # multi-step runtime mutation.
         self._writer = False
-        self._cond = asyncio.Condition()
+        self._queue: deque[tuple[str, asyncio.Event]] = deque()
+
+    def _admit(self) -> None:
+        while self._queue and self._queue[0][0] == "r" and not self._writer:
+            self._readers += 1
+            self._queue.popleft()[1].set()
+        if (self._queue and self._queue[0][0] == "w"
+                and not self._writer and self._readers == 0):
+            self._writer = True
+            self._queue.popleft()[1].set()
+
+    async def _wait_admitted(self, entry: tuple[str, asyncio.Event]) -> None:
+        try:
+            await entry[1].wait()
+        except asyncio.CancelledError:
+            if entry[1].is_set():
+                # Admitted synchronously (by _admit) before the cancellation
+                # was delivered: this waiter already OWNS the lock — roll the
+                # admission back or every later acquire hangs forever.
+                if entry[0] == "r":
+                    await self.release_read()
+                else:
+                    await self.release_write()
+            else:
+                # Still queued: withdraw, and re-run admission — this entry
+                # may have been the head that blocked the one behind it.
+                self._queue.remove(entry)
+                self._admit()
+            raise
 
     async def acquire_read(self) -> None:
-        async with self._cond:
-            while self._writer:
-                await self._cond.wait()
+        if not self._writer and not self._queue:
             self._readers += 1
+            return
+        entry = ("r", asyncio.Event())
+        self._queue.append(entry)
+        await self._wait_admitted(entry)
 
     async def release_read(self) -> None:
-        async with self._cond:
-            self._readers -= 1
-            if self._readers == 0:
-                # notify_all (not notify): readers and a waiting writer
-                # share this one condition.
-                self._cond.notify_all()
+        self._readers -= 1
+        self._admit()
 
     async def acquire_write(self) -> None:
-        async with self._cond:
-            while self._writer or self._readers > 0:
-                await self._cond.wait()
+        if not self._writer and self._readers == 0 and not self._queue:
             self._writer = True
+            return
+        entry = ("w", asyncio.Event())
+        self._queue.append(entry)
+        await self._wait_admitted(entry)
 
     async def release_write(self) -> None:
-        async with self._cond:
-            self._writer = False
-            self._cond.notify_all()
+        self._writer = False
+        self._admit()
 
 
 def _global_rw() -> _RWLock:

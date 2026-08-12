@@ -32,7 +32,8 @@ a pool-wide bookkeeping lock (entries, invalidation barriers, closing state) tha
 deliberately released before any entry lock is awaited, and a per-entry lock for the
 client itself. The engagement registry mutates and persists under one registry lock
 (reads take nothing). Reload holds a per-scope lock plus a global read-write lock in which
-a full reload is the writer excluding every other scope (INV-CFG-002). Plugin mutations
+a full reload is the writer excluding every other scope (INV-CFG-002); admission is FIFO,
+so a stream of shared-scope reloads cannot starve a pending full reload, nor the reverse. Plugin mutations
 share one tool-level lock (INV-TOOL-003); the full-reload entry points take it through a
 task-reentrant guard, because a full reload that includes the environment refresh reaches
 the plugin-env handler's health block, which serializes on the same lock — one logical

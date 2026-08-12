@@ -1567,6 +1567,179 @@ class TestFullScopeExclusion:
         ]
 
 
+class TestRWLockFifoAdmission:
+    """#311: `_RWLock` had no writer preference — `acquire_read` only blocked
+    on an ACTIVE writer, so a steady stream of shared-scope reloads (readers)
+    starved a pending `full` reload (writer) indefinitely. The fix is a FIFO
+    wait-queue: any queued waiter bars new entrants, consecutive readers are
+    admitted in batches, and no arrival order starves anyone forever.
+
+    These tests exercise the lock class directly for deterministic
+    interleaving control; TestFullScopeExclusion keeps pinning the
+    dispatch-level exclusion behaviour (INV-CFG-002).
+    """
+
+    async def test_waiting_writer_blocks_new_readers(self):
+        """THE starvation fix: a reader arriving while a writer WAITS must
+        queue behind it, not overtake it. Pre-fix ordering was r2 before w."""
+        import reload as reload_mod
+
+        rw = reload_mod._RWLock()
+        order: list[str] = []
+
+        await rw.acquire_read()  # R1 active
+
+        async def writer():
+            await rw.acquire_write()
+            order.append("w")
+            await rw.release_write()
+
+        async def reader2():
+            await rw.acquire_read()
+            order.append("r2")
+            await rw.release_read()
+
+        w_task = asyncio.ensure_future(writer())
+        for _ in range(3):
+            await asyncio.sleep(0)  # let the writer queue behind R1
+        r2_task = asyncio.ensure_future(reader2())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert order == [], (
+            "nobody may be admitted while R1 holds the read lock and a "
+            f"writer waits: {order!r}"
+        )
+        await rw.release_read()  # R1 done — writer first, THEN r2
+        await asyncio.gather(w_task, r2_task)
+        assert order == ["w", "r2"], order
+
+    async def test_queued_reader_admitted_before_later_writer(self):
+        """Phase fairness (design r1 finding): a queued reader must not be
+        overtaken by a writer that queued AFTER it — an uninterrupted writer
+        stream cannot starve readers."""
+        import reload as reload_mod
+
+        rw = reload_mod._RWLock()
+        order: list[str] = []
+
+        await rw.acquire_write()  # W1 active
+
+        async def reader():
+            await rw.acquire_read()
+            order.append("r")
+            await rw.release_read()
+
+        async def writer2():
+            await rw.acquire_write()
+            order.append("w2")
+            await rw.release_write()
+
+        r_task = asyncio.ensure_future(reader())
+        for _ in range(3):
+            await asyncio.sleep(0)  # reader queues first
+        w2_task = asyncio.ensure_future(writer2())
+        for _ in range(3):
+            await asyncio.sleep(0)  # writer2 queues behind it
+        await rw.release_write()
+        await asyncio.gather(r_task, w2_task)
+        assert order == ["r", "w2"], order
+
+    async def test_consecutive_queued_readers_admitted_together(self):
+        """A reader batch at the head of the queue is admitted concurrently
+        (readers share), not one per release cycle."""
+        import reload as reload_mod
+
+        rw = reload_mod._RWLock()
+        holding = 0
+        peak = 0
+        release = asyncio.Event()
+
+        await rw.acquire_write()
+
+        async def reader():
+            nonlocal holding, peak
+            await rw.acquire_read()
+            holding += 1
+            peak = max(peak, holding)
+            await release.wait()
+            holding -= 1
+            await rw.release_read()
+
+        tasks = [asyncio.ensure_future(reader()) for _ in range(3)]
+        for _ in range(3):
+            await asyncio.sleep(0)
+        await rw.release_write()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert peak == 3, f"queued readers were not admitted as a batch: {peak}"
+        release.set()
+        await asyncio.gather(*tasks)
+
+    async def test_cancelled_waiting_writer_unblocks_queued_reader(self):
+        """Cancelling a QUEUED (not yet admitted) writer must remove it from
+        the queue so the reader behind it is admitted — while another reader
+        still holds the lock (readers share)."""
+        import reload as reload_mod
+
+        rw = reload_mod._RWLock()
+        admitted = asyncio.Event()
+
+        await rw.acquire_read()  # R1 active, held throughout
+
+        async def writer():
+            await rw.acquire_write()  # queues; never admitted
+
+        async def reader2():
+            await rw.acquire_read()
+            admitted.set()
+            await rw.release_read()
+
+        w_task = asyncio.ensure_future(writer())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        r2_task = asyncio.ensure_future(reader2())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not admitted.is_set()  # r2 correctly queued behind the writer
+        w_task.cancel()
+        try:
+            await w_task
+        except asyncio.CancelledError:
+            pass
+        await asyncio.wait_for(asyncio.wait_for(r2_task, 1), 1)
+        assert admitted.is_set(), (
+            "reader stayed blocked behind a cancelled writer"
+        )
+        await rw.release_read()
+
+    async def test_writer_cancelled_at_admission_rolls_back(self):
+        """The admitted-but-cancelled race: release_read admits the writer
+        synchronously, then the writer task is cancelled before it resumes.
+        The cancel arm must release the write lock it already owns, or every
+        later acquire hangs forever."""
+        import reload as reload_mod
+
+        rw = reload_mod._RWLock()
+
+        await rw.acquire_read()
+
+        async def writer():
+            await rw.acquire_write()
+
+        w_task = asyncio.ensure_future(writer())
+        for _ in range(3):
+            await asyncio.sleep(0)  # writer is queued
+        await rw.release_read()  # synchronous admission: writer now OWNS it
+        w_task.cancel()  # cancellation delivered before the task resumes
+        try:
+            await w_task
+        except asyncio.CancelledError:
+            pass
+        # The lock must be free again — a reader acquires without hanging.
+        await asyncio.wait_for(rw.acquire_read(), 1)
+        await rw.release_read()
+
+
 class TestExecutorsScope:
     """A-1: 7th reload scope for ExecutorRegistry."""
 
