@@ -4143,11 +4143,14 @@ def test_mark_removal_noted_strict_failure_leaves_it_unnoted(
 @pytest.mark.parametrize("name,age_d,noted_d,pruned", [
     ("noted-8d", 8, 8, True),          # noted a week+ ago — pruned
     ("noted-6d", 6, 6, False),         # inside the retention window
-    ("unnoted-31d", 31, None, True),   # hard age bound, noted or not
+    ("unnoted-31d", 31, None, False),  # #532: un-noted evidence of an owed
+    #                                    operator notice is NEVER age-pruned
     ("unnoted-10d", 10, None, False),
     ("noted-late", 20, 1, False),      # Sol r3 item 10: created 20 days ago,
     #                                    noted YESTERDAY — the prune clock is
     #                                    noted_ts, so it survives
+    ("noted-old", 45, 32, True),       # the hard bound still reaps a NOTED
+    #                                    straggler past max age
 ])
 def test_prune_removal_records_uses_the_noted_clock_and_a_hard_bound(
         spool, name, age_d, noted_d, pruned):

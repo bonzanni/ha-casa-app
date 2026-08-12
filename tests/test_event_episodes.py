@@ -273,28 +273,177 @@ async def test_six_accepts_exhaust_via_one_atomic_update_then_note(wired):
     assert wired.rec() == final
 
 
-async def test_failed_exhaustion_mark_suppresses_the_note(wired, monkeypatch):
+async def test_failed_exhaustion_write_sends_no_note(wired, monkeypatch):
+    """#532: the note follows the durable terminal write (notify-after-mark)
+    — when the exhaustion write itself will not go durable, no note fires
+    off an unproven state."""
     wired.seed()
     real = wired.spool.update_delivery_nudge
-    calls = []
 
     def flaky(emitter, event, subscriber, gen, mutator):
-        def spy(rec):
-            merged = mutator(rec)
-            calls.append(merged)
-            return merged
-        result = real(emitter, event, subscriber, gen, spy)
-        # Fail exactly the terminal (noted=True) write.
-        if calls and calls[-1].get("noted") is True:
+        # Probe what the mutator WOULD write; refuse the terminal
+        # (status=done) write outright — it never lands on disk.
+        probe = mutator(dict(wired.rec(emitter, event, subscriber)))
+        if probe.get("status") == "done":
             return False
-        return result
+        return real(emitter, event, subscriber, gen, mutator)
 
     monkeypatch.setattr(wired.spool, "update_delivery_nudge", flaky)
     for i in range(event_attempts.MAX_NUDGES):
         due = wired.rec()["next_nudge_ts"]
         wired.clock = due
         await ee._worker_pass()
-    assert wired.notes == []
+    assert [n for n in wired.notes if "went unanswered" in n] == []
+
+
+# ---------------------------------------------------------------------------
+# #532 — exhaustion notice is at-least-once (notify-after-mark, durable retry)
+# ---------------------------------------------------------------------------
+
+
+def _observed_notify(wired):
+    """Rewire notify as an OBSERVED seam: raises while ``down``, records
+    deliveries only on success (the honest _setup_notify contract)."""
+    state = {"down": False}
+    delivered: list[str] = []
+
+    async def notify(text):
+        if state["down"]:
+            raise RuntimeError("telegram channel not ready")
+        delivered.append(text)
+
+    wired.wire(notify_operator=notify)
+    return state, delivered
+
+
+async def _drive_to_exhaustion(wired):
+    for _ in range(event_attempts.MAX_NUDGES):
+        due = wired.rec()["next_nudge_ts"]
+        wired.clock = due
+        await ee._worker_pass()
+
+
+async def test_exhaustion_notice_survives_a_boot_window_send_failure(wired):
+    """THE #532 red case: the 6th dispatch lands while the channel cannot
+    deliver — the record terminalizes un-noted, and the FIRST pass with a
+    working channel delivers exactly one notice and marks it."""
+    state, delivered = _observed_notify(wired)
+    state["down"] = True
+    wired.seed()
+    await _drive_to_exhaustion(wired)
+
+    rec = wired.rec()
+    assert rec["status"] == "done" and rec["outcome"] == "exhausted"
+    assert rec["noted"] is False                 # owed, not lost
+    assert delivered == []
+
+    state["down"] = False
+    await ee._worker_pass()
+    assert [n for n in delivered if "went unanswered" in n] != []
+    assert wired.rec()["noted"] is True
+
+    # Settled: a later pass neither re-sends nor re-marks.
+    count = len(delivered)
+    wired.advance(1_000_000.0)
+    await ee._worker_pass()
+    assert len(delivered) == count
+
+
+async def test_exhaustion_send_success_mark_failure_never_resends(wired,
+                                                                  monkeypatch):
+    """Terra design r1 / Sol design r2-r3: a send that succeeded whose mark
+    keeps failing must retry ONLY the mark — the DM stream stays bounded
+    without a crash, and the sent-key clears only on a confirmed mark."""
+    state, delivered = _observed_notify(wired)
+    wired.seed()
+
+    fail = {"on": True}
+    mark_calls: list[tuple] = []
+    real_mark = getattr(wired.spool, "mark_delivery_noted", None)
+
+    def flaky_mark(*args, **kwargs):
+        mark_calls.append(args)
+        if fail["on"]:
+            return False
+        assert real_mark is not None
+        return real_mark(*args, **kwargs)
+
+    monkeypatch.setattr(wired.spool, "mark_delivery_noted", flaky_mark,
+                        raising=False)
+    await _drive_to_exhaustion(wired)
+
+    assert len([n for n in delivered if "went unanswered" in n]) == 1
+    assert wired.rec()["noted"] is False
+
+    await ee._worker_pass()                      # mark retried, send NOT
+    assert len([n for n in delivered if "went unanswered" in n]) == 1
+    assert len(mark_calls) >= 2
+
+    fail["on"] = False
+    await ee._worker_pass()
+    assert wired.rec()["noted"] is True
+    assert len([n for n in delivered if "went unanswered" in n]) == 1
+
+
+async def test_removal_note_send_success_mark_failure_never_resends(
+        wired, monkeypatch):
+    """The removal-note twin of the bounded-duplicate rule (Sol design
+    r2-3 / Terra r2-2): mark failures retry the mark, never the send."""
+    _state, delivered = _observed_notify(wired)
+    # A corrupt delivery file for an uninstalled plugin sweeps into one
+    # removal record (same seeding as the spool's own removal tests).
+    bad = wired.spool.root / "ghost" / "delivery"
+    bad.mkdir(parents=True)
+    (bad / "e--finance.json").write_text("{not json", encoding="utf-8")
+    wired.spool.sweep({}, installed=set(), registry_valid=True,
+                      now=wired.clock)
+    assert len(wired.spool.list_removal_records()) == 1
+
+    monkeypatch.setattr(wired.spool, "mark_removal_noted",
+                        lambda *a, **k: False)
+    await ee._worker_pass()
+    removal_notes = [n for n in delivered if "was removed" in n]
+    assert len(removal_notes) == 1
+
+    await ee._worker_pass()                      # still exactly one send
+    assert len([n for n in delivered if "was removed" in n]) == 1
+
+
+async def test_notice_scans_run_under_routing_unavailable(wired):
+    """Design R3-1: the removal and unnoted-exhaustion scans are
+    notify/mark-only, so they run even under the ROUTING_UNAVAILABLE
+    sentinel — an owed notice never waits on routing health."""
+    state, delivered = _observed_notify(wired)
+    state["down"] = True
+    wired.seed()
+    await _drive_to_exhaustion(wired)
+    assert wired.rec()["noted"] is False
+
+    state["down"] = False
+    wired.routed = event_spool.ROUTING_UNAVAILABLE
+    await ee._worker_pass()
+    assert [n for n in delivered if "went unanswered" in n] != []
+    assert wired.rec()["noted"] is True
+
+
+# ---------------------------------------------------------------------------
+# #534 — wake instruction closes with the silence sentinel
+# ---------------------------------------------------------------------------
+
+
+def test_wake_instruction_carries_the_silence_sentinel_contract():
+    """#534: the reminder-delivery convention (#511) applied to event
+    wakes — imperative, fail-noisy. The delegated-verbatim specialist text
+    must NOT carry it (the specialist's turn is not the one that narrates
+    into the operator chat); the assistant-directed postscript does."""
+    plain = ee._wake_instruction(EMITTER, EVENT, SUBSCRIBER, "tok")
+    assert "<silent/>" in plain
+
+    delegated = ee._wake_instruction(EMITTER, EVENT, SUBSCRIBER, "tok",
+                                     delegate_ack=True)
+    assert "<silent/>" not in delegated
+    post = ee._delegated_ack_postscript(EMITTER, EVENT, "tok")
+    assert "<silent/>" in post
 
 
 async def test_ack_stops_the_ladder(wired):

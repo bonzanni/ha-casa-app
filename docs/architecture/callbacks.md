@@ -97,7 +97,7 @@ removal ledger relies on):
 | `results/.collect-<h>-<uuid>` | consumer (rename) | nobody | casa only — ack-teardown or aged/capped sweep |
 | `attempts/<h>.json` | casa | casa | consumer (ack rename) or casa (age-out, cap, ack) |
 | `attempts/.ack-<h>` | consumer (rename) | nobody | casa, after every artifact is a confirmed ENOENT |
-| `.removals/<plugin>-<uuid>.json` | casa | casa | casa (pruned after the note, 30-day hard bound) |
+| `.removals/<plugin>-<uuid>.json` | casa | casa | casa (pruned after the note; never age-pruned while un-noted) |
 | `ready.json`, `.index/*` | casa | casa | casa |
 
 ## Contracts & invariants

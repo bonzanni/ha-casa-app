@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.190.0] - 2026-08-12
+
+### Fixed
+
+- Plugin events: the "delivery went unanswered" operator notice is no longer
+  lost forever when it fires before the Telegram channel has started (e.g. a
+  delivery falling due during boot). The notice now retries until a send is
+  confirmed, the removal notes gained the same guarantee, and a notice that
+  sent but failed to record stops re-sending duplicates. Un-noted removal
+  records are no longer age-pruned — an owed notice survives an outage of any
+  length. (#532)
+- Plugin events: headless event wakes no longer narrate "Event processed."
+  style messages into the operator chat — wake turns are buffered and close
+  silently unless the plugin's processing produced something the operator
+  needs to see, matching reminder delivery. (#534)
+- Plugin health: a plugin held back for unwired credentials now reports
+  `env_unresolved` with the missing variable NAMES in the health report, the
+  operator DM, and the first-contact notice — instead of a bare `not_ready`.
+  Existing affected installs will receive one fresh (now informative) health
+  DM after upgrading. (#533)
+
 ## [0.189.0] - 2026-08-12
 
 ### Fixed

@@ -138,3 +138,15 @@ async def test_telegram_channel_exposes_is_ready_contract():
     send() availability guard (_app is None → log-and-drop)."""
     from channels.telegram import TelegramChannel
     assert isinstance(getattr(TelegramChannel, "is_ready", None), property)
+
+
+async def test_dm_includes_detail_when_present(tmp_path):
+    """#533: the operator DM names the missing values (the 0.153.0
+    promise), not just a reason code."""
+    p = _report(tmp_path, PluginIssue(
+        "probe", None, "verify", "env_unresolved",
+        detail="MY_API_KEY, OTHER_KEY"))
+    cm = _cm()
+    await casa_core.notify_plugin_health(cm, path=str(p))
+    assert len(cm._channel.sent) == 1
+    assert "probe (env_unresolved: MY_API_KEY, OTHER_KEY)" in cm._channel.sent[0][0]

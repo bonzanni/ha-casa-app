@@ -1306,6 +1306,50 @@ def test_update_delivery_nudge_unknown_record_returns_false(spool):
     assert spool.update_delivery_nudge(E, EV, "nobody", 1, _mutate_nudge(nudges=1)) is False
 
 
+def test_mark_delivery_noted_flips_only_noted_on_a_done_record(spool):
+    """#532: the ONE sanctioned mutation of a done record — ``noted``
+    False→True, gen-matched — so the exhaustion notice can be
+    notify-after-mark (at-least-once) instead of lost with the record."""
+    _emit(spool, when=1000.0)
+    spool.fold_pass(R(S1), 1100.0)
+    rec = _read_delivery(spool, S1)
+    ok = spool.update_delivery_nudge(
+        E, EV, S1, rec["gen"],
+        _mutate_nudge(status="done", outcome="exhausted", noted=False,
+                      ended_ts=1500.0, next_nudge_ts=None))
+    assert ok is True
+
+    assert spool.mark_delivery_noted(E, EV, S1, rec["gen"]) is True
+    after = _read_delivery(spool, S1)
+    assert after["noted"] is True
+    assert after["status"] == "done" and after["outcome"] == "exhausted"
+    assert after["ack_token"] == rec["ack_token"]      # untouched
+    assert after["gen"] == rec["gen"]
+
+    # Idempotent: an already-noted record reports success, no rewrite needed.
+    assert spool.mark_delivery_noted(E, EV, S1, rec["gen"]) is True
+
+
+def test_mark_delivery_noted_refuses_pending_gen_mismatch_and_unknown(spool):
+    _emit(spool, when=1000.0)
+    spool.fold_pass(R(S1), 1100.0)
+    rec = _read_delivery(spool, S1)
+
+    # Still pending — refuse (update_delivery_nudge owns pending records).
+    assert spool.mark_delivery_noted(E, EV, S1, rec["gen"]) is False
+
+    ok = spool.update_delivery_nudge(
+        E, EV, S1, rec["gen"],
+        _mutate_nudge(status="done", outcome="exhausted", noted=False,
+                      ended_ts=1500.0, next_nudge_ts=None))
+    assert ok is True
+    # Rotated/stale generation — refuse.
+    assert spool.mark_delivery_noted(E, EV, S1, rec["gen"] + 1) is False
+    assert _read_delivery(spool, S1)["noted"] is False
+    # Unknown record — refuse.
+    assert spool.mark_delivery_noted(E, EV, "nobody", 1) is False
+
+
 # ---------------------------------------------------------------------------
 # ack — typed results + stale-token CAS
 # ---------------------------------------------------------------------------
@@ -1920,12 +1964,19 @@ def test_mark_removal_noted_then_prune_after_window(spool):
     assert spool.list_removal_records() == []
 
 
-def test_prune_removes_un_noted_records_past_max_age(spool):
+def test_prune_never_removes_un_noted_records(spool):
+    """#532 (Sol/Terra design r2): an un-noted removal record is the ONLY
+    evidence an operator notice is still owed — age alone must never
+    delete it (a 30-day outage window used to prune it at boot, seconds
+    before the channel came up). Once noted, the noted-clock prune
+    applies as before."""
     _write_raw(_delivery_path(spool, "ghost"), "{not json")
     spool.sweep({}, installed=set(), registry_valid=True, now=1000.0)
     pruned = spool.prune_removal_records(
         now=1000.0 + es.REMOVAL_RECORD_MAX_AGE_S + 10)
-    assert pruned == 1
+    assert pruned == 0
+    records = spool.list_removal_records()
+    assert len(records) == 1 and records[0][1]["noted"] is False
 
 
 # ---------------------------------------------------------------------------

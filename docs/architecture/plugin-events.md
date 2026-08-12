@@ -52,7 +52,10 @@ snapshot — the same rule the trigger and callback reconcilers follow
 bounded by level-triggering.** There is no file-protocol ack a subscriber process claims
 directly (the first subscriber is skill-only, with no other way to signal completion): the
 wake instruction asks the agent to process the event and call `ack_event` with the given
-token. If the agent never does — a crash, a bug, a forgetful agent — the ladder simply
+token, then close the turn with the `<silent/>` sentinel — an event wake is a background
+turn, so its tokens are buffered rather than streamed (the reminder-delivery convention)
+and a narration-only close is suppressed instead of landing in the operator's chat. If
+the agent never acks — a crash, a bug, a forgetful agent — the ladder simply
 exhausts after six accepted dispatches instead of hanging forever, and the exhaustion note
 tells the operator so. The trade-off is accepted because a missed ack costs promptness,
 not data: the subscriber's next independent wake still finds the same durable state.
@@ -86,7 +89,7 @@ dot-prefixed root entry is casa-reserved):
 | `state/.corrupt-<ts>-<event>` | casa (RECONSTRUCT quarantine) | nobody | casa only — whole-tree orphan GC (evidence, not pruned individually) |
 | `delivery/<event>--<subscriber>.json` | casa (fold REPAIR/OPEN) | casa (nudge/accept/defer, `ack`, sweep terminalize) | casa — after a durable `.removals` record names it |
 | `delivery/.corrupt-<ts>-<name>` | casa (sweep quarantine) | nobody | casa — after a durable `.removals` record names it |
-| `.removals/<plugin>-<uuid>.json` | casa | casa (`mark_removal_noted`) | casa — pruned 7 days after noted, 30 hard bound |
+| `.removals/<plugin>-<uuid>.json` | casa | casa (`mark_removal_noted`) | casa — pruned 7 days after noted (30-day hard bound, noted records only; an un-noted record is a notice still owed and is never age-pruned) |
 
 ## Contracts & invariants
 
@@ -148,15 +151,22 @@ forces its subscribers to re-consent.
 
 Enforced by `update_delivery_nudge`'s conditional read-merge-write (refuses unless the
 on-disk record is still `pending` at the exact `gen` the caller expects — a done record is
-immutable forever, and a rotated generation refuses a stale caller outright) and by
+immutable, with exactly one sanctioned exception: `mark_delivery_noted` flips `noted`
+False→True on a done record, still gen-matched, and mutates nothing else — and a rotated
+generation refuses a stale caller outright) and by
 `terminalize`, which returns a record already `done` completely unchanged rather than
 re-stamping it. The ladder is `PHASE_OFFSETS = (0s, 5m, 30m, 2h, 6h, 24h)`, anchored on
 the record's own `minted_ts`, budgeted at `MAX_NUDGES = 6` bus-accepted dispatches; a
 bus-rejected attempt spends no budget and instead defers on an escalating capped delay.
 The sixth accepted dispatch's exhaustion is a single conditional write setting
-`status=done, outcome=exhausted, noted=True` together — never three separate writes — and
-the operator note is sent only after that write is confirmed durable, so a crash before
-the send costs a silently-skipped note, never a duplicate one.
+`status=done, outcome=exhausted, noted=False` together — never three separate writes. The
+operator note is then delivered notify-then-mark, exactly like the removal notes: the
+worker's exhaustion scan sends it through the observed notify seam (which raises when the
+Telegram channel is absent or not yet started, rather than false-succeeding) and only a
+confirmed send flips `noted`, retried every pass until it lands — so a boot-window send
+failure costs delay, never the notice. A send that succeeded whose mark then fails is
+keyed in memory and only the mark is retried, bounding duplicates to one per process
+crash.
 
 What it does not cover: acceptance and the ledger write recording it are not atomic with
 each other — a crash between a bus accept and `update_delivery_nudge` costs one duplicate
@@ -199,7 +209,10 @@ states, not a mechanically enforced one beyond the one tool this invariant pins.
 map becomes the `ROUTING_UNAVAILABLE` sentinel, never an empty map — an empty map is an
 authoritative result that licenses the destructive sweep; the sentinel licenses none of
 it. Dispatch stops entirely, fold is a strict no-op in every phase, and sweep degrades to
-part-TTL housekeeping only. Routing and full sweeping resume in full the instant a later
+part-TTL housekeeping only. The removal-note and exhaustion-notice scans still run — they
+read settled records and flip `noted` on a confirmed send, nothing destructive or
+forward-moving, so an owed operator notice never waits on routing health. Routing and
+full sweeping resume in full the instant a later
 compute succeeds, and every reconcile call — successful or fail-closed — kicks the worker
 so it re-evaluates promptly.
 
@@ -237,9 +250,9 @@ every unsettled record and quarantined artifact for that subscriber, writes one
 strict-durable `.removals` record naming them, and only then deletes the artifacts — no
 purge proceeds on an unproven inventory. The worker turns each un-noted removal record
 into one operator note by **notifying before marking**: only a confirmed send marks it
-noted, so a crash there costs one duplicate note, never a silently dropped one — the
-opposite ordering from budget exhaustion's mark-then-notify, because a removal note must
-be observed, not merely durable.
+noted, so a crash there costs one duplicate note, never a silently dropped one — the same
+ordering budget exhaustion now follows, both riding the observed notify seam. A note that
+sent but failed to mark is keyed in memory so later passes retry only the mark.
 
 **A delivery nudge kick is lost to a crash.** It is a hint only: the worker's timed wake
 recomputes the nearest due `next_nudge_ts` from the ledger every pass regardless, and

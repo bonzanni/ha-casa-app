@@ -60,6 +60,12 @@ def _issue_dict(issue, owners: dict | None = None) -> dict:
         "artifact_id": _get("artifact_id"),
         "fingerprint": fingerprint(issue),
     }
+    # #533: bounded elaboration (e.g. unresolved var NAMES) — additive,
+    # never part of the fingerprint (computed above from the five
+    # structured fields only), present only when the issue carries one.
+    detail = _get("detail")
+    if detail:
+        d["detail"] = detail
     # Task 11: an owned entry's issue/warning row is additionally annotated
     # with its bundle owner (`specialist:<slug>`) — the `name` field is
     # already the entry's SCOPED name (`<slug>.<manifest_name>`, spec §2),
@@ -212,6 +218,9 @@ def first_contact_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
             where = d.get("target") or "a target"
             return (f"{d.get('name')}: {where} remains bound to the previous "
                     f"artifact (reload_required)")
+        if d.get("detail"):
+            # #533: name the missing values, not just the code.
+            return f"{d.get('name')} ({d.get('reason_code')}: {d['detail']})"
         return f"{d.get('name')} ({d.get('reason_code')})"
 
     parts = [_line(d) for d in matched[:2]]

@@ -103,7 +103,9 @@ FOLD_BATCH_MAX = 64           # per-generation fold batch bound (oldest first)
 MAX_EMISSION_FILES = 512      # disk-pressure valve, per emitter
 REMOVAL_RECORD_PRUNE_S = 7 * 24 * 3600     # a NOTED removal record is kept a
 #                              week, then pruned
-REMOVAL_RECORD_MAX_AGE_S = 30 * 24 * 3600  # hard bound, noted or not
+REMOVAL_RECORD_MAX_AGE_S = 30 * 24 * 3600  # hard bound, NOTED records only
+#                              (#532: un-noted = a notice still owed — never
+#                              age-pruned)
 MARKER_STATE_MAX_BYTES = 1 << 16
 
 STATE_SCHEMA_VERSION = 1
@@ -1522,8 +1524,10 @@ class EventSpool:
         """Locked read-merge-write of one delivery record. ``False``
         unless the on-disk record is readable, valid, ``status ==
         "pending"`` AND its ``gen`` matches — a done record is immutable
-        forever, and a generation that has already rotated refuses a
-        stale caller's update outright (the fold's CAS).
+        (with exactly one sanctioned exception: the ``noted`` False→True
+        flip owned by :meth:`mark_delivery_noted`, #532), and a
+        generation that has already rotated refuses a stale caller's
+        update outright (the fold's CAS).
 
         *mutator* receives a COPY of the current record and returns the
         mutated dict; only ``nudges``, ``last_nudge_ts``, ``next_nudge_ts``,
@@ -1554,6 +1558,48 @@ class EventSpool:
                       if rec.get(k) != merged.get(k)}
             if not changed <= allowed:
                 return False
+            validated = event_attempts.validate_record(
+                merged, expect_emitter=emitter, expect_event=event,
+                expect_subscriber=subscriber)
+            if validated is None or validated["gen"] != gen:
+                return False
+            try:
+                efd = self._emitter_fd(emitter)
+            except (OSError, ValueError):
+                return False
+            try:
+                try:
+                    dfd = _open_dir(DELIVERY_DIR, efd)
+                except OSError:
+                    return False
+                try:
+                    return self._write_delivery(efd, dfd, event, subscriber,
+                                                validated)
+                finally:
+                    os.close(dfd)
+            finally:
+                os.close(efd)
+
+    def mark_delivery_noted(self, emitter: str, event: str, subscriber: str,
+                            gen: int) -> bool:
+        """The ONE sanctioned mutation of a ``done`` delivery record
+        (#532): flip ``noted`` False→True so the exhaustion notice can be
+        notify-after-mark — terminalize un-noted, send, and only a
+        CONFIRMED send marks the record, retried by the worker's scan
+        until it lands. Still gen-matched (a rotated generation refuses a
+        stale caller exactly like :meth:`update_delivery_nudge`), refused
+        on a pending record (that lifecycle belongs to
+        ``update_delivery_nudge``), and idempotent: an already-noted done
+        record reports ``True`` without a rewrite."""
+        with self._lock:
+            rec = self.read_delivery(emitter, event, subscriber)
+            if rec is None:
+                return False
+            if rec["status"] != "done" or rec["gen"] != gen:
+                return False
+            if rec.get("noted") is True:
+                return True
+            merged = dict(rec, noted=True)
             validated = event_attempts.validate_record(
                 merged, expect_emitter=emitter, expect_event=event,
                 expect_subscriber=subscriber)
@@ -2238,9 +2284,15 @@ class EventSpool:
                           if marker.state is MarkerState.PRESENT else None)
                     if rec is None:
                         continue
-                    noted_age = (now - rec["noted_ts"] if rec["noted"] else None)
-                    spent = (noted_age is not None
-                            and noted_age > REMOVAL_RECORD_PRUNE_S)
+                    # #532 (design r2, Sol+Terra): an UN-noted record is the
+                    # only evidence an operator notice is still owed — age
+                    # alone never deletes it (a 30-day outage used to prune
+                    # it at boot seconds before the channel came up). The
+                    # hard bound now reaps NOTED stragglers only.
+                    if not rec["noted"]:
+                        continue
+                    noted_age = now - rec["noted_ts"]
+                    spent = noted_age > REMOVAL_RECORD_PRUNE_S
                     aged = now - rec["ts"] > REMOVAL_RECORD_MAX_AGE_S
                     if not spent and not aged:
                         continue
