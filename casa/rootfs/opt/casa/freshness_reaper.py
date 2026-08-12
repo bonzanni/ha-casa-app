@@ -91,7 +91,13 @@ class FreshnessReaper:
                 if claimed:
                     if self._is_stale_claim(claimed, now):
                         logger.warning("freshness reaper: releasing stale save-claim for %s", key)
-                        await self._reg.clear_save_claim(key)
+                        # #526 (Terra diff-r1): staleness was judged from the
+                        # sweep's STALE entry copy — a re-registration (same
+                        # sid included) may have landed a FRESH claim since;
+                        # the generation guard declines the release then.
+                        await self._reg.clear_save_claim(
+                            key, expected_generation=generations[key],
+                        )
                     else:
                         continue  # a save is genuinely in-flight → let it finish
                 # Task 10: decode the entry into an immutable snapshot. A legacy
