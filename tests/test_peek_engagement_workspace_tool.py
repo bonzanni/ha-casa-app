@@ -37,6 +37,60 @@ async def test_peek_returns_tree_when_no_path(tmp_path, monkeypatch):
     assert "nested" in names
 
 
+async def test_tree_does_not_follow_symlinks_out_of_workspace(tmp_path, monkeypatch):
+    """#324: the empty-path tree listing must not follow a symlink out of the
+    workspace — a `secrets -> <outside>` link leaked outside names/types."""
+    import tools as tools_mod
+    from tools import peek_engagement_workspace
+
+    outside = tmp_path / "outside"
+    (outside / "sub").mkdir(parents=True)
+    (outside / "top-secret.txt").write_text("x", encoding="utf-8")
+    (outside / "sub" / "deeper.txt").write_text("y", encoding="utf-8")
+
+    root = tmp_path / "engroot"
+    root.mkdir()
+    ws = root / "eng1"
+    ws.mkdir()
+    (ws / "real.txt").write_text("ok", encoding="utf-8")
+    (ws / "link").symlink_to(outside)
+    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(root),
+                        raising=False)
+
+    result = await peek_engagement_workspace.handler({"engagement_id": "eng1"})
+    payload = json.loads(result["content"][0]["text"])
+    flat = json.dumps(payload["tree"])
+    assert "top-secret.txt" not in flat
+    assert "deeper.txt" not in flat
+    by_name = {n["name"]: n for n in payload["tree"]}
+    assert by_name["link"]["type"] == "symlink"
+    assert "children" not in by_name["link"]
+    assert by_name["real.txt"]["type"] == "file"
+
+
+async def test_tree_labels_in_workspace_dir_symlink_without_recursing(tmp_path, monkeypatch):
+    """A symlink to a directory INSIDE the workspace is still reported as a
+    symlink and never expanded (no duplicate subtree, no cycle risk)."""
+    import tools as tools_mod
+    from tools import peek_engagement_workspace
+
+    root = tmp_path / "engroot"
+    root.mkdir()
+    ws = root / "eng1"
+    (ws / "nested").mkdir(parents=True)
+    (ws / "nested" / "b.txt").write_text("deep", encoding="utf-8")
+    (ws / "alias").symlink_to(ws / "nested")
+    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(root),
+                        raising=False)
+
+    result = await peek_engagement_workspace.handler({"engagement_id": "eng1"})
+    payload = json.loads(result["content"][0]["text"])
+    by_name = {n["name"]: n for n in payload["tree"]}
+    assert by_name["alias"]["type"] == "symlink"
+    assert "children" not in by_name["alias"]
+    assert by_name["nested"]["type"] == "dir"
+
+
 async def test_peek_returns_file_contents(tmp_path, monkeypatch):
     import tools as tools_mod
     from tools import peek_engagement_workspace

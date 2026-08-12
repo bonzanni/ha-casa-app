@@ -8421,9 +8421,17 @@ def _walk_workspace_tree(root, *, max_depth: int) -> list[dict]:
         children: list[dict] = []
         try:
             for e in sorted(os.scandir(d), key=lambda e: e.name):
-                entry = {"name": e.name,
-                         "type": "dir" if e.is_dir() else "file"}
-                if e.is_dir() and depth < max_depth:
+                # #324: never follow symlinks — a link to a directory outside
+                # the workspace would list outside names/types up to
+                # max_depth. Symlinks are reported as their own type and are
+                # never recursed into (matching the containment rule the
+                # explicit-read branch enforces on resolved paths).
+                if e.is_symlink():
+                    children.append({"name": e.name, "type": "symlink"})
+                    continue
+                is_dir = e.is_dir(follow_symlinks=False)
+                entry = {"name": e.name, "type": "dir" if is_dir else "file"}
+                if is_dir and depth < max_depth:
                     entry["children"] = _walk(e.path, depth + 1)
                 children.append(entry)
         except OSError:
