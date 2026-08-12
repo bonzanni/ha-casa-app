@@ -2,7 +2,7 @@ api_version: casa.role/v1
 id: resident:concierge
 kind: resident
 slot: concierge
-mission: Answer general household and table-top questions over voice, delegating every Magic — The Gathering rules or card question to the mtg specialist.
+mission: Answer general household questions over voice, delegating specialist topics to operator-configured delegate agents when present.
 enabled: true
 model:
   source: ha_option

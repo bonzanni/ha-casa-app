@@ -6,7 +6,7 @@ hand-created directories; see recipes/specialist/create.md). Installed specialis
 their identity, persona binding, and runtime files are all derived from the component, never
 hand-edited.
 
-A component may declare bundled or repo-sourced plugin dependencies (e.g. mtg's `mtg` plugin).
+A component may declare bundled or repo-sourced plugin dependencies (e.g. a weather specialist's `weather` plugin).
 These are NEVER installed separately: `specialist_install_inspect` resolves and validates the whole
 dependency closure (persona, corpus, plugins) in one pass, ONE consent DM covers the specialist AND
 every dependency together, and `specialist_install_commit` activates all of it atomically. Do not

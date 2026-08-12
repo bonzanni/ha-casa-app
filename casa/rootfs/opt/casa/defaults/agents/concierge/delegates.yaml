@@ -1,5 +1,2 @@
 schema_version: 1
-delegates:
-  - agent: mtg
-    purpose: "Magic: The Gathering rules interactions, card text, and rulings"
-    when: "ANY question about MTG rules, cards, interactions, or rulings"
+delegates: []

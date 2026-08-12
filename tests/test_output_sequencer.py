@@ -43,8 +43,12 @@ class Recorder:
         self.edits: list[tuple[int, int, str]] = []
         self._next_id = 100
         self.edit_fails = 0
+        self.send_fails = 0
 
     async def send(self, topic_id: int, text: str) -> int | None:
+        if self.send_fails > 0:
+            self.send_fails -= 1
+            return None
         self.sends.append((topic_id, text))
         mid = self._next_id
         self._next_id += 1
@@ -701,6 +705,44 @@ async def test_platform_notice_seals_narration_below_it():
     # Narration is now SEALED: a further edit can NOT land as APPLIED (it would
     # edit a message with the receipt below it).
     assert await seq.edit_narration_if_latest(nar, "sneaky append") == SEALED
+
+
+async def test_platform_notice_failed_send_leaves_narration_open():
+    """#392: a notice whose send DEFINITELY failed (wire wrapper returned
+    ``None``) must leave narration open and editable — the #332 rule seals
+    only on a confirmed send (nothing landed below the narration)."""
+    rec, clock = Recorder(), Clock()
+    seq = _make_seq(rec, clock)
+    nar = await seq.open_narration("working on it ")
+    rec.send_fails = 1
+    assert await seq.post_platform_notice("📥 Received") is None
+    # Nothing was posted below the narration, so it must still be editable.
+    assert await seq.edit_narration_if_latest(nar, "still going") == APPLIED
+    assert seq.narration_msg_id == nar
+
+
+async def test_completion_notice_failed_send_leaves_narration_open():
+    """#392: same confirmed-send seal rule for the terminal completion post
+    (the other caller of the shared notice body)."""
+    rec, clock = Recorder(), Clock()
+    seq = _make_seq(rec, clock)
+    nar = await seq.open_narration("wrapping up ")
+    rec.send_fails = 1
+    assert await seq.post_completion_notice("✅ done") is None
+    assert await seq.edit_narration_if_latest(nar, "wrapping up .") == APPLIED
+    assert seq.narration_msg_id == nar
+
+
+async def test_paged_completion_failed_send_leaves_narration_open():
+    """#392: the paged-sender completion branch follows the same rule."""
+    from unittest.mock import AsyncMock
+
+    rec, clock = Recorder(), Clock()
+    seq = _make_seq(rec, clock, send_paged=AsyncMock(return_value=None))
+    nar = await seq.open_narration("wrapping up ")
+    assert await seq.post_completion_notice("**summary**") is None
+    assert await seq.edit_narration_if_latest(nar, "wrapping up .") == APPLIED
+    assert seq.narration_msg_id == nar
 
 
 # ---------------------------------------------------------------------------

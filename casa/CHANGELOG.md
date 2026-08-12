@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.182.0] - 2026-08-12
+
+### Fixed
+
+- **A fresh install is now genuinely neutral.** The shipped concierge no
+  longer carries Magic: The Gathering routing doctrine, no longer advertises
+  a delegate the image does not ship (which failed with `unknown_agent` when
+  invoked), and the MTG "Judge" persona pack is no longer bundled — that
+  content belongs with the separately installed MTG specialist component.
+  (#427)
+- **Approving two pending persona-install consents no longer erases the
+  first approval.** The persona-install consent ledger is now re-read before
+  every write, so sibling consent prompts merge instead of clobbering each
+  other's recorded approvals. (#310)
+- **A failed platform or completion notice no longer freezes the progress
+  message.** The in-progress narration message now stays live and editable
+  when a notice's send definitely failed (nothing was posted below it),
+  matching the rule every other write path already follows. (#392)
+
 ## [0.181.0] - 2026-08-12
 
 ### Security
