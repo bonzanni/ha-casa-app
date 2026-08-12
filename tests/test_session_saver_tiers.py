@@ -1,5 +1,9 @@
 # tests/test_session_saver_tiers.py
 """Save path: per-item true-tier tags, shared bank, voice is recall-only."""
+import logging
+import sys
+import types
+
 import pytest
 
 import session_saver
@@ -33,6 +37,67 @@ async def test_transcript_items_tagged_per_item(monkeypatch):
         content_document_id(_USER_PEER, "my salary is 5000"),
         agent_document_id(STUB_SPEAKER_PROV, "bin day is Tuesday"),
     ]
+
+
+def _install_fake_sdk_reply(monkeypatch, reply: str):
+    """Fake claude_agent_sdk for the REAL classify_tier (no monkeypatched
+    classifier here — the #508 aggregate count lives inside tier_classifier,
+    so the save-level test must run the genuine classify path)."""
+    fake = types.ModuleType("claude_agent_sdk")
+
+    class _Text:
+        def __init__(self, text):
+            self.text = text
+
+    class _Assistant:
+        def __init__(self, text):
+            self.content = [_Text(text)]
+
+    class ClaudeAgentOptions:  # noqa: N801
+        def __init__(self, **kw):
+            self.kw = kw
+
+    fake.ClaudeAgentOptions = ClaudeAgentOptions
+    fake.AssistantMessage = _Assistant
+
+    async def query(*, prompt, options):  # noqa: ANN001
+        yield _Assistant(reply)
+
+    fake.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+
+
+async def test_save_logs_one_aggregate_defaulted_count(monkeypatch, caplog):
+    """#508: at a ~12% per-call default rate, small saves look clean by chance
+    and per-item WARNs are scattered — the save must log ONE
+    N-defaulted-of-M line when any item fell to the failure default."""
+    _install_fake_sdk_reply(monkeypatch, "no mandated answer line here")
+    msgs = [_Msg("user", "my salary is 5000"), _Msg("assistant", "bin day is Tuesday")]
+    with caplog.at_level(logging.WARNING):
+        items = await session_saver.transcript_to_items(
+            msgs, speaker_provenance=STUB_SPEAKER_PROV,
+            user_provenance=STUB_USER_PROV,
+        )
+    # Leak-safe default preserved on the items themselves.
+    assert [i["tags"][0] for i in items] == ["private", "private"]
+    aggregate = [r.getMessage() for r in caplog.records
+                 if "of 2 items" in r.getMessage()]
+    assert len(aggregate) == 1
+    assert "2 of 2 items" in aggregate[0]
+    # Aggregate line stays content-free (structural counts only).
+    assert "salary" not in aggregate[0]
+
+
+async def test_clean_save_logs_no_aggregate_line(monkeypatch, caplog):
+    _install_fake_sdk_reply(monkeypatch, "friends")
+    msgs = [_Msg("user", "dinner is at seven")]
+    with caplog.at_level(logging.WARNING):
+        items = await session_saver.transcript_to_items(
+            msgs, speaker_provenance=STUB_SPEAKER_PROV,
+            user_provenance=STUB_USER_PROV,
+        )
+    assert [i["tags"][0] for i in items] == ["friends"]
+    assert not [r for r in caplog.records if "defaulted" in r.getMessage()]
 
 
 async def test_transcript_dedupes_repeated_line_within_batch(monkeypatch):

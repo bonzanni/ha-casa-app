@@ -20,7 +20,8 @@ from hindsight_ids import bank_id
 from memory_provenance import build_retain_items
 from personality_types import RetainedTurn, SpeakerProvenance
 from speaker_provenance import provenance_from_mapping, provenance_mapping
-from tier_classifier import classify_tier
+from sensitivity import DEFAULT_TIER
+from tier_classifier import classify_stats, classify_tier
 from timekeeping import split_time_envelope
 
 if TYPE_CHECKING:
@@ -115,9 +116,25 @@ async def transcript_to_items(
             turns.append(RetainedTurn(text, speaker_provenance))
     if not turns:
         return []
-    return await build_retain_items(
-        turns, classify=classify_tier, classify_concurrency=_CLASSIFY_CONCURRENCY,
-    )
+    # #508: count failure-defaults across the whole batch so the operator sees
+    # N-defaulted-of-M in ONE line instead of grepping per-item WARNs (at ~12%
+    # per-call, small saves look clean by chance and only an aggregate over a
+    # large save shows the rate). The scope is a contextvar inside
+    # tier_classifier, so the monkeypatch-by-name contract above is untouched
+    # and a test's fake classifier simply never counts. Counts only — never
+    # item or reply content (leak-safety), and nothing is persisted on the
+    # item (the structural-metadata-only rule).
+    with classify_stats() as stats:
+        items = await build_retain_items(
+            turns, classify=classify_tier, classify_concurrency=_CLASSIFY_CONCURRENCY,
+        )
+    if stats.defaulted:
+        logger.warning(
+            "tier classification defaulted to %s for %d of %d items in this "
+            "save (per-item warnings above carry each failure's shape)",
+            DEFAULT_TIER, stats.defaulted, stats.total,
+        )
+    return items
 
 
 async def save_session(

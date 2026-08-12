@@ -265,3 +265,26 @@ def test_prompt_mandates_the_labeled_final_line_contract():
     # the exact "Tier: <word>" final-line shape the fallback parser accepts.
     assert "Tier: <word>" in SENSITIVITY_PROMPT
     assert "end with a final line" in SENSITIVITY_PROMPT.lower()
+
+
+# ---------------------------------------------------------------------------
+# tier_evidence (#508 review r1, Sol S1): answer-shaped lines in a DISCARDED
+# reply, used by the classifier only as a sensitivity floor for the re-ask.
+# ---------------------------------------------------------------------------
+
+def test_tier_evidence_collects_answer_shaped_lines_only():
+    from sensitivity import tier_evidence
+
+    assert tier_evidence(
+        "This must be kept confidential.\nprivate") == ["private"]
+    assert tier_evidence("**friends**\nTier: family\nchatty tail") == [
+        "friends", "family"]
+
+
+def test_tier_evidence_ignores_prose_tier_words():
+    # #350 boundary: a tier word inside a sentence is never evidence.
+    from sensitivity import tier_evidence
+
+    assert tier_evidence("This is not public; it is family") == []
+    assert tier_evidence(None) == []
+    assert tier_evidence("") == []
