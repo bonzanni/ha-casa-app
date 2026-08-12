@@ -601,6 +601,8 @@
   doc: architecture/overview.md
 - item: env:LOG_LEVEL
   doc: reference/operator-options.md
+- item: env:ONEPASSWORD_DEFAULT_VAULT
+  doc: reference/operator-options.md
 - item: env:PUBLIC_URL
   doc: reference/operator-options.md
 - item: env:SECONDARY_AGENT_MODEL

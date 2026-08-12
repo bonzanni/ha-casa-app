@@ -50,7 +50,7 @@ container variable can survive an empty option elsewhere.
 | `telegram_transport` | `TELEGRAM_TRANSPORT` | main startup | polling | restart |
 | `hindsight_api_url` | `HINDSIGHT_API_URL` (the run script derives `MEMORY_BACKEND=hindsight` from it; `hindsight` without a URL is a startup error, an unknown backend value warns to no-op) | memory backend selection | empty → no-op memory | restart |
 | `onepassword_service_account_token` | `OP_SERVICE_ACCOUNT_TOKEN` | secret resolver (`op` CLI); setup's token blocks | empty | restart |
-| `onepassword_default_vault` | `ONEPASSWORD_DEFAULT_VAULT` | setup's GitHub-token block (the exported var has no in-repo reader) | Casa | restart |
+| `onepassword_default_vault` | `ONEPASSWORD_DEFAULT_VAULT` | setup's GitHub-token block; the configurator's vault tools fall back to it when their `vault` argument is omitted | Casa | restart |
 | `webhook_secret` | `WEBHOOK_SECRET` (else the persisted secret file) | setup's secret block; main startup | generated and persisted when empty | restart |
 | `context7_api_key` | `CONTEXT7_API_KEY` | Context7 MCP subprocess (plugin-env loading may overwrite) | empty | restart |
 | `primary_agent_model` | `PRIMARY_AGENT_MODEL` | role-slot model options → role model resolution | opus | restart |

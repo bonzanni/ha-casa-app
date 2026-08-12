@@ -1191,3 +1191,190 @@ async def test_terminal_latch_discards_via_sequencer_writers(tmp_path):
     assert await seq.post_platform_notice("discarded notice") is None
     assert await seq.post_completion_notice("completion") is not None
     assert _narration_sends(rec) == ["live", "completion"]
+
+
+# ===========================================================================
+# #538 (v0.191.0): the DISCARD tombstone — a crash between the result-time
+# discard decision and the closed-turn checkpoint must NOT resurface the
+# discarded sign-off on cold recovery. Crash injection = make the finalize
+# fail AFTER the discard decision (drain raises), then build a COMPLETELY NEW
+# relay on the persisted cursor. The flush/resurface doctrine is untouched:
+# crash BEFORE result (no tombstone) still resurfaces — pinned by the C3
+# tests above.
+# ===========================================================================
+
+
+async def test_crash_after_discard_decision_does_not_resurface_signoff(tmp_path):
+    """The exact #538 window: anchor open at ``result`` ⇒ DISCARD decided;
+    the process dies before the closed-turn checkpoint lands. The tombstone
+    (written ahead at the decision) makes cold recovery DROP the held prose
+    instead of re-rendering it as catch-up narration; both markers clear at
+    the recovered turn's closed-turn checkpoint."""
+    signoff = "I'll wait for your answer."
+    offs = _write_current(
+        tmp_path, [_init(), _anchor_ask("Q?"), _text(signoff), _result()],
+    )
+    cursor = tmp_path / ".stream_cursor.json"
+
+    # Relay 1: holds the prose, decides DISCARD at result, then "crashes"
+    # inside the finalize window (drain raises after the decision).
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+
+    async def _boom():
+        raise RuntimeError("crash inside the finalize window")
+
+    seq1.drain_and_prune_turn = _boom
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    with pytest.raises(RuntimeError):
+        await relay1.run()
+    assert rec1.sends == []                                  # held, never posted
+    persisted = StreamCursor.load(cursor)
+    assert persisted.hold_pending is True                    # window state
+    assert persisted.hold_discarded is True                  # tombstone landed
+
+    # Relay 2: a genuine cold recovery. The discarded sign-off must NOT post.
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: (5, 500, _ah()),   # anchor STILL open
+    )
+    await relay2.run()
+
+    assert rec2.sends == []                                  # the #538 kill
+    assert rec2.edits == []
+    done = StreamCursor.load(cursor)
+    assert done.hold_pending is False
+    assert done.hold_discarded is False
+    assert done.current["offset"] == offs[-1]                # past result
+
+
+async def test_crash_after_discard_mixed_frame_drops_text_keeps_tools(tmp_path):
+    """Sol design-r1 S2: the held prose rides a MIXED anchor+text frame. On
+    tombstone recovery the frame's text block is dropped while its tool_use
+    block still processes (the discrete/event machinery is not muted)."""
+    offs = _write_current(
+        tmp_path,
+        [_init(), _mixed_anchor_text("Q?", "held sign-off"), _result()],
+    )
+    cursor = tmp_path / ".stream_cursor.json"
+
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+
+    async def _boom():
+        raise RuntimeError("crash inside the finalize window")
+
+    seq1.drain_and_prune_turn = _boom
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    with pytest.raises(RuntimeError):
+        await relay1.run()
+    assert StreamCursor.load(cursor).hold_discarded is True
+
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    await relay2.run()
+
+    assert _narration_sends(rec2) == []                      # text dropped
+    # The mixed frame's tool_use still drove the event machinery on catch-up.
+    assert any(k == "tool_use" for k, _p in events2)
+    assert StreamCursor.load(cursor).current["offset"] == offs[-1]
+
+
+async def test_discard_recovery_does_not_mute_next_turn(tmp_path):
+    """Sol design-r1 S1: the in-memory discard latch must die at the recovered
+    turn's boundary. A SECOND turn already in the log behind the crashed one
+    renders normally in the SAME recovery run."""
+    _write_current(tmp_path, [
+        _init("s1"), _anchor_ask("Q?"), _text("held sign-off"), _result(),
+        _init("s2"), _text("turn2 prose"), _result(),
+    ])
+    cursor = tmp_path / ".stream_cursor.json"
+
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+
+    async def _boom():
+        raise RuntimeError("crash inside the finalize window")
+
+    seq1.drain_and_prune_turn = _boom
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    with pytest.raises(RuntimeError):
+        await relay1.run()
+    assert StreamCursor.load(cursor).hold_discarded is True
+
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    await relay2.run()
+
+    assert _narration_sends(rec2) == ["turn2 prose"]         # not muted
+    done = StreamCursor.load(cursor)
+    assert done.hold_pending is False
+    assert done.hold_discarded is False
+
+
+async def test_stale_tombstone_cleared_when_new_hold_arms(tmp_path):
+    """Terra design-r1 S1 / Sol S1: a stale tombstone (its ``hold_pending``
+    cleared by the retention-gap floor, the tombstone left behind) must NOT
+    survive into a LATER held turn — that turn's crash-before-result recovery
+    must still RESURFACE (resurface-never-lose). ``_arm_hold_marker`` starts a
+    fresh hold generation with the tombstone reset, and the gap floor clears
+    both fields."""
+    offs = _write_current(
+        tmp_path, [_init(), _mixed_anchor_text("Q?", "must resurface")],
+    )
+    cursor = tmp_path / ".stream_cursor.json"
+    seg = _ident(os.path.join(str(tmp_path), "current"))
+    # Gap-orphaned state: a prior turn's frames rotated out mid-window,
+    # leaving hold_pending + the tombstone durable at a dead coordinate.
+    StreamCursor(
+        turn_start={"segment": [999, 999], "offset": 0},
+        current={"segment": [999, 999], "offset": 40},
+        message_ids=[],
+        hold_pending=True,
+        hold_discarded=True,
+    ).save(cursor)
+
+    # Relay 1: gap floor clears BOTH fields, the fresh anchor turn re-arms and
+    # holds — a new hold generation whose marker save must NOT carry the stale
+    # tombstone.
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    await relay1.run()
+    assert rec1.sends == []                                  # held, never posted
+    held = StreamCursor.load(cursor)
+    assert held.hold_pending is True                         # new hold armed
+    assert held.hold_discarded is False                      # stale tombstone gone
+
+    # Relay 2: crash-before-result recovery of the NEW hold must resurface.
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    await relay2.run()
+    assert _narration_sends(rec2) == ["must resurface"]      # NOT dropped
+    assert relay2.cursor.current["offset"] == offs[-1]
