@@ -661,6 +661,58 @@ async def test_restart_orphans_accepted_job_left_before_task_binding(tmp_path):
     assert job.failure == JobFailure("restart_orphan", "Lost on restart")
 
 
+async def test_restart_finalizes_cancel_pending_job_as_cancelled(tmp_path):
+    """#334: a job the creator already cancelled (durable cancel_pending) must
+    not be recovered as a restart orphan — no "Lost on restart" failure, no
+    delivery, no creator notice."""
+    registry = await loaded_registry(
+        tmp_path,
+        make_job(
+            started_at=101.0,
+            execution_state=ExecutionState.RUNNING,
+            cancel_pending=True,
+            creator_peer="telegram",
+        ),
+        now=120.0,
+    )
+    recovered = await registry.recover_after_restart()
+    job = registry.get("job-1")
+    assert recovered == []
+    assert job.execution_state is ExecutionState.CANCELLED
+    assert job.failure == JobFailure("cancelled", "Cancelled by creator")
+    assert job.delivery_state is DeliveryState.NONE
+    assert job.delivery_sequence == 0
+    assert job.cancel_pending is False
+    assert job.orphan_notification_pending is False
+    assert job.terminal_at == 120.0
+
+
+async def test_restart_cancel_pending_with_live_delivery_marks_it_cancelled(
+    tmp_path,
+):
+    """#334: an in-flight delivery of a cancelled job flips to CANCELLED (the
+    live cancel paths' shape), never to a fresh READY sequence."""
+    registry = await loaded_registry(
+        tmp_path,
+        make_job(
+            started_at=101.0,
+            execution_state=ExecutionState.RUNNING,
+            delivery_state=DeliveryState.READY,
+            delivery_sequence=3,
+            cancel_pending=True,
+        ),
+        now=120.0,
+    )
+    recovered = await registry.recover_after_restart()
+    job = registry.get("job-1")
+    assert recovered == []
+    assert job.execution_state is ExecutionState.CANCELLED
+    assert job.delivery_state is DeliveryState.CANCELLED
+    assert job.delivery_sequence == 3
+    assert job.lease_until is None
+    assert job.delivery_attempt_id is None
+
+
 async def test_continuation_create_atomically_consumes_parent(tmp_path):
     registry = await loaded_registry(
         tmp_path,

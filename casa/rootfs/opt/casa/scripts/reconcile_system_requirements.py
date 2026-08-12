@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -15,14 +14,12 @@ logger = logging.getLogger("reconcile_system_requirements")
 
 
 def _resolves(verify_bin: str, tools_bin: Path) -> bool:
-    direct = tools_bin / verify_bin
-    # is_file() follows symlinks and is False for a dangling link — so a
-    # rolled-back/wiped install (stale symlink, target gone) correctly falls
-    # through to the shutil.which fallback and is reported degraded instead of
-    # masked as ready (M23).
-    if direct.is_file():
-        return True
-    return shutil.which(verify_bin) is not None
+    # Only the MANAGED tools/bin entry counts: every install backend publishes
+    # verify_bin there, so its absence always means the install was wiped or
+    # rolled back — an unrelated same-named binary on the image PATH must not
+    # mask that as ready (#334). is_file() follows symlinks and is False for a
+    # dangling link (M23).
+    return (tools_bin / verify_bin).is_file()
 
 
 def main() -> int:
@@ -63,7 +60,8 @@ def main() -> int:
         )
         results.append({"name": name, "status": "degraded",
                         "verify_bin": verify_bin,
-                        "reason": f"verify_bin {verify_bin!r} not on PATH"})
+                        "reason": (f"managed tools/bin/{verify_bin} missing "
+                                   "or dangling")})
         degraded = True
 
     status_path = Path(args.status_file)

@@ -250,7 +250,7 @@
   defines_invariants: [INV-JOB-001, INV-JOB-002, INV-JOB-003, INV-JOB-004, INV-JOB-005]
   invariant_tests:
     INV-JOB-001: [tests/test_job_registry.py::test_failed_snapshot_write_does_not_publish_memory_mutation]
-    INV-JOB-002: [tests/test_job_registry.py::test_restart_orphans_running_job_and_queues_voice_failure]
+    INV-JOB-002: [tests/test_job_registry.py::test_restart_orphans_running_job_and_queues_voice_failure, tests/test_job_registry.py::test_restart_finalizes_cancel_pending_job_as_cancelled]
     INV-JOB-003: [tests/test_job_registry.py::test_invalid_compare_and_set_does_not_mutate, tests/test_voice_delivery.py::test_stale_claim_is_denied_without_mutation]
     INV-JOB-004: [tests/test_job_registry.py::test_playing_lease_lapse_requeues_for_at_least_once_delivery]
     INV-JOB-005: [tests/test_voice_delivery.py::test_only_device_queue_head_is_offered, tests/test_voice_delivery.py::test_device_fifo_is_stable_across_route_ids]

@@ -857,8 +857,12 @@ class SummaryController:
             due = force or (now - self._last_edit_ts) >= self._throttle_s
             if due and text != self._last_rendered:
                 res = await self._sequencer.edit_summary(self._message_id, text)
-                self._last_edit_ts = now
                 if res != FAILED:
+                    # #334: a FAILED edit reached nothing on the wire — leave
+                    # the throttle timestamp untouched so the next non-forced
+                    # flush retries immediately instead of sitting out a full
+                    # window.
+                    self._last_edit_ts = now
                     self._last_rendered = text
         if force:
             await self._maybe_pin_locked()

@@ -283,6 +283,16 @@ class StreamCursor:
     # a flush, on the result-time discard, or at an abnormal spawn boundary).
     # Absent-tolerated → ``False`` (older checkpoints predate the field).
     hold_pending: bool = False
+    # #334: durable turn-end-event outbox (size one). Set ATOMICALLY in the
+    # same save as the closed-turn checkpoint (write-ahead, the ``hold_pending``
+    # precedent), cleared by a second save only after ``on_turn_event("result")``
+    # returned. A callback that raises (or a crash before the clear) leaves the
+    # marker durable; ``_run_cold`` re-delivers the pending event BEFORE the
+    # frame loop — the closed turn itself never replays. At-least-once: a crash
+    # between a successful delivery and the clear duplicates the event, which
+    # drivers already tolerate (spawn replay has the same contract).
+    # Absent-tolerated → ``None`` (older checkpoints predate the field).
+    result_event_pending: dict | None = None
 
     def __post_init__(self) -> None:
         # P2: NORMALIZE sep_stripped parallel to message_ids at EVERY
@@ -320,6 +330,11 @@ class StreamCursor:
             last_posted_len=int(data.get("last_posted_len") or 0),
             dropped_through=data.get("dropped_through"),
             hold_pending=bool(data.get("hold_pending") or False),
+            result_event_pending=(
+                data.get("result_event_pending")
+                if isinstance(data.get("result_event_pending"), dict)
+                else None
+            ),
         )
 
     def save(self, path: str | os.PathLike[str]) -> None:
@@ -341,6 +356,7 @@ class StreamCursor:
                 "last_posted_len": self.last_posted_len,
                 "dropped_through": self.dropped_through,
                 "hold_pending": self.hold_pending,
+                "result_event_pending": self.result_event_pending,
             },
         )
 
@@ -1797,10 +1813,14 @@ class TopicStreamRelay:
         # AFTER its initial reset; the latch clears at the FIRST live boundary.)
         self._replay_disarmed = False
 
-    async def _finalize(self, seg, off_after: int) -> None:
+    async def _finalize(
+        self, seg, off_after: int, *, subtype: str | None = None,
+    ) -> None:
         """Route the closing edit through ``edit_narration_if_latest`` (§2:612),
         then persist a CLOSED-TURN checkpoint (``message_ids=[]``,
-        ``turn_start == current`` past ``result``).
+        ``turn_start == current`` past ``result``) that carries a durable
+        ``result_event_pending`` marker, then deliver ``on_turn_event("result")``
+        and clear the marker (#334 — see the ``StreamCursor`` field comment).
 
         §2(d): the reply de-dup DELETE (formerly here at :633) is REMOVED — no
         message is ever deleted; a duplicate is preferred over erasing history.
@@ -1916,6 +1936,14 @@ class TopicStreamRelay:
         # armed set under a single held lock until it is empty, so nothing live
         # is pruned.
         await self.sequencer.drain_and_prune_turn()
+        # #334: the pending-event marker rides the SAME save as the closed-turn
+        # checkpoint (write-ahead). If the delivery below raises, the run
+        # aborts with the marker durable and ``_run_cold`` re-delivers it; the
+        # closed turn itself never replays.
+        self.cursor.result_event_pending = {"subtype": subtype}
+        self._save()
+        await _maybe_await(self.on_turn_event("result", {"subtype": subtype}))
+        self.cursor.result_event_pending = None
         self._save()
 
     # -- main loop ----------------------------------------------------------
@@ -1933,6 +1961,17 @@ class TopicStreamRelay:
 
     async def _run_cold(self) -> None:
         self.cursor = StreamCursor.load(self.cursor_path)
+        # #334: a durable pending turn-end event (the callback raised, or the
+        # process died before the post-delivery clear) is re-delivered FIRST —
+        # before any frame is processed — so the driver's turn lifecycle closes
+        # ahead of any later turn's events. A raise here aborts the run with
+        # the marker intact; the next cold entry retries. At-least-once.
+        if self.cursor.result_event_pending is not None:
+            await _maybe_await(self.on_turn_event(
+                "result", dict(self.cursor.result_event_pending),
+            ))
+            self.cursor.result_event_pending = None
+            self._save()
         # §A1(3) (Sol A1 review): a STALE ``dropped_through`` whose segment has
         # rotated off disk is NO LONGER cleared here. The prior cold-start clear
         # (a) never helped the WARM path (a live marker whose segment rotated out
@@ -2230,10 +2269,10 @@ class TopicStreamRelay:
             return
 
         if ftype == "result":
-            await self._finalize(seg, off_after)
-            await _maybe_await(
-                self.on_turn_event("result", {"subtype": frame.get("subtype")})
-            )
+            # #334: ``_finalize`` owns the event delivery — the closed-turn
+            # checkpoint and the durable ``result_event_pending`` marker are
+            # saved atomically before the callback runs.
+            await self._finalize(seg, off_after, subtype=frame.get("subtype"))
             return
 
         # rate_limit_event / unknown type → invisible checkpoint.

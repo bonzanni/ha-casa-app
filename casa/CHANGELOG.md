@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.185.0] - 2026-08-12
+
+### Fixed
+
+- A plugin whose managed install was wiped or rolled back is no longer
+  reported "ready" at boot just because an unrelated binary of the same name
+  exists on the image PATH — for example, a Python-based plugin whose
+  virtualenv was deleted was previously satisfied by the image's own
+  `python3` and started without its packages. Only the managed
+  `tools/bin` entry now counts; anything else reports degraded. (#334)
+- A specialist job you cancelled just before a restart is no longer
+  resurrected as a "Lost on restart" failure notice — restart recovery now
+  honors the durable cancellation and finalizes the job as cancelled,
+  with nothing delivered. (#334)
+- An engagement turn's end-of-turn bookkeeping (activity summary and spool
+  lifecycle) can no longer be left hanging until an unrelated later turn
+  when the internal turn-end callback fails transiently: the turn-end event
+  is now durably recorded with the closing checkpoint and re-delivered on
+  the next pass. (#334)
+- A transient Telegram failure while updating an engagement's summary
+  message no longer silences summary updates for the following throttle
+  window — a failed edit now retries at the next update instead of
+  consuming the window. (#334)
+
 ## [0.184.0] - 2026-08-12
 
 ### Fixed
