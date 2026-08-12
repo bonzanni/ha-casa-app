@@ -93,11 +93,23 @@ class SpecialistInstallAckStore:
     def __init__(self, path: Path = _ACKS_PATH) -> None:
         self.path = Path(path)
 
-    def _load(self) -> dict[str, dict[str, Any]]:
-        # Caller must hold _LEDGER_LOCK.
+    def _load(self, *, strict_read: bool = False) -> dict[str, dict[str, Any]]:
+        # Caller must hold _LEDGER_LOCK. Sol r1 (#310): every MUTATION passes
+        # strict_read=True — a transient read failure (an OSError that is not
+        # file-missing) must abort the read-modify-write rather than persist
+        # the fail-closed empty view over previously recorded acks. Reads keep
+        # the fail-closed {} (no consent manufactured), and a content-invalid
+        # store still starts empty: the next successful record rewrites a
+        # valid store (the documented corruption recovery).
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            if strict_read:
+                raise
+            return {}
+        except ValueError:
             return {}
         if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
             return {}
@@ -158,13 +170,13 @@ class SpecialistInstallAckStore:
         if receipt_digest:
             rec["receipt_digest"] = receipt_digest
         with _LEDGER_LOCK:
-            candidate = dict(self._load())
+            candidate = dict(self._load(strict_read=True))
             candidate[identity] = rec
             self._persist_locked(candidate)
 
     def revoke(self, identity: str) -> bool:
         with _LEDGER_LOCK:
-            acks = self._load()
+            acks = self._load(strict_read=True)
             if identity not in acks:
                 return False
             candidate = dict(acks)
@@ -177,7 +189,7 @@ class SpecialistInstallAckStore:
         records (for journaling — the caller can `restore_records` them back
         on a rollback)."""
         with _LEDGER_LOCK:
-            acks = self._load()
+            acks = self._load(strict_read=True)
             removed = [dict(rec) for rec in acks.values() if rec.get("slug") == slug]
             if not removed:
                 return []
@@ -201,7 +213,7 @@ class SpecialistInstallAckStore:
         if not records:
             return
         with _LEDGER_LOCK:
-            acks = self._load()
+            acks = self._load(strict_read=True)
             candidate = dict(acks)
             for rec in records:
                 rec = dict(rec)

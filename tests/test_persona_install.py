@@ -201,6 +201,70 @@ def test_commit_persona_install_reclaims_staging_tree(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# PersonaInstallAckStore — multi-instance ledger safety (#310)
+# ---------------------------------------------------------------------------
+
+
+def test_ack_store_record_does_not_clobber_sibling_instance_acks(tmp_path: Path) -> None:
+    """#310: the tool layer builds one store per prompt; a consent keyboard's
+    approve callback records through its own prompt-time instance. Recording
+    through instance B must MERGE with (not clobber) an ack instance A already
+    persisted after B was constructed."""
+    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+
+    path = tmp_path / "acks.json"
+    store_a = PersonaInstallAckStore(path=path)
+    store_b = PersonaInstallAckStore(path=path)  # sibling prompt, pre-A state
+    ident_a = persona_install_consent_identity(
+        persona_id="casa/alpha", version="0.1.0", checksum="a" * 8)
+    ident_b = persona_install_consent_identity(
+        persona_id="casa/beta", version="0.1.0", checksum="b" * 8)
+    store_a.record(identity=ident_a, persona_id="casa/alpha", version="0.1.0",
+                   checksum="a" * 8)
+    store_b.record(identity=ident_b, persona_id="casa/beta", version="0.1.0",
+                   checksum="b" * 8)
+    # A commit constructs a fresh store and reads the ledger from disk — both
+    # acks must be there.
+    fresh = PersonaInstallAckStore(path=path)
+    assert fresh.is_acked(ident_a)
+    assert fresh.is_acked(ident_b)
+
+
+def test_record_aborts_rather_than_wiping_on_transient_read_failure(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#310 (Sol r1): a TRANSIENT ledger read failure (an OSError that is not
+    file-missing) during record's read-modify-write must abort the mutation —
+    persisting the fail-closed empty view would erase every previously
+    recorded ack. Only a genuinely absent file starts a fresh ledger."""
+    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+
+    path = tmp_path / "acks.json"
+    store = PersonaInstallAckStore(path=path)
+    ident_a = persona_install_consent_identity(
+        persona_id="casa/alpha", version="0.1.0", checksum="a" * 8)
+    ident_b = persona_install_consent_identity(
+        persona_id="casa/beta", version="0.1.0", checksum="b" * 8)
+    store.record(identity=ident_a, persona_id="casa/alpha", version="0.1.0",
+                 checksum="a" * 8)
+
+    real_read_text = Path.read_text
+
+    def _flaky(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("transient read failure")
+        return real_read_text(self, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "read_text", _flaky)
+        with pytest.raises(OSError):
+            store.record(identity=ident_b, persona_id="casa/beta",
+                         version="0.1.0", checksum="b" * 8)
+
+    assert PersonaInstallAckStore(path=path).is_acked(ident_a)
+
+
+# ---------------------------------------------------------------------------
 # commit_persona_install
 # ---------------------------------------------------------------------------
 

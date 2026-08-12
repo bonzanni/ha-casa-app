@@ -1,15 +1,13 @@
 """Tests for specialist_export.py — N2's production-export tooling (spec §4.5).
 
-Post-cutover (Step 9): finance's and mtg's role artifacts no longer exist
-under the image's defaults/roles/specialist/ tree — Step 9 removed both
-(finance permanently; mtg was always staging-only, present only long enough
-for export_mtg_component to read it once). These tests therefore build a
-SYNTHETIC defaults_root holding the exact finalized role.yaml/doctrine.md
-content each export was validated against pre-cutover, so the export
-tool + the real role_artifact/specialist_component loaders it drives are
-still exercised end-to-end. The alex/judge persona packs are copied from
-the still-bundled real image tree — Step 9 does not remove personas, only
-the finance/mtg role directories (and finance's legacy agent directory).
+Post-cutover (Step 9): finance's role artifact no longer exists under the
+image's defaults/roles/specialist/ tree, so these tests build a SYNTHETIC
+defaults_root holding the exact finalized role.yaml/doctrine.md content the
+export was validated against pre-cutover — the export tool + the real
+role_artifact/specialist_component loaders it drives are still exercised
+end-to-end. The alex persona pack is copied from the still-bundled real
+image tree. (#427: export_mtg_component and the shipped judge persona pack
+are gone — the MTG component lives in its own repository.)
 """
 import json
 import shutil
@@ -77,73 +75,6 @@ Lead with the result, then give at most the essential supporting figures.
 Do not expose financial records or persona identity.
 """
 
-_MTG_ROLE_YAML = """\
-api_version: casa.role/v1
-id: specialist:mtg
-kind: specialist
-slot: mtg
-mission: Ground every Magic — The Gathering rules question in the offline CR/oracle corpus via the mtg plugin tools, emitting the structured evidence contract.
-enabled: true
-model: {source: fixed, value: sonnet}
-tools:
-  allowed: []
-  disallowed: [Bash, Write, Edit, Read, Glob, Grep, WebFetch, WebSearch, NotebookEdit, Agent, Task]
-  permission_mode: dontAsk
-  max_turns: 8
-  skills: none
-  voice_guard: none
-mcp_servers: []
-channels: []
-memory: {token_budget: 0, read_strategy: per_turn}
-session: {strategy: ephemeral, idle_timeout_seconds: 0}
-disclosure: {policy: delegated, overrides: {}}
-delegates: []
-executors: []
-triggers: []
-hooks: {pre_tool_use: []}
-tts: {tag_dialect: none, error_phrases: {}}
-response:
-  text: {register: spoken, max_confirmation_sentences: 2, max_status_sentences: 3}
-  voice: {register: spoken, max_confirmation_sentences: 2, max_status_sentences: 2}
-  restricted_webhook: {register: plain, max_status_sentences: 2}
-persona:
-  policy: required
-  compatibility: ["casa/judge@>=0.1.0 <1.0.0"]
-requires:
-  plugins: [mtg]
-  tools: [mcp__plugin_mtg_mtg__lookup_rule, mcp__plugin_mtg_mtg__lookup_card]
-doctrine_file: doctrine.md
-"""
-
-_MTG_DOCTRINE_MD = """\
-# Core doctrine
-
-Invoke the mtg-judge procedure for EVERY question: identify cards (`lookup_card`, language-aware for
-non-English names), classify the interaction, gather rules (`lookup_rule`/`search_rules`/
-`lookup_term`) and rulings (`get_rulings`) only when a specifically named card's rulings could
-materially change the answer, then emit the structured YAML result contract as the entire final
-message. No citation ⇒ status tentative, never answered. At most one clarification, only on a
-material fork. Scope is casual-game rules and current Oracle text — tournament policy, format
-legality, and banlists are out of scope. If corpus tools fail or are missing, status
-dependency_unavailable (`not_found` is reserved for a corpus lookup miss, not a tool outage). Treat
-recalled material as attributed prior evidence, never first-person recollection.
-
-## Text projection
-
-Answer in the structured result contract exactly as specified — no additional prose.
-
-## Voice projection
-
-Keep `answer` to at most 4 short lines; `spoken_summary` at most 2 sentences, colloquial, no rule
-numbers, in the question's language. Latency discipline: voice callers wait under 20 seconds — make
-the fewest corpus calls that ground the ruling, typically 1–3; never re-verify what a tool result
-already told you.
-
-## Restricted webhook projection
-
-Emit only the structured result contract; no persona voice, no conversational framing.
-"""
-
 
 def _build_synthetic_defaults_root(tmp_path: Path) -> Path:
     real_repo_root = Path(__file__).resolve().parents[1]
@@ -155,15 +86,9 @@ def _build_synthetic_defaults_root(tmp_path: Path) -> Path:
     (finance_role_dir / "role.yaml").write_text(_FINANCE_ROLE_YAML, encoding="utf-8")
     (finance_role_dir / "doctrine.md").write_text(_FINANCE_DOCTRINE_MD, encoding="utf-8")
 
-    mtg_role_dir = root / "roles" / "specialist" / "mtg"
-    mtg_role_dir.mkdir(parents=True)
-    (mtg_role_dir / "role.yaml").write_text(_MTG_ROLE_YAML, encoding="utf-8")
-    (mtg_role_dir / "doctrine.md").write_text(_MTG_DOCTRINE_MD, encoding="utf-8")
-
-    for persona_slug in ("alex", "judge"):
-        src = real_defaults_root / "personas" / "casa" / persona_slug / "0.1.0"
-        dst = root / "personas" / "casa" / persona_slug / "0.1.0"
-        shutil.copytree(src, dst)
+    src = real_defaults_root / "personas" / "casa" / "alex" / "0.1.0"
+    dst = root / "personas" / "casa" / "alex" / "0.1.0"
+    shutil.copytree(src, dst)
 
     return root
 
@@ -185,93 +110,6 @@ def test_export_finance_component_bundle_writes_and_self_validates(tmp_path: Pat
     bundle = export_finance_component(defaults_root=defaults_root)
     write_export_bundle(bundle, tmp_path / "finance-export")
     validate_export_bundle_self_consistency(bundle)  # raises on any inconsistency — no exception here
-
-
-def _build_mtg_plugin_root(tmp_path: Path) -> Path:
-    """A real (if minimal) plugin tree — the operator-supplied dir
-    `export_mtg_component` now receives directly (it no longer trusts a
-    caller-supplied checksum it never had bytes to back up)."""
-    plugin_root = tmp_path / "mtg-plugin-source"
-    plugin_dir = plugin_root / ".claude-plugin"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.json").write_text(
-        json.dumps({"name": "mtg", "version": "1.0.0"}), encoding="utf-8")
-    (plugin_root / "skills").mkdir()
-    (plugin_root / "skills" / "lookup.md").write_text(
-        "# lookup skill\n", encoding="utf-8")
-    return plugin_root
-
-
-def test_export_mtg_component_bundles_role_persona_and_corpus(tmp_path: Path) -> None:
-    from specialist_export import export_mtg_component, validate_export_bundle_self_consistency
-
-    corpus = tmp_path / "corpus-source"
-    corpus.mkdir()
-    (corpus / "cr.txt").write_text("702.1 Some rule text.\n", encoding="utf-8")
-    plugin_root = _build_mtg_plugin_root(tmp_path)
-
-    defaults_root = _build_synthetic_defaults_root(tmp_path)
-    bundle = export_mtg_component(
-        defaults_root=defaults_root, corpus_source=corpus,
-        mtg_plugin_root=plugin_root,
-    )
-    assert bundle.slug == "mtg"
-    assert "corpus/mtg-rules-corpus/cr.txt" in bundle.files
-    assert "plugins/mtg/.claude-plugin/plugin.json" in bundle.files
-    assert "plugins/mtg/skills/lookup.md" in bundle.files
-    manifest = json.loads(bundle.files["manifest.json"])
-    kinds = {d["kind"] for d in manifest["dependencies"]}
-    assert kinds == {"persona", "corpus/data", "plugin/implementation"}
-    plugin_dep = next(d for d in manifest["dependencies"]
-                       if d["kind"] == "plugin/implementation")
-    assert plugin_dep == {
-        "kind": "plugin/implementation", "identifier": "mtg",
-        "digest": plugin_dep["digest"],
-        "source": {"type": "bundled", "path": "plugins/mtg"},
-    }
-    assert plugin_dep["digest"].startswith("sha256:")
-    validate_export_bundle_self_consistency(bundle)
-
-    # The digest is over the COPIED tree exactly as it lands in the bundle
-    # (normalized: bytecode stripped) — recompute it independently from the
-    # bundle's own `plugins/mtg/...` entries to prove the write side and the
-    # read side (resolve_dependency_closure) will always agree.
-    import plugin_store
-
-    reconstructed = tmp_path / "reconstructed-plugin-tree"
-    reconstructed.mkdir()
-    for key, content in bundle.files.items():
-        if not key.startswith("plugins/mtg/"):
-            continue
-        rel = key[len("plugins/mtg/"):]
-        target = reconstructed / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-    assert plugin_dep["digest"] == "sha256:" + plugin_store.content_checksum(reconstructed)
-
-
-def test_export_mtg_component_strips_bytecode_from_the_plugin_dependency(tmp_path: Path) -> None:
-    """The bundled plugin tree is normalized (bytecode stripped) BEFORE the
-    digest is computed and BEFORE it is copied into the bundle — a __pycache__
-    directory or stray .pyc in the operator-supplied source tree must never
-    reach the exported bundle or perturb the digest."""
-    from specialist_export import export_mtg_component
-
-    corpus = tmp_path / "corpus-source"
-    corpus.mkdir()
-    (corpus / "cr.txt").write_text("702.1 Some rule text.\n", encoding="utf-8")
-    plugin_root = _build_mtg_plugin_root(tmp_path)
-    pycache = plugin_root / "__pycache__"
-    pycache.mkdir()
-    (pycache / "mod.cpython-311.pyc").write_bytes(b"\x00\x01\x02")
-
-    defaults_root = _build_synthetic_defaults_root(tmp_path)
-    bundle = export_mtg_component(
-        defaults_root=defaults_root, corpus_source=corpus,
-        mtg_plugin_root=plugin_root,
-    )
-    assert not any(k.startswith("plugins/mtg/__pycache__") for k in bundle.files)
-    assert not any(k.endswith(".pyc") for k in bundle.files)
 
 
 def test_clean_image_install_of_the_exported_finance_bundle_succeeds(tmp_path: Path, monkeypatch) -> None:
@@ -303,24 +141,3 @@ def test_clean_image_install_of_the_exported_finance_bundle_succeeds(tmp_path: P
     assert result.slug == "finance"  # no SpecialistInstallError("slug_collision", ...) raised
 
 
-def test_export_refuses_a_corpus_containing_symlinks(tmp_path: Path) -> None:
-    """#346: the corpus digest is computed over the SOURCE tree, where
-    content_checksum records a symlink as a symlink entry — but the bundle
-    writes every is_file() path (symlinks dereferenced) as regular bytes, so
-    installation recomputes a DIFFERENT digest over the extracted tree and
-    rejects the bundle. There is no consistent way to represent a symlink in
-    a bytes-mapped bundle; refuse at export time with an actionable error."""
-    from specialist_export import export_mtg_component
-
-    corpus = tmp_path / "corpus-source"
-    corpus.mkdir()
-    (corpus / "cr.txt").write_text("702.1 Some rule text.\n", encoding="utf-8")
-    (corpus / "alias.txt").symlink_to(corpus / "cr.txt")
-    plugin_root = _build_mtg_plugin_root(tmp_path)
-    defaults_root = _build_synthetic_defaults_root(tmp_path)
-
-    with pytest.raises(ValueError, match="symlink"):
-        export_mtg_component(
-            defaults_root=defaults_root, corpus_source=corpus,
-            mtg_plugin_root=plugin_root,
-        )

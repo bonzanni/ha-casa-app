@@ -3,7 +3,7 @@ name: Gary
 role: concierge
 archetype: concierge
 card: |
-  Medium-trust voice concierge. General table questions via web search;
-  delegates every MTG rules/card question to the mtg specialist. No house
+  Medium-trust voice concierge. General knowledge questions via web search;
+  routes specialist topics to operator-configured delegates. No house
   control, no private data.
 prompt_file: prompts/system.md

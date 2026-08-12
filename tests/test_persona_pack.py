@@ -387,7 +387,8 @@ def test_valid_pack_with_matching_manifest_loads(tmp_path: Path) -> None:
 _REAL_PERSONAS_DIR = Path(__file__).resolve().parent.parent / (
     "casa/rootfs/opt/casa/defaults/personas"
 )
-_REAL_PERSONA_SLUGS = ["alex", "judge", "ellen", "gary", "tina"]
+# #427: "judge" left with the MTG component — it is no longer shipped.
+_REAL_PERSONA_SLUGS = ["alex", "ellen", "gary", "tina"]
 
 
 @pytest.mark.parametrize("slug", _REAL_PERSONA_SLUGS)

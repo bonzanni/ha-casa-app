@@ -79,6 +79,37 @@ def test_ack_store_fails_closed_on_a_hand_edited_key(tmp_path: Path) -> None:
     assert tampered.is_acked(identity) is False  # whole-store fail-closed, never partial trust
 
 
+def test_record_aborts_rather_than_wiping_on_transient_read_failure(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#310 (Sol r1): a transient ledger read failure (an OSError that is not
+    file-missing) during a mutation's read-modify-write must abort — never
+    persist the fail-closed empty view over previously recorded acks."""
+    path = tmp_path / "acks.json"
+    store = SpecialistInstallAckStore(path=path)
+    ident_a = install_consent_identity(component_id="casa-test/a", version="0.1.0",
+                                       root_digest="sha256:" + "1" * 64, slug="a")
+    ident_b = install_consent_identity(component_id="casa-test/b", version="0.1.0",
+                                       root_digest="sha256:" + "2" * 64, slug="b")
+    store.record(identity=ident_a, component_id="casa-test/a", version="0.1.0",
+                 component_checksum="sha256:" + "1" * 64, slug="a")
+
+    real_read_text = Path.read_text
+
+    def _flaky(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("transient read failure")
+        return real_read_text(self, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "read_text", _flaky)
+        with pytest.raises(OSError):
+            store.record(identity=ident_b, component_id="casa-test/b", version="0.1.0",
+                         component_checksum="sha256:" + "2" * 64, slug="b")
+
+    assert SpecialistInstallAckStore(path=path).is_acked(ident_a)
+
+
 def test_revoke_removes_an_ack(tmp_path: Path) -> None:
     store = SpecialistInstallAckStore(path=tmp_path / "acks.json")
     identity = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",

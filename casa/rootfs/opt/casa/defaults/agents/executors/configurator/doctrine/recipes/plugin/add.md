@@ -59,7 +59,7 @@ means every target agrees. The result carries the same phase fields as
 `plugin_update` (`activation_committed` / `runtime_ready`) — on
 `activation_committed:true, runtime_ready:false` the registry entry exists
 but a target didn't come up; retry the reload/verify, not the add. Exception:
-`ok:true` with a non-empty `pending_targets` (e.g. `["specialist:mtg"]`) is
+`ok:true` with a non-empty `pending_targets` (e.g. `["specialist:weather"]`) is
 **success, not a failure** — the plugin targets a specialist that is not
 installed yet. `plugin_add` (this recipe) is needed only for an
 OPERATOR-owned plugin: a specialist with bundled or repo-declared plugin

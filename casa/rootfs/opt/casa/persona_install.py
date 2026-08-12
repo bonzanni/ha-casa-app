@@ -123,6 +123,16 @@ def inspect_persona_repo(
 _ACKS_PATH = Path("/data/persona_install_acks.json")
 _SCHEMA_VERSION = 1
 
+# #310: ONE process-wide ledger lock (the same shape Task 7 gave
+# SpecialistInstallAckStore). The tool layer constructs a fresh
+# PersonaInstallAckStore per call, and a consent keyboard's approve callback
+# records through its own prompt-time instance — a per-instance lock plus an
+# instance cache let sibling prompts clobber each other's persisted acks.
+# Every store method acquires this module-level lock, reloads the ledger file
+# fresh, applies its delta, and persists; the instance holds no authoritative
+# in-memory cache.
+_LEDGER_LOCK = threading.Lock()
+
 
 def persona_install_consent_identity(*, persona_id: str, version: str, checksum: str) -> str:
     return checksum_json({"persona_id": persona_id, "version": version, "checksum": checksum})
@@ -131,17 +141,36 @@ def persona_install_consent_identity(*, persona_id: str, version: str, checksum:
 class PersonaInstallAckStore:
     """Same fail-closed/atomic-write shape as SpecialistInstallAckStore and
     trigger_acks.TriggerAckStore — a third sibling on the SAME structural
-    pattern, not a fourth divergent design."""
+    pattern, not a fourth divergent design.
+
+    #310: like SpecialistInstallAckStore (Task 7), the instance holds NO
+    authoritative in-memory cache — every method takes the module-level
+    ``_LEDGER_LOCK``, re-reads the ledger fresh, applies its delta, and (for
+    mutations) persists. Multiple instances over the same file interleave
+    safely. (TriggerAckStore keeps its instance cache: it is only ever used
+    through the process-wide ``ACKS`` singleton, and its in-memory view
+    surviving a later unreadable file is a documented contract there.)"""
 
     def __init__(self, path: Path = _ACKS_PATH) -> None:
         self.path = Path(path)
-        self._lock = threading.Lock()
-        self._acks: dict[str, dict[str, Any]] = self._load()
 
-    def _load(self) -> dict[str, dict[str, Any]]:
+    def _load(self, *, strict_read: bool = False) -> dict[str, dict[str, Any]]:
+        # Caller must hold _LEDGER_LOCK. Sol r1 (#310): a MUTATION passes
+        # strict_read=True — a transient read failure (an OSError that is not
+        # file-missing) must abort the read-modify-write rather than persist
+        # the fail-closed empty view over previously recorded acks. Reads keep
+        # the fail-closed {} (no consent manufactured), and a content-invalid
+        # store still starts empty: the next successful record rewrites a
+        # valid store (the siblings' documented corruption recovery).
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            if strict_read:
+                raise
+            return {}
+        except ValueError:
             return {}
         if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
             return {}
@@ -161,6 +190,7 @@ class PersonaInstallAckStore:
         return out
 
     def _persist_locked(self, candidate: dict[str, dict[str, Any]]) -> None:
+        # Caller must hold _LEDGER_LOCK.
         from atomic_io import PRIVATE, atomic_write_text
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
@@ -171,17 +201,16 @@ class PersonaInstallAckStore:
         )
 
     def is_acked(self, identity: str) -> bool:
-        with self._lock:
-            return identity in self._acks
+        with _LEDGER_LOCK:
+            return identity in self._load()
 
     def record(self, *, identity: str, persona_id: str, version: str, checksum: str) -> None:
         rec = {"persona_id": persona_id, "version": version, "checksum": checksum,
                "ts": int(time.time())}
-        with self._lock:
-            candidate = dict(self._acks)
+        with _LEDGER_LOCK:
+            candidate = dict(self._load(strict_read=True))
             candidate[identity] = rec
             self._persist_locked(candidate)
-            self._acks = candidate
 
 
 def commit_persona_install(

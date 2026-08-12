@@ -1121,11 +1121,15 @@ class OutputSequencer:
         the correct high-water anchor."""
         async with self._serialized():
             if self._send_paged is not None:
-                self._seal_narration_locked()
                 mid = await _maybe_await(self._send_paged(self.topic_id, text))
-                if mid is not None and (
-                    self._high_water is None or mid > self._high_water
-                ):
+                if mid is None:
+                    return None
+                # #392: seal only after a CONFIRMED send (the #332 contract) —
+                # a definite failure posts nothing below the narration, so it
+                # must stay open and editable. The writer lock is held
+                # throughout, so nothing interleaves between send and seal.
+                self._seal_narration_locked()
+                if self._high_water is None or mid > self._high_water:
                     self._high_water = mid
                 return mid
             return await self._post_notice_locked(text, None)
@@ -1133,18 +1137,24 @@ class OutputSequencer:
     async def _post_notice_locked(
         self, text: str, reply_to: int | None,
     ) -> int | None:
-        """Shared platform/completion post body (caller holds the lock): seal
-        open narration (the notice is a causal event below it), send, and advance
-        the high-water mark."""
-        self._seal_narration_locked()
+        """Shared platform/completion post body (caller holds the lock): send,
+        then — only on a CONFIRMED send — seal open narration (the notice is a
+        causal event below it) and advance the high-water mark.
+
+        #392: the seal follows the #332 contract post_discrete established —
+        a definite send failure (wire wrapper returned ``None``) is no state
+        change, so the narration stays open and editable; nothing landed below
+        it. The writer lock is held throughout, so nothing can interleave
+        between the send and the seal."""
         if reply_to is not None:
             mid = await _maybe_await(
                 self.send_message(self.topic_id, text, reply_to=reply_to))
         else:
             mid = await _maybe_await(self.send_message(self.topic_id, text))
-        if mid is not None and (
-            self._high_water is None or mid > self._high_water
-        ):
+        if mid is None:
+            return None
+        self._seal_narration_locked()
+        if self._high_water is None or mid > self._high_water:
             self._high_water = mid
         return mid
 
