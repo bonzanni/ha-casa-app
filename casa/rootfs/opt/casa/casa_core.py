@@ -3478,10 +3478,18 @@ async def main() -> None:
     # RECONSTRUCTED from every uid source below (after load(), which populates
     # the records the reconstruct scan reads).
     uid_allocator = UidAllocator(os.path.join(DATA_DIR, "engagement-uids.json"))
+    # #283: the agent-spawn occupancy limiter, constructed BEFORE the
+    # registry so load() can restore one token per live marked record
+    # (design r3, Sol: registry load used to precede limiter construction —
+    # restoration would silently no-op). Shared with tools via init_tools.
+    from specialist_limits import AgentSpawnLimiter
+    from tools import _AGENT_SPAWN_CAP
+    agent_spawn_limiter = AgentSpawnLimiter(max_spawns=_AGENT_SPAWN_CAP)
     engagement_registry = EngagementRegistry(
         tombstone_path=os.path.join(DATA_DIR, "engagements.json"),
         bus=bus,
         uid_allocator=uid_allocator,
+        agent_spawn_limiter=agent_spawn_limiter,
     )
     await engagement_registry.load()
 
@@ -3671,6 +3679,7 @@ async def main() -> None:
         runtime=runtime,
         specialist_limiter=specialist_limiter,
         specialist_telemetry=specialist_telemetry,
+        agent_spawn_limiter=agent_spawn_limiter,  # #283 — same instance load() restored into
         voice_job_route_cap=voice_delivery_config.route_cap,
     )
     mcp_registry.register_sdk_factory(

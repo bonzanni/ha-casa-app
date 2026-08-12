@@ -34,6 +34,14 @@ verify-then-publish from a fresh staging copy, tolerant of a same-digest concurr
 The store is append-only in practice: roots are pinned, unreferenced blobs are not
 collected.
 
+**A bundle's tool grants are ceilinged before they are disclosed, and disclosed before
+they are approved.** A specialist role may declare casa-framework tools only from a
+code-owned consumer-safe allowlist — the loader refuses anything else (the bare
+server-level grant included) before a consent prompt exists to approve it — and the
+consent DM's `Casa tools:` line shows the grants that remain, so the approving operator
+sees what powers the specialist arrives with. Two further layers back this at load and at
+dispatch (INV-MCP-009), for installs that predate the ceiling.
+
 **A sourced-plugin install is a journalled bundle transaction.** The pre-state of the
 owned registry entries, the journalled tuple/sidecar files (the pending prior-rotation temporary included) and the slug's acknowledgements is
 journalled before the visible swap; a sync-phase failure rolls that recorded state back,
@@ -59,6 +67,19 @@ digest) and refuses before staging when no acknowledgement matches.
 What it does not cover: crash residue. A crash between store publication and journal
 creation leaves verified-but-unreferenced content in the store, deliberately outside
 rollback.
+
+**INV-SPEC-008**: A specialist component whose role declares a casa-framework tool outside the consumer-safe allowlist never reaches consent.
+
+Enforced in the component loader itself, which every lifecycle entry point — install
+inspect, upgrade, rollback restage — goes through: the violation is a load error naming
+the offending grants, raised before an inspection result (and therefore a consent prompt)
+can exist. The allowlist is a frozen code constant; no loadable artifact can widen it.
+
+What it does not cover: an install materialized before the ceiling existed — its
+runtime.yaml is clamped at load with a warning (the specialist keeps running minus the
+forbidden grants), and a live engagement record that already pinned such a grant is
+refused at dispatch (INV-MCP-009). Non-casa entries — CC built-ins, plugin servers — are
+governed by the role schema and the bundled-plugin consent surfaces, not this list.
 
 **INV-SPEC-002**: An install whose required configuration is missing becomes a pending instance — a desired tuple only, never an active one.
 

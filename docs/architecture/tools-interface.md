@@ -152,6 +152,16 @@ acknowledged as already terminal; a failed strict persist reports retryable.
 uncertainty, and an uncertain Telegram send is deliberately not retried — a duplicate
 message is worse than a missing one that the operator can see is missing.
 
+**A specialist context exhausts its media-send budget.** `send_media` in specialist
+context — a specialist engagement, or a delegated turn keyed by its server-stamped
+delegation id — carries a code-owned lifetime budget per context, debited synchronously
+before the delivery await so parallel calls cannot overrun it. Attempts count; failed and
+uncertain deliveries are not refunded (a refund path would let delivery errors mint
+budget). Over budget is its own typed refusal telling the agent to reference remaining
+artifacts in its result text; a specialist-classified call with *no* quota key is refused
+rather than passed unmetered. Residents and executor engagements are unmetered. The
+counters are in-memory: a restart refills them — this is a quota, not an authorization.
+
 **Memory cannot answer.** The recall tools report unavailability as its own status and
 refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's
 tool-level face).

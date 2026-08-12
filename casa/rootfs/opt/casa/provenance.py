@@ -54,6 +54,13 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # forge "invoke"/"private" clearance (spec A0/A4).
     "_origin_route",
     "_origin_clearance",
+    # #283: live-operator turn marker — the agent-spawn cap exempts a spawn
+    # ONLY when this is present (absence = agent context, fail closed), so a
+    # caller who could set it through an external context would exempt
+    # itself from the cap. Stamped exclusively by the Telegram channel for
+    # an authenticated operator sender; synthesized/scheduled/webhook turns
+    # never carry it.
+    "_operator_turn",
 })
 
 

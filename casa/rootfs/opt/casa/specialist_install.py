@@ -220,6 +220,12 @@ class InspectionResult:
     receipt_id: str = ""
     receipt_digest: str = ""
     plugin_resolutions: tuple["PluginReceiptRow", ...] = ()
+    # #541: the role.yaml's own casa-framework tool grants, for the consent
+    # DM's ``Casa tools:`` line — the powers the specialist arrives with.
+    # Post-ceiling (load_specialist_component rejected anything outside the
+    # allowlist), so always consumer-safe, but the operator approving the
+    # install still sees them. Defaulted for hand-built InspectionResults.
+    role_tool_grants: tuple[str, ...] = ()
 
 
 def _record_pending_receipt(slug_dir: Path, receipt_id: str) -> None:
@@ -1256,6 +1262,13 @@ def inspect_specialist_repo(
             dependencies=dependencies, staged_dir=component_dir,
             receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
             plugin_resolutions=tuple(plugin_rows),
+            # #541: casa-framework grants only — CC built-ins are bounded by
+            # the role schema, plugin tools by the bundled-plugin blocks.
+            role_tool_grants=tuple(
+                t for t in ((component.role.role.get("tools") or {})
+                            .get("allowed") or ())
+                if isinstance(t, str) and t.startswith("mcp__casa-framework")
+            ),
         )
     except BaseException:
         shutil.rmtree(component_dir, ignore_errors=True)

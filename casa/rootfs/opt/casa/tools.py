@@ -17,6 +17,7 @@ import uuid
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable
 
@@ -116,6 +117,10 @@ _runtime = None  # CasaRuntime | None — set by init_tools(runtime=...)
 # them — including every pre-Task-6 test — keep the old unbounded behaviour.
 _specialist_limiter: "specialist_limits.SpecialistLimiter | None" = None
 _specialist_telemetry: "specialist_limits.SpecialistTelemetry | None" = None
+# #283: the agent-spawn occupancy limiter (shared with EngagementRegistry,
+# which restores boot debt into it). None = cap feature off (tests, legacy
+# construction sites) — every check degrades to a no-op.
+_agent_spawn_limiter: "specialist_limits.AgentSpawnLimiter | None" = None
 _voice_job_route_cap = 5
 engagement_var: ContextVar[EngagementRecord | None] = ContextVar(
     "engagement_var", default=None,
@@ -136,6 +141,7 @@ def init_tools(
     runtime=None,                         # NEW — Task C.1
     specialist_limiter=None,              # Task 6 (spec §4.6)
     specialist_telemetry=None,            # Task 6 (spec §4.6)
+    agent_spawn_limiter=None,             # #283 — occupancy-debt spawn cap
     voice_job_route_cap: int = 5,
 ) -> None:
     """Initialize module-level references used by tool implementations.
@@ -168,6 +174,7 @@ def init_tools(
         _agent_role_map, _agent_registry, _trigger_registry, \
         _engagement_registry, _executor_registry, _runtime, \
         _specialist_limiter, _specialist_telemetry, \
+        _agent_spawn_limiter, \
         _voice_job_route_cap  # noqa: PLW0603
     if (isinstance(voice_job_route_cap, bool)
             or not isinstance(voice_job_route_cap, int)
@@ -185,6 +192,7 @@ def init_tools(
     _runtime = runtime
     _specialist_limiter = specialist_limiter
     _specialist_telemetry = specialist_telemetry
+    _agent_spawn_limiter = agent_spawn_limiter
     _voice_job_route_cap = voice_job_route_cap
 
 
@@ -314,6 +322,77 @@ async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
                 "message": "channel not started"}
 
 
+# #541 (design r3-r4): mechanical outbound quota for send_media in
+# SPECIALIST context — a consented bundle may hold the grant, but role
+# content cannot buy an unbounded outbound Telegram channel (max_turns has
+# no schema maximum). Lifetime budget per context, keyed by engagement id
+# (interactive) or the server-stamped ``_delegation_id`` (ephemeral); a
+# specialist-classified call with NO key is refused, never unmetered (r3,
+# both reviewers). In-memory by design (quota, not authorization — a
+# restart refilling it is acceptable); the key map is FIFO-bounded so it
+# cannot grow without limit. Debit is a synchronous check-and-increment
+# BEFORE the first claim/delivery await; attempts count and failed or
+# uncertain deliveries are never refunded — a refund path would let
+# delivery errors mint budget (r3 Sol).
+_SPECIALIST_MEDIA_SEND_BUDGET: int = 8
+_MEDIA_SEND_DEBITS: "OrderedDict[str, int]" = OrderedDict()
+_MEDIA_SEND_DEBITS_MAX_KEYS: int = 512
+
+# #541: the server-generated delegation/voice-job id for the CURRENT
+# delegated run — set by the launching call site around its create_task
+# (the task's context snapshot carries it into the delegated coroutine and
+# every descendant, exactly the inheritance origin_var rides), read by
+# _run_delegated_agent when it stamps ``_delegation_id`` onto child_origin.
+# A ContextVar rather than a parameter: the runner seam is monkeypatched by
+# exact signature in ~30 test doubles.
+_delegation_quota_key: ContextVar[str] = ContextVar(
+    "_delegation_quota_key", default="")
+
+
+def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
+    """Synchronous specialist-context debit for one send_media attempt.
+
+    Returns the refusal payload, or None when the call may proceed
+    (non-specialist contexts pass untouched). No await between the check
+    and the charge — parallel calls cannot overrun the budget (r3 Sol).
+    """
+    if eng is not None:
+        if getattr(eng, "kind", "") != "specialist":
+            return None  # executor engagements are image-owned, unmetered
+        key = f"eng:{eng.id}"
+    else:
+        if int((origin or {}).get("delegation_depth", 0) or 0) <= 0:
+            return None  # resident/operator turn
+        # #541 (Terra diff r1): a delegated RESIDENT is not specialist
+        # context — its tool grants come from the operator's own image/
+        # config role.yaml, not a third-party bundle. Exempt only on the
+        # POSITIVE server-stamped kind; absent/unknown stays metered.
+        if (origin or {}).get("_delegation_kind") == "resident":
+            return None
+        raw_key = (origin or {}).get("_delegation_id")
+        if not isinstance(raw_key, str) or not raw_key:
+            return {
+                "status": "error", "kind_error": "quota_key_missing",
+                "message": ("delegated specialist context carries no "
+                            "delegation id — media send refused (#541)"),
+            }
+        key = f"dlg:{raw_key}"
+    used = _MEDIA_SEND_DEBITS.get(key, 0)
+    if used >= _SPECIALIST_MEDIA_SEND_BUDGET:
+        return {
+            "status": "error", "kind_error": "media_send_budget_exhausted",
+            "message": (
+                f"media send budget ({_SPECIALIST_MEDIA_SEND_BUDGET}) for "
+                "this specialist context is exhausted — reference remaining "
+                "artifacts in your completion/result text instead"),
+        }
+    _MEDIA_SEND_DEBITS[key] = used + 1
+    _MEDIA_SEND_DEBITS.move_to_end(key)
+    while len(_MEDIA_SEND_DEBITS) > _MEDIA_SEND_DEBITS_MAX_KEYS:
+        _MEDIA_SEND_DEBITS.popitem(last=False)
+    return None
+
+
 @tool(
     "send_media",
     "Deliver a media file (document/photo/audio/voice) from the plugin outbox "
@@ -383,6 +462,13 @@ async def send_media(args: dict) -> dict:
             return _result({"status": "error", "kind_error": "invalid_origin",
                             "message": "no numeric, nonzero chat_id in origin"})
         origin["chat_id"] = chat_id  # normalise to the validated int for dispatch
+
+        # #541: specialist-context outbound quota — synchronous debit AFTER
+        # target validation (bogus arguments never burn budget) and BEFORE
+        # any claim/delivery await. Attempts count; no refunds.
+        _quota_refusal = _debit_specialist_media_send(eng, origin)
+        if _quota_refusal is not None:
+            return _result(_quota_refusal)
 
         # 2. Resolve channel (fail fast, before claiming).
         if _channel_manager is None:
@@ -756,6 +842,15 @@ _SYNC_WAIT_TIMEOUT_S: float = 60.0
 # a resident; depth>=1 is a delegated turn. Cap at 1 to prevent chains.
 _MAX_DELEGATION_DEPTH: int = 1
 
+# #283: global cap on concurrently LIVE (active|idle) engagements created
+# from AGENT context (a bound engagement turn, a delegated turn, or any turn
+# not positively marked as live-operator ingress). Enforced via the
+# occupancy-debt AgentSpawnLimiter wired by init_tools — reservation
+# acquired before any external side effect, transferred to the record at
+# create(), released only by terminal transitions. Code-owned constant: no
+# loadable artifact can raise it.
+_AGENT_SPAWN_CAP: int = 3
+
 # #324: cap on the `previous_result` slice of the continue_voice_job
 # internal envelope (which is exempt from the caller-facing context bound —
 # see _prelaunch's `internal_context`). Stored results have no size
@@ -919,6 +1014,57 @@ def inherit_origin_markers(origin: dict) -> dict:
         origin["_origin_route"] = route
         origin["_origin_clearance"] = clearance
     return origin
+
+
+def _effective_delegation_depth(origin: dict) -> int:
+    """The delegation depth an anti-chaining decision must use (#283).
+
+    Ambient origin first; when it carries no depth and the calling turn is
+    a bound engagement (in_casa turns INHERIT ``origin_var`` from the parent
+    task, so a depth stamped on the interactive child's RECORD origin is
+    invisible to the ambient read), fall back to the record's persisted
+    origin — the same fallback shape as ``_origin_clearance_markers``.
+    """
+    depth = (origin or {}).get("delegation_depth")
+    if depth is not None:
+        return int(depth or 0)
+    eng = engagement_var.get(None)
+    if eng is None:
+        return 0
+    eng_origin = getattr(eng, "origin", None) or {}
+    return int(eng_origin.get("delegation_depth", 0) or 0)
+
+
+def _is_agent_context(origin: dict) -> bool:
+    """Is the calling turn agent context for the spawn cap (#283)?
+
+    A spawn is operator-exempt IFF the ambient origin carries the reserved,
+    server-stamped ``_operator_turn`` marker AND the turn is neither a bound
+    engagement turn nor a delegated turn. Everything else — synthesized
+    delegation-completion turns, scheduled/trigger turns, webhook and
+    plugin-event turns, engagement turns, delegated turns — is agent
+    context. Absence means capped: the marker is stamped only at live
+    authenticated operator ingress, so this fails CLOSED (design r2, Sol:
+    a prompt-injected synthetic resident turn must not classify as the
+    operator).
+    """
+    if engagement_var.get(None) is not None:
+        return True
+    if _effective_delegation_depth(origin) > 0:
+        return True
+    return not bool((origin or {}).get("_operator_turn"))
+
+
+def _agent_spawn_cap_refusal() -> dict:
+    """Typed refusal for an agent-context spawn at the cap (#283)."""
+    return _result({
+        "status": "error", "kind": "agent_spawn_cap_exceeded",
+        "message": (
+            f"Refused: {_AGENT_SPAWN_CAP} agent-spawned engagements are "
+            "already live. Complete or cancel one first, or ask the "
+            "operator to start this engagement themselves."
+        ),
+    })
 
 
 def _result(payload: dict, *, is_error: bool | None = None) -> dict:
@@ -2077,10 +2223,26 @@ async def _run_delegated_agent(
     child_origin = {
         **parent,
         "delegation_depth": int(parent.get("delegation_depth", 0)) + 1,
+        # #541: the server-generated delegation/job id — the quota key for
+        # this ephemeral specialist context (send_media's per-context
+        # budget). Read from the ContextVar the launching call site set
+        # around its create_task (the task snapshot carries it — the same
+        # context inheritance origin_var rides), NOT a parameter: ~30 test
+        # doubles monkeypatch this seam by exact signature. Stamped ONLY
+        # here; a specialist-classified call with no key is refused, never
+        # unmetered.
+        **({"_delegation_id": _delegation_quota_key.get()}
+           if _delegation_quota_key.get() else {}),
         # Provenance foundation (A:§1, v0.76.0): the delegate's own role,
         # distinct from parent["role"] (the caller) — turn_provenance()
         # compares the two to classify this turn as "delegated".
         "execution_role": cfg.role,
+        # #541 (Terra diff r1): the EXECUTING config's tier kind, stamped
+        # from the loaded config (trusted), so the send_media quota can
+        # tell a delegated RESIDENT (unmetered — its grants are the
+        # operator's own role.yaml) from a delegated specialist. Absent or
+        # unknown kinds stay metered: only a positive "resident" exempts.
+        "_delegation_kind": getattr(cfg, "kind", "") or "",
         # Mirrors execution_role: child_origin carries the EXECUTING agent's own
         # provenance forward, not the caller's — so a NESTED delegation's
         # "parent" sees the immediately-enclosing agent's identity.
@@ -2908,8 +3070,11 @@ async def _prelaunch(
             ),
         })
 
-    # Depth cap: prevent delegation chains beyond depth=1.
-    current_depth = int((origin or {}).get("delegation_depth", 0))
+    # Depth cap: prevent delegation chains beyond depth=1. #283: read the
+    # EFFECTIVE depth — ambient origin, else the bound engagement record's
+    # origin (interactive children are depth-stamped on the record, and
+    # in_casa turns inherit the parent task's origin_var, not the record's).
+    current_depth = _effective_delegation_depth(origin)
     if current_depth >= _MAX_DELEGATION_DEPTH:
         return None, None, None, None, _result({
             "status": "error",
@@ -3612,6 +3777,9 @@ async def _run_voice_job_lifecycle(
     """Run and persist one job inside the registry-owned task lifetime."""
     try:
         try:
+            # #541: this lifecycle coroutine IS the registry-owned task —
+            # the binding scopes the bounded runner (and its inner task).
+            _delegation_quota_key.set(job_id)
             output = await _run_delegated_agent_bounded(
                 cfg,
                 task_text,
@@ -4060,8 +4228,29 @@ async def delegate_to_agent(args: dict) -> dict:
     # `EngagementRegistry` terminal transition). Every release is idempotent,
     # so an overlapping release on the SAME permit is a safe no-op.
     owned = permit
+    # #283: lexical guard for the agent-spawn reservation (interactive
+    # branch only) — released by the same finally as `owned` on any exit
+    # before its transfer to the record at create() (design r4).
+    spawn_owned = None
     try:
         if mode == "interactive":
+            # #283: agent-spawn cap — BEFORE the channel setup/topic Telegram
+            # round-trips below. Operator-exempt only when positively marked
+            # (_operator_turn); absence = agent context, fail closed.
+            if _agent_spawn_limiter is not None and _is_agent_context(origin):
+                spawn_owned = _agent_spawn_limiter.try_acquire()
+                if spawn_owned is None:
+                    return _agent_spawn_cap_refusal()
+                origin["_agent_spawned"] = True
+            # #283 (INV-ENG-004 gap 2): interactive children carry a
+            # delegation depth exactly as ephemeral children do — stamped on
+            # the origin the record persists; the depth gate reads it back
+            # through the engagement-record fallback, so an interactively
+            # engaged specialist cannot delegate onward. Unconditional:
+            # operator-initiated children run at depth 1 too (they may still
+            # engage_executor — that path is deliberately depth-exempt and
+            # cap-bounded instead).
+            origin["delegation_depth"] = _effective_delegation_depth(origin) + 1
             # Task 6 (spec §4.6): the `owned` lexical ownership guard (try/finally
             # around this whole body) releases `permit` on ANY exit before launch
             # transfer — including a CancelledError raised at any await below and
@@ -4166,6 +4355,8 @@ async def delegate_to_agent(args: dict) -> dict:
                     tools_allowed=tuple(
                         t for t in (cfg.tools.allowed or ()) if t != "Skill"
                     ) + SPECIALIST_CASA_GRANTS,
+                    # #283: reservation rides the record from here (r4).
+                    agent_spawn_permit=spawn_owned,
                 )
             except asyncio.CancelledError:
                 # create() already compensated the record; close the topic in
@@ -4188,6 +4379,11 @@ async def delegate_to_agent(args: dict) -> dict:
             # before that still releases via the outer finally (all releases
             # are idempotent).
             rec.permit = permit
+            # #283 (design r4): the spawn reservation transferred at create —
+            # a cancellation between here and driver-live must NOT release a
+            # token whose durable record stays live; terminal transitions own
+            # it now (release-both in _release_permit). The finally sees None.
+            spawn_owned = None
             # #369 (Sol diff-gate r3): capture the context generation at
             # prompt-source time, exactly as engage_executor does — this
             # interactive prompt is built from the pre-clamp task/context
@@ -4378,10 +4574,17 @@ async def delegate_to_agent(args: dict) -> dict:
         # counting the launch so a telemetry failure can never reach the outer
         # finally to release the now-live task's permit (the count goes through
         # the non-raising wrapper).
-        task = asyncio.create_task(
-            _run_delegated_agent_bounded(
-                cfg, task_text, context_text, resolution=resolution,
-                output_format=(VOICE_JOB_OUTPUT_FORMAT if is_voice else None)))
+        # #541: bind the quota key into the task's context snapshot (reset
+        # immediately — only the created task carries it forward).
+        _qk_tok = _delegation_quota_key.set(delegation_id)
+        try:
+            task = asyncio.create_task(
+                _run_delegated_agent_bounded(
+                    cfg, task_text, context_text, resolution=resolution,
+                    output_format=(VOICE_JOB_OUTPUT_FORMAT
+                                   if is_voice else None)))
+        finally:
+            _delegation_quota_key.reset(_qk_tok)
         if permit is not None:
             task.add_done_callback(_permit_release_callback(permit))
         owned = None  # __TRANSFER_SYNC__
@@ -4623,6 +4826,10 @@ async def delegate_to_agent(args: dict) -> dict:
     finally:
         if owned is not None:
             owned.release()
+        # #283: the spawn reservation, when still lexically owned (never
+        # transferred to a created record). Idempotent.
+        if spawn_owned is not None:
+            spawn_owned.release()
 
 
 # ---------------------------------------------------------------------------
@@ -6011,6 +6218,23 @@ async def _fetch_executor_archive(
     },
 )
 async def engage_executor(args: dict) -> dict:
+    # #283: lexical ownership guard for the agent-spawn reservation. The
+    # impl acquires into ``holder`` before any external side effect and
+    # nulls it when ownership transfers to the record at create(); this
+    # finally releases on EVERY other exit — early error returns and a
+    # CancelledError raised at any await (topic creation included), which
+    # per-site releases would leak (design r4, Sol S2). Release is
+    # idempotent, so overlap with a terminal-transition release is safe.
+    holder: dict = {"token": None}
+    try:
+        return await _engage_executor_impl(args, holder)
+    finally:
+        _tok = holder.get("token")
+        if _tok is not None:
+            _tok.release()
+
+
+async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
     import agent as agent_mod
     # AR-2: snapshot at entry — this handler awaits extensively (topic
     # creation, engagement-registry create, driver dispatch) and reads
@@ -6085,6 +6309,19 @@ async def engage_executor(args: dict) -> dict:
                 f"Available: {_executor_registry.list_types()}"
             ),
         })
+
+    # #283: agent-spawn cap — acquired HERE, after argument validation and
+    # BEFORE any await with external effects (the setup_engagement_features
+    # retry and topic creation below are Telegram round-trips; design r2/r3).
+    # Operator turns are exempt only when positively marked; absence of the
+    # server-stamped ``_operator_turn`` means agent context (fail closed).
+    # The origin marker is what create() counts and load() restores.
+    if _agent_spawn_limiter is not None and _is_agent_context(origin):
+        _spawn_tok = _agent_spawn_limiter.try_acquire()
+        if _spawn_tok is None:
+            return _agent_spawn_cap_refusal()
+        origin["_agent_spawned"] = True
+        _spawn_holder["token"] = _spawn_tok
 
     # §3.5/§3.8/§3.9: resolve this executor's plugin assignment ONCE — the
     # result feeds the launch gate, the recorded binding, AND the in-casa
@@ -6308,12 +6545,20 @@ async def engage_executor(args: dict) -> dict:
                     interaction_state=(
                         "first_contact_required" if _two_phase else ""),
                     topic_title=persisted_title,  # W-R6 durable short title
+                    # #283: reservation rides the record from here (r4).
+                    agent_spawn_permit=_spawn_holder.get("token"),
                 )
             except Exception as exc:  # noqa: BLE001
                 await _abort_engagement_topic(channel, "engage-abort", topic_id)
                 return _result({
                     "status": "error", "kind": "record_persist_failed",
                     "message": str(exc)})
+            # #283 (design r4): ownership transferred at successful create —
+            # terminal registry transitions release it from here on. A
+            # cancellation between create and driver-live must NOT release
+            # the token while the durable record stays live; the wrapper's
+            # finally now sees None.
+            _spawn_holder["token"] = None
             # #369 (Terra diff-gate r2): capture the record's context
             # generation at PROMPT-SOURCE time — the prompt below derives
             # from materials current now; the drivers compare this right
@@ -8180,6 +8425,14 @@ async def list_engagement_workspaces(args: dict) -> dict:
 
     entries = await asyncio.to_thread(_scan_engagement_workspaces, root, status_filter)
 
+    # #481: an engagement-bound caller sees only its own workspace — the
+    # listing is otherwise a cross-engagement reconnaissance surface
+    # (workspace ids feed peek/delete). Unbound callers list everything.
+    _caller = engagement_var.get(None)
+    if _caller is not None:
+        _own = getattr(_caller, "id", None)
+        entries = [e for e in entries if e.get("engagement_id") == _own]
+
     total = len(entries)
     truncated = total > 100
     return _result({
@@ -8190,6 +8443,23 @@ async def list_engagement_workspaces(args: dict) -> dict:
 
 
 _LIVE_ENGAGEMENT_STATES = frozenset({"active", "idle"})
+
+
+def _cross_engagement_refusal(target_id: str) -> "dict | None":
+    """#481: bind a caller-supplied workspace target to the AUTHENTICATED
+    engagement. These tools execute as casa-core (root), so their target is
+    not inherently tied to the caller; when the caller IS an engagement
+    (``engagement_var`` bound — bridge or in-process), any target other
+    than itself is refused. Unbound callers (resident/operator in-process
+    turns) keep today's behavior. Returns the refusal, or None to proceed."""
+    eng = engagement_var.get(None)
+    if eng is None or getattr(eng, "id", None) == target_id:
+        return None
+    return _result({
+        "status": "error", "kind": "cross_engagement_denied",
+        "message": ("an engagement may only operate on its own workspace "
+                    "(#481)"),
+    })
 
 
 @tool(
@@ -8217,6 +8487,10 @@ async def delete_engagement_workspace(args: dict) -> dict:
             "status": "error", "kind": "bad_request",
             "message": "engagement_id is required",
         })
+    # #481: an engagement-bound caller may only delete ITS OWN workspace.
+    _cross = _cross_engagement_refusal(engagement_id)
+    if _cross is not None:
+        return _cross
     if _engagement_registry is None:
         return _result({
             "status": "error", "kind": "not_initialized",
@@ -8372,6 +8646,14 @@ async def peek_engagement_workspace(args: dict) -> dict:
     if not engagement_id:
         return _result({"status": "error", "kind": "bad_request",
                         "message": "engagement_id is required"})
+
+    # #481: an ENGAGEMENT-bound caller may only inspect its own workspace —
+    # bound at the tool layer, so safety no longer rides on grant
+    # configuration staying correct (the v0.166 gate and the
+    # validate_config_repo fence remain as belt-and-suspenders).
+    _cross = _cross_engagement_refusal(engagement_id)
+    if _cross is not None:
+        return _cross
 
     # Security (H15): engagement_id must be a bare workspace name. Real ids
     # are uuid4().hex; reject anything containing path separators or dots so
@@ -11903,14 +12185,54 @@ CASA_TOOLS: tuple = (
 # residual and its idempotency check needs the record.
 _REBUILD_FENCE_EXEMPT = frozenset({"emit_completion"})
 
+# #541 layer 3 — the dispatch-time specialist ceiling. Applied in the SAME
+# central wrapper as the #369 fence, so it covers every casa tool on BOTH
+# transports (in-process SDK dispatch for in_casa engagements, the internal
+# socket for claude_code) by construction — including engagement records
+# PINNED before the install/load ceilings existed (a pre-fix bundle's
+# self-granted spawn tool stays in record.tools_allowed and would otherwise
+# still be honored; design r2, Sol S2a + Terra S1). Union with the
+# launch-mandatory grants so the two universal tools can never fall out of
+# the ceiling if the allowlist and MANDATORY_BRIDGE_CASA_GRANTS drift.
+from specialist_component import SPECIALIST_CASA_TOOL_ALLOWLIST
+
+_SPECIALIST_DISPATCH_CEILING: frozenset[str] = frozenset(
+    SPECIALIST_CASA_TOOL_ALLOWLIST
+    | {g.rsplit("__", 1)[-1] for g in MANDATORY_BRIDGE_CASA_GRANTS}
+)
+
+
+def _specialist_ceiling_refusal(tool_name: str) -> "dict | None":
+    """Refuse a casa tool outside the ceiling when the bound engagement is a
+    SPECIALIST. Executor records are not ceilinged (their definitions are
+    image-owned, not third-party); unbound callers (resident/operator
+    in-process turns, ephemeral delegations) are governed by their own
+    loaded config, which layers 1-2 already clamp."""
+    eng = engagement_var.get(None)
+    if eng is None or getattr(eng, "kind", "") != "specialist":
+        return None
+    if tool_name in _SPECIALIST_DISPATCH_CEILING:
+        return None
+    return {
+        "status": "error", "kind": "specialist_tool_ceiling",
+        "message": (
+            f"{tool_name} is not grantable to a specialist engagement "
+            "(consumer-safe ceiling, #541)."
+        ),
+    }
+
 
 def _fence_wrapped(tool_obj) -> None:
     inner = tool_obj.handler
+    _name = tool_obj.name
 
     async def fenced(args: dict) -> dict:
         refusal = _engagement_rebuild_fence()
         if refusal is not None:
             return _result(refusal)
+        ceiling = _specialist_ceiling_refusal(_name)
+        if ceiling is not None:
+            return _result(ceiling)
         return await inner(args)
 
     fenced.__name__ = getattr(inner, "__name__", tool_obj.name)

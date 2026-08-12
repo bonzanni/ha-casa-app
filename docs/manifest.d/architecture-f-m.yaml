@@ -1,0 +1,187 @@
+# Manifest shard (#367) — architecture documents F-M. Loaded with the root
+# docs/manifest.yaml by scripts/verify_docs.py; same entry format.
+
+- doc: architecture/home-assistant-control.md
+  summary: How an agent reads and changes the state of the house — and why the limits on that live in Home Assistant, not here.
+  when_changing: the HA facade, HA tool exposure, or anything about what an agent may control
+  covers:
+    - casa/rootfs/opt/casa/ha_mcp_facade.py::HomeAssistantFacade
+    - casa/rootfs/opt/casa/mcp_registry.py::McpServerRegistry
+  tests:
+    - tests/test_ha_mcp_facade.py
+    - tests/test_ha_mcp_url_override.py
+    - tests/test_mock_ha_mcp.py
+  related: [architecture/mcp-and-tools.md, architecture/overview.md]
+  defines_invariants: [INV-HA-001, INV-HA-002, INV-HA-003]
+  invariant_tests:
+    INV-HA-001: [tests/test_ha_mcp_facade.py::test_pin_inv_ha_001_action_arguments_pass_through_unchanged]
+    INV-HA-002: [tests/test_ha_mcp_url_override.py::test_tina_facade_initial_discovery_failure_is_sanitized_degraded]
+    INV-HA-003: [tests/test_ha_mcp_facade.py::test_pin_inv_ha_003_tool_cache_has_no_time_expiry]
+
+- doc: architecture/http-surface.md
+  summary: The two HTTP servers, what each exposes, and how an inbound request is authenticated.
+  when_changing: adding a route, changing webhook authentication, or anything crossing the container boundary
+  covers:
+    - casa/rootfs/opt/casa/webhook_auth.py::verify
+    - casa/rootfs/opt/casa/webhook_auth.py::read_secret
+    - casa/rootfs/opt/casa/casa_core.py::healthz
+    - casa/rootfs/opt/casa/ingress_identity.py::validate_ingress_identity_table
+    - casa/rootfs/opt/casa/ingress_identity.py::ingress_identity
+    - casa/rootfs/opt/casa/provenance.py::sanitize_external_context
+    - casa/rootfs/opt/casa/internal_handlers.py::admin_peercred_middleware
+    - casa/rootfs/etc/s6-overlay/scripts/setup-nginx.sh
+    - casa/config.yaml::ports
+  tests:
+    - tests/test_webhook_auth.py::test_hmac_body_valid
+    - tests/test_webhook_auth.py::test_hmac_body_wrong_secret_fails
+    - tests/test_webhook_auth.py::test_hmac_body_missing_header_fails
+    - tests/test_webhook_origin_containment.py
+    - tests/test_setup_nginx_ingress.py
+    - tests/test_admin_peercred_gate.py
+    - tests/test_svc_ttyd_socket.py
+  related: [architecture/overview.md, architecture/callbacks.md]
+  defines_invariants: [INV-HTTP-001, INV-HTTP-002, INV-HTTP-003, INV-HTTP-004, INV-HTTP-005, INV-HTTP-006, INV-HTTP-007]
+  invariant_tests:
+    INV-HTTP-001: [tests/test_webhook_auth.py::test_hmac_body_valid, tests/test_webhook_auth.py::test_static_header_valid_and_missing, tests/test_webhook_auth.py::test_timestamped_hmac_valid_within_tolerance, tests/test_webhook_auth.py::test_unknown_mode_fails]
+    INV-HTTP-002: [tests/test_pin_http_invariants.py::test_pin_inv_http_002_constant_time_everywhere_and_no_empty_secret, tests/test_webhook_auth.py::test_empty_secret_fails_closed]
+    INV-HTTP-003: [tests/test_pin_http_invariants.py::test_pin_inv_http_003_replay_unbounded_except_timestamped, tests/test_webhook_auth.py::test_timestamped_hmac_stale_rejected]
+    INV-HTTP-004: [tests/test_origin_stamping.py::test_invoke_route_is_unspoofable, tests/test_webhook_handler.py::test_payload_context_never_enters_bus_message_context]
+    INV-HTTP-005: [tests/test_pin_http_invariants.py::test_pin_inv_http_005_table_contract_disagreement_refused, tests/test_ingress_identity_boot_check.py::test_main_validates_the_table_before_doing_anything_else, tests/test_ingress_identity.py::test_a_machine_route_inside_the_human_namespace_fails_boot, tests/test_ingress_identity.py::test_a_machine_route_wearing_the_telegram_surface_fails_boot, tests/test_ingress_identity.py::test_a_human_route_stripped_of_its_surface_fails_boot]
+    INV-HTTP-006: [tests/test_ingress_identity.py::test_operator_sender_is_named_by_its_own_id_at_private_clearance, tests/test_ingress_identity.py::test_non_operator_sender_gets_its_own_peer, tests/test_ingress_identity.py::test_non_operator_sender_reads_at_public_clearance, tests/test_ingress_identity.py::test_the_operator_is_not_named_by_a_shared_constant, tests/test_ingress_identity.py::test_a_telegram_turn_without_a_sender_fails_loudly]
+    INV-HTTP-007: [tests/test_admin_peercred_gate.py::test_admin_route_rejects_non_root_peer, tests/test_admin_peercred_gate.py::test_admin_route_allows_root_peer, tests/test_admin_peercred_gate.py::test_admin_route_fails_closed_on_unknown_peer, tests/test_admin_peercred_gate.py::test_internal_route_not_gated]
+
+- doc: architecture/jobs-and-delivery.md
+  summary: Durable background jobs — execution vs delivery state, restart reconciliation, and the leased claim/ack protocol.
+  when_changing: job persistence, restart recovery, or how a deferred answer reaches a device
+  covers:
+    - casa/rootfs/opt/casa/job_registry.py::JobRegistry
+    - casa/rootfs/opt/casa/job_registry.py::VoiceJob
+    - casa/rootfs/opt/casa/job_registry.py::JobRegistry.recover_after_restart
+    - casa/rootfs/opt/casa/channels/voice/delivery.py::VoiceDeliveryCoordinator
+    - casa/rootfs/opt/casa/voice_job_result.py::parse_voice_job_result
+    - casa/rootfs/opt/casa/voice_job_result.py::spoken_text_for
+  tests:
+    - tests/test_job_registry.py
+    - tests/test_voice_delivery.py
+    - tests/test_voice_job_result.py
+  related: [architecture/voice.md, architecture/persistent-state.md, architecture/turn-loop.md]
+  defines_invariants: [INV-JOB-001, INV-JOB-002, INV-JOB-003, INV-JOB-004, INV-JOB-005]
+  invariant_tests:
+    INV-JOB-001: [tests/test_job_registry.py::test_failed_snapshot_write_does_not_publish_memory_mutation]
+    INV-JOB-002: [tests/test_job_registry.py::test_restart_orphans_running_job_and_queues_voice_failure, tests/test_job_registry.py::test_restart_finalizes_cancel_pending_job_as_cancelled]
+    INV-JOB-003: [tests/test_job_registry.py::test_invalid_compare_and_set_does_not_mutate, tests/test_voice_delivery.py::test_stale_claim_is_denied_without_mutation]
+    INV-JOB-004: [tests/test_job_registry.py::test_playing_lease_lapse_requeues_for_at_least_once_delivery]
+    INV-JOB-005: [tests/test_voice_delivery.py::test_only_device_queue_head_is_offered, tests/test_voice_delivery.py::test_device_fifo_is_stable_across_route_ids]
+
+- doc: architecture/mcp-and-tools.md
+  summary: How tools reach an agent, and where authorization for a tool call actually happens.
+  when_changing: adding a tool, changing tool dispatch, or anything about tool authorization
+  covers:
+    - casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler
+    - casa/rootfs/opt/casa/svc_casa_mcp.py
+    - casa/rootfs/opt/casa/tools.py::init_tools
+  tests:
+    - tests/test_internal_handlers.py
+    - tests/test_svc_casa_mcp.py
+    - tests/test_mcp_envelope.py
+    - tests/test_casa_engagement_channel.py
+  related: [architecture/plugins.md, architecture/hook-resolution.md, architecture/http-surface.md]
+  defines_invariants: [INV-MCP-001, INV-MCP-002, INV-MCP-003, INV-MCP-004, INV-MCP-005, INV-MCP-009, INV-MCP-010]
+  invariant_tests:
+    INV-MCP-001: [tests/test_pin_g4_invariants.py::test_pin_inv_mcp_001_internal_dispatch_enforces_engagement_grant, tests/test_bridge_tools_allowed_gate.py::test_ungranted_tool_is_rejected]
+    INV-MCP-002: [tests/test_unix_socket_runner.py::test_unix_runner_creates_socket_with_mode_0600, tests/test_casa_engagement_channel.py::TestChannelServerTransportIsTcp8100::test_channel_server_posts_to_8100_not_unix_socket, tests/test_svc_casa_mcp.py::test_svc_admin_reload_not_reachable_on_8100]
+    INV-MCP-003: [tests/test_role_scoped_mcp.py::test_casa_framework_factory_exposes_only_granted_tools, tests/test_svc_casa_mcp.py::test_svc_tools_list_uses_static_snapshot]
+    INV-MCP-004: [tests/test_engagement_auth_token.py::test_forged_id_without_token_is_rejected_and_tool_never_runs]
+    INV-MCP-005: [tests/test_engagement_auth_token.py::test_peek_refuses_to_return_mcp_json_contents]
+    INV-MCP-009: [tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_cannot_reach_forbidden_casa_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_keeps_allowlisted_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_executor_record_is_not_ceilinged, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_unbound_caller_is_not_ceilinged]
+    INV-MCP-010: [tests/test_workspace_tools_self_binding.py::test_peek_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_peek_allows_own_workspace_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_delete_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_list_filters_to_own_entry_when_engagement_bound]
+
+- doc: architecture/hook-resolution.md
+  summary: The hook-resolution path — credential-bound identity, per-executor policy maps and their fail-closed fallbacks, and the claude_code containment floor.
+  when_changing: hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot
+  covers:
+    - casa/rootfs/opt/casa/internal_handlers.py::_make_internal_hooks_resolve_handler
+    - casa/rootfs/opt/casa/hooks.py::resolve_hooks
+    - casa/rootfs/opt/casa/drivers/hook_bridge.py::translate_hooks_to_settings
+    - casa/rootfs/opt/casa/casa_core.py::_build_executor_cc_hook_policies
+  tests:
+    - tests/test_hook_proxy_endpoint.py
+    - tests/test_hooks_policy_param_types.py
+    - tests/test_hooks.py
+    - tests/test_hook_bridge.py
+  related: [architecture/mcp-and-tools.md, architecture/engagements.md]
+  defines_invariants: [INV-MCP-006, INV-MCP-007, INV-MCP-008]
+  invariant_tests:
+    INV-MCP-006: [tests/test_hook_proxy_endpoint.py::test_known_id_with_bad_token_denies_without_callback, tests/test_hook_proxy_endpoint.py::test_unauthenticated_engagement_cwd_uses_defaults_no_identity, tests/test_hook_proxy_endpoint.py::test_authenticated_id_mismatching_cwd_denies, tests/test_hooks_engagement_permission_relay.py::test_no_authenticated_identity_denies]
+    INV-MCP-007: [tests/test_hooks_policy_param_types.py::TestTheFailOpenIsGone::test_string_writable_never_yields_an_admitting_hook, tests/test_hooks_policy_param_types.py::TestCasaConfigGuardParamTypes::test_forbid_delete_residents_falsy_non_bool_is_refused, tests/test_hooks_policy_param_types.py::TestCommitSizeGuardParamTypes::test_numeric_string_is_refused, tests/test_hooks_policy_param_types.py::TestAMistypedParamFailsTheExecutorLoad::test_executor_with_mistyped_param_fails_to_load, tests/test_hooks_policy_param_types.py::TestABrokenHooksDocumentNeverFallsBackToDefaults::test_mistyped_param_denies_instead_of_inheriting_defaults, tests/test_hooks_policy_param_types.py::TestUnrepresentedExecutorDeniesAtTheResolver::test_an_unrepresented_executor_is_refused, tests/test_hooks_policy_param_types.py::TestUnrepresentedExecutorDeniesAtTheResolver::test_a_real_load_failure_reaches_the_resolver_as_a_deny, tests/test_hooks_policy_param_types.py::TestUnrepresentedExecutorDeniesAtTheResolver::test_an_executor_with_no_hooks_document_still_uses_defaults, tests/test_hooks_policy_param_types.py::TestUnrepresentedExecutorDeniesAtTheResolver::test_the_relay_is_not_refused_for_an_unrepresented_executor, tests/test_hooks_policy_param_types.py::TestReloadPrefersAKnownGoodSetOverDenyAll::test_stale_callbacks_survive_a_deny_all_rebuild]
+    INV-MCP-008: [tests/test_hooks.py::test_required_floor_and_canonical_matchers, tests/test_hooks_policies.py::TestResolveHooks::test_stray_matcher_and_timeout_stripped_before_factory_call, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_claude_code_empty_pre_tool_use_fails_closed_naming_missing_policy, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_claude_code_no_hooks_file_fails_closed, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_claude_code_full_floor_loads_with_snapshot, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_in_casa_configurator_snapshot_is_declared_not_empty, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_in_casa_no_hooks_file_snapshots_empty_dict, tests/test_hook_bridge.py::TestCanonicalMatcherForced::test_block_dangerous_bash_matcher_forced_to_canonical, tests/test_hook_bridge.py::TestCanonicalMatcherForced::test_self_containment_guard_matcher_forced_to_canonical, tests/test_hook_bridge.py::TestCanonicalMatcherForced::test_missing_path_scope_appended_with_canonical_matcher, tests/test_hooks_resolve_executor_params.py::test_post_load_hooks_yaml_mutation_does_not_reach_the_http_map, tests/test_workspace.py::TestProvisionWithHooks::test_settings_json_ignores_post_load_hooks_yaml_mutation, tests/test_boot_replay.py::test_task_only_record_settings_floor_regenerated_on_heal, tests/test_boot_replay.py::test_fast_path_settings_diff_drives_confirmed_cycle, tests/test_boot_replay.py::test_settings_snapshot_missing_floor_refuses_resume]
+
+- doc: architecture/memory.md
+  summary: Long-term memory — how a fact is written, who may read it back, and what a caller is told when the store cannot answer.
+  when_changing: recall behaviour, sensitivity tiers, provenance on a stored fact, or session persistence
+  covers:
+    - casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory
+    - casa/rootfs/opt/casa/semantic_memory.py::RecallUnavailable
+    - casa/rootfs/opt/casa/semantic_memory.py::RecallProtocolError
+    - casa/rootfs/opt/casa/semantic_memory.py::NoOpSemanticMemory
+    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items
+    - casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel
+    - casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin
+    - casa/rootfs/opt/casa/channel_policy.py::writes_to_bank
+    - casa/rootfs/opt/casa/memory_provenance.py::build_retain_items
+    - casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope
+    - casa/rootfs/opt/casa/timekeeping.py::split_time_envelope
+    - casa/rootfs/opt/casa/recall_renderer.py::render_recall
+    - casa/rootfs/opt/casa/recall_health.py::observed_recall
+    - casa/rootfs/opt/casa/session_saver.py::save_session
+    - casa/rootfs/opt/casa/session_saver.py::reset_channel
+    - casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once
+  tests:
+    - tests/test_recall_absence_invariant.py
+    - tests/test_recall_health.py::test_breaker_opens_after_threshold_failures
+    - tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below
+    - tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction
+    - tests/test_channel_policy.py
+    - tests/test_memory_provenance.py
+    - tests/test_agent_auto_recall_unavailable.py
+    - tests/test_session_saver.py
+    - tests/test_freshness_reaper.py
+    - tests/test_time_envelope.py
+    - tests/test_recall_empty_verdict.py
+  related: [architecture/overview.md, architecture/turn-loop.md]
+  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-003, INV-MEM-004, INV-MEM-005, INV-MEM-006, INV-MEM-008, INV-MEM-009, INV-MEM-010, INV-MEM-011, INV-MEM-012]
+  invariant_tests:
+    INV-MEM-001: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_001_failures_raise_never_return_empty, tests/test_hindsight_memory.py::test_recall_unrenderable_results_are_unavailable_not_zero_hits]
+    INV-MEM-002: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_002_exactly_one_readable_tier]
+    INV-MEM-003: [tests/test_sensitivity.py::test_unknown_channel_fails_closed_to_public]
+    INV-MEM-004: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_004_reserved_tags_refused_before_io]
+    INV-MEM-005: [tests/test_delegated_memory.py::test_retain_delegated_voice_writes_nothing]
+    INV-MEM-006: [tests/test_session_saver.py::test_save_session_expected_sid_mismatch_releases_claim, tests/test_session_saver.py::test_reset_channel_trailing_remove_spares_follow_up_session, tests/test_session_registry.py::test_remove_with_stale_expected_sid_spares_newer_session, tests/test_freshness_reaper.py::test_sweep_passes_cold_snapshot_sid_to_save]
+    INV-MEM-012: [tests/test_sensitivity.py::test_parse_tier_rejects_a_tier_word_inside_a_chatty_reply, tests/test_sensitivity.py::test_parse_tier_accepts_labeled_final_line_after_verbose_reply, tests/test_sensitivity.py::test_parse_tier_answer_line_is_the_literal_labeled_form_only, tests/test_sensitivity.py::test_parse_tier_conflicting_answer_lines_are_ambiguous, tests/test_sensitivity.py::test_parse_tier_agreeing_prior_answer_lines_parse, tests/test_tier_classifier.py::test_classify_chatty_reply_with_tier_words_defaults_private, tests/test_tier_classifier.py::test_classify_verbose_reply_with_labeled_final_line_parses, tests/test_tier_classifier.py::test_classify_word_plus_answer_line_parses, tests/test_tier_classifier.py::test_classify_conflicting_answer_lines_still_default]
+    INV-MEM-008: [tests/test_recall_memory_tool_tiers.py::test_engagement_started_by_a_non_operator_recalls_public_only, tests/test_telegram_sender_identity.py::test_a_lowered_engagement_recalls_at_the_lower_tier]
+    INV-MEM-009: [tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_same_utterance_two_timestamps_is_one_document, tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_timestamp_survives_out_of_band, tests/test_time_envelope.py::TestComposeStripPair::test_round_trip_is_identity_on_the_raw_text]
+    INV-MEM-010: [tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_zero_hits_below_top_clearance_scopes_the_claim, tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_hits_that_did_not_fit_are_reported_as_existing, tests/test_recall_empty_verdict.py::TestQueryEngagerUnknownIsNotAbsence::test_unknown_carries_do_not_assert_guidance]
+    INV-MEM-011: [tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_lowering_clearance_sets_the_flag_durably, tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_clamp_withholds_the_launch_materials, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_downgrade_invalidates_clears_sid_rebuilds_then_delivers, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_failed_rebuild_refuses_delivery_and_keeps_the_flag, tests/test_engagement_rebuild_fences.py::TestInProcessToolFence::test_pending_record_refuses_the_tool, tests/test_engagement_rebuild_fences.py::TestChokePointFence::test_internal_tools_call_refuses_pending_engagement, tests/test_engagement_rebuild_fences.py::TestInFlightReFilter::test_clamp_during_recall_filters_this_result, tests/test_engagement_rebuild_fences.py::TestInCasaLaunchGate::test_clamp_during_client_open_aborts_the_stale_prompt]
+
+- doc: architecture/observability.md
+  summary: How work is traced across components, what reaches a log, and what the health surfaces actually assert.
+  when_changing: logging, correlation ids, redaction, or a health surface
+  covers:
+    - casa/rootfs/opt/casa/log_cid.py::install_logging
+    - casa/rootfs/opt/casa/log_cid.py::new_cid
+    - casa/rootfs/opt/casa/log_cid.py::HumanFormatter
+    - casa/rootfs/opt/casa/log_cid.py::JsonFormatter
+    - casa/rootfs/opt/casa/log_cid.py::_RedactingRenderMixin
+    - casa/rootfs/opt/casa/log_redact.py::RedactingFilter
+    - casa/rootfs/opt/casa/log_redact.py::redact
+    - casa/rootfs/opt/casa/log_redact.py::redact_extras
+    - casa/rootfs/opt/casa/casa_core.py::healthz
+  tests:
+    - tests/test_log_redact.py
+    - tests/test_log_cid.py
+  related: [architecture/http-surface.md, architecture/overview.md]
+  defines_invariants: [INV-OBS-001, INV-OBS-003, INV-OBS-004]
+  invariant_tests:
+    INV-OBS-001: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_001_header_cid_validated_payload_cid_not]
+    INV-OBS-004: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_004_rendered_output_redacts_exceptions_and_extras]
+    INV-OBS-003: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_003_healthz_is_fixed_and_reads_nothing]

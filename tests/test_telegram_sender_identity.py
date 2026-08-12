@@ -90,6 +90,9 @@ class TestOperatorSender:
         assert msg.trusted_user_origin.server_origin.clearance == "private"
         assert msg.context["_origin_route"] == "telegram"
         assert msg.context["_origin_clearance"] == "private"
+        # #283: a live operator message is the ONE ingress that carries the
+        # spawn-cap exemption marker.
+        assert msg.context["_operator_turn"] is True
 
 
 class TestNonOperatorSender:
@@ -102,6 +105,8 @@ class TestNonOperatorSender:
         assert msg.trusted_user_origin.user_peer == "telegram:7"
         assert msg.trusted_user_origin.server_origin.clearance == "public"
         assert msg.context["_origin_clearance"] == "public"
+        # #283: a non-operator sender never carries the spawn-cap exemption.
+        assert "_operator_turn" not in msg.context
 
     async def test_accept_all_mode_has_no_operator(self):
         # telegram_chat_id empty = accept-all: there is no configured

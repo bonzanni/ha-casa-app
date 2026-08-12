@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.192.0] - 2026-08-13
+
+### Security
+
+- Specialist installs: a third-party specialist bundle can no longer grant
+  itself privileged casa-framework tools. Its role may declare tools only
+  from a consumer-safe allowlist — a violating bundle is refused before the
+  consent prompt, an already-installed one is stripped of forbidden grants
+  at load, and an already-running specialist engagement is refused at tool
+  dispatch on both transports. The install consent message now shows the
+  role's casa-framework tool grants (`Casa tools:` line), so the approving
+  operator sees the powers a specialist arrives with. (#541)
+- Agent-created engagements are now capped: at most 3 engagements spawned
+  from agent context (delegated turns, engagement turns, scheduled/webhook/
+  synthesized turns) may be live at once — live operator requests are
+  exempt and unlimited. A refused spawn performs no Telegram traffic, and
+  the cap survives restarts. Interactively-engaged specialists can no
+  longer delegate onward (the delegation depth cap now covers them). (#283)
+- `send_media` in specialist context now carries a fixed per-context send
+  budget, so a specialist cannot flood the operator or exhaust Telegram
+  quota; residents and executors are unaffected.
+- Workspace tools (`peek`/`list`/`delete_engagement_workspace`): an
+  engagement-bound caller can now only target its own workspace, closing a
+  confused-deputy path that previously relied on grant configuration
+  staying correct. (#481)
+
+### Changed
+
+- Docs corpus: `architecture/engagements.md` split (delegation and the new
+  agent-spawn boundary now live in `architecture/delegation.md`);
+  `architecture/mcp-and-tools.md` split (hook resolution and the
+  containment floor now live in `architecture/hook-resolution.md`). (#475)
+
 ## [0.191.0] - 2026-08-12
 
 ### Fixed

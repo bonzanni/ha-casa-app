@@ -16,6 +16,55 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 PLUGIN_IDENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 MAX_SCOPED_NAME_BYTES = 72
 
+# #541: the casa-framework tools a THIRD-PARTY specialist role may declare —
+# an ALLOWLIST (deny-lists cannot fence an open namespace: every tool added
+# to CASA_TOOLS later would be granted-by-default under a deny-set). Bare
+# names; the role.yaml entries carry the ``mcp__casa-framework__`` prefix.
+# Converged over design rounds 1-4 (2026-08-13, Sol+Terra):
+#   - spawn (engage_executor, delegate_to_agent), plugin management, config
+#     mutation, secrets (list_vault_items/get_item_fields), install/persona
+#     lifecycle, workspace admin, reload/restart: NEVER grantable by bundle.
+#   - send_message OUT: an unbounded outbound Telegram send primitive.
+#   - set_reminder/cancel_reminder OUT: they write the RESIDENT's trigger
+#     space (the delegated actor is inherited).
+#   - get_schedule kept: read-only; disclosure-not-authority (defended by
+#     both reviewers); surfaced on the install consent DM.
+#   - send_media kept: the shipped finance specialist's reporting flow needs
+#     it; bounded by a code-owned per-context quota at dispatch (tools.py).
+# Enforced at three layers: HERE (install/upgrade/rollback restage, before
+# consent), agent_loader's load-time clamp (pre-existing installs), and the
+# dispatch-time ceiling in tools.py (already-live engagement records).
+SPECIALIST_CASA_TOOL_ALLOWLIST: frozenset[str] = frozenset({
+    "query_engager", "emit_completion", "react", "ask_user",
+    "recall_memory", "ack_event", "get_schedule", "send_media",
+})
+
+_CASA_SERVER_GRANT = "mcp__casa-framework"
+_CASA_TOOL_PREFIX = "mcp__casa-framework__"
+
+
+def specialist_casa_tool_violations(allowed: object) -> list[str]:
+    """Return the casa-framework entries of *allowed* outside the ceiling.
+
+    The single authority all three #541 enforcement layers call. Entries
+    that are not casa-framework grants (CC built-ins, ``mcp__plugin_*``
+    servers) are out of scope and never named. Non-list/-string shapes are
+    ignored (schema validation owns shape errors).
+    """
+    out: list[str] = []
+    if not isinstance(allowed, (list, tuple)):
+        return out
+    for entry in allowed:
+        if not isinstance(entry, str):
+            continue
+        if entry == _CASA_SERVER_GRANT:
+            out.append(entry)
+        elif (entry.startswith(_CASA_TOOL_PREFIX)
+                and entry[len(_CASA_TOOL_PREFIX):]
+                not in SPECIALIST_CASA_TOOL_ALLOWLIST):
+            out.append(entry)
+    return out
+
 
 def is_valid_slug(slug: object) -> bool:
     """Canonical specialist-slug predicate — the SAME regex the loader
@@ -144,6 +193,18 @@ def load_specialist_component(component_dir: Path, manifest_path: Path) -> Speci
     slug = str(role_source.role["slot"])
     if not _SLUG_RE.fullmatch(slug):
         raise ValueError(f"invalid specialist slug {slug!r}")
+
+    # #541 tool ceiling — enforced HERE so a violating bundle fails at
+    # inspect, BEFORE any consent prompt exists to approve it. The same
+    # loader runs on upgrade/rollback restage, so no lifecycle path admits
+    # the grant later.
+    violations = specialist_casa_tool_violations(
+        (role_source.role.get("tools") or {}).get("allowed"))
+    if violations:
+        raise ValueError(
+            "specialist role declares casa-framework tools outside the "
+            f"consumer-safe ceiling: {violations!r} (allowed: "
+            f"{sorted(SPECIALIST_CASA_TOOL_ALLOWLIST)!r})")
 
     config_schema_path = component_dir / "config-schema.json"
     config_schema = json.loads(config_schema_path.read_text(encoding="utf-8"))

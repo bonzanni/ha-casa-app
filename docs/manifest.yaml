@@ -1,8 +1,12 @@
 # Publication allowlist (git-tracked only). Verify: python -m scripts.verify_docs .
 
-- doc: manifest.d/architecture-a-m.yaml
+- doc: manifest.d/architecture-a-e.yaml
   kind: meta
-  summary: Manifest shard — architecture documents A-M.
+  summary: Manifest shard — architecture documents A-E.
+
+- doc: manifest.d/architecture-f-m.yaml
+  kind: meta
+  summary: Manifest shard — architecture documents F-M.
 
 - doc: manifest.d/architecture-n-z.yaml
   kind: meta

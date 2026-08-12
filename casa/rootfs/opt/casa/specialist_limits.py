@@ -182,6 +182,84 @@ class SpecialistLimiter:
 
 
 # ---------------------------------------------------------------------------
+# Agent-spawn cap (#283)
+# ---------------------------------------------------------------------------
+
+
+class SpawnToken:
+    """One held agent-spawn occupancy slot (#283).
+
+    Same idempotence/cancellation-safety contract as :class:`Permit` —
+    ``release()`` may run more than once (first call wins) and from a
+    ``finally`` unwinding a cancelled task. Obtained only from
+    :meth:`AgentSpawnLimiter.try_acquire` / :meth:`AgentSpawnLimiter.restore`.
+    """
+
+    __slots__ = ("_limiter", "_released")
+
+    def __init__(self, limiter: "AgentSpawnLimiter") -> None:
+        self._limiter = limiter
+        self._released = False
+
+    def release(self) -> None:
+        # Single-threaded asyncio, no await: check-then-set is atomic with
+        # respect to every other coroutine (see Permit.release).
+        if self._released:
+            return
+        self._released = True
+        self._limiter._release()
+
+
+class AgentSpawnLimiter:
+    """Occupancy-debt cap on live agent-spawned engagements (#283).
+
+    Unlike :class:`SpecialistLimiter` (a permit pool), this is a plain
+    occupancy counter with two entry points:
+
+    - :meth:`try_acquire` — the spawn path: refuses (returns ``None``) when
+      ``occupancy >= max_spawns``.
+    - :meth:`restore` — boot reconciliation ONLY: increments unconditionally,
+      so more live marked records than the cap (rows created before this
+      limiter existed, or a crash mid-drain) become *debt* — occupancy above
+      the cap that must drain via terminal releases before ``try_acquire``
+      succeeds again. Never used on a spawn path.
+
+    Design rounds 3-4 (2026-08-13): a saturating boot re-acquire was rejected
+    because the first reap of an over-cap boot would open a slot while cap+
+    marked engagements remain live; debt accounting closes that.
+    """
+
+    def __init__(self, max_spawns: int) -> None:
+        if max_spawns < 1:
+            raise ValueError(f"max_spawns must be >= 1, got {max_spawns!r}")
+        self._max_spawns = max_spawns
+        self._occupancy = 0
+
+    def try_acquire(self) -> "SpawnToken | None":
+        if self._occupancy >= self._max_spawns:
+            return None
+        self._occupancy += 1
+        return SpawnToken(self)
+
+    def restore(self) -> "SpawnToken":
+        """Boot-reconcile entry: count a pre-existing live marked record.
+
+        Unconditional — restored occupancy may exceed ``max_spawns`` (debt).
+        """
+        self._occupancy += 1
+        return SpawnToken(self)
+
+    def _release(self) -> None:
+        if self._occupancy > 0:
+            self._occupancy -= 1
+
+    @property
+    def occupancy(self) -> int:
+        """Current live agent-spawned count. Test/observability helper."""
+        return self._occupancy
+
+
+# ---------------------------------------------------------------------------
 # Per-role telemetry
 # ---------------------------------------------------------------------------
 
