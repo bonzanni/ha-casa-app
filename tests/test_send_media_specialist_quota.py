@@ -129,6 +129,36 @@ async def test_specialist_engagement_keys_on_record_id(wired):
     assert body["kind_error"] == "media_send_budget_exhausted"
 
 
+async def test_delegated_resident_is_unmetered(wired):
+    # Terra diff r1: a delegated RESIDENT's grants are the operator's own
+    # role.yaml — depth alone must not classify it as specialist context.
+    ob, ch = wired
+    token = agent_mod.origin_var.set(
+        _delegated_origin(_delegation_kind="resident",
+                          _delegation_id="d3" * 16))
+    try:
+        for i in range(tools._SPECIALIST_MEDIA_SEND_BUDGET + 2):
+            body = await _send(ob, f"f{i}.pdf")
+            assert body["status"] == "ok"
+    finally:
+        agent_mod.origin_var.reset(token)
+
+
+async def test_delegated_unknown_kind_stays_metered(wired):
+    # Only a POSITIVE resident kind exempts; absent/unknown fails closed.
+    ob, ch = wired
+    token = agent_mod.origin_var.set(
+        _delegated_origin(_delegation_kind="", _delegation_id="d4" * 16))
+    try:
+        for i in range(tools._SPECIALIST_MEDIA_SEND_BUDGET):
+            body = await _send(ob, f"f{i}.pdf")
+            assert body["status"] == "ok"
+        body = await _send(ob, "over.pdf")
+    finally:
+        agent_mod.origin_var.reset(token)
+    assert body["kind_error"] == "media_send_budget_exhausted"
+
+
 async def test_resident_turn_is_unmetered(wired):
     ob, ch = wired
     token = agent_mod.origin_var.set({"role": "assistant",

@@ -363,6 +363,12 @@ def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     else:
         if int((origin or {}).get("delegation_depth", 0) or 0) <= 0:
             return None  # resident/operator turn
+        # #541 (Terra diff r1): a delegated RESIDENT is not specialist
+        # context — its tool grants come from the operator's own image/
+        # config role.yaml, not a third-party bundle. Exempt only on the
+        # POSITIVE server-stamped kind; absent/unknown stays metered.
+        if (origin or {}).get("_delegation_kind") == "resident":
+            return None
         raw_key = (origin or {}).get("_delegation_id")
         if not isinstance(raw_key, str) or not raw_key:
             return {
@@ -2231,6 +2237,12 @@ async def _run_delegated_agent(
         # distinct from parent["role"] (the caller) — turn_provenance()
         # compares the two to classify this turn as "delegated".
         "execution_role": cfg.role,
+        # #541 (Terra diff r1): the EXECUTING config's tier kind, stamped
+        # from the loaded config (trusted), so the send_media quota can
+        # tell a delegated RESIDENT (unmetered — its grants are the
+        # operator's own role.yaml) from a delegated specialist. Absent or
+        # unknown kinds stay metered: only a positive "resident" exempts.
+        "_delegation_kind": getattr(cfg, "kind", "") or "",
         # Mirrors execution_role: child_origin carries the EXECUTING agent's own
         # provenance forward, not the caller's — so a NESTED delegation's
         # "parent" sees the immediately-enclosing agent's identity.
