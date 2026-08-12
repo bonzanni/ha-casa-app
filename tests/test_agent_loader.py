@@ -806,6 +806,37 @@ class TestLoadAllSpecialists:
         broken_msg = next(err for name, err in failed if name == "broken")
         assert "runtime.yaml" in broken_msg
 
+    def test_clamps_forbidden_casa_grants_from_pre_ceiling_installs(
+            self, tmp_path):
+        """#541 layer 2: a runtime.yaml materialized before the tool ceiling
+        existed keeps loading, minus any casa-framework grant outside the
+        consumer-safe allowlist (WARN, not boot-fatal)."""
+        from agent_loader import load_all_specialists
+
+        specialists_root = tmp_path / "specialists"
+        d = _seed_specialist(specialists_root, "finance")
+        runtime = (d / "runtime.yaml").read_text()
+        (d / "runtime.yaml").write_text(runtime + (
+            "tools:\n"
+            "  allowed:\n"
+            "    - Read\n"
+            "    - mcp__casa-framework__recall_memory\n"
+            "    - mcp__casa-framework__engage_executor\n"
+            "    - mcp__casa-framework\n"
+        ))
+        roles_dir = tmp_path / "roles"
+        _seed_role_artifact(roles_dir, "specialist", "finance")
+
+        found, failed = load_all_specialists(
+            str(specialists_root), roles_dir=str(roles_dir),
+        )
+        assert failed == []
+        allowed = found["finance"].tools.allowed
+        assert "Read" in allowed
+        assert "mcp__casa-framework__recall_memory" in allowed
+        assert "mcp__casa-framework__engage_executor" not in allowed
+        assert "mcp__casa-framework" not in allowed
+
 
 # ---------------------------------------------------------------------------
 # TestBuildRoleRegistry

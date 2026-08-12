@@ -74,6 +74,56 @@ async def test_delegation_context_block_includes_caller_and_register(monkeypatch
     assert "Task: turn off the lights" in prompt
 
 
+async def test_delegated_child_origin_carries_delegation_quota_key(monkeypatch):
+    """#541: the launching call site binds tools._delegation_quota_key around
+    its create_task; the delegated run stamps it onto child_origin as
+    ``_delegation_id`` — send_media's quota key for the ephemeral context."""
+    captured_origins: list[dict] = []
+
+    async def _fake_query(self, prompt):
+        captured_origins.append(dict(agent_mod.origin_var.get(None) or {}))
+
+    class _FakeClient:
+        def __init__(self, options): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): pass
+        query = _fake_query
+        async def receive_response(self):
+            if False:
+                yield None
+            return
+
+    residents = {
+        "assistant": _make_cfg("assistant", "Ellen"),
+        "butler": _make_cfg("butler", "Tina"),
+    }
+    reg = AgentRegistry.build(residents=residents, specialists={})
+    monkeypatch.setattr(tools, "_agent_registry", reg, raising=False)
+    monkeypatch.setattr(tools, "_agent_role_map", dict(residents), raising=False)
+    monkeypatch.setattr(tools, "ClaudeSDKClient", _FakeClient)
+
+    import asyncio
+    origin_token = agent_mod.origin_var.set({
+        "role": "assistant", "channel": "telegram", "chat_id": "1",
+        "user_id": 1, "cid": "abc", "user_text": "x",
+        "delegation_depth": 0,
+    })
+    qk_token = tools._delegation_quota_key.set("deleg-123")
+    try:
+        # Mirror the production shape: the key is bound around create_task
+        # and travels via the task's context snapshot.
+        task = asyncio.create_task(tools._run_delegated_agent(
+            _make_cfg("butler", "Tina"), "turn off the lights", "(none)"))
+    finally:
+        tools._delegation_quota_key.reset(qk_token)
+        agent_mod.origin_var.reset(origin_token)
+    await task
+
+    assert captured_origins
+    assert captured_origins[0]["_delegation_id"] == "deleg-123"
+    assert captured_origins[0]["delegation_depth"] == 1
+
+
 async def test_caller_name_follows_a_rename_without_a_full_restart(monkeypatch):
     """#436: `tools._agent_registry` is a BOOT snapshot — `sync_agent_role_map`
     refreshes the role map beside it and never touches it — so a caller

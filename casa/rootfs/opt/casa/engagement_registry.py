@@ -243,6 +243,17 @@ class EngagementRecord:
     # or, for a pre-finalize failure (topic/driver-start), inline at the
     # point of failure — see delegate_to_agent's interactive branch.
     permit: Any = None
+    # #283: the agent-spawn occupancy token (specialist_limits.SpawnToken)
+    # this record holds when its origin carries ``_agent_spawned`` — a
+    # SEPARATE field from ``permit`` (design r3: an agent-context interactive
+    # specialist holds BOTH, and sharing the field would overwrite one or
+    # leak the other). Memory-only like ``permit`` (never tombstoned; boot
+    # reconciliation re-mints it via the limiter's restore()). Attached by
+    # ``create()`` itself (design r4: ownership transfers at successful
+    # create, never after driver start — a cancellation in that window must
+    # not release a token whose marked record remains live). Released
+    # exactly once by ``_release_permit`` on every terminal transition.
+    agent_spawn_permit: Any = None
     # v0.79.0 (§4): persisted question numbering. ``next_question_number`` is a
     # monotonic per-engagement allocator (never rewound, even when a question
     # closes) so every displayed ``Q<n>`` is durable and unique across restarts.
@@ -321,6 +332,7 @@ class EngagementRegistry:
         tombstone_path: str,
         bus: Any | None,
         uid_allocator: Any | None = None,
+        agent_spawn_limiter: Any | None = None,
     ) -> None:
         self._tombstone_path = tombstone_path
         self._bus = bus
@@ -333,6 +345,13 @@ class EngagementRegistry:
         # raising, and downstream containment code is expected to fail closed
         # on the sentinel rather than render a root/unallocated uid.
         self._uid_allocator = uid_allocator
+        # #283: injected specialist_limits.AgentSpawnLimiter. Optional (None
+        # keeps every existing construction site and test working); when
+        # present, ``load()`` restores one occupancy token per live marked
+        # record so a restart cannot refill the spawn pool while marked
+        # engagements are still live. MUST be constructed and injected
+        # BEFORE ``load()`` runs (design r3, Sol: casa_core's boot order).
+        self._agent_spawn_limiter = agent_spawn_limiter
         self._records: dict[str, EngagementRecord] = {}
         self._topic_index: dict[int, str] = {}
         self._lock = asyncio.Lock()
@@ -433,6 +452,17 @@ class EngagementRegistry:
             if not rec.auth_token:
                 rec.auth_token = secrets.token_urlsafe(32)
                 reconciled_any = True
+            # #283 boot restore: every LIVE record whose origin carries the
+            # agent-spawn marker re-occupies one limiter slot, held on the
+            # record exactly as a fresh create would. restore() counts
+            # unconditionally, so more live marked rows than the cap become
+            # DEBT — new acquisition stays refused until terminal releases
+            # drain below the cap (design r3: a saturating acquire would let
+            # the first reap admit a spawn while cap+ marked rows stay live).
+            if (self._agent_spawn_limiter is not None
+                    and rec.status in ("active", "idle")
+                    and rec.origin.get("_agent_spawned")):
+                rec.agent_spawn_permit = self._agent_spawn_limiter.restore()
             self._records[rec.id] = rec
             if rec.topic_id is not None:
                 self._topic_index[rec.topic_id] = rec.id
@@ -623,7 +653,21 @@ class EngagementRegistry:
         plugin_artifacts: tuple[dict, ...] | list[dict] = (),
         interaction_state: str = "",
         topic_title: str = "",
+        agent_spawn_permit: Any = None,
     ) -> EngagementRecord:
+        # #283 belt-and-suspenders: a record whose origin carries the
+        # agent-spawn marker must arrive WITH its reservation — the call
+        # sites acquire before any external side effect; a marked create
+        # without a token means a coding error upstream, and admitting it
+        # would run an uncounted engagement. Fail closed. (No limiter wired
+        # ⇒ the cap feature is off for this construction site — tests,
+        # legacy callers — and the guard stays quiet.)
+        if (self._agent_spawn_limiter is not None
+                and (origin or {}).get("_agent_spawned")
+                and agent_spawn_permit is None):
+            raise ValueError(
+                "agent-spawned engagement created without a spawn "
+                "reservation (#283)")
         engagement_id = uuid.uuid4().hex
         now = time.time()
         rec = EngagementRecord(
@@ -649,6 +693,12 @@ class EngagementRegistry:
             plugin_artifacts=tuple(dict(pa) for pa in plugin_artifacts),
             interaction_state=interaction_state,
             topic_title=topic_title,
+            # #283 (design r4): ownership transfers HERE, at create — once
+            # this call returns successfully, terminal transitions own the
+            # release. If create raises (rollback ran, no record exists),
+            # the caller's lexical finally still owns it; SpawnToken.release
+            # is idempotent so the overlap is safe.
+            agent_spawn_permit=agent_spawn_permit,
         )
         async with self._lock:
             self._records[engagement_id] = rec
@@ -761,13 +811,18 @@ class EngagementRegistry:
         ``Permit.release()`` is idempotent, so ``_finalize_engagement``'s
         own release (and re-entrant terminal calls) are safe no-ops.
         Executor engagements carry ``permit=None`` → guarded no-op."""
-        permit = getattr(rec, "permit", None)
-        if permit is not None:
-            try:
-                permit.release()
-            except Exception:  # noqa: BLE001 — a bookkeeping release must never break a terminal transition
-                logger.warning("engagement %s permit release raised",
-                               rec.id[:8], exc_info=True)
+        # #283: BOTH permit fields release here (design r3: an agent-context
+        # interactive specialist holds a SpecialistLimiter permit AND an
+        # agent-spawn token; releasing only one wedges or overspends the
+        # other pool). Each release is idempotent.
+        for field in ("permit", "agent_spawn_permit"):
+            permit = getattr(rec, field, None)
+            if permit is not None:
+                try:
+                    permit.release()
+                except Exception:  # noqa: BLE001 — a bookkeeping release must never break a terminal transition
+                    logger.warning("engagement %s %s release raised",
+                                   rec.id[:8], field, exc_info=True)
 
     async def mark_completed(self, engagement_id: str, completed_at: float) -> None:
         async with self._lock:

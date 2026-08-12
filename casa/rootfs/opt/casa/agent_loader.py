@@ -1611,6 +1611,22 @@ def load_all_specialists(
             # whole scan.
             failed.append((entry, str(exc)))
             continue
+        # #541 layer 2 — load-time clamp: an install materialized BEFORE the
+        # tool ceiling existed can carry forbidden casa-framework grants in
+        # its runtime.yaml. Strip them with a WARN (not boot-fatal: the
+        # specialist keeps running minus the forbidden grants). The clamped
+        # cfg is what record-pinning and _build_specialist_options see, so
+        # every fresh launch inherits it; ALREADY-LIVE engagement records
+        # are covered by the dispatch-time ceiling in tools.py (layer 3).
+        from specialist_component import specialist_casa_tool_violations
+        _violations = specialist_casa_tool_violations(cfg.tools.allowed)
+        if _violations:
+            logger.warning(
+                "specialist %s: stripping casa-framework grants outside the "
+                "consumer-safe ceiling from tools.allowed: %r (#541)",
+                cfg.role, _violations)
+            cfg.tools.allowed = [
+                t for t in cfg.tools.allowed if t not in set(_violations)]
         found[cfg.role] = cfg
     return found, failed
 

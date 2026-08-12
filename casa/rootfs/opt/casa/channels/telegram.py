@@ -1429,6 +1429,12 @@ class TelegramChannel(Channel):
         # clearance off these instead of the channel-wide private constant.
         context["_origin_route"] = "telegram"
         context["_origin_clearance"] = trusted_origin.server_origin.clearance
+        # #283: live-operator marker — reserved (sanitize strips it from
+        # every external context), stamped ONLY for the authenticated
+        # operator sender. The agent-spawn cap exempts exactly these turns;
+        # synthesized/scheduled/delegated turns never carry it.
+        if self._sender_is_operator(user):
+            context["_operator_turn"] = True
 
         msg = BusMessage(
             type=MessageType.CHANNEL_IN,
@@ -3195,6 +3201,10 @@ class TelegramChannel(Channel):
                     "button_answer": request_id,
                     "_origin_route": "telegram",
                     "_origin_clearance": _clearance,
+                    # #283: a button tap is a live operator action — same
+                    # marker rule as _handle above, operator sender only.
+                    **({"_operator_turn": True}
+                       if self._user_id_is_operator(user_id) else {}),
                 },
                 trusted_user_origin=_trusted_origin,
             )

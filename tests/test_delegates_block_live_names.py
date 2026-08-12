@@ -41,7 +41,8 @@ _TOOLS_GLOBALS = (
     "_channel_manager", "_bus", "_specialist_registry", "_mcp_registry",
     "_agent_role_map", "_agent_registry", "_trigger_registry",
     "_engagement_registry", "_executor_registry", "_runtime",
-    "_specialist_limiter", "_specialist_telemetry", "_voice_job_route_cap",
+    "_specialist_limiter", "_specialist_telemetry", "_agent_spawn_limiter",
+    "_voice_job_route_cap",
 )
 
 

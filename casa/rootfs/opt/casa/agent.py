@@ -973,6 +973,11 @@ class Agent:
         # the recall clearance gate, and delegation synthesis read it.
         for _marker_key in (
             "synthetic", "button_answer", "_origin_route", "_origin_clearance",
+            # #283: live-operator marker for the agent-spawn cap — reserved
+            # (server-stamped at telegram ingress, stripped from external
+            # contexts), deliberately NOT copied by the delegation-completion
+            # synthesizer or any trigger/webhook context builder.
+            "_operator_turn",
         ):
             if _marker_key in msg.context:
                 origin_snapshot[_marker_key] = msg.context[_marker_key]

@@ -2,15 +2,16 @@
 last_reviewed: 2026-08-10
 ---
 
-# Engagements and delegation
+# Engagements
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-Work one agent hands to another: ephemeral delegation, durable engagements, how they end,
-and what survives a restart. It does not cover the turn loop itself, nor what a driver's
-underlying runtime does once started.
+Durable engagements: their records, how they end, and what survives a restart. How agents
+address and launch one another — the delegation ACL, the depth cap, the agent-spawn cap —
+lives in [`architecture/delegation.md`](delegation.md). It does not cover the turn loop
+itself, nor what a driver's underlying runtime does once started.
 
 ## Mental model
 
@@ -20,7 +21,8 @@ durable record with its own topic, which outlives the call that created it.
 
 Three launch paths exist and they are not symmetrical. Ordinary specialist delegation runs
 ephemerally. *Interactive* specialist delegation creates an engagement. Engaging an executor
-always creates one.
+always creates one. Both engagement-creating paths pass the agent-spawn gate first
+(INV-ENG-008).
 
 **Ending an engagement is a race with exactly one winner, and that is the load-bearing
 design.** The terminal transition is attempted against the registry; only the caller that
@@ -50,11 +52,6 @@ thirty days, bounding duplicate-task protection. Separately, an observer watches
 events and may post a bounded LLM interjection into the resident chat — capped at three per
 engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
 budget slot is reserved before evaluation and returned if nothing is posted.
-
-**The depth cap is narrower than it sounds.** It stops an ephemerally delegated agent —
-resident or specialist alike — from delegating onwards. It is read in one place and stamped
-in one place, and the executor launch path touches neither — so it is not a general limit on
-agents creating long-running work.
 
 **A `claude_code` engagement gets its own OS identity, not just its own record.** A
 never-reused uid, backed by a durable dual-copy counter, is allocated per engagement, its
@@ -116,83 +113,6 @@ operator marking an engagement complete finalizes past unread input deliberately
 also exists only where the driver implements the inbound accessors — today that is the
 claude-code driver alone, so an interactive in-casa specialist completion has no unread-input
 gate. Accessor failures fail open with a warning rather than wedging termination.
-
-**INV-ENG-004**: Ephemeral delegation stops at depth one.
-
-Enforced in the pre-launch check for the delegation tool, against a depth stamped when an
-ephemeral delegated child's origin is built — stamped for every delegated target, resident
-and specialist alike, and checked without regard to the caller's tier.
-
-What it does not cover: the executor launch path neither reads nor stamps the depth, and the
-interactive branch that creates a specialist engagement copies the caller's origin without
-stamping — an interactively-engaged specialist runs at the caller's depth and can delegate
-onwards. The guarantee is "an agent reached through ephemeral delegation cannot delegate
-again", not "agent-created work cannot chain".
-
-**INV-ENG-006**: Accepting a delegate's display name never widens the delegation ACL.
-
-The delegation tool accepts either a delegate's role id or its persona display name, because
-Casa advertises both to the model. The block renders each entry as `role (Display Name)`,
-collapsing to the bare role when no distinct persona name exists — role first, because that
-is what the tool is keyed on; rendering the persona first is what taught the model to
-address delegates by a name the ACL then refused. The display name stays as the
-parenthetical so the model can still map "ask Tina to…" onto a role.
-
-Resolution is scoped: the candidate set is the *caller's own* declared delegates, so every
-value it can produce is already inside the ACL.
-An exact role id is matched first, so a delegate whose display name happens to be another
-delegate's role id cannot shadow it. A name matching two declared delegates is refused with
-its own kind rather than resolved to either.
-
-The name is canonicalized **before the voice-handoff decision**, not only inside the ACL.
-That decision runs first of all — before any await, so a live voice turn reserves
-foreground ownership before work can race ahead — and applies its own exact-role-id test.
-A display name reaching it unresolved would read as "not declared", skip the handoff, and
-then be accepted by the ACL, running the delegation on the ordinary sync path under the
-voice budget: the Concierge policy silently bypassed. The pre-handoff pass is deliberately
-silent and total — it rewrites only a name it can resolve to exactly one declared role, and
-every denial stays the ACL's to emit, in the established gate order.
-
-What it does not cover: this says nothing about *global* name uniqueness. The registry's
-own `name_to_role` is a global, first-binding-wins map and is deliberately **not** what the
-ACL consults — a collision there would silently pick a winner, which is not a resolution an
-authorization boundary may perform. Nothing prevents two agents elsewhere in a deployment
-from sharing a display name; it only stops mattering at this gate.
-
-**INV-ENG-007**: Every `<delegates>` block Casa builds names delegates as the ACL then resolves them.
-
-The two used to come from objects with different lifetimes. `AgentRegistry` is immutable
-and a live agent keeps the instance it was constructed with — deliberately, so that
-rebinding the runtime's registry cannot reach a running agent — while the delegation role
-map is rebuilt on every reload path. Reloading a single role therefore refreshed what
-resolution accepted and left every *other* agent rendering its boot-time snapshot: rename a
-persona and the assistant went on offering a name the ACL had stopped recognising.
-
-Prompt building now reads the live role map at point of use, so the block, the caller
-identity a specialist is handed, and the ACL's alias resolution share one source. Membership
-follows: a delegate the map dropped is not advertised, and one added since the caller was
-built is. The construction-time registry survives only as fallback for a process where the
-tools module was never initialized — so the live directory reports that state as *absent*
-rather than empty, and "nobody is dispatchable" is never mistaken for "nothing is wired
-yet".
-
-Reading it at build time is only half of it. Options are assembled on a **cold** pool
-connect; a warm client is reused without rebuilding them, and a per-role reload closes only
-the reloaded role's own pool. So the reload paths additionally drop the warm clients of
-agents whose block would now render differently — what carries a rename into a conversation
-already in progress. The drop is scoped by an actual diff of the directory (a cold reconnect
-costs seconds and a fresh prompt-cache prefix), and *scheduled*, never awaited, since a
-reload runs inside a caller's own turn and the invalidation waits on that turn's lock. Every reload scope that commits an agent config does this, including the policy
-cascade — which swaps every role without any per-role reload requested, reached by a
-config-sync run *after* its own agents sweep.
-
-What it does not cover, and the boundary is the word *builds*: a block is a snapshot taken
-when assembled, and the model calls the tool later. A reload landing in between degrades the
-alias to the ordinary undeclared refusal, enumerating the current delegates; the next turn
-is consistent again. Two further gaps predate this rule: concurrent per-role reloads can publish a briefly
-partial role map, since the specialist registry is cleared and refilled in place off-loop
-while another reload snapshots it; and *tier* lookups still read a boot-time registry global
-no reload refreshes.
 
 **INV-ENG-005**: Once the output sequencer is terminalized, ordinary narration and unresolved sends cannot post below the completion.
 
@@ -274,39 +194,9 @@ than being handed a success for a transition that did not happen. Distinguishing
 retryable outcome from the precondition failure matters where it is surfaced: one says
 "read your messages", the other says "try again".
 
-**A delegation names a target the caller does not declare.** Refused before any lookup, so
-the refusal cannot distinguish an agent that exists from one that does not. The payload
-enumerates the caller's *own* declared delegates as role/name pairs, filtered against the
-role map target resolution itself reads — so an advertised role resolves, and a declared
-delegate that is disabled or removed is excluded rather than offered as a retry that would
-fail as unknown at the next gate. Naming them discloses nothing the caller does not
-already hold: these are its own declarations.
-
-Its role/name pairs match that caller's rendered `<delegates>` block, because both are
-built from the same live role map (INV-ENG-007) rather than from a per-agent snapshot that
-a per-role reload could leave behind. The enumeration is what tells apart "this delegate is
-not wired to me" from "wired, but addressed by the wrong key". The refusal is logged with the
-caller role and the target collapsed to `<other>` when unregistered; it moves **no
-per-role telemetry counter**, because the target is caller-supplied and the check runs
-before authorization.
-
-**A delegation names something that matches two declared delegates.** Refused with a
-distinct kind that lists the candidate roles, rather than picking one (INV-ENG-006).
-
-**A required plugin is withheld because its environment is unresolved.** The refusal names
-the cause, not only the absence: the payload carries per-plugin entries with the unresolved
-variable names and the remediation. Causes that record no reason — a plugin not assigned to
-the target, an invalid registry — still deny, with the reason list present and empty.
-
-Read the trust boundary carefully. Environment *values* are never read — only the names a
-plugin's own `.mcp.json` references, and whether each resolves. But those names are
-**manifest-controlled content** shown to the model, not only to the operator log. The
-extractor accepts any `[A-Z_][A-Z0-9_]*`, so a hostile artifact can park an
-uppercase-alphanumeric literal there — an AWS access key id is exactly that shape —
-indistinguishable from a genuine variable name. So the guarantee is "no environment value",
-not "no secret": exposure is bounded by a cap on how many names one denial reports and how
-long each may be, with over-long tokens dropped rather than truncated — a truncated
-credential is still a credential prefix.
+**A delegation is refused at one of its gates.** The ACL, alias, spawn-cap and
+plugin-withholding refusals, and what each payload discloses, are described in
+[`architecture/delegation.md`](delegation.md).
 
 **Two callers race.** The loser is absorbed as already-terminal. No duplicate topic closure
 and no duplicate notification.
@@ -354,10 +244,6 @@ serialization will either fail or persist something meaningless.
 **A new topic output** should go through the per-engagement sequencer if its ordering
 relative to narration matters. Direct sends exist as a fallback and bypass ordering.
 
-**Not enforced anywhere**: nothing caps how deeply agents can create *engagements*. If that
-matters for a change you are making, it needs new code — do not expect the delegation depth
-cap to cover it.
-
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
@@ -392,5 +278,5 @@ cap to cover it.
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
-- [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)
+- [`architecture/delegation.md`](../architecture/delegation.md)
 <!-- END SOURCEMAP -->

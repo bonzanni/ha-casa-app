@@ -268,11 +268,22 @@ def render_install_consent_message(inspection: Any) -> str:
             lines.append(f"    Secrets required: {', '.join(row.env_names)}")
         plugin_blocks.append("\n".join(lines))
     plugin_section = ("\n".join(plugin_blocks) + "\n") if plugin_blocks else ""
+    # #541: the role's own casa-framework tool grants — the one place spawn/
+    # privilege tools could have entered was the one thing the operator never
+    # saw. Post-ceiling these are always consumer-safe, but the approving
+    # operator still sees what powers the specialist arrives with. Omitted
+    # entirely when the role grants none (same style as the plugin lines);
+    # getattr-defaulted so a hand-built inspection object predating the
+    # field renders unchanged.
+    role_grants = getattr(inspection, "role_tool_grants", ()) or ()
+    casa_tools_line = (
+        f"Casa tools: {', '.join(role_grants)}\n" if role_grants else "")
     return (
         "\U0001F510 Specialist install consent\n\n"
         f"Install '{inspection.component_id}@{inspection.version}' as "
         f"specialist:{inspection.slug}?\n"
         f"Mission: {inspection.mission}\n"
+        f"{casa_tools_line}"
         f"Default persona: {inspection.default_persona_ref}\n"
         f"Dependencies: {deps or '(none)'}\n"
         f"{dep_digest_lines}"

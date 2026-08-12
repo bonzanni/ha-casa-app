@@ -20,7 +20,8 @@ from specialist_component import compute_component_checksum
 
 
 def write_minimal_component(tmp_path: Path, *, slug: str = "mtg-test",
-                             extra_dependencies: list[dict] | None = None) -> tuple[Path, Path]:
+                             extra_dependencies: list[dict] | None = None,
+                             tools_allowed: list[str] | None = None) -> tuple[Path, Path]:
     """Build a minimal, checksum-valid specialist component tree under
     ``tmp_path / "component"`` and return ``(component_dir, manifest_path)``.
 
@@ -34,7 +35,8 @@ def write_minimal_component(tmp_path: Path, *, slug: str = "mtg-test",
         "api_version": "casa.role/v1", "id": f"specialist:{slug}", "kind": "specialist",
         "slot": slug, "mission": "Answer test questions.", "enabled": True,
         "model": {"source": "fixed", "value": "sonnet"},
-        "tools": {"allowed": [], "disallowed": ["Bash"], "permission_mode": "dontAsk",
+        "tools": {"allowed": list(tools_allowed or []), "disallowed": ["Bash"],
+                   "permission_mode": "dontAsk",
                    "max_turns": 8, "skills": "none", "voice_guard": "none"},
         "mcp_servers": [], "channels": [], "memory": {"token_budget": 0, "read_strategy": "per_turn"},
         "session": {"strategy": "ephemeral", "idle_timeout_seconds": 0},
