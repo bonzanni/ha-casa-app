@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.179.0] - 2026-08-12
+
+### Fixed
+
+- **A tier classification the model fumbles now gets a second chance
+  instead of silently locking the memory to `private`.** When the
+  classifier's reply omits the mandated `Tier: <word>` answer line
+  (measured at ~12% of calls on a large save), Casa now re-asks once with
+  the format requirement restated before falling back to the leak-safe
+  `private` default — and a second opinion can never *lower* the tier
+  below what the discarded reply's own answer lines said. Each session
+  save also logs a single "defaulted for N of M items" line, so the rate
+  is visible at a glance instead of buried in per-item warnings. (#508)
+
 ## [0.178.0] - 2026-08-12
 
 ### Added
