@@ -106,7 +106,8 @@ turn re-enters the normal fresh retry policy — up to the standard attempt limi
 single extra try.
 
 **The pool cannot serve the turn.** It raises, and the turn creates its own client for this
-turn only.
+turn only. The two failures compose: a stale session id hit on that per-turn fallback
+re-enters the same stale-id recovery above, rather than surfacing raw.
 
 **The CLI does not match its pin.** Boot verifies the effective Claude CLI against a pinned
 path and exact pinned version, and a mismatch is *fatal at startup* — replacing or

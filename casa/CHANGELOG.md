@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.191.0] - 2026-08-12
+
+### Fixed
+
+- Turn dispatch: a stale stored session hit at the exact moment the warm
+  client pool is unavailable no longer fails the turn outright — the
+  per-turn fallback now runs the same clear-and-retry-fresh recovery as the
+  normal path, so the turn completes and the stale session pointer is
+  cleaned up. (#537)
+- Configurator: the 1Password vault tools now fall back to the configured
+  `onepassword_default_vault` when no vault is named, instead of failing
+  and guessing vault names against the account. (#535)
+
 ## [0.190.0] - 2026-08-12
 
 ### Fixed

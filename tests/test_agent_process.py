@@ -1736,6 +1736,47 @@ class TestResumeResilience:
         assert entry is not None
         assert "sdk_session_id" not in entry
 
+    async def test_pool_unavailable_fallback_recovers_stale_resume(
+        self, tmp_path,
+    ):
+        """#537: the pool raises PoolUnavailable AND the bypass fallback's
+        resume attempt hits the stale-resume ProcessError. The recovery
+        (conditional clear + retry fresh) must fire for the fallback exactly
+        as it does for the primary attempt — the double fault must not
+        surface raw nor leave the stale sid registered."""
+        from claude_agent_sdk import ProcessError
+        from sdk_client_pool import PoolUnavailable
+
+        FakeClient.reset()
+        FakeClient.failure_schedule = [
+            ProcessError("Command failed with exit code 1", exit_code=1),
+            None,
+        ]
+
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        key = build_scoped_session_key("voice", "butler", "probe-scope")
+        await reg.register(
+            key, resident_role_id("butler"), "stale-sid-537",
+            binding_digest=RESIDENT_DIGEST,
+            speaker_provenance=resident_prov("butler"),
+            user_provenance=STUB_USER_PROV,
+        )
+
+        agent = _make_agent_with_registry(reg, role="butler")
+
+        with patch.object(
+            agent._pool, "turn",
+            AsyncMock(side_effect=PoolUnavailable("pool closing")),
+        ), patch("sdk_client_pool._default_make_client", FakeClient), \
+                patch_retry_sleep():
+            text = await agent._process(_msg("voice", "probe-scope", "hi"))
+
+        assert text == "pong"
+        assert FakeClient.attempts == 2      # stale bypass + fresh retry
+        entry = reg.get(key)
+        assert entry is not None
+        assert entry.get("sdk_session_id") != "stale-sid-537"
+
     async def test_recovery_clear_preserves_concurrent_registration(
         self, tmp_path,
     ):

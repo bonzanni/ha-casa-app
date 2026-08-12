@@ -1238,50 +1238,70 @@ class Agent:
             # per-turn bypass. ProcessError on a resuming attempt = the stale
             # resume class (spec 5.8): clear + retry fresh (the pool re-derives
             # a FRESH decision from the cleared registry).
+            # #537: the recovery lives in a helper wrapping EACH attempt path,
+            # not in a sibling except arm — a sibling arm never catches an
+            # exception raised inside the PoolUnavailable handler's suite, so
+            # the bypass fallback's stale-resume ProcessError used to surface
+            # raw AND leave the stale sid registered. Both call sites now
+            # recover identically; depth stays bounded (one clear per helper
+            # call, two helper calls max).
+            async def _attempt_with_stale_recovery(attempt_fn):
+                try:
+                    return await retry_sdk_call(
+                        attempt_fn, on_retry=self._log_retry,
+                    )
+                except ProcessError as exc:
+                    if last_resume["sid"] is None:
+                        raise
+                    # Phase 4b Bug 5: structured retry telemetry. exc.stderr
+                    # is populated by Bug 4's stderr callback; truncate to a
+                    # 200-char tail with newlines escaped so one log line
+                    # stays scannable.
+                    stderr_tail = (
+                        (exc.stderr or "")[-200:].replace("\n", "\\n")
+                    )
+                    logger.info(
+                        "sdk_retry_fresh channel_key=%s exit_code=%s "
+                        "prior_sid=%s stderr_tail=%s",
+                        channel_key, exc.exit_code, last_resume["sid"],
+                        stderr_tail,
+                    )
+                    logger.warning(
+                        "SDK resume failed (key=%s sid=%s); clearing and "
+                        "retrying fresh", channel_key, last_resume["sid"],
+                    )
+                    # #349: clear only while the entry still carries the sid
+                    # that FAILED — this task released its per-key lock before
+                    # this arm runs, so a concurrent same-key turn may have
+                    # registered a valid newer session, and the retry below
+                    # should resume THAT (the pool/bypass re-derive the
+                    # decision from the registry).
+                    # #526: the generation guard closes the #349 residual — a
+                    # concurrent turn that re-registered the SAME sid moved
+                    # the generation past this attempt's snapshot, so the
+                    # clear declines and that session's continuity and
+                    # save-time consolidation both survive.
+                    await self._session_registry.clear_sdk_session(
+                        channel_key, expected_sid=last_resume["sid"],
+                        expected_generation=last_resume["gen"],
+                    )
+                    return await retry_sdk_call(
+                        attempt_fn, on_retry=self._log_retry,
+                    )
+
             attempt = _attempt_pooled_turn if use_pool else _attempt_bypass_turn
             try:
                 response_text, sdk_session_id, usage, used_resume, \
                     session_published = \
-                    await retry_sdk_call(attempt, on_retry=self._log_retry)
+                    await _attempt_with_stale_recovery(attempt)
             except PoolUnavailable:
+                # Reachable from the primary attempt OR from the recovery
+                # retry after a clear (the clear is idempotent and guarded, so
+                # falling through to the bypass — which re-derives its resume
+                # decision from the registry — is correct either way).
                 response_text, sdk_session_id, usage, used_resume, \
                     session_published = \
-                    await retry_sdk_call(
-                        _attempt_bypass_turn, on_retry=self._log_retry,
-                    )
-            except ProcessError as exc:
-                if last_resume["sid"] is None:
-                    raise
-                # Phase 4b Bug 5: structured retry telemetry. exc.stderr is
-                # populated by Bug 4's stderr callback; truncate to a 200-char
-                # tail with newlines escaped so one log line stays scannable.
-                stderr_tail = (exc.stderr or "")[-200:].replace("\n", "\\n")
-                logger.info(
-                    "sdk_retry_fresh channel_key=%s exit_code=%s prior_sid=%s "
-                    "stderr_tail=%s",
-                    channel_key, exc.exit_code, last_resume["sid"], stderr_tail,
-                )
-                logger.warning(
-                    "SDK resume failed (key=%s sid=%s); clearing and retrying "
-                    "fresh", channel_key, last_resume["sid"],
-                )
-                # #349: clear only while the entry still carries the sid that
-                # FAILED — this task released its per-key lock before this arm
-                # runs, so a concurrent same-key turn may have registered a
-                # valid newer session, and the retry below should resume THAT
-                # (the pool/bypass re-derive the decision from the registry).
-                # #526: the generation guard closes the #349 residual — a
-                # concurrent turn that re-registered the SAME sid moved the
-                # generation past this attempt's snapshot, so the clear
-                # declines and that session's continuity and save-time
-                # consolidation both survive.
-                await self._session_registry.clear_sdk_session(
-                    channel_key, expected_sid=last_resume["sid"],
-                    expected_generation=last_resume["gen"],
-                )
-                response_text, sdk_session_id, usage, used_resume, \
-                    session_published = \
-                    await retry_sdk_call(attempt, on_retry=self._log_retry)
+                    await _attempt_with_stale_recovery(_attempt_bypass_turn)
 
             # Per-turn telemetry (spec 5.2 §5.2). Microsecond cost — string
             # format + one logger.info — and runs after streaming has

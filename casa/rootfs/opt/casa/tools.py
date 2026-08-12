@@ -11521,7 +11521,16 @@ def _tool_set_plugin_env_reference(
     return {"ok": True}
 
 
+def _default_vault() -> str:
+    """#535: the operator's configured default vault (``svc-casa/run`` exports
+    the ``onepassword_default_vault`` option, "" when unset). The recipe
+    doctrine promises the vault-facing tools fall back to it — without the
+    fallback the configurator guessed vault names against the account."""
+    return os.environ.get("ONEPASSWORD_DEFAULT_VAULT", "")
+
+
 def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
+    vault = vault or _default_vault()
     cmd = ["op", "item", "list", "--format", "json"]
     if vault:
         cmd += ["--vault", vault]
@@ -11537,6 +11546,7 @@ def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
 
 
 def _tool_get_item_fields(*, item: str, vault: str = "") -> dict:
+    vault = vault or _default_vault()
     cmd = ["op", "item", "get", item, "--format", "json"]
     if vault:
         cmd += ["--vault", vault]
@@ -11601,7 +11611,9 @@ async def remove_plugin_env_reference(args: dict) -> dict:
 
 @tool(
     "list_vault_items",
-    "List 1Password vault items, optionally filtered by query string and/or vault name.",
+    "List 1Password vault items, optionally filtered by query string and/or "
+    "vault name. An omitted vault falls back to the configured "
+    "onepassword_default_vault.",
     {"query": str, "vault": str},
 )
 async def list_vault_items(args: dict) -> dict:
@@ -11614,7 +11626,9 @@ async def list_vault_items(args: dict) -> dict:
 
 @tool(
     "get_item_fields",
-    "Get field labels and types for a 1Password item (does not return secret values).",
+    "Get field labels and types for a 1Password item (does not return secret "
+    "values). An omitted vault falls back to the configured "
+    "onepassword_default_vault.",
     {"item": str, "vault": str},
 )
 async def get_item_fields(args: dict) -> dict:
