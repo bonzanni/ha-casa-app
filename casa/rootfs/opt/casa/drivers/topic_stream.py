@@ -286,12 +286,16 @@ class StreamCursor:
     # #538: the DISCARD tombstone riding ``hold_pending``. ``_finalize``'s
     # result-time discard decision write-aheads it (own ``_save``) BEFORE the
     # closing-edit/drain awaits, so a crash in that window recovers as "the
-    # held frames are DEAD" — cold catch-up DROPS their text instead of
-    # resurfacing it (the one case where resurfacing is wrong). Meaningless
-    # without ``hold_pending``; cleared at every site that clears the marker
-    # AND reset by ``_arm_hold_marker`` when a new hold generation starts.
-    # Absent-tolerated → ``False``.
-    hold_discarded: bool = False
+    # held frames are DEAD" — recovery DROPS their text instead of
+    # resurfacing it (the one case where resurfacing is wrong). Shape:
+    # ``{"from": {"segment": [...], "offset": int}}`` — the FIRST held
+    # frame's coordinate; only frames AT/PAST it are dead (Sol diff-r1: a
+    # frame-scoped bool would also drop throttled-but-landed pre-anchor text
+    # from the wire-high-water reconstruction and shrink the closing edit).
+    # Meaningless without ``hold_pending``; cleared at every site that
+    # clears the marker AND reset by ``_arm_hold_marker`` when a new hold
+    # generation starts. Absent-tolerated → ``None``.
+    hold_discarded: dict | None = None
     # #334: durable turn-end-event outbox (size one). Set ATOMICALLY in the
     # same save as the closed-turn checkpoint (write-ahead, the ``hold_pending``
     # precedent), cleared by a second save only after ``on_turn_event("result")``
@@ -352,7 +356,11 @@ class StreamCursor:
             last_posted_len=int(data.get("last_posted_len") or 0),
             dropped_through=data.get("dropped_through"),
             hold_pending=bool(data.get("hold_pending") or False),
-            hold_discarded=bool(data.get("hold_discarded") or False),
+            hold_discarded=(
+                data.get("hold_discarded")
+                if isinstance(data.get("hold_discarded"), dict)
+                else None
+            ),
             result_event_pending=(
                 data.get("result_event_pending")
                 if isinstance(data.get("result_event_pending"), dict)
@@ -738,15 +746,19 @@ class TopicStreamRelay:
         # ``result`` / abnormal ``spawn`` / retention gap), after which normal
         # arming resumes. In-memory only; ``False`` on warm re-entry.
         self._replay_disarmed = False
-        # #538: cold-replay DISCARD latch — the tombstone's in-memory face.
-        # Set at cold start iff BOTH ``hold_pending`` and ``hold_discarded``
-        # are durable: the recovered turn's held frames were already ruled
-        # dead at ``result``, so catch-up DROPS their text (checkpoint still
-        # advances) instead of the disarm latch's resurface rendering. Dies
-        # with ``_replay_disarmed`` at the recovered turn's boundary
+        # #538: cold-replay DISCARD latch — the tombstone's in-memory face
+        # (the dead range's ``from`` coordinate, or ``None``). Set at cold
+        # start iff BOTH ``hold_pending`` and ``hold_discarded`` are durable:
+        # the recovered turn's held frames were already ruled dead at
+        # ``result``, so recovery DROPS text for frames at/past ``from``
+        # (checkpoint still advances) instead of the disarm latch's resurface
+        # rendering — in the live catch-up commit sites AND the replay/
+        # wire-high-water reconstruction sites, so a second crash mid-recovery
+        # cannot resurrect the range through ``_replay_text``. Dies with
+        # ``_replay_disarmed`` at the recovered turn's boundary
         # (``_reset_turn_state`` / abnormal ``spawn``) so a later turn's
-        # narration is never muted. In-memory only; ``False`` on warm re-entry.
-        self._replay_discard = False
+        # narration is never muted. In-memory only; ``None`` on warm re-entry.
+        self._replay_discard: dict | None = None
 
     # -- persistence helpers ------------------------------------------------
 
@@ -770,7 +782,7 @@ class TopicStreamRelay:
             # left behind by the retention-gap floor before it cleared both)
             # would otherwise DROP this hold's prose on a crash-before-result
             # recovery that must RESURFACE it.
-            self.cursor.hold_discarded = False
+            self.cursor.hold_discarded = None
             self._save()
 
     def _checkpoint(self, seg, off_after: int) -> None:
@@ -876,6 +888,23 @@ class TopicStreamRelay:
         if self._seg_rank(tseg) == (1 << 30):
             return False
         return self._seg_rank(st) < self._seg_rank(tseg)
+
+    def _in_discarded_range(self, seg, off_after: int) -> bool:
+        """#538: is this frame inside the tombstoned (result-time DISCARDED)
+        held range — at or past the first held frame's coordinate? Frames
+        BEFORE it (posted or throttled-but-landed pre-anchor narration) stay
+        untouched: they are genuine wire content the reconstruction and the
+        re-run closing edit still need."""
+        rd = self._replay_discard
+        if rd is None:
+            return False
+        fr = rd.get("from") or {}
+        if (
+            tuple(seg) == tuple(fr.get("segment", (0, 0)))
+            and off_after == int(fr.get("offset", 0))
+        ):
+            return True
+        return not self._coord_le(seg, off_after, fr)
 
     def _update_live(self, seg, off_after: int) -> None:
         """Latch REPLAY→LIVE using monotonic segment order (turn_start<=current)."""
@@ -1367,12 +1396,12 @@ class TopicStreamRelay:
         if not text:
             self._checkpoint(seg, off_after)
             return
-        # #538: tombstone catch-up — this text frame is part of a held range
+        # #538: tombstone catch-up — this text frame is inside a held range
         # already ruled DISCARDED at the crashed run's ``result``. Drop the
         # text (never buffer, never post) but still advance the checkpoint so
         # the frame is not re-read; the latch dies at the recovered turn's
         # boundary.
-        if self._replay_discard:
+        if self._in_discarded_range(seg, off_after):
             self._checkpoint(seg, off_after)
             return
         await self._maybe_arm_suppression()
@@ -1460,7 +1489,7 @@ class TopicStreamRelay:
         # held text; the frame's tool blocks still process and the frame-end
         # checkpoint in ``_handle_assistant_blocks`` advances (the buffer
         # stays empty, so the hold exemption never fires).
-        if self._replay_discard:
+        if self._in_discarded_range(seg, off_after):
             return
         await self._maybe_arm_suppression()
         # §D5: armed — BUFFER (see ``_post_text``). The frame-end checkpoint in
@@ -1851,7 +1880,7 @@ class TopicStreamRelay:
             # set (it only exists between the result-time discard decision and
             # the closed-turn save), but every ``hold_pending`` clear site
             # drops the tombstone with it so the pair can never skew.
-            self.cursor.hold_discarded = False
+            self.cursor.hold_discarded = None
         self._save()
 
     def _reset_turn_state(self) -> None:
@@ -1887,7 +1916,7 @@ class TopicStreamRelay:
         self._replay_disarmed = False
         # #538: the discard latch dies on the SAME boundary — a later turn's
         # narration must never be muted by a recovered turn's tombstone.
-        self._replay_discard = False
+        self._replay_discard = None
 
     async def _finalize(
         self, seg, off_after: int, *, subtype: str | None = None,
@@ -1947,6 +1976,9 @@ class TopicStreamRelay:
             else:
                 # Held-buffer DISCARD (anchor still open, or terminal): the held
                 # prose never posts — clear the buffer AND any pending separators.
+                # (#538: capture the dead range's start — the FIRST held frame's
+                # coordinate — before the buffer goes away.)
+                held_from = (self._anchor_buffer[0][1], self._anchor_buffer[0][2])
                 self._anchor_buffer = []
                 self._seps_clear()
                 # #538: write-ahead the DISCARD tombstone BEFORE the awaits
@@ -1954,9 +1986,16 @@ class TopicStreamRelay:
                 # leave ``hold_pending`` alone durable, and cold recovery's
                 # disarmed catch-up RESURFACED the held frames — the one case
                 # where resurfacing is wrong (the sign-off the discard killed
-                # posted after all). With the tombstone, recovery DROPS them;
+                # posted after all). The tombstone carries the FIRST held
+                # frame's coordinate so recovery drops exactly the dead range;
                 # both fields clear atomically in the closed-turn save below.
-                self.cursor.hold_discarded = True
+                _first_held = held_from
+                self.cursor.hold_discarded = {
+                    "from": {
+                        "segment": list(_first_held[0]),
+                        "offset": int(_first_held[1]),
+                    },
+                }
                 self._save()
         coord = {"segment": list(seg), "offset": off_after}
         # wb3-2: a TERMINAL engagement DISCARDS its closing edit entirely — the
@@ -2032,7 +2071,7 @@ class TopicStreamRelay:
         # re-rendered. Either way the closed-turn checkpoint advances past the
         # held frames, so clear ``hold_pending`` ATOMICALLY in this same save.
         self.cursor.hold_pending = False
-        self.cursor.hold_discarded = False  # #538: tombstone dies with it
+        self.cursor.hold_discarded = None  # #538: tombstone dies with it
         self._reset_turn_state()
         # F4+F6: drain every still-armed late intent, then prune + seal, as ONE
         # atomic lock hold. The former flush→prune→seal sequence released the
@@ -2132,10 +2171,11 @@ class TopicStreamRelay:
         self._replay_disarmed = bool(self.cursor.hold_pending)
         # #538: the DISCARD tombstone overrides the resurface rendering — the
         # held frames were already ruled dead at the crashed run's ``result``,
-        # so this recovery's catch-up DROPS their text instead. Rides (never
-        # replaces) the disarm latch and dies on the same boundaries.
-        self._replay_discard = bool(
-            self.cursor.hold_pending and self.cursor.hold_discarded
+        # so this recovery DROPS text for frames at/past its ``from``
+        # coordinate. Rides (never replaces) the disarm latch and dies on the
+        # same boundaries.
+        self._replay_discard = (
+            self.cursor.hold_discarded if self.cursor.hold_pending else None
         )
         gap_seen = False
 
@@ -2177,7 +2217,7 @@ class TopicStreamRelay:
                         # crash-recovery resurface once a fresh hold re-set
                         # ``hold_pending`` (belt-and-suspenders with the
                         # ``_arm_hold_marker`` reset).
-                        self.cursor.hold_discarded = False
+                        self.cursor.hold_discarded = None
                         self._save()
                     # #523: the marker's source frames rotated out with the
                     # gap — its coordinate can never be reached again, so it
@@ -2292,7 +2332,15 @@ class TopicStreamRelay:
             # REPLAY: rebuild visible-text state ONLY; suppress all side effects.
             # §R3: re-derive from the SAME (message_id, text) extractor the live
             # path uses, so the separator lands identically on reconstruction.
-            if frame is not None:
+            # #538: a tombstoned frame's text is NOT wire content — a prior
+            # tombstone recovery may have checkpointed past dropped frames
+            # before a second crash, so they can arrive here ≤ ``current``;
+            # reconstructing them would inflate ``_per_message_text`` past
+            # the true wire and the re-run closing edit would post the dead
+            # suffix (Sol diff-r1 S2, double-crash arm).
+            if frame is not None and not self._in_discarded_range(
+                seg, off_after,
+            ):
                 narr = extract_narration(frame)
                 if narr is not None and narr.text:
                     self._replay_text(narr.text, narr.message_id)
@@ -2318,7 +2366,18 @@ class TopicStreamRelay:
                 self.cursor.last_posted_len = self._posted_len
                 self.cursor.wire_hw = None  # durably cleared by finalize
             elif self._coord_le(seg, off_after, hw_coord):
-                if frame is not None:
+                # #538 (Sol diff-r1 S2): held frames sit between ``current``
+                # and the wire-high-water coordinate, so this branch would
+                # otherwise reconstruct the DISCARDED prose into
+                # ``_per_message_text`` — past ``wire_hw.len`` — and the
+                # re-run finalize's closing edit would post the dead suffix.
+                # Range-scoped (not blanket): throttled-but-landed pre-anchor
+                # text BELOW the tombstone's ``from`` is genuine wire content
+                # the reconstruction must keep, or the closing edit would
+                # SHRINK the posted message.
+                if frame is not None and not self._in_discarded_range(
+                    seg, off_after,
+                ):
                     narr = extract_narration(frame)
                     if narr is not None and narr.text:
                         self._replay_text(narr.text, narr.message_id)
@@ -2372,14 +2431,14 @@ class TopicStreamRelay:
             self._suppressing_for = None
             self._anchor_candidate = None
             self._replay_disarmed = False
-            self._replay_discard = False  # #538: same boundary, same death
+            self._replay_discard = None  # #538: same boundary, same death
             await _maybe_await(
                 self.on_turn_event("spawn", {"epoch": frame.get("epoch")})  # (2)
             )
             self.cursor.current = {"segment": list(seg), "offset": off_after}  # (3)
             self.cursor.last_posted_len = self._posted_len
             self.cursor.hold_pending = False
-            self.cursor.hold_discarded = False  # #538: tombstone dies with it
+            self.cursor.hold_discarded = None  # #538: tombstone dies with it
             self._save()
             return
 

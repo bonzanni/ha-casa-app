@@ -1234,7 +1234,7 @@ async def test_crash_after_discard_decision_does_not_resurface_signoff(tmp_path)
     assert rec1.sends == []                                  # held, never posted
     persisted = StreamCursor.load(cursor)
     assert persisted.hold_pending is True                    # window state
-    assert persisted.hold_discarded is True                  # tombstone landed
+    assert persisted.hold_discarded is not None              # tombstone landed
 
     # Relay 2: a genuine cold recovery. The discarded sign-off must NOT post.
     rec2, events2 = Recorder(), []
@@ -1249,7 +1249,7 @@ async def test_crash_after_discard_decision_does_not_resurface_signoff(tmp_path)
     assert rec2.edits == []
     done = StreamCursor.load(cursor)
     assert done.hold_pending is False
-    assert done.hold_discarded is False
+    assert done.hold_discarded is None
     assert done.current["offset"] == offs[-1]                # past result
 
 
@@ -1276,7 +1276,7 @@ async def test_crash_after_discard_mixed_frame_drops_text_keeps_tools(tmp_path):
     )
     with pytest.raises(RuntimeError):
         await relay1.run()
-    assert StreamCursor.load(cursor).hold_discarded is True
+    assert StreamCursor.load(cursor).hold_discarded is not None
 
     rec2, events2 = Recorder(), []
     seq2, _c2 = _fast_sequencer(rec2)
@@ -1315,7 +1315,7 @@ async def test_discard_recovery_does_not_mute_next_turn(tmp_path):
     )
     with pytest.raises(RuntimeError):
         await relay1.run()
-    assert StreamCursor.load(cursor).hold_discarded is True
+    assert StreamCursor.load(cursor).hold_discarded is not None
 
     rec2, events2 = Recorder(), []
     seq2, _c2 = _fast_sequencer(rec2)
@@ -1328,7 +1328,7 @@ async def test_discard_recovery_does_not_mute_next_turn(tmp_path):
     assert _narration_sends(rec2) == ["turn2 prose"]         # not muted
     done = StreamCursor.load(cursor)
     assert done.hold_pending is False
-    assert done.hold_discarded is False
+    assert done.hold_discarded is None
 
 
 async def test_stale_tombstone_cleared_when_new_hold_arms(tmp_path):
@@ -1350,7 +1350,7 @@ async def test_stale_tombstone_cleared_when_new_hold_arms(tmp_path):
         current={"segment": [999, 999], "offset": 40},
         message_ids=[],
         hold_pending=True,
-        hold_discarded=True,
+        hold_discarded={"from": {"segment": [999, 999], "offset": 20}},
     ).save(cursor)
 
     # Relay 1: gap floor clears BOTH fields, the fresh anchor turn re-arms and
@@ -1366,7 +1366,7 @@ async def test_stale_tombstone_cleared_when_new_hold_arms(tmp_path):
     assert rec1.sends == []                                  # held, never posted
     held = StreamCursor.load(cursor)
     assert held.hold_pending is True                         # new hold armed
-    assert held.hold_discarded is False                      # stale tombstone gone
+    assert held.hold_discarded is None                       # stale tombstone gone
 
     # Relay 2: crash-before-result recovery of the NEW hold must resurface.
     rec2, events2 = Recorder(), []
@@ -1378,3 +1378,99 @@ async def test_stale_tombstone_cleared_when_new_hold_arms(tmp_path):
     await relay2.run()
     assert _narration_sends(rec2) == ["must resurface"]      # NOT dropped
     assert relay2.cursor.current["offset"] == offs[-1]
+
+
+async def test_crash_after_discard_with_prior_narration_and_wire_hw(tmp_path):
+    """Sol diff-r1 S2: PRIOR narration means the crashed finalize's closing
+    edit landed and persisted ``wire_hw`` — the #523 catch-up branch then
+    reconstructs frames up to the result coordinate, and without the
+    range-scoped guard it rebuilt the DISCARDED sign-off into
+    ``_per_message_text`` past ``wire_hw.len``, so the re-run closing edit
+    posted the dead suffix. Recovery must keep the wire at exactly the prior
+    content and never surface the sign-off."""
+    _write_current(tmp_path, [
+        _init(), _text("prefix "), _anchor_ask("Q?"),
+        _text("DEAD SIGNOFF"), _result(),
+    ])
+    cursor = tmp_path / ".stream_cursor.json"
+
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+
+    async def _boom():
+        raise RuntimeError("crash inside the finalize window")
+
+    seq1.drain_and_prune_turn = _boom
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    with pytest.raises(RuntimeError):
+        await relay1.run()
+    assert _narration_sends(rec1) == ["prefix "]
+    persisted = StreamCursor.load(cursor)
+    assert persisted.hold_discarded is not None
+    assert persisted.wire_hw is not None        # the closing edit landed
+
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    await relay2.run()
+
+    assert all("DEAD" not in t for _tp, t in rec2.sends)
+    assert all("DEAD" not in e[2] for e in rec2.edits)
+    done = StreamCursor.load(cursor)
+    assert done.hold_pending is False
+    assert done.hold_discarded is None
+    assert done.wire_hw is None
+
+
+async def test_discard_recovery_keeps_throttled_pre_anchor_text(tmp_path):
+    """The tombstone is RANGE-scoped, not blanket: pre-anchor narration that
+    was throttled in memory but LANDED via the crashed finalize's closing edit
+    (it is inside ``wire_hw.len``) must survive reconstruction — a blanket
+    text-drop would make the re-run closing edit SHRINK the posted message."""
+    _write_current(tmp_path, [
+        _init(), _text("prefix "), _text("more"), _anchor_ask("Q?"),
+        _text("DEAD SIGNOFF"), _result(),
+    ])
+    cursor = tmp_path / ".stream_cursor.json"
+
+    rec1 = Recorder()
+    seq1, _c1 = _fast_sequencer(rec1)
+
+    async def _boom():
+        raise RuntimeError("crash inside the finalize window")
+
+    seq1.drain_and_prune_turn = _boom
+    relay1 = _make_relay(
+        tmp_path, cursor, rec1, [], sequencer=seq1,
+        open_anchor_state=lambda: (5, 500, _ah()),
+        edit_throttle=999.0,                 # "more" stays a throttled hold
+    )
+    with pytest.raises(RuntimeError):
+        await relay1.run()
+    # The closing edit flushed the throttled "more" to the wire.
+    assert rec1.edits and "more" in rec1.edits[-1][2]
+    assert all("DEAD" not in e[2] for e in rec1.edits)
+    assert StreamCursor.load(cursor).wire_hw is not None
+
+    rec2, events2 = Recorder(), []
+    seq2, _c2 = _fast_sequencer(rec2)
+    relay2 = _make_relay(
+        tmp_path, cursor, rec2, events2, sequencer=seq2,
+        open_anchor_state=lambda: (5, 500, _ah()),
+    )
+    await relay2.run()
+
+    # Nothing shrank and nothing dead surfaced: any wire write relay2 makes
+    # still carries "more" and never "DEAD".
+    assert all("DEAD" not in t for _tp, t in rec2.sends)
+    assert all("DEAD" not in e[2] for e in rec2.edits)
+    assert all("more" in e[2] for e in rec2.edits)
+    done = StreamCursor.load(cursor)
+    assert done.hold_pending is False
+    assert done.hold_discarded is None
