@@ -250,22 +250,28 @@ a parser contract, not accuracy; the eval set owns accuracy.
 
 **INV-MEM-015**: The lessons block injected into an executor's prompt at launch carries only summaries stamped with that launch's own procedural epoch; a summary is stamped at finalize with the epoch persisted on its engagement's record at create, never with the finalize-time definition.
 
-The epoch is a digest over the procedural bytes the launch actually consumes — the
-role-artifact checksum, the resolved prompt template's path and just-read bytes, every
-doctrine file as provisioned, and (for workspace-driven executors) the *source* workspace
-instruction file, pre-interpolation, whichever of the template or plain-copy forms will be
-consumed. Launch-specific substitutions are never inputs: rendered bytes embed the task and
-the recalled memory itself, which would make every epoch unique and the filter circular.
-Filtering is client-side between recall and render (the tag filter cannot narrow), drops
-foreign-epoch *and* unstamped hits alike — a lesson that cannot prove it was learned under
-the current doctrine is exactly what the filter exists for — and the injected block
-subordinates itself to the doctrine files in as many words.
+The epoch is a digest over the procedural bytes *as read at launch* — the role-artifact
+checksum, the resolved prompt template's path and just-read bytes, every doctrine file,
+and (for workspace-driven executors) the *source* workspace instruction file,
+pre-interpolation, whichever of the template or plain-copy forms will be consumed.
+Launch-specific substitutions are never inputs: rendered bytes embed the task and the
+recalled memory itself, which would make every epoch unique and the filter circular.
+Workspace provisioning re-reads those sources, so after provisioning the driver recomputes
+the digest and aborts the launch on a mismatch rather than stamp an engagement with an
+epoch it did not run under. Filtering is client-side between recall and render (the tag
+filter cannot narrow), drops foreign-epoch *and* unstamped hits alike — a lesson that
+cannot prove it was learned under the current doctrine is exactly what the filter exists
+for — and the injected block subordinates itself to the doctrine files in as many words.
 
 What it does not cover: `query_engager` is deliberately unfiltered (an answer to "what
 happened last time" is not injected procedure); a same-epoch lesson that is merely wrong
-survives, tempered only by the subordination line; and epochs never expire lessons from the
+survives, tempered only by the subordination line; epochs never expire lessons from the
 bank — a doctrine rollback to a byte-identical earlier state resurrects that epoch's
-lessons, by construction.
+lessons, by construction; and the post-provision recheck reads the current sources, not
+the bytes provisioning consumed, so an edit that lands and reverts inside the provisioning
+window can still mislabel — accepted, since it needs two opposing edits to config-synced
+doctrine within milliseconds, and closing it would thread an immutable byte snapshot
+through the whole provisioning path.
 
 ## Failure behavior
 

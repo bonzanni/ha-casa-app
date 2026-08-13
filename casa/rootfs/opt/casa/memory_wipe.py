@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -207,9 +208,21 @@ async def wipe_long_term_memory(
             # than reporting a success it did not deliver. Records already
             # unlinked stay unlinked — removing a retry record can only lose
             # a retry, never add content — so a retried wipe is safe.
+            # Terra diff-r2: NOT Path.glob() — pathlib's globbing swallows
+            # the scandir OSError internally (an unreadable spool dir yields
+            # [] with no exception, verified empirically on 3.12), which
+            # silently re-opened the fail-open this block exists to close.
+            # os.scandir raises, and a MISSING dir is the one legitimate
+            # empty (fresh install, nothing ever spooled).
             root = Path(retry_dir)
             try:
-                records = sorted(root.glob("*.json"))
+                with os.scandir(root) as it:
+                    records = sorted(
+                        Path(entry.path) for entry in it
+                        if entry.name.endswith(".json")
+                    )
+            except FileNotFoundError:
+                records = []
             except OSError as exc:
                 raise WipeAborted(
                     f"could not enumerate the retry spool ({exc}); nothing "

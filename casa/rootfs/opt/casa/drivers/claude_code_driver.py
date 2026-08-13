@@ -1217,6 +1217,14 @@ class ClaudeCodeDriver(DriverProtocol):
                 # not. Skipped when the record carries no epoch (best-effort
                 # persist failed — the summary retains untagged, which the
                 # archive filter treats as unproven, never as current).
+                # Declared residual (Sol diff-r2, accepted): this rechecks
+                # the CURRENT sources, not the bytes provisioning read, so
+                # an edit that lands and REVERTS between provision's read
+                # and this recheck (A->B->A) passes — closing it would mean
+                # threading an immutable byte snapshot through the whole
+                # provisioning path for a race that needs two edits to
+                # config-synced doctrine within the provisioning
+                # milliseconds. INV-MEM-015 discloses it.
                 _recorded_epoch = getattr(engagement, "procedural_epoch", "") or ""
                 if _recorded_epoch:
                     from executor_epoch import compute_procedural_epoch

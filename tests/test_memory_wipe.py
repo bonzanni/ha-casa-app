@@ -367,3 +367,44 @@ class TestDiffR1Fixes:
         assert sem.deleted == []                       # bank untouched
         assert reg.get("k") is not None                # pointer untouched
         assert not reg.retirement_pending("k")         # claims released
+
+    async def test_unreadable_spool_dir_aborts_before_deletion(
+        self, tmp_path, monkeypatch,
+    ):
+        """Terra diff-r2: Path.glob() swallows the scandir OSError (an
+        unreadable dir yields [] silently), so enumeration must use scandir
+        directly — an unreadable spool dir aborts the wipe with nothing
+        deleted."""
+        reg = _reg(tmp_path)
+        await _register(reg, "k", "sid-1")
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        (spool / "r.json").write_text("{}")
+        sem = FakeSem()
+
+        real_scandir = memory_wipe.os.scandir
+
+        def failing_scandir(path):
+            if str(path) == str(spool):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_scandir(path)
+
+        monkeypatch.setattr(memory_wipe.os, "scandir", failing_scandir)
+        with pytest.raises(WipeAborted, match="enumerate"):
+            await wipe_long_term_memory(
+                registry=reg, semantic_memory=sem, fence=RetainFence(),
+                bank="casa", retry_dir=spool,
+            )
+        assert sem.deleted == []
+        assert reg.get("k") is not None
+        assert not reg.retirement_pending("k")
+
+    async def test_missing_spool_dir_is_the_legitimate_empty(self, tmp_path):
+        reg = _reg(tmp_path)
+        sem = FakeSem()
+        report = await wipe_long_term_memory(
+            registry=reg, semantic_memory=sem, fence=RetainFence(),
+            bank="casa", retry_dir=tmp_path / "never-created",
+        )
+        assert report.bank_deleted is True
+        assert report.spool_records_dropped == 0
