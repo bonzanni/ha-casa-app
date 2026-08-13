@@ -4,8 +4,28 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+
+class DeliveryOutcome(Enum):
+    """Whether a delivery actually reached the transport (#556).
+
+    A one-shot operator notice rides at the HEAD of the text, so the outcome
+    keys on the first unit of output, not on total success: a multi-page reply
+    whose page 1 landed HAS shown the notice, whatever happens to page 3.
+
+    ``UNKNOWN`` is what a channel that has not opted into the contract yields
+    (it returns ``None``, which callers coerce). Those callers keep today's
+    behavior EXPLICITLY rather than by omission — the distinction matters,
+    because treating "channel is off the contract" as "delivery failed" would
+    re-offer a notice forever on a channel that cannot report.
+    """
+
+    DELIVERED = "delivered"
+    NOT_DELIVERED = "not_delivered"
+    UNKNOWN = "unknown"
 
 
 class Channel(ABC):

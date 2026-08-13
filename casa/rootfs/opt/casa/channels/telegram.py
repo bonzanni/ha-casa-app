@@ -42,7 +42,7 @@ from ingress_identity import (
     TELEGRAM_OPERATOR_CLEARANCE,
     ingress_identity,
 )
-from channels import Channel
+from channels import Channel, DeliveryOutcome
 # v0.79.0 (§2 Primitive A): the per-topic OUTPUT SEQUENCER + relay-mediated
 # discrete-posting intent registry. Implemented in the sibling module and
 # RE-EXPORTED here so ``channels.telegram.OutputSequencer`` resolves per the
@@ -3759,8 +3759,13 @@ class TelegramChannel(Channel):
         counts a dropped message as sent."""
         return self._app is not None
 
-    async def send(self, message: str, context: dict[str, Any]) -> None:
-        """Send a complete message (block mode fallback)."""
+    async def send(self, message: str, context: dict[str, Any]) -> DeliveryOutcome:
+        """Send a complete message (block mode fallback).
+
+        #556: reports whether anything reached Telegram. The availability guard
+        below returns NORMALLY having made zero Bot API calls, which a caller
+        suppressing a one-shot notice must be able to tell from success.
+        """
         # Release THIS turn's lease BEFORE the availability guard — lease
         # bookkeeping is local and must not be skipped in a reconnect window.
         target_chat = _resolve_chat_id(context, self.chat_id)
@@ -3768,13 +3773,22 @@ class TelegramChannel(Channel):
 
         if self._app is None:
             logger.warning("Telegram channel not started; cannot send message")
-            return
+            return DeliveryOutcome.NOT_DELIVERED
 
+        outcome = DeliveryOutcome.NOT_DELIVERED
         for chunk in _split_message(message):
             await self._app.bot.send_message(
                 chat_id=target_chat,
                 text=chunk,
             )
+            # The head landed. Stamp it where it survives a LATER chunk raising:
+            # a raising method returns no enum at all, so the returned value
+            # cannot carry this fact (#556 design §2.2).
+            if outcome is DeliveryOutcome.NOT_DELIVERED:
+                context["_delivery_head_sent"] = True
+                outcome = DeliveryOutcome.DELIVERED
+        # An empty split (whitespace-only input) correctly stays NOT_DELIVERED.
+        return outcome
 
     async def send_media(
         self, content: bytes, kind: str, filename: str, context: dict[str, Any],
