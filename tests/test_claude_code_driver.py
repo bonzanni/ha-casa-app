@@ -3503,3 +3503,76 @@ class TestCompletionEscalationInnerCancel:
         await started.wait()
         drv._force_tasks[rec.id].cancel()      # owner cancels the kill
         await outer                            # must NOT raise CancelledError
+
+
+class TestProceduralEpochRevalidation:
+    """#215 (Sol diff-r1): provisioning re-reads the prompt and copies the
+    doctrine AFTER the launch hashed them — an edit landing in that window
+    must abort the launch rather than stamp the engagement with an epoch it
+    did not run under."""
+
+    def _mk(self, monkeypatch, tmp_path):
+        from unittest.mock import AsyncMock
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers import s6_rc
+
+        _patch_uid_drop_ok(monkeypatch)
+
+        async def _noop():
+            return None
+
+        async def _noop_start(*, engagement_id):
+            return None
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked", _noop)
+        monkeypatch.setattr(s6_rc, "start_service", _noop_start)
+        monkeypatch.setattr(
+            s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc-root"))
+        (tmp_path / "svc-root").mkdir()
+        monkeypatch.setattr(
+            ClaudeCodeDriver, "_spawn_background_tasks",
+            lambda self, engagement: None)
+
+        async def _noop_write(self, engagement, text):
+            return None
+        monkeypatch.setattr(ClaudeCodeDriver, "_write_to_fifo", _noop_write)
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+        )
+        (tmp_path / "engagements").mkdir()
+        return drv
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
+    )
+    async def test_epoch_mismatch_aborts_launch(self, monkeypatch, tmp_path):
+        drv = self._mk(monkeypatch, tmp_path)
+        defn = _make_defn(tmp_path)
+        rec = _make_record(allocated_uid=200005)
+        rec.procedural_epoch = "0" * 64   # stale: never matches the real bytes
+
+        with pytest.raises(RuntimeError, match="materials changed"):
+            await drv.start(rec, prompt="system prompt body", options=defn)
+        # Bug-13 rollback: no half-provisioned workspace left behind.
+        assert not (tmp_path / "engagements" / rec.id).exists()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
+    )
+    async def test_matching_epoch_launches(self, monkeypatch, tmp_path):
+        from executor_epoch import compute_procedural_epoch
+
+        drv = self._mk(monkeypatch, tmp_path)
+        defn = _make_defn(tmp_path)
+        rec = _make_record(allocated_uid=200005)
+        with open(defn.prompt_template_path, encoding="utf-8") as fh:
+            rec.procedural_epoch = compute_procedural_epoch(
+                defn, prompt_template=fh.read())
+
+        await drv.start(rec, prompt="system prompt body", options=defn)
+        assert (tmp_path / "engagements" / rec.id / "CLAUDE.md").exists()

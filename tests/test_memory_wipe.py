@@ -304,3 +304,66 @@ class TestSingleFlight:
         release.set()
         await drain
         assert done == ["wipe-finished"]
+
+
+class TestDiffR1Fixes:
+    async def test_cancel_during_drain_releases_exclusive(self):
+        """Sol diff-r1: a wipe cancelled while draining must not leave the
+        exclusive lock held — later retains and wipes would deadlock."""
+        fence = RetainFence()
+        release = asyncio.Event()
+
+        async def writer():
+            async with fence.retaining(fence.generation()):
+                await release.wait()
+
+        w = asyncio.create_task(writer())
+        await asyncio.sleep(0)
+
+        async def wiper():
+            async with fence.exclusive_wipe():
+                pass
+
+        x = asyncio.create_task(wiper())
+        await asyncio.sleep(0.02)      # parked in the drain
+        x.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await x
+        release.set()
+        await w
+        # The fence is usable: a writer retains and a wipe completes.
+        async with fence.retaining(fence.generation()):
+            pass
+        await asyncio.wait_for(fence.exclusive_wipe().__aenter__(), timeout=1)
+
+    async def test_unremovable_spool_record_aborts_before_deletion(
+        self, tmp_path, monkeypatch,
+    ):
+        """Sol diff-r1: a spool record that cannot be removed is a surviving
+        durable pre-wipe writer — the wipe must abort with the pointers and
+        the bank untouched, never report success."""
+        from pathlib import Path as _P
+
+        reg = _reg(tmp_path)
+        await _register(reg, "k", "sid-1")
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        (spool / "r.json").write_text("{}")
+        sem = FakeSem()
+
+        real_unlink = _P.unlink
+
+        def failing_unlink(self, *a, **k):
+            if self.suffix == ".json" and self.parent == spool:
+                raise OSError("EPERM")
+            return real_unlink(self, *a, **k)
+
+        monkeypatch.setattr(_P, "unlink", failing_unlink)
+        with pytest.raises(WipeAborted, match="could not be removed"):
+            await wipe_long_term_memory(
+                registry=reg, semantic_memory=sem, fence=RetainFence(),
+                bank="casa", retry_dir=spool,
+            )
+        assert sem.deleted == []                       # bank untouched
+        assert reg.get("k") is not None                # pointer untouched
+        assert not reg.retirement_pending("k")         # claims released

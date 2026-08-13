@@ -144,6 +144,13 @@ class _ExclusiveSection:
                 "in-flight memory writers did not drain within "
                 f"{_EXCLUSIVE_DRAIN_TIMEOUT_S:.0f}s; nothing was deleted"
             ) from None
+        except BaseException:
+            # Sol diff-r1: a CANCELLATION during the drain (shutdown killing
+            # the wipe task, an admin client dropping) left the exclusive
+            # lock held forever — every later retain and wipe then
+            # deadlocked. Any exceptional exit releases the lock.
+            self._fence._exclusive.release()
+            raise
         self._fence._generation += 1
 
     async def __aexit__(self, *exc) -> bool:
@@ -193,18 +200,34 @@ async def wipe_long_term_memory(
         claims[key] = (registry.begin_retirement(key, sid), sid)
     try:
         async with fence.exclusive_wipe():  # 2. drain + bump gen
-            # 3. Drop the durable retry spool.
+            # 3. Drop the durable retry spool — FAIL CLOSED (Sol diff-r1): a
+            # record that cannot be enumerated or removed is a durable
+            # pre-wipe writer that would replay into the emptied bank, so the
+            # wipe aborts BEFORE any pointer or the bank is touched rather
+            # than reporting a success it did not deliver. Records already
+            # unlinked stay unlinked — removing a retry record can only lose
+            # a retry, never add content — so a retried wipe is safe.
             root = Path(retry_dir)
             try:
                 records = sorted(root.glob("*.json"))
-            except OSError:
-                records = []
+            except OSError as exc:
+                raise WipeAborted(
+                    f"could not enumerate the retry spool ({exc}); nothing "
+                    "was deleted"
+                ) from exc
+            failed_unlinks = 0
             for path in records:
                 try:
                     path.unlink()
                     report.spool_records_dropped += 1
                 except OSError:
+                    failed_unlinks += 1
                     logger.warning("wipe: could not unlink %s", path)
+            if failed_unlinks:
+                raise WipeAborted(
+                    f"{failed_unlinks} spool record(s) could not be removed; "
+                    "session pointers and the bank were left untouched"
+                )
             # 4. Drop session pointers WITHOUT retention (retiring saves
             # first — exactly the residue #411 names). notify_reset joins
             # any in-flight pool turn and flushes/closes the warm client.

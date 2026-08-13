@@ -1207,6 +1207,37 @@ class ClaudeCodeDriver(DriverProtocol):
                     # above has landed.
                     uid=engagement.allocated_uid, gid=engagement.allocated_uid,
                 )
+                # #215 (Sol diff-r1): the epoch on the record was hashed from
+                # the bytes the LAUNCH read, but provisioning above re-read
+                # the prompt and copied the doctrine from disk — an edit
+                # landing in between would stamp this engagement's summary
+                # (and filter its archive) under materials it did not run on.
+                # Recompute from the same sources now and ABORT on mismatch:
+                # the launch is cleanly re-runnable, a mislabeled epoch is
+                # not. Skipped when the record carries no epoch (best-effort
+                # persist failed — the summary retains untagged, which the
+                # archive filter treats as unproven, never as current).
+                _recorded_epoch = getattr(engagement, "procedural_epoch", "") or ""
+                if _recorded_epoch:
+                    from executor_epoch import compute_procedural_epoch
+                    try:
+                        with open(defn.prompt_template_path, encoding="utf-8") as fh:
+                            _prompt_now = fh.read()
+                    except OSError as exc:
+                        raise RuntimeError(
+                            "executor prompt template vanished during launch: "
+                            f"{exc}"
+                        ) from exc
+                    _epoch_now = compute_procedural_epoch(
+                        defn, prompt_template=_prompt_now,
+                    )
+                    if _epoch_now != _recorded_epoch:
+                        raise RuntimeError(
+                            "executor procedural materials changed during "
+                            "launch (doctrine/prompt edited mid-provision); "
+                            "aborting so the engagement is not stamped with "
+                            "an epoch it did not run under — retry the launch"
+                        )
                 write_casa_meta(
                     workspace_path=ws,
                     engagement_id=engagement.id,
