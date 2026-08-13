@@ -132,3 +132,66 @@ class TestFinalizeStream:
         assert await ch.finalize_stream(
             " " * 5000, ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
         assert bot.edit_message_text.await_count == 0
+
+
+class TestFinalizeResponseStream:
+    async def test_page1_edit_is_delivered(self):
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        assert await ch.finalize_response_stream(
+            "**hi**", ctx, on_token) is DeliveryOutcome.DELIVERED
+        assert ctx["_delivery_head_sent"] is True
+
+    async def test_badrequest_fallback_still_delivered(self):
+        """The BadRequest -> fallback0 retry landed, so the notice showed."""
+        from telegram.error import BadRequest
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.side_effect = [BadRequest("bad entity"), None]
+        assert await ch.finalize_response_stream(
+            "**hi**", ctx, on_token) is DeliveryOutcome.DELIVERED
+        assert bot.edit_message_text.await_count == 2
+
+    async def test_failed_page1_edit_is_not_delivered(self):
+        from telegram.error import BadRequest
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.side_effect = BadRequest("chat not found")
+        assert await ch.finalize_response_stream(
+            "**hi**", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+        assert "_delivery_head_sent" not in ctx
+
+    async def test_delegates_verbatim_when_no_stream_started(self):
+        """No message_id -> send_response; its outcome must pass through."""
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._app = None
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        assert await ch.finalize_response_stream(
+            "**hi**", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+
+    async def test_plain_text_delegates_to_finalize_stream_verbatim(self):
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        assert await ch.finalize_response_stream(
+            "plain text", ctx, on_token) is DeliveryOutcome.DELIVERED
+        assert ctx["_delivery_head_sent"] is True
+

@@ -3878,7 +3878,7 @@ class TelegramChannel(Channel):
 
     async def finalize_response_stream(
         self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback,
-    ) -> None:
+    ) -> DeliveryOutcome:
         """Streamed agent response: apply entities on the final edit only.
 
         Block mode / no streamed message → send_response(). Plain (no markup) or
@@ -3888,21 +3888,24 @@ class TelegramChannel(Channel):
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
         if self._app is None:
-            return
+            return DeliveryOutcome.NOT_DELIVERED
         message_id = _peek_stream_message_id(on_token)
         if message_id is None:
-            await self.send_response(full_text, context)
-            return
+            return await self.send_response(full_text, context)  # verbatim
         # v2 (RC3): an oversized SUCCESSFUL response no longer delegates to
         # the plain finalize_stream (raw-marker chunks); page 1 rich-edits the
         # streamed message, the rest send rendered. Single page keeps the
         # v0.70.0 contract (no markup → plain finalize, BadRequest → raw edit).
         pages = render_paged(full_text)
         if len(pages) == 1 and pages[0][1] is None:
-            await self.finalize_stream(full_text, context, on_token)
-            return
+            return await self.finalize_stream(  # verbatim (§2.1)
+                full_text, context, on_token)
         display0, entities0 = pages[0]
         fallback0 = full_text if len(pages) == 1 else display0
+        # Page 1 carries a prepended operator notice, so page 1 decides the
+        # outcome; the overflow sends below swallow their errors and cannot
+        # downgrade it (#556 design §2.3).
+        outcome = DeliveryOutcome.NOT_DELIVERED
         try:
             try:
                 if entities0 is not None:
@@ -3922,6 +3925,13 @@ class TelegramChannel(Channel):
         except TelegramError as exc:
             if "not modified" not in str(exc).lower():
                 logger.warning("Final stream edit failed: %s", exc)
+            else:
+                # Already displays this exact text, notice included.
+                outcome = DeliveryOutcome.DELIVERED
+                context["_delivery_head_sent"] = True
+        else:
+            outcome = DeliveryOutcome.DELIVERED
+            context["_delivery_head_sent"] = True
         for display, entities in pages[1:]:
             try:
                 if entities is None:
@@ -3931,6 +3941,7 @@ class TelegramChannel(Channel):
                     await self._send_one(target_chat, display, display, entities)
             except TelegramError as exc:
                 logger.warning("Final stream overflow send failed: %s", exc)
+        return outcome
 
     async def send_response_to_topic(
         self, thread_id: int, text: str, **kwargs,
