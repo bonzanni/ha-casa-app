@@ -25,7 +25,16 @@ from typing import Any, Awaitable, Callable
 
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
-from telegram.error import BadRequest, NetworkError, TelegramError, TimedOut
+from telegram.error import (
+    BadRequest,
+    ChatMigrated,
+    Forbidden,
+    InvalidToken,
+    NetworkError,
+    RetryAfter,
+    TelegramError,
+    TimedOut,
+)
 
 from channels.tg_richtext import render, render_paged
 from telegram.ext import (
@@ -4162,25 +4171,40 @@ class TelegramChannel(Channel):
             return outcome
 
 
+# A REFUSAL, not a transport failure: PTB builds each of these from a response
+# Telegram actually sent, so the API evaluated the call and declined it and
+# nothing was displayed. Membership is an explicit allowlist rather than a class
+# test, because the hierarchy cuts across the distinction that matters here —
+# `BadRequest` (HTTP 400, a refusal) and `TimedOut` (no response at all) are
+# BOTH `NetworkError` subclasses in PTB 22.7, so classifying by base class gets
+# it exactly backwards.
+_SERVER_REFUSALS = (BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated)
+
+
 def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
-    """Classify a failed edit: proven negative, or merely ambiguous?
+    """Classify a failed edit: established negative, or merely ambiguous?
 
     ``NOT_DELIVERED`` is a CLAIM — that nothing reached the operator — and a
-    caller acts on it by re-offering a one-shot notice. A lost acknowledgement
-    does not support that claim: PTB raises ``TimedOut`` when the response never
-    arrives, but Telegram may well have applied the edit, in which case the
-    operator has already read the notice and re-offering it nags them about
-    something they have seen.
+    caller acts on it by re-offering a one-shot notice. Both errors are costly
+    and they are costly in opposite directions, so the taxonomy has to be right
+    in both:
 
-    ``BadRequest`` is different in kind: the API evaluated the call and refused
-    it, so nothing was displayed and the negative is established.
+    - A lost acknowledgement does not support the claim. PTB raises ``TimedOut``
+      when no response arrives, but Telegram may well have applied the edit, in
+      which case the operator has read the notice and re-offering it nags them
+      about something they have seen. That is ``UNKNOWN``.
+    - A refusal does support it. The call was evaluated and declined, so the
+      notice was certainly not shown, and withholding it would leave a blocking
+      issue unreported — the very defect #556 exists to fix. An operator who
+      blocks the bot mid-stream produces ``Forbidden`` here, and must still be
+      told once they unblock it.
 
-    Sol + Terra diff r1 (both, independently): collapsing the ambiguous case
-    into NOT_DELIVERED was a REGRESSION against the pre-contract behavior, which
-    swallowed such an error and left the notice suppressed. UNKNOWN restores
-    that while keeping the genuine negatives #556 exists to report.
+    Both halves were found by review: collapsing ambiguity into NOT_DELIVERED
+    was a regression against pre-contract behavior (Sol + Terra, diff r1), and
+    the first fix then over-corrected by treating every non-``BadRequest``
+    refusal as ambiguous (Sol, diff r2).
     """
-    return (DeliveryOutcome.NOT_DELIVERED if isinstance(exc, BadRequest)
+    return (DeliveryOutcome.NOT_DELIVERED if isinstance(exc, _SERVER_REFUSALS)
             else DeliveryOutcome.UNKNOWN)
 
 

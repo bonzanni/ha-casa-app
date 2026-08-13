@@ -113,6 +113,21 @@ class _FakeRetryAfter(_FakeTelegramError):
         self.retry_after = retry_after
 
 
+class _FakeInvalidToken(_FakeTelegramError):
+    # Real PTB 22.7: InvalidToken -> TelegramError (verified 2026-08-14).
+    # A SERVER REFUSAL for INV-TG-006's purposes: PTB raises it from a 401/404
+    # response, so the call was evaluated and declined.
+    def __init__(self, *a, **k):
+        super().__init__("Invalid token")
+
+
+class _FakeChatMigrated(_FakeTelegramError):
+    # Real PTB 22.7: ChatMigrated -> TelegramError, carrying .new_chat_id.
+    def __init__(self, new_chat_id=0, *a, **k):
+        super().__init__(f"Group migrated to supergroup. New chat id: {new_chat_id}")
+        self.new_chat_id = new_chat_id
+
+
 class _FakeInputFile:
     """Value-shape stand-in for telegram.InputFile — captures the wrapped bytes
     and filename so send_media tests can assert on them."""
@@ -183,6 +198,8 @@ def _install_telegram_stubs() -> None:
     tg_err.BadRequest = _FakeBadRequest
     tg_err.Forbidden = _FakeForbidden
     tg_err.RetryAfter = _FakeRetryAfter
+    tg_err.InvalidToken = _FakeInvalidToken
+    tg_err.ChatMigrated = _FakeChatMigrated
     tg.error = tg_err
 
     tg.MessageEntity = _FakeMessageEntity

@@ -125,6 +125,57 @@ class TestFinalizeStream:
         assert await ch.finalize_stream(
             "hi", ctx, on_token) is DeliveryOutcome.UNKNOWN
 
+    async def test_a_server_refusal_is_an_established_negative(self):
+        """Sol diff r2: the first fix over-corrected. Forbidden/InvalidToken/
+        RetryAfter/ChatMigrated are responses Telegram actually sent — the call
+        was evaluated and declined, so nothing was shown. Treating them as
+        ambiguous would consume an unseen notice, re-breaking #556 for the
+        operator who blocks the bot and later unblocks it."""
+        from telegram.error import ChatMigrated, Forbidden, InvalidToken, RetryAfter
+
+        for exc in (Forbidden("bot was blocked by the user"),
+                    InvalidToken(),
+                    RetryAfter(30),
+                    ChatMigrated(new_chat_id=-100999)):
+            ch, bot = _mk_channel_with_fake_bot()
+            ch._delivery_mode = "stream"
+            ctx = {"chat_id": "42"}
+            on_token = ch.create_on_token(ctx)
+            await on_token("partial")
+            ctx.pop("_delivery_head_sent", None)
+            bot.edit_message_text.side_effect = exc
+            assert await ch.finalize_stream("hi", ctx, on_token) is \
+                DeliveryOutcome.NOT_DELIVERED, f"{type(exc).__name__} is a refusal"
+
+    async def test_overflow_head_timeout_is_unknown(self):
+        """Terra + Sol diff r2: the overflow head-edit catch had no ambiguity
+        test, so reverting only that site left every test green."""
+        from telegram.error import TimedOut
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.side_effect = TimedOut("ack lost")
+        assert await ch.finalize_stream(
+            "x" * 9000, ctx, on_token) is DeliveryOutcome.UNKNOWN
+        assert bot.edit_message_text.await_count == 1   # the head WAS attempted
+
+    async def test_overflow_head_refusal_is_not_delivered(self):
+        from telegram.error import Forbidden
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.side_effect = Forbidden("blocked")
+        assert await ch.finalize_stream(
+            "x" * 9000, ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+
     async def test_without_app_is_not_delivered(self):
         ch, bot = _mk_channel_with_fake_bot()
         ch._delivery_mode = "stream"
@@ -209,13 +260,29 @@ class TestFinalizeResponseStream:
         assert "_delivery_head_sent" not in ctx
 
     async def test_delegates_verbatim_when_no_stream_started(self):
-        """No message_id -> send_response; its outcome must pass through."""
+        """No message_id -> send_response; its outcome must pass through.
+
+        Sol diff r2: the first version of this test set `_app = None`, so it
+        returned at the availability guard and never reached the delegation it
+        is named after — deleting that delegation would not have failed it. The
+        app stays present here and `send_response` is stubbed with a
+        distinctive outcome, so only propagation can satisfy it.
+        """
         ch, bot = _mk_channel_with_fake_bot()
-        ch._app = None
         ctx = {"chat_id": "42"}
-        on_token = ch.create_on_token(ctx)
+        on_token = ch.create_on_token(ctx)     # no tokens -> no message_id
+
+        sentinel = DeliveryOutcome.NOT_DELIVERED
+        called: list[str] = []
+
+        async def _fake_send_response(text, context):
+            called.append(text)
+            return sentinel
+
+        ch.send_response = _fake_send_response
         assert await ch.finalize_response_stream(
-            "**hi**", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+            "**hi**", ctx, on_token) is sentinel
+        assert called == ["**hi**"]
 
     async def test_plain_text_delegates_to_finalize_stream_verbatim(self):
         ch, bot = _mk_channel_with_fake_bot()
