@@ -46,7 +46,10 @@ class TestSendResponse:
         propagation can satisfy it."""
         ch, bot = _mk_channel_with_fake_bot()
         ctx = {"chat_id": "42"}
-        sentinel = DeliveryOutcome.NOT_DELIVERED
+        # Sol diff r4: an ENUM sentinel is a singleton, so a delegate whose
+        # result is discarded and replaced by the same member still passes. An
+        # opaque object can only arrive here by being propagated.
+        sentinel = object()
         called: list[str] = []
 
         async def _fake_send(text, context):
@@ -287,7 +290,7 @@ class TestFinalizeResponseStream:
         ctx = {"chat_id": "42"}
         on_token = ch.create_on_token(ctx)     # no tokens -> no message_id
 
-        sentinel = DeliveryOutcome.NOT_DELIVERED
+        sentinel = object()          # opaque: only propagation can pass (Sol r4)
         called: list[str] = []
 
         async def _fake_send_response(text, context):
@@ -309,7 +312,7 @@ class TestFinalizeResponseStream:
         await on_token("partial")
         ctx.pop("_delivery_head_sent", None)
 
-        sentinel = DeliveryOutcome.UNKNOWN
+        sentinel = object()          # opaque: only propagation can pass (Sol r4)
         called: list[str] = []
 
         async def _fake_finalize_stream(text, context, tok):
