@@ -10,6 +10,7 @@ decay/supersession.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -486,6 +487,47 @@ async def test_health_issues_surface_and_decay(wired, monkeypatch):
     far_future = _time.time() + pse._HEALTH_DECAY_S + 10.0
     monkeypatch.setattr(pse, "_now", lambda: far_future)
     assert pse.health_issues() == []
+
+
+@pytest.mark.asyncio
+async def test_last_error_reaches_the_rendered_notice(wired, monkeypatch,
+                                                      tmp_path):
+    """#554: health_issues() emits the episode's last_error as `detail` and the
+    regeneration call site dropped it, so a failed setup reached the operator as
+    a bare reason code while the explanation sat unread one line away. Asserted
+    end-to-end on the RENDERED notice, because that is the only place the
+    operator ever sees it — and the pre-fix code passes every test that stops
+    at the report."""
+    import plugin_health
+    import plugin_registry
+    import tools
+
+    _prompt()
+    await _decide()
+    pse._update_episode(pse.episodes()[0]["id"], status="failed",
+                        last_error="ambiguous server binding")
+
+    health = tmp_path / "health.json"
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", health)
+    for module, name, value in (
+        (plugin_registry, "resolve_all",
+         lambda: SimpleNamespace(issues=[], warnings=[])),
+        (plugin_registry, "load_registry",
+         lambda *a, **k: SimpleNamespace(valid=False, entries=[])),
+    ):
+        monkeypatch.setattr(module, name, value)
+    for mod_name in ("trigger_reconcile", "callback_reconcile",
+                     "event_reconcile"):
+        monkeypatch.setattr(__import__(mod_name), "current_issues", lambda: [])
+
+    tools._regenerate_plugin_health([])
+
+    report = plugin_health.load_report(health)
+    row = next(d for d in report["issues"]
+               if d["reason_code"] == "setup_episode_failed")
+    assert row["detail"] == "ambiguous server binding"
+    notice = plugin_health.render_notice("assistant", path=health)
+    assert notice is not None and "ambiguous server binding" in notice
 
 
 @pytest.mark.asyncio

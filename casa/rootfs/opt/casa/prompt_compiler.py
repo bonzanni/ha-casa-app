@@ -6,7 +6,8 @@ system prompt for a persona-bearing resident from three image-owned inputs —
 the platform frame, the canonical role doctrine, and the bound persona pack —
 plus the image-owned safety kernel, in a FIXED section order:
 
-    <platform_frame> <role_identity> <persona> <role_doctrine> <safety_kernel>
+    <platform_frame> <role_identity> <persona> <role_doctrine>
+    <response_shape> <safety_kernel>
 
 The restricted-webhook surface strips the persona entirely (an untrusted
 webhook origin must never see the resident's persona identity). Each surface
@@ -22,6 +23,7 @@ claims to bind is rejected as tampered/stale.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 from canonical_bytes import canonical_text, checksum_bytes
 from markdown_sections import sections, select_markdown_sections
@@ -29,11 +31,31 @@ from personality_binding import BindingRecord, compute_binding_digest
 from role_slot import RoleSlot
 from trait_renderer import RENDERER_VERSION, estimate_tokens_v1, render_v1
 
+# #549: the response-shape section is rendered from role.yaml's `response:`
+# block, whose only bounded-length field is `register` (role.v1.json admits any
+# non-empty string). Capping what we render bounds the whole section, which is
+# what lets the ceilings below carry an exact reserve for it.
+_REGISTER_MAX_CHARS = 64
+
+# #549 (Sol design r3, S2): the section consumes the SAME per-surface budget as
+# everything else, so adding it would have pushed a projection that compiles
+# today past an unchanged ceiling — an installed, schema-valid specialist would
+# become unloadable for no reason but our new section. Each total ceiling is
+# raised by a reserve that provably exceeds the largest section we can emit
+# (five short lines plus a register capped at _REGISTER_MAX_CHARS), so every
+# projection admitted before this change is still admitted after it. The
+# persona ceilings are untouched — the section is not persona prose.
+_RESPONSE_SHAPE_TOKEN_RESERVE = 128
+
 # Per-surface (persona_token_ceiling, total_token_ceiling). The persona budget
 # bounds how much authored persona prose can dominate the prompt; the total
 # budget bounds the assembled projection. voice is tighter than text (a spoken
 # turn is latency-bound); restricted_webhook admits no persona at all.
-_LIMITS = {"text": (2000, 12000), "voice": (400, 6000), "restricted_webhook": (0, 4000)}
+_LIMITS = {
+    "text": (2000, 12000 + _RESPONSE_SHAPE_TOKEN_RESERVE),
+    "voice": (400, 6000 + _RESPONSE_SHAPE_TOKEN_RESERVE),
+    "restricted_webhook": (0, 4000 + _RESPONSE_SHAPE_TOKEN_RESERVE),
+}
 
 # #355: every projection heading is excluded from any OTHER selected
 # section's subtree (see compile_projection_set) — the surface's own section
@@ -99,6 +121,63 @@ def _persona_body(persona, surface: str) -> str:
     return "\n\n".join(v for v in body if v)
 
 
+# #549: role.yaml's `response:` block was declared and never read — the compiled
+# bundle REPLACES the composed prompt for a persona-bound resident (INV-PERS-001),
+# so `defaults/agents/*/response_shape.yaml` and the composed system prompt's
+# brevity rules never reached the model, and editing the block had no effect and
+# gave no warning. Rendering it here is what makes the declaration live.
+#
+# One renderer per key, in a FIXED order so the projection stays byte-for-byte
+# deterministic. A key absent from the block renders nothing. A value of the
+# wrong type is SKIPPED rather than raising: `defaults/schema/role.v1.json`
+# ($defs/responseProjection) is closed and typed, and every role.yaml — image
+# and specialist-bundle alike — is validated against it in role_artifact.py
+# before it can become a RoleSlot, so a raise here could only fire where the
+# loader already rejected, while being able to block a legitimate install
+# (Terra design r1, S2). The drift this guards against is OUR OWN — a schema key
+# nobody taught the renderer — and that is pinned by a test which reads the
+# schema, not by a runtime rejection third-party bundles would pay for.
+def _sentences(value: object, label: str) -> str | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    return f"{label}: at most {value} sentence{'' if value == 1 else 's'}."
+
+
+_RESPONSE_RENDERERS: tuple[tuple[str, "object"], ...] = (
+    ("register", lambda v: (
+        f"Register: {v.strip()[:_REGISTER_MAX_CHARS]}."
+        if isinstance(v, str) and v.strip() else None)),
+    ("max_confirmation_sentences",
+     lambda v: _sentences(v, "Confirmations")),
+    ("max_status_sentences",
+     lambda v: _sentences(v, "Status updates")),
+    ("first_clause_max_words", lambda v: (
+        f"First clause: at most {v} words."
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None)),
+    ("first_clause_requires_early_punctuation", lambda v: (
+        "Punctuate within the first clause." if v is True else None)),
+)
+
+
+def _response_shape_body(role: RoleSlot, surface: str) -> str:
+    """The `response:` block for *surface*, as deterministic prose. Empty when
+    the role declares none (role.v1.json requires the block, so this is the
+    defensive path for a RoleSlot built by something other than the loader)."""
+    response = role.normalized.get("response")
+    if not isinstance(response, Mapping):
+        return ""
+    block = response.get(surface)
+    if not isinstance(block, Mapping):
+        return ""
+    lines = []
+    for key, render in _RESPONSE_RENDERERS:
+        if key in block:
+            line = render(block[key])
+            if line is not None:
+                lines.append(line)
+    return "\n".join(lines)
+
+
 def compile_projection_set(
     *, role: RoleSlot, persona, platform_frame: str, safety_kernel: str,
 ) -> dict[str, CompiledProjection]:
@@ -121,7 +200,11 @@ def compile_projection_set(
         ]
         if persona_body:
             parts.append(("persona", persona_body))
-        parts.extend([("role_doctrine", doctrine), ("safety_kernel", canonical_text(safety_kernel))])
+        parts.append(("role_doctrine", doctrine))
+        response_shape = _response_shape_body(role, surface)
+        if response_shape:
+            parts.append(("response_shape", response_shape))
+        parts.append(("safety_kernel", canonical_text(safety_kernel)))
         projection = _projection(parts)
         persona_tokens = estimate_tokens_v1(persona_body)
         persona_limit, total_limit = _LIMITS[surface]

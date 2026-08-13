@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.195.0] - 2026-08-13
+
+### Changed
+
+- Casa now tells you what happened, not what it did internally (#549, #550).
+  The assistant's brevity and plain-language rules were written in a place a
+  persona-bound assistant never reads, so setup and configuration replies
+  narrated raw internals — artifact hashes, variable names, tool ids, status
+  flags — and buried the one thing you had to act on. The rules now reach the
+  assistant, the response limits declared for it actually apply, and requests
+  are phrased as the thing you need to provide rather than the setting it
+  needs to fill. Progress during a multi-step job is a short beat per step,
+  with detail available on request. Engagement conversations are unchanged and
+  stay technical.
+- Plugin-health messages read like something you can act on (#551). The
+  degraded notice and the operator DM no longer speak in internal reason codes
+  or claim "an operator has been notified" to the operator reading them, and
+  the DM no longer points at a file that nothing you have can open. An
+  unchanged notice is no longer repeated every time a plugin change restarts
+  the agent — a single setup could previously show the identical line three or
+  four times — while any change to what it says appears immediately, and a
+  resolved problem that returns is announced again.
+
+### Fixed
+
+- A failed plugin setup now says what went wrong (#554). The explanation was
+  being produced and then dropped one step before it reached you, so the
+  report and the notice named only an internal code. The name of a setting a
+  plugin is still waiting for is carried through the same way.
+
 ## [0.194.0] - 2026-08-13
 
 ### Added

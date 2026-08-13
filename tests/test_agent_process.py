@@ -426,25 +426,27 @@ class TestResponseProvenanceRouting:
 
 
 class TestHealthNoticeDeliveryConfirmation:
-    """#349: the §3.10 first-contact notice flag is consumed only after the
-    channel delivery SUCCEEDS — a transient send failure must leave the
-    notice pending so it reappears on the next turn."""
+    """#551: repeat suppression lives in plugin_health's decaying memo, not in
+    a per-Agent flag. A delivery that RAISED certainly showed nothing, so it
+    releases the cooldown immediately (#349's guarantee, preserved)."""
 
     def _agent_with_notice(self, tmp_path, monkeypatch, notice):
         import plugin_health
+        plugin_health._notice_memo.clear()
         monkeypatch.setattr(
-            plugin_health, "first_contact_notice", lambda role: notice,
+            plugin_health, "render_notice",
+            lambda role, path=plugin_health.HEALTH_PATH: notice,
         )
         agent = _make_agent(tmp_path, role="assistant")
         stub = _StubTelegramChannel()
         agent._channel_manager.register(stub)
         return agent, stub
 
-    async def test_failed_delivery_keeps_notice_pending(
+    async def test_failed_delivery_releases_the_cooldown(
         self, tmp_path, monkeypatch,
     ):
         agent, stub = self._agent_with_notice(
-            tmp_path, monkeypatch, "PLUGIN-DEGRADED x (corrupt_artifact)",
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
         stub.finalize_response_stream.side_effect = RuntimeError("channel down")
 
@@ -452,9 +454,8 @@ class TestHealthNoticeDeliveryConfirmation:
             with pytest.raises(RuntimeError):
                 await agent.handle_message(_msg("telegram", "123", "hi"))
 
-        assert agent._health_notice_pending is True
-
-        # Channel recovers: the SAME notice is delivered on the next turn.
+        # Channel recovers: the SAME notice is delivered on the next turn,
+        # with no cooldown wait — the raise proved it was never shown.
         stub.finalize_response_stream.side_effect = None
         with patch.object(agent, "_process", AsyncMock(return_value="again")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
@@ -462,13 +463,12 @@ class TestHealthNoticeDeliveryConfirmation:
         delivered = stub.finalize_response_stream.call_args[0][0]
         assert delivered.startswith("PLUGIN-DEGRADED")
         assert delivered.endswith("again")
-        assert agent._health_notice_pending is False
 
-    async def test_successful_delivery_consumes_notice_once(
+    async def test_identical_notice_is_not_repeated_within_the_cooldown(
         self, tmp_path, monkeypatch,
     ):
         agent, stub = self._agent_with_notice(
-            tmp_path, monkeypatch, "PLUGIN-DEGRADED x (corrupt_artifact)",
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
@@ -476,13 +476,35 @@ class TestHealthNoticeDeliveryConfirmation:
         assert stub.finalize_response_stream.call_args[0][0].startswith(
             "PLUGIN-DEGRADED",
         )
-        assert agent._health_notice_pending is False
 
         with patch.object(agent, "_process", AsyncMock(return_value="second")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
         assert stub.finalize_response_stream.call_args[0][0] == "second"
 
-    async def test_healthy_turn_leaves_notice_pending(
+    async def test_notice_survives_agent_reconstruction(
+        self, tmp_path, monkeypatch,
+    ):
+        """#551's actual complaint: a plugin mutation reconstructs the Agent
+        (reload._construct_agent), which re-armed the old per-instance flag and
+        re-showed the identical line three or four times in one setup flow.
+        Suppression must outlive the instance."""
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
+        )
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0].startswith(
+            "PLUGIN-DEGRADED",
+        )
+
+        fresh = _make_agent(tmp_path, role="assistant")
+        stub2 = _StubTelegramChannel()
+        fresh._channel_manager.register(stub2)
+        with patch.object(fresh, "_process", AsyncMock(return_value="after")):
+            await fresh.handle_message(_msg("telegram", "123", "hi"))
+        assert stub2.finalize_response_stream.call_args[0][0] == "after"
+
+    async def test_healthy_turn_sends_no_notice(
         self, tmp_path, monkeypatch,
     ):
         agent, stub = self._agent_with_notice(tmp_path, monkeypatch, None)
@@ -491,19 +513,19 @@ class TestHealthNoticeDeliveryConfirmation:
             await agent.handle_message(_msg("telegram", "123", "hi"))
 
         assert stub.finalize_response_stream.call_args[0][0] == "hello"
-        assert agent._health_notice_pending is True
 
-    async def test_no_final_text_channel_leaves_notice_pending(
+    async def test_no_final_text_channel_does_not_consume_the_notice(
         self, tmp_path, monkeypatch,
     ):
         """Sol/Terra diff r1: voice's `send()` is a documented no-op — its
         final text is never delivered out-of-band, so a channel declaring
         `delivers_final_text = False` must neither receive the notice nor
-        consume the flag; the notice waits for a deliverable channel."""
+        burn its cooldown; a text channel still shows it afterwards."""
         import plugin_health
+        plugin_health._notice_memo.clear()
         monkeypatch.setattr(
-            plugin_health, "first_contact_notice",
-            lambda role: "PLUGIN-DEGRADED x (corrupt_artifact)",
+            plugin_health, "render_notice",
+            lambda role, path=plugin_health.HEALTH_PATH: "PLUGIN-DEGRADED x",
         )
         agent = _make_agent(tmp_path, role="assistant")
 
@@ -520,10 +542,21 @@ class TestHealthNoticeDeliveryConfirmation:
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("voice", "scope-1", "hi"))
 
-        # Final text still flows (voice relays via the returned RESPONSE),
-        # but unprefixed, and the notice stays pending for a text channel.
+        # Final text still flows (voice relays via the returned RESPONSE), but
+        # unprefixed — and the cooldown is untouched, so a text channel still
+        # gets the notice.
         assert stub.send.call_args[0][0] == "hello"
-        assert agent._health_notice_pending is True
+
+        text_agent = _make_agent(tmp_path, role="assistant")
+        text_stub = _StubTelegramChannel()
+        text_agent._channel_manager.register(text_stub)
+        with patch.object(
+            text_agent, "_process", AsyncMock(return_value="hi there"),
+        ):
+            await text_agent.handle_message(_msg("telegram", "123", "hi"))
+        assert text_stub.finalize_response_stream.call_args[0][0].startswith(
+            "PLUGIN-DEGRADED",
+        )
 
     async def test_real_voice_channel_declares_no_final_text(self):
         """The gate reads `delivers_final_text` off the channel — pin that the

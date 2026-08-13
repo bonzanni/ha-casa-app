@@ -636,7 +636,6 @@ class Agent:
         # concurrent turns from racing the first (off-loop) resolve.
         self._plugin_snapshot: PluginBindingSnapshot | None = None
         self._plugin_resolution_lock = asyncio.Lock()
-        self._health_notice_pending = True   # Task 10: first-contact notice
         # Resolve hooks once at construction. HooksConfig.pre_tool_use
         # empty → default policy bundle (block_dangerous_bash + path_scope
         # scoped to cfg.cwd).
@@ -807,44 +806,53 @@ class Agent:
             if not stripped or not stripped.replace("<silent/>", "").strip():
                 text = ""
 
-        # §3.10 first-contact notice: while plugin-health holds a blocking
-        # issue affecting this agent's role, prepend a one-line notice to the
-        # FIRST user-visible reply after boot (§3.10). The flag is consumed
-        # ONLY after the delivery below actually SUCCEEDS (#349) — a raise in
-        # send/finalize leaves it pending so the notice reappears next turn.
-        # Accepted residual: two concurrent first turns can now both prepend
-        # the notice (duplicate-benign beats lost-forever).
+        # §3.10 notice: while plugin-health holds a blocking issue affecting
+        # this agent's role, prepend a one-line notice to a user-visible reply.
+        # Suppression of repeats lives entirely in plugin_health.pending_notice
+        # (#551) — see _maybe_prepend_health_notice for why it cannot live here.
         # A channel that never delivers its final text out-of-band (voice:
         # `send()` is a documented no-op; the reply reaches the user only via
-        # the token stream, which has already flushed) must not receive —
-        # and must not consume — the notice; it stays pending for a channel
-        # that can actually show it (Sol/Terra diff r1).
-        health_notice_prepended = False
+        # the token stream, which has already flushed) must not receive the
+        # notice — and must not consume its cooldown — so it is not consulted
+        # at all; a channel that can actually show it renders it (Sol/Terra
+        # diff r1).
         if (
-            text and channel is not None and self._health_notice_pending
+            text and channel is not None
             and getattr(channel, "delivers_final_text", True)
         ):
-            text, health_notice_prepended = (
-                await self._maybe_prepend_health_notice(text)
-            )
+            text, health_notice = await self._maybe_prepend_health_notice(text)
+        else:
+            health_notice = None
 
         if text and channel is not None:
             # Rich-text (v0.70.0) renders only genuine agent responses
             # (error_kind is None). Error/system text stays plain via the
             # original finalize_stream/send paths.
-            if on_token is not None and hasattr(channel, "finalize_stream"):
-                if error_kind is None and hasattr(
-                    channel, "finalize_response_stream",
-                ):
-                    await channel.finalize_response_stream(
-                        text, msg.context, on_token,
-                    )
+            try:
+                if on_token is not None and hasattr(channel, "finalize_stream"):
+                    if error_kind is None and hasattr(
+                        channel, "finalize_response_stream",
+                    ):
+                        await channel.finalize_response_stream(
+                            text, msg.context, on_token,
+                        )
+                    else:
+                        await channel.finalize_stream(
+                            text, msg.context, on_token,
+                        )
+                elif error_kind is None and hasattr(channel, "send_response"):
+                    await channel.send_response(text, msg.context)
                 else:
-                    await channel.finalize_stream(text, msg.context, on_token)
-            elif error_kind is None and hasattr(channel, "send_response"):
-                await channel.send_response(text, msg.context)
-            else:
-                await channel.send(text, msg.context)
+                    await channel.send(text, msg.context)
+            except BaseException:
+                # #349, preserved through #551's rework: a delivery that RAISED
+                # certainly showed nothing, so release the notice's cooldown and
+                # offer it again on the very next turn.
+                if health_notice is not None:
+                    import plugin_health
+                    plugin_health.forget_notice(
+                        self.config.role, health_notice)
+                raise
         elif channel is not None and hasattr(channel, "turn_finished"):
             # L7 (v0.52.0): a turn that strips to empty / `<silent/>` never
             # calls send()/finalize_stream(), so give the channel a chance to
@@ -855,10 +863,6 @@ class Agent:
                 await channel.turn_finished(msg.context)
             except Exception:  # noqa: BLE001
                 logger.exception("channel.turn_finished failed")
-
-        # #349: confirmed send — only now is the first-contact notice consumed.
-        if health_notice_prepended:
-            self._health_notice_pending = False
 
         if not text and error_kind is None and msg.type != MessageType.REQUEST:
             return None
@@ -2150,22 +2154,34 @@ class Agent:
             await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
         await self._pool.aclose()
 
-    async def _maybe_prepend_health_notice(self, text: str) -> tuple[str, bool]:
-        """§3.10 first-contact: prepend a one-line plugin-health notice if the
-        report holds a blocking issue for this role. Returns ``(text,
-        prepended)``; the flag is NOT consumed here — the caller clears it
-        only after the channel delivery actually succeeds (#349: consuming at
-        production time lost the notice forever on a transient send failure).
-        A healthy first turn returns ``prepended=False`` so a later-appearing
-        issue still surfaces next turn (Sol F6)."""
-        if not (text and self._health_notice_pending):
-            return text, False
+    async def _maybe_prepend_health_notice(
+        self, text: str,
+    ) -> tuple[str, str | None]:
+        """§3.10: prepend a one-line plugin-health notice if the report holds a
+        blocking issue for this role.
+
+        #551 (design r3, Sol+Terra): consulted on EVERY eligible turn rather
+        than once per Agent instance. The old per-instance one-shot flag could
+        not coexist with plugin_health's decaying memo — a turn whose delivery
+        silently sent nothing (#556) consumed the flag, and no later turn ever
+        asked again, so the memo's "it comes back after the cooldown" guarantee
+        was unreachable and a blocking issue stayed unread for the life of the
+        instance. plugin_health.pending_notice is now the sole suppression
+        mechanism: it decays, so nothing here needs to know whether a send
+        succeeded.
+
+        Returns ``(text, notice_or_None)``. The caller hands the notice back to
+        ``plugin_health.forget_notice`` if delivery RAISES, which keeps #349's
+        immediate retry on a transient send failure — the cooldown covers the
+        silent non-delivery it cannot detect (#556), not the loud one it can."""
+        if not text:
+            return text, None
         import plugin_health
         notice = await asyncio.to_thread(
-            plugin_health.first_contact_notice, self.config.role)
+            plugin_health.pending_notice, self.config.role)
         if notice:
-            return f"{notice}\n\n{text}", True
-        return text, False
+            return f"{notice}\n\n{text}", notice
+        return text, None
 
     @property
     def plugin_binding_snapshot(self) -> "PluginBindingSnapshot | None":

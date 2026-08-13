@@ -3044,20 +3044,17 @@ async def notify_plugin_health(
     entries = [e for e in (list(report.get("issues", []))
                            + list(report.get("warnings", [])))
                if e.get("fingerprint") in fp_set]
-    def _describe(e: dict) -> str:
-        # #533: carry the detail (e.g. the unresolved var names) into the
-        # DM — the 0.153.0 promise is that health NAMES the missing values.
-        if e.get("detail"):
-            return f"{e.get('name')} ({e.get('reason_code')}: {e['detail']})"
-        return f"{e.get('name')} ({e.get('reason_code')})"
-
-    parts = [_describe(e) for e in entries[:5]]
-    listed = ", ".join(parts) + (f" +{len(entries) - 5} more"
+    # #551: the DM addresses the same human as the in-band notice, so it shares
+    # the one operator-facing renderer rather than printing reason codes. It
+    # carries the detail (an unresolved var name, a setup episode's last_error)
+    # for the same reason the notice does — #533/#554, nothing else conveys it.
+    # The old "See /data/plugin-health.json" tail is gone: the recipient's own
+    # assistant cannot open that file (no health-read tool exists for any role,
+    # and Read is inert for residents), so it named a door that does not open.
+    parts = [plugin_health.describe_issue(e) for e in entries[:5]]
+    listed = ", ".join(parts) + (f", and {len(entries) - 5} more"
                                  if len(entries) > 5 else "")
-    content = (
-        f"⚠️ Plugin health: {len(entries)} plugin item(s) need attention: "
-        f"{listed}. See /data/plugin-health.json."
-    )
+    content = f"⚠️ Something needs attention: {listed}."
     channel = (channel_manager.get("telegram")
                if channel_manager is not None else None)
     # Sol r1-2: channel.send() log-and-drops while the PTB app is not
