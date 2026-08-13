@@ -40,10 +40,22 @@ class TestSend:
 
 class TestSendResponse:
     async def test_plain_text_delegates_outcome_verbatim(self):
+        """Sol + Terra diff r3: the first version asserted DELIVERED, which a
+        direct send would also produce — it proved nothing about delegation.
+        The delegate is stubbed with a distinctive outcome so ONLY verbatim
+        propagation can satisfy it."""
         ch, bot = _mk_channel_with_fake_bot()
         ctx = {"chat_id": "42"}
-        assert await ch.send_response("just text", ctx) is DeliveryOutcome.DELIVERED
-        assert ctx["_delivery_head_sent"] is True
+        sentinel = DeliveryOutcome.NOT_DELIVERED
+        called: list[str] = []
+
+        async def _fake_send(text, context):
+            called.append(text)
+            return sentinel
+
+        ch.send = _fake_send
+        assert await ch.send_response("just text", ctx) is sentinel
+        assert called == ["just text"]
 
     async def test_rendered_single_page_is_delivered(self):
         ch, bot = _mk_channel_with_fake_bot()
@@ -131,12 +143,15 @@ class TestFinalizeStream:
         was evaluated and declined, so nothing was shown. Treating them as
         ambiguous would consume an unseen notice, re-breaking #556 for the
         operator who blocks the bot and later unblocks it."""
-        from telegram.error import ChatMigrated, Forbidden, InvalidToken, RetryAfter
+        from telegram.error import (
+            ChatMigrated, Conflict, Forbidden, InvalidToken, RetryAfter,
+        )
 
         for exc in (Forbidden("bot was blocked by the user"),
                     InvalidToken(),
                     RetryAfter(30),
-                    ChatMigrated(new_chat_id=-100999)):
+                    ChatMigrated(new_chat_id=-100999),
+                    Conflict("terminated by other getUpdates request")):
             ch, bot = _mk_channel_with_fake_bot()
             ch._delivery_mode = "stream"
             ctx = {"chat_id": "42"}
@@ -285,13 +300,24 @@ class TestFinalizeResponseStream:
         assert called == ["**hi**"]
 
     async def test_plain_text_delegates_to_finalize_stream_verbatim(self):
+        """Same correction as the send_response delegation test: a distinctive
+        stubbed outcome, so bypassing the delegate cannot pass."""
         ch, bot = _mk_channel_with_fake_bot()
         ch._delivery_mode = "stream"
         ctx = {"chat_id": "42"}
         on_token = ch.create_on_token(ctx)
         await on_token("partial")
         ctx.pop("_delivery_head_sent", None)
+
+        sentinel = DeliveryOutcome.UNKNOWN
+        called: list[str] = []
+
+        async def _fake_finalize_stream(text, context, tok):
+            called.append(text)
+            return sentinel
+
+        ch.finalize_stream = _fake_finalize_stream
         assert await ch.finalize_response_stream(
-            "plain text", ctx, on_token) is DeliveryOutcome.DELIVERED
-        assert ctx["_delivery_head_sent"] is True
+            "plain text", ctx, on_token) is sentinel
+        assert called == ["plain text"]
 

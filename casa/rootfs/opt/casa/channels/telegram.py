@@ -28,6 +28,7 @@ from telegram.constants import ChatAction
 from telegram.error import (
     BadRequest,
     ChatMigrated,
+    Conflict,
     Forbidden,
     InvalidToken,
     NetworkError,
@@ -4178,7 +4179,9 @@ class TelegramChannel(Channel):
 # `BadRequest` (HTTP 400, a refusal) and `TimedOut` (no response at all) are
 # BOTH `NetworkError` subclasses in PTB 22.7, so classifying by base class gets
 # it exactly backwards.
-_SERVER_REFUSALS = (BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated)
+_SERVER_REFUSALS = (
+    BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated, Conflict,
+)
 
 
 def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:

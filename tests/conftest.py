@@ -128,6 +128,12 @@ class _FakeChatMigrated(_FakeTelegramError):
         self.new_chat_id = new_chat_id
 
 
+class _FakeConflict(_FakeTelegramError):
+    # Real PTB 22.7: Conflict -> TelegramError, built from an HTTP 409 response.
+    # A SERVER REFUSAL for INV-TG-006 (Sol + Terra, diff r3).
+    pass
+
+
 class _FakeInputFile:
     """Value-shape stand-in for telegram.InputFile — captures the wrapped bytes
     and filename so send_media tests can assert on them."""
@@ -200,6 +206,7 @@ def _install_telegram_stubs() -> None:
     tg_err.RetryAfter = _FakeRetryAfter
     tg_err.InvalidToken = _FakeInvalidToken
     tg_err.ChatMigrated = _FakeChatMigrated
+    tg_err.Conflict = _FakeConflict
     tg.error = tg_err
 
     tg.MessageEntity = _FakeMessageEntity

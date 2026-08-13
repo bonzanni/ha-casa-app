@@ -207,9 +207,27 @@ async def test_concurrent_notifies_send_exactly_once(tmp_path):
 
 
 async def test_undeliverable_send_is_not_marked(tmp_path):
-    """A dropped alert must retry next boot/mutation, not count as delivered."""
+    """A dropped alert must retry next boot/mutation, not count as delivered.
+
+    Sol diff r3: the first version set `is_ready=False`, which exits BEFORE the
+    send, so deleting the outcome check left it green. The channel is ready
+    here and the send itself reports the negative — which is the actual race,
+    since the app can be torn down between the readiness check and the call.
+    """
+    from channels import DeliveryOutcome
+
     p = _report(tmp_path, PluginIssue("q", "specialist:finance",
                                       "resolve", "corrupt_artifact", "c" * 64))
-    cm = _FakeChannelManager(_FakeChannel(is_ready=False))
-    await casa_core.notify_plugin_health(cm, path=str(p))
+    ch = _FakeChannel()
+    ch._outcome_override = DeliveryOutcome.NOT_DELIVERED
+
+    async def _send(message, context):
+        ch.attempted.append(message)
+        return DeliveryOutcome.NOT_DELIVERED
+
+    ch.attempted = []
+    ch.send = _send
+    await casa_core.notify_plugin_health(_FakeChannelManager(ch), path=str(p))
+
+    assert len(ch.attempted) == 1, "the send must actually have been attempted"
     assert plugin_health.new_fingerprints(plugin_health.load_report(p)) != []
