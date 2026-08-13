@@ -34,7 +34,7 @@ from plugin_grants import (
 )
 
 from bus import BusMessage, MessageBus, MessageType
-from channels import ChannelManager
+from channels import ChannelManager, DeliveryOutcome
 from claude_runtime import CLAUDE_CLI_PATH
 from config import AgentConfig
 from specialist_registry import DelegationComplete
@@ -828,31 +828,47 @@ class Agent:
             # Rich-text (v0.70.0) renders only genuine agent responses
             # (error_kind is None). Error/system text stays plain via the
             # original finalize_stream/send paths.
+            outcome = None
             try:
                 if on_token is not None and hasattr(channel, "finalize_stream"):
                     if error_kind is None and hasattr(
                         channel, "finalize_response_stream",
                     ):
-                        await channel.finalize_response_stream(
+                        outcome = await channel.finalize_response_stream(
                             text, msg.context, on_token,
                         )
                     else:
-                        await channel.finalize_stream(
+                        outcome = await channel.finalize_stream(
                             text, msg.context, on_token,
                         )
                 elif error_kind is None and hasattr(channel, "send_response"):
-                    await channel.send_response(text, msg.context)
+                    outcome = await channel.send_response(text, msg.context)
                 else:
-                    await channel.send(text, msg.context)
+                    outcome = await channel.send(text, msg.context)
             except BaseException:
-                # #349, preserved through #551's rework: a delivery that RAISED
-                # certainly showed nothing, so release the notice's cooldown and
-                # offer it again on the very next turn.
-                if health_notice is not None:
+                # #349, preserved through #551's rework and NARROWED by #556: a
+                # delivery that raised having shown NOTHING releases the
+                # cooldown, so the notice is offered again on the very next
+                # turn. A delivery whose HEAD landed and whose tail then raised
+                # has already displayed the notice — releasing there would nag
+                # the operator about something they just read. The stamp is the
+                # only carrier of that fact, because a raising call returns no
+                # outcome at all.
+                if (health_notice is not None
+                        and not msg.context.get("_delivery_head_sent")):
                     import plugin_health
                     plugin_health.forget_notice(
                         self.config.role, health_notice)
                 raise
+            # #556: a NORMAL return is not a reliable positive either — every
+            # delivery method returns normally when the PTB app is absent,
+            # having made zero Bot API calls. Only a proven negative releases;
+            # UNKNOWN (a channel not on the contract, returning None) keeps
+            # today's behavior, explicitly rather than by omission.
+            if (health_notice is not None
+                    and outcome is DeliveryOutcome.NOT_DELIVERED):
+                import plugin_health
+                plugin_health.forget_notice(self.config.role, health_notice)
         elif channel is not None and hasattr(channel, "turn_finished"):
             # L7 (v0.52.0): a turn that strips to empty / `<silent/>` never
             # calls send()/finalize_stream(), so give the channel a chance to
