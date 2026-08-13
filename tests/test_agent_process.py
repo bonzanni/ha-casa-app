@@ -527,6 +527,35 @@ class TestHealthNoticeDeliveryConfirmation:
             await agent.handle_message(_msg("telegram", "123", "hi"))
         assert stub.finalize_response_stream.call_args[0][0] == "second"
 
+    async def test_an_ambiguous_transport_failure_does_not_repeat_the_notice(
+        self, tmp_path, monkeypatch,
+    ):
+        """Sol + Terra diff r1: the regression this batch nearly shipped.
+
+        A lost acknowledgement (TimedOut) on a final edit is not evidence that
+        the edit failed — Telegram may have applied it, in which case the
+        operator has read the notice. Reporting NOT_DELIVERED there re-offered
+        it on the next turn, which the pre-contract code did NOT do, because it
+        swallowed the error and returned nothing.
+        """
+        from channels import DeliveryOutcome
+
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
+        )
+        stub.finalize_response_stream.return_value = DeliveryOutcome.UNKNOWN
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0].startswith(
+            "PLUGIN-DEGRADED",
+        )
+
+        # Not repeated: the notice may well have been displayed.
+        with patch.object(agent, "_process", AsyncMock(return_value="second")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0] == "second"
+
     async def test_channel_off_the_contract_keeps_todays_behavior(
         self, tmp_path, monkeypatch,
     ):

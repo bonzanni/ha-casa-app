@@ -107,6 +107,24 @@ class TestFinalizeStream:
             "hi", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
         assert "_delivery_head_sent" not in ctx
 
+    async def test_timeout_after_acceptance_is_unknown_not_a_negative(self):
+        """Sol + Terra diff r1, independently: a lost ACKNOWLEDGEMENT is not
+        evidence of a lost MESSAGE. Telegram may have applied the edit, so
+        claiming NOT_DELIVERED would re-offer a notice already read — which is
+        what the pre-contract code avoided by swallowing the error.
+        """
+        from telegram.error import TimedOut
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.side_effect = TimedOut("ack lost")
+        assert await ch.finalize_stream(
+            "hi", ctx, on_token) is DeliveryOutcome.UNKNOWN
+
     async def test_without_app_is_not_delivered(self):
         ch, bot = _mk_channel_with_fake_bot()
         ch._delivery_mode = "stream"
@@ -173,6 +191,21 @@ class TestFinalizeResponseStream:
         bot.edit_message_text.side_effect = BadRequest("chat not found")
         assert await ch.finalize_response_stream(
             "**hi**", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+        assert "_delivery_head_sent" not in ctx
+
+    async def test_timeout_on_page1_edit_is_unknown(self):
+        """Same ambiguity on the rich finalizer's page-1 edit."""
+        from telegram.error import TimedOut
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.side_effect = TimedOut("ack lost")
+        assert await ch.finalize_response_stream(
+            "**hi**", ctx, on_token) is DeliveryOutcome.UNKNOWN
         assert "_delivery_head_sent" not in ctx
 
     async def test_delegates_verbatim_when_no_stream_started(self):

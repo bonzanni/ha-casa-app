@@ -3925,6 +3925,7 @@ class TelegramChannel(Channel):
         except TelegramError as exc:
             if "not modified" not in str(exc).lower():
                 logger.warning("Final stream edit failed: %s", exc)
+                outcome = _edit_failure_outcome(exc)
             else:
                 # Already displays this exact text, notice included.
                 outcome = DeliveryOutcome.DELIVERED
@@ -4123,7 +4124,7 @@ class TelegramChannel(Channel):
             except TelegramError as exc:
                 if "not modified" not in str(exc).lower():
                     logger.warning("Final stream edit failed: %s", exc)
-                    return DeliveryOutcome.NOT_DELIVERED
+                    return _edit_failure_outcome(exc)
                 # "not modified" — the message ALREADY displays this exact
                 # text, notice included. A positive outcome (§2.4 ruling 1).
             context["_delivery_head_sent"] = True
@@ -4147,6 +4148,8 @@ class TelegramChannel(Channel):
                 if "not modified" in str(exc).lower():
                     outcome = DeliveryOutcome.DELIVERED
                     context["_delivery_head_sent"] = True
+                else:
+                    outcome = _edit_failure_outcome(exc)
             else:
                 outcome = DeliveryOutcome.DELIVERED
                 context["_delivery_head_sent"] = True
@@ -4157,6 +4160,28 @@ class TelegramChannel(Channel):
                 )
             # The head chunk decides: later chunks cannot un-show it.
             return outcome
+
+
+def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
+    """Classify a failed edit: proven negative, or merely ambiguous?
+
+    ``NOT_DELIVERED`` is a CLAIM — that nothing reached the operator — and a
+    caller acts on it by re-offering a one-shot notice. A lost acknowledgement
+    does not support that claim: PTB raises ``TimedOut`` when the response never
+    arrives, but Telegram may well have applied the edit, in which case the
+    operator has already read the notice and re-offering it nags them about
+    something they have seen.
+
+    ``BadRequest`` is different in kind: the API evaluated the call and refused
+    it, so nothing was displayed and the negative is established.
+
+    Sol + Terra diff r1 (both, independently): collapsing the ambiguous case
+    into NOT_DELIVERED was a REGRESSION against the pre-contract behavior, which
+    swallowed such an error and left the notice suppressed. UNKNOWN restores
+    that while keeping the genuine negatives #556 exists to report.
+    """
+    return (DeliveryOutcome.NOT_DELIVERED if isinstance(exc, BadRequest)
+            else DeliveryOutcome.UNKNOWN)
 
 
 _TG_MAX_LENGTH = 4096

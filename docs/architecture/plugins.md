@@ -81,9 +81,22 @@ line they have already read is the failure in the other direction. A channel tha
 report keeps the old behavior, deliberately: "cannot report" must not read as "failed", or
 the notice would repeat forever there.
 
+A transport failure that cannot distinguish "never arrived" from "arrived, acknowledgement
+lost" is *not* a proven negative and does not release the memo. Only an established one
+does — the application being absent, so no call was made at all, or the API evaluating the
+call and refusing it. Erring the other way would repeat the line on every turn that hits a
+flaky connection.
+
 The operator DM is gated the same way, and marks its fingerprints notified only once
-delivery is confirmed. Both surfaces serialize through one lock, so a notice cannot be sent
-twice by two paths that each read the state before either marked it.
+delivery is confirmed. The out-of-band notices — that DM and the reminders one — serialize
+through a single lock, so neither can be sent twice by two paths that each read the state
+before either marked it.
+
+What that lock does **not** cover is the in-band notice, which is claimed on the turn's own
+path and keyed by rendered text rather than by fingerprint. The two stores are therefore
+independent, and a mutation that raises its first blocking issue mid-turn can show the
+operator the same warning twice: once as the DM the tool awaits, once on the reply that
+follows it. That predates this contract and is tracked separately.
 
 **Approval is per call, not per install, and it does not survive a restart.** A protected
 tool call by a resident or specialist consumes a single-use grant bound to a specific
