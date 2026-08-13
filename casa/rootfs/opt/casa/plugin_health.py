@@ -7,7 +7,15 @@ re-alerts. A post-boot Telegram DM fires (via the deterministic bus, like
 notify_config_sync) when the report contains NEW fingerprints; an issue
 disappearing from the report clears its fingerprint. While the report holds
 unresolved blocking issues, the affected resident prepends a one-line notice
-to its first user-visible turn (first_contact_notice).
+to a user-visible turn (pending_notice).
+
+Both operator-facing surfaces — the in-band notice and the DM — render through
+describe_issue(), which translates a reason code into what the operator can DO
+about it. Reason codes are an OPEN namespace (every plugin feature mints more,
+and verify passes its own `reasons[0]` straight through), so the translation
+classifies by suffix family with a small override table and a safe fallback,
+rather than an exhaustive map that would silently leak every new code. The raw
+code stays in the report and in the log; only the operator's line is translated.
 """
 from __future__ import annotations
 
@@ -15,6 +23,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -198,10 +207,96 @@ def mark_notified(fps: list[str], path: Path = HEALTH_PATH) -> None:
         _atomic_write(path, report)
 
 
-def first_contact_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
-    """One-line notice for the affected resident's first user-visible turn if
-    the report holds a blocking issue targeting this role (or registry-wide,
-    target=None); else None (§3.10)."""
+# #551: what the operator can DO about a reason code. Codes that need their own
+# words get an entry here; everything else is classified by suffix below. A code
+# absent from both is not a bug — it renders the fallback and is logged.
+_REASON_PHRASES = {
+    "setup_env_unprovisioned": "still needs a value from you",
+    "env_unresolved": "is missing a setting it needs",
+    "setup_episode_pending": "has a setup step still to finish",
+    "setup_episode_failed": "could not finish setting up",
+    "setup_episode_stale": "started setting up and stopped partway",
+    "setup_episode_refused": "was not allowed to finish setting up",
+    "target_pending": "is waiting for the specialist it belongs to",
+    "corrupt_artifact": "could not be loaded",
+    "artifact_missing": "could not be found",
+    "unsafe_archive": "could not be loaded safely",
+    "registry_invalid": "could not be read",
+    "verify_exception": "could not be checked",
+    "postcondition_failed": "did not finish starting up",
+    "snapshot_raced": "hit an error while starting up",
+    "legacy_provenance": "was installed without the usual provenance checks",
+    "duplicate_name": "clashes with another plugin's name",
+    "name_mismatch": "does not match the name it was installed under",
+}
+
+# Suffix families close the OPEN code namespace by construction: a code minted
+# tomorrow that ends in one of these renders correctly without an edit here.
+# Ordered — the first matching suffix wins.
+_REASON_SUFFIXES = (
+    ("_pending_ack", "is waiting for your approval"),
+    ("_unprovisioned", "still needs a value from you"),
+    ("_unresolved", "is missing a setting it needs"),
+    ("_invalid", "could not be loaded"),
+    ("_missing", "could not be loaded"),
+    ("_collision", "clashes with something already installed"),
+    ("_unavailable", "could not be reached"),
+    ("_rejected", "was refused"),
+    ("_error", "hit an error"),
+    ("_failed", "hit an error"),
+)
+
+_REASON_FALLBACK = "is not working"
+
+
+def describe_issue(d: dict) -> str:
+    """One operator-facing clause for a report row (§3.10, #551). Never emits
+    the raw reason code: the operator cannot act on an internal identifier and
+    has no way to look one up (there is no health-read tool for any role)."""
+    name = d.get("name") or "a plugin"
+    code = str(d.get("reason_code") or "")
+    # D4 (v0.74.0): a stale binding is an INCOMPLETE UPDATE — the old artifact
+    # stays live until reload. Never say "updating" or "will refresh next use"
+    # (false for a cached persistent Agent).
+    if code == "reload_required":
+        return f"{name} is still running its previous version"
+    phrase = _REASON_PHRASES.get(code)
+    if phrase is None:
+        for suffix, candidate in _REASON_SUFFIXES:
+            if code.endswith(suffix):
+                phrase = candidate
+                break
+    if phrase is None:
+        phrase = _REASON_FALLBACK
+        logger.debug("plugin_health: no operator phrasing for reason_code %r",
+                     code)
+    # #554: the detail (an unresolved variable name, a setup episode's
+    # last_error) is the one actionable fact in the row, and nothing else
+    # carries it to the operator.
+    if d.get("detail"):
+        return f"{name} {phrase} — {d['detail']}"
+    return f"{name} {phrase}"
+
+
+# #551: the notice is re-derived on every eligible turn, so the same line would
+# otherwise be prepended once per Agent reconstruction — and a plugin mutation
+# reconstructs the Agent (reload._construct_agent), which is why a multi-step
+# setup showed it three or four times unchanged.
+#
+# The memo records what was PUT IN FRONT of a role, never that delivery
+# succeeded: no channel reports that truthfully (see #556), so a memo meaning
+# "delivered" would suppress a line the operator never saw. And it DECAYS, so
+# the worst case of any missed delivery is one quiet window rather than silence
+# for the life of the process. Keyed on the rendered TEXT, so a changed detail,
+# a changed "+N more" count or a different plugin all render immediately.
+_NOTICE_COOLDOWN_S = 3600.0
+_notice_memo: dict[str, tuple[str, float]] = {}
+_MEMO_LOCK = threading.Lock()
+
+
+def render_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
+    """The notice text for this role's blocking issues, or None when there are
+    none. Pure: no memo read or write (pending_notice applies suppression)."""
     report = load_report(path)
     if not report:
         return None
@@ -210,24 +305,41 @@ def first_contact_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
                if d.get("target") in ok_targets]
     if not matched:
         return None
-    def _line(d) -> str:
-        # D4 (v0.74.0): a stale binding is an INCOMPLETE UPDATE — the old
-        # artifact stays live until reload. Never say "updating" or "will
-        # refresh next use" (false for a cached persistent Agent).
-        if d.get("reason_code") == "reload_required":
-            where = d.get("target") or "a target"
-            return (f"{d.get('name')}: {where} remains bound to the previous "
-                    f"artifact (reload_required)")
-        if d.get("detail"):
-            # #533: name the missing values, not just the code.
-            return f"{d.get('name')} ({d.get('reason_code')}: {d['detail']})"
-        return f"{d.get('name')} ({d.get('reason_code')})"
-
-    parts = [_line(d) for d in matched[:2]]
-    body = ", ".join(parts)
+    body = ", ".join(describe_issue(d) for d in matched[:2])
     if len(matched) > 2:
-        body += f" +{len(matched) - 2} more"
+        body += f", and {len(matched) - 2} more"
     if all(d.get("reason_code") == "reload_required" for d in matched):
-        return (f"⚠️ Plugin update incomplete: {body} — an operator has "
-                f"been notified.")
-    return f"⚠️ Plugin degraded: {body} — an operator has been notified."
+        return f"⚠️ An update did not finish: {body}."
+    return f"⚠️ Something needs attention: {body}."
+
+
+def forget_notice(role: str, text: str) -> None:
+    """Drop *role*'s memo when it still holds exactly *text*, so the notice is
+    offered again on the very next turn instead of waiting out the cooldown.
+
+    Called when delivery RAISED. A raise is a reliable negative signal even
+    though a normal return is not a reliable positive one (#556), so acting on
+    it costs nothing and preserves #349's guarantee that a transient send
+    failure never swallows the notice."""
+    with _MEMO_LOCK:
+        previous = _notice_memo.get(role)
+        if previous is not None and previous[0] == text:
+            del _notice_memo[role]
+
+
+def pending_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
+    """render_notice(), suppressed when the byte-identical line was already put
+    in front of this role less than _NOTICE_COOLDOWN_S ago. A role whose issues
+    have all resolved drops its memo, so a recurrence re-announces at once."""
+    text = render_notice(role, path)
+    now = time.monotonic()
+    with _MEMO_LOCK:
+        if text is None:
+            _notice_memo.pop(role, None)
+            return None
+        previous = _notice_memo.get(role)
+        if (previous is not None and previous[0] == text
+                and now - previous[1] < _NOTICE_COOLDOWN_S):
+            return None
+        _notice_memo[role] = (text, now)
+    return text

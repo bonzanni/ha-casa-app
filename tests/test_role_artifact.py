@@ -275,6 +275,18 @@ class TestSchemaValidation:
             load_role_artifact(d)
         assert not isinstance(exc_info.value, jsonschema.exceptions.ValidationError)
 
+    def test_blank_response_register_raises(self, tmp_path):
+        """Sol diff r1: `minLength: 1` admitted a whitespace-only register,
+        which the compiler renders as nothing — a minimal role could load
+        successfully and silently carry no response section into its prompt at
+        all. The loader refuses it instead of losing it quietly."""
+        role = valid_role()
+        role["response"]["text"]["register"] = "  "
+        d = write_role_dir(tmp_path, role=role)
+
+        with pytest.raises(ValueError):
+            load_role_artifact(d)
+
     def test_unknown_top_level_field_raises(self, tmp_path):
         role = valid_role()
         role["bogus_field"] = "surprise"

@@ -499,3 +499,28 @@ def test_assistant_refuses_to_relay_a_connection_verdict():
     collapsed = _collapse_ws(_system_md_path().read_text(encoding="utf-8"))
     assert ("Do not relay anyone else's verdict on whether a connection works"
             in collapsed)
+
+
+def test_liveness_prohibition_reaches_a_persona_bound_assistant():
+    """The test above guards the COMPOSED prompt — which a persona-bound
+    resident never reads, because the compiled bundle replaces it
+    (INV-PERS-001). #443's prohibition therefore had no force on the normal
+    configuration: the same defect #549 fixed for the response limits. It is
+    now in the role doctrine's core section, so it reaches every projection.
+
+    Asserted on the COMPILED text, not on the file, because selecting the core
+    section is what actually carries it into the prompt."""
+    from markdown_sections import select_markdown_sections
+
+    doctrine = (Path(__file__).resolve().parents[1]
+                / "casa/rootfs/opt/casa/defaults/roles/resident/assistant"
+                / "doctrine.md").read_text(encoding="utf-8")
+    sentence = "Do not relay anyone else's verdict on whether a connection works"
+    assert sentence in _collapse_ws(doctrine)
+    for surface in ("Text projection", "Voice projection",
+                    "Restricted webhook projection"):
+        selected = select_markdown_sections(
+            doctrine, ("Core doctrine", surface),
+            exclude=("Text projection", "Voice projection",
+                     "Restricted webhook projection"))
+        assert sentence in _collapse_ws(selected), surface

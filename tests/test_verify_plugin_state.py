@@ -135,25 +135,73 @@ def test_verify_unresolved_secret_carries_a_named_reason(tmp_path):
     assert "env_unresolved" in r["targets"][0]["reasons"]
 
 
-def test_env_unresolved_detail_is_bounded_and_names_only_unresolved():
-    """#533: the health detail names the unresolved vars (bounded at 5,
-    like the withhold WARNING) — never resolved or unprovisioned rows,
-    and never a value."""
-    from tools import _env_unresolved_detail
+def test_env_detail_is_bounded_and_matches_the_reason():
+    """#533: the health detail names the vars (bounded at 5, like the withhold
+    WARNING) and never a value. #554: each reason draws on the status that
+    PRODUCED it, so `setup_env_unprovisioned` names the unprovisioned vars
+    instead of nothing at all."""
+    from tools import _env_detail_for
     verify = {"secrets": [
         {"var": "A_KEY", "status": "unresolved"},
         {"var": "B_KEY", "status": "resolved"},
         {"var": "C_KEY", "status": "unprovisioned"},
     ]}
-    assert _env_unresolved_detail(verify) == "A_KEY"
+    assert _env_detail_for(verify, "env_unresolved") == "A_KEY"
+    assert _env_detail_for(verify, "setup_env_unprovisioned") == "C_KEY"
+    assert _env_detail_for(verify, "mcp_invalid") is None
 
     many = {"secrets": [
         {"var": f"V{i:02d}", "status": "unresolved"} for i in range(7)]}
-    detail = _env_unresolved_detail(many)
-    assert detail == "V00, V01, V02, V03, V04 +2 more"
+    assert (_env_detail_for(many, "env_unresolved")
+            == "V00, V01, V02, V03, V04 +2 more")
 
-    assert _env_unresolved_detail({"secrets": []}) is None
-    assert _env_unresolved_detail({}) is None
+    assert _env_detail_for({"secrets": []}, "env_unresolved") is None
+    assert _env_detail_for({}, "env_unresolved") is None
+
+
+def test_unprovisioned_variable_reaches_the_report_and_the_notice(
+        tmp_path, monkeypatch):
+    """#554, end to end (Terra diff r1): the unit above proves the helper picks
+    the right names, but the operator only ever sees the RENDERED notice — and
+    the pre-fix code passed every test that stopped at the helper. Dropping the
+    detail at either the verify call site or the renderer fails this."""
+    import plugin_health
+    import plugin_registry
+    import tools
+
+    health = tmp_path / "health.json"
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", health)
+    monkeypatch.setattr(
+        tools, "_tool_verify_plugin_state",
+        lambda plugin_name: {
+            "ready": False,
+            "reasons": ["setup_env_unprovisioned"],
+            "secrets": [{"var": "CASA_PLUGIN_FX_BIN",
+                         "status": "unprovisioned"}],
+            "targets": [{"target": "resident:assistant", "ready": False,
+                         "reasons": ["setup_env_unprovisioned"]}],
+        })
+    monkeypatch.setattr(
+        plugin_registry, "resolve_all",
+        lambda: SimpleNamespace(issues=[], warnings=[]))
+    monkeypatch.setattr(
+        plugin_registry, "load_registry",
+        lambda *a, **k: SimpleNamespace(
+            valid=True, entries=[{"name": "fx-setup",
+                                  "targets": ["resident:assistant"]}]))
+    for mod_name in ("trigger_reconcile", "callback_reconcile",
+                     "event_reconcile"):
+        monkeypatch.setattr(__import__(mod_name), "current_issues", lambda: [])
+
+    tools._regenerate_plugin_health([])
+
+    report = plugin_health.load_report(health)
+    row = next(d for d in report["issues"]
+               if d["reason_code"] == "setup_env_unprovisioned")
+    assert row["detail"] == "CASA_PLUGIN_FX_BIN"
+    notice = plugin_health.render_notice("assistant", path=health)
+    assert notice is not None and "CASA_PLUGIN_FX_BIN" in notice
+    assert "setup_env_unprovisioned" not in notice
 
 
 def test_verify_reload_required_is_never_green(tmp_path, monkeypatch):

@@ -36,6 +36,6 @@
     "doctrine_file": {"const": "doctrine.md"}
   },
   "$defs": {
-    "responseProjection": {"type": "object", "additionalProperties": false, "required": ["register"], "properties": {"register": {"type": "string", "minLength": 1}, "max_confirmation_sentences": {"type": "integer", "minimum": 0}, "max_status_sentences": {"type": "integer", "minimum": 0}, "first_clause_max_words": {"type": "integer", "minimum": 1}, "first_clause_requires_early_punctuation": {"type": "boolean"}}}
+    "responseProjection": {"type": "object", "additionalProperties": false, "required": ["register"], "properties": {"register": {"type": "string", "minLength": 1, "pattern": "\\S"}, "max_confirmation_sentences": {"type": "integer", "minimum": 0}, "max_status_sentences": {"type": "integer", "minimum": 0}, "first_clause_max_words": {"type": "integer", "minimum": 1}, "first_clause_requires_early_punctuation": {"type": "boolean"}}}
   }
 }

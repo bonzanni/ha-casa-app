@@ -323,50 +323,53 @@ def test_executor_resume_uses_recorded_paths_never_resolves(tmp_path,
 
 # --- §3.10 first-contact notice --------------------------------------------
 
-def test_first_contact_prepends_and_reports_consumption(tmp_path, monkeypatch):
-    """#349: producing the notice no longer burns the flag — the caller
-    consumes it only after a CONFIRMED delivery. The method reports whether a
-    notice was prepended so the caller knows what to consume."""
+def test_notice_is_prepended_and_returned_for_release(tmp_path, monkeypatch):
+    """#551: the method returns the notice it prepended so the caller can hand
+    it to forget_notice when delivery RAISES. A second turn inside the cooldown
+    is unprefixed — suppression lives in plugin_health, not in the Agent."""
     import plugin_health
-    monkeypatch.setattr(plugin_health, "first_contact_notice",
-                        lambda role: "PLUGIN-DEGRADED x (corrupt_artifact)")
+    plugin_health._notice_memo.clear()
+    monkeypatch.setattr(
+        plugin_health, "render_notice",
+        lambda role, path=plugin_health.HEALTH_PATH: "PLUGIN-DEGRADED x")
     a = _make_agent(tmp_path)
 
     async def run():
-        out, prepended = await a._maybe_prepend_health_notice("hello")
-        assert prepended is True
+        out, notice = await a._maybe_prepend_health_notice("hello")
+        assert notice == "PLUGIN-DEGRADED x"
         assert out.startswith("PLUGIN-DEGRADED")
         assert out.endswith("hello")
-        # NOT consumed here — delivery hasn't happened yet.
-        assert a._health_notice_pending is True
-        # Once the caller confirms delivery and clears the flag, the next
-        # turn is unprefixed.
-        a._health_notice_pending = False
-        out2, prepended2 = await a._maybe_prepend_health_notice("again")
-        assert prepended2 is False
+        out2, notice2 = await a._maybe_prepend_health_notice("again")
+        assert notice2 is None
         assert out2 == "again"
+        # Releasing it (delivery raised) offers it again at once.
+        plugin_health.forget_notice(a.config.role, "PLUGIN-DEGRADED x")
+        out3, notice3 = await a._maybe_prepend_health_notice("retry")
+        assert notice3 == "PLUGIN-DEGRADED x"
+        assert out3.startswith("PLUGIN-DEGRADED")
 
     asyncio.run(run())
 
 
-def test_first_contact_healthy_turn_leaves_flag_pending(tmp_path, monkeypatch):
-    """Sol F6: a healthy first turn must NOT burn the flag — a later-appearing
-    issue still gets first-contact delivery."""
+def test_healthy_turn_leaves_a_later_issue_deliverable(tmp_path, monkeypatch):
+    """Sol F6, preserved: a healthy turn must not suppress anything — an issue
+    appearing afterwards is delivered on the next turn."""
     import plugin_health
+    plugin_health._notice_memo.clear()
     state = {"notice": None}
-    monkeypatch.setattr(plugin_health, "first_contact_notice",
-                        lambda role: state["notice"])
+    monkeypatch.setattr(
+        plugin_health, "render_notice",
+        lambda role, path=plugin_health.HEALTH_PATH: state["notice"])
     a = _make_agent(tmp_path)
 
     async def run():
-        out, prepended = await a._maybe_prepend_health_notice("healthy")
+        out, notice = await a._maybe_prepend_health_notice("healthy")
         assert out == "healthy"
-        assert prepended is False
-        assert a._health_notice_pending is True          # NOT consumed
-        state["notice"] = "PLUGIN-DEGRADED y (reload_required)"
-        out2, prepended2 = await a._maybe_prepend_health_notice("now")
+        assert notice is None
+        state["notice"] = "PLUGIN-DEGRADED y"
+        out2, notice2 = await a._maybe_prepend_health_notice("now")
         assert out2.startswith("PLUGIN-DEGRADED")
-        assert prepended2 is True
+        assert notice2 == "PLUGIN-DEGRADED y"
 
     asyncio.run(run())
 

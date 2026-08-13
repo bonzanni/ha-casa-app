@@ -95,7 +95,11 @@ serving throughout an update Casa has just performed.
 
 Enforced in the shipped prose: `recipes/plugin/add.md` and `update.md` tell the engager to say
 only that the setup tool still needs to run and that its own result is what to go on, and the
-assistant's prompt forbids relaying another party's verdict about a connection. Before this,
+assistant is forbidden to relay another party's verdict about a connection. That prohibition
+sits in the assistant's *role doctrine*, in the core section every projection selects, because
+a persona-bound resident is served the compiled bundle and never reads the composed prompt —
+so a rule written only there has no force on the normal configuration, which is the same
+failure `architecture/personality.md` describes for declared response limits. Before this,
 `update.md` instructed the engager to report that "the update succeeded but the integration is
 dead" whenever the setup tool was not Casa-run — which, for a callback-gated plugin, was every
 update. A Gmail that was serving throughout was announced as down and the operator was asked

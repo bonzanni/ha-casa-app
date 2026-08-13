@@ -54,7 +54,23 @@ regeneration reads the previous report inside that critical section, so a regene
 racing a just-delivered notification cannot erase its marker and re-alert. A held-back
 plugin's unresolved variables reach the report and the DM by NAME (a bounded `detail` field
 on the issue row — names only, never values, and never part of the dedup fingerprint, so a
-detail change alone never re-alerts).
+detail change alone never re-alerts). Each reason draws its detail from the secret status
+that produced it, so a variable a setup tool has yet to provision is named by the reason that
+says so, and a setup episode that failed carries its own error into the row.
+
+**Health speaks to the operator in what they can do, and does not repeat itself.** Both
+operator-facing surfaces — the in-band notice a resident prepends to a reply, and the DM —
+render through one translation that never emits a reason code: the codes are internal
+identifiers, an open set that grows with every plugin feature, and no role has a tool that
+could look one up. The translation therefore classifies by families of code rather than
+enumerating them, so a code minted later still reads as something actionable, and an
+unrecognized one degrades to a plain statement rather than leaking. Repeats are suppressed
+by a decaying, in-process memo of the exact line last put in front of each role: any change
+to what the operator would read renders immediately, a role whose issues have resolved is
+re-armed at once, and a delivery that raised releases the line for the next turn. The memo
+records what was *shown*, never that delivery succeeded — no channel reports that
+truthfully — and because it expires, a missed delivery costs one quiet window rather than
+permanent silence.
 
 **Approval is per call, not per install, and it does not survive a restart.** A protected
 tool call by a resident or specialist consumes a single-use grant bound to a specific

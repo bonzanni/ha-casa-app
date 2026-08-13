@@ -9092,19 +9092,36 @@ async def _plugin_tools_guard():
 _PLUGIN_HEALTH_PATH = "/data/plugin-health.json"
 
 
-def _env_unresolved_detail(verify: dict) -> "str | None":
-    """#533: the BOUNDED unresolved-var-name list for a health issue's
-    detail — first five names (the withhold WARNING's bounding idiom),
-    ``+N more`` beyond that, never a value. ``None`` when nothing is
-    unresolved (unprovisioned rows have their own reason and are not
-    repeated here)."""
-    unresolved = sorted({s.get("var") for s in verify.get("secrets") or []
-                         if s.get("status") == "unresolved" and s.get("var")})
-    if not unresolved:
+# #554: the variable NAMES are the one actionable fact in an env-shaped health
+# row, and nothing else carries them to the operator. The detail was attached to
+# `env_unresolved` only, so a `setup_env_unprovisioned` row — the commonest
+# shape during a plugin setup flow — reached the report and the notice naming no
+# variable at all. Each reason draws on the secret status that PRODUCED it
+# (_tool_verify_plugin_state re-grades a setupProvides name from "unresolved" to
+# "unprovisioned"), so the reason and the names it shows always agree.
+_ENV_DETAIL_STATUSES = {
+    "env_unresolved": ("unresolved",),
+    "setup_env_unprovisioned": ("unprovisioned",),
+}
+
+
+def _secret_names_detail(verify: dict, statuses: "tuple[str, ...]") -> "str | None":
+    """#533/#554: the BOUNDED variable-name list for a health issue's detail —
+    first five names (the withhold WARNING's bounding idiom), ``+N more``
+    beyond that, never a value. ``None`` when no row carries one of
+    *statuses*."""
+    names = sorted({s.get("var") for s in verify.get("secrets") or []
+                    if s.get("status") in statuses and s.get("var")})
+    if not names:
         return None
-    shown = unresolved[:5]
-    extra = len(unresolved) - len(shown)
+    shown = names[:5]
+    extra = len(names) - len(shown)
     return ", ".join(shown) + (f" +{extra} more" if extra > 0 else "")
+
+
+def _env_detail_for(verify: dict, reason: str) -> "str | None":
+    statuses = _ENV_DETAIL_STATUSES.get(reason)
+    return None if statuses is None else _secret_names_detail(verify, statuses)
 
 
 def _regenerate_plugin_health(extra_issues: list) -> None:
@@ -9162,25 +9179,22 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
                 # surface it, never silently drop the plugin from the report.
                 _add(name, None, "verify_exception")
                 continue
-            # #533: the env_unresolved rows carry the var NAMES so the
+            # #533/#554: the env-shaped rows carry the var NAMES so the
             # report and DM can honor the 0.153.0 "names the missing
             # values" promise.
-            env_detail = _env_unresolved_detail(verify)
             rows = verify.get("targets") or []
             for row in rows:
                 if not row.get("ready"):
                     reason = (row.get("reasons") or ["not_ready"])[0]
                     _add(name, row.get("target"), reason,
-                         detail=env_detail if reason == "env_unresolved"
-                         else None)
+                         detail=_env_detail_for(verify, reason))
             # Sol round-3 H13: a top-level not-ready with NO target rows (e.g. an
             # unassigned plugin with a missing secret / mcp_invalid) would else be
             # erased — surface it against the plugin itself.
             if verify.get("ready") is not True and not rows:
                 for reason in (verify.get("reasons") or ["not_ready"]):
                     _add(name, None, reason,
-                         detail=env_detail if reason == "env_unresolved"
-                         else None)
+                         detail=_env_detail_for(verify, reason))
     # #211: a registered plugin targeting a NOT-yet-installed specialist is
     # the documented plugin-before-specialist install order — WARNING-class
     # ("target_pending"), never a blocking issue. RECOMPUTABLE like the
@@ -9230,10 +9244,15 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
     try:
         import plugin_setup_episodes
         for row in plugin_setup_episodes.health_issues():
+            # #554: health_issues() emits the episode's last_error as `detail`
+            # and this call site dropped it, so a failed setup reached the
+            # operator as a bare reason code while the explanation sat unread.
+            # `detail` is outside the fingerprint (#533), so carrying it here
+            # changes no issue identity and no notification dedup.
             setup_issues.append(PluginIssue(
                 name=row.get("plugin") or "", target=None, stage="setup",
                 reason_code=row.get("kind") or "setup_episode",
-                artifact_id=None))
+                artifact_id=None, detail=row.get("detail") or None))
     except Exception:  # noqa: BLE001
         logger.debug("setup-episode health merge skipped", exc_info=True)
     plugin_health.write_report(

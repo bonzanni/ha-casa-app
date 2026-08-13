@@ -55,6 +55,7 @@
     - casa/rootfs/opt/casa/personality_types.py
     - casa/rootfs/opt/casa/agent_loader.py::_compose_prompt
     - casa/rootfs/opt/casa/role_slot.py
+    - casa/rootfs/opt/casa/prompt_compiler.py::compile_projection_set
   tests:
     - tests/test_personality_binding.py
     - tests/test_persona_install.py
@@ -269,7 +270,7 @@
     INV-TOOL-002: [tests/test_internal_handlers.py::test_tools_call_inactive_engagement_is_rejected_fail_closed, tests/test_internal_handlers.py::test_tools_call_terminal_engagement_binds_for_emit_completion]
     INV-TOOL-003: [tests/test_plugin_tools.py::test_envelope_pre_activation_failure_is_pinned_shape]
     INV-TOOL-004: [tests/test_plugin_tools.py::test_envelope_committed_but_not_ready]
-    INV-TOOL-005: [tests/test_assistant_prompts.py::test_shipped_setup_prompt_carries_the_liveness_prohibition, tests/test_assistant_prompts.py::test_no_shipped_prompt_reverts_to_a_known_liveness_claim, tests/test_assistant_prompts.py::test_setup_handback_prompts_defer_to_the_tools_own_result, tests/test_assistant_prompts.py::test_assistant_refuses_to_relay_a_connection_verdict]
+    INV-TOOL-005: [tests/test_assistant_prompts.py::test_shipped_setup_prompt_carries_the_liveness_prohibition, tests/test_assistant_prompts.py::test_no_shipped_prompt_reverts_to_a_known_liveness_claim, tests/test_assistant_prompts.py::test_setup_handback_prompts_defer_to_the_tools_own_result, tests/test_assistant_prompts.py::test_assistant_refuses_to_relay_a_connection_verdict, tests/test_assistant_prompts.py::test_liveness_prohibition_reaches_a_persona_bound_assistant]
 
 - doc: architecture/triggers.md
   summary: What makes an agent act without a person speaking — scheduled and webhook triggers, and the consent a plugin trigger needs.

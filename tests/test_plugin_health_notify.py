@@ -116,7 +116,10 @@ async def test_warning_only_change_fires_dm(tmp_path):
     cm = _cm()
     await casa_core.notify_plugin_health(cm, path=str(path))
     assert len(cm._channel.sent) == 1
-    assert "legacy_provenance" in cm._channel.sent[0][0]
+    # #551: the DM addresses the same human as the in-band notice, so it names
+    # the plugin and what happened — never the internal reason code.
+    assert "lesina" in cm._channel.sent[0][0]
+    assert "legacy_provenance" not in cm._channel.sent[0][0]
     # marked notified → second call is a no-op (deduped).
     await casa_core.notify_plugin_health(cm, path=str(path))
     assert len(cm._channel.sent) == 1
@@ -141,12 +144,18 @@ async def test_telegram_channel_exposes_is_ready_contract():
 
 
 async def test_dm_includes_detail_when_present(tmp_path):
-    """#533: the operator DM names the missing values (the 0.153.0
-    promise), not just a reason code."""
+    """#533: the operator DM names the missing values (the 0.153.0 promise).
+    #551: through the shared operator-facing renderer, so the values arrive
+    without the reason code — and without the old 'See /data/plugin-health.json'
+    tail, which named a file the recipient's own assistant cannot open."""
     p = _report(tmp_path, PluginIssue(
         "probe", None, "verify", "env_unresolved",
         detail="MY_API_KEY, OTHER_KEY"))
     cm = _cm()
     await casa_core.notify_plugin_health(cm, path=str(p))
     assert len(cm._channel.sent) == 1
-    assert "probe (env_unresolved: MY_API_KEY, OTHER_KEY)" in cm._channel.sent[0][0]
+    body = cm._channel.sent[0][0]
+    assert "MY_API_KEY, OTHER_KEY" in body
+    assert "probe" in body
+    assert "env_unresolved" not in body
+    assert "/data/plugin-health.json" not in body

@@ -30,6 +30,17 @@ bundle is compiled when a binding activates. At turn time, if a bundle exists, i
 in the composed prompt is not automatically carried into an activated compiled prompt — it is
 there only if the compilation put it there.
 
+That is a rule about *declarations* as much as prose. A role artifact's response block —
+register, and the sentence ceilings for confirmations and status — is compiled into its own
+section of each projection, one rendering per surface, so the limits a role declares are the
+limits the model is given. The renderer is deliberately exhaustive rather than tolerant: a
+key the response schema admits but no renderer handles is a declaration that would be read
+by nobody and would fail silently, so the schema's own key set is what the renderer is
+checked against. It does not reject an unrecognized key at compile time, because the schema
+is closed and every role artifact is validated against it before it becomes a role — a
+rejection there could only fire where the loader already refused, while being able to block
+an install that is entirely valid.
+
 **A role's checksum covers the model it actually resolved to, so everyone must resolve it the
 same way.** A role artifact may declare its model as an operator option rather than a fixed
 value, and the checksum hashes the resolved result alongside the declaration — deliberately,
@@ -168,6 +179,7 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `casa/rootfs/opt/casa/personality_types.py`
 - `casa/rootfs/opt/casa/agent_loader.py::_compose_prompt`
 - `casa/rootfs/opt/casa/role_slot.py`
+- `casa/rootfs/opt/casa/prompt_compiler.py::compile_projection_set`
 
 **Tests**
 - `tests/test_personality_binding.py`
