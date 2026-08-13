@@ -3836,7 +3836,9 @@ class TelegramChannel(Channel):
                 chat_id=chat_id, text=original, **kw,
             )
 
-    async def send_response(self, message: str, context: dict[str, Any]) -> None:
+    async def send_response(
+        self, message: str, context: dict[str, Any],
+    ) -> DeliveryOutcome:
         """Block-mode agent response with rich-text rendering (plain fallback).
 
         v2 (RC3): an oversized response paginates through ``render_paged()`` —
@@ -3849,21 +3851,30 @@ class TelegramChannel(Channel):
         self._release_typing(context, target_chat)
         if self._app is None:
             logger.warning("Telegram channel not started; cannot send message")
-            return
+            return DeliveryOutcome.NOT_DELIVERED
         pages = render_paged(message)
         if len(pages) == 1:
             display, entities = pages[0]
             if entities is None:
-                await self.send(message, context)
-                return
+                # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
+                # it here is how a delegation path loses the distinction.
+                return await self.send(message, context)
             await self._send_one(target_chat, message, display, entities)
-            return
+            context["_delivery_head_sent"] = True
+            return DeliveryOutcome.DELIVERED
+        outcome = DeliveryOutcome.NOT_DELIVERED
         for display, entities in pages:
             if entities is None:
                 await self._app.bot.send_message(
                     chat_id=target_chat, text=display)
             else:
                 await self._send_one(target_chat, display, display, entities)
+            # Page 1 carries the notice: once it lands the delivery counts as
+            # shown, however the remaining pages fare.
+            if outcome is DeliveryOutcome.NOT_DELIVERED:
+                context["_delivery_head_sent"] = True
+                outcome = DeliveryOutcome.DELIVERED
+        return outcome
 
     async def finalize_response_stream(
         self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback,
