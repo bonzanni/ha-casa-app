@@ -101,6 +101,8 @@
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_spool.py
   doc: architecture/plugin-events.md
+- item: casa/rootfs/opt/casa/executor_epoch.py
+  doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/executor_registry.py
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/explanation_store.py
@@ -131,6 +133,8 @@
   doc: architecture/mcp-and-tools.md
 - item: casa/rootfs/opt/casa/memory_provenance.py
   doc: architecture/memory.md
+- item: casa/rootfs/opt/casa/memory_wipe.py
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/observer.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/persona_install.py
@@ -206,7 +210,7 @@
 - item: casa/rootfs/opt/casa/session_registry.py
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/session_saver.py
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/session_sweeper.py
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/speaker_provenance.py
@@ -423,6 +427,8 @@
   doc: architecture/tools-interface.md
 - item: tool:voice_job_status
   doc: architecture/tools-interface.md
+- item: tool:wipe_memory
+  doc: architecture/memory-lifecycle.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:/
   doc: architecture/http-surface.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:/callback/done
@@ -433,6 +439,8 @@
   doc: architecture/observability.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:path
   doc: architecture/mcp-and-tools.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/wipe
+  doc: architecture/memory-lifecycle.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/reload
   doc: architecture/configuration.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/hooks/resolve

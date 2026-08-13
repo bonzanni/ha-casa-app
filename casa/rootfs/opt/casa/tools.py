@@ -828,6 +828,154 @@ async def ask_user(args: dict) -> dict:
     return _result({"status": "awaiting_user", "request_id": rid})
 
 
+@tool(
+    "wipe_memory",
+    "Irreversibly wipe ALL long-term memory: the shared memory bank, the "
+    "durable retry spool, and every conversation pointer (dropped WITHOUT "
+    "retention). Operator-only and consent-gated: posts an Approve/Cancel "
+    "keyboard to the operator's DM and executes only on the operator's "
+    "Approve tap. Two-turn: returns awaiting_user immediately; the outcome "
+    "is edited into the keyboard message when the wipe finishes.",
+    {},
+)
+async def wipe_memory(args: dict) -> dict:
+    """#411 agent door. Code-enforced gates, in order: a direct genuine
+    operator-DM turn (never a delegated/engagement/scheduled context), a
+    configured operator identity (empty ⇒ NOBODY is operator ⇒ refused for
+    everyone), the operator-bound broker claim (#469 — only the configured
+    operator's tap can commit), and single-flight admission. The wipe itself
+    runs as a DETACHED task spawned from the broker finish hook — never
+    inside the invoking turn, whose pool entry lock the orchestrator's
+    flush-close must be able to take (design r1, Sol S-C2)."""
+    from provenance import turn_provenance
+
+    prov = turn_provenance()
+    if prov.transport not in ("dm", "button") or prov.execution != "direct":
+        return _result({
+            "status": "error", "kind": "unsupported_origin",
+            "message": (
+                "wipe_memory requires a direct, genuine inbound-DM turn "
+                f"(got transport={prov.transport!r} execution={prov.execution!r})"
+            ),
+        })
+    if engagement_var.get(None) is not None:
+        return _result({
+            "status": "error", "kind": "forbidden",
+            "message": "wipe_memory is not available from an engagement",
+        })
+
+    import agent as agent_mod
+    import trigger_consent
+    from memory_wipe import FENCE
+    import memory_wipe as memory_wipe_mod
+
+    registry = getattr(agent_mod, "active_session_registry", None)
+    sem = getattr(agent_mod, "active_semantic_memory", None)
+    if registry is None or sem is None:
+        return _result({
+            "status": "error", "kind": "not_initialized",
+            "message": "memory backend or session registry not initialized",
+        })
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    op = trigger_consent.operator_identity(channel) if channel is not None else None
+    if channel is None or op is None:
+        # Identity v0.136: with telegram_chat_id empty NOBODY is the
+        # operator, so consent cannot be granted and the wipe is denied for
+        # everyone — same posture as protected plugin tools.
+        return _result({
+            "status": "error", "kind": "consent_channel_unavailable",
+            "message": (
+                "no configured operator DM — the wipe consent keyboard "
+                "cannot be posted, so the wipe is refused"
+            ),
+        })
+    chat_id, operator_id = op
+
+    from verdict_broker import BROKER
+    from channels.channel_handlers import render_ask_body
+
+    rid = uuid.uuid4().hex
+    options = ["Approve — wipe everything", "Cancel"]
+    question = (
+        "⚠️ Wipe ALL long-term memory?\n\n"
+        "This deletes the shared memory bank, drops any spooled retry "
+        "records, and forgets every conversation pointer without saving it. "
+        "It cannot be undone."
+    )
+    scope = f"authz:{chat_id}"
+    body = render_ask_body(None, question, options)
+    req, _created = BROKER.register(
+        namespace="resident_ask", scope=scope, request_id=rid,
+        timeout_s=300.0, detached=True, supersede=False,
+        meta={
+            "options": options,
+            "chat_id": chat_id,
+            "operator_id": operator_id,
+            "kind": "memory_wipe",
+            "_scope": scope,
+        },
+    )
+
+    async def _post():
+        return await channel.post_dm_keyboard(
+            chat_id=chat_id, request_id=rid, text=body, options=options,
+            short_labels=True,
+        )
+
+    def _finish_factory(message_id: int):
+        async def _run_wipe_and_report() -> None:
+            try:
+                from hindsight_ids import bank_id
+                report = await memory_wipe_mod.wipe_long_term_memory(
+                    registry=registry, semantic_memory=sem, fence=FENCE,
+                    bank=bank_id("casa"),
+                )
+                text = f"{body}\n\n✅ {report.summary()}"
+            except memory_wipe_mod.WipeAborted as exc:
+                text = f"{body}\n\n❌ Wipe aborted: {exc}"
+            except Exception as exc:  # noqa: BLE001 — report truthfully
+                logger.exception("memory wipe failed")
+                text = f"{body}\n\n❌ Wipe FAILED: {exc} — state may be partial"
+            await channel.edit_dm_message(chat_id, message_id, text)
+
+        async def _finish(outcome: dict) -> None:
+            if outcome.get("outcome") != "answered" or outcome.get("option_index") != 0:
+                await channel.edit_dm_message(
+                    chat_id, message_id,
+                    f"{body}\n\n(cancelled — nothing was deleted)",
+                )
+                return
+            # Approve: admit as THE single-flight wipe. The finish hook runs
+            # broker-owned, OUTSIDE any turn, so the orchestrator's
+            # flush-close can take pool entry locks freely (Sol S-C2).
+            task = memory_wipe_mod.start_wipe_task(_run_wipe_and_report())
+            if task is None:
+                await channel.edit_dm_message(
+                    chat_id, message_id,
+                    f"{body}\n\n(refused — a wipe is already running or the "
+                    "app is shutting down; nothing additional was deleted)",
+                )
+                return
+            await channel.edit_dm_message(
+                chat_id, message_id, f"{body}\n\n⏳ Wiping long-term memory…",
+            )
+        return _finish
+
+    await BROKER.ensure_posted(req, _post, _finish_factory)
+    if "message_id" not in req.meta:
+        return _result({
+            "status": "error", "kind": "delivery_failed",
+            "message": "could not deliver the consent keyboard to the operator",
+        })
+    return _result({
+        "status": "awaiting_user", "request_id": rid,
+        "message": (
+            "consent keyboard posted to the operator; the wipe runs only on "
+            "an explicit Approve tap and reports its result in that message"
+        ),
+    })
+
+
 # ---------------------------------------------------------------------------
 # delegate_to_agent — Phase 3.1
 # ---------------------------------------------------------------------------
@@ -2485,12 +2633,16 @@ async def _run_delegated_agent(
     if cfg.memory.token_budget > 0 and text:
         sem = getattr(agent_mod, "active_semantic_memory", None)
         if sem is not None:
+            # #411: fence generation captured synchronously with the exchange
+            # content — the detached task may not run until after a wipe.
+            from memory_wipe import FENCE
             bg = asyncio.create_task(retain_delegated(
                 sem, origin_channel=str(parent.get("channel", "")),
                 turns=[
                     RetainedTurn(task_text, caller_provenance),
                     RetainedTurn(text, executing_provenance),
                 ],
+                fence_generation=FENCE.generation(),
             ))
             _specialist_bg_tasks.add(bg)
             bg.add_done_callback(_specialist_bg_tasks.discard)
@@ -6127,6 +6279,7 @@ def _duplicate_task_refusal(origin: dict, task_text: str) -> dict | None:
 async def _fetch_executor_archive(
     *, task: str, origin_channel: str, token_budget: int,
     origin_route: str | None = None, origin_clearance: str | None = None,
+    epoch_tag: str | None = None,
 ) -> str:
     """Read prior-engagement "lessons" as a SEMANTIC recall against the shared
     ``casa`` bank, keyed on the current ``task`` and filtered to the originating
@@ -6160,6 +6313,15 @@ async def _fetch_executor_archive(
     # helper cannot know that, so the caller states it.
     if not (task or "").strip():
         return ""
+    # #215: scope the injected block to THIS launch's doctrine epoch —
+    # lessons written under another (or no recorded) epoch are dropped
+    # client-side before rendering. Injected procedure must agree with the
+    # doctrine injected beside it; query_engager (Q&A, not injected
+    # procedure) is deliberately unfiltered.
+    hit_filter = None
+    if epoch_tag is not None:
+        from executor_epoch import make_archive_epoch_filter
+        hit_filter = make_archive_epoch_filter(epoch_tag)
     try:
         digest = await delegated_recall(
             sem, query=task, origin_channel=origin_channel, max_tokens=token_budget,
@@ -6169,10 +6331,21 @@ async def _fetch_executor_archive(
             # ORIGINATING turn's clearance — a non-operator-launched executor
             # must not be handed private lessons in its system prompt.
             origin_route=origin_route, origin_clearance=origin_clearance,
+            hit_filter=hit_filter,
         )
     except RecallUnavailable:
         return ""
-    return f"## Prior engagements (lessons learned)\n{digest}" if digest else ""
+    if not digest:
+        return ""
+    # #215: one subordination line — lessons are observations from prior
+    # engagements; the versioned doctrine files prevail wherever they
+    # disagree. Covers the same-epoch case where a lesson is merely wrong.
+    return (
+        "## Prior engagements (lessons learned)\n"
+        "These are observations from prior engagements. Where they disagree "
+        "with your doctrine files, the doctrine prevails.\n"
+        f"{digest}"
+    )
 
 
 @tool(
@@ -6615,6 +6788,26 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                 "message": str(exc),
             })
 
+        # #215: the procedural epoch of THIS launch, digested from the exact
+        # bytes it consumes (the template just read + doctrine dir + the
+        # workspace instruction SOURCE for claude_code) — computed before the
+        # archive fetch (whose filter needs it) and persisted on the record
+        # so finalize stamps the summary with the epoch the engagement
+        # actually ran under, not the finalize-time definition.
+        from executor_epoch import compute_procedural_epoch, epoch_application_tag
+        procedural_epoch = compute_procedural_epoch(
+            defn, prompt_template=prompt_template,
+        )
+        try:
+            await _engagement_registry.set_procedural_epoch(
+                rec.id, procedural_epoch,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort, like the
+            # state-emoji publication above: a persistence failure costs the
+            # summary its epoch tag (retained untagged, filtered later),
+            # never the launch.
+            logger.warning("set_procedural_epoch failed: %s", exc)
+
         # Semantic-recall memory injection (design §3, plan 3): when the executor
         # opts in (defn.memory.enabled=True, off by default), fetch prior-engagement
         # lessons from the shared `casa` bank at the origin channel's read-clearance.
@@ -6626,6 +6819,7 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                 token_budget=defn.memory.token_budget,
                 origin_route=origin.get("_origin_route"),
                 origin_clearance=origin.get("_origin_clearance"),
+                epoch_tag=epoch_application_tag(executor_type, procedural_epoch),
             )
 
         # W3/Sol r5-B8: the {task} value reaches BOTH driver paths through this ONE
@@ -7304,9 +7498,13 @@ async def _finalize_engagement(
             "artifacts": artifacts,
             "next_steps": next_steps,
         })
+        # #411: fence generation captured synchronously with the summary
+        # assembly — the detached task may not run until after a wipe.
+        from memory_wipe import FENCE as _FENCE
         bg = asyncio.create_task(retain_delegated(
             sem, origin_channel=str(engagement.origin.get("channel", "")),
             turns=[RetainedTurn(summary, _summary_prov)],
+            fence_generation=_FENCE.generation(),
         ))
         _specialist_bg_tasks.add(bg)
         bg.add_done_callback(_specialist_bg_tasks.discard)
@@ -7384,9 +7582,24 @@ async def _finalize_engagement(
             "last_text": text,
             "artifacts": artifacts,
         })
+        # #215: stamp the summary with the epoch persisted on the RECORD at
+        # launch (never the finalize-time definition — a reload may have
+        # moved it). A legacy record without one retains untagged; the
+        # archive filter then drops it, by design. #411: the fence
+        # generation is captured HERE, synchronously with the summary
+        # assembly — the detached task below may not run until after a wipe.
+        from executor_epoch import epoch_application_tag
+        from memory_wipe import FENCE
+        _epoch = getattr(engagement, "procedural_epoch", "") or ""
+        _tags = (
+            [epoch_application_tag(engagement.role_or_type, _epoch)]
+            if _epoch else []
+        )
         bg = asyncio.create_task(retain_delegated(
             sem, origin_channel=str(engagement.origin.get("channel", "")),
             turns=[RetainedTurn(type_summary, _summary_prov)],
+            application_tags=_tags,
+            fence_generation=FENCE.generation(),
         ))
         _specialist_bg_tasks.add(bg)
         bg.add_done_callback(_specialist_bg_tasks.discard)
@@ -12118,6 +12331,8 @@ CASA_TOOLS: tuple = (
     cancel_voice_job,
     continue_voice_job,
     recall_memory,                 # §4.3 — shared-bank semantic recall (tier-clearance filtered)
+    wipe_memory,                   # #411 — operator-consented long-term wipe;
+                                   # NEVER add to SPECIALIST_CASA_TOOL_ALLOWLIST
     get_schedule,
     set_reminder,                  # #396 — durable reminders
     cancel_reminder,               # #396

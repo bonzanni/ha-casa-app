@@ -41,9 +41,12 @@ conversation or hand a turn a stale client. A mismatched entry is closed and reb
 than reused. Know the lock's reach, though: it serializes the *decision* against the
 registry's current contents, not a multi-step mutation of them — a `/new` reset retains the
 old session and only afterwards removes the pointer, none of it under a pool entry lock.
-The Telegram channel serializes `/new` against same-chat message *enqueue*, and the reset's
-save and removal are generation-checked (INV-MEM-006) — but a turn already dispatched
-before the reset began can still read the old session id fresh and resume it once more.
+What covers that window is the retirement claim
+([`architecture/memory-lifecycle.md`](memory-lifecycle.md), INV-MEM-013): while a reset or
+wipe holds one, this decision — and the bypass path's — is forced to fresh, so a turn
+dispatched before the reset began starts a new conversation instead of resuming the dying
+one, and the registry refuses to re-register the dying id. The decision reports such a
+steer as its own reason, so observability tells the truth about why a session was fresh.
 
 "That decision" is more than a timestamp: resume requires a decodable stored entry, an exact
 role-identity match, an exact personality-binding digest, a *usable* last-active time, and

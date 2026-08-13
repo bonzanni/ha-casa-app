@@ -22,7 +22,7 @@ turn / engagement that spawned them — its channel is on ``origin_var`` /
 from __future__ import annotations
 
 import logging
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from channel_policy import writes_to_bank
 from hindsight_ids import bank_id
@@ -45,6 +45,7 @@ async def delegated_recall(
     path: RecallPath = "delegated", current_speaker: SpeakerProvenance | None = None,
     origin_route: str | None = None, origin_clearance: str | None = None,
     with_stats: bool = False,
+    hit_filter: "Callable[[tuple], tuple] | None" = None,
 ) -> str | tuple[str, int]:
     """Recall the shared bank at the ORIGINATING context's read-clearance,
     returning an ATTRIBUTED digest (personality Task 11).
@@ -133,6 +134,14 @@ async def delegated_recall(
             origin_channel, type(exc).__name__,
         )
         raise RecallUnavailable("backend_error") from exc
+    if hit_filter is not None:
+        # #215: client-side post-recall scoping (the backend's only content
+        # filter is the sensitivity-tier tags, and tags_match="any" makes an
+        # additive tag a broadener) — used by the executor-archive path to
+        # drop lessons from another doctrine epoch. Applied between recall
+        # and render so the clearance/breaker plumbing above stays the one
+        # shared implementation.
+        hits = hit_filter(hits)
     digest = render_recall(
         hits, current_speaker=current_speaker, surface=surface,
         clearance=clearance, token_budget=max_tokens,
@@ -144,6 +153,8 @@ async def delegated_recall(
 
 async def retain_delegated(
     semantic_memory: Any, *, origin_channel: str, turns: Sequence[RetainedTurn],
+    application_tags: Sequence[str] = (),
+    fence_generation: int | None = None,
 ) -> None:
     """Explicitly retain delegated ``turns`` to the shared bank, each classified at
     its TRUE tier AND attributed to its real :class:`SpeakerProvenance` — IFF the
@@ -154,14 +165,35 @@ async def retain_delegated(
     re-retain idempotency no longer needs a caller-scoped prefix, and the same
     fact retained across delegations collapses to one document. ``classify_tier``
     is passed by name so tests that monkeypatch ``delegated_memory.classify_tier``
-    still take effect. Best-effort; never raises."""
+    still take effect. Best-effort; never raises.
+
+    ``application_tags`` (#215) rides through to ``build_retain_items``, whose
+    reserved/tier forgery gate still applies — used to stamp executor
+    engagement summaries with their launch's doctrine epoch.
+    ``fence_generation`` (#411): the retain-fence generation the CALLER
+    captured synchronously where the summary content was assembled (these
+    retains are spawned as detached tasks, so an in-body capture could
+    postdate a wipe and restore pre-wipe content). A wipe completing in
+    between makes this retain discard, silently but logged."""
+    from memory_wipe import FENCE, StaleGeneration
+
     if not writes_to_bank(origin_channel):
         return
-    items = await build_retain_items(turns, classify=classify_tier)
-    if not items:
-        return
+    if fence_generation is None:
+        fence_generation = FENCE.generation()
     try:
-        await semantic_memory.retain(bank_id("casa"), items, async_=True)
+        async with FENCE.retaining(fence_generation):
+            items = await build_retain_items(
+                turns, classify=classify_tier,
+                application_tags=application_tags,
+            )
+            if items:
+                await semantic_memory.retain(bank_id("casa"), items, async_=True)
+    except StaleGeneration:
+        logger.warning(
+            "delegated retain discarded (origin_channel=%s) — a memory wipe "
+            "completed first", origin_channel,
+        )
     except Exception:  # noqa: BLE001 — best-effort background write
         logger.warning(
             "delegated retain failed (origin_channel=%s)", origin_channel, exc_info=True,

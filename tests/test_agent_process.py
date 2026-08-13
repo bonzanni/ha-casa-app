@@ -2383,7 +2383,8 @@ class TestSaveBeforeOverwrite:
 
         retain_calls: list[dict] = []
 
-        async def _fake_retain_cold(old, *, directory, channel, semantic_memory):
+        async def _fake_retain_cold(old, *, directory, channel, semantic_memory,
+                                    fence_generation=None):
             retain_calls.append({
                 "sid": old.sdk_session_id,
                 "role": old.agent,

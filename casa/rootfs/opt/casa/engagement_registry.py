@@ -232,6 +232,14 @@ class EngagementRecord:
     # first_contact_required -> awaiting_operator -> authorized. Never
     # backwards; see ``_pure_interaction_transition``.
     interaction_state: str = ""
+    # #215: the procedural-epoch digest computed at LAUNCH from the exact
+    # bytes the launch consumed (executor_epoch.compute_procedural_epoch).
+    # Persisted so finalize stamps the summary with the epoch its engagement
+    # actually ran under — never the finalize-time definition, which a
+    # reload may have moved (design r1, Sol S-B2/Terra T-B1). "" = legacy or
+    # non-executor record: the summary is then retained UNTAGGED and a later
+    # archive filter drops it.
+    procedural_epoch: str = ""
     # Task 6 (spec §4.6): the concurrency Permit this interactive
     # specialist delegation holds, if any (set by tools.py's
     # delegate_to_agent right after `create()`, None for executor
@@ -414,6 +422,7 @@ class EngagementRegistry:
                     permission_mode=row.get("permission_mode") or "acceptEdits",
                     plugin_artifacts=tuple(row.get("plugin_artifacts") or ()),
                     interaction_state=row.get("interaction_state") or "",
+                    procedural_epoch=row.get("procedural_epoch") or "",
                     next_question_number=int(row.get("next_question_number", 1) or 1),
                     open_questions=tuple(
                         dict(q) for q in (row.get("open_questions") or ())
@@ -596,6 +605,7 @@ class EngagementRegistry:
                 "permission_mode": rec.permission_mode,
                 "plugin_artifacts": [dict(pa) for pa in rec.plugin_artifacts],
                 "interaction_state": rec.interaction_state,
+                "procedural_epoch": rec.procedural_epoch,
                 "next_question_number": rec.next_question_number,
                 "open_questions": [dict(q) for q in rec.open_questions],
                 "summary_message_id": rec.summary_message_id,
@@ -1304,6 +1314,24 @@ class EngagementRegistry:
             if rec.current_state_emoji is not None:
                 return
             rec.current_state_emoji = emoji
+            await self._write_tombstone_locked()
+
+    async def set_procedural_epoch(
+        self, engagement_id: str, epoch: str,
+    ) -> None:
+        """#215: launch-time publication of the procedural epoch this
+        engagement's prompt/doctrine bytes were digested to. Write-once
+        (a set value is never overwritten) and only on a non-terminal
+        record; best-effort persistence like the launch paths it serves."""
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                return
+            if rec.status in ("completed", "cancelled", "error"):
+                return
+            if rec.procedural_epoch:
+                return
+            rec.procedural_epoch = epoch
             await self._write_tombstone_locked()
 
     async def advance_interaction_state(

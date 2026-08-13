@@ -1150,7 +1150,14 @@ class ClaudeCodeDriver(DriverProtocol):
                 # _fetch_executor_archive lazily imports agent itself.
                 executor_memory_block = ""
                 if defn.memory.enabled:
+                    from executor_epoch import epoch_application_tag
                     from tools import _fetch_executor_archive
+                    # #215: filter by the epoch persisted on the RECORD at
+                    # launch — this render belongs to that engagement's
+                    # materials, not to whatever the definition digests to
+                    # now. A legacy record without one filters everything
+                    # (empty archive), never mislabels.
+                    _epoch = getattr(engagement, "procedural_epoch", "") or ""
                     executor_memory_block = await _fetch_executor_archive(
                         task=engagement.task,
                         origin_channel=engagement.origin.get("channel", "telegram"),
@@ -1162,6 +1169,9 @@ class ClaudeCodeDriver(DriverProtocol):
                         origin_route=engagement.origin.get("_origin_route"),
                         origin_clearance=engagement.origin.get(
                             "_origin_clearance"),
+                        epoch_tag=epoch_application_tag(
+                            engagement.role_or_type, _epoch,
+                        ),
                     )
 
                 # §3.3: a workspace-template/ (e.g. plugin-developer) selects

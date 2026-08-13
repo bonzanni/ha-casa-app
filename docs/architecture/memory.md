@@ -110,15 +110,18 @@ record that carries a stamped clearance: an engagement running before per-sender
 existed has none, so it keeps channel-keyed clearance — on Telegram, private — until it
 finishes.
 
-**Writing is narrower than reading.** Only write-trusted channels retain to the shared bank.
-A channel that can recall is not thereby able to store.
+**Writing is narrower than reading, and it has its own document.** Only write-trusted
+channels retain to the shared bank — a channel that can recall is not thereby able to
+store — and *when* a conversation is retained, reset, or wiped is the retention
+lifecycle: [`architecture/memory-lifecycle.md`](memory-lifecycle.md) owns the freshness
+windows, the save claim-and-guard protocol (INV-MEM-006), the retirement claims that
+steer racing turns off a dying session (INV-MEM-013), and the operator-consented wipe
+(INV-MEM-014).
 
-**When a session goes cold is tunable, and retention deduplicates.** The freshness windows
-that decide when a session stops being resumable and becomes save-eligible are
-environment-tunable (`FRESHNESS_VOICE_MINUTES`, default 30; `FRESHNESS_TELEGRAM_HOURS`,
-default 12). Retained facts are content-addressed, so the same speaker saying the same
-thing across sessions collapses to one stored document — and agent-side deduplication
-ignores persona version, so a persona upgrade does not mint duplicate memories.
+**Retention deduplicates.** Retained facts are content-addressed, so the same speaker
+saying the same thing across sessions collapses to one stored document — and agent-side
+deduplication ignores persona version, so a persona upgrade does not mint duplicate
+memories.
 
 Content addressing only holds because the hash input is the utterance and nothing else.
 Every sent user turn carries a per-turn time envelope, and the transcript echoes it back —
@@ -181,35 +184,9 @@ valid provenance tag is trusted and is not cross-checked against the duplicate c
 the item's metadata. A recalled fact can therefore carry a speaker identity that the read path
 has not independently established.
 
-**INV-MEM-005**: Only write-trusted channels retain to the shared bank.
-
-Enforced by the channel write-policy check, consulted by every production retain path.
-
-What it does not cover: the seam's retain method itself enforces nothing. A future caller that
-skips the builder and the policy check would bypass both.
-
-**INV-MEM-006**: A session save or removal keyed by channel acts only on the session id its caller snapshotted — a registration carrying a different id in that window is released, not retained or deleted; an explicit reset deliberately removes its snapshotted session even when re-registered.
-
-The registry key names a *conversation slot*, not a session — a new turn can re-register the
-slot at any suspension point. Every step of the save protocol therefore carries the session
-id its caller judged (the reaper's cold snapshot, a reset's own snapshot): the save entry
-point releases a claim that landed on a different session, `finish_save` and
-`clear_save_claim` decline when the stored id moved, and an explicit reset's trailing
-removal declines the same way — as do the reaper's direct removals of unusable and
-recall-only entries (a snapshot without a session id guards on that absence).
-
-Where the id cannot distinguish, the guards also accept a *registration generation*:
-a process-local monotonic token stamped per registration, never persisted (a loaded entry
-reads "no generation", which no live one reproduces). Passing the snapshotted generation
-makes each conditional mutation — claim placement included — decline once any
-registration moved it, even same-id. Stale-resume recovery and the reaper pass it; a
-*reset* does not: the id names the conversation being reset, so removing a same-id
-re-registration is its contract.
-
-What it does not cover: a caller that passes no expected id gets the unconditional
-behavior; and a turn still running on the *same* session when a reset saves it can have its
-tail exchanges miss retention — the reset drops the pointer (its contract) and nothing
-saves that session again.
+**INV-MEM-005** and **INV-MEM-006** — write trust and the save/reset guard protocol —
+are declared in [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with
+the retirement claims (INV-MEM-013) and the wipe contract (INV-MEM-014).
 
 **INV-MEM-008**: An engagement's reads resolve clearance from the origin markers its own record carries, and a steering turn from a lower-clearance sender clamps those markers down permanently.
 
@@ -271,6 +248,25 @@ whose statement the answer-line arm falsifies.
 What it does not cover: a classifier confidently declaring the wrong tier is believed —
 a parser contract, not accuracy; the eval set owns accuracy.
 
+**INV-MEM-015**: The lessons block injected into an executor's prompt at launch carries only summaries stamped with that launch's own procedural epoch; a summary is stamped at finalize with the epoch persisted on its engagement's record at create, never with the finalize-time definition.
+
+The epoch is a digest over the procedural bytes the launch actually consumes — the
+role-artifact checksum, the resolved prompt template's path and just-read bytes, every
+doctrine file as provisioned, and (for workspace-driven executors) the *source* workspace
+instruction file, pre-interpolation, whichever of the template or plain-copy forms will be
+consumed. Launch-specific substitutions are never inputs: rendered bytes embed the task and
+the recalled memory itself, which would make every epoch unique and the filter circular.
+Filtering is client-side between recall and render (the tag filter cannot narrow), drops
+foreign-epoch *and* unstamped hits alike — a lesson that cannot prove it was learned under
+the current doctrine is exactly what the filter exists for — and the injected block
+subordinates itself to the doctrine files in as many words.
+
+What it does not cover: `query_engager` is deliberately unfiltered (an answer to "what
+happened last time" is not injected procedure); a same-epoch lesson that is merely wrong
+survives, tempered only by the subordination line; and epochs never expire lessons from the
+bank — a doctrine rollback to a byte-identical earlier state resurrects that epoch's
+lessons, by construction.
+
 ## Failure behavior
 
 **The backend is slow, unreachable, or returns an error.** The seam raises `RecallUnavailable`
@@ -303,21 +299,9 @@ tier token or a final `Tier: <word>` line with agreeing earlier answers parses �
 anything else (prose, conflicts) is ambiguity. The write is not lost, but the fact
 goes invisible below the highest clearance — absence on voice and friends surfaces.
 
-**Saving a session fails.** The save is abandoned, its claim is released — including when the
-failure is a cancellation at shutdown — and the entry stays for a later sweep to retry. An
-explicit reset is the exception — it drops the pointer whether or not the save succeeded,
-unless a newer session registered meanwhile (INV-MEM-006), in which case the newer
-registration stands.
-
-**A gap-superseded session's background retain fails.** That retain runs decoupled from the
-registry (the new turn is about to overwrite the entry), so failure spools a durable retry
-record instead; the freshness sweep drives retries and gives up loudly after a bounded
-number of attempts. An unreadable record is dropped, not retried forever.
-
-**The session registry file is corrupt at boot.** An unparseable file is renamed aside and
-the process starts with an empty registry; a parseable file with structurally corrupt
-individual entries quarantines just those entries and keeps the rest. Affected session
-pointers are lost; the app comes up.
+Failures on the *write* side — a save that fails, a spooled retry, a corrupt session
+registry, a wipe whose drain times out — are the retention lifecycle's:
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md).
 
 ## Extension points
 
@@ -326,9 +310,8 @@ in particular it must raise, not return empty, when it cannot answer or when not
 survives filtering. If it holds resources, implement the close hook.
 
 **A new channel** needs an explicit clearance entry, or it reads at the least-sensitive tier
-by default. Write access is a separate, deliberate addition. If its sessions should be
-retained when they go cold, that is a *third* list — none of the three is inferred from the
-others, and forgetting one produces a channel that silently never persists.
+by default. Write access is a separate, deliberate addition, and the retention list is a
+third ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
 
 **A new recall caller** should decide whether it wants its own telemetry and breaker, which
 means choosing a distinct recall path rather than inheriting another's. It must also decide,
@@ -340,7 +323,14 @@ since what may be disclosed is decided per surface.
 
 **A new writer** should build its items through the retain-item builder. Calling the seam's
 retain directly bypasses tier tagging, provenance validation and the write-trust check at
-once.
+once — and see [`architecture/memory-lifecycle.md`](memory-lifecycle.md) for the retain
+fence a writer must also enter.
+
+**Scoping what a recall surfaces** is a caller-side decision: the backend's only content
+filter is the sensitivity tags, so a caller that must narrow further (the executor archive
+drops lessons from another doctrine epoch — INV-MEM-015) filters the typed hits between
+recall and render, never by adding tags to the request (an added tag *broadens* an
+any-match filter).
 
 ## Source & test map
 
@@ -361,9 +351,9 @@ once.
 - `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
-- `casa/rootfs/opt/casa/session_saver.py::save_session`
-- `casa/rootfs/opt/casa/session_saver.py::reset_channel`
-- `casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once`
+- `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`
+- `casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag`
+- `casa/rootfs/opt/casa/executor_epoch.py::make_archive_epoch_filter`
 
 **Tests**
 - `tests/test_recall_absence_invariant.py`
@@ -373,12 +363,12 @@ once.
 - `tests/test_channel_policy.py`
 - `tests/test_memory_provenance.py`
 - `tests/test_agent_auto_recall_unavailable.py`
-- `tests/test_session_saver.py`
-- `tests/test_freshness_reaper.py`
 - `tests/test_time_envelope.py`
 - `tests/test_recall_empty_verdict.py`
+- `tests/test_executor_epoch.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
 <!-- END SOURCEMAP -->

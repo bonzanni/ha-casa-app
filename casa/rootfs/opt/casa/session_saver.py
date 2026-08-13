@@ -169,9 +169,16 @@ async def save_session(
     mutation below against a re-registration of the SAME sid, which
     ``expected_sid`` cannot see."""
     from agent import snapshot_session_entry
+    from memory_wipe import FENCE, StaleGeneration
 
     if not writes_to_bank(channel):
         return False  # recall-only channel (e.g. voice): never persists facts
+    # #411: inline writer — capture the fence generation at entry, before
+    # reading any source data. A memory wipe completing between here and the
+    # retain below makes this save DISCARD (the operator consented to
+    # deleting exactly this content); the registry entry is gone by then
+    # (the wipe removed it), so nothing retries the discarded save.
+    fence_generation = FENCE.generation()
     if not await registry.try_begin_save(
         channel_key, expected_generation=expected_generation,
     ):
@@ -197,13 +204,31 @@ async def save_session(
         return False
     sid = snapshot.sdk_session_id
     try:
-        messages = await asyncio.to_thread(get_session_messages, sid, directory)
-        items = await transcript_to_items(
-            messages, speaker_provenance=snapshot.speaker_provenance,
-            user_provenance=snapshot.user_provenance,
-        )
-        if items:
-            await semantic_memory.retain(bank_id("casa"), items, async_=True)
+        try:
+            async with FENCE.retaining(fence_generation):
+                messages = await asyncio.to_thread(
+                    get_session_messages, sid, directory,
+                )
+                items = await transcript_to_items(
+                    messages, speaker_provenance=snapshot.speaker_provenance,
+                    user_provenance=snapshot.user_provenance,
+                )
+                if items:
+                    await semantic_memory.retain(
+                        bank_id("casa"), items, async_=True,
+                    )
+        except StaleGeneration:
+            # A wipe completed since entry: this transcript was deleted by
+            # operator consent. Release the claim and report no save; the
+            # wipe's registry removal is what prevents any retry.
+            logger.warning(
+                "save_session: %s discarded — a memory wipe completed while "
+                "this save was in flight", channel_key,
+            )
+            await registry.clear_save_claim(
+                channel_key, sid, expected_generation=expected_generation,
+            )
+            return False
         # Pass the saved sid so a user turn that re-registered this channel
         # mid-save (slow multi-minute reaper retain) is not clobbered (M24);
         # the generation guard (#526) extends that to a same-sid re-register.
@@ -285,12 +310,19 @@ async def retry_spooled_cold_retains(
     sweep). Success removes the record; failure increments its attempt count
     and gives up loudly at ``_COLD_RETAIN_MAX_ATTEMPTS``; a structurally
     unreadable record is dropped rather than retried forever."""
+    from memory_wipe import FENCE, StaleGeneration
+
     root = Path(retry_dir if retry_dir is not None else _COLD_RETAIN_RETRY_DIR)
     try:
         records = sorted(root.glob("*.json"))
     except OSError:
         return
     for path in records:
+        # #411: per-record capture, before reading the record — a wipe
+        # completing while this record's retain is in flight discards it
+        # (the record itself is pre-wipe content; the wipe already unlinked
+        # it, or unlinks nothing and we drop it here).
+        fence_generation = FENCE.generation()
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
             sid = str(record["sdk_session_id"])
@@ -303,11 +335,17 @@ async def retry_spooled_cold_retains(
             path.unlink(missing_ok=True)
             continue
         try:
-            messages = await asyncio.to_thread(get_session_messages, sid, directory)
-            items = await transcript_to_items(
-                messages, speaker_provenance=speaker, user_provenance=user)
-            if items:
-                await semantic_memory.retain(bank_id("casa"), items, async_=True)
+            async with FENCE.retaining(fence_generation):
+                messages = await asyncio.to_thread(get_session_messages, sid, directory)
+                items = await transcript_to_items(
+                    messages, speaker_provenance=speaker, user_provenance=user)
+                if items:
+                    await semantic_memory.retain(bank_id("casa"), items, async_=True)
+            path.unlink(missing_ok=True)
+        except StaleGeneration:
+            logger.warning(
+                "cold-retain retry: record %s discarded — a memory wipe "
+                "completed first", path.name)
             path.unlink(missing_ok=True)
         except asyncio.CancelledError:
             raise
@@ -336,6 +374,7 @@ async def retry_spooled_cold_retains(
 async def retain_cold_session(
     old: "SessionEntrySnapshot", *, directory: str, channel: str, semantic_memory,
     retry_dir: str | Path = _COLD_RETAIN_RETRY_DIR,
+    fence_generation: int | None = None,
 ) -> None:
     """Retain a specific cold SDK session's transcript to the shared ``casa`` bank,
     OFF the turn's critical path and DECOUPLED from the session registry (no
@@ -347,25 +386,49 @@ async def retain_cold_session(
     Personality Task 10: consumes the immutable ``SessionEntrySnapshot`` directly.
     A legacy/corrupt snapshot with no usable speaker/user provenance retains
     NOTHING — memory is never written with invented authorship. The
-    content-addressed ``document_id`` keeps re-retain idempotent."""
+    content-addressed ``document_id`` keeps re-retain idempotent.
+
+    ``fence_generation`` (#411): captured by the caller AT THE RESUME
+    DECISION that superseded this session (never inside this coroutine — it
+    may not run until after a wipe). The whole retain-and-spool section sits
+    behind the fence: a wipe completing in between makes this DISCARD — no
+    retain and no spool record, because the operator consented to deleting
+    exactly this transcript's memory."""
+    from memory_wipe import FENCE, StaleGeneration
+
     if not writes_to_bank(channel):
         return
     if old.speaker_provenance is None or old.user_provenance is None:
         return  # legacy/corrupt snapshot: never retain with invented authorship
+    if fence_generation is None:
+        fence_generation = FENCE.generation()
     try:
-        messages = await asyncio.to_thread(get_session_messages, old.sdk_session_id, directory)
-        items = await transcript_to_items(
-            messages, speaker_provenance=old.speaker_provenance,
-            user_provenance=old.user_provenance,
+        async with FENCE.retaining(fence_generation):
+            messages = await asyncio.to_thread(
+                get_session_messages, old.sdk_session_id, directory,
+            )
+            items = await transcript_to_items(
+                messages, speaker_provenance=old.speaker_provenance,
+                user_provenance=old.user_provenance,
+            )
+            if items:
+                await semantic_memory.retain(bank_id("casa"), items, async_=True)
+    except StaleGeneration:
+        logger.warning(
+            "cold-session retain discarded for sid=%s — a memory wipe "
+            "completed first", old.sdk_session_id,
         )
-        if items:
-            await semantic_memory.retain(bank_id("casa"), items, async_=True)
     except asyncio.CancelledError:
         # Terra r1 (#345): shutdown cancels these unawaited background tasks —
         # without this arm the cancel bypassed the spool and lost exactly the
         # registry-decoupled transcript the spool protects. The spool write is
         # synchronous (no await), so it completes before the cancel propagates.
-        _spool_cold_retain(old, directory=directory, channel=channel, retry_dir=retry_dir)
+        # #411: the spool arm honours the fence generation too — a cancel
+        # landing after a wipe must not write a pre-wipe record the wipe's
+        # spool sweep can no longer see. The sync check-then-write cannot be
+        # interleaved by the (await-driven) wipe.
+        if FENCE.generation() == fence_generation:
+            _spool_cold_retain(old, directory=directory, channel=channel, retry_dir=retry_dir)
         raise
     except Exception:  # noqa: BLE001 — background; never surface to the turn
         logger.warning(
@@ -375,7 +438,9 @@ async def retain_cold_session(
         # #345: the registry entry is (about to be) overwritten by the new
         # turn — without a durable record this transcript would be lost for
         # good on a transient outage. The reaper retries the spool each sweep.
-        _spool_cold_retain(old, directory=directory, channel=channel, retry_dir=retry_dir)
+        # #411: generation-guarded like the cancel arm above.
+        if FENCE.generation() == fence_generation:
+            _spool_cold_retain(old, directory=directory, channel=channel, retry_dir=retry_dir)
 
 
 async def reset_channel(
@@ -385,42 +450,70 @@ async def reset_channel(
     then drop the pointer so the next turn starts fresh. Role + transcript
     directory are derived from the registry entry (the caller — e.g. the Telegram
     channel — does not need to know them). If there is no entry there is nothing
-    to save; just return (the caller still acks)."""
+    to save; just return (the caller still acks).
+
+    #290: the whole body runs under a per-key RETIREMENT CLAIM
+    (``registry.begin_retirement``): while it is live, both resume-decision
+    sites steer a racing same-key turn to a FRESH session instead of the
+    dying sid, and ``register()`` refuses to re-arm the dying sid itself.
+    The snapshot is taken BEFORE the flush-close (in the same no-await block
+    as the claim) so a steered-fresh turn registering mid-close can never
+    become the session this reset retains and removes; the sid guards on
+    ``save_session``/``remove`` then decline on any re-registration, which
+    during the claim window can only be a steered-fresh NEW sid."""
     # Imported lazily: agent imports session_saver at module load, so a
     # top-level import here would cycle.
     from agent import agent_home_for_role_id, snapshot_session_entry
 
-    # AR-4 (pooling spec): close any warm SDK client for this key FIRST —
-    # disconnect sends stdin EOF, which is what makes the CLI flush the
-    # transcript .jsonl this save is about to read (SDK #625).
-    await registry.notify_reset(channel_key)
-    entry = registry.get(channel_key)
-    snapshot = snapshot_session_entry(entry)
-    if snapshot is None:
-        return
-    role = snapshot.agent
-    # Task 9: entries now store the canonical role_id; derive the transcript
-    # cwd from it. A legacy short-role entry (pre-Task-9) falls back to the
-    # bare-slug formula so its transcript is still found.
-    try:
-        directory = agent_home_for_role_id(role)
-    except ValueError:
-        directory = f"/config/agent-home/{role}"
-    # Task 10: the reduced save_session reads speaker/user provenance from the
-    # entry snapshot itself — no role=/user_peer= to pass here.
-    # save_session is idempotent and removes the entry on a successful retain;
-    # remove() afterwards guarantees the pointer is cleared even when the save
-    # was a no-op (nothing to retain). Both carry the snapshot's sid (#317):
-    # a follow-up turn that re-registered this key mid-save keeps its fresh
-    # session instead of having it retained or its pointer deleted.
-    # #526 deliberately NOT generation-guarded here: the reset's contract
-    # (INV-MEM-006) is to retain-and-drop exactly the conversation the sid
-    # names — a same-sid re-registration IS that conversation, whoever
-    # refreshed the pointer, so removing it is the reset executing its
-    # contract, not the ABA the generation guard exists to stop.
-    await save_session(
-        channel_key, registry, semantic_memory,
-        directory=directory, channel=channel,
-        expected_sid=snapshot.sdk_session_id,
-    )
-    await registry.remove(channel_key, expected_sid=snapshot.sdk_session_id)
+    # Bounded re-derive loop (design r2, Sol S-A2): when the FIRST pass finds
+    # no resumable entry it places no claim, so an in-flight pre-reset turn
+    # joined by the flush-close below may publish a session in that window —
+    # exactly what this reset exists to retire. One more pass picks it up,
+    # and THAT pass claims in its no-await block, so a second materialization
+    # can only be a steered-fresh turn, which must survive.
+    for _pass in (1, 2):
+        # Snapshot + claim with NO await in between.
+        snapshot = snapshot_session_entry(registry.get(channel_key))
+        token = (
+            registry.begin_retirement(channel_key, snapshot.sdk_session_id)
+            if snapshot is not None else None
+        )
+        try:
+            # AR-4 (pooling spec): close any warm SDK client for this key —
+            # disconnect sends stdin EOF, which is what makes the CLI flush
+            # the transcript .jsonl the save below is about to read (SDK
+            # #625). Joins any in-flight pool turn via the entry lock.
+            await registry.notify_reset(channel_key)
+            if snapshot is None:
+                if snapshot_session_entry(registry.get(channel_key)) is None:
+                    return  # genuinely nothing to reset
+                continue  # a pre-reset turn materialized a session; retire it
+            role = snapshot.agent
+            # Task 9: entries now store the canonical role_id; derive the
+            # transcript cwd from it. A legacy short-role entry (pre-Task-9)
+            # falls back to the bare-slug formula.
+            try:
+                directory = agent_home_for_role_id(role)
+            except ValueError:
+                directory = f"/config/agent-home/{role}"
+            # Task 10: the reduced save_session reads speaker/user provenance
+            # from the entry snapshot itself. save_session is idempotent and
+            # removes the entry on a successful retain; remove() afterwards
+            # guarantees the pointer is cleared even when the save was a
+            # no-op. Both carry the snapshot's sid (#317): a follow-up turn
+            # that re-registered this key mid-save keeps its fresh session.
+            # #526 deliberately NOT generation-guarded here: the reset's
+            # contract (INV-MEM-006) is to retain-and-drop exactly the
+            # conversation the sid names.
+            await save_session(
+                channel_key, registry, semantic_memory,
+                directory=directory, channel=channel,
+                expected_sid=snapshot.sdk_session_id,
+            )
+            await registry.remove(
+                channel_key, expected_sid=snapshot.sdk_session_id,
+            )
+            return
+        finally:
+            if token is not None:
+                registry.end_retirement(channel_key, token)

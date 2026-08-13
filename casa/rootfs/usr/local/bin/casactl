@@ -19,6 +19,7 @@ Usage:
     casactl persona diff --role <role-id> --to <ref>
     casactl specialist status <slug>
     casactl explain <correlation_id> [--show-sensitive]
+    casactl memory-wipe --yes
 """
 from __future__ import annotations
 
@@ -153,6 +154,22 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_memory_wipe(args: argparse.Namespace) -> int:
+    """#411: irreversibly wipe long-term memory. Refuses without --yes;
+    prints exactly what will be deleted first so the refusal is informed."""
+    if not args.yes:
+        print(
+            "memory-wipe deletes ALL long-term memory:\n"
+            "  - the shared memory bank (every retained fact and summary)\n"
+            "  - the durable cold-retain retry spool\n"
+            "  - every conversation pointer (dropped WITHOUT saving)\n"
+            "It cannot be undone. Re-run with --yes to proceed.",
+            file=sys.stderr,
+        )
+        return 2
+    return _print_admin_result("/admin/memory/wipe", {"confirm": True})
+
+
 def _cmd_restart_supervised(args: argparse.Namespace) -> int:
     """Direct Supervisor POST - same as the MCP tool's out-of-engagement path."""
     import urllib.request
@@ -227,6 +244,13 @@ def main() -> int:
     explain_p.add_argument("correlation_id")
     explain_p.add_argument("--show-sensitive", action="store_true")
 
+    wipe_p = sub.add_parser(
+        "memory-wipe",
+        help="Irreversibly wipe ALL long-term memory (#411). Requires --yes.",
+    )
+    wipe_p.add_argument("--yes", action="store_true",
+                        help="Actually perform the wipe.")
+
     args = parser.parse_args()
     if args.cmd == "reload":
         return _cmd_reload(args)
@@ -238,6 +262,8 @@ def main() -> int:
         return _cmd_specialist(args)
     if args.cmd == "explain":
         return _cmd_explain(args)
+    if args.cmd == "memory-wipe":
+        return _cmd_memory_wipe(args)
     return 1
 
 
