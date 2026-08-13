@@ -66,11 +66,24 @@ could look one up. The translation therefore classifies by families of code rath
 enumerating them, so a code minted later still reads as something actionable, and an
 unrecognized one degrades to a plain statement rather than leaking. Repeats are suppressed
 by a decaying, in-process memo of the exact line last put in front of each role: any change
-to what the operator would read renders immediately, a role whose issues have resolved is
-re-armed at once, and a delivery that raised releases the line for the next turn. The memo
-records what was *shown*, never that delivery succeeded — no channel reports that
-truthfully — and because it expires, a missed delivery costs one quiet window rather than
-permanent silence.
+to what the operator would read renders immediately, and a role whose issues have resolved
+is re-armed at once.
+
+The memo is released — the line offered again on the very next turn, without waiting out its
+window — whenever the delivery that carried it can be shown to have displayed nothing. That
+was once knowable only from a raise, so a delivery that returned normally after sending
+nothing consumed the line silently; a reconnect makes that reachable mid-turn, and no
+retrieval path exists for an operator to ask what they missed. Channels that carry these
+notices now report delivery explicitly (see `INV-TG-006` in
+[`architecture/telegram.md`](telegram.md)), so both a proven failure and a raise-with-nothing-shown
+release the memo, while a delivery whose head reached the operator does not — repeating a
+line they have already read is the failure in the other direction. A channel that does not
+report keeps the old behavior, deliberately: "cannot report" must not read as "failed", or
+the notice would repeat forever there.
+
+The operator DM is gated the same way, and marks its fingerprints notified only once
+delivery is confirmed. Both surfaces serialize through one lock, so a notice cannot be sent
+twice by two paths that each read the state before either marked it.
 
 **Approval is per call, not per install, and it does not survive a restart.** A protected
 tool call by a resident or specialist consumes a single-use grant bound to a specific

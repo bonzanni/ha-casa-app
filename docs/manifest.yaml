@@ -30,7 +30,11 @@
 
 - doc: doctrine/invariants.md
   kind: generated
-  summary: Every INV-* id, its statement, and the file that defines it.
+  summary: Every INV-* id in families A-M, its statement, and the file that defines it.
+
+- doc: doctrine/invariants-n-z.md
+  kind: generated
+  summary: Every INV-* id in families N-Z, its statement, and the file that defines it.
 
 - doc: reference/operator-options.md
   summary: The option-by-option operator contract — key, env var, consumer, default, restart-vs-reload.
