@@ -111,12 +111,10 @@ existed has none, so it keeps channel-keyed clearance — on Telegram, private �
 finishes.
 
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
-channels retain to the shared bank — a channel that can recall is not thereby able to
-store — and *when* a conversation is retained, reset, or wiped is the retention
-lifecycle: [`architecture/memory-lifecycle.md`](memory-lifecycle.md) owns the freshness
-windows, the save claim-and-guard protocol (INV-MEM-006), the retirement claims that
-steer racing turns off a dying session (INV-MEM-013), and the operator-consented wipe
-(INV-MEM-014).
+channels retain to the shared bank, and *when* a conversation is retained, reset, or
+wiped is the retention lifecycle: [`architecture/memory-lifecycle.md`](memory-lifecycle.md)
+owns the freshness windows, the save guard protocol (INV-MEM-006), the retirement claims
+(INV-MEM-013), and the operator-consented wipe (INV-MEM-014).
 
 **Retention deduplicates.** Retained facts are content-addressed, so the same speaker
 saying the same thing across sessions collapses to one stored document — and agent-side
@@ -265,13 +263,12 @@ for — and the injected block subordinates itself to the doctrine files in as m
 
 What it does not cover: `query_engager` is deliberately unfiltered (an answer to "what
 happened last time" is not injected procedure); a same-epoch lesson that is merely wrong
-survives, tempered only by the subordination line; epochs never expire lessons from the
-bank — a doctrine rollback to a byte-identical earlier state resurrects that epoch's
-lessons, by construction; and the post-provision recheck reads the current sources, not
-the bytes provisioning consumed, so an edit that lands and reverts inside the provisioning
-window can still mislabel — accepted, since it needs two opposing edits to config-synced
-doctrine within milliseconds, and closing it would thread an immutable byte snapshot
-through the whole provisioning path.
+survives, tempered only by the subordination line; epochs never expire lessons — a
+doctrine rollback to byte-identical state resurrects that epoch's lessons, by
+construction; and the recheck reads the current sources, not the bytes provisioning
+consumed, so an edit that lands *and reverts* inside the provisioning window can still
+mislabel — accepted: it needs two opposing edits within milliseconds, and closing it
+would thread an immutable byte snapshot through the whole provisioning path.
 
 ## Failure behavior
 
