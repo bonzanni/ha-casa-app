@@ -207,7 +207,7 @@
     - tests/test_specialist_bundle_journal.py
     - tests/test_system_requirements_installer_tarball.py
   related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md]
-  defines_invariants: [INV-SPEC-001, INV-SPEC-002, INV-SPEC-003, INV-SPEC-004, INV-SPEC-005, INV-SPEC-006, INV-SPEC-007, INV-SPEC-008]
+  defines_invariants: [INV-SPEC-001, INV-SPEC-002, INV-SPEC-003, INV-SPEC-004, INV-SPEC-005, INV-SPEC-006, INV-SPEC-007, INV-SPEC-008, INV-SPEC-009]
   invariant_tests:
     INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
     INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]
@@ -215,8 +215,9 @@
     INV-SPEC-003: [tests/test_specialist_lifecycle_matrix.py::test_upgrade_failure_leaves_the_complete_active_tuple_running, tests/test_specialist_install.py::test_rollback_restores_the_prior_tuple]
     INV-SPEC-004: [tests/test_specialist_materialize.py::test_materialize_operational_files_repeat_call_swaps_atomically_and_gcs_old_version]
     INV-SPEC-005: [tests/test_specialist_consent_receipt.py::test_pin_inv_spec_005_tampered_receipt_loads_as_none]
-    INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_upgrade_strips_stale_plaintext_secret_keys_from_the_carried_snapshot]
+    INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses]
     INV-SPEC-007: [tests/test_system_requirements_installer_tarball.py::test_failed_reinstall_preserves_existing_install, tests/test_system_requirements_installer_tarball.py::test_invalid_install_cmd_shape_checked_before_touching_install]
+    INV-SPEC-009: [tests/test_personality_binding.py::test_verify_instance_tuple_rejects_a_digest_not_derived_from_the_snapshot, tests/test_personality_binding.py::test_atomic_write_refuses_a_mismatched_tuple_as_a_backstop, tests/test_specialist_install.py::test_boot_sweep_tombstones_an_already_sanitized_pre_guard_digest, tests/test_specialist_bundle_journal.py::test_begin_sanitizes_captured_tuple_files]
 
 - doc: architecture/telegram.md
   summary: How Telegram messages become turns — transports, authentication, the per-topic causal log, keyboards, and rendering.

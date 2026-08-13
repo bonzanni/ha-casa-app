@@ -11983,7 +11983,7 @@ def _resolve_local_persona(ref: str):
 
 
 async def _stage_and_report(role_id: str, slot: str, binding) -> dict:
-    from personality_binding import InstanceDir, InstanceTuple
+    from personality_binding import InstanceDir, make_instance_tuple
     import specialist_materialize
 
     # Resolve the bindings root through the SAME seam agent_loader's boot-time
@@ -11997,9 +11997,7 @@ async def _stage_and_report(role_id: str, slot: str, binding) -> dict:
 
     instance_dir = InstanceDir(agent_loader._resident_bindings_root(None) / f"resident-{slot}")
     root = binding.override_source or binding.image_default_root or ""
-    tuple_ = InstanceTuple(
-        root=root, binding=binding, config_snapshot={}, config_digest=binding.effective_config_digest,
-    )
+    tuple_ = make_instance_tuple(root=root, binding=binding, config_snapshot={})
 
     # Round-5 fix (F2b): the resident InstanceDir write shares the
     # personality-instance mutation lock (specialist_materialize.MATERIALIZE_LOCK)

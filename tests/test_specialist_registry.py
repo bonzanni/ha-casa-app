@@ -7,6 +7,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -792,6 +793,71 @@ async def test_one_malformed_installed_tuple_does_not_abort_the_index_load(tmp_p
     assert damaged.last_activation_error
     # The slug stays reserved: a fresh install cannot silently overwrite it.
     assert "damaged" in index.all_collision_slugs()
+
+
+async def test_a_rejected_desired_does_not_take_down_a_healthy_active(tmp_path):
+    """#372 (D7, Terra design r2): active and desired must be loaded
+    INDEPENDENTLY — a tombstoned/pre-guard desired.yaml (e.g. a pending
+    upgrade staged by an older version) must not drop the slug's healthy
+    active generation from the fleet. The instance stays active, with the
+    desired failure surfaced as diagnostic state."""
+    from personality_binding import InstanceDir, InstanceTuple, PRE_GUARD_SENTINEL
+    from specialist_registry import InstalledSpecialistIndex
+    from test_specialist_install import _specialist_binding
+
+    root = tmp_path / "specialists"
+    binding = _specialist_binding("mixed", mode="component-default",
+                                  component_root="casa/mixed@0.1.0#sha256:" + "a" * 64)
+    d = InstanceDir(root / "mixed")
+    d.stage_desired(InstanceTuple(
+        root="casa/mixed@0.1.0#sha256:" + "a" * 64, binding=binding,
+        config_snapshot={}, config_digest=binding.effective_config_digest,
+    ))
+    d.commit_desired_to_active()
+    # A tombstoned pending desired alongside the healthy active.
+    raw = yaml.safe_load((root / "mixed" / "active.yaml").read_text(encoding="utf-8"))
+    raw["config_digest"] = PRE_GUARD_SENTINEL
+    raw["binding"]["effective_config_digest"] = PRE_GUARD_SENTINEL
+    (root / "mixed" / "desired.yaml").write_text(
+        yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    index = InstalledSpecialistIndex(specialists_dir=str(root))
+    index.load()
+
+    instance = index.get_instance("mixed")
+    assert instance is not None
+    assert instance.state == "active"
+    assert instance.active is not None
+    assert instance.desired is None
+    assert instance.last_activation_error  # the desired failure is surfaced
+    assert "secret-digest guard" in instance.last_activation_error
+
+
+async def test_a_rejected_active_still_isolates_the_slug_as_error(tmp_path):
+    """#372 (D7 companion): the active side keeps #346 semantics — a
+    pre-guard active isolates the slug as state="error" (slug reserved)
+    regardless of what desired holds."""
+    from personality_binding import PRE_GUARD_SENTINEL
+    from specialist_registry import InstalledSpecialistIndex
+
+    root = tmp_path / "specialists"
+    (root / "legacy").mkdir(parents=True)
+    (root / "legacy" / "active.yaml").write_text(
+        yaml.safe_dump({
+            "api_version": "casa.instance-tuple/v1",
+            "root": "casa/legacy@0.1.0#sha256:" + "b" * 64,
+            "binding": {"effective_config_digest": PRE_GUARD_SENTINEL},
+            "config_snapshot": {}, "config_digest": PRE_GUARD_SENTINEL,
+        }, sort_keys=False), encoding="utf-8")
+
+    index = InstalledSpecialistIndex(specialists_dir=str(root))
+    index.load()
+
+    instance = index.get_instance("legacy")
+    assert instance is not None
+    assert instance.state == "error"
+    assert "secret-digest guard" in (instance.last_activation_error or "")
+    assert "legacy" in index.all_collision_slugs()
 
 
 # ---------------------------------------------------------------------------

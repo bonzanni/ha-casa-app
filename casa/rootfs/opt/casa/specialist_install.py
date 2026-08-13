@@ -1625,8 +1625,9 @@ def commit_specialist_install(
     every subsequent call, so this slug self-heals on the very next
     reconcile with no operator action required."""
     from personality_binding import (
-        InstanceDir, InstanceTuple, check_persona_requirements,
-        compute_effective_config_digest, materialize_component_default_binding,
+        InstanceDir, check_persona_requirements,
+        compute_effective_config_digest, make_instance_tuple,
+        materialize_component_default_binding,
     )
     from persona_pack import load_persona_pack
     from prompt_compiler import compile_prompt_bundle
@@ -1856,9 +1857,14 @@ def commit_specialist_install(
         # locked step as the tuple rotation; None (legacy) touches no sidecar.
         def _stage_and_commit(sidecar_doc: "dict | None") -> "SpecialistInstance":
             if not satisfied:
+                # #372 (D0): the placeholder binding is built over the SAME
+                # partial merged_config that is persisted as the snapshot, so
+                # the tuple's digest equation holds for pending state too.
                 placeholder_binding = materialize_component_default_binding(
                     role=role, persona=persona, component_root=root,
                     dependency_digests=dependency_digests,
+                    effective_config_digest=compute_effective_config_digest(
+                        dict(merged_config)),
                 )
                 with specialist_materialize.MATERIALIZE_LOCK:
                     _refuse_if_active_present(instance_dir, slug=inspection.slug, root=root)
@@ -1867,10 +1873,9 @@ def commit_specialist_install(
                         # must never exist without its receipt marker.
                         _record_pending_receipt(
                             specialists_dir / inspection.slug, receipt.receipt_id)
-                    instance_dir.stage_desired(InstanceTuple(
+                    instance_dir.stage_desired(make_instance_tuple(
                         root=root, binding=placeholder_binding,
                         config_snapshot=dict(merged_config),
-                        config_digest=placeholder_binding.effective_config_digest,
                     ))
                     if sidecar_doc is not None:
                         instance_dir.stage_desired_owned_plugins(sidecar_doc)
@@ -1882,9 +1887,8 @@ def commit_specialist_install(
             last_activation_error: str | None = None
             with specialist_materialize.MATERIALIZE_LOCK:
                 _refuse_if_active_present(instance_dir, slug=inspection.slug, root=root)
-                instance_dir.stage_desired(InstanceTuple(
+                instance_dir.stage_desired(make_instance_tuple(
                     root=root, binding=binding, config_snapshot=dict(merged_config),
-                    config_digest=effective_config_digest,
                 ))
                 if sidecar_doc is not None:
                     instance_dir.stage_desired_owned_plugins(sidecar_doc)
@@ -1937,7 +1941,11 @@ def commit_specialist_install(
             rollback_txn = BundleTxn(
                 journal_path=journal, slug=inspection.slug,
                 before_entries=before_owned, before_tuple_files=before_tuple_files,
-                ack_records=ack_records, registry_path=registry_path,
+                ack_records=ack_records, op="install",
+                target_root=component_root_string(
+                    component_id=inspection.component_id, version=inspection.version,
+                    component_checksum=inspection.root_digest),
+                registry_path=registry_path,
                 specialists_dir=specialists_dir, acks_path=acks.path,
                 agents_specialists_dir=agents_specialists_dir)
             try:
@@ -1967,6 +1975,10 @@ def commit_specialist_install(
                     before_entries=before_entries, before_tuple_files=before_tuple_files,
                     ack_records=ack_records, removed_artifact_ids=removed,
                     new_artifact_ids=tuple(sorted(new_artifact_ids)),
+                    op="install",
+                    target_root=component_root_string(
+                        component_id=inspection.component_id, version=inspection.version,
+                        component_checksum=inspection.root_digest),
                     registry_path=registry_path, specialists_dir=specialists_dir,
                     acks_path=acks.path,
                     agents_specialists_dir=agents_specialists_dir)
@@ -2159,6 +2171,10 @@ def upgrade_specialist(
         rollback_txn = BundleTxn(
             journal_path=journal, slug=slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
+            op="upgrade",
+            target_root=component_root_string(
+                component_id=inspection.component_id, version=inspection.version,
+                component_checksum=inspection.root_digest),
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
@@ -2196,6 +2212,10 @@ def upgrade_specialist(
                 before_tuple_files=before_tuple_files, ack_records=ack_records,
                 removed_artifact_ids=removed,
                 new_artifact_ids=tuple(sorted(new_artifact_ids)),
+                op="upgrade",
+                target_root=component_root_string(
+                    component_id=inspection.component_id, version=inspection.version,
+                    component_checksum=inspection.root_digest),
                 registry_path=registry_path, specialists_dir=specialists_dir,
                 acks_path=acks.path,
                 agents_specialists_dir=agents_specialists_dir)
@@ -2245,8 +2265,9 @@ def _upgrade_core(
     check below; this function never publishes/registers plugins itself
     (upgrade_specialist's bundle branch does that after this returns)."""
     from personality_binding import (
-        InstanceDir, InstanceTuple, check_persona_requirements, compute_effective_config_digest,
-        materialize_component_default_binding, materialize_override_binding,
+        InstanceDir, check_persona_requirements, compute_effective_config_digest,
+        make_instance_tuple, materialize_component_default_binding,
+        materialize_override_binding,
     )
     from persona_pack import load_persona_pack
     from prompt_compiler import compile_prompt_bundle
@@ -2274,7 +2295,12 @@ def _upgrade_core(
         raise SpecialistInstallError("consent_missing", "no recorded operator approval for the upgrade")
 
     instance_dir = InstanceDir(specialists_dir / slug)
-    active_before = instance_dir.active()
+    try:
+        active_before = instance_dir.active()
+    except ValueError as exc:
+        # #372: a pre-guard (or otherwise unverifiable) active is a typed
+        # refusal, not an escaped ValueError — recovery is uninstall+reinstall.
+        raise SpecialistInstallError("active_unreadable", str(exc)) from exc
     if active_before is None:
         raise SpecialistInstallError("no_active_tuple", f"{slug!r} has no active install to upgrade")
 
@@ -2453,8 +2479,12 @@ def _upgrade_core(
             dependency_digests=dependency_digests, effective_config_digest=effective_config_digest)
 
     if not satisfied:
+        # #372 (D0): the placeholder carries the digest of the NEW merged
+        # snapshot it persists — never the prior active's digest, which may
+        # predate the secret-digest guard.
         placeholder = _build_upgrade_binding(
-            effective_config_digest=active_before.binding.effective_config_digest)
+            effective_config_digest=compute_effective_config_digest(
+                dict(merged_config)))
         # F1 (round 4): the placeholder stage_desired is an InstanceDir write —
         # hold MATERIALIZE_LOCK. F2: `active_before` was read before the lock;
         # re-read inside it and refuse if a concurrent uninstall removed the
@@ -2466,9 +2496,8 @@ def _upgrade_core(
                 # Marker BEFORE the stage (Sol r7-2): desired.yaml must
                 # never exist without its receipt marker.
                 _record_pending_receipt(specialists_dir / slug, receipt.receipt_id)
-            instance_dir.stage_desired(InstanceTuple(
-                root=root, binding=placeholder, config_snapshot=merged_config,
-                config_digest=placeholder.effective_config_digest))
+            instance_dir.stage_desired(make_instance_tuple(
+                root=root, binding=placeholder, config_snapshot=merged_config))
         note = f"missing required config/secret: {missing}"
         if dropped_keys:
             note += f"; dropped_config_keys={dropped_keys}"
@@ -2487,9 +2516,13 @@ def _upgrade_core(
         check_persona_requirements(role.normalized, persona)
     except ValueError as exc:
         raise SpecialistInstallError("persona_incompatible", str(exc)) from exc
+    # #372: binding construction is equation-safe (pure digest arithmetic over
+    # schema-known string config) — build it OUTSIDE the try so the compile
+    # error arm below can stage an honest error record without re-running a
+    # step that could itself raise inside the except.
+    effective_config_digest = compute_effective_config_digest(merged_config)
+    binding = _build_upgrade_binding(effective_config_digest=effective_config_digest)
     try:
-        effective_config_digest = compute_effective_config_digest(merged_config)
-        binding = _build_upgrade_binding(effective_config_digest=effective_config_digest)
         compile_prompt_bundle(
             role=role, persona=persona, binding=binding,
             platform_frame=(Path(__file__).parent / "defaults" / "personality"
@@ -2506,9 +2539,13 @@ def _upgrade_core(
         # refusal supersedes the (now-moot) compile error for a vanished slug.
         with specialist_materialize.MATERIALIZE_LOCK:
             _require_active_unchanged(instance_dir, active_before, slug=slug)
-            instance_dir.stage_desired(InstanceTuple(
-                root=root, binding=active_before.binding, config_snapshot=merged_config,
-                config_digest=active_before.binding.effective_config_digest))
+            # #372 (Sol design r2): stage the error record over the NEW merged
+            # snapshot with the binding computed over that same snapshot — never
+            # the prior active's binding, whose digest belongs to a different
+            # (possibly pre-guard) mapping. A crash before discard_desired()
+            # must not leave a mismatched desired.yaml behind.
+            instance_dir.stage_desired(make_instance_tuple(
+                root=root, binding=binding, config_snapshot=merged_config))
             instance_dir.discard_desired(reason=str(exc))
         return SpecialistInstance(
             slug=slug, stable_agent_id=f"specialist:{slug}", state="error",
@@ -2531,8 +2568,8 @@ def _upgrade_core(
         # concurrent upgrade/rollback committed a different active — never
         # commit this upgrade over a concurrent winner or recreate a removed dir.
         _require_active_unchanged(instance_dir, active_before, slug=slug)
-        instance_dir.stage_desired(InstanceTuple(
-            root=root, binding=binding, config_snapshot=merged_config, config_digest=effective_config_digest))
+        instance_dir.stage_desired(make_instance_tuple(
+            root=root, binding=binding, config_snapshot=merged_config))
         committed = instance_dir.commit_desired_to_active()  # new binding digest -> new session epoch
         _clear_pending_receipt(specialists_dir / slug)
         # #337 (Sol r1): the commit just rotated the OLD active — possibly
@@ -2567,27 +2604,76 @@ def _sanitize_prior_snapshot(prior_path: Path, *, secret_names: "set[str]", slug
     strips again as defense-in-depth)."""
     if not secret_names:
         return
-    from personality_binding import (
-        InstanceTuple, atomic_write_instance_tuple, load_instance_tuple,
-    )
+    from atomic_io import atomic_write_text
+    from personality_binding import PRE_GUARD_SENTINEL
     try:
-        prior = load_instance_tuple(prior_path)
-        if prior is None:
+        # #372 (D5b): raw rewrite, not a tuple round-trip — when the strip
+        # changes the snapshot, the retained digests were computed over a
+        # mapping that contained a secret-classified value (the plain→secret
+        # reclassification makes this reachable for post-guard priors too).
+        # Strip the plaintext AND sentinel both digest fields in the same
+        # atomic write: the prior becomes a tombstone rollback refuses
+        # (legacy_prior) instead of an oracle the config git repo commits.
+        if not prior_path.is_file():
             return
-        cleaned = {k: v for k, v in dict(prior.config_snapshot).items()
-                   if k not in secret_names}
-        if len(cleaned) == len(prior.config_snapshot):
+        payload = yaml.safe_load(prior_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
             return
-        atomic_write_instance_tuple(prior_path, InstanceTuple(
-            root=prior.root, binding=prior.binding,
-            config_snapshot=cleaned, config_digest=prior.config_digest))
+        snapshot = payload.get("config_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            return
+        cleaned = {k: v for k, v in snapshot.items() if k not in secret_names}
+        if len(cleaned) == len(snapshot):
+            return
+        payload["config_snapshot"] = cleaned
+        payload["config_digest"] = PRE_GUARD_SENTINEL
+        binding = payload.get("binding")
+        if isinstance(binding, dict):
+            binding["effective_config_digest"] = PRE_GUARD_SENTINEL
+        atomic_write_text(
+            prior_path, yaml.safe_dump(payload, sort_keys=False), mode=0o600)
         logger.info(
-            "specialist upgrade %r: stripped legacy plaintext secret key(s) "
-            "from active.prior.yaml (#337)", slug)
+            "specialist upgrade %r: stripped secret-classified key(s) from "
+            "active.prior.yaml and tombstoned its digests (#337/#372)", slug)
     except Exception:  # noqa: BLE001 — post-commit, best-effort
         logger.warning(
             "specialist %r: prior-snapshot sanitization failed (best-effort; "
             "the committed active is unaffected)", slug, exc_info=True)
+
+
+def _pre_guard_prior_reason(prior_path: Path) -> "str | None":
+    """#372 (D5): classify a retained prior WITHOUT the strict loader. Returns
+    a human-readable reason when the file bears the pre-guard tombstone
+    sentinel or its config_digest is not the digest of its persisted snapshot
+    — the two shapes the boot scrub and the upgrade-time sanitizer produce, or
+    that v0.137's digest-preserving sanitization left behind. None means the
+    file is absent, unparseable (the strict loader owns that error), or passes
+    the digest equation."""
+    from personality_binding import PRE_GUARD_SENTINEL, compute_effective_config_digest
+    if not prior_path.is_file():
+        return None
+    try:
+        payload = yaml.safe_load(prior_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — unparseable: strict loader owns it
+        return None
+    if not isinstance(payload, dict):
+        return None
+    binding = payload.get("binding")
+    if payload.get("config_digest") == PRE_GUARD_SENTINEL or (
+        isinstance(binding, dict)
+        and binding.get("effective_config_digest") == PRE_GUARD_SENTINEL
+    ):
+        return "its digests were tombstoned by sanitization"
+    snapshot = payload.get("config_snapshot") or {}
+    if not isinstance(snapshot, dict):
+        return "its config_snapshot is not a mapping"
+    try:
+        expected = compute_effective_config_digest(snapshot)
+    except Exception:  # noqa: BLE001 — undigestable snapshot: fail closed
+        return "its config_snapshot cannot be canonically digested"
+    if payload.get("config_digest") != expected:
+        return "its config_digest was not computed over its persisted snapshot"
+    return None
 
 
 def _declared_secret_names_for_root(
@@ -2647,10 +2733,55 @@ def sanitize_specialist_snapshots(
     Works on the raw YAML payload (so ``desired.error.yaml``'s extra
     ``_error_reason`` and a pending ``.rollback-tmp`` are handled uniformly)
     and strips each snapshot against ITS OWN component root's declared
-    ``secret_names``. Everything else — binding, digest, error reason — is
-    preserved byte-compatibly. Best-effort per file; returns the number of
-    files cleaned."""
+    ``secret_names``.
+
+    #372 (D3): after the strip, every file is checked against the digest
+    equation — ``config_digest == digest(config_snapshot)``. A mismatch means
+    the digest was computed over a mapping that no longer equals the persisted
+    snapshot (the pre-guard oracle #372 closes), whether or not anything was
+    just stripped: residue files (``desired.error.yaml``,
+    ``active.yaml.rollback-tmp``) are DELETED; tuple files get both digest
+    fields tombstoned with ``PRE_GUARD_SENTINEL`` so the strict loader raises
+    the typed #372 error and the index isolates the slug. An unparseable
+    tuple file is replaced by a minimal sentinel tombstone (fail closed);
+    unparseable residue is deleted. Tombstoning ``desired.yaml`` also removes
+    the slug's pending-receipt marker — the configure re-commit can never
+    consume it, and a present marker would pin the receipt and its staging
+    trees through the boot age sweep forever. Best-effort per file; returns
+    the number of files cleaned."""
     from atomic_io import atomic_write_text
+    from personality_binding import PRE_GUARD_SENTINEL, compute_effective_config_digest
+
+    _RESIDUE_FILES = ("desired.error.yaml", "active.yaml.rollback-tmp")
+
+    def _digest_mismatch(payload: dict) -> bool:
+        if payload.get("config_digest") == PRE_GUARD_SENTINEL:
+            return False  # already tombstoned — idempotent
+        snapshot = payload.get("config_snapshot") or {}
+        if not isinstance(snapshot, dict):
+            return True
+        try:
+            return payload.get("config_digest") != compute_effective_config_digest(snapshot)
+        except Exception:  # noqa: BLE001 — undigestable snapshot: fail closed
+            return True
+
+    def _tombstone(path: Path, payload: dict, slug: str, filename: str) -> None:
+        payload["config_digest"] = PRE_GUARD_SENTINEL
+        binding = payload.get("binding")
+        if isinstance(binding, dict):
+            binding["effective_config_digest"] = PRE_GUARD_SENTINEL
+        atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False), mode=0o600)
+        logger.warning(
+            "specialist %r: %s carries a digest not derived from its "
+            "persisted snapshot — tombstoned (#372); uninstall and reinstall",
+            slug, filename)
+        if filename == "desired.yaml":
+            marker = path.parent / "pending-receipt.json"
+            if marker.is_file():
+                marker.unlink()
+                logger.info(
+                    "specialist %r: released the pending-receipt marker of "
+                    "the tombstoned desired tuple (#372)", slug)
 
     cleaned = 0
     if not specialists_dir.is_dir():
@@ -2661,55 +2792,96 @@ def sanitize_specialist_snapshots(
     for slug_dir in sorted(specialists_dir.iterdir()):
         if not slug_dir.is_dir() or slug_dir.name in {"store", ".bundle-staging"}:
             continue
+        # #372 (D8): a crash-orphaned atomic-write temporary
+        # (`<tuple>.yaml.tmp`) is read by nothing and can hold a complete
+        # pre-guard tuple — delete it before the config-git snapshot.
+        try:
+            for orphan in sorted(slug_dir.glob("*.yaml.tmp")):
+                orphan.unlink()
+                cleaned += 1
+                logger.warning(
+                    "specialist %r: deleted orphan tuple write-temporary %s "
+                    "(#372)", slug_dir.name, orphan.name)
+        except OSError:
+            logger.exception(
+                "specialist %r: orphan-temporary sweep failed", slug_dir.name)
         for filename in _TUPLE_SNAPSHOT_FILES:
             path = slug_dir / filename
             if not path.is_file():
                 continue
             try:
-                payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+                try:
+                    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+                except yaml.YAMLError:
+                    payload = None
                 if not isinstance(payload, dict):
+                    # #372 (D3a): unclassifiable payload — fail closed.
+                    if filename in _RESIDUE_FILES:
+                        path.unlink()
+                        logger.warning(
+                            "specialist %r: deleted unparseable residue %s (#372)",
+                            slug_dir.name, filename)
+                    else:
+                        _tombstone(path, {
+                            "api_version": "casa.instance-tuple/v1",
+                            "config_snapshot": {},
+                        }, slug_dir.name, filename)
+                    cleaned += 1
                     continue
+                mutated = False
                 snapshot = payload.get("config_snapshot")
                 root = payload.get("root")
                 if snapshot and not isinstance(snapshot, dict):
                     # Sol r4 family: a truthy non-mapping snapshot cannot be
                     # classified key-by-key — replace it outright.
                     payload["config_snapshot"] = {}
-                    atomic_write_text(
-                        path, yaml.safe_dump(payload, sort_keys=False), mode=0o600)
-                    cleaned += 1
+                    mutated = True
                     logger.info(
                         "specialist %r: replaced a non-mapping config_snapshot "
                         "in %s (#337)", slug_dir.name, filename)
+                elif isinstance(snapshot, dict) and snapshot:
+                    if not isinstance(root, str) or not root:
+                        # Sol r4: an unusable root cannot be classified — scrub
+                        # everything rather than skipping into the git snapshot.
+                        secret_names: "set[str] | None" = set(snapshot)
+                    else:
+                        if root not in schema_cache:
+                            schema_cache[root] = _declared_secret_names_for_root(
+                                root, specialists_dir=specialists_dir)
+                        secret_names = schema_cache[root]
+                        if secret_names is None:
+                            # Sol r3: unloadable schema — scrub EVERY key rather
+                            # than silently skipping; the config-git snapshot follows.
+                            secret_names = set(snapshot)
+                    # Sol r5: str() before sorting — mixed-type mapping keys must
+                    # not TypeError out of a fail-closed scrub into the skip arm.
+                    stripped = sorted(str(k) for k in snapshot if k in secret_names)
+                    if stripped:
+                        payload["config_snapshot"] = {
+                            k: v for k, v in snapshot.items() if k not in secret_names}
+                        mutated = True
+                        logger.info(
+                            "specialist %r: scrubbed legacy plaintext secret key(s) %s "
+                            "from %s (#337)", slug_dir.name, stripped, filename)
+                # #372 (D3b): the digest equation is the detector — a strip
+                # above ALWAYS breaks it (the digest covered the pre-strip
+                # mapping), and an already-sanitized pre-guard file breaks it
+                # with nothing left to strip.
+                if _digest_mismatch(payload):
+                    if filename in _RESIDUE_FILES:
+                        path.unlink()
+                        logger.warning(
+                            "specialist %r: deleted residue %s carrying a "
+                            "digest not derived from its snapshot (#372)",
+                            slug_dir.name, filename)
+                    else:
+                        _tombstone(path, payload, slug_dir.name, filename)
+                    cleaned += 1
                     continue
-                if not isinstance(snapshot, dict) or not snapshot:
-                    continue
-                if not isinstance(root, str) or not root:
-                    # Sol r4: an unusable root cannot be classified — scrub
-                    # everything rather than skipping into the git snapshot.
-                    secret_names: "set[str] | None" = set(snapshot)
-                else:
-                    if root not in schema_cache:
-                        schema_cache[root] = _declared_secret_names_for_root(
-                            root, specialists_dir=specialists_dir)
-                    secret_names = schema_cache[root]
-                    if secret_names is None:
-                        # Sol r3: unloadable schema — scrub EVERY key rather
-                        # than silently skipping; the config-git snapshot follows.
-                        secret_names = set(snapshot)
-                # Sol r5: str() before sorting — mixed-type mapping keys must
-                # not TypeError out of a fail-closed scrub into the skip arm.
-                stripped = sorted(str(k) for k in snapshot if k in secret_names)
-                if not stripped:
-                    continue
-                payload["config_snapshot"] = {
-                    k: v for k, v in snapshot.items() if k not in secret_names}
-                atomic_write_text(
-                    path, yaml.safe_dump(payload, sort_keys=False), mode=0o600)
-                cleaned += 1
-                logger.info(
-                    "specialist %r: scrubbed legacy plaintext secret key(s) %s "
-                    "from %s (#337)", slug_dir.name, stripped, filename)
+                if mutated:
+                    atomic_write_text(
+                        path, yaml.safe_dump(payload, sort_keys=False), mode=0o600)
+                    cleaned += 1
             except Exception:  # noqa: BLE001 — best-effort per file
                 logger.warning(
                     "specialist %r: snapshot scrub of %s failed",
@@ -2830,7 +3002,7 @@ def rollback_specialist(
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
-        registry_path=registry_path, specialists_dir=specialists_dir,
+        op="rollback", registry_path=registry_path, specialists_dir=specialists_dir,
         acks_path=acks.path,
         agents_specialists_dir=agents_specialists_dir)
     try:
@@ -2853,7 +3025,7 @@ def rollback_specialist(
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             removed_artifact_ids=removed,
             new_artifact_ids=tuple(sorted(prior_ids)),
-            registry_path=registry_path, specialists_dir=specialists_dir,
+            op="rollback", registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
     except BaseException:
@@ -2889,6 +3061,17 @@ def _rollback_core(
 
     instance_dir = InstanceDir(specialists_dir / slug)
     prior_path = specialists_dir / slug / "active.prior.yaml"
+    # #372 (D5): classify the RAW prior before the strict loader touches it —
+    # a sentineled or equation-violating prior must surface as a typed
+    # legacy_prior refusal (active untouched; the rollback target requires a
+    # reinstall), never as an escaped ValueError.
+    legacy_reason = _pre_guard_prior_reason(prior_path)
+    if legacy_reason is not None:
+        raise SpecialistInstallError(
+            "legacy_prior",
+            f"{slug!r}: retained prior tuple predates the secret-digest guard "
+            f"(#372): {legacy_reason}; the current active is untouched — "
+            "reinstall to obtain a rollback target")
     prior = load_instance_tuple(prior_path)
     if prior is None:
         raise SpecialistInstallError("no_prior_tuple", f"{slug!r} has no retained prior tuple")
@@ -2949,20 +3132,20 @@ def _rollback_core(
     except ValueError as exc:
         raise SpecialistInstallError("compile_failed", str(exc)) from exc
 
-    # #337 (Sol r1, defense-in-depth): a pre-#337 prior can still carry a
-    # secret's plaintext in its config_snapshot — never restore it. Strip
-    # against the prior component's own secret_names declaration.
+    # #337/#372 (D5): a pre-v0.137 prior can carry a secret's plaintext with a
+    # digest VALIDLY computed over that secret-bearing mapping (the equation
+    # holds, so the raw classification above does not catch it). Restoring it
+    # would republish the plaintext; stripping it would persist a digest not
+    # derived from the stripped snapshot (the write backstop refuses). The
+    # only correct disposition is a typed refusal.
     _prior_secret_names = set(prior_component.config_schema.get("secret_names", []) or [])
-    _stripped = sorted(k for k in prior.config_snapshot if k in _prior_secret_names)
-    if _stripped:
-        logger.info(
-            "specialist rollback %r: stripped legacy plaintext secret key(s) "
-            "%s from the restored snapshot (#337)", slug, _stripped)
-        prior = InstanceTuple(
-            root=prior.root, binding=prior.binding,
-            config_snapshot={k: v for k, v in dict(prior.config_snapshot).items()
-                             if k not in _prior_secret_names},
-            config_digest=prior.config_digest)
+    _present = sorted(k for k in prior.config_snapshot if k in _prior_secret_names)
+    if _present:
+        raise SpecialistInstallError(
+            "legacy_prior",
+            f"{slug!r}: retained prior tuple carries secret-classified key(s) "
+            f"{_present} from before the secret-digest guard (#372); the "
+            "current active is untouched — reinstall to obtain a rollback target")
 
     # Commit FIRST, same reordering as commit_specialist_install/
     # upgrade_specialist — `prior` is a previously-active, already-validated
@@ -3092,7 +3275,7 @@ def uninstall_specialist(
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
-        registry_path=registry_path, specialists_dir=specialists_dir,
+        op="uninstall", registry_path=registry_path, specialists_dir=specialists_dir,
         acks_path=acks.path,
         agents_specialists_dir=agents_specialists_dir)
     try:
@@ -3109,7 +3292,7 @@ def uninstall_specialist(
             journal_path=journal, slug=slug, before_entries=before_entries,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             removed_artifact_ids=all_ids, new_artifact_ids=(),
-            registry_path=registry_path, specialists_dir=specialists_dir,
+            op="uninstall", registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
     except BaseException:

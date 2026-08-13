@@ -479,18 +479,22 @@ class InstalledSpecialistIndex:
                     continue
                 slug = entry.name
                 instance_dir = InstanceDir(entry)
+                # #346 + #372 (D7): active and desired are loaded
+                # INDEPENDENTLY. A damaged/tombstoned ACTIVE isolates the slug
+                # as state="error" (keeping it in the index reserves the slug —
+                # a fresh install cannot silently overwrite a damaged one, and
+                # the error is surfaced to admin/inspection paths). A damaged
+                # desired alongside a HEALTHY active must not take the running
+                # generation out of the fleet: the instance stays active and
+                # the desired failure is surfaced as diagnostic state.
+                _tuple_errors = (ValueError, OSError, yaml.YAMLError,
+                                 jsonschema.ValidationError)
+                desired_error: str | None = None
                 try:
-                    active, desired = instance_dir.active(), instance_dir.desired()
-                except (ValueError, OSError, yaml.YAMLError,
-                        jsonschema.ValidationError) as exc:
-                    # #346: a single damaged tuple file (bad YAML, schema
-                    # violation, tampered digest) must not abort the whole
-                    # boot-time scan. Isolate the slug as state="error" —
-                    # keeping it in the index reserves the slug (a fresh
-                    # install cannot silently overwrite a damaged one) and
-                    # surfaces the error to admin/inspection paths.
+                    active = instance_dir.active()
+                except _tuple_errors as exc:
                     logger.error(
-                        "installed specialist %r: unreadable instance tuple "
+                        "installed specialist %r: unreadable active tuple "
                         "(%s); isolated as state=error", slug, exc,
                     )
                     instances[slug] = SpecialistInstance(
@@ -499,6 +503,30 @@ class InstalledSpecialistIndex:
                         last_activation_error=str(exc),
                     )
                     continue
+                try:
+                    desired = instance_dir.desired()
+                except _tuple_errors as exc:
+                    desired = None
+                    desired_error = str(exc)
+                    if active is None:
+                        # No healthy generation at all: same isolation as a
+                        # damaged active.
+                        logger.error(
+                            "installed specialist %r: unreadable desired tuple "
+                            "with no active (%s); isolated as state=error",
+                            slug, exc,
+                        )
+                        instances[slug] = SpecialistInstance(
+                            slug=slug, stable_agent_id=f"specialist:{slug}",
+                            state="error", active=None, desired=None,
+                            last_activation_error=desired_error,
+                        )
+                        continue
+                    logger.warning(
+                        "installed specialist %r: unreadable desired tuple "
+                        "(%s); the healthy active generation stays loaded",
+                        slug, exc,
+                    )
                 if active is None and desired is None:
                     continue
                 # Two states only: the both-None case `continue`d above, so
@@ -511,7 +539,8 @@ class InstalledSpecialistIndex:
                 )
                 instances[slug] = SpecialistInstance(
                     slug=slug, stable_agent_id=f"specialist:{slug}", state=state,
-                    active=active, desired=desired, last_activation_error=None,
+                    active=active, desired=desired,
+                    last_activation_error=desired_error,
                 )
         self._instances = instances
 

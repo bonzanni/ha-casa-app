@@ -250,14 +250,69 @@ class InstanceTuple:
     config_digest: str
 
 
+# #372: the value a boot-time scrub writes over a digest that was computed
+# over a secret-bearing config mapping. Deliberately fails the binding
+# schema's digest pattern — a tombstoned tuple must never verify — and is
+# recognized by the loaders BEFORE schema validation so the operator sees
+# the real cause instead of an opaque pattern error.
+PRE_GUARD_SENTINEL = "pre-guard:removed"
+
+_PRE_GUARD_MESSAGE = (
+    "instance tuple predates the secret-digest guard (#372) and was "
+    "tombstoned; uninstall and reinstall this specialist"
+)
+
+
+def _raise_if_pre_guard_tombstone(raw: object) -> None:
+    if not isinstance(raw, dict):
+        return
+    binding = raw.get("binding")
+    if raw.get("config_digest") == PRE_GUARD_SENTINEL or (
+        isinstance(binding, dict)
+        and binding.get("effective_config_digest") == PRE_GUARD_SENTINEL
+    ):
+        raise ValueError(_PRE_GUARD_MESSAGE)
+
+
 def verify_instance_tuple(raw: dict) -> InstanceTuple:
+    _raise_if_pre_guard_tombstone(raw)
     binding = verify_binding_record(raw["binding"])
     config_digest = raw["config_digest"]
     if config_digest != binding.effective_config_digest:
         raise ValueError("instance tuple config_digest does not match its binding's effective_config_digest")
+    snapshot = raw.get("config_snapshot") or {}
+    # #372: the digest must be DERIVED from the persisted (secret-free)
+    # snapshot, not merely agree with the binding — a pre-guard digest that
+    # survived sanitization satisfies the binding equality but not this.
+    if config_digest != compute_effective_config_digest(dict(snapshot)):
+        raise ValueError(
+            "instance tuple config_digest is not the digest of its persisted "
+            "config_snapshot (#372: predates the secret-digest guard, or the "
+            "writer is defective)"
+        )
     return InstanceTuple(
         root=raw["root"], binding=binding,
-        config_snapshot=raw.get("config_snapshot") or {}, config_digest=config_digest,
+        config_snapshot=snapshot, config_digest=config_digest,
+    )
+
+
+def make_instance_tuple(
+    *, root: str, binding: BindingRecord, config_snapshot: Mapping[str, object],
+) -> InstanceTuple:
+    """#372: the ONE construction path for tuples that are going to be
+    persisted. config_digest is always DERIVED from the snapshot — writers
+    cannot choose it — and a binding whose effective_config_digest disagrees
+    is refused here, before anything reaches disk."""
+    config_digest = compute_effective_config_digest(dict(config_snapshot))
+    if binding.effective_config_digest != config_digest:
+        raise ValueError(
+            "binding effective_config_digest was not computed over this "
+            "config_snapshot (#372: build the binding from the same sanitized "
+            "mapping that is being persisted)"
+        )
+    return InstanceTuple(
+        root=root, binding=binding,
+        config_snapshot=dict(config_snapshot), config_digest=config_digest,
     )
 
 
@@ -273,6 +328,13 @@ def load_instance_tuple(path: Path) -> InstanceTuple | None:
     if not path.exists():
         return None
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        # #372: before schema validation — the sentinel deliberately fails the
+        # digest pattern, and the typed message must win over the opaque
+        # jsonschema error.
+        _raise_if_pre_guard_tombstone(raw)
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
     schema = json.loads((_SCHEMA_DIR / "instance-tuple.v1.json").read_text(encoding="utf-8"))
     jsonschema.validate(raw, schema)
     try:
@@ -282,6 +344,21 @@ def load_instance_tuple(path: Path) -> InstanceTuple | None:
 
 
 def atomic_write_instance_tuple(path: Path, tuple_: InstanceTuple) -> None:
+    # #372 backstop at the write primitive: even a caller that bypassed
+    # make_instance_tuple cannot persist a digest not derived from the
+    # snapshot it is persisting — in EITHER digest field (Sol diff r1: a
+    # split-digest tuple would otherwise park the oracle in
+    # binding.effective_config_digest while the top-level field looks honest).
+    if tuple_.config_digest != compute_effective_config_digest(dict(tuple_.config_snapshot)):
+        raise ValueError(
+            "refusing to persist an instance tuple whose config_digest is not "
+            "the digest of its config_snapshot (#372)"
+        )
+    if tuple_.binding.effective_config_digest != tuple_.config_digest:
+        raise ValueError(
+            "refusing to persist an instance tuple whose binding "
+            "effective_config_digest disagrees with its config_digest (#372)"
+        )
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = yaml.safe_dump(_raw_from_tuple(tuple_), sort_keys=False)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -779,9 +856,8 @@ def reconcile_resident_binding(
                     instance_dir.discard_desired(reason="no-op: candidate matches the already-active binding")
                 return active
 
-            candidate_tuple = InstanceTuple(
+            candidate_tuple = make_instance_tuple(
                 root=root, binding=candidate_binding, config_snapshot={},
-                config_digest=candidate_binding.effective_config_digest,
             )
             check_persona_requirements(role.normalized, persona)
             # #339: the candidate must PROVE it loads before promotion. The

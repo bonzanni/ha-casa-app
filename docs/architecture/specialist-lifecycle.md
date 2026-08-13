@@ -94,6 +94,13 @@ deliberately not materialized.
 Enforced by the upgrade core recording an error result without touching the running tuple,
 and by the rollback core's restoration from the retained prior.
 
+One explicit carve-out (#372): a retained prior that predates the secret-digest guard —
+its digests tombstoned by sanitization, or its snapshot still carrying a
+secret-classified key — is refused with a typed `legacy_prior` error instead of being
+restored. The current active tuple is untouched; the rollback *target* requires a
+reinstall. The same applies to a prior sentineled by an upgrade whose incoming schema
+reclassified a persisted plain key as secret.
+
 One identity detail is easy to get wrong at exactly these commit points: a role's checksum
 covers the model it *resolved to*, not just the model policy it declares. Every path here
 that materializes a role while writing or checking a binding — commit, upgrade, rollback,
@@ -118,15 +125,37 @@ inspected; the commit separately re-checks that what it fetched still matches.
 Enforced as a typed refusal in the commit and upgrade cores before any staging, by the
 upgrade's snapshot merge excluding secret-named keys (the prior component's declaration
 included, so a key reclassified to plain never carries its old plaintext forward), by a
-post-commit sanitization of the retained prior tuple, by the rollback core stripping again
-before it restores, and by a boot-time scrub of every persisted tuple snapshot that runs
-before the boot config-git snapshot.
+post-commit sanitization of the retained prior tuple that strips the plaintext and
+tombstones the prior's digests in the same atomic write, by the rollback core refusing a
+prior that still carries a secret-classified key, and by a boot-time scrub of every
+persisted tuple snapshot that runs before the boot config-git snapshot.
 
-What it does not cover: a config digest computed before the guard existed was derived from
-the plaintext-bearing mapping and is retained (rewriting it would rebuild the binding,
-which the rollback contract forbids — the digest is unguessable only to the extent the
-secret was); a runtime config-git commit issued between an upgrade crash and the next boot
-can still capture pre-scrub bytes; persona overrides copy the active snapshot unchanged.
+What it does not cover: bundle-journal captures are sanitized at write and at restore
+(INV-SPEC-009), but a journal quarantined during a boot keeps its file for one boot as
+diagnostic state before the next boot's sweep deletes it; persona overrides copy the
+active snapshot unchanged (loadable, therefore secret-free, post-guard state).
+
+**INV-SPEC-009**: A persisted instance tuple's `config_digest` is the digest of its persisted (secret-free) snapshot — never of any other mapping.
+
+Enforced at three layers (#372): construction goes through one factory that derives the
+digest from the snapshot and refuses a binding whose `effective_config_digest` disagrees;
+the atomic write primitive independently re-checks the same equation; and the loader
+rejects any persisted tuple that violates it. Pre-guard files — snapshots sanitized while
+their digest, computed over the original secret-bearing mapping, was retained — fail the
+equation and are tombstoned at boot: both digest fields are replaced by a sentinel the
+loader turns into a typed "uninstall and reinstall" error (an unparseable tuple file
+fails closed to the same tombstone; `desired.error.yaml` and crash residue are deleted
+outright, and tombstoning a pending `desired.yaml` releases its receipt marker). Bundle
+journals apply the same sanitizer to every captured tuple payload when a journal is
+written and again when any journal restores, failing closed to all-keys stripping when
+the schema union (the capture's own root plus an install/upgrade's target root) cannot
+be established.
+
+What it does not cover: the config git repository's *history* — commits that predate the
+guard may retain pre-guard digests (and, before the boot scrub existed, plaintext);
+remediation for an affected install is secret rotation. A slug whose tuple was
+tombstoned surfaces as an error-state instance; recovery is uninstall + reinstall with
+fresh consent.
 
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 
@@ -238,9 +267,12 @@ inside the mutation lock, so a receipt consumed by a concurrent bundle fails clo
 receipt-required instead of rotating sidecar generations for a no-op; the sidecar commit
 itself treats a byte-identical restage as a no-op rather than rotating the prior away.
 
-**A damaged instance tuple is found at boot.** The installed index isolates that slug as an
-error-state instance — its slug stays reserved against reinstall-overwrite and the error is
-surfaced for inspection — instead of aborting the whole scan and with it the app start.
+**A damaged instance tuple is found at boot.** The installed index loads active and
+desired independently (#372): a damaged or tombstoned *active* isolates the slug as an
+error-state instance — its slug stays reserved against reinstall-overwrite and the error
+is surfaced for inspection — instead of aborting the whole scan and with it the app
+start, while a damaged *desired* beside a healthy active leaves the running generation in
+the fleet and surfaces the desired failure as diagnostic state.
 
 ## Extension points
 

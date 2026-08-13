@@ -980,9 +980,11 @@ def test_upgrade_refuses_when_a_same_root_config_mutation_races_before_the_lock(
 
     # Hook the pre-activation compile (runs AFTER active_before was read, BEFORE
     # the in-lock re-check) to re-commit the active tuple with an ALTERED
-    # config_snapshot. root, binding, and config_digest are all UNCHANGED, so a
-    # root-only revalidation cannot see this mutation — the exact same-root case
-    # the F1 full-tuple fix must now catch.
+    # config_snapshot but the SAME root — the same-root case a root-only
+    # revalidation waved through and the F1 full-tuple fix must catch. #372
+    # rewrite: the digest and binding are recomputed honestly over the mutated
+    # snapshot (the old shape — mutated snapshot under the old digest — is now
+    # unwritable by design), which still leaves `root` unchanged.
     real_compile = prompt_compiler.compile_prompt_bundle
     fired = {"done": False}
 
@@ -990,12 +992,28 @@ def test_upgrade_refuses_when_a_same_root_config_mutation_races_before_the_lock(
         result = real_compile(*a, **k)
         if not fired["done"]:
             fired["done"] = True
+            from dataclasses import replace
+            from personality_binding import (
+                compute_binding_digest, compute_effective_config_digest,
+                make_instance_tuple,
+            )
             idir = InstanceDir(specialists_dir / "mtg")
             active = idir.active()
-            idir.stage_desired(InstanceTuple(
-                root=active.root, binding=active.binding,
-                config_snapshot={**dict(active.config_snapshot), "_probe": "raced"},
-                config_digest=active.config_digest))
+            new_snapshot = {**dict(active.config_snapshot), "_probe": "raced"}
+            ecd = compute_effective_config_digest(new_snapshot)
+            b = active.binding
+            raced_binding = replace(
+                b, effective_config_digest=ecd,
+                binding_digest=compute_binding_digest(
+                    stable_agent_id=b.stable_agent_id, role_checksum=b.role_checksum,
+                    persona_id=b.persona_id, persona_version=b.persona_version,
+                    persona_checksum=b.persona_checksum,
+                    compiler_schema_version=b.compiler_schema_version,
+                    dependency_digests=b.dependency_digests,
+                    effective_config_digest=ecd))
+            idir.stage_desired(make_instance_tuple(
+                root=active.root, binding=raced_binding,
+                config_snapshot=new_snapshot))
             idir.commit_desired_to_active()
         return result
 
