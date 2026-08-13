@@ -126,6 +126,15 @@ class SemanticMemory(ABC):
     async def profile(self, bank: str) -> str:
         """Return the bank's mental-model overlay digest (cheap GET, no LLM)."""
 
+    async def delete_bank(self, bank: str) -> bool:
+        """#411: irreversibly delete ``bank`` and everything in it. Returns
+        True when the backend performed a deletion, False when there was
+        nothing to delete (NoOp). Like ``retain``, the seam itself enforces
+        NO policy (INV-MEM-005 discipline) — operator consent and writer
+        quiescing live entirely at the callers (:mod:`memory_wipe`); nothing
+        but the wipe orchestrator may call this."""
+        return False
+
     async def close(self) -> None:
         """Release any backend resources (e.g. a pooled HTTP session).
 

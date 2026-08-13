@@ -131,6 +131,33 @@ class HindsightSemanticMemory(SemanticMemory):
             "memory_retain bank=%s items=%d async=%s", bank, len(items), async_,
         )
 
+    async def delete_bank(self, bank: str) -> bool:
+        """#411: whole-bank delete (``DELETE /v1/default/banks/{bank}``).
+        Policy-free like ``retain`` — consent and writer quiescing live in
+        :mod:`memory_wipe`, the only permitted caller. Raises on transport/
+        HTTP failure (the wipe reports it truthfully rather than claiming a
+        deletion that did not happen)."""
+        _validate_bank_id(bank)
+        url = f"{self._base}/v1/default/banks/{bank}"
+        if self._session is None or self._session.closed:
+            self._session = self._new_session()
+
+        async def _delete_once() -> None:
+            # Not _roundtrip: a DELETE may legitimately return an empty body
+            # (the provenance-contract probe tolerates exactly that), and
+            # _roundtrip's unconditional .json() would raise on success.
+            async with self._session.request("DELETE", url) as resp:
+                resp.raise_for_status()
+
+        try:
+            await _delete_once()
+        except aiohttp.ClientConnectionError:
+            # Same single connection-drop retry as _request; DELETE is
+            # idempotent so a retry after a mid-call drop is safe.
+            await _delete_once()
+        logger.warning("memory bank DELETED bank=%s", bank)
+        return True
+
     async def recall(
         self, bank: str, query: str, *, tags: list[str], max_tokens: int,
         types: tuple[str, ...] = _DEFAULT_TYPES,

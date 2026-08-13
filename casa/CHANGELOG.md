@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.194.0] - 2026-08-13
+
+### Added
+
+- A supported way to wipe long-term memory (#411). One operation deletes
+  the memory bank, drops any pending durable retry records, and forgets
+  every conversation pointer without saving it first — previously a
+  hand-cleared bank could be silently re-populated by a conversation
+  retiring, an engagement finishing, or a queued retry replaying. Two
+  explicit doors: ask the assistant (`wipe_memory` posts an Approve/Cancel
+  keyboard to the configured operator's DM and executes only on the
+  operator's own tap, then reports exactly what it removed), or run
+  `casactl memory-wipe --yes` from the add-on terminal. At most one wipe
+  runs at a time, a wipe in flight is finished before shutdown proceeds,
+  and a memory write already past the point of no return is discarded
+  rather than allowed to restore deleted content afterwards.
+
+### Fixed
+
+- A message or button tap racing `/new` can no longer land in the
+  conversation being reset (#290). While a reset (or wipe) is retiring a
+  session, any concurrent turn on the same chat starts the fresh
+  conversation instead of resuming the dying one, and the retiring
+  session can no longer re-register itself mid-reset. A reset arriving
+  while an earlier turn is still finishing now also retires the session
+  that turn publishes, instead of leaving it resumable.
+- Executor "lessons learned" can no longer steer against current doctrine
+  (#215). Prior-engagement summaries are stamped at launch with a digest
+  of the exact prompt and doctrine the engagement ran under, and the
+  lessons block injected into a future launch keeps only summaries from
+  its own doctrine epoch — anything older, unstamped, or from another
+  executor type is dropped, and the block now states that doctrine
+  prevails where they disagree.
+
 ## [0.193.0] - 2026-08-13
 
 ### Security

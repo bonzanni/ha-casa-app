@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import dataclasses
 import logging
 import os
 import time
@@ -326,6 +327,19 @@ class SdkClientPool:
                 decision = self._decide(
                     channel, reg_entry, self._wall_now(),
                 )
+                # #290/#411: while a reset/wipe holds a retirement claim on
+                # this key, steer the turn to a FRESH session instead of the
+                # dying sid, and DON'T retain the old snapshot here — the
+                # retiring caller owns that retain (a second one would only
+                # be duplicate work). Checked in the pool, not the decide
+                # callback, so no pool user can exist without the steer;
+                # duck-typed so registry fakes without claims are unaffected.
+                _retiring = getattr(self._registry, "retirement_pending", None)
+                if _retiring is not None and _retiring(channel_key):
+                    decision = dataclasses.replace(
+                        decision, action="new", resume_sid=None,
+                        retain_old=False, old=None, reason="retiring",
+                    )
                 resume_sid = (
                     decision.resume_sid if decision.action == "resume" else None
                 )
@@ -353,9 +367,18 @@ class SdkClientPool:
                     # Task 9: hand the resume gate's own immutable snapshot to
                     # the retain callback (sourced from the registry read under
                     # the entry lock, AR-3) — never a sid reconstructed from the
-                    # pool's own possibly-stale ``entry.sid``.
+                    # pool's own possibly-stale ``entry.sid``. #411: the second
+                    # argument is the retain-fence generation the DECISION was
+                    # made under (captured by the decide callback in the same
+                    # no-await block as the registry read) — the aclose() await
+                    # above sits between decision and this call, and a memory
+                    # wipe completing inside it must make the spawned retain
+                    # discard rather than restore pre-wipe content.
                     if decision.retain_old and decision.old is not None:
-                        on_stale_old(decision.old)
+                        on_stale_old(
+                            decision.old,
+                            getattr(decision, "fence_generation", None),
+                        )
                     options = await build_options(is_fresh, resume_sid)
                     fresh_client = ManagedSdkClient(
                         options,

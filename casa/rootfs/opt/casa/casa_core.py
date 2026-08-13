@@ -123,6 +123,7 @@ async def start_internal_unix_runner(
     from internal_handlers import (
         _make_internal_tools_call_handler,
         _make_internal_hooks_resolve_handler,
+        build_admin_memory_wipe_handler,
         build_admin_reload_handler,
         admin_peercred_middleware,
     )
@@ -151,6 +152,13 @@ async def start_internal_unix_runner(
     internal_app.router.add_post(
         "/admin/reload",
         build_admin_reload_handler(runtime=runtime),
+    )
+    # #411: operator memory wipe (casactl memory-wipe --yes). Root-gated by
+    # the same peercred middleware; shares memory_wipe's single-flight slot
+    # with the consented agent-tool door.
+    internal_app.router.add_post(
+        "/admin/memory/wipe",
+        build_admin_memory_wipe_handler(),
     )
 
     # Task 14 (personality Phase A): lean inspection/explain admin routes —
@@ -1924,11 +1932,21 @@ async def _drain_broker_before_channel_shutdown(channel_manager: Any) -> None:
     authorization-challenge setup driver can only find a cancelled request
     (never posts a fresh keyboard during shutdown); THEN await the coordinator
     drivers; THEN flush the broker finish hooks; THEN stop the channels.
+
+    #411 (design r3, Terra TOCTOU): wipe admission is FROZEN before any of
+    that — a consent finish hook firing during this drain can then only be
+    refused, never spawn a wipe after the wipe drain below already looked —
+    and any RUNNING wipe is drained after the hooks but before the channels
+    stop (its report edit needs the channel) and before semantic memory
+    closes (its bank delete needs the seam).
     """
+    import memory_wipe
     from verdict_broker import BROKER
+    memory_wipe.freeze_wipes()
     BROKER.cancel_all(reason="casa_shutdown")
     await CHALLENGES.drain()
     await BROKER.drain_hooks()
+    await memory_wipe.drain_wipe_task()
     await channel_manager.stop_all()
 
 
@@ -3967,6 +3985,7 @@ async def main() -> None:
     import agent as agent_mod
     agent_mod.active_engagement_driver = engagement_driver
     agent_mod.active_semantic_memory = semantic_memory   # resident long-term (Hindsight seam)
+    agent_mod.active_session_registry = session_registry  # #411 — wipe orchestrator input
     agent_mod.active_executor_registry = executor_registry
     runtime.engagement_driver = engagement_driver
 

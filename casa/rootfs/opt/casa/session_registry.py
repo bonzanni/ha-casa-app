@@ -141,6 +141,12 @@ class SessionRegistry:
         # #526: in-memory only — an entry loaded from disk has NO generation
         # (reads ``None``), and no live registration can allocate ``None``.
         self._generations: dict[str, int] = {}
+        # #290/#411: live retirement claims, {channel_key: {token: dying_sid}}.
+        # A SET of claims per key, not a slot — an overlapping owner (a wipe
+        # over a live /new) ending its claim must never clear another's
+        # protection. In-memory only, like the generations: a persisted claim
+        # would survive a restart and wrongly force fresh sessions forever.
+        self._retirements: dict[str, dict[object, str | None]] = {}
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as fh:
@@ -212,7 +218,20 @@ class SessionRegistry:
         """
         validate_speaker_provenance(speaker_provenance)
         validate_speaker_provenance(user_provenance)
+        # #290/#411: while a retirement claim names this exact sid as dying,
+        # refuse to re-arm the pointer — an in-flight turn that resumed the
+        # dying session before the claim landed would otherwise re-register
+        # it mid-retirement and resurrect the conversation the reset/wipe is
+        # dropping. The turn's content is not lost: it is in the dying sid's
+        # CLI transcript, which the retirement's save reads after the flush.
+        # Registrations of OTHER sids (a steered-fresh racing turn) proceed.
         async with self._lock:
+            if sdk_session_id in self._retired_sids(channel_key):
+                logger.warning(
+                    "register: refusing re-registration of retiring session "
+                    "for %s — a reset/wipe is dropping it", channel_key,
+                )
+                return
             entry: dict[str, Any] = copy.deepcopy(
                 self._data.get(channel_key) or {},
             )
@@ -258,6 +277,48 @@ class SessionRegistry:
     def get(self, channel_key: str) -> dict[str, Any] | None:
         """Return the entry for *channel_key*, or ``None``."""
         return self._data.get(channel_key)
+
+    def begin_retirement(self, channel_key: str, sid: str | None) -> object:
+        """#290/#411: claim ``channel_key`` for a retirement (an explicit
+        reset or a memory wipe) of the session ``sid`` and return an opaque
+        token. While ANY claim is live for a key:
+
+        - both resume-decision sites steer a racing turn to a FRESH session
+          instead of the dying sid (see ``retirement_pending``), and
+        - :meth:`register` refuses to re-register the dying sid itself, so an
+          in-flight turn's publication cannot re-arm the pointer the
+          retirement is about to drop.
+
+        Synchronous and allocation-only — callers take their entry snapshot
+        and this claim in the SAME no-await block. ``sid`` may be ``None``
+        (the snapshotted entry had no session id); a ``None`` claim steers
+        turns but refuses no registration."""
+        token = object()
+        self._retirements.setdefault(channel_key, {})[token] = sid
+        return token
+
+    def end_retirement(self, channel_key: str, token: object) -> None:
+        """Release exactly the claim identified by ``token`` (idempotent).
+        Other live claims on the key are untouched."""
+        claims = self._retirements.get(channel_key)
+        if claims is None:
+            return
+        claims.pop(token, None)
+        if not claims:
+            del self._retirements[channel_key]
+
+    def retirement_pending(self, channel_key: str) -> bool:
+        """True while ANY retirement claim is live for the key. Read in the
+        SAME no-await block as the :meth:`get`/:meth:`generation` snapshot it
+        accompanies — the resume-decision sites steer to a fresh session
+        while this holds."""
+        return bool(self._retirements.get(channel_key))
+
+    def _retired_sids(self, channel_key: str) -> set[str]:
+        return {
+            s for s in (self._retirements.get(channel_key) or {}).values()
+            if s is not None
+        }
 
     def generation(self, channel_key: str) -> int | None:
         """Return the entry's registration generation (#526).

@@ -50,6 +50,18 @@ is enabled by pointing Casa at a self-hosted **Hindsight** app.
 |--------|-------------|
 | `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — both **save** (the freshness reaper retains ended conversations, each item tier-classified) and **recall** (a mental-model overlay + relevance-ranked recall on the read path, plus a `recall_memory` pull tool). **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session). |
 
+**Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
+bank, drops any pending durable retry records, and forgets every conversation
+pointer without saving it — closing the "cleared it by hand but items kept
+reappearing" gap. Two ways to run it, both explicit: ask the assistant (the
+`wipe_memory` tool posts an Approve/Cancel keyboard to the configured operator's
+DM and executes only on the operator's own tap, reporting exactly what it
+removed), or from the add-on terminal run `casactl memory-wipe --yes` (refuses
+without the flag). With `telegram_chat_id` empty nobody is the operator, so the
+assistant-side wipe is denied for everyone. A conversation or engagement already
+in flight when the wipe runs may still contribute one item afterwards; everything
+durable is removed.
+
 The following env var is **auto-derived** from `hindsight_api_url` and rarely needs
 setting by hand:
 

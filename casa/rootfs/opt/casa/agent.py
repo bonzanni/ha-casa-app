@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import time
@@ -84,6 +85,7 @@ active_executor_registry = None   # ExecutorRegistry | None, set by casa_core.ma
 active_claude_code_driver = None  # ClaudeCodeDriver | None, set by casa_core.main
 active_runtime = None             # CasaRuntime | None, set by casa_core.main (Task C.3)
 active_semantic_memory = None     # SemanticMemory | None, set by casa_core.main
+active_session_registry = None    # SessionRegistry | None, set by casa_core.main (#411)
 
 # Phase 3.1: delegating-turn origin. Set by Agent._process for the
 # duration of a turn so the `delegate_to_agent` tool handler can read
@@ -264,15 +266,25 @@ class SessionEntrySnapshot:
 class ResumeDecision:
     """The structured outcome of the resume gate (replaces the former
     ``(decision, save_old)`` tuple). ``retain_old``/``old`` drive
-    save-before-overwrite of a superseded cold session."""
+    save-before-overwrite of a superseded cold session.
+
+    ``reason="retiring"`` (#290/#411) is never produced by
+    :func:`_resume_decision` itself — it is the steer applied on top of it
+    (by the pool, or by the bypass path) while a reset/wipe holds a
+    retirement claim on the key. ``fence_generation`` (#411) is the retain
+    fence generation captured in the same no-await block as the decision;
+    a cold retain spawned from this decision passes it to the fence so a
+    wipe that completed between decision and retain makes the retain
+    discard instead of restoring pre-wipe content."""
     action: Literal["resume", "new"]
     resume_sid: str | None
     retain_old: bool
     old: SessionEntrySnapshot | None
     reason: Literal[
         "missing", "role_mismatch", "binding_mismatch",
-        "fresh", "expired", "invalid_entry",
+        "fresh", "expired", "invalid_entry", "retiring",
     ]
+    fence_generation: int | None = None
 
 
 def _decode_provenance(raw: object) -> SpeakerProvenance | None:
@@ -419,6 +431,13 @@ def _plan_load(channel: str, *, is_fresh_session: bool) -> _LoadPlan:
     if channel == "voice":
         return _LoadPlan(push_overlay=True, auto_recall=False)
     return _LoadPlan(push_overlay=True, auto_recall=True)
+
+
+def _retain_fence():
+    """The process-wide retain fence (#411). Imported lazily so tests that
+    stub agent's collaborators need not know the fence exists."""
+    from memory_wipe import FENCE
+    return FENCE
 
 
 def _memory_bank() -> str:
@@ -642,9 +661,17 @@ class Agent:
             # mismatch (another resident's entry under the same channel_key,
             # impossible post-A2 collision-safety, but defense-in-depth) never
             # resumes.
-            decide=lambda ch, entry, now: _resume_decision(
-                ch, entry, now,
-                role_id=self.config.role_id, binding_digest=self.config.binding_digest,
+            # #411: fence_generation is captured INSIDE the lambda — the pool
+            # invokes decide synchronously in its decision block (AR-3), so
+            # the capture lands in the same no-await block as the registry
+            # read, per the fence's capture-point contract.
+            decide=lambda ch, entry, now: dataclasses.replace(
+                _resume_decision(
+                    ch, entry, now,
+                    role_id=self.config.role_id,
+                    binding_digest=self.config.binding_digest,
+                ),
+                fence_generation=_retain_fence().generation(),
             ),
             origin_ctxvar=origin_var, cid_ctxvar=cid_var,
             engagement_ctxvar=_engagement_var,
@@ -1157,8 +1184,9 @@ class Agent:
                     prompt=prompt_text, origin=origin_snapshot,
                     cid=cid_var.get(), build_options=_build,
                     binding_digest=self.config.binding_digest,
-                    on_stale_old=lambda old: self._spawn_cold_retain(
+                    on_stale_old=lambda old, fence_gen=None: self._spawn_cold_retain(
                         old, directory=agent_home, channel=msg.channel,
+                        fence_generation=fence_gen,
                     ),
                     on_message=on_message,
                     on_success=_publish,
@@ -1188,15 +1216,29 @@ class Agent:
                 )
                 existing = self._session_registry.get(channel_key)
                 # #526: same no-await block as the entry snapshot (see the
-                # pooled path's on_decision).
+                # pooled path's on_decision). #290/#411: the retirement check
+                # and the fence-generation capture share that block too — the
+                # bypass path is a full resume-decision site and gets the
+                # same steer the pool applies, so no path can resume a
+                # session a reset/wipe is retiring.
                 existing_generation = self._session_registry.generation(
                     channel_key,
                 )
+                _retiring = getattr(
+                    self._session_registry, "retirement_pending",
+                    lambda _k: False,
+                )(channel_key)
+                _fence_gen = _retain_fence().generation()
                 decision = _resume_decision(
                     msg.channel, existing, datetime.now(timezone.utc),
                     role_id=self.config.role_id,
                     binding_digest=self.config.binding_digest,
                 )
+                if _retiring:
+                    decision = dataclasses.replace(
+                        decision, action="new", resume_sid=None,
+                        retain_old=False, old=None, reason="retiring",
+                    )
                 resume_sid = (
                     decision.resume_sid if decision.action == "resume" else None
                 )
@@ -1211,6 +1253,7 @@ class Agent:
                     # path, tier §2.4).
                     self._spawn_cold_retain(
                         decision.old, directory=agent_home, channel=msg.channel,
+                        fence_generation=_fence_gen,
                     )
                 # else ("new", retain_old=False): no prior entry → nothing to save
                 options = await self._build_options(
@@ -2215,6 +2258,7 @@ class Agent:
 
     def _spawn_cold_retain(
         self, old: SessionEntrySnapshot, *, directory: str, channel: str,
+        fence_generation: int | None = None,
     ) -> None:
         """Retain a cold prior session in the background (claim-free; cannot race
         register()). Tracked so it isn't GC'd; failures are swallowed in
@@ -2224,11 +2268,23 @@ class Agent:
         produced (``decision.old``) and passes it straight through to the reduced
         ``retain_cold_session``, which reads the speaker/user provenance off the
         snapshot itself. A legacy/corrupt snapshot with no usable provenance
-        retains nothing (never invents authorship)."""
+        retains nothing (never invents authorship).
+
+        ``fence_generation`` (#411) is the retain-fence generation captured at
+        the RESUME DECISION that produced ``old`` — not here, and not inside
+        the spawned coroutine: awaits (the pool's client close) sit between
+        the decision and this call, and the task body may not run until later
+        still; a memory wipe completing in either window must make the retain
+        DISCARD rather than restore pre-wipe content. ``None`` (legacy/test
+        callers) falls back to capturing now, which is still before the
+        coroutine body runs."""
+        if fence_generation is None:
+            fence_generation = _retain_fence().generation()
         task = asyncio.create_task(
             retain_cold_session(
                 old, directory=directory, channel=channel,
                 semantic_memory=self._semantic_memory,
+                fence_generation=fence_generation,
             ),
             name=f"cold-retain-{old.sdk_session_id}",
         )

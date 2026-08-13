@@ -200,3 +200,93 @@ async def test_executor_kind_retains_distinct_doc_prefix(tmp_path, monkeypatch):
     exec_payload = json.loads(exec_call["items"][0]["content"])
     assert exec_payload["kind"] == "executor_engagement_summary"
     assert exec_payload["engagement_id"] == rec.id
+
+
+async def test_executor_summary_stamped_with_launch_epoch_tag(tmp_path, monkeypatch):
+    """#215 (design r1, Sol S-B2/Terra T-B1): the executor summary carries the
+    epoch PERSISTED ON THE RECORD at launch — and a record without one (legacy)
+    retains untagged rather than borrowing the finalize-time definition."""
+    from engagement_registry import EngagementRegistry
+    from executor_epoch import epoch_application_tag
+    from tools import _finalize_engagement, init_tools
+
+    sem = _install_sem(monkeypatch)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    rec = await _make_engagement(reg, channel="telegram", kind="executor")
+    await reg.set_procedural_epoch(rec.id, "e" * 64)
+
+    telegram = MagicMock()
+    telegram.send_to_topic = AsyncMock()
+    telegram.close_topic = AsyncMock()
+    telegram.update_topic_state = AsyncMock()
+    cm = MagicMock()
+    cm.get.return_value = telegram
+    bus = MagicMock()
+    bus.notify = AsyncMock()
+    init_tools(
+        channel_manager=cm, bus=bus,
+        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=reg,
+    )
+    driver = MagicMock()
+    driver.cancel = AsyncMock()
+
+    await _finalize_engagement(
+        rec, outcome="completed", text="summary", artifacts=[],
+        next_steps=[], driver=driver,
+    )
+    import tools as tools_mod
+    await asyncio.gather(*list(tools_mod._specialist_bg_tasks), return_exceptions=True)
+
+    exec_call = next(
+        c for c in sem.retain_calls
+        if json.loads(c["items"][0]["content"]).get("kind") == "executor_engagement_summary"
+    )
+    expected = epoch_application_tag("finance", "e" * 64)
+    assert expected in exec_call["items"][0]["tags"]
+    # The plain engagement summary is NOT epoch-stamped.
+    plain_call = next(
+        c for c in sem.retain_calls
+        if json.loads(c["items"][0]["content"]).get("kind") == "engagement_summary"
+    )
+    assert not any(t.startswith("casa-doctrine-epoch-") for t in plain_call["items"][0]["tags"])
+
+
+async def test_executor_summary_without_epoch_retains_untagged(tmp_path, monkeypatch):
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement, init_tools
+
+    sem = _install_sem(monkeypatch)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    rec = await _make_engagement(reg, channel="telegram", kind="executor")
+
+    telegram = MagicMock()
+    telegram.send_to_topic = AsyncMock()
+    telegram.close_topic = AsyncMock()
+    telegram.update_topic_state = AsyncMock()
+    cm = MagicMock()
+    cm.get.return_value = telegram
+    bus = MagicMock()
+    bus.notify = AsyncMock()
+    init_tools(
+        channel_manager=cm, bus=bus,
+        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=reg,
+    )
+    driver = MagicMock()
+    driver.cancel = AsyncMock()
+
+    await _finalize_engagement(
+        rec, outcome="completed", text="summary", artifacts=[],
+        next_steps=[], driver=driver,
+    )
+    import tools as tools_mod
+    await asyncio.gather(*list(tools_mod._specialist_bg_tasks), return_exceptions=True)
+
+    exec_call = next(
+        c for c in sem.retain_calls
+        if json.loads(c["items"][0]["content"]).get("kind") == "executor_engagement_summary"
+    )
+    assert not any(
+        t.startswith("casa-doctrine-epoch-") for t in exec_call["items"][0]["tags"]
+    )

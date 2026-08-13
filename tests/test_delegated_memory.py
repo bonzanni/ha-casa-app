@@ -220,3 +220,21 @@ async def test_delegated_recall_renders_attribution_and_never_leaks_raw_tags():
     assert "casa-source-" not in out
     for token in ("public", "friends", "family", "private"):
         assert token not in out
+
+
+async def test_delegated_recall_hit_filter_applied_between_recall_and_render():
+    """#215: an optional hit_filter scopes hits client-side BEFORE rendering
+    (the executor-archive epoch filter's seam); the with_stats count reflects
+    the FILTERED set so callers never overclaim."""
+    sem = _Sem()
+    out, n = await delegated_memory.delegated_recall(
+        sem, query="build the invoice", origin_channel="telegram",
+        max_tokens=2000, hit_filter=lambda hits: (), with_stats=True,
+    )
+    assert out == "" and n == 0
+
+    out2 = await delegated_memory.delegated_recall(
+        sem, query="build the invoice", origin_channel="telegram",
+        max_tokens=2000, hit_filter=lambda hits: hits,
+    )
+    assert "prior fact" in out2
