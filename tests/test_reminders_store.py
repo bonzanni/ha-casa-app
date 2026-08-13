@@ -504,6 +504,58 @@ class TestEnvPlaceholderDoor:
         assert reminders.remove_entry(path, "reminder-a1b2c3d4") == "removed"
         assert reminders.past_due(path, NOW) == [], "no redelivery next pass"
 
+    def test_the_rewrite_is_recorded_for_the_operator(
+            self, tmp_path, monkeypatch):
+        """#513: warn-and-proceed leaves the operator's declared-text intent
+        silently altered. The log line reaches nobody, so the rewrite is
+        recorded for an on-channel notice."""
+        reminders._placeholder_pending.clear()
+        monkeypatch.setenv("DETAIL", "bins tonight")
+        path = self._authored(tmp_path, extra=(
+            '  - {name: reminder-a1b2c3d4, type: date, '
+            f'at: "{OVERDUE}", one_shot: true, channel: telegram, '
+            'prompt: x, managed_by: agent}\n'))
+
+        assert reminders.remove_entry(path, "reminder-a1b2c3d4") == "removed"
+        assert reminders.peek_placeholder_notices() == [path]
+
+    def test_a_failed_write_records_nothing(self, tmp_path, monkeypatch):
+        """A notice claiming 'Updated <file>' for a file that was never
+        written is a false report about operator-authored configuration.
+        _save can raise before os.replace (atomic_io), leaving the original
+        untouched — so the record follows the write, not the check."""
+        reminders._placeholder_pending.clear()
+        monkeypatch.setenv("DETAIL", "bins tonight")
+        path = self._authored(tmp_path, extra=(
+            '  - {name: reminder-a1b2c3d4, type: date, '
+            f'at: "{OVERDUE}", one_shot: true, channel: telegram, '
+            'prompt: x, managed_by: agent}\n'))
+
+        def _boom(*_a, **_kw):
+            raise OSError("no space left on device")
+        monkeypatch.setattr(reminders, "_save", _boom)
+
+        with pytest.raises(OSError):
+            reminders.remove_entry(path, "reminder-a1b2c3d4")
+        assert reminders.peek_placeholder_notices() == []
+
+    def test_a_non_placeholder_rewrite_records_nothing(
+            self, tmp_path, monkeypatch):
+        """Only placeholder-bearing files are worth telling the operator
+        about; an ordinary cleanup must stay silent."""
+        reminders._placeholder_pending.clear()
+        path = _write(tmp_path, [_mine("reminder-a1b2c3d4", OVERDUE)])
+
+        assert reminders.remove_entry(path, "reminder-a1b2c3d4") == "removed"
+        assert reminders.peek_placeholder_notices() == []
+
+    def test_clear_removes_only_the_named_path(self, tmp_path):
+        reminders._placeholder_pending.clear()
+        reminders._placeholder_pending.update({"/a/triggers.yaml",
+                                               "/b/triggers.yaml"})
+        reminders.clear_placeholder_notice("/a/triggers.yaml")
+        assert reminders.peek_placeholder_notices() == ["/b/triggers.yaml"]
+
 
 # --- past_due --------------------------------------------------------------
 

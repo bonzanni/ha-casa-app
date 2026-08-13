@@ -95,6 +95,7 @@ import functools
 import logging
 import os
 import secrets
+import threading
 from datetime import datetime, timedelta
 
 import yaml
@@ -404,6 +405,33 @@ def _emit(doc: dict, path: str) -> str:
         raise ValueError(f"{path}: cannot be re-emitted: {exc}") from exc
 
 
+# --- #513: placeholder-bearing rewrites owed to the operator ---------------
+# remove_entry runs OFF the loop (a thread, under trigger_write_lock.PASS_LOCK)
+# and cannot await a send, so it records the path here and the notifier on the
+# loop delivers it. A plain lock, not asyncio's — the writer is a thread.
+_PLACEHOLDER_LOCK = threading.Lock()
+_placeholder_pending: set[str] = set()
+
+
+def peek_placeholder_notices() -> list[str]:
+    """Snapshot of files rewritten despite ``${...}`` interpolation (#513).
+
+    A SNAPSHOT, never a drain. The caller removes a path only once its notice
+    is CONFIRMED delivered — draining here would consume the pending work on an
+    unconfirmed send, which is exactly the defect #556 reports about the
+    plugin-health notice. Sorted so the notifier's order is deterministic.
+    """
+    with _PLACEHOLDER_LOCK:
+        return sorted(_placeholder_pending)
+
+
+def clear_placeholder_notice(path: str) -> None:
+    """Drop *path* once its notice has been confirmed delivered (or suppressed
+    as already-notified in this process)."""
+    with _PLACEHOLDER_LOCK:
+        _placeholder_pending.discard(path)
+
+
 def _save(path: str, doc: dict) -> None:
     atomic_write_text(path, _emit(doc, path))
 
@@ -577,7 +605,8 @@ def remove_entry(path: str, name: str) -> str:
     if not any(_agent_owned(e) for e in matches):
         return "not_owned"
 
-    if text is not None and text_has_lone_placeholder(text):
+    placeholder_rewrite = text is not None and text_has_lone_placeholder(text)
+    if placeholder_rewrite:
         # Warn and PROCEED. Refusing here is what strands a delivered reminder.
         logger.warning(
             "reminders: %s uses ${...} interpolation; rewriting it to remove "
@@ -588,6 +617,13 @@ def remove_entry(path: str, name: str) -> str:
                              if not (_agent_owned(e)
                                      and e.get("name") == name)]
     _save(path, candidate)
+    if placeholder_rewrite:
+        # AFTER the write, never at the warning site (#513): _save can raise
+        # before os.replace, leaving the original file untouched, and a notice
+        # claiming "Updated <file>" for a file that was never written is a
+        # false report about the operator's own configuration.
+        with _PLACEHOLDER_LOCK:
+            _placeholder_pending.add(path)
     return "removed"
 
 
