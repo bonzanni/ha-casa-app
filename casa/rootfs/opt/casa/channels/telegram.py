@@ -4065,19 +4065,23 @@ class TelegramChannel(Channel):
 
     async def finalize_stream(
         self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback
-    ) -> None:
+    ) -> DeliveryOutcome:
         """Send the final version of a streamed response.
 
         In stream mode, does a final edit to ensure the complete text
         is displayed.  Falls back to send() if streaming never started
         (e.g., empty response or stream mode was block).
+
+        #556: the outcome describes the FINAL EDIT, not the token stream. A
+        one-shot notice is prepended after streaming, so tokens the operator
+        already watched never contained it — only this edit can show it.
         """
         # Release the lease before the availability guard (reconnect-safe).
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
 
         if self._app is None:
-            return
+            return DeliveryOutcome.NOT_DELIVERED
 
         # Retrieve state from the closure
         state = getattr(on_token, "__self__", None)
@@ -4095,8 +4099,7 @@ class TelegramChannel(Channel):
 
         if message_id is None:
             # Streaming never sent a message — fall back to regular send
-            await self.send(full_text, context)
-            return
+            return await self.send(full_text, context)   # verbatim (§2.1)
 
         # Final edit with complete text (#305: UTF-16 units)
         if utf16_len(full_text) <= _TG_MAX_LENGTH:
@@ -4109,26 +4112,40 @@ class TelegramChannel(Channel):
             except TelegramError as exc:
                 if "not modified" not in str(exc).lower():
                     logger.warning("Final stream edit failed: %s", exc)
+                    return DeliveryOutcome.NOT_DELIVERED
+                # "not modified" — the message ALREADY displays this exact
+                # text, notice included. A positive outcome (§2.4 ruling 1).
+            context["_delivery_head_sent"] = True
+            return DeliveryOutcome.DELIVERED
         else:
             # Response exceeded the limit — edit first chunk, send the rest
             chunks = _split_message(full_text)
             if not chunks:
                 # Whitespace-only overflow (#305 drops unsendable chunks) —
                 # keep the streamed message as-is rather than index [].
-                return
+                # Nothing was shown, so nothing may be suppressed on it.
+                return DeliveryOutcome.NOT_DELIVERED
+            outcome = DeliveryOutcome.NOT_DELIVERED
             try:
                 await self._app.bot.edit_message_text(
                     chat_id=target_chat,
                     message_id=message_id,
                     text=chunks[0],
                 )
-            except TelegramError:
-                pass
+            except TelegramError as exc:
+                if "not modified" in str(exc).lower():
+                    outcome = DeliveryOutcome.DELIVERED
+                    context["_delivery_head_sent"] = True
+            else:
+                outcome = DeliveryOutcome.DELIVERED
+                context["_delivery_head_sent"] = True
             for chunk in chunks[1:]:
                 await self._app.bot.send_message(
                     chat_id=target_chat,
                     text=chunk,
                 )
+            # The head chunk decides: later chunks cannot un-show it.
+            return outcome
 
 
 _TG_MAX_LENGTH = 4096

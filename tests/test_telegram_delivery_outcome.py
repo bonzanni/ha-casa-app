@@ -75,3 +75,60 @@ class TestSendResponse:
             await ch.send_response(long_text, ctx)
         assert ctx["_delivery_head_sent"] is True
         assert bot.send_message.await_count == 2
+
+
+class TestFinalizeStream:
+    async def test_not_modified_is_delivered(self):
+        """The edit text IS the notice-bearing text, so an unchanged message
+        already displays the notice (#556 design §2.4 ruling 1)."""
+        from telegram.error import BadRequest
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        bot.edit_message_text.side_effect = BadRequest("Message is not modified")
+        assert await ch.finalize_stream(
+            "hi", ctx, on_token) is DeliveryOutcome.DELIVERED
+        assert ctx["_delivery_head_sent"] is True
+
+    async def test_failed_edit_is_not_delivered(self):
+        from telegram.error import BadRequest
+
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.side_effect = BadRequest("chat not found")
+        assert await ch.finalize_stream(
+            "hi", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+        assert "_delivery_head_sent" not in ctx
+
+    async def test_without_app_is_not_delivered(self):
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        ch._app = None
+        assert await ch.finalize_stream(
+            "hi", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+
+    async def test_whitespace_overflow_is_not_delivered(self):
+        """#305 drops unsendable chunks and returns without editing. The
+        operator saw streamed prose, but the notice is prepended AFTER
+        streaming — it was never in what they saw."""
+        ch, bot = _mk_channel_with_fake_bot()
+        ch._delivery_mode = "stream"
+        ctx = {"chat_id": "42"}
+        on_token = ch.create_on_token(ctx)
+        await on_token("partial")
+        ctx.pop("_delivery_head_sent", None)
+        bot.edit_message_text.reset_mock()
+        assert await ch.finalize_stream(
+            " " * 5000, ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+        assert bot.edit_message_text.await_count == 0
