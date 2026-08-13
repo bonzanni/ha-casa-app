@@ -3024,6 +3024,54 @@ async def operator_notify(channel_manager: Any, text: str) -> None:
 _OPERATOR_NOTICE_LOCK = asyncio.Lock()
 
 
+# #513: files already announced to the operator this process. Per-file, per
+# process, which is what the issue asks for ("inform, not nag"). Persisting it
+# is deliberately out of scope.
+_placeholder_notified: set[str] = set()
+
+
+async def notify_placeholder_rewrites(channel_manager: Any) -> None:
+    """Tell the operator that a ``${...}``-bearing triggers.yaml was rewritten.
+
+    Cleanup warns and PROCEEDS when it must rewrite such a file, because
+    refusing strands a delivered reminder into redelivering forever. The person
+    that warning concerns is the operator — it is their hand-written config
+    whose entries may now resolve differently — but it only ever existed at
+    log_level, where they never see it (#513).
+
+    Peek-and-confirm, never drain: a path leaves the pending set on exactly one
+    condition — it was delivered, or it was already announced in this process.
+    An exception out of ``send`` therefore leaves it pending by construction,
+    with no ``finally`` to undo that.
+
+    Retry is "the next rewrite": if a notice fails and no further rewrite
+    happens in this process, the operator is not told. That is a deliberate
+    stopping point — closing it needs either persistence (which #513 rules out)
+    or a retry worker, and a retry worker would be a fourth delivery path
+    carrying the same confirm-before-consume obligation that this batch exists
+    to get right ONCE.
+    """
+    import reminders
+    channel = (channel_manager.get("telegram")
+               if channel_manager is not None else None)
+    if channel is None or not getattr(channel, "is_ready", True):
+        return  # nothing consumed — retried on the next rewrite
+    async with _OPERATOR_NOTICE_LOCK:
+        for path in reminders.peek_placeholder_notices():
+            # Re-checked INSIDE the lock: a caller that went first may have
+            # announced this very path while this one was queued.
+            if path in _placeholder_notified:
+                reminders.clear_placeholder_notice(path)
+                continue
+            outcome = await channel.send(
+                f"⚠️ Updated {path}, which uses ${{...}} placeholders — a "
+                f"placeholder entry there may now resolve differently. "
+                f"Worth a look.", {"cid": new_cid()})
+            if outcome is not DeliveryOutcome.NOT_DELIVERED:
+                _placeholder_notified.add(path)
+                reminders.clear_placeholder_notice(path)
+
+
 async def notify_plugin_health(
     channel_manager: Any,
     *,
@@ -3613,6 +3661,13 @@ async def main() -> None:
             logger.warning(
                 "one-shot cleanup for %s:%s reported %s", role, name, outcome,
             )
+        # #513: if that rewrite touched a ${...}-bearing file, the operator is
+        # owed a word about it. Never fatal — a cleanup must not fail because a
+        # courtesy notice could not be sent.
+        try:
+            await notify_placeholder_rewrites(channel_manager)
+        except Exception:  # noqa: BLE001
+            logger.warning("placeholder-rewrite notice failed", exc_info=True)
 
     trigger_registry = TriggerRegistry(
         scheduler=scheduler, app=app, bus=bus,
