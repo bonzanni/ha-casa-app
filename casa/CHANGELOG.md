@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.193.0] - 2026-08-13
+
+### Security
+
+- Specialist config digests are now provably secret-free (#372). Before
+  v0.137.0, a specialist's persisted `config_digest` could be computed over
+  configuration that still contained a plaintext secret; the v0.137.0
+  cleanup removed the plaintext but kept those digests, leaving an offline
+  brute-force oracle for low-entropy secrets in the tuple files and in
+  everything that captured them. Now the digest is derived from the
+  persisted (secret-free) snapshot at three enforced layers — construction,
+  the atomic write primitive, and the loader — and the first boot on this
+  version removes every retained pre-guard digest from disk: affected
+  tuple files are tombstoned (the specialist surfaces as an error-state
+  install; uninstall and reinstall it), diagnostic/crash residue and stale
+  quarantined bundle journals are deleted, and bundle-journal captures are
+  sanitized both when written and when restored. Rolling back to a
+  pre-guard generation is refused with a typed error instead of restoring
+  it. Config-git history from before v0.137.0 may still contain pre-guard
+  digests or plaintext — rotate any secret that predates it.
+
+### Fixed
+
+- A specialist upgrade that reclassifies a plain config key as secret no
+  longer leaves the old plaintext (or a digest over it) in the retained
+  rollback generation or in crash-recovery journals.
+- A damaged or stale pending upgrade no longer takes the specialist's
+  healthy running generation out of the fleet at boot, and no longer pins
+  its consent receipt and staging trees forever.
+- A crash-orphaned bundle-journal temporary file no longer causes boot
+  reconciliation to quarantine every installed specialist.
+
 ## [0.192.0] - 2026-08-13
 
 ### Security

@@ -33,6 +33,8 @@ import os
 import re
 import shutil
 import uuid
+
+import yaml
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -120,6 +122,131 @@ def _dump(payload: dict) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
+# #372 (D9): instance-tuple-shaped capture filenames — the only entries of
+# `before.tuple_files` the sanitizer below rewrites. Sidecars and the
+# pending-receipt marker never carry config snapshots.
+_CAPTURED_TUPLE_FILES = frozenset({
+    "active.yaml", "desired.yaml", "active.prior.yaml",
+    "active.yaml.rollback-tmp",
+})
+
+
+def _captured_secret_union(*, op: str, target_root: str, tuple_root: object,
+                           specialists_dir: Path) -> "set[str] | None":
+    """#372 (D9): the secret-name union a captured tuple snapshot is
+    sanitized against — the capture's own root schema, plus (for install/
+    upgrade ops) the incoming target root's schema. ``None`` means fail
+    closed: strip every key (unloadable/tampered schema, unusable root, or —
+    r7 amendment — an install/upgrade journal without a usable target_root,
+    the pre-provenance journal shape)."""
+    from specialist_install import _declared_secret_names_for_root
+    if not isinstance(tuple_root, str) or not tuple_root:
+        return None
+    union = _declared_secret_names_for_root(
+        tuple_root, specialists_dir=specialists_dir)
+    if union is None:
+        return None
+    union = set(union)
+    if op in ("install", "upgrade"):
+        if not isinstance(target_root, str) or not target_root:
+            return None
+        incoming = _declared_secret_names_for_root(
+            target_root, specialists_dir=specialists_dir)
+        if incoming is None:
+            return None
+        union |= incoming
+    return union
+
+
+def _sanitize_captured_tuple_files(
+    tuple_files: "dict[str, str | None]", *, op: str, target_root: str,
+    specialists_dir: Path,
+) -> "dict[str, str | None]":
+    """#372 (D9): one sanitizer for BOTH journal ends — applied when a capture
+    is serialized (a new journal never holds plaintext or a secret-derived
+    digest at any moment of its life) and again when any journal restores
+    (covering pre-fix journals already on disk). Idempotent: an honest or
+    already-sanitized payload passes through byte-identically; an unparseable
+    tuple payload becomes the minimal sentinel tombstone (fail closed)."""
+    from personality_binding import PRE_GUARD_SENTINEL
+
+    sanitized: "dict[str, str | None]" = {}
+    for filename, content in tuple_files.items():
+        if content is None or filename not in _CAPTURED_TUPLE_FILES:
+            sanitized[filename] = content
+            continue
+        try:
+            payload = yaml.safe_load(content)
+        except yaml.YAMLError:
+            payload = None
+        if not isinstance(payload, dict):
+            sanitized[filename] = yaml.safe_dump({
+                "api_version": "casa.instance-tuple/v1",
+                "binding": {"effective_config_digest": PRE_GUARD_SENTINEL},
+                "config_snapshot": {}, "config_digest": PRE_GUARD_SENTINEL,
+            }, sort_keys=False)
+            logger.warning(
+                "bundle journal (op=%s): unparseable captured %s replaced by "
+                "a sentinel tombstone (#372)", op, filename)
+            continue
+        snapshot = payload.get("config_snapshot")
+        stripped = False
+        if snapshot and not isinstance(snapshot, dict):
+            payload["config_snapshot"] = {}
+            stripped = True
+        elif isinstance(snapshot, dict) and snapshot:
+            union = _captured_secret_union(
+                op=op, target_root=target_root,
+                tuple_root=payload.get("root"), specialists_dir=specialists_dir)
+            if union is None:
+                union = set(snapshot)
+            kept = {k: v for k, v in snapshot.items() if k not in union}
+            if len(kept) != len(snapshot):
+                payload["config_snapshot"] = kept
+                stripped = True
+        # #372 (both reviewers, diff r1): key-stripping alone misses the
+        # v0.137 sanitized shape — a secret-free snapshot whose digests were
+        # computed over the original secret-bearing mapping. Check the digest
+        # equation on BOTH fields unconditionally; any disagreement (or an
+        # undigestable snapshot) tombstones. A sentinel already in place is
+        # left as-is (idempotent).
+        if not stripped:
+            from personality_binding import compute_effective_config_digest
+            binding = payload.get("binding")
+            binding_digest = (binding.get("effective_config_digest")
+                              if isinstance(binding, dict) else None)
+            # Diff r2 (both reviewers): the idempotence exemption applies only
+            # when BOTH fields are already sentinels — a sentinel in one field
+            # must not shield a stale secret-derived digest in the other.
+            both_sentineled = (
+                payload.get("config_digest") == PRE_GUARD_SENTINEL
+                and (binding_digest == PRE_GUARD_SENTINEL
+                     or not isinstance(binding, dict)))
+            if not both_sentineled:
+                try:
+                    expected = compute_effective_config_digest(
+                        payload.get("config_snapshot") or {})
+                except Exception:  # noqa: BLE001 — undigestable: fail closed
+                    expected = None
+                if (expected is None
+                        or payload.get("config_digest") != expected
+                        or (isinstance(binding, dict)
+                            and binding_digest != expected)):
+                    stripped = True
+        if stripped:
+            payload["config_digest"] = PRE_GUARD_SENTINEL
+            binding = payload.get("binding")
+            if isinstance(binding, dict):
+                binding["effective_config_digest"] = PRE_GUARD_SENTINEL
+            sanitized[filename] = yaml.safe_dump(payload, sort_keys=False)
+            logger.warning(
+                "bundle journal (op=%s): stripped secret-union key(s) from "
+                "captured %s and tombstoned its digests (#372)", op, filename)
+        else:
+            sanitized[filename] = content
+    return sanitized
+
+
 def begin(op: str, slug: str, *, before_entries: list[dict],
           before_tuple_files: dict[str, "str | None"],
           ack_records: list[dict], receipt_digest: str = "",
@@ -137,6 +264,12 @@ def begin(op: str, slug: str, *, before_entries: list[dict],
     ops_dir = Path(ops_dir)
     ops_dir.mkdir(parents=True, exist_ok=True)
     path = ops_dir / f"{slug}.{uuid.uuid4().hex}.json"
+    # #372 (D9a): captures are sanitized BEFORE they are serialized — the
+    # journal file itself must never hold a snapshot's secret-union keys or a
+    # digest computed over them, at any moment of its life.
+    before_tuple_files = _sanitize_captured_tuple_files(
+        dict(before_tuple_files), op=op, target_root=target_root,
+        specialists_dir=SPECIALISTS_DIR)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "op": op,
@@ -186,6 +319,11 @@ class BundleTxn:
     ack_records: list[dict]
     removed_artifact_ids: tuple[str, ...] = ()
     new_artifact_ids: tuple[str, ...] = ()
+    # #372 (D9b): provenance the restore-side sanitizer needs. Defaults are
+    # the fail-closed shape — a constructor that does not thread them gets
+    # all-keys stripping for any secret-bearing capture, never plaintext.
+    op: str = ""
+    target_root: str = ""
     registry_path: Path = plugin_registry.REGISTRY_PATH
     specialists_dir: Path = SPECIALISTS_DIR
     acks_path: Path = ACKS_PATH
@@ -234,9 +372,18 @@ class BundleTxn:
         # their `with MATERIALIZE_LOCK:` scopes exited; the tool compensation
         # thread and boot reconciliation never take it).
         from specialist_materialize import MATERIALIZE_LOCK, resolve_material_content_dir
+        # #372 (D9b): every restore — runtime compensation AND boot recovery —
+        # re-runs the capture sanitizer, so a journal written by pre-fix code
+        # (or with unusable provenance) restores stripped-and-tombstoned
+        # state, never plaintext or a secret-derived digest. Idempotent for
+        # captures D9a already sanitized.
+        restored_tuple_files = _sanitize_captured_tuple_files(
+            dict(self.before_tuple_files), op=self.op,
+            target_root=self.target_root,
+            specialists_dir=Path(self.specialists_dir))
         with MATERIALIZE_LOCK:
             slug_dir = Path(self.specialists_dir) / self.slug
-            for filename, content in self.before_tuple_files.items():
+            for filename, content in restored_tuple_files.items():
                 target = slug_dir / filename
                 if content is None:
                     target.unlink(missing_ok=True)
@@ -272,10 +419,13 @@ class BundleTxn:
 
 
 def quarantine(slug: str, *,
-                registry_path: Path = plugin_registry.REGISTRY_PATH) -> None:
+                registry_path: Path = plugin_registry.REGISTRY_PATH) -> bool:
     """Remove every registry entry owned by `slug` and flag the slug in the
     registry raw doc's `quarantined_bundles` list (surfaced by health,
-    Task 11)."""
+    Task 11). Returns True when the quarantine was durably persisted; False
+    when it was skipped because the registry is invalid (#372, Sol diff r3 —
+    a skip is not durable quarantine, and callers must not treat it as
+    success)."""
     registry_path = Path(registry_path)
     data = plugin_registry.load_registry(registry_path)
     # Whole-branch G: never save a reconstructed partial doc over an
@@ -288,7 +438,7 @@ def quarantine(slug: str, *,
         logger.warning(
             "quarantine(%s): registry is invalid — skipping save (already "
             "fails closed)", slug)
-        return
+        return False
     raw = data.raw if isinstance(data.raw, dict) else {}
     plugins = raw.get("plugins")
     if isinstance(plugins, list):
@@ -302,10 +452,11 @@ def quarantine(slug: str, *,
         qlist.append(slug)
     data.raw = raw
     plugin_registry.save_registry(data, registry_path)
+    return True
 
 
 def quarantine_all(*,
-                    registry_path: Path = plugin_registry.REGISTRY_PATH) -> None:
+                    registry_path: Path = plugin_registry.REGISTRY_PATH) -> bool:
     """Deterministic worst case: an unparseable journal filename carries no
     trustworthy slug, so every owner-bearing entry is removed and every
     owning slug flagged."""
@@ -317,7 +468,7 @@ def quarantine_all(*,
         logger.warning(
             "quarantine_all: registry is invalid — skipping save (already "
             "fails closed)")
-        return
+        return False
     raw = data.raw if isinstance(data.raw, dict) else {}
     plugins = raw.get("plugins")
     slugs: set[str] = set()
@@ -336,6 +487,7 @@ def quarantine_all(*,
             qlist.append(s)
     data.raw = raw
     plugin_registry.save_registry(data, registry_path)
+    return True
 
 
 def _valid_payload(payload: Any, slug: str) -> bool:
@@ -386,8 +538,16 @@ def _valid_payload(payload: Any, slug: str) -> bool:
         return False
 
 
-def _quarantine_rename(path: Path) -> None:
-    os.replace(path, path.with_name(path.name + ".quarantined"))
+def _quarantine_remove(path: Path) -> None:
+    """#372 (diff r1, both reviewers): a quarantined journal's FILE is deleted
+    once the registry-level quarantine is durable — "kept until next boot" is
+    no confidentiality bound on a box that never reboots, and the captured
+    before-bytes can hold pre-guard plaintext and digests. The registry flag,
+    the log line, and the reconcile actions list carry the diagnostics."""
+    logger.warning(
+        "deleting quarantined journal file %s (#372); the registry "
+        "quarantine flag carries the diagnostic state", path.name)
+    path.unlink(missing_ok=True)
 
 
 RECEIPTS_DIR = Path("/config/specialists/.receipts")
@@ -423,8 +583,21 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
     try:
         if specialists_dir.is_dir():
             for slug_dir in specialists_dir.iterdir():
-                if slug_dir.is_dir() and (slug_dir / "desired.yaml").is_file():
-                    pending_slugs.add(slug_dir.name)
+                if not slug_dir.is_dir() or not (slug_dir / "desired.yaml").is_file():
+                    continue
+                # #372 (D3c liveness, Terra design r3): a tombstoned or
+                # pre-guard desired is NOT a live pending candidate — its
+                # configure re-commit can never succeed, and counting it here
+                # would pin its receipt and staging tree through the age
+                # sweep forever.
+                import specialist_install as _si
+                if _si._pre_guard_prior_reason(slug_dir / "desired.yaml") is not None:
+                    logger.info(
+                        "pending slug %r excluded from receipt retention: its "
+                        "desired tuple is pre-guard/tombstoned (#372)",
+                        slug_dir.name)
+                    continue
+                pending_slugs.add(slug_dir.name)
     except OSError:
         pass
     # Sol r6-2: prefer the durable marker naming the EXACT receipt the
@@ -507,6 +680,39 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
         last_boot_reconcile_actions = actions
         return actions
 
+    # #372 (D8): sweep terminal .ops residue BEFORE the scan.
+    # - `_fsync_write`'s `<name>.tmp-<hex>` survives a hard kill between open
+    #   and replace; its unrecognized filename would otherwise hit the
+    #   quarantine_all arm below and drop every healthy specialist (Sol
+    #   design r3). No journal writer is live during this boot oneshot.
+    # - A `.quarantined` file from an EARLIER boot is skipped permanently by
+    #   every recovery path, and its before.tuple_files can embed pre-guard
+    #   digests and plaintext — delete it. Files quarantined DURING this run
+    #   keep their one-boot diagnostic window and die at the next boot. The
+    #   registry-level quarantine flag is untouched either way.
+    for path in sorted(ops_dir.iterdir()):
+        if not path.is_file():
+            continue
+        if re.search(r"\.tmp-[0-9a-f]{32}$", path.name):
+            try:
+                path.unlink()
+                logger.warning(
+                    "deleted crash-orphaned journal temporary %s (#372)", path.name)
+                actions.append({"slug": None, "action": "deleted_journal_tmp"})
+            except OSError:
+                logger.exception("could not delete journal temporary %s", path)
+        elif path.name.endswith(".quarantined"):
+            try:
+                path.unlink()
+                logger.warning(
+                    "deleted quarantined journal file %s from an earlier boot "
+                    "(#372); the registry quarantine flag is unaffected",
+                    path.name)
+                actions.append(
+                    {"slug": None, "action": "deleted_quarantined_journal"})
+            except OSError:
+                logger.exception("could not delete quarantined journal %s", path)
+
     for path in sorted(ops_dir.iterdir()):
         if not path.is_file():
             continue
@@ -516,11 +722,15 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
         match = JOURNAL_NAME_RE.match(path.name)
         if match is None:
             try:
-                quarantine_all(registry_path=registry_path)
+                persisted = quarantine_all(registry_path=registry_path)
             except Exception:  # noqa: BLE001 — degrade-and-boot
                 logger.exception(
-                    "quarantine_all failed for unparseable journal %s", path)
-            _quarantine_rename(path)
+                    "quarantine_all failed for unparseable journal %s; the "
+                    "journal file is retained so the next boot retries", path)
+                continue  # #372 (Sol diff r2): delete only after durability
+            if not persisted:  # #372 (Sol diff r3): a skipped save is not durable
+                continue
+            _quarantine_remove(path)
             actions.append({"slug": None, "action": "quarantine_all"})
             continue
 
@@ -532,10 +742,15 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
 
         if not _valid_payload(payload, slug):
             try:
-                quarantine(slug, registry_path=registry_path)
+                persisted = quarantine(slug, registry_path=registry_path)
             except Exception:  # noqa: BLE001 — degrade-and-boot
-                logger.exception("quarantine failed for slug %s", slug)
-            _quarantine_rename(path)
+                logger.exception(
+                    "quarantine failed for slug %s; the journal file is "
+                    "retained so the next boot retries", slug)
+                continue  # #372 (Sol diff r2): delete only after durability
+            if not persisted:  # #372 (Sol diff r3): a skipped save is not durable
+                continue
+            _quarantine_remove(path)
             actions.append({"slug": slug, "action": "quarantine"})
             continue
 
@@ -553,6 +768,11 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
             before_entries=before["registry_entries"],
             before_tuple_files=before["tuple_files"],
             ack_records=before["ack_records"],
+            # #372 (D9b): thread the journal's provenance to the restore-side
+            # sanitizer; a pre-provenance journal (both default to "") fails
+            # closed there.
+            op=payload.get("op") or "",
+            target_root=payload.get("target_root") or "",
             registry_path=registry_path,
             specialists_dir=specialists_dir,
             acks_path=acks_path,
@@ -563,11 +783,16 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
         except Exception:  # noqa: BLE001 — degrade-and-boot
             logger.exception("rollback failed for slug %s; quarantining", slug)
             try:
-                quarantine(slug, registry_path=registry_path)
+                persisted = quarantine(slug, registry_path=registry_path)
             except Exception:  # noqa: BLE001
                 logger.exception(
-                    "quarantine failed for slug %s after rollback failure", slug)
-            _quarantine_rename(path)
+                    "quarantine failed for slug %s after rollback failure; "
+                    "the journal file is retained so the next boot retries",
+                    slug)
+                continue  # #372 (Sol diff r2): delete only after durability
+            if not persisted:  # #372 (Sol diff r3): a skipped save is not durable
+                continue
+            _quarantine_remove(path)
             actions.append({"slug": slug, "action": "quarantine"})
             continue
 

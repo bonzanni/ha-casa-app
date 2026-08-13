@@ -32,6 +32,23 @@ def _finance_entry():
                        manifest_name="finance", repo="bonzanni/casa-specialist-finance")
 
 
+def _tuple_yaml(snapshot: dict, config_digest: str) -> str:
+    import yaml
+    return yaml.safe_dump({
+        "api_version": "casa.instance-tuple/v1",
+        "root": "casa/mtg@0.1.0#sha256:" + "e" * 64,
+        "binding": {"effective_config_digest": config_digest},
+        "config_snapshot": snapshot, "config_digest": config_digest,
+    }, sort_keys=False)
+
+
+def _honest_tuple_yaml(snapshot: dict) -> str:
+    """#372: captured tuple contents must be honest instance-tuple payloads —
+    the D9 sanitizer tombstones arbitrary stand-in strings by design."""
+    from personality_binding import compute_effective_config_digest
+    return _tuple_yaml(snapshot, compute_effective_config_digest(snapshot))
+
+
 # --------------------------------------------------------------------------
 # begin / mark_step / complete lifecycle
 # --------------------------------------------------------------------------
@@ -41,10 +58,19 @@ def test_begin_writes_journal_with_full_before_state(tmp_path):
     entries = [owned_entry()]
     ack_records = [{"component_id": "c", "version": "1",
                     "component_checksum": "x", "slug": "mtg"}]
+    # #372 (D9a): tuple captures pass through a sanitizer — an HONEST,
+    # secret-free tuple payload is preserved verbatim.
+    from personality_binding import EMPTY_CONFIG_DIGEST
+    import yaml as _yaml
+    honest = _yaml.safe_dump({
+        "api_version": "casa.instance-tuple/v1",
+        "binding": {"effective_config_digest": EMPTY_CONFIG_DIGEST},
+        "config_snapshot": {}, "config_digest": EMPTY_CONFIG_DIGEST,
+    }, sort_keys=False)
     path = journal.begin(
         "install", "mtg",
         before_entries=entries,
-        before_tuple_files={"active.yaml": "old-content"},
+        before_tuple_files={"active.yaml": honest},
         ack_records=ack_records,
         receipt_digest="deadbeef",
         ops_dir=ops_dir,
@@ -57,7 +83,7 @@ def test_begin_writes_journal_with_full_before_state(tmp_path):
     assert payload["slug"] == "mtg"
     assert payload["state"] == "in-progress"
     assert payload["before"]["registry_entries"] == entries
-    assert payload["before"]["tuple_files"] == {"active.yaml": "old-content"}
+    assert payload["before"]["tuple_files"] == {"active.yaml": honest}
     assert payload["before"]["ack_records"] == ack_records
     assert payload["receipt_digest"] == "deadbeef"
     assert payload["steps_done"] == []
@@ -130,19 +156,23 @@ def test_fsync_write_is_atomic_on_a_torn_write(tmp_path, monkeypatch):
     assert [p.name for p in ops_dir.iterdir()] == [path.name]
 
 
-def test_rollback_over_invalid_registry_quarantines(tmp_path):
+def test_rollback_over_invalid_registry_retains_the_journal(tmp_path):
     # Whole-branch G: an in-progress journal whose registry is unreadable must
     # route to the quarantine path, never save a partial reconstructed doc.
+    # #372 (Sol diff r3): quarantine's skip over an invalid registry is NOT
+    # durable — the journal is retained for next-boot retry, and no
+    # "quarantine" action is reported for a quarantine that never persisted.
     ops_dir = tmp_path / "ops"
     reg = tmp_path / "registry.json"
     reg.write_text("{ not valid json")
     entries = [owned_entry()]
-    journal.begin("install", "mtg", before_entries=entries, before_tuple_files={},
-                  ack_records=[], ops_dir=ops_dir)
+    path = journal.begin("install", "mtg", before_entries=entries, before_tuple_files={},
+                         ack_records=[], ops_dir=ops_dir)
     actions = journal.reconcile_boot(
         ops_dir=ops_dir, registry_path=reg,
         specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
-    assert actions == [{"slug": "mtg", "action": "quarantine"}]
+    assert actions == []
+    assert path.exists()   # retained: nothing durable was persisted
     # The unreadable registry was NOT overwritten with partial data.
     assert reg.read_text() == "{ not valid json"
 
@@ -189,7 +219,14 @@ def test_reconcile_boot_keeps_pending_installs_receipt_and_staging(tmp_path):
     staged_tree.mkdir(parents=True)
     (staged_tree / "manifest.json").write_text("{}", encoding="utf-8")
     (specialists / "mtg").mkdir(parents=True)
-    (specialists / "mtg" / "desired.yaml").write_text("x: 1\n", encoding="utf-8")
+    # #372: pending liveness requires a desired that passes the digest
+    # equation — a minimal honest tuple, not an arbitrary stand-in.
+    from personality_binding import EMPTY_CONFIG_DIGEST
+    (specialists / "mtg" / "desired.yaml").write_text(
+        json.dumps({"api_version": "casa.instance-tuple/v1",
+                    "binding": {"effective_config_digest": EMPTY_CONFIG_DIGEST},
+                    "config_snapshot": {}, "config_digest": EMPTY_CONFIG_DIGEST}),
+        encoding="utf-8")
     # The durable marker written at pending-commit time (Sol r6-2) names the
     # EXACT receipt the pending candidate was committed with.
     (specialists / "mtg" / "pending-receipt.json").write_text(
@@ -234,6 +271,282 @@ def test_reconcile_boot_keeps_pending_installs_receipt_and_staging(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# #372 (D8/D9): journal residue sweeps + captured-tuple sanitization
+# --------------------------------------------------------------------------
+
+
+def test_a_journal_temporary_never_triggers_quarantine_all_and_is_deleted(tmp_path):
+    """#372 (D8, Sol design r3): a crash-orphaned `<journal>.json.tmp-<hex>`
+    must be deleted BEFORE the reconcile scan — pre-fix its unrecognized name
+    hit quarantine_all() and dropped every healthy specialist."""
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    orphan = ops_dir / ("mtg." + "a" * 32 + ".json.tmp-" + "b" * 32)
+    orphan.write_text("{torn", encoding="utf-8")
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=tmp_path / "registry.json",
+        specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json",
+        receipts_dir=tmp_path / "receipts", personas_dir=tmp_path / "personas")
+
+    assert not orphan.exists()
+    assert not any(a["action"] == "quarantine_all" for a in actions)
+
+
+def test_quarantined_journal_files_are_deleted_after_recovery(tmp_path):
+    """#372 (D8): a quarantined journal is terminal residue no recovery path
+    reads, and its before.tuple_files can embed pre-guard digests — delete the
+    FILE after recovery (the registry-level quarantine flag is unaffected)."""
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    stale = ops_dir / ("mtg." + "a" * 32 + ".json.quarantined")
+    stale.write_text(json.dumps({"before": {"tuple_files": {
+        "active.yaml": _tuple_yaml({"api_token": "hunter2"}, "sha256:" + "9" * 64),
+    }}}), encoding="utf-8")
+
+    journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=tmp_path / "registry.json",
+        specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json",
+        receipts_dir=tmp_path / "receipts", personas_dir=tmp_path / "personas")
+
+    assert not stale.exists()
+
+
+def test_begin_sanitizes_captured_tuple_files(tmp_path):
+    """#372 (D9a): a new journal never holds a captured tuple snapshot's
+    secret-union keys or a digest over them — with no loadable target schema
+    the union fails closed to every key."""
+    from personality_binding import PRE_GUARD_SENTINEL
+
+    ops_dir = tmp_path / "ops"
+    captured = _honest_tuple_yaml({"api_token": "hunter2-legacy-plaintext"})
+    path = journal.begin(
+        "upgrade", "mtg", before_entries=[],
+        before_tuple_files={"active.yaml": captured, "pending-receipt.json": '{"receipt_id": "r"}'},
+        ack_records=[], target_root="", ops_dir=ops_dir)
+
+    text = path.read_text(encoding="utf-8")
+    assert "hunter2-legacy-plaintext" not in text
+    payload = json.loads(text)
+    import yaml
+    sanitized = yaml.safe_load(payload["before"]["tuple_files"]["active.yaml"])
+    assert sanitized["config_snapshot"] == {}
+    assert sanitized["config_digest"] == PRE_GUARD_SENTINEL
+    assert sanitized["binding"]["effective_config_digest"] == PRE_GUARD_SENTINEL
+    # Non-tuple captured files pass through untouched.
+    assert payload["before"]["tuple_files"]["pending-receipt.json"] == '{"receipt_id": "r"}'
+
+
+def test_sanitizer_tombstones_the_already_sanitized_pre_guard_shape(tmp_path):
+    """#372 (both reviewers, diff r1): the v0.137 sanitized shape — a
+    secret-FREE snapshot whose digests were computed over the original
+    secret-bearing mapping — has nothing left to strip, so key-stripping
+    alone misses it. The equation check must tombstone it at BOTH journal
+    ends."""
+    from personality_binding import PRE_GUARD_SENTINEL, compute_effective_config_digest
+    import yaml
+
+    stale = compute_effective_config_digest({"api_token": "hunter2-legacy-plaintext"})
+    captured = _tuple_yaml({}, stale)
+
+    # Capture end.
+    path = journal.begin(
+        "upgrade", "mtg", before_entries=[],
+        before_tuple_files={"active.yaml": captured}, ack_records=[],
+        target_root="", ops_dir=tmp_path / "ops")
+    sanitized = yaml.safe_load(
+        json.loads(path.read_text(encoding="utf-8"))["before"]["tuple_files"]["active.yaml"])
+    assert sanitized["config_digest"] == PRE_GUARD_SENTINEL
+    assert sanitized["binding"]["effective_config_digest"] == PRE_GUARD_SENTINEL
+
+    # Restore end (pre-fix journal shape: raw capture, no provenance).
+    reg = tmp_path / "registry.json"
+    _write_registry(reg, [])
+    txn = journal.BundleTxn(
+        journal_path=tmp_path / "j.json", slug="mtg", before_entries=[],
+        before_tuple_files={"active.yaml": captured}, ack_records=[],
+        registry_path=reg, specialists_dir=tmp_path / "specialists",
+        acks_path=tmp_path / "acks.json",
+        agents_specialists_dir=tmp_path / "agents-specialists")
+    txn.rollback_disk()
+    restored = yaml.safe_load(
+        (tmp_path / "specialists" / "mtg" / "active.yaml").read_text(encoding="utf-8"))
+    assert restored["config_digest"] == PRE_GUARD_SENTINEL
+    assert restored["binding"]["effective_config_digest"] == PRE_GUARD_SENTINEL
+    assert stale not in (tmp_path / "specialists" / "mtg" / "active.yaml").read_text(
+        encoding="utf-8")
+
+
+def test_a_journal_quarantined_during_this_run_is_deleted_not_renamed(tmp_path):
+    """#372 (both reviewers, diff r1): 'next boot' is no bound on a box that
+    never reboots — a journal quarantined during THIS run must have its file
+    deleted once the registry-level quarantine is durable; the flag and the
+    actions list carry the diagnostics."""
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    bad = ops_dir / ("mtg." + "a" * 32 + ".json")
+    bad.write_text("{ not valid json", encoding="utf-8")
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
+
+    assert {"slug": "mtg", "action": "quarantine"} in actions
+    assert list(ops_dir.iterdir()) == []   # neither the journal nor a .quarantined copy
+    assert "mtg" in _read_registry(registry_path).get("quarantined_bundles", [])
+
+
+def test_sanitizer_tombstones_a_half_sentineled_capture(tmp_path):
+    """#372 (both reviewers, diff r2): a sentinel in ONE digest field must not
+    exempt the OTHER from the equation check — a stale secret-derived digest
+    beside a sentinel is still the oracle."""
+    from personality_binding import PRE_GUARD_SENTINEL, compute_effective_config_digest
+    import yaml
+
+    stale = compute_effective_config_digest({"api_token": "hunter2-legacy-plaintext"})
+    payload = yaml.safe_load(_tuple_yaml({}, stale))
+    payload["config_digest"] = PRE_GUARD_SENTINEL       # binding keeps stale
+    half = yaml.safe_dump(payload, sort_keys=False)
+
+    path = journal.begin(
+        "upgrade", "mtg", before_entries=[],
+        before_tuple_files={"active.yaml": half}, ack_records=[],
+        target_root="", ops_dir=tmp_path / "ops")
+    sanitized = yaml.safe_load(
+        json.loads(path.read_text(encoding="utf-8"))["before"]["tuple_files"]["active.yaml"])
+    assert sanitized["binding"]["effective_config_digest"] == PRE_GUARD_SENTINEL
+    assert stale not in path.read_text(encoding="utf-8")
+
+
+def test_a_journal_is_retained_when_its_quarantine_fails_to_persist(tmp_path, monkeypatch):
+    """#372 (Sol diff r2): the journal file is deleted only AFTER the
+    registry-level quarantine is durable — a failed quarantine write must
+    retain the journal so the next boot retries, never silently lose the
+    recovery state."""
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    bad = ops_dir / ("mtg." + "a" * 32 + ".json")
+    bad.write_text("{ not valid json", encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise OSError("simulated registry write failure")
+
+    monkeypatch.setattr(journal.plugin_registry, "save_registry", _boom)
+    journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
+
+    assert bad.exists()   # retained for next-boot retry, not deleted
+
+
+def test_a_journal_is_retained_when_quarantine_skips_an_invalid_registry(tmp_path):
+    """#372 (Sol diff r3): quarantine() deliberately skips saving over an
+    INVALID registry (whole-branch G) — that skip is NOT durable quarantine,
+    so the journal file must be retained for next-boot retry, exactly like a
+    raised save failure."""
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text("{ not valid json", encoding="utf-8")
+    bad = ops_dir / ("mtg." + "a" * 32 + ".json")
+    bad.write_text("{ not valid json either", encoding="utf-8")
+
+    journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
+
+    assert bad.exists()   # retained: nothing durable was persisted
+    assert registry_path.read_text(encoding="utf-8") == "{ not valid json"
+
+
+def test_rollback_disk_sanitizes_a_pre_fix_journal_capture(tmp_path):
+    """#372 (D9b + r7 amendment): a journal written by pre-fix code restores
+    through the same sanitizer — with missing target_root on an upgrade the
+    union fails closed, so the restored tuple is stripped and tombstoned, not
+    plaintext."""
+    from personality_binding import PRE_GUARD_SENTINEL
+    import yaml
+
+    reg = tmp_path / "registry.json"
+    _write_registry(reg, [])
+    txn = journal.BundleTxn(
+        journal_path=tmp_path / "j.json", slug="mtg",
+        before_entries=[],
+        before_tuple_files={"active.yaml": _honest_tuple_yaml({"api_token": "hunter2-legacy-plaintext"})},
+        ack_records=[], op="upgrade", target_root="",
+        registry_path=reg, specialists_dir=tmp_path / "specialists",
+        acks_path=tmp_path / "acks.json",
+        agents_specialists_dir=tmp_path / "agents-specialists")
+    txn.rollback_disk()
+
+    restored = (tmp_path / "specialists" / "mtg" / "active.yaml").read_text(encoding="utf-8")
+    assert "hunter2-legacy-plaintext" not in restored
+    payload = yaml.safe_load(restored)
+    assert payload["config_snapshot"] == {}
+    assert payload["config_digest"] == PRE_GUARD_SENTINEL
+
+
+def test_boot_scrub_deletes_orphan_tuple_write_temporaries(tmp_path):
+    """#372 (D8): a crash-orphaned `<tuple>.yaml.tmp` under a slug dir is read
+    by nothing and can hold a full pre-guard tuple — the boot scrub deletes
+    it."""
+    from specialist_install import sanitize_specialist_snapshots
+
+    slug_dir = tmp_path / "specialists" / "mtg"
+    slug_dir.mkdir(parents=True)
+    orphan = slug_dir / "active.yaml.tmp"
+    orphan.write_text(_tuple_yaml({"api_token": "hunter2"}, "sha256:" + "9" * 64),
+                      encoding="utf-8")
+
+    assert sanitize_specialist_snapshots(specialists_dir=tmp_path / "specialists") == 1
+    assert not orphan.exists()
+
+
+def test_a_tombstoned_desired_is_not_a_live_pending_candidate(tmp_path):
+    """#372 (D3c liveness, Terra design r3): the receipt sweep's pending
+    exemption requires a desired.yaml that passes the digest equation — a
+    tombstoned/pre-guard desired must not pin its receipt and staging tree
+    forever."""
+    import os
+    import time
+    from personality_binding import PRE_GUARD_SENTINEL
+
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    specialists = tmp_path / "specialists"
+    staging = specialists / ".staging"
+    staged_tree = staging / "deadbeef01"
+    staged_tree.mkdir(parents=True)
+    (specialists / "mtg").mkdir(parents=True)
+    (specialists / "mtg" / "desired.yaml").write_text(
+        _tuple_yaml({}, PRE_GUARD_SENTINEL), encoding="utf-8")
+    (specialists / "mtg" / "pending-receipt.json").write_text(
+        json.dumps({"receipt_id": "c" * 32}), encoding="utf-8")
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(staged_tree), "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for p in (receipt_path, staged_tree):
+        os.utime(p, (month_ago, month_ago))
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=tmp_path / "registry.json",
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert not receipt_path.exists()   # no longer pinned by the dead pending
+    assert not staged_tree.exists()
+
+
+# --------------------------------------------------------------------------
 # reconcile_boot: no-op cases
 # --------------------------------------------------------------------------
 
@@ -254,9 +567,12 @@ def test_reconcile_boot_noop_empty_ops_dir(tmp_path):
     assert actions == []
 
 
-def test_reconcile_boot_skips_preexisting_quarantined_file(tmp_path):
-    """Idempotency: a file already renamed .quarantined by an earlier boot is
-    left completely untouched on the next boot."""
+def test_reconcile_boot_deletes_a_preexisting_quarantined_file(tmp_path):
+    """#372 (D8, rewrites the pre-#372 skip pin): a file renamed .quarantined
+    by an EARLIER boot has had its diagnostic window — no recovery path ever
+    reads it again, and its captured bytes can embed pre-guard digests and
+    plaintext. It is deleted, never rolled back, and the registry is
+    untouched."""
     ops_dir = tmp_path / "ops"
     ops_dir.mkdir()
     registry_path = tmp_path / "registry.json"
@@ -268,8 +584,9 @@ def test_reconcile_boot_skips_preexisting_quarantined_file(tmp_path):
         ops_dir=ops_dir, registry_path=registry_path,
         specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
 
-    assert actions == []
-    assert q.read_text(encoding="utf-8") == "not even valid json"
+    assert actions == [{"slug": None, "action": "deleted_quarantined_journal"}]
+    assert not q.exists()
+    assert _read_registry(registry_path)["plugins"] == []
 
 
 # --------------------------------------------------------------------------
@@ -288,8 +605,10 @@ def test_reconcile_boot_rolls_back_inprogress_journal(tmp_path):
 
     slug_dir = specialists_dir / "mtg"
     slug_dir.mkdir(parents=True)
-    (slug_dir / "active.yaml").write_text("mid-mutation", encoding="utf-8")
-    (slug_dir / "desired.yaml").write_text("mid-mutation-desired", encoding="utf-8")
+    (slug_dir / "active.yaml").write_text(
+        _honest_tuple_yaml({}), encoding="utf-8")
+    (slug_dir / "desired.yaml").write_text(
+        _honest_tuple_yaml({}), encoding="utf-8")
 
     ack_record = {"component_id": "casa-specialist-mtg", "version": "0.2.0",
                   "component_checksum": "root-digest", "slug": "mtg", "ts": 1}
@@ -297,7 +616,8 @@ def test_reconcile_boot_rolls_back_inprogress_journal(tmp_path):
     journal.begin(
         "install", "mtg",
         before_entries=[before_entry],
-        before_tuple_files={"active.yaml": "pre-mutation", "desired.yaml": None},
+        before_tuple_files={"active.yaml": _honest_tuple_yaml({}),
+                            "desired.yaml": None},
         ack_records=[ack_record],
         ops_dir=ops_dir,
     )
@@ -312,7 +632,8 @@ def test_reconcile_boot_rolls_back_inprogress_journal(tmp_path):
     doc = _read_registry(registry_path)
     assert doc["plugins"] == [before_entry]
 
-    assert (slug_dir / "active.yaml").read_text(encoding="utf-8") == "pre-mutation"
+    assert (slug_dir / "active.yaml").read_text(
+        encoding="utf-8") == _honest_tuple_yaml({})
     assert not (slug_dir / "desired.yaml").exists()
 
     identity = install_consent_identity(
@@ -345,7 +666,7 @@ def test_rollback_restores_the_pending_receipt_marker(tmp_path):
     journal.begin(
         "install", "mtg", before_entries=[],
         before_tuple_files={"active.yaml": None,
-                            "desired.yaml": "pending-tuple",
+                            "desired.yaml": _honest_tuple_yaml({}),
                             "pending-receipt.json": marker_json},
         ack_records=[], ops_dir=ops_dir)
 
@@ -353,7 +674,8 @@ def test_rollback_restores_the_pending_receipt_marker(tmp_path):
         ops_dir=ops_dir, registry_path=registry_path,
         specialists_dir=specialists_dir, acks_path=tmp_path / "acks.json")
     assert {"slug": "mtg", "action": "rolled_back"} in actions
-    assert (slug_dir / "desired.yaml").read_text(encoding="utf-8") == "pending-tuple"
+    assert (slug_dir / "desired.yaml").read_text(
+        encoding="utf-8") == _honest_tuple_yaml({})
     assert _json.loads((slug_dir / "pending-receipt.json").read_text(
         encoding="utf-8")) == {"receipt_id": "e" * 32}
     assert not (slug_dir / "active.yaml").exists()
@@ -451,7 +773,8 @@ def test_reconcile_boot_corrupt_json_quarantines_exactly_that_slug(tmp_path):
 
     assert actions == [{"slug": "mtg", "action": "quarantine"}]
     assert not bad.exists()
-    assert bad.with_name(bad.name + ".quarantined").exists()
+    assert not bad.exists()
+    assert not bad.with_name(bad.name + ".quarantined").exists()  # #372: deleted, not renamed
 
     doc = _read_registry(registry_path)
     names = [e["name"] for e in doc["plugins"]]
@@ -475,7 +798,8 @@ def test_reconcile_boot_payload_slug_mismatch_quarantines(tmp_path):
         specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
 
     assert actions == [{"slug": "mtg", "action": "quarantine"}]
-    assert path.with_name(path.name + ".quarantined").exists()
+    assert not path.exists()
+    assert not path.with_name(path.name + ".quarantined").exists()  # #372: deleted, not renamed
     assert _read_registry(registry_path)["quarantined_bundles"] == ["mtg"]
 
 
@@ -494,7 +818,8 @@ def test_reconcile_boot_malformed_before_shape_quarantines(tmp_path):
         specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
 
     assert actions == [{"slug": "mtg", "action": "quarantine"}]
-    assert path.with_name(path.name + ".quarantined").exists()
+    assert not path.exists()
+    assert not path.with_name(path.name + ".quarantined").exists()  # #372: deleted, not renamed
 
 
 def test_reconcile_boot_tuple_files_key_outside_fixed_set_quarantines(tmp_path):
@@ -510,7 +835,8 @@ def test_reconcile_boot_tuple_files_key_outside_fixed_set_quarantines(tmp_path):
         specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
 
     assert actions == [{"slug": "mtg", "action": "quarantine"}]
-    assert path.with_name(path.name + ".quarantined").exists()
+    assert not path.exists()
+    assert not path.with_name(path.name + ".quarantined").exists()  # #372: deleted, not renamed
 
 
 def test_reconcile_boot_traversal_tuple_key_quarantines(tmp_path):
@@ -526,7 +852,8 @@ def test_reconcile_boot_traversal_tuple_key_quarantines(tmp_path):
         specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
 
     assert actions == [{"slug": "mtg", "action": "quarantine"}]
-    assert path.with_name(path.name + ".quarantined").exists()
+    assert not path.exists()
+    assert not path.with_name(path.name + ".quarantined").exists()  # #372: deleted, not renamed
 
 
 def test_reconcile_boot_ack_restore_failure_quarantines_slug(tmp_path):
@@ -559,7 +886,7 @@ def test_reconcile_boot_ack_restore_failure_quarantines_slug(tmp_path):
     assert doc["plugins"] == []   # quarantine cleans up the partial rollback
     assert doc["quarantined_bundles"] == ["mtg"]
     remaining = list(ops_dir.iterdir())
-    assert len(remaining) == 1 and remaining[0].name.endswith(".quarantined")
+    assert remaining == []  # #372: the quarantined journal file is deleted
 
 
 # --------------------------------------------------------------------------
@@ -581,7 +908,8 @@ def test_reconcile_boot_unparseable_filename_quarantines_all(tmp_path, filename)
 
     assert actions == [{"slug": None, "action": "quarantine_all"}]
     assert not bad.exists()
-    assert (ops_dir / f"{filename}.quarantined").exists()
+    assert not (ops_dir / filename).exists()
+    assert not (ops_dir / f"{filename}.quarantined").exists()  # #372: deleted, not renamed
 
     doc = _read_registry(registry_path)
     assert doc["plugins"] == []
@@ -649,7 +977,7 @@ def test_bundletxn_rollback_disk_restores_registry_tuple_files_and_acks(tmp_path
         journal_path=tmp_path / "unused.json",
         slug="mtg",
         before_entries=[before_entry],
-        before_tuple_files={"active.yaml": "pre-mutation"},
+        before_tuple_files={"active.yaml": _honest_tuple_yaml({})},
         ack_records=[ack_record],
         registry_path=registry_path,
         specialists_dir=specialists_dir,
@@ -659,7 +987,8 @@ def test_bundletxn_rollback_disk_restores_registry_tuple_files_and_acks(tmp_path
 
     doc = _read_registry(registry_path)
     assert doc["plugins"] == [before_entry]
-    assert (slug_dir / "active.yaml").read_text(encoding="utf-8") == "pre-mutation"
+    assert (slug_dir / "active.yaml").read_text(
+        encoding="utf-8") == _honest_tuple_yaml({})
 
     identity = install_consent_identity(
         component_id=ack_record["component_id"], version=ack_record["version"],
@@ -729,12 +1058,16 @@ def test_journal_snapshots_and_restores_the_rollback_tmp(tmp_path):
 
     slug_dir = tmp_path / "specialists" / "mtg"
     slug_dir.mkdir(parents=True)
-    (slug_dir / "active.yaml").write_text("active: current\n", encoding="utf-8")
+    # #372: honest tuple payloads — the D9 sanitizer tombstones arbitrary
+    # stand-in strings by design. Distinct bytes via a different root; empty
+    # snapshots keep the sanitizer from classifying (no CAS store here).
+    pending_rotation = _honest_tuple_yaml({}).replace("@0.1.0", "@0.2.0")
+    (slug_dir / "active.yaml").write_text(_honest_tuple_yaml({}), encoding="utf-8")
     (slug_dir / "active.yaml.rollback-tmp").write_text(
-        "pending: rotation\n", encoding="utf-8")
+        pending_rotation, encoding="utf-8")
 
     snap = _tuple_files_snapshot(slug_dir)
-    assert snap["active.yaml.rollback-tmp"] == "pending: rotation\n"
+    assert snap["active.yaml.rollback-tmp"] == pending_rotation
 
     txn = journal.BundleTxn(
         slug="mtg", journal_path=tmp_path / "j.json",
@@ -749,7 +1082,7 @@ def test_journal_snapshots_and_restores_the_rollback_tmp(tmp_path):
         "clobbered: yes\n", encoding="utf-8")
     txn.rollback_disk()
     assert (slug_dir / "active.yaml.rollback-tmp").read_text(
-        encoding="utf-8") == "pending: rotation\n"
+        encoding="utf-8") == pending_rotation
 
     # And a tmp recorded ABSENT is removed on rollback.
     snap_absent = dict(snap, **{"active.yaml.rollback-tmp": None})

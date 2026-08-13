@@ -367,7 +367,8 @@ def apply_persona_override(
     binding (mode="override" + override_source — BindingRecord already has
     both fields; this function only needed to stop clobbering `root`)."""
     from personality_binding import (
-        InstanceDir, InstanceTuple, check_persona_requirements, materialize_override_binding,
+        InstanceDir, check_persona_requirements, make_instance_tuple,
+        materialize_override_binding,
     )
     import specialist_materialize
 
@@ -393,9 +394,8 @@ def apply_persona_override(
         binding = materialize_override_binding(
             role=role, persona=persona, override_source=override_source)
         with specialist_materialize.MATERIALIZE_LOCK:
-            instance_dir.stage_desired(InstanceTuple(
+            instance_dir.stage_desired(make_instance_tuple(
                 root=override_source, binding=binding, config_snapshot={},
-                config_digest=binding.effective_config_digest,
             ))
             return instance_dir.commit_desired_to_active()
 
@@ -439,10 +439,9 @@ def apply_persona_override(
     # a binding derived from the now-stale `active_before`.
     with specialist_materialize.MATERIALIZE_LOCK:
         _require_active_unchanged(instance_dir, active_before, slug=role.slot)
-        instance_dir.stage_desired(InstanceTuple(
+        instance_dir.stage_desired(make_instance_tuple(
             root=active_before.root,                       # UNCHANGED — still the component root
             binding=binding,
             config_snapshot=active_before.config_snapshot,  # UNCHANGED — override never touches config
-            config_digest=active_before.config_digest,
         ))
         return instance_dir.commit_desired_to_active()

@@ -276,6 +276,94 @@ def test_tampered_active_file_is_rejected_on_load(tmp_path: Path) -> None:
         d.active()
 
 
+# --- #372: config_digest is always the digest of the persisted snapshot -----
+
+
+def _binding_for_config(config: dict) -> BindingRecord:
+    return _binding(effective_config_digest=compute_effective_config_digest(config))
+
+
+def test_make_instance_tuple_derives_config_digest_from_snapshot() -> None:
+    from personality_binding import make_instance_tuple
+    snapshot = {"region": "eu", "workspace": "main"}
+    tuple_ = make_instance_tuple(
+        root="casa/x@1.0.0", binding=_binding_for_config(snapshot),
+        config_snapshot=snapshot,
+    )
+    assert tuple_.config_digest == compute_effective_config_digest(snapshot)
+    assert tuple_.config_digest == tuple_.binding.effective_config_digest
+
+
+def test_make_instance_tuple_refuses_a_binding_disagreeing_with_the_snapshot() -> None:
+    from personality_binding import make_instance_tuple
+    with pytest.raises(ValueError, match="effective_config_digest"):
+        make_instance_tuple(
+            root="casa/x@1.0.0", binding=_binding_for_config({"other": "config"}),
+            config_snapshot={"region": "eu"},
+        )
+
+
+def test_verify_instance_tuple_rejects_a_digest_not_derived_from_the_snapshot() -> None:
+    # The #372 pre-guard shape: binding and tuple digests agree with each
+    # other but were computed over a mapping that no longer equals the
+    # (sanitized) persisted snapshot.
+    from personality_binding import _raw_from_tuple, verify_instance_tuple
+    stale = _binding_for_config({"region": "eu", "api_key": "plaintext-secret"})
+    raw = _raw_from_tuple(InstanceTuple(
+        root="casa/x@1.0.0", binding=stale,
+        config_snapshot={"region": "eu"},  # sanitized: api_key stripped
+        config_digest=stale.effective_config_digest,
+    ))
+    with pytest.raises(ValueError, match="snapshot"):
+        verify_instance_tuple(raw)
+
+
+def test_atomic_write_refuses_a_mismatched_tuple_as_a_backstop(tmp_path: Path) -> None:
+    from personality_binding import atomic_write_instance_tuple
+    stale = _binding_for_config({"region": "eu", "api_key": "plaintext-secret"})
+    mismatched = InstanceTuple(
+        root="casa/x@1.0.0", binding=stale, config_snapshot={"region": "eu"},
+        config_digest=stale.effective_config_digest,
+    )
+    with pytest.raises(ValueError, match="snapshot"):
+        atomic_write_instance_tuple(tmp_path / "active.yaml", mismatched)
+    assert not (tmp_path / "active.yaml").exists()
+
+
+def test_atomic_write_refuses_a_split_digest_tuple(tmp_path: Path) -> None:
+    """#372 (Sol diff r1): the backstop must check BOTH digest fields — a
+    tuple whose top-level digest honestly matches the snapshot while its
+    binding retains a digest computed over a secret-bearing mapping would
+    otherwise persist the oracle in binding.effective_config_digest."""
+    from personality_binding import atomic_write_instance_tuple
+    stale = _binding_for_config({"secret": "hunter2"})
+    split = InstanceTuple(
+        root="casa/x@1.0.0", binding=stale, config_snapshot={},
+        config_digest=EMPTY_CONFIG_DIGEST,
+    )
+    with pytest.raises(ValueError, match="binding"):
+        atomic_write_instance_tuple(tmp_path / "active.yaml", split)
+    assert not (tmp_path / "active.yaml").exists()
+
+
+def test_sentinel_digest_raises_the_pre_guard_error_before_schema_validation(
+    tmp_path: Path,
+) -> None:
+    from personality_binding import (
+        PRE_GUARD_SENTINEL, _raw_from_tuple, load_instance_tuple,
+    )
+    good = _binding_for_config({})
+    raw = _raw_from_tuple(_tuple(good))
+    raw["config_digest"] = PRE_GUARD_SENTINEL
+    raw["binding"]["effective_config_digest"] = PRE_GUARD_SENTINEL
+    path = tmp_path / "active.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    # The sentinel violates binding.v1.json's digest pattern, so an ordinary
+    # schema error would be opaque; the loader must name the real cause.
+    with pytest.raises(ValueError, match="secret-digest guard"):
+        load_instance_tuple(path)
+
+
 def _specialist_role() -> "RoleSlot":
     from role_slot import RoleSlot, ResolvedModel
     return RoleSlot(
