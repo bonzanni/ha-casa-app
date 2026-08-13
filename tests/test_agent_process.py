@@ -464,6 +464,114 @@ class TestHealthNoticeDeliveryConfirmation:
         assert delivered.startswith("PLUGIN-DEGRADED")
         assert delivered.endswith("again")
 
+    async def test_notice_survives_a_delivery_that_sent_nothing(
+        self, tmp_path, monkeypatch,
+    ):
+        """INV-TG-006 / #556: the delivery RETURNED, having sent nothing.
+
+        A Telegram reconnect nulls the PTB app mid-turn; every delivery method
+        then returns normally after zero Bot API calls. Before this fix that
+        was indistinguishable from success, so the notice was consumed without
+        ever being displayed — and the operator had no way to ask for it.
+        """
+        from channels import DeliveryOutcome
+
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
+        )
+        stub.finalize_response_stream.return_value = (
+            DeliveryOutcome.NOT_DELIVERED)
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0].startswith(
+            "PLUGIN-DEGRADED",
+        )
+
+        # Channel recovers. The notice must be offered again AT ONCE — not
+        # after the one-hour cooldown — because it was never shown.
+        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        with patch.object(agent, "_process", AsyncMock(return_value="again")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+
+        delivered = stub.finalize_response_stream.call_args[0][0]
+        assert delivered.startswith("PLUGIN-DEGRADED")
+        assert delivered.endswith("again")
+
+    async def test_head_delivered_then_raise_does_not_repeat_the_notice(
+        self, tmp_path, monkeypatch,
+    ):
+        """#556: a raise is only a reliable negative when NOTHING was shown.
+
+        A multi-page reply whose page 1 landed HAS displayed the notice; if a
+        later page raises, re-offering it next turn nags the operator about
+        something they already read. The head stamp is what tells the two
+        apart, because a raising method returns no outcome at all.
+        """
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
+        )
+
+        async def _head_then_raise(text, context, on_token):
+            context["_delivery_head_sent"] = True     # page 1 landed
+            raise RuntimeError("page 3 failed")
+
+        stub.finalize_response_stream.side_effect = _head_then_raise
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            with pytest.raises(RuntimeError):
+                await agent.handle_message(_msg("telegram", "123", "hi"))
+
+        # Next turn: unprefixed, because the operator has already seen it.
+        stub.finalize_response_stream.side_effect = None
+        with patch.object(agent, "_process", AsyncMock(return_value="second")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0] == "second"
+
+    async def test_an_ambiguous_transport_failure_does_not_repeat_the_notice(
+        self, tmp_path, monkeypatch,
+    ):
+        """Sol + Terra diff r1: the regression this batch nearly shipped.
+
+        A lost acknowledgement (TimedOut) on a final edit is not evidence that
+        the edit failed — Telegram may have applied it, in which case the
+        operator has read the notice. Reporting NOT_DELIVERED there re-offered
+        it on the next turn, which the pre-contract code did NOT do, because it
+        swallowed the error and returned nothing.
+        """
+        from channels import DeliveryOutcome
+
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
+        )
+        stub.finalize_response_stream.return_value = DeliveryOutcome.UNKNOWN
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0].startswith(
+            "PLUGIN-DEGRADED",
+        )
+
+        # Not repeated: the notice may well have been displayed.
+        with patch.object(agent, "_process", AsyncMock(return_value="second")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0] == "second"
+
+    async def test_channel_off_the_contract_keeps_todays_behavior(
+        self, tmp_path, monkeypatch,
+    ):
+        """UNKNOWN is not NOT_DELIVERED. A channel that returns None has not
+        opted in; treating that as failure would re-offer forever."""
+        agent, stub = self._agent_with_notice(
+            tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
+        )
+        stub.finalize_response_stream.return_value = None    # no contract
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        with patch.object(agent, "_process", AsyncMock(return_value="second")):
+            await agent.handle_message(_msg("telegram", "123", "hi"))
+        assert stub.finalize_response_stream.call_args[0][0] == "second"
+
     async def test_identical_notice_is_not_repeated_within_the_cooldown(
         self, tmp_path, monkeypatch,
     ):

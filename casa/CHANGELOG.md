@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.196.0] - 2026-08-14
+
+### Fixed
+
+- A warning about a plugin problem is no longer lost when the reply carrying it
+  never reached you (#556). Casa prepends a short notice to a reply when
+  something needs your attention, then goes quiet about it for an hour so it
+  does not nag. If Telegram dropped that reply — a reconnect at the wrong
+  moment is enough — the notice was still counted as shown, so you got an hour
+  of silence about a blocking problem, with no way to ask what it said. Casa
+  now checks that the message actually went out before going quiet, and offers
+  the notice again on your next message if it did not. A reply that reached you
+  and then failed partway is still counted as shown, so nothing is repeated
+  that you have already read.
+
+### Added
+
+- Casa tells you when a cleanup rewrote a reminders file that uses `${...}`
+  placeholders (#513). Removing a delivered reminder rewrites the file, which
+  can change what a placeholder entry resolves to. That risk was only ever
+  mentioned in the logs, so the file could quietly change meaning. You now get
+  a one-line message naming the file, once per file, so you can check the
+  entries you wrote by hand.
+
 ## [0.195.0] - 2026-08-13
 
 ### Changed

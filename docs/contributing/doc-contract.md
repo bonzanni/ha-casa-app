@@ -111,7 +111,9 @@ carrying its own `kind: meta` entry in the allowlist. Documents never live under
 An agent knows what it is about to change before it knows which subsystem owns it, and the
 routing table has to meet it where it is.
 
-Never hand-edit a generated block or file: `llms.txt`, `doctrine/invariants.md`, the routing
+Never hand-edit a generated block or file: `llms.txt`, the invariant index — which shards by
+family letter across `doctrine/invariants.md` (A-M) and `doctrine/invariants-n-z.md` (N-Z),
+because one file outgrew the index ceiling — the routing
 table between the README's markers, and each document's Source & test map are all rendered
 from the manifest (root plus shards). Hand-kept indexes rot behind the corpus they index; generated ones
 cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`.

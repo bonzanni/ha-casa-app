@@ -65,6 +65,7 @@ REQUIRED_SKELETON = {
     "llms.txt",
     "manifest.yaml",
     "doctrine/invariants.md",
+    "doctrine/invariants-n-z.md",
     "doctrine/publishing.md",
     "contributing/doc-contract.md",
 }
@@ -790,8 +791,8 @@ def render_routing(repo_root: Path) -> str:
     return "\n".join(rows) + "\n"
 
 
-def render_invariants(repo_root: Path) -> str:
-    """One row per INV-* id: the statement and the file that defines it."""
+def _invariant_rows(repo_root: Path) -> list[tuple[str, str, str]]:
+    """Every (id, statement, defining document), sorted by id."""
     docs_dir = repo_root / "docs"
     found: list[tuple[str, str, str]] = []
     for entry in _documents(repo_root):
@@ -802,8 +803,27 @@ def render_invariants(repo_root: Path) -> str:
             match = INV_DEFINITION.search(line)
             if match:
                 found.append((match.group(1), line.split(":", 1)[1].strip(), entry["doc"]))
-    rows = [
-        "# Invariants",
+    return sorted(found)
+
+
+# The index outgrew the 40 KB ceiling once the corpus passed ~200 invariants, so
+# it shards by FAMILY letter — the same A-M / N-Z convention the manifest shards
+# already use (#367). The split point is mechanical on purpose: an index that
+# shards by meaning would need re-deciding every time a family is added.
+_INV_SHARD_SPLIT = "N"
+
+
+def _invariant_family(inv: str) -> str:
+    """`INV-TG-006` -> `TG`. The family is what the shard split reads."""
+    parts = inv.split("-")
+    return parts[1] if len(parts) > 2 else ""
+
+
+def _render_invariant_table(
+    rows: list[tuple[str, str, str]], title: str, sibling: tuple[str, str],
+) -> str:
+    out = [
+        f"# {title}",
         "",
         GENERATED_NOTE,
         "",
@@ -811,12 +831,32 @@ def render_invariants(repo_root: Path) -> str:
         "",
         "Every invariant is defined in exactly one file and referenced by id elsewhere.",
         "",
+        f"The index is sharded by family letter: see also [`{sibling[0]}`]({sibling[1]}).",
+        "",
         "| Id | Statement | Defined in |",
         "|---|---|---|",
     ]
-    for inv, statement, home in sorted(found):
-        rows.append(f"| `{inv}` | {statement} | [`{home}`](../{home}) |")
-    return "\n".join(rows) + "\n"
+    for inv, statement, home in rows:
+        out.append(f"| `{inv}` | {statement} | [`{home}`](../{home}) |")
+    return "\n".join(out) + "\n"
+
+
+def render_invariants(repo_root: Path) -> str:
+    """Families A-M: one row per INV-* id, its statement, its defining file."""
+    rows = [r for r in _invariant_rows(repo_root)
+            if _invariant_family(r[0]) < _INV_SHARD_SPLIT]
+    return _render_invariant_table(
+        rows, "Invariants (A-M)",
+        ("doctrine/invariants-n-z.md", "invariants-n-z.md"))
+
+
+def render_invariants_n_z(repo_root: Path) -> str:
+    """Families N-Z. Same contract as :func:`render_invariants`."""
+    rows = [r for r in _invariant_rows(repo_root)
+            if _invariant_family(r[0]) >= _INV_SHARD_SPLIT]
+    return _render_invariant_table(
+        rows, "Invariants (N-Z)",
+        ("doctrine/invariants.md", "invariants.md"))
 
 
 def render_sourcemap(entry: dict) -> str:
@@ -856,6 +896,7 @@ def nav_targets(repo_root: Path) -> dict[str, str]:
     targets = {
         "llms.txt": render_llms(repo_root),
         "doctrine/invariants.md": render_invariants(repo_root),
+        "doctrine/invariants-n-z.md": render_invariants_n_z(repo_root),
     }
     readme = docs_dir / "README.md"
     if readme.is_file():

@@ -5783,6 +5783,14 @@ async def set_reminder(args: dict) -> dict:
             except (OSError, ValueError):
                 logger.warning("set_reminder: rollback failed for %s", name,
                                exc_info=True)
+            # #513: the rollback rewrites the file too, so it owes the same
+            # notice as a cancel does.
+            try:
+                import casa_core
+                await casa_core.notify_placeholder_rewrites(_channel_manager)
+            except Exception:  # noqa: BLE001
+                logger.warning("placeholder-rewrite notice failed",
+                               exc_info=True)
             return _result({"status": "error", "kind": "register_failed",
                             "message": str(exc)})
 
@@ -5843,6 +5851,14 @@ async def cancel_reminder(args: dict) -> dict:
     if outcome != "removed":
         return _result({"status": "error", "kind": "not_found",
                         "message": f"no reminder named {name!r}"})
+
+    # #513: a cancel is one of the two live paths that rewrites a
+    # ${...}-bearing triggers.yaml. Never fatal to the cancel itself.
+    try:
+        import casa_core
+        await casa_core.notify_placeholder_rewrites(_channel_manager)
+    except Exception:  # noqa: BLE001
+        logger.warning("placeholder-rewrite notice failed", exc_info=True)
 
     # Drop the live job too, so the cancellation takes effect now. Best
     # effort: the entry is already gone, so a boot would not resurrect it.

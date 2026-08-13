@@ -155,6 +155,34 @@ What it does not cover: the plain streaming and splitting path. That path now me
 same UTF-16 units through the shared helper, but it splits plain text only — it carries no
 entities and makes no entity-budget promise.
 
+**INV-TG-006**: A one-shot operator notice is released for re-offer if and only if no part of it reached the operator.
+
+Every delivery method reports a `DeliveryOutcome`. The distinction it exists to draw is
+that a **normal return is not proof of delivery**: each method has an availability guard
+that returns after zero Bot API calls when the application is absent, which a reconnect can
+make true mid-turn. A caller that suppresses a one-shot notice on a normal return therefore
+consumes notices that were never displayed.
+
+Because such a notice is prepended at the *head* of the text, the outcome keys on the first
+unit of output rather than on total success: the first chunk of a split message, page 1 of a
+paginated response, or the final edit of a streamed one. A later page failing does not
+un-show what page 1 displayed. Two consequences worth stating, because both invert the
+naive reading:
+
+- An edit refused as "not modified" is **delivered** — the message already displays exactly
+  this text, notice included.
+- A streamed message whose final edit never ran is **not delivered**, even though the
+  operator watched prose arrive. The notice is prepended after streaming, so it was never
+  in what they saw.
+
+A raise carries the same question and cannot answer it through a return value, so the head
+fact is stamped on the turn context and consulted on the exception path.
+
+What it does not cover: channels that have not adopted the contract. They return nothing,
+which reads as `UNKNOWN` and preserves their existing behavior. That case is deliberately
+distinct from a negative — treating "cannot report" as "failed" would re-offer a notice on
+every turn forever.
+
 ## Failure behavior
 
 **No secret, or a wrong one, in webhook mode.** The route refuses before parsing. Nothing

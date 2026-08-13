@@ -203,6 +203,20 @@ depends on. No other use of a reference is refused.
 Cancelling or sweeping one is *not* refused — it warns and proceeds, since blocking cleanup
 is what strands a delivered reminder into redelivering forever.
 
+That rewrite may change what the operator's own entries resolve to, so it is announced to
+them on-channel rather than only in a log line they would have to go looking for. The
+announcement is recorded *after* the write returns, never when the condition is detected: a
+save can fail before the file is replaced, and "updated your file" about a file that was
+never written is a false report. It is sent once per file per process — enough to inform,
+not so often as to nag — and the record is only consumed once delivery is confirmed, so a
+reconnect that swallows the notice does not swallow the fact.
+
+Its retry is the next rewrite. If the announcement cannot be delivered and no further
+rewrite happens before restart, it is not delivered at all. Closing that gap needs either
+persistence across restarts or a retry loop; both were judged disproportionate for a
+courtesy notice, and the honest limitation is recorded here rather than hidden behind
+machinery that looks like a guarantee.
+
 **A requested recurrence cannot be expressed as a cron.** Refused with the reason, rather
 than rounded to a nearby time the user was not told about.
 

@@ -25,7 +25,17 @@ from typing import Any, Awaitable, Callable
 
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
-from telegram.error import BadRequest, NetworkError, TelegramError, TimedOut
+from telegram.error import (
+    BadRequest,
+    ChatMigrated,
+    Conflict,
+    Forbidden,
+    InvalidToken,
+    NetworkError,
+    RetryAfter,
+    TelegramError,
+    TimedOut,
+)
 
 from channels.tg_richtext import render, render_paged
 from telegram.ext import (
@@ -42,7 +52,7 @@ from ingress_identity import (
     TELEGRAM_OPERATOR_CLEARANCE,
     ingress_identity,
 )
-from channels import Channel
+from channels import Channel, DeliveryOutcome
 # v0.79.0 (§2 Primitive A): the per-topic OUTPUT SEQUENCER + relay-mediated
 # discrete-posting intent registry. Implemented in the sibling module and
 # RE-EXPORTED here so ``channels.telegram.OutputSequencer`` resolves per the
@@ -3759,8 +3769,13 @@ class TelegramChannel(Channel):
         counts a dropped message as sent."""
         return self._app is not None
 
-    async def send(self, message: str, context: dict[str, Any]) -> None:
-        """Send a complete message (block mode fallback)."""
+    async def send(self, message: str, context: dict[str, Any]) -> DeliveryOutcome:
+        """Send a complete message (block mode fallback).
+
+        #556: reports whether anything reached Telegram. The availability guard
+        below returns NORMALLY having made zero Bot API calls, which a caller
+        suppressing a one-shot notice must be able to tell from success.
+        """
         # Release THIS turn's lease BEFORE the availability guard — lease
         # bookkeeping is local and must not be skipped in a reconnect window.
         target_chat = _resolve_chat_id(context, self.chat_id)
@@ -3768,13 +3783,22 @@ class TelegramChannel(Channel):
 
         if self._app is None:
             logger.warning("Telegram channel not started; cannot send message")
-            return
+            return DeliveryOutcome.NOT_DELIVERED
 
+        outcome = DeliveryOutcome.NOT_DELIVERED
         for chunk in _split_message(message):
             await self._app.bot.send_message(
                 chat_id=target_chat,
                 text=chunk,
             )
+            # The head landed. Stamp it where it survives a LATER chunk raising:
+            # a raising method returns no enum at all, so the returned value
+            # cannot carry this fact (#556 design §2.2).
+            if outcome is DeliveryOutcome.NOT_DELIVERED:
+                context["_delivery_head_sent"] = True
+                outcome = DeliveryOutcome.DELIVERED
+        # An empty split (whitespace-only input) correctly stays NOT_DELIVERED.
+        return outcome
 
     async def send_media(
         self, content: bytes, kind: str, filename: str, context: dict[str, Any],
@@ -3822,7 +3846,9 @@ class TelegramChannel(Channel):
                 chat_id=chat_id, text=original, **kw,
             )
 
-    async def send_response(self, message: str, context: dict[str, Any]) -> None:
+    async def send_response(
+        self, message: str, context: dict[str, Any],
+    ) -> DeliveryOutcome:
         """Block-mode agent response with rich-text rendering (plain fallback).
 
         v2 (RC3): an oversized response paginates through ``render_paged()`` —
@@ -3835,25 +3861,34 @@ class TelegramChannel(Channel):
         self._release_typing(context, target_chat)
         if self._app is None:
             logger.warning("Telegram channel not started; cannot send message")
-            return
+            return DeliveryOutcome.NOT_DELIVERED
         pages = render_paged(message)
         if len(pages) == 1:
             display, entities = pages[0]
             if entities is None:
-                await self.send(message, context)
-                return
+                # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
+                # it here is how a delegation path loses the distinction.
+                return await self.send(message, context)
             await self._send_one(target_chat, message, display, entities)
-            return
+            context["_delivery_head_sent"] = True
+            return DeliveryOutcome.DELIVERED
+        outcome = DeliveryOutcome.NOT_DELIVERED
         for display, entities in pages:
             if entities is None:
                 await self._app.bot.send_message(
                     chat_id=target_chat, text=display)
             else:
                 await self._send_one(target_chat, display, display, entities)
+            # Page 1 carries the notice: once it lands the delivery counts as
+            # shown, however the remaining pages fare.
+            if outcome is DeliveryOutcome.NOT_DELIVERED:
+                context["_delivery_head_sent"] = True
+                outcome = DeliveryOutcome.DELIVERED
+        return outcome
 
     async def finalize_response_stream(
         self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback,
-    ) -> None:
+    ) -> DeliveryOutcome:
         """Streamed agent response: apply entities on the final edit only.
 
         Block mode / no streamed message → send_response(). Plain (no markup) or
@@ -3863,21 +3898,24 @@ class TelegramChannel(Channel):
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
         if self._app is None:
-            return
+            return DeliveryOutcome.NOT_DELIVERED
         message_id = _peek_stream_message_id(on_token)
         if message_id is None:
-            await self.send_response(full_text, context)
-            return
+            return await self.send_response(full_text, context)  # verbatim
         # v2 (RC3): an oversized SUCCESSFUL response no longer delegates to
         # the plain finalize_stream (raw-marker chunks); page 1 rich-edits the
         # streamed message, the rest send rendered. Single page keeps the
         # v0.70.0 contract (no markup → plain finalize, BadRequest → raw edit).
         pages = render_paged(full_text)
         if len(pages) == 1 and pages[0][1] is None:
-            await self.finalize_stream(full_text, context, on_token)
-            return
+            return await self.finalize_stream(  # verbatim (§2.1)
+                full_text, context, on_token)
         display0, entities0 = pages[0]
         fallback0 = full_text if len(pages) == 1 else display0
+        # Page 1 carries a prepended operator notice, so page 1 decides the
+        # outcome; the overflow sends below swallow their errors and cannot
+        # downgrade it (#556 design §2.3).
+        outcome = DeliveryOutcome.NOT_DELIVERED
         try:
             try:
                 if entities0 is not None:
@@ -3897,6 +3935,14 @@ class TelegramChannel(Channel):
         except TelegramError as exc:
             if "not modified" not in str(exc).lower():
                 logger.warning("Final stream edit failed: %s", exc)
+                outcome = _edit_failure_outcome(exc)
+            else:
+                # Already displays this exact text, notice included.
+                outcome = DeliveryOutcome.DELIVERED
+                context["_delivery_head_sent"] = True
+        else:
+            outcome = DeliveryOutcome.DELIVERED
+            context["_delivery_head_sent"] = True
         for display, entities in pages[1:]:
             try:
                 if entities is None:
@@ -3906,6 +3952,7 @@ class TelegramChannel(Channel):
                     await self._send_one(target_chat, display, display, entities)
             except TelegramError as exc:
                 logger.warning("Final stream overflow send failed: %s", exc)
+        return outcome
 
     async def send_response_to_topic(
         self, thread_id: int, text: str, **kwargs,
@@ -4040,19 +4087,23 @@ class TelegramChannel(Channel):
 
     async def finalize_stream(
         self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback
-    ) -> None:
+    ) -> DeliveryOutcome:
         """Send the final version of a streamed response.
 
         In stream mode, does a final edit to ensure the complete text
         is displayed.  Falls back to send() if streaming never started
         (e.g., empty response or stream mode was block).
+
+        #556: the outcome describes the FINAL EDIT, not the token stream. A
+        one-shot notice is prepended after streaming, so tokens the operator
+        already watched never contained it — only this edit can show it.
         """
         # Release the lease before the availability guard (reconnect-safe).
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
 
         if self._app is None:
-            return
+            return DeliveryOutcome.NOT_DELIVERED
 
         # Retrieve state from the closure
         state = getattr(on_token, "__self__", None)
@@ -4070,8 +4121,7 @@ class TelegramChannel(Channel):
 
         if message_id is None:
             # Streaming never sent a message — fall back to regular send
-            await self.send(full_text, context)
-            return
+            return await self.send(full_text, context)   # verbatim (§2.1)
 
         # Final edit with complete text (#305: UTF-16 units)
         if utf16_len(full_text) <= _TG_MAX_LENGTH:
@@ -4084,26 +4134,81 @@ class TelegramChannel(Channel):
             except TelegramError as exc:
                 if "not modified" not in str(exc).lower():
                     logger.warning("Final stream edit failed: %s", exc)
+                    return _edit_failure_outcome(exc)
+                # "not modified" — the message ALREADY displays this exact
+                # text, notice included. A positive outcome (§2.4 ruling 1).
+            context["_delivery_head_sent"] = True
+            return DeliveryOutcome.DELIVERED
         else:
             # Response exceeded the limit — edit first chunk, send the rest
             chunks = _split_message(full_text)
             if not chunks:
                 # Whitespace-only overflow (#305 drops unsendable chunks) —
                 # keep the streamed message as-is rather than index [].
-                return
+                # Nothing was shown, so nothing may be suppressed on it.
+                return DeliveryOutcome.NOT_DELIVERED
+            outcome = DeliveryOutcome.NOT_DELIVERED
             try:
                 await self._app.bot.edit_message_text(
                     chat_id=target_chat,
                     message_id=message_id,
                     text=chunks[0],
                 )
-            except TelegramError:
-                pass
+            except TelegramError as exc:
+                if "not modified" in str(exc).lower():
+                    outcome = DeliveryOutcome.DELIVERED
+                    context["_delivery_head_sent"] = True
+                else:
+                    outcome = _edit_failure_outcome(exc)
+            else:
+                outcome = DeliveryOutcome.DELIVERED
+                context["_delivery_head_sent"] = True
             for chunk in chunks[1:]:
                 await self._app.bot.send_message(
                     chat_id=target_chat,
                     text=chunk,
                 )
+            # The head chunk decides: later chunks cannot un-show it.
+            return outcome
+
+
+# A REFUSAL, not a transport failure: PTB builds each of these from a response
+# Telegram actually sent, so the API evaluated the call and declined it and
+# nothing was displayed. Membership is an explicit allowlist rather than a class
+# test, because the hierarchy cuts across the distinction that matters here —
+# `BadRequest` (HTTP 400, a refusal) and `TimedOut` (no response at all) are
+# BOTH `NetworkError` subclasses in PTB 22.7, so classifying by base class gets
+# it exactly backwards.
+_SERVER_REFUSALS = (
+    BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated, Conflict,
+)
+
+
+def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
+    """Classify a failed edit: established negative, or merely ambiguous?
+
+    ``NOT_DELIVERED`` is a CLAIM — that nothing reached the operator — and a
+    caller acts on it by re-offering a one-shot notice. Both errors are costly
+    and they are costly in opposite directions, so the taxonomy has to be right
+    in both:
+
+    - A lost acknowledgement does not support the claim. PTB raises ``TimedOut``
+      when no response arrives, but Telegram may well have applied the edit, in
+      which case the operator has read the notice and re-offering it nags them
+      about something they have seen. That is ``UNKNOWN``.
+    - A refusal does support it. The call was evaluated and declined, so the
+      notice was certainly not shown, and withholding it would leave a blocking
+      issue unreported — the very defect #556 exists to fix. An operator who
+      blocks the bot mid-stream produces ``Forbidden`` here, and must still be
+      told once they unblock it.
+
+    Both halves were found by review: collapsing ambiguity into NOT_DELIVERED
+    was a regression against pre-contract behavior (Sol + Terra, diff r1), and
+    the first fix then over-corrected by treating every non-``BadRequest``
+    refusal as ambiguous (Sol, diff r2).
+    """
+    return (DeliveryOutcome.NOT_DELIVERED if isinstance(exc, _SERVER_REFUSALS)
+            else DeliveryOutcome.UNKNOWN)
 
 
 _TG_MAX_LENGTH = 4096
