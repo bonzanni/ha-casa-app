@@ -20,11 +20,16 @@ class _FakeChannel:
         self.sent = []
 
     async def send(self, message, context):
+        from channels import DeliveryOutcome
+
         if not self.is_ready:
-            return  # TelegramChannel.send log-and-drops when not started
+            # TelegramChannel.send log-and-drops when not started — and since
+            # #556 says so out loud instead of returning a bare None.
+            return DeliveryOutcome.NOT_DELIVERED
         if self.raise_on_send:
             raise RuntimeError("telegram down")
         self.sent.append((message, context))
+        return DeliveryOutcome.DELIVERED
 
 
 class _FakeChannelManager:
@@ -159,3 +164,52 @@ async def test_dm_includes_detail_when_present(tmp_path):
     assert "probe" in body
     assert "env_unresolved" not in body
     assert "/data/plugin-health.json" not in body
+
+
+class _SlowChannel(_FakeChannel):
+    """Blocks inside send() so a second caller can enter the read->send->mark
+    window that #556's design closes with _OPERATOR_NOTICE_LOCK."""
+
+    def __init__(self):
+        super().__init__()
+        import asyncio
+        self.gate = asyncio.Event()
+        self.entered = 0
+
+    async def send(self, message, context):
+        from channels import DeliveryOutcome
+
+        self.entered += 1
+        await self.gate.wait()
+        self.sent.append((message, context))
+        return DeliveryOutcome.DELIVERED
+
+
+async def test_concurrent_notifies_send_exactly_once(tmp_path):
+    """Sol r1 S2: load -> new_fingerprints -> await send -> mark spans an
+    await. _REPORT_LOCK serializes each read and write but does not reserve a
+    delivery, so two callers both saw the same fingerprints and both sent."""
+    import asyncio
+
+    p = _report(tmp_path, PluginIssue("dup", "specialist:finance",
+                                      "resolve", "corrupt_artifact", "b" * 64))
+    ch = _SlowChannel()
+    cm = _FakeChannelManager(ch)
+
+    first = asyncio.create_task(casa_core.notify_plugin_health(cm, path=str(p)))
+    second = asyncio.create_task(casa_core.notify_plugin_health(cm, path=str(p)))
+    await asyncio.sleep(0)          # let both reach the notifier
+    ch.gate.set()
+    await asyncio.gather(first, second)
+
+    assert len(ch.sent) == 1
+    assert plugin_health.new_fingerprints(plugin_health.load_report(p)) == []
+
+
+async def test_undeliverable_send_is_not_marked(tmp_path):
+    """A dropped alert must retry next boot/mutation, not count as delivered."""
+    p = _report(tmp_path, PluginIssue("q", "specialist:finance",
+                                      "resolve", "corrupt_artifact", "c" * 64))
+    cm = _FakeChannelManager(_FakeChannel(is_ready=False))
+    await casa_core.notify_plugin_health(cm, path=str(p))
+    assert plugin_health.new_fingerprints(plugin_health.load_report(p)) != []

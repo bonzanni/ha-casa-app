@@ -31,7 +31,7 @@ from authz_grants import CHALLENGES, GRANTS
 import callback_http
 from bus import BusMessage, BusShutdownError, MessageBus, MessageType
 from channel_authz import agent_allowed_on
-from channels import ChannelManager
+from channels import ChannelManager, DeliveryOutcome
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     CLAUDE_CLI_VERSION,
@@ -3013,6 +3013,17 @@ async def operator_notify(channel_manager: Any, text: str) -> None:
     await ch.send_response(text, ctx)
 
 
+# #556: every out-of-band operator notice runs the same sequence — read state,
+# await a send, mark state. That sequence spans an await, so without a
+# reservation two callers read the same pending work and both send it. It was
+# found twice, in two different notifiers (Sol r1/r2, Terra r2), so it gets ONE
+# guard rather than one per notifier. Invariant, stated once: at most one
+# operator notice is in flight, and no notice is marked before it is confirmed.
+# Every holder must RE-READ its state after acquiring — the whole point is that
+# the state may have been marked by the caller that went first.
+_OPERATOR_NOTICE_LOCK = asyncio.Lock()
+
+
 async def notify_plugin_health(
     channel_manager: Any,
     *,
@@ -3020,7 +3031,7 @@ async def notify_plugin_health(
 ) -> None:
     """Push an operator DM for NEW plugin-health issues (§3.10). Deduped by
     STRUCTURED fingerprints (not free text). Marks notified ONLY after a
-    successful SEND, so a Telegram-down boot/mutation retries next time.
+    CONFIRMED send, so a Telegram-down boot/mutation retries next time.
     Non-fatal.
 
     #342: delivery is a direct, awaited ``channel.send`` — NOT a bus
@@ -3030,6 +3041,16 @@ async def notify_plugin_health(
     marked the fingerprints notified and the alert was lost forever even
     once Telegram was configured later.
     """
+    import plugin_health
+    async with _OPERATOR_NOTICE_LOCK:
+        await _notify_plugin_health_locked(channel_manager, path)
+
+
+async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
+    """The body of :func:`notify_plugin_health`, run under
+    ``_OPERATOR_NOTICE_LOCK``. The report is read HERE, after the lock is
+    acquired, so a caller that queued behind another sees the fingerprints the
+    first one marked instead of re-sending them (#556)."""
     import plugin_health
     report = plugin_health.load_report(path)
     if not report:
@@ -3063,9 +3084,16 @@ async def notify_plugin_health(
     if channel is None or not getattr(channel, "is_ready", True):
         return  # no deliverable channel — retry next boot/mutation
     try:
-        await channel.send(content, {"cid": new_cid()})
+        outcome = await channel.send(content, {"cid": new_cid()})
     except Exception as exc:  # noqa: BLE001
         logger.warning("plugin_health notify: send failed: %s", exc)
+        return  # not marked → retried next boot/mutation
+    # #556: the is_ready pre-check above is a cheap early-out, not proof — the
+    # app can be torn down between that check and this send. Only a PROVEN
+    # negative withholds the mark; UNKNOWN (a channel not on the contract,
+    # returning None) keeps today's behavior, or a non-reporting channel would
+    # re-DM the same issue on every boot forever.
+    if outcome is DeliveryOutcome.NOT_DELIVERED:
         return  # not marked → retried next boot/mutation
     plugin_health.mark_notified(fps, path)
 
