@@ -522,8 +522,13 @@ class TestEnvPlaceholderDoor:
     def test_a_failed_write_records_nothing(self, tmp_path, monkeypatch):
         """A notice claiming 'Updated <file>' for a file that was never
         written is a false report about operator-authored configuration.
-        _save can raise before os.replace (atomic_io), leaving the original
-        untouched — so the record follows the write, not the check."""
+        The write can raise before os.replace (atomic_io), leaving the original
+        untouched — so the record follows the write, not the check.
+
+        Patched at ``atomic_write_text``, which is the actual write: #512 moved
+        emission ahead of it in ``remove_entry`` (the disarm check needs the
+        emitted text), so patching the old ``_save`` wrapper would no longer
+        intercept anything."""
         reminders._placeholder_pending.clear()
         monkeypatch.setenv("DETAIL", "bins tonight")
         path = self._authored(tmp_path, extra=(
@@ -533,7 +538,7 @@ class TestEnvPlaceholderDoor:
 
         def _boom(*_a, **_kw):
             raise OSError("no space left on device")
-        monkeypatch.setattr(reminders, "_save", _boom)
+        monkeypatch.setattr(reminders, "atomic_write_text", _boom)
 
         with pytest.raises(OSError):
             reminders.remove_entry(path, "reminder-a1b2c3d4")
@@ -555,6 +560,177 @@ class TestEnvPlaceholderDoor:
                                                "/b/triggers.yaml"})
         reminders.clear_placeholder_notice("/a/triggers.yaml")
         assert reminders.peek_placeholder_notices() == ["/b/triggers.yaml"]
+
+
+# --- the door survives its own cleanup (#512) -------------------------------
+
+
+class TestTheDoorSurvivesItsOwnCleanup:
+    """`remove_entry` warns and PROCEEDS, and used to disarm the door doing it.
+
+    Its rewrite re-emitted `prompt: "${DETAIL}"` as `prompt: ${DETAIL}`, which
+    is the one shape whose meaning depends on quoting — so the operator's entry
+    changed resolution class, and `text_has_lone_placeholder` stopped matching
+    the file. One cancel therefore converted a guarded file into an unguarded
+    one for every consumer at once: this writer's own refusal, the
+    configurator's trigger edits, and `config_sync`'s choice between the loud
+    byte-level reconcile and the entry-level one that can DROP an entry.
+
+    These are the inverse of `TestEnvPlaceholderDoor`'s hazard case: same file,
+    same value, asserted after the module's own rewrite rather than after a
+    hand-rolled `safe_dump`, and through the LIVE loader.
+    """
+
+    OVERDUE_MINE = ('  - {name: reminder-a1b2c3d4, type: date, '
+                    f'at: "{OVERDUE}", one_shot: true, channel: telegram, '
+                    'prompt: x, managed_by: agent}\n')
+
+    def _authored(self, tmp_path, prompt='"${DETAIL}"', head="", extra=""):
+        p = tmp_path / "triggers.yaml"
+        p.write_text(
+            "schema_version: 1\n"
+            f"{head}"
+            "triggers:\n"
+            "  - name: op-alert\n"
+            "    type: cron\n"
+            '    schedule: "0 8 * * *"\n'
+            "    channel: telegram\n"
+            f"    prompt: {prompt}\n"
+            + self.OVERDUE_MINE + extra,
+            encoding="utf-8")
+        return str(p)
+
+    def _live(self, path):
+        import agent_loader
+        return agent_loader._read_yaml(path)["triggers"][0]["prompt"]
+
+    @pytest.mark.parametrize("form", [
+        '"${DETAIL}"',                  # double-quoted
+        "'${DETAIL}'",                  # single-quoted
+        "!!str ${DETAIL}",              # the tag instead of quoting
+        "|-\n      ${DETAIL}",          # a block scalar
+    ])
+    def test_the_operator_s_entry_still_means_what_it_meant(
+            self, form, tmp_path, monkeypatch):
+        """The value is `true` precisely because that is where the two
+        readings diverge: declared text it is the string "true", re-emitted
+        plain it is the boolean True — which then fails the prompt's schema."""
+        monkeypatch.setenv("DETAIL", "true")
+        path = self._authored(tmp_path, prompt=form)
+        assert self._live(path) == "true", "precondition: declared text"
+
+        assert reminders.remove_entry(path, "reminder-a1b2c3d4") == "removed"
+
+        assert self._live(path) == "true", form
+        assert self._live(path) is not True
+
+    def test_the_guard_still_matches_the_file_afterwards(
+            self, tmp_path, monkeypatch):
+        """The consequence the issue is about: the predicate is what every
+        other writer consults, so a rewrite that erased it disarmed them all."""
+        import config
+        monkeypatch.setenv("DETAIL", "true")
+        path = self._authored(tmp_path)
+
+        assert reminders.remove_entry(path, "reminder-a1b2c3d4") == "removed"
+
+        assert config.text_has_lone_placeholder(
+            pathlib.Path(path).read_text(encoding="utf-8"))
+
+    def test_the_next_writer_still_refuses(self, tmp_path, monkeypatch):
+        """Read through a consumer rather than the predicate: after a cleanup,
+        `add_entry` must still refuse this file. It began succeeding once the
+        first cancel stripped the quoting."""
+        monkeypatch.setenv("DETAIL", "true")
+        path = self._authored(tmp_path)
+        reminders.remove_entry(path, "reminder-a1b2c3d4")
+
+        with pytest.raises(ValueError, match="interpolation"):
+            reminders.add_entry(path, _mine("reminder-b2c3d4e5"))
+
+    def test_config_sync_still_takes_the_LOUD_path(self, tmp_path, monkeypatch):
+        """The consumer whose failure is the silent one (`config_sync.py:217`):
+        an unguarded file reconciles per entry, and per-entry validation DROPS
+        an entry it judges invalid. Asserted on the real gate, not the
+        predicate it calls."""
+        import config_sync
+        monkeypatch.setenv("DETAIL", "true")
+        path = self._authored(tmp_path)
+        reminders.remove_entry(path, "reminder-a1b2c3d4")
+
+        assert config_sync._entry_doc(
+            pathlib.Path(path).read_text(encoding="utf-8"),
+            "triggers", "name") is None, "must stay byte-level"
+
+    def test_a_plain_lone_placeholder_is_left_plain(self, tmp_path,
+                                                    monkeypatch):
+        """The fix must not quote what the operator left unquoted: a plain
+        lone placeholder has its value read back, and quoting it would retype
+        `minutes: ${EVERY}` from 60 the integer to "60" the string — the same
+        defect pointed the other way, on the same file."""
+        monkeypatch.setenv("EVERY", "60")
+        path = self._authored(tmp_path, prompt='"put the bins out"', extra=(
+            "  - name: op-tick\n    type: interval\n"
+            "    minutes: ${EVERY}\n    channel: telegram\n"
+            "    prompt: tick\n"))
+        reminders.remove_entry(path, "reminder-a1b2c3d4")
+
+        import agent_loader
+        entry = [e for e in agent_loader._read_yaml(path)["triggers"]
+                 if e["name"] == "op-tick"][0]
+        assert entry["minutes"] == 60 and isinstance(entry["minutes"], int)
+
+    def test_repeated_cleanups_do_not_wear_the_declaration_away(
+            self, tmp_path, monkeypatch):
+        """It was a ONE-SHOT loss, so a fix that only survived the first
+        rewrite would look identical in every other test here."""
+        monkeypatch.setenv("DETAIL", "true")
+        path = self._authored(tmp_path, extra=(
+            '  - {name: reminder-b2c3d4e5, type: date, '
+            f'at: "{OVERDUE}", one_shot: true, channel: telegram, '
+            'prompt: y, managed_by: agent}\n'))
+
+        assert reminders.remove_entry(path, "reminder-a1b2c3d4") == "removed"
+        assert reminders.remove_entry(path, "reminder-b2c3d4e5") == "removed"
+
+        assert self._live(path) == "true"
+
+    def test_a_declaration_the_document_DISCARDS_is_reported_not_carried(
+            self, tmp_path, monkeypatch, caplog):
+        """The residual bound, pinned so it stays a decision.
+
+        The predicate scans TOKENS and the rewrite carries what the document
+        KEEPS, so the two can only disagree about a scalar construction throws
+        away — here a duplicate key's loser. Nothing surviving can have been
+        retyped (the surviving `prompt` is the boolean it already was, before
+        any rewrite), but the guard is off for this file from now on, and the
+        operator's log says so rather than nothing.
+        """
+        import config
+        monkeypatch.setenv("DETAIL", "true")
+        path = self._authored(tmp_path, prompt='"${DETAIL}"\n    prompt: true')
+        assert self._live(path) is True, "precondition: already the loser"
+
+        with caplog.at_level("WARNING"):
+            assert reminders.remove_entry(path, "reminder-a1b2c3d4") == "removed"
+
+        assert self._live(path) is True, "the survivor is unchanged"
+        assert not config.text_has_lone_placeholder(
+            pathlib.Path(path).read_text(encoding="utf-8"))
+        assert any("declared-text guard is off" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_an_ordinary_file_is_written_exactly_as_before(self, tmp_path):
+        """No placeholder anywhere: the emitted bytes must be what `safe_dump`
+        produced before this change, or every cleanup of every ordinary
+        triggers.yaml becomes a diff in the operator's config repo."""
+        path = _write(tmp_path, [HEARTBEAT,
+                                 _mine("reminder-a1b2c3d4", OVERDUE)])
+        reminders.remove_entry(path, "reminder-a1b2c3d4")
+
+        assert pathlib.Path(path).read_text(encoding="utf-8") == yaml.safe_dump(
+            {"schema_version": 1, "triggers": [HEARTBEAT]},
+            sort_keys=False, allow_unicode=True)
 
 
 # --- past_due --------------------------------------------------------------

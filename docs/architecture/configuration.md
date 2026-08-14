@@ -92,6 +92,23 @@ is the same as nothing, never the same as another text that does not parse, beca
 treating two failures as agreement makes the reconciler write nothing while advancing the
 baseline past the change it was supposed to deliver.
 
+**Refusing is not available to every writer, so the declaration itself is carried across a
+rewrite.** One writer of these files cannot refuse: removing a delivered reminder must
+always succeed, because the entry *is* the record that delivery is owed and a cleanup that
+refuses redelivers forever ([`architecture/reminders.md`](reminders.md)). It therefore
+warns and proceeds — and while it did so through a plain dump, the rewrite it performed
+erased the very quoting the refusal above tests, so one cancellation silently disarmed that
+refusal for every other writer of that file, permanently. The parse a writer uses now keeps
+one fact a plain load discards, which scalars the source declared as text, and the dump
+re-quotes exactly those. Nothing else about a file's form survives — not comments, not key
+order, not which quoting style was used — only whether a scalar consisting solely of a
+placeholder was declared text at all, which is the one property that decides what it means.
+The two halves are deliberately different mechanisms rather than one: the refusal reads the
+file's *tokens*, so it also fires for a declaration the document then discards (a duplicate
+key's loser), and a rewrite can only carry what the document keeps. Where they disagree the
+file is by definition one whose surviving scalars have nothing at stake, and the writer
+says so in the log rather than leaving the change silent.
+
 **An environment placeholder is resolved as its scalar is built, not before the file is
 read.** A config file may write `${VAR}` inside a scalar, and it is resolved once the
 parser has already decided the document's shape. That order is the whole point: the
@@ -271,6 +288,16 @@ walks it ([#442](https://github.com/bonzanni/ha-casa-app/issues/442) is the cons
 half); one holding a bare alias to an anchor defined elsewhere in the file cannot see it,
 and reads as text. And a value that is a document marker rather than a scalar (`---`) reads
 as the empty document it is, where parsing it in place would have made it the string.
+
+**INV-CFG-010**: An in-process rewrite of a config file re-emits a scalar the source declared as text and whose whole value is a `${VAR}` placeholder still declared as text, so the rewrite changes neither what that scalar means nor whether the refusal above applies to the file afterwards.
+
+Enforced in the writers' own load/dump pair, which records the declaration on the node and
+re-quotes it on the way out; a scalar the source left plain stays plain, since quoting that
+one would retype it in the other direction. It binds the rewrite, not the file: what the
+document *discards* — a duplicate key's loser, an overridden merge donor — carries no
+declaration to preserve, and that is the one case in which a rewrite ends with the refusal
+no longer applying. Nothing surviving in such a file can have changed meaning, and the
+writer logs the transition rather than performing it silently.
 
 ## Failure behavior
 

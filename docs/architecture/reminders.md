@@ -56,6 +56,18 @@ that, since a reference with text around it is a string either way, a plain lone
 read back as a value both before and after, and one in a comment reaches no loader at all.
 No shipped configuration uses references.
 
+**Which makes the declaration the one part of a file's form a rewrite does carry**
+(INV-CFG-010). Cancellation cannot refuse — see the entry-is-the-record rule below — so
+while it rewrote through a plain dump it stripped that quoting as it went: the entry's
+value changed from the text it holds to whatever that text means as YAML, and, because the
+refusal is a question asked of the *file*, every later writer of that file stopped refusing
+too. One cancellation disarmed the door for good. The writers' parse now records which
+scalars the source declared as text and their dump re-quotes exactly those, so the door
+survives its own cleanup path. Everything else in this paragraph still holds — comments,
+key order and which quoting style was used are not preserved — and the exception is
+narrow by construction: a declaration on content the document itself discards cannot be
+carried, and that is logged rather than left silent.
+
 **A one-shot reminder still present with a past fire time is one that is owed.** The entry
 is the record and delivery removes it, so there is no second store to keep in sync. This is
 what lets a sweep recover an occurrence the process was down for — something the scheduler

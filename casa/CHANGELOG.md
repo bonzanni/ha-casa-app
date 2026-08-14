@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.199.0] - 2026-08-14
+
+### Fixed
+
+- Cancelling a reminder no longer quietly weakens the protection around a
+  trigger file you wrote environment references into (#512). If one of your
+  triggers holds a value written as `"${SOMETHING}"` — in quotes, meaning "use
+  this text exactly" — Casa refuses to rewrite that file, so nothing of yours
+  is retyped behind your back. Delivering or cancelling a reminder is the one
+  thing it must still do, and doing it used to drop those quotes: the value
+  silently became something else the next time the file was read (a `true`
+  became a yes/no flag rather than the word), and, worse, the refusal stopped
+  applying to that file for good, so every later change went through unchecked
+  — including the reconciliation that can drop a trigger you added yourself.
+  The quotes now survive the rewrite, so the value keeps its meaning and the
+  protection stays on. In the one case Casa cannot carry them across — quoting
+  that sits on a duplicate key the file itself discards — it says so in the
+  log instead of changing the file silently.
+
 ## [0.198.0] - 2026-08-14
 
 ### Fixed

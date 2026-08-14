@@ -102,7 +102,8 @@ import yaml
 
 import trigger_write_lock
 from atomic_io import atomic_write_text
-from config import _ENV_RE, text_has_lone_placeholder
+from config import (_ENV_RE, dump_yaml_declared_text,
+                    load_yaml_declared_text, text_has_lone_placeholder)
 
 
 def _under_pass_lock(fn):
@@ -346,6 +347,10 @@ def _read_doc(path: str) -> "tuple[str | None, dict]":
     dumping would bake resolved values into the file and destroy the operator's
     ``${VAR}`` placeholders permanently.
 
+    It records one thing a plain ``safe_load`` throws away: which lone
+    placeholders the file declared as TEXT, so :func:`_emit` can re-emit them
+    quoted (#512). Everything else about the parse is ``safe_load``'s.
+
     It also does NOT drop malformed entries. Under #396 this file was written
     only by this module, so dropping corruption was safe; it is now the
     OPERATOR's file, and silently dropping an entry from the document we write
@@ -365,7 +370,7 @@ def _read_doc(path: str) -> "tuple[str | None, dict]":
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     try:
-        doc = yaml.safe_load(text) or {}
+        doc = load_yaml_declared_text(text) or {}
     except (Exception, RecursionError) as exc:  # noqa: BLE001
         raise ValueError(f"{path}: cannot parse: {exc}") from exc
     if not isinstance(doc, dict):
@@ -386,6 +391,13 @@ def _agent_owned(entry) -> bool:
 def _emit(doc: dict, path: str) -> str:
     """Serialize *doc*, folding an emission failure into ``ValueError``.
 
+    Quoting survives (#512): a scalar :func:`_read_doc` saw declared as text and
+    consisting only of ``${VAR}`` is re-emitted quoted, so the rewrite does not
+    change what it means to the loader — and does not erase the very property
+    ``text_has_lone_placeholder`` tests, which is what made one cleanup
+    permanently disarm the guard for every later writer. Nothing else about the
+    file's form is preserved; see the module docstring.
+
     Parsing tolerance and EMISSION tolerance are not the same (Sol, impl r1):
     with the pinned PyYAML, a document nested a few hundred levels deep
     ``safe_load``s fine but makes ``safe_dump`` raise ``RecursionError`` — which
@@ -400,7 +412,7 @@ def _emit(doc: dict, path: str) -> str:
     duplicate nudge is a better failure than a missed reminder (spec §8).
     """
     try:
-        return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+        return dump_yaml_declared_text(doc, sort_keys=False, allow_unicode=True)
     except (Exception, RecursionError) as exc:  # noqa: BLE001
         raise ValueError(f"{path}: cannot be re-emitted: {exc}") from exc
 
@@ -616,7 +628,28 @@ def remove_entry(path: str, name: str) -> str:
     candidate["triggers"] = [e for e in doc["triggers"]
                              if not (_agent_owned(e)
                                      and e.get("name") == name)]
-    _save(path, candidate)
+    text_out = _emit(candidate, path)
+    disarmed = placeholder_rewrite and not text_has_lone_placeholder(text_out)
+    atomic_write_text(path, text_out)
+    if disarmed:
+        # The residual bound of #512's fix, made LOUD rather than silent. The
+        # rewrite carries the declared-text form of every scalar the document
+        # KEEPS, so this can only happen when the file's declared-text
+        # placeholders were all discarded by construction — a duplicate key's
+        # loser, a merge donor an explicit key overrides. Nothing surviving can
+        # have been retyped, but the guard those consumers share is off for
+        # this file from here on, and that is worth a line in the log.
+        #
+        # AFTER the write, for the same reason the notice below is (#513): the
+        # write can raise, leaving the file untouched, and a log line saying
+        # the guard is off would then be false about the operator's own file.
+        logger.warning(
+            "reminders: %s no longer declares any ${...} scalar as text after "
+            "this rewrite; the declared-text guard is off for this file, "
+            "because the quoting it matched was on configuration the document "
+            "itself discards (a duplicate key, or an overridden merge key)",
+            path,
+        )
     if placeholder_rewrite:
         # AFTER the write, never at the warning site (#513): _save can raise
         # before os.replace, leaving the original file untouched, and a notice

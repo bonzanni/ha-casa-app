@@ -114,7 +114,7 @@
     - tests/test_config_sync_backstop.py
     - tests/test_admin_reload_route.py
   related: [architecture/overview.md, architecture/plugins.md, architecture/agent-taxonomy.md]
-  defines_invariants: [INV-CFG-001, INV-CFG-002, INV-CFG-003, INV-CFG-004, INV-CFG-005, INV-CFG-006, INV-CFG-007, INV-CFG-008, INV-CFG-009]
+  defines_invariants: [INV-CFG-001, INV-CFG-002, INV-CFG-003, INV-CFG-004, INV-CFG-005, INV-CFG-006, INV-CFG-007, INV-CFG-008, INV-CFG-009, INV-CFG-010]
   invariant_tests:
     INV-CFG-001: [tests/test_pin_g4_invariants.py::test_pin_inv_cfg_001_exactly_eight_scopes_none_reading_options]
     INV-CFG-002: [tests/test_reload.py::test_full_excludes_other_scopes]
@@ -125,6 +125,7 @@
     INV-CFG-007: [tests/test_config_sync_entry_merge.py::test_refuses_the_merge_when_nothing_validates]
     INV-CFG-008: [tests/test_config_sync_entry_merge.py::test_output_carries_the_live_documents_top_level]
     INV-CFG-009: [tests/test_agent_loader_env_substitution.py::test_a_placeholder_value_survives_whatever_punctuation_it_contains, tests/test_agent_loader_env_substitution.py::test_a_hostile_value_can_no_longer_stop_the_file_loading, tests/test_agent_loader_env_substitution.py::test_a_QUOTED_placeholder_is_text_whatever_the_value_looks_like, tests/test_agent_loader_env_substitution.py::test_a_PLAIN_lone_placeholder_keeps_its_value_s_type, tests/test_agent_loader_env_substitution.py::test_a_PLAIN_lone_placeholder_means_what_its_text_means_as_YAML]
+    INV-CFG-010: [tests/test_agent_loader_env_substitution.py::test_a_rewrite_keeps_every_declared_text_form_declared, tests/test_agent_loader_env_substitution.py::test_a_rewrite_leaves_a_PLAIN_lone_placeholder_PLAIN, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_the_operator_s_entry_still_means_what_it_meant, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_the_guard_still_matches_the_file_afterwards, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_a_declaration_the_document_DISCARDS_is_reported_not_carried]
 
 - doc: architecture/delegation.md
   summary: How one agent addresses and launches another — the delegation ACL and aliases, the depth cap, and the agent-spawn cap.

@@ -277,6 +277,116 @@ def load_yaml_with_env(text: str):
 
 
 # ---------------------------------------------------------------------------
+# Carrying the declared-text form THROUGH a rewrite (#512)
+# ---------------------------------------------------------------------------
+#
+# :func:`text_has_lone_placeholder` above is the refusal: it tells a writer that
+# re-emitting a file would change what one of its scalars means. The pair below
+# is the other half — for the one writer that cannot refuse. ``remove_entry``
+# must proceed (a delivered reminder it cannot clean up redelivers forever), and
+# a plain dump then re-emits ``prompt: "${DETAIL}"`` as ``prompt: ${DETAIL}``:
+# the entry's resolution class changes AND the predicate stops matching the
+# file, so every consumer of the guard silently disarms after the first cleanup.
+
+
+class DeclaredTextPlaceholder(str):
+    """A scalar the SOURCE declared as text and whose whole value is ``${VAR}``.
+
+    A ``str`` in every respect that matters to a consumer — equality, hashing,
+    ``json`` encoding, jsonschema, rendering — carrying one extra fact that the
+    parsed document otherwise throws away: this scalar was quoted (or tagged
+    ``!!str``), and quoting is what makes a lone placeholder text rather than a
+    value read back as YAML (:class:`_EnvSafeLoader`).
+
+    A marker is needed because after loading, ``"${V}"`` and ``${V}`` are the
+    same ``str``: a representer keyed on the VALUE would quote both, which turns
+    a plain ``minutes: ${MINUTES}`` from a value-read into text — the inverse
+    retyping, and one that damages the operator's own configuration. Style is
+    the only thing that distinguishes them, and the loader is the last place it
+    is still known.
+    """
+
+
+class _DeclaredTextLoader(yaml.SafeLoader):
+    """``SafeLoader`` that keeps the declared-text form of a lone placeholder.
+
+    The shape it marks is exactly :func:`text_has_lone_placeholder`'s, read from
+    the node instead of the token — including that predicate's deliberate
+    absence of ``.strip()``: a value with padding must stay quoted for reasons
+    of its own, so it needs no marker.
+
+    Values are NOT env-resolved (unlike :class:`_EnvSafeLoader`): this loader
+    exists for the writers, and resolving before a dump would bake today's
+    environment into the operator's file permanently.
+    """
+
+    def compose_scalar_node(self, anchor):
+        # Same recording as _EnvSafeLoader's, for the same reason: a `!!str`
+        # tagged scalar can be PLAIN, so style alone would miss it, and the
+        # finished node cannot tell an authored tag from a resolved one.
+        explicit = self.peek_event().tag not in (None, "!")
+        node = super().compose_scalar_node(anchor)
+        node.env_explicit_tag = explicit
+        return node
+
+
+def _construct_declared_text(loader: _DeclaredTextLoader, node):
+    value = loader.construct_scalar(node)
+    if ((node.style is not None or getattr(node, "env_explicit_tag", False))
+            and _ENV_RE.fullmatch(value)):
+        return DeclaredTextPlaceholder(value)
+    return value
+
+
+_DeclaredTextLoader.add_constructor(
+    "tag:yaml.org,2002:str", _construct_declared_text)
+
+
+class _DeclaredTextDumper(yaml.SafeDumper):
+    """``SafeDumper`` that re-emits a :class:`DeclaredTextPlaceholder` quoted.
+
+    One conditional representer, never a Dumper-wide ``default_style``: that
+    would quote every scalar in the file, which is a far larger rewrite of the
+    operator's document than the one being avoided.
+
+    Double quotes whatever the authored style was (single, block, ``!!str``
+    tag). The marked value is exactly ``${IDENT}`` — ASCII with no character a
+    double-quoted scalar reads differently — so the value survives verbatim, and
+    what the guard and the loader both look for is that the scalar is quoted at
+    all, not how.
+    """
+
+
+_DeclaredTextDumper.add_representer(
+    DeclaredTextPlaceholder,
+    lambda dumper, value: dumper.represent_scalar(
+        _STR_TAG, str(value), style='"'),
+)
+
+
+def load_yaml_declared_text(text: str):
+    """``yaml.safe_load`` that records which lone placeholders were declared text.
+
+    For a writer that will re-emit the document through
+    :func:`dump_yaml_declared_text`. Raises exactly what ``safe_load`` raises.
+    """
+    return yaml.load(text, Loader=_DeclaredTextLoader)
+
+
+def dump_yaml_declared_text(doc, **kwargs) -> str:
+    """``yaml.safe_dump`` that re-quotes what :func:`load_yaml_declared_text` marked.
+
+    A document that carries no marker dumps byte-identically to ``safe_dump``'s
+    output. A marker reaching a plain ``yaml.safe_dump`` instead raises
+    ``RepresenterError`` (PyYAML's representer table is keyed on the exact
+    type), which is deliberate: the loader is used only where this dumper is,
+    and a marker arriving anywhere else should be loud rather than silently
+    unquoted.
+    """
+    return yaml.dump(doc, Dumper=_DeclaredTextDumper, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
