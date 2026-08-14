@@ -56,6 +56,7 @@ The index is sharded by family letter: see also [`doctrine/invariants.md`](invar
 | `INV-TG-004` | Writer operations on a sequenced topic are serialized under one lock. | [`architecture/telegram.md`](../architecture/telegram.md) |
 | `INV-TG-005` | A rich response is paginated to Telegram's message-length and entity budgets. | [`architecture/telegram.md`](../architecture/telegram.md) |
 | `INV-TG-006` | A one-shot operator notice is released for re-offer if and only if no part of it reached the operator. | [`architecture/telegram.md`](../architecture/telegram.md) |
+| `INV-TG-007` | A settled DM question drops its buttons along with its text. | [`architecture/telegram.md`](../architecture/telegram.md) |
 | `INV-TOOL-001` | The result wrapper marks an outer error only for a payload with status "error" or ok false; every other status is a successful outcome. | [`architecture/tools-interface.md`](../architecture/tools-interface.md) |
 | `INV-TOOL-002` | Internal tool calls bind engagement authority only for an active record; completion alone may bind a terminal record, so a duplicate completion gets its truthful already-terminal answer. | [`architecture/tools-interface.md`](../architecture/tools-interface.md) |
 | `INV-TOOL-003` | Plugin mutations serialize under one lock, and a failure before registry activation leaves the registry unchanged, reported in a pinned envelope shape. | [`architecture/tools-interface.md`](../architecture/tools-interface.md) |

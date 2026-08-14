@@ -183,6 +183,25 @@ which reads as `UNKNOWN` and preserves their existing behavior. That case is del
 distinct from a negative — treating "cannot report" as "failed" would re-offer a notice on
 every turn forever.
 
+**INV-TG-007**: A settled DM question drops its buttons along with its text.
+
+The DM settle edit sends an *explicit empty* keyboard rather than omitting the markup.
+Omitting it is not neutral: the client library drops the absent parameter, so the platform's
+edit call never touches the markup and the buttons outlive the text that retired them. The
+operator is then holding a live-looking control for a question that is already closed —
+which is the single-attention-lane discipline broken in the one place it is most visible.
+
+The clear is unconditional because every caller of the DM settle edit is a broker finish
+hook, and a finish hook runs only at a terminal outcome: an answered question, an expiry, a
+supersession, a shutdown. There is no mid-question repaint on this path for the flag to
+protect, and an opt-in flag is a thing the next call site forgets. The topic path is
+different — it has genuine mid-question edits — and keeps its explicit opt-in.
+
+What it does not cover: it does not make the edit *succeed*. A settlement whose edit fails
+in transport leaves the keyboard standing, and the failure is logged rather than retried
+(INV-TG-003's caveat applies here too). A tap on such a keyboard is still refused by the
+broker as stale, so what survives is a misleading display, never a wrong outcome.
+
 ## Failure behavior
 
 **No secret, or a wrong one, in webhook mode.** The route refuses before parsing. Nothing
@@ -242,6 +261,7 @@ units but sends unformatted text only.
 
 **Tests**
 - `tests/test_telegram_update_handler.py`
+- `tests/test_telegram_dm_settle.py`
 - `tests/test_tg_richtext_remnants.py`
 - `tests/test_verdict_broker.py`
 - `tests/test_telegram_new_reset.py`

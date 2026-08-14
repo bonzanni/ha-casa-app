@@ -1469,9 +1469,15 @@ class TestDmKeyboardApis:
         ch = _mk_dm_channel(fake_telegram_bot)
         fake_telegram_bot.edit_message_text = AsyncMock()
         assert await ch.edit_dm_message(500, 42, "new") is True
-        fake_telegram_bot.edit_message_text.assert_awaited_once_with(
-            chat_id=500, message_id=42, text="new",
-        )
+        # #569: the settle edit carries an EXPLICIT EMPTY markup so the
+        # question's buttons go with its text (INV-TG-007, pinned in
+        # tests/test_telegram_dm_settle.py).
+        _, kwargs = fake_telegram_bot.edit_message_text.call_args
+        assert kwargs["chat_id"] == 500
+        assert kwargs["message_id"] == 42
+        assert kwargs["text"] == "new"
+        assert list(kwargs["reply_markup"].inline_keyboard) == []
+        assert fake_telegram_bot.edit_message_text.await_count == 1
 
     async def test_edit_dm_message_not_modified_is_success(
         self, fake_telegram_bot,

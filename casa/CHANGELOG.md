@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.204.0] - 2026-08-14
+
+### Fixed
+
+- **A question Casa has already settled no longer keeps its buttons** (#569).
+  When a question in your direct chat was answered, expired, superseded or
+  cancelled at shutdown, Casa rewrote the message to say so — "Answered:
+  Confirm", "(this question has expired)" — but the tappable buttons stayed
+  underneath it. Tapping one was always safe (Casa refuses a tap on a closed
+  question), but the chat kept offering a control for something that was
+  already over. The buttons now go with the text.
+
+  This affected every button question Casa asks in a direct chat: the ones an
+  agent asks you, the memory-wipe confirmation, protected-action approvals, and
+  every install-consent prompt — plugin callbacks, plugin events, webhook
+  triggers, personas and specialists. The equivalent bug in engagement topics
+  was fixed in 0.79.0; the direct-chat path was missed at the time.
+
 ## [0.203.0] - 2026-08-14
 
 ### Added
