@@ -29,7 +29,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from broker_helpers import deliver
+from broker_helpers import deliver, wait_until
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -155,6 +155,23 @@ def _body(resp: web.Response) -> dict:
 @pytest.fixture
 def _fresh_broker(monkeypatch):
     fresh = VerdictBroker()
+    # #562: the tests below must wait for a CONDITION -- "the handler has
+    # reached ``BROKER.register``" -- not for a fixed wall-clock sleep, which
+    # is no barrier at all under the parallel gate (12 workers on a loaded
+    # box). ``register_counts[request_id]`` is the observable for that
+    # condition, and it is the only one that can see a SECOND arrival for the
+    # same request_id: a keyboard is posted once per request_id, and the
+    # broker's own ``pending()`` is a set of live keys, so neither counts.
+    counts: dict[str, int] = {}
+    real_register = fresh.register
+
+    def _counting_register(**kw):
+        out = real_register(**kw)
+        counts[kw["request_id"]] = counts.get(kw["request_id"], 0) + 1
+        return out
+
+    fresh.register = _counting_register  # type: ignore[method-assign]
+    fresh.register_counts = counts  # type: ignore[attr-defined]
     monkeypatch.setattr(verdict_broker, "BROKER", fresh)
     return fresh
 
@@ -193,6 +210,37 @@ def _payload(**overrides) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Readiness barriers (#562)
+# ---------------------------------------------------------------------------
+#
+# Every `deliver()` below needs the ask to have reached a specific state
+# first; a fixed ``asyncio.sleep(0.05)`` only *usually* gets there. These wait
+# on the state itself (bounded by ``wait_until``'s wall-clock timeout, so a
+# condition that never fires still FAILS rather than hanging).
+
+
+async def _await_registered(broker, request_id: str, n: int = 1) -> None:
+    """Wait until *n* handlers have reached ``BROKER.register`` for
+    *request_id* (n=2 for a concurrent pair / a reattaching retry)."""
+    await wait_until(lambda: broker.register_counts.get(request_id, 0) >= n)
+
+
+async def _await_posted(broker, ch, request_id: str, n_reg: int = 1) -> None:
+    """Wait until the ask is registered AND its keyboard has been posted.
+
+    The keyboard post is what wires the finish hook and the ``message_id``
+    (``verdict_broker._run_setup``), and ``ensure_posted`` declines to post at
+    all once the future is already resolved — so delivering before this point
+    can leave a test with zero keyboards and no settle edit."""
+    await wait_until(
+        lambda: (
+            broker.register_counts.get(request_id, 0) >= n_reg
+            and len(ch.options_keyboards) >= 1
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # /internal/channel/ask — HTTP-level tests (TestClient/TestServer)
 # ---------------------------------------------------------------------------
 
@@ -203,7 +251,7 @@ async def test_ask_answered_edits_answered(app_with_ask) -> None:
         task = asyncio.ensure_future(client.post(
             "/internal/channel/ask", json=_payload(request_id="rid-1"),
         ))
-        await asyncio.sleep(0.05)
+        await _await_posted(broker, ch, "rid-1")
         assert deliver(broker, 
             namespace="engagement_ask", scope="eng-1", request_id="rid-1",
             option_index=1, actor_id=999,
@@ -235,7 +283,7 @@ async def test_ask_calls_advance_interaction_state_first_contact(
         task = asyncio.ensure_future(client.post(
             "/internal/channel/ask", json=_payload(request_id="rid-fc"),
         ))
-        await asyncio.sleep(0.05)
+        await _await_posted(broker, ch, "rid-fc")
         assert deliver(broker, 
             namespace="engagement_ask", scope="eng-1", request_id="rid-fc",
             option_index=0, actor_id=999,
@@ -278,7 +326,13 @@ async def test_ask_only_creator_posts_one_keyboard(app_with_ask) -> None:
         t2 = asyncio.ensure_future(client.post(
             "/internal/channel/ask", json=_payload(request_id="rid-x"),
         ))
-        await asyncio.sleep(0.05)
+        # #562: ``n_reg=2`` is the test's PREMISE, not the flake fix — without
+        # it a slow second POST could still be pre-``register`` when the
+        # verdict lands, and the "two concurrent POSTs" case would silently
+        # degrade to a plain sequential reattach (which the 60s retired-key
+        # tombstone answers identically, so nothing would fail). The flake
+        # itself is the registered+posted clause of ``_await_posted``.
+        await _await_posted(broker, ch, "rid-x", n_reg=2)
         assert deliver(broker, 
             namespace="engagement_ask", scope="eng-1", request_id="rid-x",
             option_index=0, actor_id=999,
@@ -332,7 +386,7 @@ async def test_ask_validation_clamps_and_rejects(
             "/internal/channel/ask",
             json=_payload(request_id="clamp-lo", timeout_s=20),
         ))
-        await asyncio.sleep(0.02)
+        await _await_registered(broker, "clamp-lo")
         req_lo = broker._live[("engagement_ask", "eng-1", "clamp-lo")]
         assert req_lo.timeout_s == 30.0
         broker.cancel(namespace="engagement_ask", scope="eng-1",
@@ -346,7 +400,7 @@ async def test_ask_validation_clamps_and_rejects(
             "/internal/channel/ask",
             json=_payload(request_id="clamp-hi", timeout_s=600),
         ))
-        await asyncio.sleep(0.02)
+        await _await_registered(broker, "clamp-hi")
         req_hi = broker._live[("engagement_ask", "eng-1", "clamp-hi")]
         assert req_hi.timeout_s == 570.0
         broker.cancel(namespace="engagement_ask", scope="eng-1",
@@ -371,7 +425,7 @@ async def test_ask_accepts_long_question_and_label(app_with_ask) -> None:
                 request_id="rid-long", question=long_question,
                 options=[long_label, "B"]),
         ))
-        await asyncio.sleep(0.05)
+        await _await_posted(broker, ch, "rid-long")
         assert deliver(broker, 
             namespace="engagement_ask", scope="eng-1", request_id="rid-long",
             option_index=0, actor_id=999,
@@ -492,7 +546,7 @@ async def test_ask_cancel_route_is_explicit_cancellation(app_with_ask) -> None:
         t1 = asyncio.ensure_future(client.post(
             "/internal/channel/ask", json=_payload(request_id="rid-ec"),
         ))
-        await asyncio.sleep(0.05)
+        await _await_posted(broker, ch, "rid-ec")
         resp_cancel = await client.post(
             "/internal/channel/ask_cancel",
             json={"engagement_id": "eng-1", "request_id": "rid-ec",
@@ -550,7 +604,7 @@ async def test_ask_cancelled_during_post_completes_setup_one_keyboard(
     # A same-id retry reattaches (created=False) -- awaits the SAME setup,
     # no second post.
     task2 = asyncio.create_task(handler(_FakeRequest(payload)))
-    await asyncio.sleep(0.02)
+    await _await_registered(broker, "rid-6", 2)
     assert deliver(broker, 
         namespace="engagement_ask", scope="eng-1", request_id="rid-6",
         option_index=0, actor_id=999,
@@ -576,7 +630,7 @@ async def test_ask_disconnect_leaves_pending_for_reattach(
     payload = _payload(request_id="rid-7")
 
     task = asyncio.create_task(handler(_FakeRequest(payload)))
-    await asyncio.sleep(0.05)  # registration + fast post complete
+    await _await_posted(broker, ch, "rid-7")  # registered + posted
     assert broker.pending(namespace="engagement_ask", scope="eng-1") == [
         "rid-7",
     ]
@@ -591,7 +645,7 @@ async def test_ask_disconnect_leaves_pending_for_reattach(
     ]
 
     task2 = asyncio.create_task(handler(_FakeRequest(payload)))
-    await asyncio.sleep(0.02)
+    await _await_registered(broker, "rid-7", 2)
     assert deliver(broker, 
         namespace="engagement_ask", scope="eng-1", request_id="rid-7",
         option_index=0, actor_id=999,
@@ -616,7 +670,7 @@ async def test_ask_broker_finish_hook_edits_answered_not_handler_not_callback(
 
     payload = _payload(request_id="rid-fh")
     task = asyncio.create_task(handler(_FakeRequest(payload)))
-    await asyncio.sleep(0.05)  # registered + keyboard posted; now awaiting
+    await _await_posted(broker, ch, "rid-fh")  # now awaiting the tap
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
