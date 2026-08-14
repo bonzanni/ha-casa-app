@@ -54,6 +54,17 @@ def _persona(persona_id: str, version: str) -> PersonaPack:
     )
 
 
+def _install_override_persona(tmp_path, monkeypatch, persona_id: str, version: str):
+    """#543: publish a REAL persona pack under the approved installed root
+    (through the `$CASA_CONFIG_DIR` seam) and return it — the arrangement
+    `resident_persona_swap`/`persona_apply` produce in production, and the one
+    the in-lock presence check requires."""
+    from test_persona_install import install_persona_for_apply
+
+    return install_persona_for_apply(
+        tmp_path, monkeypatch, persona_id=persona_id, version=version)
+
+
 def _loaders(personas: dict[str, PersonaPack]):
     def load(ref: str) -> PersonaPack:
         if ref not in personas:
@@ -149,7 +160,12 @@ def test_tool_stage_and_loader_reconcile_share_the_same_bindings_root(tmp_path, 
 
     role = _role()
     default = _persona("casa/tina", "0.1.0")
-    override = _persona("casa/gary", "0.2.0")
+    # #543: _stage_and_report re-proves the persona is resolvable under the
+    # approved roots INSIDE the materialize lock (a persona_remove can land
+    # between the tool resolving the pack and the binding being staged), so
+    # the override here must be a pack that is genuinely installed — which is
+    # what resident_persona_swap always resolves anyway.
+    override = _install_override_persona(tmp_path, monkeypatch, "casa/gary", "0.2.0")
 
     # Establish the boot-time active binding through the LOADER's own root
     # resolver (mirrors load_agent_from_dir's _activate_resident_binding).

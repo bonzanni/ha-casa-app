@@ -941,6 +941,26 @@ def test_concurrent_current_specialist_roles_dir_threads_build_complete_overlay(
 # ==========================================================================
 
 
+def _publish_installed_copy(persona, specialists_dir: Path, slug: str,
+                            tmp_path: Path, monkeypatch) -> None:
+    """Copy an installed specialist's CAS-bundled persona into the operator
+    installed-personas root, through the `$CASA_CONFIG_DIR` seam (#543)."""
+    import shutil
+
+    from personality_binding import InstanceDir
+    from specialist_install import cas_store_dir, parse_component_root
+
+    active = InstanceDir(specialists_dir / slug).active()
+    _, _, checksum = parse_component_root(active.root)
+    cas_dir = cas_store_dir(checksum, store_root=specialists_dir / "store")
+    config_root = tmp_path / "config-root"
+    monkeypatch.setenv("CASA_CONFIG_DIR", str(config_root))
+    dest = config_root / "personas" / persona.persona_id / persona.version
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(cas_dir / "persona" / "pack", dest / "pack", dirs_exist_ok=True)
+    shutil.copy2(cas_dir / "persona" / "manifest.json", dest / "manifest.json")
+
+
 def _load_specialist_persona_role(specialists_dir: Path, slug: str):
     """Load the (persona, role) pair from an installed specialist's CAS bytes —
     exactly what apply_persona_override's specialist caller (tools.persona_apply)
@@ -1046,6 +1066,11 @@ def test_apply_persona_override_specialist_stages_under_the_lock(
 
     specialists_dir, agents_dir = _install_active(tmp_path, slug="mtg")
     persona, role = _load_specialist_persona_role(specialists_dir, "mtg")
+    # #543: an override must name a persona the specialist loader can resolve,
+    # and it resolves overrides from the INSTALLED root only — a component's
+    # own CAS-bundled pack is not one of the approved roots. Publish the same
+    # bytes there (identical checksum, so the binding's pin still holds).
+    _publish_installed_copy(persona, specialists_dir, "mtg", tmp_path, monkeypatch)
 
     seen = _record_stage_lockstate(monkeypatch)
     committed = apply_persona_override(
@@ -1111,7 +1136,11 @@ def test_stage_and_report_resident_stages_under_the_lock_off_loop(
 
     monkeypatch.setenv("CASA_BINDINGS_DIR", str(tmp_path / "bindings"))
     role = _role()
-    persona = _persona("casa/gary", "0.2.0")
+    # #543: the in-lock persona re-verify requires a pack that is actually
+    # installed under the approved roots — see install_persona_for_apply.
+    from test_persona_install import install_persona_for_apply
+    persona = install_persona_for_apply(
+        tmp_path, monkeypatch, persona_id="casa/gary", version="0.2.0")
     binding = materialize_override_binding(
         role=role, persona=persona, override_source="operator:casa/gary@0.2.0")
 

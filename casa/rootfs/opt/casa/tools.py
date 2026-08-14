@@ -12288,13 +12288,12 @@ def _persona_roots() -> tuple[Path, ...]:
     for operator-installed packs, the module-relative image-defaults tree for
     shipped ones) — the tool that resolves/stages a persona and the loader
     that activates it must agree on the directories."""
-    import agent_loader
-    from persona_install import installed_personas_root
+    # #543: one authority — persona_install.persona_pack_roots — so the
+    # removal/reference side and the resolve side can never disagree about
+    # where a persona may live.
+    from persona_install import persona_pack_roots
 
-    return (
-        installed_personas_root(),
-        Path(agent_loader.SCHEMA_DIR).parent / "personas",
-    )
+    return persona_pack_roots()
 
 
 def _resolve_local_persona(ref: str):
@@ -12334,6 +12333,7 @@ def _resolve_local_persona(ref: str):
 
 async def _stage_and_report(role_id: str, slot: str, binding) -> dict:
     from personality_binding import InstanceDir, make_instance_tuple
+    from specialist_install import SpecialistInstallError
     import specialist_materialize
 
     # Resolve the bindings root through the SAME seam agent_loader's boot-time
@@ -12358,12 +12358,27 @@ async def _stage_and_report(role_id: str, slot: str, binding) -> dict:
     # a worker thread via asyncio.to_thread — the same off-loop pattern reload's
     # _specialist_roles_dir uses. Validation/reporting stay loop-side.
     def _locked_stage():
+        from persona_install import require_persona_present
+
         with specialist_materialize.MATERIALIZE_LOCK:
             active = instance_dir.active()
+            # #543: the persona was resolved BEFORE this lock was taken, so a
+            # persona_remove could have deleted it in between; staging a
+            # binding that pins absent bytes is boot-fatal for a resident
+            # (INV-PERS-003). Re-prove it in-lock, where no removal can
+            # interleave. (An image-default reset is a no-op here — image
+            # packs are never removable.)
+            require_persona_present(binding)
             instance_dir.stage_desired(tuple_)
             return active
 
-    active = await asyncio.to_thread(_locked_stage)
+    try:
+        active = await asyncio.to_thread(_locked_stage)
+    except SpecialistInstallError as exc:
+        # #543: the in-lock persona re-verify refused (the pack was removed or
+        # its bytes changed while this swap was in flight). Structured refusal,
+        # never a raw exception out of the tool — and nothing was staged.
+        return {"ok": False, "kind": exc.kind, "detail": exc.detail}
     return {
         "ok": True, "role": role_id, "persona": f"{binding.persona_id}@{binding.persona_version}",
         "activation": "restart_required",
@@ -12454,6 +12469,138 @@ async def resident_persona_reset(args: dict) -> dict:
     return _result(await _stage_and_report(role_id, slot, binding))
 
 
+# ---------------------------------------------------------------------------
+# #543 — persona disposal tools (list / remove / prune / ack revoke)
+#
+# All three mutating tools run under _PLUGIN_TOOLS_LOCK, like every other
+# lifecycle mutation: it is what keeps a bundle transaction from being
+# mid-flight (its journal captures tuples that a compensation can restore)
+# while a persona is being removed. The removal core then takes
+# MATERIALIZE_LOCK in the worker thread — the same order every lifecycle path
+# already uses.
+# ---------------------------------------------------------------------------
+
+
+@tool(
+    "persona_list",
+    "List the personas installed under /config/personas — id, version, checksum, display name, "
+    "which agents' bindings still refer to each one, and whether it can be removed. Also reports "
+    "the image-shipped persona packs, which are part of the image and are never removable. "
+    "Read-only.",
+    {"type": "object", "properties": {}},
+)
+async def persona_list(args: dict) -> dict:
+    from persona_install import (
+        list_installed_personas, persona_pack_roots, persona_references,
+    )
+    from personality_binding import IMAGE_DEFAULT_PERSONA_BY_SLOT
+    from specialist_install import SpecialistInstallError
+
+    def _sync() -> dict:
+        try:
+            references = persona_references()
+        except SpecialistInstallError as exc:
+            return {"ok": False, "kind": exc.kind, "detail": exc.detail}
+        installed = list_installed_personas(references=references)
+        image_root = persona_pack_roots()[1]
+        image_defaults = []
+        for slot, ref in sorted(IMAGE_DEFAULT_PERSONA_BY_SLOT.items()):
+            persona_id, _, version = ref.partition("@")
+            image_defaults.append({
+                "slot": slot, "ref": ref,
+                "present": (image_root / persona_id / version / "manifest.json").is_file(),
+            })
+        return {"ok": True, "installed": installed, "image_defaults": image_defaults}
+
+    return _result(await asyncio.to_thread(_sync))
+
+
+@tool(
+    "persona_remove",
+    "Remove an INSTALLED persona version from /config/personas and revoke its install approval. "
+    "REFUSES (kind: persona_pinned) while any resident or specialist binding — active, staged, or "
+    "retained for rollback — still refers to it: reset or re-apply those agents first (and restart, "
+    "for a resident). Image-shipped personas are never removable.",
+    {"type": "object", "properties": {
+        "persona_id": {"type": "string"}, "version": {"type": "string"}},
+     "required": ["persona_id", "version"]},
+)
+async def persona_remove(args: dict) -> dict:
+    from persona_install import remove_installed_persona
+    from specialist_install import SpecialistInstallError
+
+    async with _PLUGIN_TOOLS_LOCK:
+        # Kill any pending install keyboard for this persona FIRST, on the LOOP
+        # — ChallengeCoordinator is loop-confined and single-owner. This is
+        # best-effort (an already-answered challenge cannot be cancelled); the
+        # authoritative guard is the ack ledger's revocation generation, which
+        # the removal advances before it deletes anything.
+        CHALLENGES.cancel_matching(persona=args["persona_id"])
+        try:
+            result = await asyncio.to_thread(
+                remove_installed_persona,
+                persona_id=args["persona_id"], version=args["version"])
+        except SpecialistInstallError as exc:
+            payload = {"ok": False, "kind": exc.kind, "detail": exc.detail}
+            return _result(payload)
+    return _result(result)
+
+
+@tool(
+    "persona_prune",
+    "Remove every installed persona version that no binding refers to any more (the persona "
+    "garbage collection sweep). Each removal also revokes that version's install approval. "
+    "Reports what was removed and what was kept, with the reason. Run persona_list first so the "
+    "operator sees what will go.",
+    {"type": "object", "properties": {}},
+)
+async def persona_prune(args: dict) -> dict:
+    from persona_install import prune_installed_personas
+    from specialist_install import SpecialistInstallError
+
+    async with _PLUGIN_TOOLS_LOCK:
+        try:
+            result = await asyncio.to_thread(prune_installed_personas)
+        except SpecialistInstallError as exc:
+            return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+    return _result({"ok": True, **result})
+
+
+@tool(
+    "persona_ack_revoke",
+    "Revoke the operator's install approval for a persona — all versions, or one version — WITHOUT "
+    "touching any installed bytes. A later install of the same persona re-prompts for consent. "
+    "Sibling of trigger_ack_revoke / callback_ack_revoke / event_ack_revoke.",
+    {"type": "object", "properties": {
+        "persona_id": {"type": "string"}, "version": {"type": "string"}},
+     "required": ["persona_id"]},
+)
+async def persona_ack_revoke(args: dict) -> dict:
+    from persona_install import PersonaInstallAckStore, PersonaLedgerInvalid
+    import specialist_materialize
+
+    persona_id = args["persona_id"]
+    version = args.get("version") or None
+
+    def _sync() -> dict:
+        # Under MATERIALIZE_LOCK for the same reason commit_persona_install
+        # publishes under it: the commit path re-reads the ack inside that lock,
+        # so revoking under it means a revoke can never land between that read
+        # and the publication it authorizes.
+        with specialist_materialize.MATERIALIZE_LOCK:
+            try:
+                removed = PersonaInstallAckStore().revoke(
+                    persona_id=persona_id, version=version)
+            except (OSError, PersonaLedgerInvalid) as exc:
+                return {"ok": False, "kind": "ack_revoke_failed", "detail": str(exc)}
+        return {"ok": True, "persona_id": persona_id, "version": version,
+                "revoked_acks": len(removed)}
+
+    async with _PLUGIN_TOOLS_LOCK:
+        CHALLENGES.cancel_matching(persona=persona_id)
+        return _result(await asyncio.to_thread(_sync))
+
+
 # Module-level tool registry — iterated by create_casa_tools() for the SDK
 # path and by the MCP HTTP bridge (mcp_bridge._build_tool_dispatch) for
 # real `claude` CLI engagements. Adding a tool here exposes it on both
@@ -12525,6 +12672,10 @@ CASA_TOOLS: tuple = (
     persona_install_inspect,
     persona_install_commit,
     persona_apply,
+    persona_list,                  # #543 — the disposal side of the lifecycle
+    persona_remove,
+    persona_prune,
+    persona_ack_revoke,
 )
 
 

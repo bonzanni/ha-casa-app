@@ -1398,7 +1398,7 @@ def test_cas_pin_roots_on_missing_directory_returns_empty(tmp_path: Path) -> Non
     assert cas_pin_roots(tmp_path / "does-not-exist") == frozenset()
 
 
-def test_cas_pin_roots_pins_an_override_bound_specialists_component_root(tmp_path: Path) -> None:
+def test_cas_pin_roots_pins_an_override_bound_specialists_component_root(tmp_path: Path, monkeypatch) -> None:
     """Round-2 fix (finding #8/#4's exposed bug): an OVERRIDE-mode specialist
     binding has `binding.component_root is None` (only component-default
     populates it) — cas_pin_roots must still pin the component blob via
@@ -1420,7 +1420,11 @@ def test_cas_pin_roots_pins_an_override_bound_specialists_component_root(tmp_pat
     # persona_id/version must satisfy the mtg role's persona_requirements
     # ("casa/judge@>=0.1.0 <1.0.0", from _write_component above) — a
     # DIFFERENT version of the SAME compatible slug, not an unrelated one.
-    override_dir = tmp_path / "judge2-repo"
+    # #543: build it straight into the approved installed root (through the
+    # $CASA_CONFIG_DIR seam) — apply_persona_override re-proves in-lock that
+    # the persona it is about to pin is resolvable there.
+    monkeypatch.setenv("CASA_CONFIG_DIR", str(tmp_path / "config-root"))
+    override_dir = tmp_path / "config-root" / "personas" / "casa" / "judge" / "0.2.0"
     persona_yaml = {
         "api_version": "casa.persona/v1", "id": "casa/judge", "version": "0.2.0",
         "trait_schema_version": 1,
@@ -1466,7 +1470,8 @@ def test_persona_pin_roots_always_includes_image_defaults(tmp_path: Path) -> Non
         assert ref in pinned
 
 
-def test_persona_pin_roots_includes_a_resident_override_binding(tmp_path: Path) -> None:
+def test_persona_pin_roots_includes_a_resident_override_binding(
+        tmp_path: Path, monkeypatch) -> None:
     from persona_install import apply_persona_override
     from persona_pack import load_persona_pack
     from role_artifact import load_role_artifact
@@ -1479,9 +1484,11 @@ def test_persona_pin_roots_includes_a_resident_override_binding(tmp_path: Path) 
         / "casa/rootfs/opt/casa/defaults/roles/resident/assistant"
     )
     role = materialize_role(source=load_role_artifact(role_dir), options={})
-    persona_dir = tmp_path / "ellen-repo"
-    _write_persona_repo(persona_dir, persona_id="casa/ellen", version="0.1.0")
-    persona = load_persona_pack(persona_dir / "pack", persona_dir / "manifest.json")
+    # #543: apply_persona_override re-proves the persona is resolvable under
+    # the approved roots before staging, so install it where the loader looks.
+    from test_persona_install import install_persona_for_apply
+    persona = install_persona_for_apply(
+        tmp_path, monkeypatch, persona_id="casa/ellen", version="0.1.0")
 
     bindings_dir = tmp_path / "bindings"
     apply_persona_override(
@@ -1493,7 +1500,7 @@ def test_persona_pin_roots_includes_a_resident_override_binding(tmp_path: Path) 
     assert "casa/ellen@0.1.0" in pinned
 
 
-def test_persona_pin_roots_includes_an_override_bound_specialist(tmp_path: Path) -> None:
+def test_persona_pin_roots_includes_an_override_bound_specialist(tmp_path: Path, monkeypatch) -> None:
     from persona_install import apply_persona_override
     from persona_pack import load_persona_pack
     from personality_binding import InstanceDir
@@ -1510,9 +1517,11 @@ def test_persona_pin_roots_includes_an_override_bound_specialist(tmp_path: Path)
 
     # persona_id/version must satisfy the mtg role's persona_requirements
     # ("casa/judge@>=0.1.0 <1.0.0", from _write_component above).
-    persona_dir = tmp_path / "judge3-repo"
-    _write_persona_repo(persona_dir, persona_id="casa/judge", version="0.3.0")
-    persona = load_persona_pack(persona_dir / "pack", persona_dir / "manifest.json")
+    # #543: see install_persona_for_apply — an override must name a persona
+    # the specialist loader can actually resolve at activation.
+    from test_persona_install import install_persona_for_apply
+    persona = install_persona_for_apply(
+        tmp_path, monkeypatch, persona_id="casa/judge", version="0.3.0")
 
     apply_persona_override(
         target_role_id="specialist:mtg", persona=persona, role=role,

@@ -33,7 +33,7 @@ deny those writes; the typed tools in the recipes are the only mutation path. If
 NO recipe matches, say so in the topic and ask before improvising.
 
 - `specialist/install` — add a specialist from a component repository (the ONLY way to add one); `specialist/upgrade`, `specialist/rollback`, `specialist/uninstall` — lifecycle of an installed specialist. (`specialist/create`, `specialist/update`, `specialist/delete`: retired stubs — read them only to learn what replaced them.)
-- `persona/install` — pull a persona from a repository; `persona/apply` — bind an installed persona to a resident or specialist.
+- `persona/install` — pull a persona from a repository; `persona/apply` — bind an installed persona to a resident or specialist; `persona/remove` — delete one installed persona and revoke its approval; `persona/prune` — sweep every persona nothing is bound to.
 - `plugin/add`, `plugin/update`, `plugin/remove`, `plugin/secrets` — plugin registry lifecycle and secret wiring.
 - `trigger/add`, `trigger/update`, `trigger/remove` — scheduled/webhook triggers on an agent.
 - `delegate/wire`, `delegate/unwire` — a resident's delegation entries.
