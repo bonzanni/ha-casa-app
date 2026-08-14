@@ -240,15 +240,19 @@ def test_a_journal_that_cannot_be_read_refuses_every_removal(
         tree, tmp_path, monkeypatch) -> None:
     """The one journal state that DOES refuse: a read error is unknown, not
     negative — the same file may read fine at boot and replay its capture."""
-    import specialist_bundle_journal
-
     _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
-    _write_journal(tree, tmp_path)
+    path = _write_journal(tree, tmp_path)
 
-    def _boom(path):
-        raise OSError("EIO")
+    # A real read failure, so the classifier itself produces the verdict —
+    # patching the classifier would be patching the thing under test.
+    real_read_text = Path.read_text
 
-    monkeypatch.setattr(specialist_bundle_journal, "replayable_tuple_files", _boom)
+    def _read_text(self, *args, **kwargs):
+        if self.name == path.name:
+            raise OSError(5, "EIO")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
 
     with pytest.raises(SpecialistInstallError) as raised:
         _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
@@ -718,3 +722,74 @@ def test_the_journal_classifier_is_the_one_boot_uses(tree, tmp_path) -> None:
         "the name/shape/state rules is what let the reference scan disagree "
         "with what boot actually replays")
     assert "_valid_payload(payload" not in source
+
+
+# ---------------------------------------------------------------------------
+# Diff review round 3
+# ---------------------------------------------------------------------------
+
+
+def test_a_present_but_null_revocations_map_is_a_damaged_document(tmp_path) -> None:
+    """Sol diff r3: `_load_revocations` read a MISSING key and a present
+    `null` identically as {} — generation zero. A ledger carrying
+    `"revocations": null` therefore manufactured a reset fence that a
+    pre-revoke consent tap would match."""
+    from persona_install import PersonaInstallAckStore, PersonaLedgerInvalid
+
+    path = tmp_path / "acks.json"
+    path.write_text(json.dumps(
+        {"schema_version": 1, "acks": {}, "revocations": None}), encoding="utf-8")
+
+    with pytest.raises(PersonaLedgerInvalid):
+        PersonaInstallAckStore(path=path).revoke(persona_id="casa/newton")
+
+
+def test_a_boolean_schema_version_is_not_version_one(tmp_path) -> None:
+    """JSON `true` equals 1 in Python, so an inexact comparison accepted a
+    document whose schema version was a boolean."""
+    from persona_install import PersonaInstallAckStore, PersonaLedgerInvalid
+
+    path = tmp_path / "acks.json"
+    path.write_text(json.dumps({"schema_version": True, "acks": {}}), encoding="utf-8")
+
+    with pytest.raises(PersonaLedgerInvalid):
+        PersonaInstallAckStore(path=path).revoke(persona_id="casa/newton")
+
+
+def test_a_bindings_root_that_cannot_be_resolved_refuses_every_removal(
+        tree, tmp_path, monkeypatch) -> None:
+    """Sol diff r3: the fail-closed treatment stopped above the roots. A root
+    that cannot be resolved read as "no bindings at all", so the scan returned
+    an empty reference set for a directory it never actually saw — and removal
+    then deleted a persona an active resident still named."""
+    import os
+
+    _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
+    _write_tuple(tree["bindings"] / "resident-assistant" / "active.yaml",
+                 personas_root=tree["personas"], persona_id="casa/newton", version="0.1.0")
+
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):
+        if str(path) == str(tree["bindings"]):
+            raise OSError(40, "ELOOP")     # swallowed by Path.is_dir()
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _stat)
+
+    with pytest.raises(SpecialistInstallError) as raised:
+        _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
+
+    assert raised.value.kind == "references_unavailable"
+    assert (tree["personas"] / "casa/newton" / "0.1.0" / "manifest.json").is_file()
+
+
+def test_a_bindings_root_that_is_simply_absent_is_empty(tree, tmp_path) -> None:
+    """And the other side: a host with no bindings directory at all has no
+    resident references, and removal must work normally."""
+    import shutil
+
+    _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
+    shutil.rmtree(tree["bindings"])
+
+    assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True

@@ -498,8 +498,19 @@ def quarantine_all(*,
 JOURNAL_IGNORED = "ignored"          # not a journal this loop owns at all
 JOURNAL_UNPARSEABLE = "unparseable"  # name does not parse -> quarantine_all
 JOURNAL_INVALID = "invalid"          # shape/state invalid -> quarantine (never replayed)
+JOURNAL_UNREADABLE = "unreadable"    # the file itself could not be READ
 JOURNAL_COMPLETE = "complete"        # finished -> pruned WITHOUT rollback
 JOURNAL_REPLAY = "replay"            # the ONLY class whose captures are restored
+
+# #543 (Sol+Terra diff r3): UNREADABLE is a distinct verdict because its two
+# consumers must answer it DIFFERENTLY, and collapsing it into either one is a
+# defect. At boot it is fail-closed like an invalid journal — a read error used
+# to make the payload invalid, which quarantined the slug, and an in-progress
+# journal exists precisely because its mutation may have left registry and
+# tuple state mid-transition, so continuing past it would let a half-completed
+# specialist load. For the persona reference scan it is the opposite of
+# "restores nothing": the same file may read fine at boot and replay its
+# capture, so removal must refuse.
 
 
 def classify_journal(path: Path) -> "tuple[str, str | None, dict | None]":
@@ -511,9 +522,9 @@ def classify_journal(path: Path) -> "tuple[str, str | None, dict | None]":
     function is the point — an independent copy of the rule is what let the
     reference scan refuse removals for journals boot would only quarantine.
 
-    An OSError propagates: a file that cannot be READ right now may read fine
-    at boot, so its class is unknown rather than harmless. Callers decide
-    (boot logs and moves on; removal refuses)."""
+    A file that cannot be READ is `JOURNAL_UNREADABLE`, never silently one of
+    the other classes — see the verdict list for why its two consumers must
+    treat it differently."""
     if path.name.endswith(".quarantined") or re.search(r"\.tmp-[0-9a-f]{32}$", path.name):
         return JOURNAL_IGNORED, None, None
     match = JOURNAL_NAME_RE.match(path.name)
@@ -522,6 +533,8 @@ def classify_journal(path: Path) -> "tuple[str, str | None, dict | None]":
     slug = match.group("slug")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return JOURNAL_UNREADABLE, slug, None
     except ValueError:
         payload = None
     if not _valid_payload(payload, slug):
@@ -781,14 +794,18 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
         # #543: the name/shape/state rules live in classify_journal, which the
         # persona reference scan reads too — the actions below are this loop's
         # own, the CLASSIFICATION is shared, so neither side can drift.
-        try:
-            verdict, slug, payload = classify_journal(path)
-        except OSError:
-            logger.exception(
-                "journal %s could not be read; retained for the next boot", path.name)
-            continue
+        verdict, slug, payload = classify_journal(path)
         if verdict == JOURNAL_IGNORED:
             continue
+        if verdict == JOURNAL_UNREADABLE:
+            # Sol+Terra diff r3: this MUST quarantine, as it always did — a
+            # read error used to make the payload invalid and take the branch
+            # below. An unreadable in-progress journal may be covering a
+            # half-completed transaction, and continuing past it would let the
+            # unchanged registry snapshot load that specialist for this boot.
+            logger.warning("journal %s could not be read; quarantining %s",
+                           path.name, slug)
+            verdict = JOURNAL_INVALID
 
         if verdict == JOURNAL_UNPARSEABLE:
             try:

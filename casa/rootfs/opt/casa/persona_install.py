@@ -230,10 +230,23 @@ class PersonaInstallAckStore:
             raise PersonaLedgerInvalid(
                 f"{self.path}: the consent ledger is not readable JSON ({exc}); "
                 "refusing to record or revoke consent against it") from exc
-        if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
+        version = raw.get("schema_version") if isinstance(raw, dict) else None
+        # Sol diff r3: an EXACT integer check — JSON `true` equals 1 in Python,
+        # so a bool would otherwise pass for schema_version 1.
+        if (not isinstance(raw, dict) or isinstance(version, bool)
+                or version != _SCHEMA_VERSION):
             raise PersonaLedgerInvalid(
                 f"{self.path}: the consent ledger has an unrecognized shape or "
                 "schema version; refusing to record or revoke consent against it")
+        # Sol diff r3: a PRESENT-but-null revocations map is not an absent one.
+        # `_load_revocations` reads both as {} — i.e. generation zero — so a
+        # document carrying `"revocations": null` manufactured a reset fence
+        # that a pre-revoke consent tap would match.
+        if "revocations" in raw and not isinstance(raw["revocations"], dict):
+            raise PersonaLedgerInvalid(
+                f"{self.path}: the consent ledger's revocation generations are "
+                "present but malformed; refusing to record or revoke consent "
+                "against it")
         # Sol+Terra diff r2: check the TYPE before comparing. `raw.get("acks")
         # or {}` collapsed a missing key, null, false, [] and "" to {} — and
         # `_load` fail-closes to {} for each of those too, so the comparison
@@ -267,9 +280,9 @@ class PersonaInstallAckStore:
             return {}
         if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
             return {}
-        revocations = raw.get("revocations")
-        if revocations is None:
-            return {}
+        if "revocations" not in raw:
+            return {}                      # never revoked — every generation is 0
+        revocations = raw["revocations"]
         if not isinstance(revocations, dict) or not all(
                 isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool) and v >= 0
                 for k, v in revocations.items()):
@@ -777,9 +790,13 @@ def _journal_references(ops_dir: Path) -> "list[PersonaReference]":
     from personality_binding import verify_instance_tuple
 
     out: list[PersonaReference] = []
+    # Sol diff r3: the ROOT gets the same treatment as everything under it —
+    # Path.is_dir() answers False for ELOOP/ENOTDIR/EBADF as well as for
+    # genuine absence, so an unresolvable root read as "no journals at all"
+    # and the scan returned an empty set for a directory it never saw.
+    if not _is_dir_or_refuse(ops_dir):
+        return out
     try:
-        if not ops_dir.is_dir():
-            return out
         entries = sorted(ops_dir.iterdir())
     except OSError as exc:
         raise SpecialistInstallError(
@@ -790,16 +807,17 @@ def _journal_references(ops_dir: Path) -> "list[PersonaReference]":
     for path in entries:
         if not _is_file_or_refuse(path):     # absence vs "cannot tell" — see _stat_or_refuse
             continue
-        try:
-            tuple_files = specialist_bundle_journal.replayable_tuple_files(path)
-        except OSError as exc:
+        verdict, _slug, payload = specialist_bundle_journal.classify_journal(path)
+        if verdict == specialist_bundle_journal.JOURNAL_UNREADABLE:
+            # Boot quarantines this one; the scan cannot lean on that, because
+            # the same file may read fine at boot and replay its capture.
             raise SpecialistInstallError(
                 "references_unavailable",
-                f"bundle journal {path.name} could not be read ({exc}); it may still "
-                "restore a persona binding, so no persona can be removed until it is "
-                "readable") from exc
-        if not tuple_files:
+                f"bundle journal {path.name} could not be read; it may still restore "
+                "a persona binding, so no persona can be removed until it is readable")
+        if verdict != specialist_bundle_journal.JOURNAL_REPLAY:
             continue
+        tuple_files = payload["before"]["tuple_files"]
         for filename, content in sorted(tuple_files.items()):
             if not isinstance(content, str) or not content.strip():
                 continue
@@ -854,9 +872,9 @@ def persona_references(
 
     def _scan(root: Path, *, filenames: tuple[str, ...], kind: str,
               skip: frozenset[str] = frozenset()) -> None:
+        if not _is_dir_or_refuse(root):    # see the journal root above
+            return
         try:
-            if not root.is_dir():
-                return
             entries = sorted(root.iterdir())
         except OSError as exc:
             raise SpecialistInstallError(
@@ -957,7 +975,7 @@ def _installed_versions(personas_root: Path) -> "list[tuple[str, str, Path]]":
     shape are skipped — they are not installed personas and are not this
     subsystem's to delete."""
     out: list[tuple[str, str, Path]] = []
-    if not personas_root.is_dir():
+    if not _is_dir_or_refuse(personas_root):
         return out
     for namespace in sorted(personas_root.iterdir()):
         if not namespace.is_dir() or namespace.name.startswith("."):
