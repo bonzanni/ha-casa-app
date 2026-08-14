@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.205.0] - 2026-08-15
+
+### Added
+
+- **A scheduled agent can now send you a file** (#485). Until now a turn fired
+  by one of an agent's own schedules — a cron pass, an interval, a reminder —
+  could only write text. If it produced a PDF, a photo or a report, it had to
+  ask you to say something first, and send the file on the reply. It can now
+  deliver the file in the same turn: a weekly invoice pass sends the invoice
+  itself.
+
+  This applies to schedules on the Telegram channel, and delivery goes to the
+  configured operator chat. With no operator configured, scheduled turns stay
+  text-only exactly as before. Turns fired by a plugin's webhook are
+  deliberately not included — they carry outside content, and they keep no way
+  to put a file in your chat.
+
+  Asking you an interactive *question* from a scheduled turn is not part of
+  this and is tracked separately (#573): a question outlives the turn that
+  asked it, which needs machinery this release does not add.
+
 ## [0.204.0] - 2026-08-14
 
 ### Fixed

@@ -82,6 +82,14 @@ their job was "lost".
 What it does not cover: delivery. A leased delivery attempt survives recovery with one
 fresh lease instead of being orphaned, precisely so a mid-playback device is not preempted.
 
+Recovery rebuilds the notified turn's origin **field by field** from the durable row, so
+anything the live path carried as an origin marker and the row does not carry as a field is
+gone by the time a resident is resumed. Scheduled-media eligibility (INV-TRIG-012) is
+therefore a stored boolean rather than a marker riding the origin dict, restored only from
+an exact stored true — a row written before the field existed restores nothing, and the
+resumed turn stays text-only exactly as it did before that feature. Read that as the general
+rule for this file: a capability that must survive a restart has to be *in the row*.
+
 **INV-JOB-003**: Every delivery transition is a compare-and-set against both the expected durable state and the recorded attempt id; a stale or mismatched frame is denied without mutation.
 
 Enforced in the registry's transition methods — some through the shared CAS helper, some

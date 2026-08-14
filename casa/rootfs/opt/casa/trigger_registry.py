@@ -21,6 +21,7 @@ from aiohttp import web
 from bus import BusMessage, MessageBus, MessageType
 from config import TriggerSpec
 from log_cid import new_cid
+from provenance import scheduled_delivery_markers
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -249,6 +250,11 @@ class TriggerRegistry:
                     "chat_id": f"{trig.type}-{trig.name}",
                     "trigger": trig.name,
                     "cid": new_cid(),
+                    # #485: admits send_media for a telegram-channel trigger.
+                    # The chat_id above stays the SESSION LABEL — it keys the
+                    # SDK session and the voice-job scope, and the delivery
+                    # identity is resolved separately at the point of use.
+                    **scheduled_delivery_markers(trig.channel),
                 },
             )
             await self._bus.send(msg)

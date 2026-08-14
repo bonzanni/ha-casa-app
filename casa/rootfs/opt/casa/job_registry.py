@@ -115,6 +115,14 @@ class VoiceJob:
     # case delivery must FAIL CLOSED rather than assume audio and announce a
     # phone's answer on a speaker.
     delivery_modality: str | None = None
+    # #485: was this delegation created by a turn Casa's own schedule fired?
+    # The live completion path carries that as an origin marker, but a restart
+    # resumes through THIS row, whose origin is rebuilt field by field — so the
+    # eligibility has to be a field or it is silently gone. Defaults False: a
+    # row written before this field existed restores no eligibility, which is
+    # the fail-closed direction (the turn stays text-only, exactly as it did
+    # before the feature).
+    scheduled_delivery: bool = False
 
 
 @dataclass(frozen=True)
@@ -1251,6 +1259,10 @@ class JobRegistry:
                 handoff_id=JobRegistry._optional_str(row.get("handoff_id")),
                 handoff_state=HandoffState(row.get("handoff_state", "NONE")),
                 delivery_modality=row.get("delivery_modality"),
+                # #485: exact True only. A legacy row has no key, and a
+                # malformed one must not mint eligibility — bool("false")
+                # is True, which is precisely the coercion to avoid here.
+                scheduled_delivery=row.get("scheduled_delivery") is True,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise JobRegistryError(f"invalid job snapshot row: {exc}") from exc
@@ -1310,6 +1322,7 @@ class JobRegistry:
             "handoff_id": job.handoff_id,
             "handoff_state": job.handoff_state.value,
             "delivery_modality": job.delivery_modality,
+            "scheduled_delivery": job.scheduled_delivery,
         }
 
     async def _write_snapshot_locked(

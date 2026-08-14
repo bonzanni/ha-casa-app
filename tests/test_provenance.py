@@ -42,6 +42,11 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # #283: live-operator marker — an external caller who could set it
         # would exempt itself from the agent-spawn cap.
         "_operator_turn",
+        # #485: scheduled-delivery marker — an external caller who could set it
+        # would aim media at the operator's DM from a webhook payload. The
+        # authenticated webhook route dispatches MessageType.SCHEDULED too,
+        # which is why eligibility is this marker and never the message type.
+        "_scheduled_delivery",
     })
 
 

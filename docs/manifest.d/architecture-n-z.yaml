@@ -302,8 +302,10 @@
     - tests/test_agent_loader_trigger_auth.py
     - tests/test_casa_reload_triggers_resident.py
     - tests/test_config_trigger_tools.py
+    - tests/test_scheduled_media_delivery.py
+    - tests/test_scheduled_delivery_durable.py
   related: [architecture/plugins.md, architecture/http-surface.md, architecture/overview.md, architecture/callbacks.md, architecture/reminders.md]
-  defines_invariants: [INV-TRIG-001, INV-TRIG-002, INV-TRIG-003, INV-TRIG-004, INV-TRIG-005, INV-TRIG-009, INV-TRIG-011]
+  defines_invariants: [INV-TRIG-001, INV-TRIG-002, INV-TRIG-003, INV-TRIG-004, INV-TRIG-005, INV-TRIG-009, INV-TRIG-011, INV-TRIG-012]
   invariant_tests:
     INV-TRIG-001: [tests/test_trigger_registry.py::test_interval_channel_must_be_registered_on_agent]
     INV-TRIG-002: [tests/test_pin_g4_invariants.py::test_pin_inv_trig_002_plugin_namespace_reserved_in_user_schema, tests/test_trigger_registry.py::test_duplicate_trigger_name_same_agent_rejected, tests/test_trigger_registry.py::test_cross_role_webhook_name_collision_rejected]
@@ -311,6 +313,7 @@
     INV-TRIG-004: [tests/test_plugin_triggers_consent.py::test_tampered_identity_fails_whole_store_closed]
     INV-TRIG-005: [tests/test_plugin_triggers_overlay.py::test_replace_is_atomic_full_swap_stale_swept]
     INV-TRIG-009: [tests/test_trigger_registry_date.py::test_firing_an_agent_owned_one_shot_removes_job_and_entry, tests/test_trigger_registry_date.py::test_firing_an_OPERATORS_one_shot_drops_the_job_but_not_the_entry, tests/test_trigger_registry_date.py::test_firing_a_one_shot_frees_its_job_id]
+    INV-TRIG-012: [tests/test_scheduled_media_delivery.py::TestDispatchSitesStamp::test_scheduler_dispatch_stamps_the_marker, tests/test_scheduled_media_delivery.py::TestDispatchSitesStamp::test_reminder_sweep_stamps_the_marker, tests/test_scheduled_media_delivery.py::TestSendMediaFromScheduledTurn::test_delivers_to_the_operator_dm, tests/test_scheduled_media_delivery.py::TestSendMediaFromScheduledTurn::test_unmarked_scheduled_turn_still_refused, tests/test_scheduled_media_delivery.py::test_marker_is_reserved_and_stripped_from_external_context, tests/test_scheduled_delivery_durable.py::TestOriginReconstruction::test_marked_job_restores_the_marker, tests/test_job_registry.py::test_recovered_orphan_carries_scheduled_delivery_across_restart]
     INV-TRIG-011: [tests/test_hooks.py::TestTriggerFileWriteGuard::test_denies_every_write_capable_primitive, tests/test_hooks.py::TestTriggerFileWriteGuard::test_denies_a_bash_write_form, tests/test_hooks.py::TestTriggerFileWriteGuard::test_guard_is_code_mandatory_for_executors_and_residents, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_relative_path_resolves_against_the_SESSION_cwd, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_a_relative_path_with_no_reported_cwd_fails_CLOSED, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_every_historical_bash_bypass_is_closed, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_reads_still_pass, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_the_file_tools_stay_precise, tests/test_config_trigger_tools.py::test_configurator_writers_serialize_under_the_pass_lock, tests/test_config_sync_reminder_race.py::test_reminder_survives_concurrent_reconcile_clobber]
 
 - doc: architecture/reminders.md

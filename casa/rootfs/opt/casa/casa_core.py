@@ -3285,6 +3285,11 @@ async def _notify_recovered_delegations(
                 "chat_id": job.scope_id,
                 "cid": job.origin_route_id or "-",
                 "user_text": job.task,
+                # #485: restored from the durable field, so a scheduled turn
+                # resumed after a restart can still deliver media. Added only
+                # when stored — a legacy row has no field and stays text-only.
+                **({"_scheduled_delivery": True}
+                   if job.scheduled_delivery is True else {}),
             },
             elapsed_s=0.0,
         )

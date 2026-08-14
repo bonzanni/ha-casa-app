@@ -104,6 +104,7 @@ import trigger_write_lock
 from atomic_io import atomic_write_text
 from config import (_ENV_RE, dump_yaml_declared_text,
                     load_yaml_declared_text, text_has_lone_placeholder)
+from provenance import scheduled_delivery_markers
 
 
 def _under_pass_lock(fn):
@@ -938,6 +939,11 @@ async def sweep_reminders(runtime, now: datetime) -> int:
                         "trigger": name,
                         "cid": new_cid(),
                         "late": True,
+                        # #485: the SAME rule the scheduler applies — a
+                        # reminder delivered late (the restart case this sweep
+                        # exists for) must be able to send exactly what it
+                        # could have sent on time.
+                        **scheduled_delivery_markers(entry.get("channel", "")),
                     },
                 ))
             except Exception:  # noqa: BLE001

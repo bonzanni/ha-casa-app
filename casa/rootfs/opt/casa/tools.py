@@ -393,6 +393,65 @@ def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     return None
 
 
+def _scheduled_operator_target(origin: dict) -> "tuple[int, int] | None":
+    """The operator ``(chat_id, user_id)`` a SCHEDULED turn may deliver to (#485).
+
+    A resident's own time-based trigger turn carries a session-keying label in
+    ``origin["chat_id"]`` (``f"{type}-{name}"``), not a chat id — the label keys
+    the SDK session and the voice-job scope, so it is never overwritten. This
+    resolves where such a turn's media should actually go, and returns ``None``
+    for everything else. Every arm is fail-closed; ``None`` means the turn stays
+    text-only, which is the behaviour before this feature existed.
+
+    Admission requires ALL of:
+
+    * ``_scheduled_delivery`` exactly ``True`` — the reserved marker stamped by
+      Casa's two time-based dispatch sites and stripped from every external
+      context. Eligibility is never inferred from ``message_type`` because the
+      authenticated webhook route dispatches ``MessageType.SCHEDULED`` too;
+    * the telegram channel — the only one with an operator DM;
+    * genuinely DIRECT execution: no engagement bound, and the executing role
+      is the origin's own role. A delegated specialist inherits the whole parent
+      origin, marker included, and must not inherit the delivery target with it;
+    * a configured operator. ``operator_user_id()`` is the single home of that
+      rule and already fails closed (empty, group, non-numeric, non-operator ⇒
+      ``None``) — identity v0.136: with no operator configured, NOBODY is the
+      operator.
+
+    Resolved HERE, per call, rather than stamped at dispatch: the trigger that
+    fired an hour ago must not be able to deliver to an operator id that has
+    since changed. For a private Telegram chat the chat id equals the user id,
+    so both returned values are that id (same premise as
+    ``trigger_consent.operator_identity``).
+
+    Deliberately NOT part of ``turn_provenance()``: that predicate is shared
+    with the protected-action authorization hook (``authz_grants``), and
+    widening it would widen who can raise an approval. Only ``send_media``
+    consults this.
+    """
+    from provenance import strict_positive_id
+
+    if origin.get("_scheduled_delivery") is not True:
+        return None
+    if origin.get("channel") != "telegram":
+        return None
+    if engagement_var.get(None) is not None:
+        return None
+    role = origin.get("role")
+    if not role or origin.get("execution_role") != role:
+        return None
+    if _channel_manager is None:
+        return None
+    channel = _channel_manager.get("telegram")
+    resolver = getattr(channel, "operator_user_id", None)
+    if not callable(resolver):
+        return None
+    operator_id = strict_positive_id(resolver())
+    if operator_id is None:
+        return None
+    return operator_id, operator_id
+
+
 @tool(
     "send_media",
     "Deliver a media file from the plugin outbox to the user over the "
@@ -460,6 +519,14 @@ async def send_media(args: dict) -> dict:
                 chat_id = None
         else:
             chat_id = None
+        if not chat_id:
+            # #485: a resident's own scheduled telegram trigger carries a
+            # session LABEL here, not a chat id. Resolve the operator's DM
+            # instead of refusing — see _scheduled_operator_target for the
+            # (fail-closed) admission rules. Everything else still refuses.
+            _scheduled = _scheduled_operator_target(origin)
+            if _scheduled is not None:
+                chat_id = _scheduled[0]
         if not chat_id:
             return _result({"status": "error", "kind_error": "invalid_origin",
                             "message": "no numeric, nonzero chat_id in origin"})
