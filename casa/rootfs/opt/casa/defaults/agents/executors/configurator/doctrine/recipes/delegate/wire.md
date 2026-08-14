@@ -10,12 +10,12 @@ resident to delegate to another (e.g. Ellen → Tina for device control).
 ## Edit agents/<resident-role>/delegates.yaml
 
 FIRST Read the file and check whether the `delegates:` list already has an entry
-with `agent: <target-role>`. The image ships some residents pre-wired (e.g. the
-assistant already lists `finance`), so wiring that specialist after installing it
-must NOT append a second entry. If an entry for `<target-role>` already exists,
-leave it (or refine its `purpose`/`when` in place) — do NOT add a duplicate; the
-wiring is already done. Only when no entry for `<target-role>` is present, add to
-the `delegates:` list:
+with `agent: <target-role>`. An entry may already be there from an earlier
+operator or configurator action, so wiring a specialist after installing it must
+NOT append a second entry. If an entry for `<target-role>` already exists, leave
+it (or refine its `purpose`/`when` in place) — do NOT add a duplicate; the wiring
+is already done. Only when no entry for `<target-role>` is present, add to the
+`delegates:` list:
 
     - agent: <target-role>          # resident OR specialist role
       purpose: <one-sentence description>

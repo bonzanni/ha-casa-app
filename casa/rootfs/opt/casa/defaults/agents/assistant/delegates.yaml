@@ -1,8 +1,5 @@
 schema_version: 1
 delegates:
-  - agent: finance
-    purpose: "invoicing, expense categorization, financial reporting"
-    when: "user asks about money, invoices, budgets, or financial reports"
   - agent: butler
     purpose: "house devices — lights, climate, locks, media, sensors"
     when: "user asks to control or check the state of anything in the house"
