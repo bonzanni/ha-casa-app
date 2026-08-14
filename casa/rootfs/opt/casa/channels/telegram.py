@@ -3116,14 +3116,30 @@ class TelegramChannel(Channel):
         literal markers on settle). An entity ``BadRequest`` retries the SAME
         EDIT plain with the original text — never a new message (Sol+Terra
         design round: an edit must not become a duplicate post).
+
+        #569: the edit carries an EXPLICIT EMPTY ``InlineKeyboardMarkup([])``,
+        so the settled question drops its buttons. A bare ``edit_message_text``
+        leaves them tappable — PTB drops the omitted ``reply_markup``, so
+        ``editMessageText`` never touches the markup. That is the same defect
+        v0.79.0 fixed for the TOPIC path (``edit_topic_message``'s
+        ``clear_keyboard``); the DM path was left behind, and it settles EVERY
+        DM question Casa asks: ``ask_user``, ``wipe_memory``, the
+        protected-action challenge, and callback / event / trigger / persona /
+        specialist install consent. Unconditional rather than opt-in because
+        every caller in the tree is a broker FINISH hook — a terminal outcome,
+        never a mid-question repaint — and an opt-in flag is a thing the next
+        call site forgets.
         """
+        from telegram import InlineKeyboardMarkup
+
+        cleared = InlineKeyboardMarkup([])
         display, entities = render(text)
         try:
             if entities is not None:
                 try:
                     await self.bot.edit_message_text(
                         chat_id=chat_id, message_id=message_id, text=display,
-                        entities=entities,
+                        entities=entities, reply_markup=cleared,
                     )
                     return True
                 except BadRequest as exc:
@@ -3136,6 +3152,7 @@ class TelegramChannel(Channel):
                     )
             await self.bot.edit_message_text(
                 chat_id=chat_id, message_id=message_id, text=text,
+                reply_markup=cleared,
             )
             return True
         except BadRequest as exc:
