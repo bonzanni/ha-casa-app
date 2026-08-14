@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.198.0] - 2026-08-14
+
+### Fixed
+
+- Building Casa no longer fails because a download server had a bad moment
+  (#545). The image build fetches a few small programs from the internet, and
+  a momentary network hiccup on one of them used to abandon the whole build —
+  which happened twice in a row on one recent release, each time for a file
+  that was perfectly available seconds later. Those downloads now wait and try
+  again on their own before giving up. This changes nothing about the running
+  app; it only makes producing it less likely to need a second run.
+
 ## [0.197.0] - 2026-08-14
 
 ### Added
