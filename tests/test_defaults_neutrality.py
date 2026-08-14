@@ -44,6 +44,52 @@ def test_concierge_ships_no_delegates() -> None:
     assert data.get("delegates") == []
 
 
+def _shipped_resident_roles(yaml) -> set[str]:
+    """The residents this image actually ships.
+
+    Derived from the tree rather than listed here — a hardcoded set would pass
+    by construction the day a resident is added or dropped, which is the drift
+    this pin exists to catch — but INTERSECTED with the authoritative fixed
+    slot set. A directory that merely claims `kind: resident` is not a shipped
+    agent: `agent_loader` validates the resident set against
+    `FIXED_RESIDENT_SLOTS` and refuses anything else (`agent_loader.py:1550-1560`),
+    so trusting the claim alone would let a `defaults/agents/ghost/runtime.yaml`
+    saying `kind: resident` legitimise `agent: ghost` here while boot rejects it.
+    """
+    from role_slot import FIXED_RESIDENT_SLOTS
+
+    roles: set[str] = set()
+    for runtime in (DEFAULTS_ROOT / "agents").glob("*/runtime.yaml"):
+        data = yaml.safe_load(runtime.read_text(encoding="utf-8")) or {}
+        if data.get("kind") == "resident":
+            roles.add(runtime.parent.name)
+    return roles & set(FIXED_RESIDENT_SLOTS)
+
+
+def test_no_shipped_delegates_entry_names_an_unshipped_agent() -> None:
+    """#525: a shipped `delegates.yaml` must not declare an agent the image
+    does not contain (pre-fix: the assistant declared `finance`, a specialist
+    that ships separately).
+
+    This pins the CLASS, not the one file. A dead entry is not inert:
+    `agent.py::_render_delegates_block` filters it out of the advertised block,
+    so it silently becomes wiring that reads as done and never was — and
+    `config_sync` re-seeds it into every live tree on every sync.
+    """
+    yaml = pytest.importorskip("yaml")
+    shipped = _shipped_resident_roles(yaml)
+    assert shipped, "no shipped residents found — the derivation is broken"
+
+    offenders: list[str] = []
+    for path in sorted((DEFAULTS_ROOT / "agents").glob("*/delegates.yaml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for entry in data.get("delegates") or []:
+            agent = entry.get("agent")
+            if agent not in shipped:
+                offenders.append(f"{path.relative_to(DEFAULTS_ROOT)}: {agent}")
+    assert offenders == []
+
+
 def test_gary_persona_pack_manifest_matches_content() -> None:
     """The gary pack was edited for neutrality; its manifest checksums must
     match the admitted file bytes or the concierge fails to boot."""

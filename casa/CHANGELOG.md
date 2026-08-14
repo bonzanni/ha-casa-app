@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.200.0] - 2026-08-14
+
+### Changed
+
+- A fresh install no longer claims to have a finance specialist it does not
+  have (#525). The assistant shipped with a finance helper already listed as
+  one of its delegates, but no such helper is included in the image — you
+  install one yourself, from its own repository. Nothing misbehaved, because
+  Casa hides a helper that isn't there rather than offering it, but the
+  configuration file that records who the assistant can hand work to listed
+  something that had never existed on your box. It now lists only what ships,
+  and an installed specialist gets wired in the same way every other one
+  already is: when you install it, Casa adds it.
+
+  If you installed a finance specialist on an earlier version, updating removes
+  that stale entry — and with it the assistant's ability to hand finance work
+  over, quietly. That happens whether or not you have edited the delegate list
+  since: an untouched list is replaced wholesale, and an edited one is merged
+  entry by entry, which drops the finance entry just the same. Only an edit to
+  that entry itself keeps it. Ask the configurator to *"wire finance into the
+  assistant's delegates"* and it will be restored. Installing the specialist
+  fresh on this version needs no such step.
+
 ## [0.199.0] - 2026-08-14
 
 ### Fixed
