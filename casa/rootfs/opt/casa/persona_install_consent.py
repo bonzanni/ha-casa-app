@@ -41,12 +41,22 @@ def prompt_persona_install_consent(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
     key = PersonaInstallConsentKey(persona_id=inspection.persona_id, identity=identity)
     text = render_persona_install_consent_message(inspection)
+    # #543: capture the revocation generations AT PROMPT TIME. The Telegram
+    # callback commits the broker answer and calls `_on_commit_sync` with no
+    # await between them — but a persona_remove/persona_ack_revoke worker runs
+    # on a DIFFERENT thread and can revoke in that window, and an
+    # already-answered challenge can no longer be cancelled. Carrying the
+    # generations through to `record` is what makes the revoke authoritative:
+    # a tap that lands after one writes nothing at all.
+    generations = acks.revocation_generations(
+        persona_id=inspection.persona_id, version=inspection.version)
 
     def _on_commit_sync(idx: int, meta: dict) -> None:
         if idx == 0:
-            acks.record(identity=identity, persona_id=inspection.persona_id,
-                        version=inspection.version, checksum=inspection.checksum)
-            meta["acked"] = True
+            meta["acked"] = acks.record(
+                identity=identity, persona_id=inspection.persona_id,
+                version=inspection.version, checksum=inspection.checksum,
+                expect_generations=generations)
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
@@ -61,8 +71,14 @@ def prompt_persona_install_consent(
                 if not req.meta.get("acked"):
                     await channel.edit_dm_message(
                         chat_id, message_id,
-                        "internal error recording persona install consent — re-run the install to "
-                        "be prompted again")
+                        # #543: this now covers two cases — a genuine write
+                        # failure, and an approval that arrived after the
+                        # persona's consent was revoked (persona_remove /
+                        # persona_ack_revoke). Neither recorded anything, and
+                        # the remedy is the same.
+                        "this approval was not recorded (the persona's consent was "
+                        "revoked, or the write failed) — re-run the install to be "
+                        "prompted again")
                     return
                 await channel.edit_dm_message(
                     chat_id, message_id, f"✅ Approved — installing {inspection.persona_id!r}")

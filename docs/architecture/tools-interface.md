@@ -68,6 +68,15 @@ because "these bytes are not valid" is a claim the evidence would not support. A
 also validate less than its extensions suggest; the text kind checks encoding, never
 structure, so a malformed `.json` is delivered as the text file it is.
 
+**A lifecycle surface is only finished when it can also undo.** Personas install, apply and
+publish through consent-bound tools; removing one, sweeping the versions nothing refers to,
+enumerating what is installed and revoking a stored approval are tools too — not filesystem
+work, because the tree they live in is denied to the configurator precisely so that the
+sequencing stays owned by code. The removal tools refuse rather than force, and a refusal
+names its referrers; the sweep reports what it kept and why, so "some were skipped" is never
+the whole story an operator gets. What each refusal means, and why removal is decided by
+references rather than by use, belongs to [`architecture/personality.md`](personality.md).
+
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner
 (INV-ENG-001); everything observable — permits, brokers, topics, notifications, retention —

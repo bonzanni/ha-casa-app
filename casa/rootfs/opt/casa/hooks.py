@@ -1028,7 +1028,8 @@ _MANAGED_ROUTE_BINDINGS = (
 )
 _MANAGED_ROUTE_PERSONAS = (
     "Personas: use persona_install_inspect / persona_install_commit / "
-    "persona_apply (doctrine/recipes/persona/)."
+    "persona_apply / persona_list / persona_remove / persona_prune / "
+    "persona_ack_revoke (doctrine/recipes/persona/)."
 )
 
 # Managed prefix -> routing sentence. Prefixes are matched against

@@ -18,6 +18,7 @@ The index is sharded by family letter: see also [`doctrine/invariants.md`](invar
 | `INV-PERS-003` | A resident's binding reconciliation runs as part of loading and is not isolated from it. | [`architecture/personality.md`](../architecture/personality.md) |
 | `INV-PERS-004` | The restricted-origin prompt omits the persona section. | [`architecture/personality.md`](../architecture/personality.md) |
 | `INV-PERS-005` | The persona packs the image ships are exactly the fixed resident slots' image defaults — no more, no fewer. | [`architecture/personality.md`](../architecture/personality.md) |
+| `INV-PERS-006` | an installed persona that any readable-or-restorable binding tuple still names is never removed — single removal and the sweep both refuse it, and a reference set that cannot be computed refuses too. | [`architecture/personality.md`](../architecture/personality.md) |
 | `INV-PLUG-001` | A registry entry is usable only when its recorded artifact id equals the id computed from its own source coordinates. | [`architecture/plugins.md`](../architecture/plugins.md) |
 | `INV-PLUG-002` | A resolved artifact must match its recorded content checksum, and the artifact path and its parent must not be symlinks. | [`architecture/plugins.md`](../architecture/plugins.md) |
 | `INV-PLUG-003` | Archive extraction refuses traversal, absolute paths, links out of the tree, and special files. | [`architecture/plugins.md`](../architecture/plugins.md) |

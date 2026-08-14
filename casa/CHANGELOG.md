@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.203.0] - 2026-08-14
+
+### Added
+
+- **Personas can now be removed, listed and cleaned up** (#543). Installing a
+  persona has always been a chat request away; getting rid of one was not
+  possible at all. Four new tools close that:
+  - `persona_list` — what is installed, what each persona is bound to, and
+    whether it can be removed. Corrupt installs are listed too, rather than
+    quietly missing.
+  - `persona_remove` — delete one installed persona and revoke its install
+    approval.
+  - `persona_prune` — remove every persona nothing is bound to any more.
+    Because persona versions are immutable, each upgrade left the old version
+    on disk forever; this is how that space comes back. It is never automatic:
+    Casa does not delete something you approved without being asked.
+  - `persona_ack_revoke` — withdraw a stored approval without touching any
+    files, so installing that persona again asks you afresh. The sibling of
+    the existing trigger, callback and event revoke tools.
+
+  Removal **refuses while anything is still bound to the persona**, and says
+  what is holding it. That is deliberate: a resident whose persona has been
+  deleted cannot start, and you would only find out at the next restart. Free
+  it first — reset or apply a different persona, and restart the resident —
+  then remove.
+
+### Fixed
+
+- An install that was approved and then revoked while it was still running
+  could publish the persona anyway, undoing the removal (#543). Approval is now
+  re-checked at the moment of publication, and an approval tap that arrives
+  after a revoke records nothing.
+- Applying a persona that was removed in the same moment could leave an agent
+  bound to a persona that no longer exists — an agent that then fails to start
+  (#543). Both apply paths now re-check the persona right before they commit,
+  and report a clear error instead.
+
 ## [0.202.0] - 2026-08-14
 
 ### Removed

@@ -371,11 +371,19 @@
   doc: architecture/tools-interface.md
 - item: tool:peek_engagement_workspace
   doc: architecture/tools-interface.md
+- item: tool:persona_ack_revoke
+  doc: architecture/tools-interface.md
 - item: tool:persona_apply
   doc: architecture/tools-interface.md
 - item: tool:persona_install_commit
   doc: architecture/tools-interface.md
 - item: tool:persona_install_inspect
+  doc: architecture/tools-interface.md
+- item: tool:persona_list
+  doc: architecture/tools-interface.md
+- item: tool:persona_prune
+  doc: architecture/tools-interface.md
+- item: tool:persona_remove
   doc: architecture/tools-interface.md
 - item: tool:plugin_add
   doc: architecture/tools-interface.md

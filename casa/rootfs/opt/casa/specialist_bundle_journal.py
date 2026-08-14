@@ -490,6 +490,88 @@ def quarantine_all(*,
     return True
 
 
+# #543 — journal classification verdicts. ONE authority: `reconcile_boot` acts
+# on these, and `persona_install.persona_references` asks the same function
+# whether a journal can still put an override binding back on disk. The two
+# used to carry independent copies of the rule, which is exactly how they
+# disagreed (Terra/Sol diff r1+r2).
+JOURNAL_IGNORED = "ignored"          # not a journal this loop owns at all
+JOURNAL_UNPARSEABLE = "unparseable"  # name does not parse -> quarantine_all
+JOURNAL_INVALID = "invalid"          # shape/state invalid -> quarantine (never replayed)
+JOURNAL_UNREADABLE = "unreadable"    # the file itself could not be READ
+JOURNAL_COMPLETE = "complete"        # finished -> pruned WITHOUT rollback
+JOURNAL_REPLAY = "replay"            # the ONLY class whose captures are restored
+
+# #543 (Sol+Terra diff r3): UNREADABLE is a distinct verdict because its two
+# consumers must answer it DIFFERENTLY, and collapsing it into either one is a
+# defect. At boot it is fail-closed like an invalid journal — a read error used
+# to make the payload invalid, which quarantined the slug, and an in-progress
+# journal exists precisely because its mutation may have left registry and
+# tuple state mid-transition, so continuing past it would let a half-completed
+# specialist load. For the persona reference scan it is the opposite of
+# "restores nothing": the same file may read fine at boot and replay its
+# capture, so removal must refuse.
+
+
+def classify_journal(path: Path) -> "tuple[str, str | None, dict | None]":
+    """Classify one file in the ops directory as `(verdict, slug, payload)`.
+
+    This is the single implementation of "what would boot do with this file":
+    `reconcile_boot` dispatches on the verdict, and `replayable_tuple_files`
+    reads the one verdict that restores anything. Keeping both on this
+    function is the point — an independent copy of the rule is what let the
+    reference scan refuse removals for journals boot would only quarantine.
+
+    A file that cannot be READ is `JOURNAL_UNREADABLE`, never silently one of
+    the other classes — see the verdict list for why its two consumers must
+    treat it differently."""
+    if path.name.endswith(".quarantined"):
+        return JOURNAL_IGNORED, None, None
+    # Sol diff r4: a `.tmp-<hex>` write temporary is DELETED by the sweep above
+    # before this loop runs, so it normally never reaches here at all. When
+    # that delete FAILS, the pre-feature code fell through to the
+    # unparseable-name branch and quarantined everything — drastic, but it is
+    # the established fail-closed behaviour for an ops directory that cannot be
+    # cleaned, and this refactor is not the place to soften it. Classifying it
+    # `IGNORED` would have quietly changed that.
+    match = JOURNAL_NAME_RE.match(path.name)
+    if match is None:
+        return JOURNAL_UNPARSEABLE, None, None
+    slug = match.group("slug")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return JOURNAL_UNREADABLE, slug, None
+    except ValueError:
+        payload = None
+    if not _valid_payload(payload, slug):
+        return JOURNAL_INVALID, slug, None
+    if payload["state"] == "complete":
+        return JOURNAL_COMPLETE, slug, payload
+    return JOURNAL_REPLAY, slug, payload
+
+
+def replayable_tuple_files(path: Path) -> "dict[str, Any] | None":
+    """#543: the captured tuple files this journal file would ACTUALLY have
+    restored, or None when it would restore nothing.
+
+    Only `JOURNAL_REPLAY` restores anything: a complete journal is pruned
+    without rollback, and an unparseable or invalid one is quarantined without
+    rollback (a quarantine that fails to persist retains the file for the next
+    boot to retry, still without restoring it).
+
+    The bytes returned are the CAPTURE. `BundleTxn.rollback_disk` re-runs the
+    #372 capture sanitizer before writing them, which can only strip or
+    tombstone a captured tuple, never introduce a persona reference that the
+    capture did not already carry — so for the reference scan this is exact or
+    over-inclusive, and over-inclusive means "refuses a removal", never
+    "permits one"."""
+    verdict, _slug, payload = classify_journal(path)
+    if verdict != JOURNAL_REPLAY:
+        return None
+    return dict(payload["before"]["tuple_files"])
+
+
 def _valid_payload(payload: Any, slug: str) -> bool:
     """Strict, jsonschema-shaped structural validation (spec §3.1): schema
     shape, `payload["slug"] == filename slug`, and tuple-path containment —
@@ -716,11 +798,23 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
     for path in sorted(ops_dir.iterdir()):
         if not path.is_file():
             continue
-        if path.name.endswith(".quarantined"):
+        # #543: the name/shape/state rules live in classify_journal, which the
+        # persona reference scan reads too — the actions below are this loop's
+        # own, the CLASSIFICATION is shared, so neither side can drift.
+        verdict, slug, payload = classify_journal(path)
+        if verdict == JOURNAL_IGNORED:
             continue
+        if verdict == JOURNAL_UNREADABLE:
+            # Sol+Terra diff r3: this MUST quarantine, as it always did — a
+            # read error used to make the payload invalid and take the branch
+            # below. An unreadable in-progress journal may be covering a
+            # half-completed transaction, and continuing past it would let the
+            # unchanged registry snapshot load that specialist for this boot.
+            logger.warning("journal %s could not be read; quarantining %s",
+                           path.name, slug)
+            verdict = JOURNAL_INVALID
 
-        match = JOURNAL_NAME_RE.match(path.name)
-        if match is None:
+        if verdict == JOURNAL_UNPARSEABLE:
             try:
                 persisted = quarantine_all(registry_path=registry_path)
             except Exception:  # noqa: BLE001 — degrade-and-boot
@@ -734,13 +828,7 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
             actions.append({"slug": None, "action": "quarantine_all"})
             continue
 
-        slug = match.group("slug")
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            payload = None
-
-        if not _valid_payload(payload, slug):
+        if verdict == JOURNAL_INVALID:
             try:
                 persisted = quarantine(slug, registry_path=registry_path)
             except Exception:  # noqa: BLE001 — degrade-and-boot
@@ -754,7 +842,7 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
             actions.append({"slug": slug, "action": "quarantine"})
             continue
 
-        if payload["state"] == "complete":
+        if verdict == JOURNAL_COMPLETE:
             # Crash between the complete-write and the unlink: the op
             # already finished — prune WITHOUT rollback.
             path.unlink()

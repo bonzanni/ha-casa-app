@@ -427,14 +427,36 @@ def _resident_role():
     return materialize_role(source=load_role_artifact(role_dir), options={})
 
 
-def test_apply_persona_override_resident_sets_override_source_as_root(tmp_path: Path) -> None:
-    from persona_install import apply_persona_override
+def install_persona_for_apply(tmp_path: Path, monkeypatch, *, persona_id: str,
+                              version: str):
+    """#543: `apply_persona_override` re-proves, INSIDE the materialize lock,
+    that the persona it is about to pin is resolvable under the approved roots
+    — because a `persona_remove` can land between the caller resolving the
+    pack and the binding being staged, and a binding pinning absent bytes is
+    boot-fatal for a resident.
+
+    So a test that applies a pack parked in an arbitrary directory is
+    describing an arrangement production never produces (`persona_apply` and
+    `resident_persona_swap` both resolve from the approved roots) and that the
+    loader could not activate. Install it where the loader looks, through the
+    same `$CASA_CONFIG_DIR` seam."""
     from persona_pack import load_persona_pack
 
+    config_root = tmp_path / "config-root"
+    monkeypatch.setenv("CASA_CONFIG_DIR", str(config_root))
+    dest = config_root / "personas" / persona_id / version
+    dest.mkdir(parents=True)
+    _write_persona_repo(dest, persona_id=persona_id, version=version)
+    return load_persona_pack(dest / "pack", dest / "manifest.json")
+
+
+def test_apply_persona_override_resident_sets_override_source_as_root(
+        tmp_path: Path, monkeypatch) -> None:
+    from persona_install import apply_persona_override
+
     role = _resident_role()
-    persona_dir = tmp_path / "ellen-repo"
-    _write_persona_repo(persona_dir, persona_id="casa/ellen", version="0.1.0")
-    persona = load_persona_pack(persona_dir / "pack", persona_dir / "manifest.json")
+    persona = install_persona_for_apply(
+        tmp_path, monkeypatch, persona_id="casa/ellen", version="0.1.0")
 
     committed = apply_persona_override(
         target_role_id="resident:assistant", persona=persona, role=role,
@@ -570,16 +592,15 @@ def _specialist_role(specialists_dir: Path, slug: str):
     return materialize_role(source=load_role_artifact(cas_dir / "role"), options={}), active
 
 
-def test_apply_persona_override_specialist_preserves_root_and_dependency_state(tmp_path: Path) -> None:
+def test_apply_persona_override_specialist_preserves_root_and_dependency_state(
+        tmp_path: Path, monkeypatch) -> None:
     from persona_install import apply_persona_override
-    from persona_pack import load_persona_pack
 
     specialists_dir, _agents_dir = _installed_specialist(tmp_path)
     role, active_before = _specialist_role(specialists_dir, "mtg-n1d")
 
-    override_dir = tmp_path / "newton-repo"
-    _write_persona_repo(override_dir, persona_id="casa/newton", version="0.1.0")
-    persona = load_persona_pack(override_dir / "pack", override_dir / "manifest.json")
+    persona = install_persona_for_apply(
+        tmp_path, monkeypatch, persona_id="casa/newton", version="0.1.0")
     # This fixture's role.yaml sets persona.compatibility to a wildcard
     # entry ("casa/*@>=0.0.0 <99.0.0" — see _write_specialist_component
     # above), which check_persona_requirements matches against ANY slug in

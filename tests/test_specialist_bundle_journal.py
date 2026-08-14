@@ -3,6 +3,7 @@ quarantine semantics (design spec §3.1)."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -1241,3 +1242,71 @@ def test_bundletxn_rollback_disk_serializes_behind_materialize_lock(tmp_path):
     t.join(5)
     assert not (agents_dir / "mtg").exists()
     assert not content.exists()
+
+
+def test_reconcile_boot_quarantines_a_journal_it_cannot_read(tmp_path, monkeypatch):
+    """#543 (Sol+Terra diff r3): a read error must still quarantine the slug.
+
+    Before the shared classifier existed, an OSError from `read_text` made the
+    payload invalid and fell into the quarantine branch. Extracting the
+    classification briefly turned that into "log and continue", which lets the
+    unchanged registry snapshot load a specialist whose in-progress journal
+    exists precisely because its mutation may have left state mid-transition.
+    """
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [owned_entry(), _finance_entry()])
+    unreadable = ops_dir / f"mtg.{'a' * 32}.json"
+    unreadable.write_text("{}", encoding="utf-8")
+
+    real_read_text = Path.read_text
+
+    def _read_text(self, *args, **kwargs):
+        if self.name == unreadable.name:
+            raise OSError(5, "EIO")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
+
+    assert actions == [{"slug": "mtg", "action": "quarantine"}]
+    assert _read_registry(registry_path)["quarantined_bundles"] == ["mtg"]
+
+
+def test_an_undeletable_journal_temporary_still_quarantines_all(tmp_path, monkeypatch):
+    """#543 (Sol diff r4): parity with the pre-feature boot path. The sweep
+    normally deletes a `.tmp-<hex>` before the classification loop sees it;
+    when that delete FAILS, the old code fell through to the unparseable-name
+    branch and quarantined everything. Drastic, but it is the established
+    fail-closed behaviour for an ops directory that cannot be cleaned, and the
+    classifier refactor must not have softened it."""
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [owned_entry(), _finance_entry()])
+    stuck = ops_dir / f"mtg.{'a' * 32}.json.tmp-{'b' * 32}"
+    stuck.write_text("{}", encoding="utf-8")
+
+    real_unlink = Path.unlink
+    failed_once = []
+
+    def _unlink(self, *args, **kwargs):
+        # Only the SWEEP's delete fails; the quarantine branch's own cleanup is
+        # left working, so this test isolates the classification difference
+        # rather than a second, unrelated failure.
+        if self.name == stuck.name and not failed_once:
+            failed_once.append(True)
+            raise OSError(13, "EACCES")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _unlink)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
+
+    assert {"slug": None, "action": "quarantine_all"} in actions

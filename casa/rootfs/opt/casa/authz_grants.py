@@ -810,6 +810,7 @@ class ChallengeCoordinator:
     def cancel_matching(
         self, *, role: str | None = None, artifact: str | None = None,
         chat: int | None = None, plugin: str | None = None,
+        persona: str | None = None,
     ) -> int:
         """Cancel the broker records for every live challenge matching ANY of
         the provided filters (keyboard -> expired via the finish hook). Returns
@@ -831,6 +832,14 @@ class ChallengeCoordinator:
             # never undo the revoke. GrantKey has no `plugin` attr ⇒ never
             # matched by this filter.
             if plugin is not None and getattr(k, "plugin", None) == plugin:
+                return True
+            # persona filter (#543): persona_remove / persona_ack_revoke kill a
+            # persona's PENDING install keyboards, matching
+            # PersonaInstallConsentKey.persona_id. This is best-effort only —
+            # an ALREADY-ANSWERED challenge cannot be cancelled, which is why
+            # the authoritative guard is the ack ledger's revocation
+            # generation, not this sweep.
+            if persona is not None and getattr(k, "persona_id", None) == persona:
                 return True
             return False
 

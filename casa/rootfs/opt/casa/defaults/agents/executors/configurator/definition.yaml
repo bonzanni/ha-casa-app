@@ -80,6 +80,10 @@ tools:
     - mcp__casa-framework__persona_install_inspect
     - mcp__casa-framework__persona_install_commit
     - mcp__casa-framework__persona_apply
+    - mcp__casa-framework__persona_list
+    - mcp__casa-framework__persona_remove
+    - mcp__casa-framework__persona_prune
+    - mcp__casa-framework__persona_ack_revoke
   permission_mode: acceptEdits
 mcp_server_names:
   - casa-framework

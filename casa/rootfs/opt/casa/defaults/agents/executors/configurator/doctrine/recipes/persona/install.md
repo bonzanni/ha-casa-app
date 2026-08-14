@@ -28,6 +28,10 @@ does not apply it to anything by itself; see `recipes/persona/apply.md` for that
 5. Tell the operator the persona is installed but NOT applied to anything yet — installing and
    applying are separate steps (`recipes/persona/apply.md`).
 
+If the commit refuses with `kind: "version_content_conflict"` because the local copy is corrupt or
+was published concurrently, remove that copy with `persona_remove` (`recipes/persona/remove.md`)
+and retry — never by editing `/config/personas`, which the hooks deny.
+
 ## Common mistakes
 
 - Calling `persona_install_commit` before the operator has actually tapped Approve — it will
