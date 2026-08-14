@@ -270,9 +270,12 @@ class PluginOutbox:
                 # A claimed regular file shrinking between fstat and read is an
                 # integrity anomaly (only a root racer could) — refuse.
                 raise OutboxError("guard_error", "file shrank during read")
+            # The predicate gets the WHOLE buffer, not a head — the size cap is
+            # already enforced above, so it is free to look at all of it, and
+            # `text` (#565) has no signature to look at a head FOR.
             if not MEDIA_POLICIES[kind].accepts(content):
                 raise OutboxError("magic_mismatch",
-                                  f"head bytes not valid for kind {kind!r}")
+                                  f"content not valid for kind {kind!r}")
             return content
         except OutboxError:
             raise

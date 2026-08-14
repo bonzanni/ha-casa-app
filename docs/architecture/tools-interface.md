@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-07
+last_reviewed: 2026-08-14
 ---
 
 # The tool interface
@@ -48,6 +48,25 @@ by widening a filesystem scope — `/data` holds secrets and is deliberately nev
 broadly — and it is outside the specialist dispatch ceiling, so a third-party bundle cannot
 reach it. It answers two different questions from two stores: what is standing wrong now, and
 what happened during a past setup, which only the episode row's recorded error can say.
+
+**One table is the whole media surface, and a kind is not a file type.** The
+`send_media` capability derives everything type-specific — the schema's `kind` enum, the
+argument check, the content gate, the delivered-filename extension allowlist, the size cap
+and the send-method dispatch — from a single policy table, so a new delivery kind is one
+entry rather than a change spread across three modules. Two consequences are easy to get
+backwards. First, several *kinds* can share one *send method*: PDF, zip and text all leave
+as Telegram documents, so the kind is what was gated, never the method — and the kind named
+`document` therefore means PDF specifically, a name kept only because it is public API.
+Widening it into a catch-all would dissolve the magic gate it exists to be. Second, the
+gate's two halves do different work, and for some kinds it is the extension list, not the
+content predicate, that confines the kind: a zip signature is equally an OOXML document, a
+`.jar` or an `.apk`, so `.zip`-only is the actual boundary. Each predicate is total over
+content — every admitted byte string yields a verdict rather than an exception — but
+totality is a claim about content, not about the machine: an allocation failure is left to
+propagate as an internal error rather than being reported as a verdict about the bytes,
+because "these bytes are not valid" is a claim the evidence would not support. A kind may
+also validate less than its extensions suggest; the text kind checks encoding, never
+structure, so a malformed `.json` is delivered as the text file it is.
 
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner

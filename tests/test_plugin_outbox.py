@@ -328,6 +328,57 @@ def test_capture_empty_file_magic_mismatch(outbox):
     outbox.remove_claim(name)
 
 
+def test_capture_text_returns_bytes_verbatim(outbox):
+    """#565: the whole point — a text artifact reaches the operator as a file
+    without its bytes ever entering the model context."""
+    body = "date,amount\n2026-08-14,42.00\n".encode()
+    name = _claim_of(outbox, "ledger.csv", body)
+    assert outbox.capture(name, "text") == body
+
+
+def test_capture_text_refuses_nul_and_bad_utf8_and_empty(outbox):
+    """#565 red case, end-to-end through capture rather than the bare predicate:
+    a NUL byte and invalid UTF-8 are both `magic_mismatch`, and an empty file is
+    refused rather than delivered as a zero-byte document."""
+    for label, body in (("nul", b"a\x00b"),
+                        ("badutf8", b"\xff\xfe\x00"),
+                        ("empty", b"")):
+        name = _claim_of(outbox, f"{label}.txt", body)
+        with pytest.raises(OutboxError) as ei:
+            outbox.capture(name, "text")
+        assert ei.value.kind == "magic_mismatch", label
+        outbox.remove_claim(name)
+
+
+def test_capture_zip_ok_and_truncated_stub_refused(outbox):
+    """#482: a real local-file-header archive captures; a bare 4-byte signature
+    is under the format's own 30-byte header floor and must not be delivered."""
+    good = b"PK\x03\x04" + b"\x00" * 26
+    name = _claim_of(outbox, "pkg.zip", good)
+    assert outbox.capture(name, "zip") == good
+
+    name = _claim_of(outbox, "stub.zip", b"PK\x03\x04")
+    with pytest.raises(OutboxError) as ei:
+        outbox.capture(name, "zip")
+    assert ei.value.kind == "magic_mismatch"
+    outbox.remove_claim(name)
+
+
+def test_capture_text_oversize_refused_at_its_own_lower_cap(outbox):
+    """#565: `text` is capped at 5 MB while the other send_document kinds are
+    20 MB. A 6 MB text file is `too_large` — a buffer that `document` would
+    have accepted on size."""
+    from media_policies import MEDIA_POLICIES
+
+    assert MEDIA_POLICIES["text"].size_cap < MEDIA_POLICIES["document"].size_cap
+    body = b"x" * (MEDIA_POLICIES["text"].size_cap + 1)
+    name = _claim_of(outbox, "big.txt", body)
+    with pytest.raises(OutboxError) as ei:
+        outbox.capture(name, "text")
+    assert ei.value.kind == "too_large"
+    outbox.remove_claim(name)
+
+
 def test_capture_jpeg_as_document_magic_mismatch(outbox):
     name = _claim_of(outbox, "j.jpg", JPEG)
     with pytest.raises(OutboxError) as ei:
