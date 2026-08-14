@@ -442,3 +442,101 @@ def test_the_rewrite_guard_reads_TEXT_not_the_constructed_document():
     discarded = ('k:\n  <<: {prompt: "${DETAIL}"}\n  prompt: put the bins out\n')
     assert yaml.safe_load(discarded)["k"]["prompt"] == "put the bins out"
     assert config.text_has_lone_placeholder(discarded)
+
+
+# --- carrying the declared-text form through a rewrite (#512) --------------
+#
+# The guard above tells a writer that re-emitting a file would change what one
+# of its scalars means. These pin the other half, for the one writer that
+# cannot refuse: the declaration itself survives the dump, so the rewrite
+# neither retypes the scalar nor erases the property the guard tests.
+
+
+@pytest.mark.parametrize("form", [
+    'k: "${V}"\n',                              # double-quoted
+    "k: '${V}'\n",                              # single-quoted
+    "k: |-\n  ${V}\n",                          # literal block
+    "k: >-\n  ${V}\n",                          # folded block
+    "k: !!str ${V}\n",                           # the tag, shorthand
+    "k: !<tag:yaml.org,2002:str> ${V}\n",        # the same tag, verbatim
+    "%TAG !y! tag:yaml.org,2002:\n---\nk: !y!str ${V}\n",   # ...via a handle
+    "k: !!str &x ${V}\n",                        # tag before anchor
+    "k: &x !!str ${V}\n",                        # anchor before tag
+    'k: !!str "${V}"\n',                         # both at once
+])
+def test_a_rewrite_keeps_every_declared_text_form_declared(form, monkeypatch):
+    """Each spelling the guard recognises must ALSO survive the dump.
+
+    A form the loader marks but the dumper drops is the #512 defect restored
+    for that spelling — and silently, since the value re-parses as a boolean
+    only once the variable happens to hold one. Asserted through the live
+    loader, on the emitted text, with the value that makes the difference
+    visible: `"true"` the string against `True` the boolean.
+    """
+    monkeypatch.setenv("V", "true")
+    out = config.dump_yaml_declared_text(config.load_yaml_declared_text(form))
+    assert agent_loader.parse_yaml_text(out, "<t>") == {"k": "true"}, out
+    assert config.text_has_lone_placeholder(out), out
+
+
+def test_a_rewrite_leaves_a_PLAIN_lone_placeholder_PLAIN(monkeypatch):
+    """The inverse, and the reason the marker exists rather than a rule keyed
+    on the VALUE: after loading, `"${V}"` and `${V}` are the same `str`, so
+    quoting both would turn a plain placeholder's value-read into text — the
+    same retyping in the other direction, on the operator's own file.
+    """
+    monkeypatch.setenv("V", "7")
+    out = config.dump_yaml_declared_text(
+        config.load_yaml_declared_text("k: ${V}\n"))
+    assert out == "k: ${V}\n"
+    assert agent_loader.parse_yaml_text(out, "<t>") == {"k": 7}
+
+
+def test_one_file_can_hold_both_forms_and_keep_both(monkeypatch):
+    monkeypatch.setenv("V", "true")
+    text = 'declared: "${V}"\nplain: ${V}\nembedded: say ${V}\n'
+    out = config.dump_yaml_declared_text(config.load_yaml_declared_text(text))
+    assert agent_loader.parse_yaml_text(out, "<t>") == {
+        "declared": "true", "plain": True, "embedded": "say true"}
+
+
+def test_a_declared_text_KEY_survives_too(monkeypatch):
+    """The guard scans every scalar token, keys included, so a rewrite that
+    kept only values would still disarm it."""
+    monkeypatch.setenv("V", "true")
+    out = config.dump_yaml_declared_text(
+        config.load_yaml_declared_text('"${V}": 1\n'))
+    assert config.text_has_lone_placeholder(out), out
+    assert agent_loader.parse_yaml_text(out, "<t>") == {"true": 1}
+
+
+def test_a_document_with_nothing_to_preserve_dumps_as_safe_dump_would():
+    """The pair is not a second emitter: a file with no declared-text
+    placeholder must come out byte-identical to today's output, or every
+    rewrite of every ordinary triggers.yaml is a diff in the operator's repo.
+    """
+    doc = {"schema_version": 2, "triggers": [
+        {"name": "op", "prompt": "put the bins out", "minutes": 60}]}
+    assert (config.dump_yaml_declared_text(doc, sort_keys=False)
+            == yaml.safe_dump(doc, sort_keys=False))
+
+
+def test_the_marker_reaching_a_PLAIN_dump_is_loud_rather_than_silent():
+    """PyYAML keys representers on the EXACT type, so a marker that escapes to
+    `yaml.safe_dump` raises instead of quietly losing its quoting. Pinned
+    because that is the failure mode the design accepts in exchange for not
+    mutating the global `SafeDumper`: loud, at the one call site that would
+    have to be found by hand otherwise.
+    """
+    doc = config.load_yaml_declared_text('k: "${V}"\n')
+    with pytest.raises(yaml.representer.RepresenterError):
+        yaml.safe_dump(doc)
+
+
+def test_the_marker_is_a_str_everywhere_it_is_not_being_dumped():
+    """Consumers must not have to know about it: equality, hashing, membership
+    and `str`-ness are the whole contract outside the dumper."""
+    value = config.load_yaml_declared_text('k: "${V}"\n')["k"]
+    assert isinstance(value, str)
+    assert value == "${V}" and hash(value) == hash("${V}")
+    assert {value: 1} == {"${V}": 1}
