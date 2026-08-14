@@ -612,3 +612,109 @@ def test_a_revoke_keeps_every_unrelated_approval(tmp_path) -> None:
     assert [r["persona_id"] for r in removed] == ["casa/newton"]
     assert acks.is_acked(keep) is True
     assert acks.is_acked(drop) is False
+
+
+# ---------------------------------------------------------------------------
+# Diff review round 2 — absence vs "cannot tell", and the ledger fence
+# ---------------------------------------------------------------------------
+
+
+def test_a_tuple_path_that_cannot_be_stat_ed_refuses_every_removal(
+        tree, tmp_path, monkeypatch) -> None:
+    """`Path.is_file()` answers False for ENOENT, ENOTDIR, EBADF and ELOOP
+    alike, so a path the kernel merely could not resolve read as absent — and
+    absent means unreferenced, which deletes the bytes a resident may still
+    name. Only a genuine FileNotFoundError may un-pin a persona."""
+    import os
+
+    import persona_install
+
+    _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
+    _write_tuple(tree["bindings"] / "resident-assistant" / "active.yaml",
+                 personas_root=tree["personas"], persona_id="casa/newton", version="0.1.0")
+
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):
+        if str(path).endswith("active.yaml"):
+            raise OSError(40, "ELOOP")      # swallowed by Path.is_file()
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(persona_install.os if hasattr(persona_install, "os") else os,
+                        "stat", _stat)
+    monkeypatch.setattr(os, "stat", _stat)
+
+    with pytest.raises(SpecialistInstallError) as raised:
+        _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
+
+    assert raised.value.kind == "references_unavailable"
+    assert (tree["personas"] / "casa/newton" / "0.1.0" / "manifest.json").is_file()
+
+
+def test_a_missing_tuple_file_is_still_simply_absent(tree, tmp_path) -> None:
+    """The other side of the same coin: a file that is genuinely not there is
+    a real answer — every loader reads it as absent too — so it must NOT
+    refuse, or nothing could ever be removed."""
+    _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
+    (tree["bindings"] / "resident-assistant").mkdir(parents=True)   # no tuple files at all
+
+    assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
+
+
+@pytest.mark.parametrize("acks", [None, False, [], "", 0])
+def test_a_falsey_ack_map_is_a_damaged_document_not_an_empty_one(tmp_path, acks) -> None:
+    """Sol+Terra diff r2: `raw.get("acks") or {}` collapsed every falsey shape
+    to an empty map, and `_load` fail-closes to {} for each of them too — so
+    the comparison succeeded and the guard waved through exactly the malformed
+    documents it exists to refuse."""
+    from persona_install import PersonaInstallAckStore, PersonaLedgerInvalid
+
+    path = tmp_path / "acks.json"
+    path.write_text(json.dumps({"schema_version": 1, "acks": acks}), encoding="utf-8")
+
+    with pytest.raises(PersonaLedgerInvalid):
+        PersonaInstallAckStore(path=path).revoke(persona_id="casa/newton")
+
+
+def test_a_direct_record_cannot_reset_the_revocation_fence(tmp_path) -> None:
+    """Sol diff r2: a record that rewrote a damaged document dropped the
+    revocation generations with it, so a consent tap that captured 0 before a
+    completed revoke matched again and could republish the removed persona.
+    Every record validates the document now — the generation-free one too."""
+    from persona_install import (
+        PersonaInstallAckStore, PersonaLedgerInvalid, persona_install_consent_identity,
+    )
+
+    path = tmp_path / "acks.json"
+    acks = PersonaInstallAckStore(path=path)
+    stale = acks.revocation_generations(persona_id="casa/newton", version="0.1.0")
+    acks.revoke(persona_id="casa/newton", version="0.1.0")
+    path.write_text("{ truncated", encoding="utf-8")
+
+    identity = persona_install_consent_identity(
+        persona_id="casa/other", version="0.1.0", checksum="cafe")
+    with pytest.raises(PersonaLedgerInvalid):
+        acks.record(identity=identity, persona_id="casa/other", version="0.1.0",
+                    checksum="cafe")
+
+    # Nothing was rewritten, so the fence the revoke established is still the
+    # last thing written to the file — a repair is the operator deleting it,
+    # deliberately, not a consent write silently resetting it.
+    assert path.read_text(encoding="utf-8") == "{ truncated"
+    del stale
+
+
+def test_the_journal_classifier_is_the_one_boot_uses(tree, tmp_path) -> None:
+    """The anti-drift property itself: boot's reconcile loop and the persona
+    reference scan must dispatch on the SAME classification, not on two copies
+    of the rule that agree today."""
+    import inspect
+
+    import specialist_bundle_journal
+
+    source = inspect.getsource(specialist_bundle_journal.reconcile_boot)
+    assert "classify_journal(path)" in source, (
+        "reconcile_boot must consume classify_journal — an independent copy of "
+        "the name/shape/state rules is what let the reference scan disagree "
+        "with what boot actually replays")
+    assert "_valid_payload(payload" not in source

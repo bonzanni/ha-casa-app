@@ -234,7 +234,13 @@ class PersonaInstallAckStore:
             raise PersonaLedgerInvalid(
                 f"{self.path}: the consent ledger has an unrecognized shape or "
                 "schema version; refusing to record or revoke consent against it")
-        if self._load() != (raw.get("acks") or {}):
+        # Sol+Terra diff r2: check the TYPE before comparing. `raw.get("acks")
+        # or {}` collapsed a missing key, null, false, [] and "" to {} — and
+        # `_load` fail-closes to {} for each of those too, so the comparison
+        # succeeded and the guard waved through exactly the malformed
+        # documents it exists to refuse.
+        acks = raw.get("acks")
+        if not isinstance(acks, dict) or self._load() != acks:
             raise PersonaLedgerInvalid(
                 f"{self.path}: the consent ledger's ack records do not validate; "
                 "refusing to record or revoke consent against it")
@@ -322,12 +328,15 @@ class PersonaInstallAckStore:
         rec = {"persona_id": persona_id, "version": version, "checksum": checksum,
                "ts": int(time.time())}
         with _LEDGER_LOCK:
-            if expect_generations is not None:
-                # Only the generation-checked path refuses a damaged document:
-                # a direct record (no generations) keeps the siblings'
-                # documented corruption recovery, where the next successful
-                # write rewrites a valid store.
-                self._require_valid_document()
+            # Sol diff r2: EVERY record validates the document, including the
+            # generation-free one. Letting a direct record rewrite a damaged
+            # document restored the siblings' corruption recovery at the cost
+            # of the revocation fence — the rewrite drops the generations, so a
+            # consent tap that captured 0 before a completed revoke matches
+            # again and republishes the removed persona. A damaged ledger
+            # authorizes nothing while it stays damaged (`is_acked` reads it as
+            # no acks at all), and is repaired by removing the file.
+            self._require_valid_document()
             revocations = self._load_revocations(strict_read=True)
             if expect_generations is not None:
                 current = (revocations.get(persona_id, 0),
@@ -701,6 +710,43 @@ _SPECIALIST_NON_SLUG_DIRS = frozenset({"store", ".staging", ".bundle-staging",
                                        ".roles-overlay", ".ops"})
 
 
+def _stat_or_refuse(path: Path) -> "Any | None":
+    """#543 (Sol diff r2): absence and "could not tell" are different answers,
+    and only the first may un-pin a persona.
+
+    ``Path.is_file()``/``is_dir()`` answer False for ENOENT, ENOTDIR, EBADF and
+    ELOOP alike — so a path the kernel merely could not resolve reads as
+    absent. (EIO and EACCES do propagate, contrary to the round-2 finding as
+    stated; the swallowed set is still wrong to trust here.) A missing file is
+    a real answer — the loaders read it as absent too, so it pins nothing —
+    while any other stat failure is unknown, and unknown must refuse."""
+    import os
+
+    try:
+        return os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SpecialistInstallError(
+            "references_unavailable",
+            f"{path} could not be examined ({exc}); it may name a persona, so no "
+            "persona can be removed until it is readable") from exc
+
+
+def _is_file_or_refuse(path: Path) -> bool:
+    import stat as stat_mod
+
+    st = _stat_or_refuse(path)
+    return st is not None and stat_mod.S_ISREG(st.st_mode)
+
+
+def _is_dir_or_refuse(path: Path) -> bool:
+    import stat as stat_mod
+
+    st = _stat_or_refuse(path)
+    return st is not None and stat_mod.S_ISDIR(st.st_mode)
+
+
 def _override_ref(tup: Any) -> "str | None":
     if tup is None or tup.binding.mode != "override":
         return None
@@ -742,9 +788,9 @@ def _journal_references(ops_dir: Path) -> "list[PersonaReference]":
             "journal there may still restore a persona binding, so no persona can "
             "be removed until it is readable") from exc
     for path in entries:
+        if not _is_file_or_refuse(path):     # absence vs "cannot tell" — see _stat_or_refuse
+            continue
         try:
-            if not path.is_file():
-                continue
             tuple_files = specialist_bundle_journal.replayable_tuple_files(path)
         except OSError as exc:
             raise SpecialistInstallError(
@@ -819,12 +865,12 @@ def persona_references(
                 "name a persona, so no persona can be removed until it is readable"
             ) from exc
         for entry in entries:
-            if not entry.is_dir() or entry.name in skip:
+            if entry.name in skip or not _is_dir_or_refuse(entry):
                 continue
             name = entry.name[len("resident-"):] if kind == "resident" else entry.name
             for filename in filenames:
                 path = entry / filename
-                if not path.is_file():
+                if not _is_file_or_refuse(path):
                     continue
                 # Sol diff r1 (S1): a tuple file that EXISTS but cannot be
                 # interpreted is NOT evidence of "no reference" — and
@@ -845,6 +891,15 @@ def persona_references(
                         f"{path} exists but could not be read ({exc}); it may name a "
                         "persona, so no persona can be removed until it is resolved"
                     ) from exc
+                if tup is None:
+                    # The file was there a moment ago (stat succeeded) but
+                    # load_instance_tuple's own existence probe said no — a
+                    # concurrent write, or a stat error it swallowed. Either
+                    # way this is "could not tell", not "names nothing".
+                    raise SpecialistInstallError(
+                        "references_unavailable",
+                        f"{path} changed while the reference set was being computed; "
+                        "no persona can be removed until the scan is stable")
                 ref = _override_ref(tup)
                 if ref is not None:
                     _add(ref, f"{kind}:{name}", filename)
