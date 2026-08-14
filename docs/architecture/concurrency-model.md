@@ -85,7 +85,21 @@ new one.
 Enforced in the pool's turn path. This is INV-TURN-001's concurrency face: what the lock
 reads and decides is documented there.
 
-What it does not cover: unpooled turn types, and the bus layer above (INV-CONC-001).
+What it does not cover: unpooled turn types other than the scheduled ones INV-CONC-004
+claims, and the bus layer above (INV-CONC-001).
+
+**INV-CONC-004**: Every turn that can touch a scheduled session — a schedule firing, a scheduled question's answer, and a delegation completion resumed into it — serializes under one per-session-key gate held through the session-id publish.
+
+Enforced by the agent's session write gate, taken for any turn whose type is scheduled or
+whose context carries the scheduled-delivery marker. Scheduled turns bypass the warm pool,
+so INV-CONC-003's lock never covered them, while a completion for the same session arrives
+as a *pooled* turn — nothing made the three mutually exclusive, and two of them resuming one
+session id forks it. The gate spans the registry publish as well as the SDK attempt, because
+the unpooled path publishes its new session id after the attempt returns; releasing earlier
+would let the next turn read the predecessor.
+
+What it does not cover: sessions with no scheduled turn — an ordinary DM or voice session is
+INV-CONC-003's territory, and the gate is never taken for it.
 
 ## Failure behavior
 
@@ -139,13 +153,16 @@ critical section and belongs to the owning subsystem's contract.
 - `casa/rootfs/opt/casa/bus.py::MessageBus.start_agent_loop`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn`
 - `casa/rootfs/opt/casa/reload.py::_RWLock`
+- `casa/rootfs/opt/casa/agent.py::session_write_gate`
 
 **Tests**
 - `tests/test_bus.py`
 - `tests/test_sdk_client_pool_pool.py`
+- `tests/test_scheduled_ask_user.py`
 
 **Related**
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/configuration.md`](../architecture/configuration.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/jobs-and-delivery.md`](../architecture/jobs-and-delivery.md)
 <!-- END SOURCEMAP -->

@@ -7,6 +7,7 @@ import dataclasses
 import json
 import logging
 import time
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -78,6 +79,53 @@ from voice_turn_guard import VoiceTurnGuard
 
 logger = logging.getLogger(__name__)
 
+
+# #573: one writer per scheduled session.
+#
+# A SCHEDULED turn bypasses the warm client pool (AR-6) and so takes no
+# cross-turn lock, while a delegation completion for that same session is
+# re-synthesized as a pooled REQUEST and a scheduled ask's answer arrives as a
+# second SCHEDULED turn. Nothing made those three mutually exclusive: two of
+# them could resume one SDK session id concurrently and fork it. This gate
+# serializes every turn that can touch such a session, keyed by channel_key,
+# and is held across the SDK attempt AND the registry publish — the bypass
+# path publishes its new sid after the attempt returns, so releasing earlier
+# would let the next turn read the predecessor.
+#
+# Refcounted rather than a plain dict-of-locks: the key space is per-boot
+# unbounded, and an entry that nothing holds is deleted rather than retained.
+_SESSION_GATES: "dict[str, list]" = {}
+
+
+@asynccontextmanager
+async def session_write_gate(channel_key: str):
+    entry = _SESSION_GATES.get(channel_key)
+    if entry is None:
+        entry = [asyncio.Lock(), 0]
+        _SESSION_GATES[channel_key] = entry
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] <= 0 and _SESSION_GATES.get(channel_key) is entry:
+            del _SESSION_GATES[channel_key]
+
+
+def _needs_session_gate(msg: BusMessage) -> bool:
+    """Whether *msg* can touch a scheduled session's SDK session.
+
+    Both arms are Casa-owned and unspoofable: the message type is set by the
+    dispatcher, and ``_scheduled_delivery`` is stripped from every external
+    context. Keying on the message type alone missed the delegation-completion
+    REQUEST, which is the pooled half of the race.
+    """
+    return (
+        msg.type == MessageType.SCHEDULED
+        or msg.context.get("_scheduled_delivery") is True
+    )
+
 # Module-level driver/provider/registry references written by casa_core.main
 # so tool handlers can reach them without circular imports.
 active_engagement_driver = None   # InCasaDriver | None, set by casa_core.main
@@ -107,9 +155,10 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #   _origin_route / _origin_clearance — Release A containment (ingress + tier)
 #   _operator_turn             — #283 live-operator marker for the spawn cap
 #   _scheduled_delivery        — #485 Casa's own schedule fired this turn
+#   _scheduled_epoch           — #573 the trigger-lifecycle epoch it fired under
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
-    "_operator_turn", "_scheduled_delivery",
+    "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
@@ -969,6 +1018,10 @@ class Agent:
         synth_context = dict(msg.context)
         for _marker_key in (
             "_origin_route", "_origin_clearance", "_scheduled_delivery",
+            # #573: the epoch travels with the marker for the same reason the
+            # marker travels — a completion resumed into a scheduled session
+            # must be judged against the trigger set that ASKED for the work.
+            "_scheduled_epoch",
         ):
             if _marker_key in origin:
                 synth_context[_marker_key] = origin[_marker_key]
@@ -1376,18 +1429,43 @@ class Agent:
                     )
 
             attempt = _attempt_pooled_turn if use_pool else _attempt_bypass_turn
-            try:
-                response_text, sdk_session_id, usage, used_resume, \
-                    session_published = \
-                    await _attempt_with_stale_recovery(attempt)
-            except PoolUnavailable:
-                # Reachable from the primary attempt OR from the recovery
-                # retry after a clear (the clear is idempotent and guarded, so
-                # falling through to the bypass — which re-derives its resume
-                # decision from the registry — is correct either way).
-                response_text, sdk_session_id, usage, used_resume, \
-                    session_published = \
-                    await _attempt_with_stale_recovery(_attempt_bypass_turn)
+            # #573: a turn that can touch a SCHEDULED session runs under the
+            # per-session write gate, and holds it across BOTH the attempt (with
+            # its stale-resume recovery and PoolUnavailable fallback) and the
+            # registry publish below — the bypass path publishes its new sid
+            # after the attempt returns, so a gate released at the end of the
+            # attempt would still let the next turn resume the predecessor.
+            _gate = (
+                session_write_gate(channel_key) if _needs_session_gate(msg)
+                else nullcontext()
+            )
+            async with _gate:
+                try:
+                    response_text, sdk_session_id, usage, used_resume, \
+                        session_published = \
+                        await _attempt_with_stale_recovery(attempt)
+                except PoolUnavailable:
+                    # Reachable from the primary attempt OR from the recovery
+                    # retry after a clear (the clear is idempotent and guarded,
+                    # so falling through to the bypass — which re-derives its
+                    # resume decision from the registry — is correct either way).
+                    response_text, sdk_session_id, usage, used_resume, \
+                        session_published = \
+                        await _attempt_with_stale_recovery(_attempt_bypass_turn)
+
+                # 9. SessionRegistry — record the SDK session id for resume +
+                # save. Inside the gate; see the note above.
+                if sdk_session_id and not session_published:
+                    await self._session_registry.register(
+                        channel_key=channel_key,
+                        agent=self.config.role_id,
+                        sdk_session_id=sdk_session_id,
+                        scope_class=(
+                            "webhook_oneshot" if is_webhook_oneshot else None),
+                        binding_digest=self.config.binding_digest,
+                        speaker_provenance=speaker_provenance_for_role(self.config),
+                        user_provenance=user_provenance,
+                    )
 
             # Per-turn telemetry (spec 5.2 §5.2). Microsecond cost — string
             # format + one logger.info — and runs after streaming has
@@ -1425,17 +1503,8 @@ class Agent:
             # its true sensitivity tier off the critical path (tier model §2.4);
             # nothing to compute or record per-turn here.
 
-            # 9. SessionRegistry — record the SDK session id for resume + save.
-            if sdk_session_id and not session_published:
-                await self._session_registry.register(
-                    channel_key=channel_key,
-                    agent=self.config.role_id,
-                    sdk_session_id=sdk_session_id,
-                    scope_class="webhook_oneshot" if is_webhook_oneshot else None,
-                    binding_digest=self.config.binding_digest,
-                    speaker_provenance=speaker_provenance_for_role(self.config),
-                    user_provenance=user_provenance,
-                )
+            # 9. SessionRegistry publish moved up, under the #573 session write
+            # gate — see the attempt block above.
 
             # Task 14 / #199: record this turn's provenance so an operator can
             # `casactl explain <cid>` it. Fail-safe (never raises) and off the

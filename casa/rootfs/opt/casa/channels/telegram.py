@@ -70,7 +70,11 @@ from media_policies import MEDIA_POLICIES
 from text_util import utf16_len, utf16_prefix_end
 from channels.telegram_supervisor import ReconnectSupervisor
 from log_cid import cid_var, new_cid
-from provenance import sanitize_external_context, strict_positive_id
+from provenance import (
+    sanitize_external_context,
+    scheduled_delivery_markers,
+    strict_positive_id,
+)
 from rate_limit import RateLimiter
 
 import topic_ledger
@@ -3254,6 +3258,62 @@ class TelegramChannel(Channel):
                 # exhaustion so the caller can overwrite the keyboard).
                 logger.warning(
                     "button continuation dispatch attempt %d/3 raised "
+                    "(target=%s request_id=%s): %s",
+                    attempt + 1, target_role, request_id, exc,
+                )
+            if attempt < len(delays):
+                await _sleep(delays[attempt])
+        return False
+
+    async def _dispatch_scheduled_continuation(
+        self, *, session_scope: str, target_role: str, request_id: str,
+        text: str, epoch: int | None = None,
+        _sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> bool:
+        """Deliver a scheduled ask's TERMINAL outcome back into the session
+        that asked (#573).
+
+        Deliberately NOT the button sibling above. That one is addressed to a
+        DM chat and is attributed to the tapper; this one must land in the
+        SCHEDULED session — the label in ``session_scope`` keys it — or the
+        resident receives an answer in a session that never saw the question.
+        So it reproduces the SHAPE of the firing turn instead: a ``SCHEDULED``
+        message carrying the session label as ``chat_id``, the same
+        ``_scheduled_delivery`` marker, and the epoch the question was ASKED
+        under (replayed from the durable record, never re-resolved — a
+        revocation that raced the tap would otherwise hand the continuation a
+        fresh epoch).
+
+        No ``trusted_user_origin``, no ``_operator_turn``, no
+        ``_origin_clearance``: the operator's tap is reported in the CONTENT of
+        the turn, and giving it a speaker identity would relabel every
+        machine-authored turn in that session as operator-authored (the
+        registry keeps ONE ``user_provenance`` per entry).
+        """
+        delays = (0.5, 1.0)
+        cid = new_cid()
+        for attempt in range(3):
+            msg = BusMessage(
+                type=MessageType.SCHEDULED,
+                source="scheduled-ask",
+                target=target_role,
+                content=text,
+                channel="telegram",
+                context={
+                    "chat_id": session_scope,
+                    "cid": cid,
+                    "button_answer": request_id,
+                    **scheduled_delivery_markers("telegram", epoch),
+                },
+            )
+            try:
+                if await self._bus.send_checked(msg) == "accepted":
+                    return True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — counts as a failed attempt
+                logger.warning(
+                    "scheduled continuation dispatch attempt %d/3 raised "
                     "(target=%s request_id=%s): %s",
                     attempt + 1, target_role, request_id, exc,
                 )

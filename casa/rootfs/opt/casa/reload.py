@@ -22,6 +22,8 @@ import time
 from collections import deque
 from typing import Any, Awaitable, Callable
 
+import scheduled_asks
+
 logger = logging.getLogger("reload")
 
 
@@ -502,6 +504,12 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
             f"avoid mixed state)",
         )
 
+    # #573: the role's trigger set is being replaced, so every question one of
+    # its schedules left pending is revoked FIRST — on the event loop, because
+    # `reregister_for` itself runs in a worker thread where the broker's
+    # finisher cannot reach a running loop. Each revocation settles its ask:
+    # the keyboard is retired and the scheduled session is told.
+    scheduled_asks.revoke_role(role, "trigger_reloaded")
     try:
         await asyncio.to_thread(
             runtime.trigger_registry.reregister_for,
@@ -845,6 +853,7 @@ async def _teardown_role(runtime: Any, role: str) -> None:
         logger.warning(
             "reload_agents: bus.unregister(%s) failed: %s", role, exc,
         )
+    scheduled_asks.revoke_role(role, "role_evicted")
     try:
         await asyncio.to_thread(
             runtime.trigger_registry.reregister_for, role, [], [],
@@ -1074,6 +1083,7 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
     actions += _refresh_role_map(runtime, context=f"role={role}")
 
     # Re-register triggers for that role only.
+    scheduled_asks.revoke_role(role, "trigger_reloaded")
     try:
         await asyncio.to_thread(
             runtime.trigger_registry.reregister_for,
@@ -1429,6 +1439,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # contained (the sweep survives; the add stands) but must be
         # visible in the action trail.
         if getattr(new_cfg, "triggers", None):
+            scheduled_asks.revoke_role(r, "trigger_reloaded")
             try:
                 await asyncio.to_thread(
                     runtime.trigger_registry.reregister_for,

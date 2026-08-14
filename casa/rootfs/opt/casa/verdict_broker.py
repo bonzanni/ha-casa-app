@@ -117,10 +117,31 @@ class VerdictBroker:
         detached: bool = False,
         meta: dict | None = None,
         supersede: bool = False,
-    ) -> tuple[PendingRequest, bool]:
+        require_idle: bool = False,
+        idle_scopes: "tuple[str, ...]" = (),
+    ) -> "tuple[PendingRequest | None, bool]":
+        """Register (or reattach to) a request.
+
+        ``require_idle`` (#573) refuses the registration — returning
+        ``(None, False)`` — when ANY live request already occupies this
+        (namespace, scope) or any of ``idle_scopes``. It is what lets a
+        MACHINE-timed question decline the operator's attention lane instead
+        of superseding a live human one, and it is decided here because
+        ``register`` has no awaits: the check and the insert are one
+        indivisible step against the tap handler, a typed-reply cancel and an
+        authorization challenge's own registration. ``idle_scopes`` exists
+        because that lane is not a single scope — a protected-action challenge
+        lives in ``authz:<chat>`` while a plain ask lives in ``dm:<chat>``.
+        """
         if namespace not in _VALID_NAMESPACES:
             raise ValueError(f"invalid namespace: {namespace!r}")
         key: Key = (namespace, scope, request_id)
+
+        if require_idle:
+            occupied = {scope, *idle_scopes}
+            for k in self._live:
+                if k[0] == namespace and k[1] in occupied:
+                    return None, False
 
         existing = self._live.get(key)
         if existing is not None:
@@ -357,6 +378,26 @@ class VerdictBroker:
         for key in keys:
             self._finish(key, {"outcome": "cancelled", "reason": reason})
         return len(keys)
+
+    def cancel_where(
+        self, *, namespace: str, reason: str,
+        predicate: Callable[[PendingRequest], bool],
+    ) -> list[str]:
+        """Cancel every LIVE request in *namespace* for which *predicate* holds.
+
+        Synchronous, like every other finisher, and that is the point (#573):
+        a caller deciding "cancel the machine-raised questions in this DM" must
+        decide and act in ONE no-await block, against the live map itself.
+        Selecting them from a durable record file instead loses to any ask that
+        has registered but not yet persisted. Returns the cancelled request ids.
+        """
+        keys = [
+            k for k, req in self._live.items()
+            if k[0] == namespace and predicate(req)
+        ]
+        for key in keys:
+            self._finish(key, {"outcome": "cancelled", "reason": reason})
+        return [k[2] for k in keys]
 
     def cancel_all(self, *, reason: str) -> int:
         keys = list(self._live.keys())

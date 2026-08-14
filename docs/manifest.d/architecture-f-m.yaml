@@ -60,18 +60,25 @@
     - casa/rootfs/opt/casa/channels/voice/delivery.py::VoiceDeliveryCoordinator
     - casa/rootfs/opt/casa/voice_job_result.py::parse_voice_job_result
     - casa/rootfs/opt/casa/voice_job_result.py::spoken_text_for
+    - casa/rootfs/opt/casa/scheduled_asks.py::ScheduledAskStore
+    - casa/rootfs/opt/casa/scheduled_asks.py::make_finish_hook
+    - casa/rootfs/opt/casa/scheduled_asks.py::reconcile_at_boot
   tests:
     - tests/test_job_registry.py
     - tests/test_voice_delivery.py
     - tests/test_voice_job_result.py
-  related: [architecture/voice.md, architecture/persistent-state.md, architecture/turn-loop.md]
-  defines_invariants: [INV-JOB-001, INV-JOB-002, INV-JOB-003, INV-JOB-004, INV-JOB-005]
+    - tests/test_scheduled_ask_user.py
+  related: [architecture/voice.md, architecture/persistent-state.md, architecture/turn-loop.md, architecture/triggers.md]
+  defines_invariants: [INV-JOB-001, INV-JOB-002, INV-JOB-003, INV-JOB-004, INV-JOB-005, INV-JOB-006, INV-JOB-007, INV-JOB-008]
   invariant_tests:
     INV-JOB-001: [tests/test_job_registry.py::test_failed_snapshot_write_does_not_publish_memory_mutation]
     INV-JOB-002: [tests/test_job_registry.py::test_restart_orphans_running_job_and_queues_voice_failure, tests/test_job_registry.py::test_restart_finalizes_cancel_pending_job_as_cancelled]
     INV-JOB-003: [tests/test_job_registry.py::test_invalid_compare_and_set_does_not_mutate, tests/test_voice_delivery.py::test_stale_claim_is_denied_without_mutation]
     INV-JOB-004: [tests/test_job_registry.py::test_playing_lease_lapse_requeues_for_at_least_once_delivery]
     INV-JOB-005: [tests/test_voice_delivery.py::test_only_device_queue_head_is_offered, tests/test_voice_delivery.py::test_device_fifo_is_stable_across_route_ids]
+    INV-JOB-006: [tests/test_scheduled_ask_user.py::TestDurableRecord::test_posting_record_is_written_before_the_keyboard, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_settling_is_persisted_before_the_edit, tests/test_scheduled_ask_user.py::TestBootReconcile::test_settling_record_is_never_replayed, tests/test_scheduled_ask_user.py::TestBootReconcile::test_live_record_is_restored_and_still_answerable]
+    INV-JOB-007: [tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_every_cancellation_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_timeout_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_settles_nothing_and_keeps_the_record, tests/test_scheduled_ask_user.py::TestAttribution::test_the_continuation_is_machine_authored]
+    INV-JOB-008: [tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_a_plain_dm_ask_is_live, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_an_authz_challenge_is_live, tests/test_scheduled_ask_user.py::TestLane::test_an_authz_challenge_cancels_a_live_scheduled_ask]
 
 - doc: architecture/mcp-and-tools.md
   summary: How tools reach an agent, and where authorization for a tool call actually happens.

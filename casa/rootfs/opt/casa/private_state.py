@@ -90,6 +90,10 @@ FILES: tuple[Entry, ...] = (
     Entry("/data/jobs.json", 0o600, PRIVATE,
           "Delegated job rows: creator identity, task, context, result and "
           "failure text for resident and specialist work."),
+    Entry("/data/scheduled_asks.json", 0o600, PRIVATE,
+          "Pending scheduled questions: the operator's chat and user id, the "
+          "question body and its options, and which resident session is "
+          "waiting on the answer."),
     Entry("/data/plugin-health.json", 0o600, PRIVATE,
           "Per-plugin health state, regenerated every boot."),
     Entry("/data/plugin-setup-episodes.json", 0o600, PRIVATE,

@@ -207,6 +207,8 @@
   doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/sensitivity.py
   doc: architecture/memory.md
+- item: casa/rootfs/opt/casa/scheduled_asks.py
+  doc: architecture/jobs-and-delivery.md
 - item: casa/rootfs/opt/casa/session_registry.py
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/session_saver.py

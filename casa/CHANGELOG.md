@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.206.0] - 2026-08-15
+
+### Added
+
+- **A scheduled agent can now ask you a question** (#573). The other half of
+  what v0.205.0 started: a turn fired by one of an agent's own schedules can
+  put a tappable question in your DM — the weekly invoice pass that sends the
+  PDF can now also ask *Confirm / Wrong / Later* in the same turn, and act on
+  your answer.
+
+  A question like this outlives the turn that asked it, so it behaves
+  differently from one you prompted yourself:
+
+  - **It waits politely.** If you already have a question open — an agent's, or
+    an approval request — the scheduled one is not asked at all rather than
+    replacing yours on screen. The agent is told so and can try on its next
+    run. An approval request raised while a scheduled question is waiting
+    retires the scheduled one first: your attention goes to the thing you are
+    doing.
+  - **It survives a restart.** The question is recorded on disk before the
+    buttons are posted, so if Casa restarts while you are deciding, the buttons
+    still work afterwards. A question that expired while Casa was down is
+    closed cleanly instead of pretending to be live, and one whose operator
+    changed in the meantime is never re-offered.
+  - **The agent always finds out what happened.** Answered, timed out,
+    superseded, or cancelled because you edited the schedule — every ending is
+    delivered back into the same session that asked, so the agent is never left
+    waiting on an answer that will never come.
+  - **Your tap stays your tap.** The answer is reported to the agent as the
+    content of a scheduled turn, not as a message from you, so a machine-run
+    session is never rewritten as one you authored.
+
+  Editing, reloading or cancelling a schedule now closes any question it left
+  open, and tells the agent why.
+
 ## [0.205.0] - 2026-08-15
 
 ### Added

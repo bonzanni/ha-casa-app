@@ -22,6 +22,7 @@ from bus import BusMessage, MessageBus, MessageType
 from config import TriggerSpec
 from log_cid import new_cid
 from provenance import scheduled_delivery_markers
+import scheduled_asks
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -254,7 +255,11 @@ class TriggerRegistry:
                     # The chat_id above stays the SESSION LABEL — it keys the
                     # SDK session and the voice-job scope, and the delivery
                     # identity is resolved separately at the point of use.
-                    **scheduled_delivery_markers(trig.channel),
+                    # #573: the epoch says which trigger SET this fired under,
+                    # so a turn still running when its trigger is deleted or
+                    # rewritten can no longer raise a question for it.
+                    **scheduled_delivery_markers(
+                        trig.channel, scheduled_asks.epoch_for(role)),
                 },
             )
             await self._bus.send(msg)
