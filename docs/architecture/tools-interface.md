@@ -38,6 +38,17 @@ argument or a bad enum before the handler runs — code and tests rely on it. Th
 bridge route checks only that the name is known and passes the arguments through, so a
 tool reachable both ways must carry its own validation for the bridge side.
 
+**Reading plugin state and changing it are separate grants.** Every tool that mutates the
+plugin registry refuses a caller outside the privileged configuration roles, and that has
+not changed. What changed is that *reading* is no longer bundled with mutating: a zero-argument,
+read-only status tool is granted to the assistant resident, so an operator asking why a
+plugin is not working is answered in the turn rather than by spawning a configurator
+engagement to ask on their behalf. It reads through the health and setup-episode modules, never
+by widening a filesystem scope — `/data` holds secrets and is deliberately never opened
+broadly — and it is outside the specialist dispatch ceiling, so a third-party bundle cannot
+reach it. It answers two different questions from two stores: what is standing wrong now, and
+what happened during a past setup, which only the episode row's recorded error can say.
+
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner
 (INV-ENG-001); everything observable — permits, brokers, topics, notifications, retention —

@@ -11590,6 +11590,106 @@ async def plugin_list(args: dict) -> dict:
     return _result(await asyncio.to_thread(_tool_plugin_list))
 
 
+# #555: how many setup obligations the history names. The episode store has no
+# TTL and no size cap — one row survives per plugin ever installed, including
+# removed ones — so an unbounded return would grow a resident's context without
+# limit for no added answer.
+_STATUS_HISTORY_LIMIT = 20
+
+
+def _episode_sentence(row: dict) -> str:
+    """One operator-facing line for a setup obligation.
+
+    Prose, not a row: the assistant paraphrases raw JSON badly, which is the
+    whole of #550 — handing it a dict inside the feature meant to relieve that
+    would reproduce the problem."""
+    plugin = row.get("plugin") or "a plugin"
+    status = str(row.get("status") or "unknown")
+    said = {
+        "pending": "setup has not run yet",
+        "dispatched": "setup is running",
+        "failed": "setup failed",
+        "stale": "setup started and stopped partway",
+        "refused": "setup was not allowed to run",
+    }.get(status, f"setup is {status}")
+    parts = [f"{plugin}: {said}"]
+    attempts = _status_int(row.get("attempts"))
+    retries = _status_int(row.get("execution_retries"))
+    if attempts:
+        parts.append(f"{attempts} attempt{'s' if attempts != 1 else ''}")
+    if retries:
+        parts.append(f"{retries} execution retr{'ies' if retries != 1 else 'y'}")
+    line = " — ".join(parts)
+    # The last_error is the ONE fact that answers a historical failure; the
+    # health report describes standing state only and cannot carry it.
+    last_error = row.get("last_error")
+    if isinstance(last_error, str) and last_error.strip():
+        line += f" — last error: {last_error.strip()}"
+    return line
+
+
+def _status_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _status_sort_key(row: dict) -> float:
+    """`updated_ts` as a number, tolerating anything a hand-edited store holds.
+    A malformed stamp sorts oldest rather than raising mid-render."""
+    try:
+        return float(row.get("updated_ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _tool_plugin_status() -> dict:
+    """#555: the assistant's read-only answer to "what is wrong with plugin X,
+    and what went wrong when it was installed?".
+
+    Two stores, because they answer different questions: the health report holds
+    STANDING failures, while the episode row's `last_error` and retry counts are
+    the only record of a HISTORICAL one. Neither is reachable any other way —
+    `Read` is inert for residents and /data is deliberately never opened
+    broadly, since it holds secrets.
+
+    Each half degrades independently: a corrupt report must not cost the
+    operator the episode history that would have explained the failure."""
+    standing: list = []
+    history: list = []
+    try:
+        import plugin_health
+        report = plugin_health.load_report(Path(_PLUGIN_HEALTH_PATH)) or {}
+        standing = [plugin_health.describe_issue(d)
+                    for d in (list(report.get("issues") or [])
+                              + list(report.get("warnings") or []))]
+    except Exception:  # noqa: BLE001 — a read tool must never raise at a resident
+        logger.exception("plugin_status: health report read failed")
+    try:
+        import plugin_setup_episodes
+        rows = [r for r in plugin_setup_episodes.episodes()
+                if isinstance(r, dict)]
+        rows.sort(key=_status_sort_key, reverse=True)
+        history = [_episode_sentence(r) for r in rows[:_STATUS_HISTORY_LIMIT]]
+    except Exception:  # noqa: BLE001
+        logger.exception("plugin_status: episode store read failed")
+    return {"ok": True, "standing": standing, "history": history}
+
+
+@tool(
+    "plugin_status",
+    "Report what is currently wrong with any installed plugin, and what "
+    "happened during each plugin's automatic setup — including the error a "
+    "failed setup last reported. Read-only: it changes nothing, and it is the "
+    "way to answer an operator asking why a plugin is not working without "
+    "engaging the configurator.",
+    {"type": "object", "properties": {}},
+)
+async def plugin_status(args: dict) -> dict:
+    return _result(await asyncio.to_thread(_tool_plugin_status))
+
+
 # ---------------------------------------------------------------------------
 # Plan 4b §7.4–7.6: uninstall + verify_plugin_state + vault helper tools
 # ---------------------------------------------------------------------------
@@ -12397,6 +12497,9 @@ CASA_TOOLS: tuple = (
     event_ack_revoke,              # #419 — plugin-event consent off-switch
     consent_reprompt,              # #494 — on-demand consent-DM re-issue
     plugin_list,
+    plugin_status,                 # #555 — read-only plugin health + setup
+                                   # history for the RESIDENT; the mutation
+                                   # tools above stay configurator-only
     verify_plugin_state,
     verify_plugin_secrets,
     set_plugin_env_reference,

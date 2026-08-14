@@ -231,3 +231,38 @@ async def test_undeliverable_send_is_not_marked(tmp_path):
 
     assert len(ch.attempted) == 1, "the send must actually have been attempted"
     assert plugin_health.new_fingerprints(plugin_health.load_report(p)) != []
+
+
+# ---------------------------------------------------------------------------
+# The DM sentence is plugin_health.render_line — one renderer for both operator
+# surfaces (#551 claimed this; only describe_issue() was actually shared, and
+# the sentence around it had drifted). The LIMIT stays per-surface.
+# ---------------------------------------------------------------------------
+
+async def test_dm_uses_the_incomplete_update_prefix_for_stale_bindings(tmp_path):
+    """Pre-fix this DM said "Something needs attention" while the in-band notice
+    for the same rows said "An update did not finish" — two wordings for one
+    state, from the two copies of the sentence."""
+    p = _report(tmp_path, PluginIssue("p", "resident:assistant", "reload",
+                                      "reload_required", None))
+    cm = _cm()
+    await casa_core.notify_plugin_health(cm, path=str(p))
+    assert cm._channel.sent[0][0].startswith("⚠️ An update did not finish:")
+    assert cm._channel.sent[0][0] == plugin_health.render_notice(
+        "assistant", p)
+
+
+async def test_dm_names_five_where_the_in_band_notice_names_two(tmp_path):
+    """The limits are deliberately NOT shared: a DM is a message of its own, so
+    it names five; the in-band line rides on a reply, so it names two."""
+    p = _report(tmp_path, *[
+        PluginIssue(f"p{i}", "resident:assistant", "resolve",
+                    "artifact_missing", None) for i in range(6)])
+    cm = _cm()
+    await casa_core.notify_plugin_health(cm, path=str(p))
+    dm = cm._channel.sent[0][0]
+    assert [f"p{i}" in dm for i in range(6)] == [True] * 5 + [False]
+    assert dm.endswith(", and 1 more.")
+    notice = plugin_health.render_notice("assistant", p)
+    assert [f"p{i}" in notice for i in range(6)] == [True] * 2 + [False] * 4
+    assert notice.endswith(", and 4 more.")

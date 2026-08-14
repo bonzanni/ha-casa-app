@@ -466,6 +466,35 @@ def _isolate_resident_bindings(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_operator_notice_lock():
+    """Rebind ``casa_core._OPERATOR_NOTICE_LOCK`` per test.
+
+    It is a module-level ``asyncio.Lock()`` created at import (#556), so it
+    binds to the FIRST running loop that acquires it. Every pytest-asyncio test
+    gets its own loop, so the second file in a worker to use an operator
+    notifier raised "is bound to a different event loop" — and worse, a loop
+    that died holding it left it locked for the rest of the process. The suite
+    stayed green only because ``--dist loadfile`` usually scattered those files
+    across workers; run `tests/test_placeholder_rewrite_notice.py` and
+    `tests/test_plugin_health_notify.py` in one process on v0.196.0 and it
+    fails. Reproduced at 978f812 before this batch — not caused by it.
+
+    Test-only: production has exactly one loop for the process's life, so the
+    lock there is bound once and correctly. Nothing about the guarantee it
+    provides (at most one operator notice in flight) is relaxed here — each
+    test simply gets its own instance of it."""
+    try:
+        import asyncio as _asyncio
+
+        import casa_core as _cc
+    except Exception:  # pragma: no cover — import is universal in tests
+        yield
+        return
+    _cc._OPERATOR_NOTICE_LOCK = _asyncio.Lock()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_ask_validation_gates():
     try:
         from channels import channel_handlers as _ch

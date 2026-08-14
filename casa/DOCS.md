@@ -652,7 +652,11 @@ The `configurator` is the first Tier 3 Executor - knows Casa's configuration sur
 
 Plugin management uses the registry tools (`plugin_add`, `plugin_update`,
 `plugin_assign`, `plugin_unassign`, `plugin_remove`, `plugin_list`,
-`verify_plugin_state`) — see [Plugins](#plugins-v0710). Repository-installed
+`verify_plugin_state`) — see [Plugins](#plugins-v0710). Asking the assistant
+why a plugin is not working needs none of them: `plugin_status` (0.197.0) is
+read-only, granted to the assistant, and reports both what is currently
+blocking each plugin and what a past automatic setup last failed on.
+Repository-installed
 specialists use their own recipe — see
 [Installing a specialist from a repository](#installing-a-specialist-from-a-repository).
 

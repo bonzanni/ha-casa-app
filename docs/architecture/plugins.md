@@ -61,10 +61,27 @@ says so, and a setup episode that failed carries its own error into the row.
 **Health speaks to the operator in what they can do, and does not repeat itself.** Both
 operator-facing surfaces — the in-band notice a resident prepends to a reply, and the DM —
 render through one translation that never emits a reason code: the codes are internal
-identifiers, an open set that grows with every plugin feature, and no role has a tool that
-could look one up. The translation therefore classifies by families of code rather than
-enumerating them, so a code minted later still reads as something actionable, and an
-unrecognized one degrades to a plain statement rather than leaking. Repeats are suppressed
+identifiers, an open set that grows with every plugin feature. The translation therefore
+classifies by families of code rather than enumerating them, so a code minted later still
+reads as something actionable, and an unrecognized one degrades to a plain statement rather
+than leaking. The shared renderer is now the whole sentence, not merely the per-issue clause:
+the two surfaces had each written their own wrapper around the shared clause and those had
+already drifted, so a set of stale bindings was announced as an incomplete update in-band
+and as a generic fault by DM. What deliberately stays per-surface is how many issues each
+names — the in-band line rides on top of a reply and names two, while the DM is a message of
+its own and names five, because the operator has no other way to see those names in that
+moment. The truncated tail is answerable now: the read-only plugin status tool the assistant
+holds reports the full standing set on request.
+
+A report is normalized as it is read, and normalization filters rather than rejects. External
+corruption of the report file — a non-object document, a row that is not a mapping, an
+unhashable target — used to raise out of the notice renderer, which runs on a resident's turn
+and is not guarded there, so a hand-broken file cost the operator their reply and not merely
+their notice. Rejecting the whole document on one bad row would have thrown away a valid
+blocking issue sitting beside it, so the bad rows are dropped and the good ones still reach
+both surfaces.
+
+Repeats are suppressed
 by a decaying, in-process memo of the exact line last put in front of each role: any change
 to what the operator would read renders immediately, and a role whose issues have resolved
 is re-armed at once.
@@ -97,6 +114,18 @@ path and keyed by rendered text rather than by fingerprint. The two stores are t
 independent, and a mutation that raises its first blocking issue mid-turn can show the
 operator the same warning twice: once as the DM the tool awaits, once on the reply that
 follows it. That predates this contract and is tracked separately.
+
+Coordinating them is harder than it reads, and the reason is worth recording where the next
+attempt will find it. The two surfaces select different rows: the DM announces only
+fingerprints not yet notified, while the notice states everything standing for that role —
+and setup-episode rows are targetless, never decay while pending, and therefore stand for
+every role during exactly the multi-step setup flow where the duplicate appears. So the two
+messages rarely carry identical text even when they carry the same warning, which defeats
+suppression keyed on the rendered line. Suppression keyed on fingerprints instead defeats
+itself differently: fingerprints deliberately exclude the detail field, while the visible
+sentence includes it, so a fingerprint match can suppress wording the operator never read.
+And any store of "already delivered" that the report's own resolution pruning does not reach
+can outlive the issue it describes, which is how a recurrence goes unannounced.
 
 **Approval is per call, not per install, and it does not survive a restart.** A protected
 tool call by a resident or specialist consumes a single-use grant bound to a specific
