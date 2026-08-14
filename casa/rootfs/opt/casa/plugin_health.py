@@ -133,11 +133,58 @@ def _atomic_write(path: Path, report: dict) -> None:
                       mode=PRIVATE)
 
 
+def _normalize(report: dict) -> dict:
+    """Coerce a parsed report to the shapes every consumer assumes.
+
+    #559 batch (Sol design r3): the writer only ever emits well-formed rows, so
+    anything else is external corruption of /data/plugin-health.json — but the
+    consumers were reading it unguarded. A non-dict row, an unhashable `target`
+    or an unhashable entry in `notified_fingerprints` each raised out of
+    render_notice AND new_fingerprints; render_notice runs on a resident's turn
+    via Agent._maybe_prepend_health_notice, which does not guard it, so the
+    operator lost their REPLY, not merely the notice.
+
+    FILTER, never reject: dropping the whole report over one bad row would
+    discard a valid blocking issue sitting beside it, and that alert is the
+    asset this module exists to protect."""
+    def _rows(key: str) -> list:
+        raw = report.get(key)
+        if not isinstance(raw, list):
+            return []
+        out = []
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            # `target` is matched against a SET (render_notice) and `fingerprint`
+            # is put INTO one — an unhashable value raises in both.
+            if not isinstance(row.get("target"), (str, type(None))):
+                continue
+            if not isinstance(row.get("fingerprint"), (str, type(None))):
+                continue
+            out.append(row)
+        return out
+
+    raw_fps = report.get("notified_fingerprints")
+    report["issues"] = _rows("issues")
+    report["warnings"] = _rows("warnings")
+    report["notified_fingerprints"] = (
+        [fp for fp in raw_fps if isinstance(fp, str)]
+        if isinstance(raw_fps, list) else [])
+    return report
+
+
 def load_report(path: Path = HEALTH_PATH) -> dict | None:
+    """The report, or None when it is absent, unreadable, unparseable — or valid
+    JSON that is not an object. Rows are normalized on read (see _normalize), so
+    every consumer is downstream of one tolerance rule rather than each carrying
+    its own."""
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        report = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(report, dict):
+        return None
+    return _normalize(report)
 
 
 def write_report(*, issues: list, warnings: list,
@@ -294,6 +341,36 @@ _notice_memo: dict[str, tuple[str, float]] = {}
 _MEMO_LOCK = threading.Lock()
 
 
+# #551 said both operator-facing surfaces "render through one translation", and
+# describe_issue() was that translation — but the SENTENCE around it was written
+# twice, and the two copies had already drifted: this one switches prefix for an
+# all-reload_required set, while the DM in casa_core hardcoded the generic
+# "Something needs attention" for every case, so an incomplete update was
+# announced as a generic fault by DM and as an incomplete update in-band. One
+# renderer, two callers, and the documented contract becomes true of the code.
+#
+# The LIMIT stays per-caller: the in-band line rides on top of a reply and must
+# stay short, while the DM is a message of its own and naming five is useful
+# there. (A shared limit was considered as part of the #559 duplicate-suppression
+# work and rejected with it — see that issue: lowering the DM to 2 loses names
+# the operator has no other way to see.)
+_NOTICE_LIMIT = 2
+
+
+def render_line(entries: list, limit: int = _NOTICE_LIMIT) -> str | None:
+    """One operator-facing sentence for a set of report rows, or None for an
+    empty set. `limit` rows are named; the rest become ", and N more"."""
+    if not entries:
+        return None
+    body = ", ".join(describe_issue(d) for d in entries[:limit])
+    if len(entries) > limit:
+        body += f", and {len(entries) - limit} more"
+    # D4 (v0.74.0): an all-stale-binding set is an INCOMPLETE UPDATE, and says so.
+    if all(d.get("reason_code") == "reload_required" for d in entries):
+        return f"⚠️ An update did not finish: {body}."
+    return f"⚠️ Something needs attention: {body}."
+
+
 def render_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
     """The notice text for this role's blocking issues, or None when there are
     none. Pure: no memo read or write (pending_notice applies suppression)."""
@@ -301,16 +378,8 @@ def render_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
     if not report:
         return None
     ok_targets = {f"resident:{role}", f"specialist:{role}", None}
-    matched = [d for d in report.get("issues", [])
-               if d.get("target") in ok_targets]
-    if not matched:
-        return None
-    body = ", ".join(describe_issue(d) for d in matched[:2])
-    if len(matched) > 2:
-        body += f", and {len(matched) - 2} more"
-    if all(d.get("reason_code") == "reload_required" for d in matched):
-        return f"⚠️ An update did not finish: {body}."
-    return f"⚠️ Something needs attention: {body}."
+    return render_line([d for d in report.get("issues", [])
+                        if d.get("target") in ok_targets])
 
 
 def forget_notice(role: str, text: str) -> None:

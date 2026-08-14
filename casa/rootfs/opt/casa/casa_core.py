@@ -3117,13 +3117,16 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
     # the one operator-facing renderer rather than printing reason codes. It
     # carries the detail (an unresolved var name, a setup episode's last_error)
     # for the same reason the notice does — #533/#554, nothing else conveys it.
-    # The old "See /data/plugin-health.json" tail is gone: the recipient's own
-    # assistant cannot open that file (no health-read tool exists for any role,
-    # and Read is inert for residents), so it named a door that does not open.
-    parts = [plugin_health.describe_issue(e) for e in entries[:5]]
-    listed = ", ".join(parts) + (f", and {len(entries) - 5} more"
-                                 if len(entries) > 5 else "")
-    content = f"⚠️ Something needs attention: {listed}."
+    # The old "See /data/plugin-health.json" tail is gone — it named a door that
+    # did not open; since #555 the door is plugin_status, which the recipient's
+    # own assistant can call, so a truncated "+N more" tail is now answerable.
+    #
+    # The SENTENCE is plugin_health.render_line, not a second implementation of
+    # it: this path used to build its own and had already drifted from the
+    # in-band one (it announced an all-reload_required set as a generic fault).
+    # The limit stays 5 here — a DM is a message of its own, and naming five is
+    # information the operator has no other way to get in that moment.
+    content = plugin_health.render_line(entries, limit=5)
     channel = (channel_manager.get("telegram")
                if channel_manager is not None else None)
     # Sol r1-2: channel.send() log-and-drops while the PTB app is not

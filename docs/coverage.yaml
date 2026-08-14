@@ -387,6 +387,8 @@
   doc: architecture/tools-interface.md
 - item: tool:plugin_remove
   doc: architecture/tools-interface.md
+- item: tool:plugin_status
+  doc: architecture/tools-interface.md
 - item: tool:plugin_unassign
   doc: architecture/tools-interface.md
 - item: tool:plugin_update

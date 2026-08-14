@@ -490,3 +490,120 @@ def test_notice_names_the_detail(tmp_path):
         warnings=[], path=p, registry_path=tmp_path / "registry.json")
     notice = plugin_health.render_notice("assistant", path=p)
     assert notice is not None and "MY_API_KEY" in notice
+
+
+# ---------------------------------------------------------------------------
+# #559 batch — report shape tolerance (design r3 D4, Sol r3 S1).
+#
+# A hand-corrupted /data/plugin-health.json must never raise out of a consumer:
+# render_notice runs on a resident's turn through Agent._maybe_prepend_health_notice,
+# which does not guard it, so a raise there costs the operator their REPLY, not
+# merely the notice. Normalization FILTERS rather than rejects — dropping the
+# whole report over one bad row would discard a valid blocking issue beside it,
+# which is the alert we care most about keeping.
+# ---------------------------------------------------------------------------
+
+_GOOD_ROW = {"name": "fx", "target": "resident:assistant", "stage": "verify",
+             "reason_code": "env_unresolved", "artifact_id": "a",
+             "fingerprint": "fp-good"}
+
+
+def _write(tmp_path: Path, doc) -> Path:
+    p = tmp_path / "plugin-health.json"
+    p.write_text(json.dumps(doc), encoding="utf-8")
+    return p
+
+
+def test_load_report_rejects_non_mapping_json(tmp_path):
+    """Valid JSON of the wrong shape reads as absent, not as a report."""
+    assert plugin_health.load_report(_write(tmp_path, [1, 2])) is None
+    assert plugin_health.load_report(_write(tmp_path, "nope")) is None
+    assert plugin_health.load_report(_write(tmp_path, 5)) is None
+
+
+def test_load_report_drops_bad_rows_and_keeps_the_valid_one(tmp_path):
+    """One malformed row must not cost the valid blocking row beside it."""
+    path = _write(tmp_path, {"issues": [_GOOD_ROW, [], "x", None],
+                             "warnings": "not-a-list",
+                             "notified_fingerprints": [[], "fp-old", 7]})
+    report = plugin_health.load_report(path)
+    assert [d["fingerprint"] for d in report["issues"]] == ["fp-good"]
+    assert report["warnings"] == []
+    assert report["notified_fingerprints"] == ["fp-old"]
+
+
+def test_malformed_report_never_raises_out_of_a_consumer(tmp_path):
+    """The two consumers reachable from an operator turn (render_notice, via
+    Agent._maybe_prepend_health_notice) and from the DM path (new_fingerprints).
+
+    Each case below RAISED before this change: a non-dict row, an unhashable
+    `target`, and an unhashable entry in notified_fingerprints."""
+    for doc in (
+        {"issues": [_GOOD_ROW, []], "warnings": [], "notified_fingerprints": []},
+        {"issues": [dict(_GOOD_ROW, target=[])], "warnings": [],
+         "notified_fingerprints": []},
+        {"issues": [_GOOD_ROW], "warnings": [], "notified_fingerprints": [[]]},
+    ):
+        path = _write(tmp_path, doc)
+        plugin_health.render_notice("assistant", path)          # must not raise
+        plugin_health.new_fingerprints(plugin_health.load_report(path))
+
+
+def test_valid_issue_still_reaches_both_surfaces_beside_a_bad_row(tmp_path):
+    """Assert the OUTCOME, not merely the absence of a raise: the good row is
+    still announced by both the notice and the DM's fingerprint selection."""
+    path = _write(tmp_path, {"issues": [_GOOD_ROW, []], "warnings": [],
+                             "notified_fingerprints": []})
+    assert "fx" in (plugin_health.render_notice("assistant", path) or "")
+    assert plugin_health.new_fingerprints(
+        plugin_health.load_report(path)) == ["fp-good"]
+
+
+# ---------------------------------------------------------------------------
+# #559 batch — ONE renderer, ONE limit for both operator-facing surfaces
+# (design r3 D2). Two renderers with the same job had already diverged: the
+# in-band notice switches prefix for an all-reload_required set while the DM
+# did not, so the two never byte-matched for that normal blocking state.
+# ---------------------------------------------------------------------------
+
+def _row(name, code="env_unresolved", target="resident:assistant", fp=None):
+    return {"name": name, "target": target, "stage": "verify",
+            "reason_code": code, "artifact_id": "a",
+            "fingerprint": fp or f"fp-{name}"}
+
+
+def test_render_line_is_none_for_no_entries():
+    assert plugin_health.render_line([]) is None
+
+
+def test_render_line_names_up_to_the_limit_then_counts_the_rest():
+    rows = [_row(n) for n in ("alpha", "beta", "gamma", "delta")]
+    line = plugin_health.render_line(rows)
+    assert "alpha" in line and "beta" in line
+    assert "gamma" not in line
+    assert line.endswith(", and 2 more.")
+
+
+def test_render_line_keeps_the_reload_required_prefix():
+    """The prefix rule is the renderer's, so BOTH surfaces get it — the DM used
+    to hardcode the generic prefix, which is why an all-reload_required issue
+    could never be deduped."""
+    assert plugin_health.render_line(
+        [_row("p", code="reload_required")]).startswith(
+            "⚠️ An update did not finish:")
+    assert plugin_health.render_line(
+        [_row("p", code="reload_required"), _row("q")]).startswith(
+            "⚠️ Something needs attention:")
+
+
+def test_render_notice_is_render_line_over_this_roles_issues(tmp_path):
+    """render_notice must be the renderer applied to a filtered row set — not a
+    second implementation of the same sentence."""
+    path = _write(tmp_path, {
+        "issues": [_row("mine"), _row("theirs", target="resident:butler"),
+                   _row("everyones", target=None)],
+        "warnings": [], "notified_fingerprints": []})
+    notice = plugin_health.render_notice("assistant", path)
+    assert notice == plugin_health.render_line(
+        [_row("mine"), _row("everyones", target=None)])
+    assert "theirs" not in notice

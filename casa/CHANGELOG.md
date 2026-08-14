@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.197.0] - 2026-08-14
+
+### Added
+
+- Your assistant can now tell you what is wrong with a plugin, and what went
+  wrong when one was set up (#555). Ask "why isn't the fx-setup plugin
+  working?" and you get an answer in the conversation: what is currently
+  blocking each plugin, and for past setups, how many attempts were made and
+  the error the last one reported. Until now nothing could read that — the
+  detail was recorded and kept, but no agent could open it, so the only way to
+  ask was to have Casa start a configurator session on your behalf. The new
+  view is read-only and changes nothing; installing and changing plugins stays
+  with the configurator as before.
+
+### Fixed
+
+- A plugin problem is described the same way whichever way Casa tells you
+  about it. A half-finished update was announced as "an update did not finish"
+  in a reply but as the generic "something needs attention" by direct message,
+  because the two messages were written separately and had drifted apart. They
+  now share one wording. Each still names as many problems as suits it — a
+  short reply names two, a direct message names five — and you can ask your
+  assistant for the full list.
+
+- A damaged plugin-health file no longer costs you a reply. If that file was
+  corrupted outside Casa, reading it could fail in the middle of answering you,
+  and the whole reply was lost rather than just the warning. Casa now skips the
+  damaged parts and still reports every problem it can still read.
+
 ## [0.196.0] - 2026-08-14
 
 ### Fixed
