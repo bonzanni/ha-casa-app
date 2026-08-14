@@ -182,18 +182,25 @@ def _shipped_grants(rel: str) -> list:
     return doc["tools"]["allowed"]
 
 
-@pytest.mark.parametrize("rel", [
-    # The OPERATIONAL grant list — config_sync copies defaults/agents/** to
-    # /config/agents/**, which is what the running assistant loads. Asserting
-    # only the canonical role artifact below let a first draft of this batch
-    # register the tool and grant it NOWHERE the running agent would read:
-    # the test passed and the tool was unreachable (Sol, diff review r1).
-    "agents/assistant/runtime.yaml",
-    # The canonical role artifact (Personality Phase A).
-    "roles/resident/assistant/role.yaml",
-])
-def test_granted_to_the_assistant_in_both_shipped_artifacts(rel):
-    assert "mcp__casa-framework__plugin_status" in _shipped_grants(rel)
+def test_granted_in_the_operational_runtime_artifact():
+    """`agents/assistant/runtime.yaml` is the ONLY artifact that authorizes a
+    resident's tools: `agent_loader._build_runtime_fields` builds
+    `cfg.tools.allowed` exclusively from it, and config_sync copies
+    defaults/agents/** to /config/agents/** where the running assistant reads
+    it. A first draft of this batch granted the tool only in the canonical role
+    artifact and the suite stayed green while the tool was unreachable."""
+    assert ("mcp__casa-framework__plugin_status"
+            in _shipped_grants("agents/assistant/runtime.yaml"))
+
+
+def test_the_role_artifact_is_not_a_resident_tool_ceiling():
+    """The counterpart pin, so nobody "fixes" the asymmetry above by adding an
+    inert grant. `roles/resident/<role>/role.yaml` is compared for kind and
+    model only; unlike an EXECUTOR's role artifact it is not intersected with
+    the operational allowlist, so a grant there authorizes nothing and only
+    moves the role checksum."""
+    assert ("mcp__casa-framework__plugin_status"
+            not in _shipped_grants("roles/resident/assistant/role.yaml"))
 
 
 def test_selection_through_the_shipped_grants_exposes_it_and_no_mutation_tool():
