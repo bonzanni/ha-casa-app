@@ -46,10 +46,8 @@ same way.** A role artifact may declare its model as an operator option rather t
 value, and the checksum hashes the resolved result alongside the declaration — deliberately,
 so flipping the option produces a new identity and a new session epoch. The consequence is a
 trap: any code path that materializes a role for a binding that will be PERSISTED, or
-checked against one that was, has to resolve that option exactly as the loader will. (The
-export verifier is the deliberate exception: it materializes and compiles a throwaway
-binding purely to prove a bundle is self-consistent, so it resolves against no options at
-all and never persists the result.) Materializing with no options resolves the
+checked against one that was, has to resolve that option exactly as the loader will.
+Materializing with no options resolves the
 declared *default*, which silently produces a binding the loader can never re-derive, and the
 specialist is then dropped as a binding-activation failure on a host whose option differs
 from the default. Install, upgrade, rollback, persona override and the reconcile pass all
@@ -102,6 +100,21 @@ pack installed under a custom config root is found by everything that later read
 tool that staged where boot does not look would report success for a swap that never
 activates.
 
+**A specialist's own default persona is not one of those roots.** The two approved roots
+are the installed-personas root and the image defaults tree; a specialist's
+component-default persona is read from that component's CAS store instead, which is
+neither. So a component's bundled persona is *not* resolvable by ref — installing a
+specialist makes its persona active for that specialist and does nothing else. Whether such
+a persona could be applied to a resident is a separate question with its own answer: a fixed
+resident slot's compatibility admits only its own slug, so it depends entirely on which
+persona the component declares, and nothing stops a component declaring a slot's own.
+
+**The image ships persona packs for the fixed resident slots and nothing else.** Every pack
+in the defaults tree is the image default for one of those slots, and each slot's default is
+in the tree — the two sets are equal by contract, not by coincidence. The image is not a
+distribution channel: specialists and their personas arrive by install, which is why a pack
+that no slot defaults to has no reachable consumer at all.
+
 **The observer and secondary passes run on their own model.** `SECONDARY_AGENT_MODEL`
 (default *haiku*) selects the model for engagement observation and engager-query synthesis
 — a cost/latency/judgment tunable documented nowhere else.
@@ -130,6 +143,12 @@ The consequence is the important part: a failure there propagates into resident 
 which is boot-fatal. Persona problems on a resident are not a degraded mode.
 
 **INV-PERS-004**: The restricted-origin prompt omits the persona section.
+
+**INV-PERS-005**: The persona packs the image ships are exactly the fixed resident slots' image defaults — no more, no fewer.
+
+What it does not cover: it says nothing about which personas are *available* on a host.
+Installed bare personas and specialists' bundled personas are both reachable content that
+this invariant does not count, because neither is shipped in the image.
 
 ## Failure behavior
 

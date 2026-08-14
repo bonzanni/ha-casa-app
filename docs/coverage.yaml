@@ -219,8 +219,6 @@
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_component.py
   doc: architecture/specialist-lifecycle.md
-- item: casa/rootfs/opt/casa/specialist_export.py
-  doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_install.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_install_consent.py

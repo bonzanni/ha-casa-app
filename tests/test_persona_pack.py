@@ -378,27 +378,135 @@ def test_valid_pack_with_matching_manifest_loads(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# R1 (foundation review r2): the 5 shipped canonical persona packs must
+# R1 (foundation review r2): every shipped canonical persona pack must
 # still load after assert_json_safe is wired in as defense in depth —
 # their content is ordinary JSON-shaped YAML, so this is a pure
 # no-regression check.
+#
+# The set under test is DERIVED from IMAGE_DEFAULT_PERSONA_BY_SLOT rather
+# than hand-listed, because after #544 those are the same set by
+# construction and a hand-listed copy is what let an orphan pack sit in the
+# image unnoticed. #427: "judge" left with the MTG component. #544: "alex"
+# left with the finance specialist — the image ships no specialist content,
+# so it ships no persona belonging to no resident slot.
 # ---------------------------------------------------------------------------
 
 _REAL_PERSONAS_DIR = Path(__file__).resolve().parent.parent / (
     "casa/rootfs/opt/casa/defaults/personas"
 )
-# #427: "judge" left with the MTG component — it is no longer shipped.
-_REAL_PERSONA_SLUGS = ["alex", "ellen", "gary", "tina"]
 
 
-@pytest.mark.parametrize("slug", _REAL_PERSONA_SLUGS)
-def test_real_shipped_persona_pack_loads(slug: str) -> None:
-    version_dir = _REAL_PERSONAS_DIR / "casa" / slug / "0.1.0"
+def _slot_default_persona_refs_by_slot() -> dict[str, tuple[str, str, str]]:
+    """IMAGE_DEFAULT_PERSONA_BY_SLOT re-expressed in the on-disk layout's own
+    terms: slot -> (namespace, slug, version)."""
+    from personality_binding import IMAGE_DEFAULT_PERSONA_BY_SLOT
+
+    by_slot = {}
+    for slot, ref in IMAGE_DEFAULT_PERSONA_BY_SLOT.items():
+        persona_id, _, version = ref.partition("@")
+        namespace, _, slug = persona_id.partition("/")
+        by_slot[slot] = (namespace, slug, version)
+    return by_slot
+
+
+def _slot_default_persona_refs() -> frozenset[tuple[str, str, str]]:
+    """The (namespace, slug, version) triples IMAGE_DEFAULT_PERSONA_BY_SLOT
+    names, in the on-disk layout's own terms."""
+    return frozenset(_slot_default_persona_refs_by_slot().values())
+
+
+def _shipped_persona_packs() -> frozenset[tuple[str, str, str]]:
+    """Every persona pack actually present under defaults/personas/, as
+    (namespace, slug, version). Walks the whole tree — not just the "casa"
+    namespace — so an orphan pack parked under a new namespace is caught.
+
+    #544 (Sol r2, S2): found by RECURSIVE search for manifest.json and then
+    asserting the depth, rather than globbing the expected depth directly. A
+    glob of `*/*/*` silently ignores a pack at any other depth, so a valid
+    pack dropped at `personas/<ns>/<slug>/` with no version directory was
+    invisible to every one of these tests — dead bundled bytes could return
+    unnoticed, which is the exact thing INV-PERS-005 exists to prevent. Such
+    a pack is not loadable (every loader wants <ns>/<slug>/<version>), so
+    misplacement is itself the defect worth failing on, not a shape to
+    tolerate."""
+    packs = set()
+    for manifest in _REAL_PERSONAS_DIR.rglob("manifest.json"):
+        parts = manifest.relative_to(_REAL_PERSONAS_DIR).parts
+        assert len(parts) == 4, (
+            f"persona pack manifest at unexpected depth: "
+            f"{manifest.relative_to(_REAL_PERSONAS_DIR)} — expected "
+            f"<namespace>/<slug>/<version>/manifest.json"
+        )
+        packs.add(parts[:3])
+    return frozenset(packs)
+
+
+@pytest.mark.parametrize(
+    ("namespace", "slug", "version"), sorted(_slot_default_persona_refs()))
+def test_real_shipped_persona_pack_loads(namespace: str, slug: str, version: str) -> None:
+    version_dir = _REAL_PERSONAS_DIR / namespace / slug / version
     result = load_persona_pack(
         version_dir / "pack", version_dir / "manifest.json"
     )
-    assert result.persona_id == f"casa/{slug}"
-    assert result.version == "0.1.0"
+    assert result.persona_id == f"{namespace}/{slug}"
+    assert result.version == version
+
+
+def test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to() -> None:
+    """#544: the image is not a distribution channel for anything but the
+    fixed resident slots' own defaults. A pack in the tree that no slot
+    defaults to is dead weight the image cannot serve — nothing resolves it
+    for a resident (no resident role's persona compatibility admits a
+    foreign slug) and nothing resolves it for a specialist (a specialist's
+    component-default persona is read from its CAS store, not from the
+    image defaults). Set equality in BOTH directions: an extra pack is an
+    orphan, a missing one breaks its slot's boot reconciliation."""
+    assert _shipped_persona_packs() == _slot_default_persona_refs()
+
+
+def test_every_fixed_resident_slot_has_an_image_default_persona() -> None:
+    """#544 (Sol/Terra r1, both S2): the set-equality test above compares two
+    views DERIVED FROM THE SAME MAP, so it is blind to the map itself losing a
+    slot. Dropping "assistant" from IMAGE_DEFAULT_PERSONA_BY_SLOT and deleting
+    Ellen's pack in the same edit keeps both derived sets equal and every
+    parametrized load passing, while a fresh assistant boot raises KeyError at
+    `IMAGE_DEFAULT_PERSONA_BY_SLOT[role.slot]` in reconcile_resident_binding.
+    FIXED_RESIDENT_SLOTS is the independent anchor that closes that hole."""
+    from personality_binding import IMAGE_DEFAULT_PERSONA_BY_SLOT
+    from role_slot import FIXED_RESIDENT_SLOTS
+
+    assert set(IMAGE_DEFAULT_PERSONA_BY_SLOT) == set(FIXED_RESIDENT_SLOTS)
+    # #544 (Terra r2, S2): the slots must not COLLAPSE onto a shared persona
+    # either. Pointing all three slots at Gary, deleting Ellen and Tina, and
+    # relaxing each role's compatibility to match satisfies every other
+    # assertion here while "no more, no fewer" is plainly false — the refs
+    # are distinct per slot, so their count is the cheap thing to pin.
+    assert len(set(IMAGE_DEFAULT_PERSONA_BY_SLOT.values())) == len(FIXED_RESIDENT_SLOTS)
+
+
+@pytest.mark.parametrize("slot", sorted(_slot_default_persona_refs_by_slot()))
+def test_each_slots_image_default_persona_satisfies_that_slots_real_role(slot: str) -> None:
+    """#544 (Sol r1 #7): pin each mapped default against the SHIPPED role
+    artifact's own persona compatibility — the one oracle here that is not
+    derived from the default map. Without it, repointing a slot at another
+    slot's persona (assistant -> casa/tina) and deleting the orphaned pack
+    satisfies both set-equality and the fixed-slot keyset, yet every boot of
+    that resident then fails check_persona_requirements.
+
+    The RAW role artifact is used deliberately, not a materialized role: only
+    the persona block is read, and materializing would drag in the ha_option
+    model resolution this assertion has no business depending on."""
+    from personality_binding import check_persona_requirements
+    from role_artifact import load_role_artifact
+
+    namespace, slug, version = _slot_default_persona_refs_by_slot()[slot]
+    version_dir = _REAL_PERSONAS_DIR / namespace / slug / version
+    pack = load_persona_pack(version_dir / "pack", version_dir / "manifest.json")
+    role_dir = (
+        Path(__file__).resolve().parent.parent
+        / "casa/rootfs/opt/casa/defaults/roles/resident" / slot
+    )
+    check_persona_requirements(load_role_artifact(role_dir).role, pack)  # raises on mismatch
 
 
 # ---------------------------------------------------------------------------

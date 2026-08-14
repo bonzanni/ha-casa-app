@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.202.0] - 2026-08-14
+
+### Removed
+
+- The **Alex persona is no longer bundled in the Casa image** (#544). Alex is
+  the finance specialist's persona, and Casa ships with no specialist
+  preconfigured — specialists are installed, and each one brings its own
+  persona with it. The finance specialist already carried Alex itself, so a
+  finance install still gets Alex, with exactly the same identity; nothing you
+  can reach today changes. The image now ships persona packs for its three
+  resident slots and nothing else: Ellen, Tina and Gary.
+
+  Alex was never applicable to a resident in any case — each resident slot
+  accepts only its own persona — so there is no binding that this can break.
+
+### Changed
+
+- Retired the internal one-off tool that built the finance specialist's
+  release bundle out of the image tree. The finance specialist has lived in its
+  own repository since the cutover, and with Alex gone the tool had no image
+  content left to read.
+
 ## [0.201.0] - 2026-08-14
 
 ### Added

@@ -61,12 +61,13 @@
     - tests/test_persona_install.py
     - tests/test_personality_admin_handlers.py
   related: [architecture/agent-taxonomy.md, architecture/turn-loop.md]
-  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004]
+  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-005]
   invariant_tests:
     INV-PERS-001: [tests/test_tools_specialist_options.py::test_build_specialist_options_prefers_compiled_bundle_when_present]
     INV-PERS-002: [tests/test_persona_pack.py::test_pin_inv_pers_002_capability_claims_are_not_semantically_validated]
     INV-PERS-003: [tests/test_phase_a_compiler_integration.py::test_missing_override_persona_blob_at_reload_raises_load_error]
     INV-PERS-004: [tests/test_prompt_compiler.py::test_compiler_order_and_restricted_projection]
+    INV-PERS-005: [tests/test_persona_pack.py::test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to]
 
 - doc: architecture/plugin-events.md
   summary: Plugin-emitted domain events — casa-minted generations, per-subscriber delivery receipts, and consent-gated headless wakes.
