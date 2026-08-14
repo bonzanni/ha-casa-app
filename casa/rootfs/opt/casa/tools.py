@@ -12497,19 +12497,25 @@ async def persona_list(args: dict) -> dict:
     from specialist_install import SpecialistInstallError
 
     def _sync() -> dict:
+        # Sol/Terra diff r1: the WHOLE body, not just the reference scan — an
+        # OSError from any directory walk (bindings, specialists, personas)
+        # must come back as this tool's {ok, kind} envelope, because these
+        # tools are the operator's only sanctioned surface onto that tree.
         try:
             references = persona_references()
+            installed = list_installed_personas(references=references)
+            image_root = persona_pack_roots()[1]
+            image_defaults = []
+            for slot, ref in sorted(IMAGE_DEFAULT_PERSONA_BY_SLOT.items()):
+                persona_id, _, version = ref.partition("@")
+                image_defaults.append({
+                    "slot": slot, "ref": ref,
+                    "present": (image_root / persona_id / version / "manifest.json").is_file(),
+                })
         except SpecialistInstallError as exc:
             return {"ok": False, "kind": exc.kind, "detail": exc.detail}
-        installed = list_installed_personas(references=references)
-        image_root = persona_pack_roots()[1]
-        image_defaults = []
-        for slot, ref in sorted(IMAGE_DEFAULT_PERSONA_BY_SLOT.items()):
-            persona_id, _, version = ref.partition("@")
-            image_defaults.append({
-                "slot": slot, "ref": ref,
-                "present": (image_root / persona_id / version / "manifest.json").is_file(),
-            })
+        except OSError as exc:
+            return {"ok": False, "kind": "scan_failed", "detail": str(exc)}
         return {"ok": True, "installed": installed, "image_defaults": image_defaults}
 
     return _result(await asyncio.to_thread(_sync))
@@ -12541,8 +12547,11 @@ async def persona_remove(args: dict) -> dict:
                 remove_installed_persona,
                 persona_id=args["persona_id"], version=args["version"])
         except SpecialistInstallError as exc:
-            payload = {"ok": False, "kind": exc.kind, "detail": exc.detail}
-            return _result(payload)
+            return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+        except OSError as exc:
+            # A directory that cannot be walked or a rename that fails at the
+            # filesystem level: structured refusal, never a raw exception.
+            return _result({"ok": False, "kind": "scan_failed", "detail": str(exc)})
     return _result(result)
 
 
@@ -12563,6 +12572,8 @@ async def persona_prune(args: dict) -> dict:
             result = await asyncio.to_thread(prune_installed_personas)
         except SpecialistInstallError as exc:
             return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+        except OSError as exc:
+            return _result({"ok": False, "kind": "scan_failed", "detail": str(exc)})
     return _result({"ok": True, **result})
 
 

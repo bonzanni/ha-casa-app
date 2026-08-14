@@ -120,11 +120,24 @@ persona's bytes are needed for as long as any binding tuple that a later load �
 *recovery* — can read still names them. That set is wider than "what is active": a staged
 `desired` tuple, a specialist's retained prior (its rollback input), the pending-rotation
 temporary a failed prior rotation leaves behind, and the tuple bytes captured inside an
-unfinished bundle journal, which both the tool layer's compensation and the next boot's journal
-reconciliation write back verbatim. Removal computes that whole set and refuses if it is
-non-empty; there is no force. It is deliberately narrower in one place: a *resident's* prior
-tuple is not a reference, because nothing reads one — counting it would pin the outgoing persona
-from the moment a reset committed, which is the opposite of what a reset is for.
+bundle journal that would still be *replayed*, whose capture both the tool layer's compensation
+and the next boot's journal reconciliation write back verbatim. Removal computes that whole set
+and refuses if it is non-empty; there is no force. It is deliberately narrower in two places: a
+*resident's* prior tuple is not a reference, because nothing reads one — counting it would pin
+the outgoing persona from the moment a reset committed, which is the opposite of what a reset is
+for — and a journal that boot would quarantine rather than replay is not a reference either,
+which is why whether a journal is replayable is answered by the journal module itself rather
+than by a second copy of the rule.
+
+**Unreadable is not unreferenced.** The scan distinguishes "this names no persona" from "this
+could not be interpreted", and only the first permits removal. A tuple file that exists but fails
+to load, a directory that cannot be walked, a journal that cannot be read — each refuses every
+removal, because the same bytes may be perfectly readable at the next boot, and a state that
+un-pins a persona by being broken is the boot-fatal failure wearing a disguise. The consent
+ledger inverts the same question for the same reason: for the approvals, an unreadable file
+reads as none and manufactures no consent, but for the revocation generations an unreadable file
+would read as *generation zero*, so mutations refuse it outright rather than accept a baseline
+they cannot verify.
 
 **The reference scan and the persona it protects are read under one lock.** Both application
 paths resolve a persona pack *before* taking the materialize lock, so removal computes its
@@ -185,8 +198,9 @@ this invariant does not count, because neither is shipped in the image.
 **INV-PERS-006**: an installed persona that any readable-or-restorable binding tuple still names is never removed — single removal and the sweep both refuse it, and a reference set that cannot be computed refuses too.
 
 What it does not cover: it is about *reachable* references, not about use. A persona nothing
-names is removable even if an operator still wants it, and a reference held only by an
-unfinished bundle journal blocks removal even though nothing is running it.
+names is removable even if an operator still wants it; a reference held only by a replayable
+bundle journal blocks removal even though nothing is running it; and a journal boot would
+quarantine holds nothing, because quarantine never restores.
 
 ## Failure behavior
 

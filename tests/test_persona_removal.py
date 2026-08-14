@@ -159,49 +159,96 @@ def test_a_resident_prior_tuple_is_not_a_reference(tree, tmp_path) -> None:
     assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
 
 
+def _write_journal(tree, tmp_path, *, name: str = "mtg.%s.json" % ("a1" * 16),
+                   slug: str = "mtg", state: str = "in-progress",
+                   persona_id: str = "casa/newton", version: str = "0.1.0") -> Path:
+    """A bundle journal capturing an override tuple. Built to the shape the
+    journal module itself validates — the callers below assert the module's
+    OWN verdict on it, so a fixture that drifts from what boot replays fails
+    loudly instead of quietly testing nothing (Terra diff r1: the first
+    version of this fixture used a state boot never replays, so the test that
+    named it was asserting a premise the code contradicts)."""
+    _write_tuple(tmp_path / "captured" / "active.yaml", personas_root=tree["personas"],
+                 persona_id=persona_id, version=version)
+    captured = (tmp_path / "captured" / "active.yaml").read_text(encoding="utf-8")
+    path = tree["ops"] / name
+    path.write_text(json.dumps({
+        "schema_version": 1, "op": "upgrade", "slug": slug, "state": state,
+        "before": {"registry_entries": [], "tuple_files": {"active.yaml": captured},
+                   "ack_records": []},
+    }), encoding="utf-8")
+    return path
+
+
 def test_an_in_progress_bundle_journal_holds_a_reference(tree, tmp_path) -> None:
     """A journal's captured tuple bytes are rewritten verbatim by
     `BundleTxn.rollback_disk` — from the tool layer's compensation AND from
     the next boot's `reconcile_boot`. A tuple that is not on disk right now
     can therefore come back (Sol design round 1)."""
+    import specialist_bundle_journal
+
     _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
-    _write_tuple(tmp_path / "captured" / "active.yaml", personas_root=tree["personas"],
-                 persona_id="casa/newton", version="0.1.0")
-    captured = (tmp_path / "captured" / "active.yaml").read_text(encoding="utf-8")
-    (tree["ops"] / "mtg.abc123.json").write_text(json.dumps({
-        "op": "upgrade", "slug": "mtg", "state": "begin",
-        "before": {"registry_entries": [], "tuple_files": {"active.yaml": captured},
-                   "ack_records": []},
-    }), encoding="utf-8")
+    path = _write_journal(tree, tmp_path)
+    # The premise, asserted against the authority rather than assumed: boot
+    # really would replay this journal's captured tuples.
+    assert specialist_bundle_journal.replayable_tuple_files(path) is not None
 
     with pytest.raises(SpecialistInstallError) as raised:
         _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
 
     assert raised.value.kind == "persona_pinned"
-    assert "journal:mtg.abc123.json" in raised.value.detail
+    assert f"journal:{path.name}" in raised.value.detail
 
 
 def test_a_complete_journal_holds_no_reference(tree, tmp_path) -> None:
     """`reconcile_boot` prunes a complete journal WITHOUT rolling back, so its
     captured tuples can never be restored."""
+    import specialist_bundle_journal
+
     _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
-    _write_tuple(tmp_path / "captured" / "active.yaml", personas_root=tree["personas"],
-                 persona_id="casa/newton", version="0.1.0")
-    captured = (tmp_path / "captured" / "active.yaml").read_text(encoding="utf-8")
-    (tree["ops"] / "mtg.abc123.json").write_text(json.dumps({
-        "op": "upgrade", "slug": "mtg", "state": "complete",
-        "before": {"registry_entries": [], "tuple_files": {"active.yaml": captured},
-                   "ack_records": []},
-    }), encoding="utf-8")
+    path = _write_journal(tree, tmp_path, state="complete")
+    assert specialist_bundle_journal.replayable_tuple_files(path) is None
 
     assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
 
 
-def test_an_unreadable_journal_refuses_every_removal(tree, tmp_path) -> None:
-    """Fail-closed: a journal whose replay cannot be predicted blocks removal
-    entirely rather than being scanned optimistically."""
+@pytest.mark.parametrize("kind", ["bad-json", "bad-state", "bad-slug", "bad-name"])
+def test_a_journal_boot_would_never_replay_holds_no_reference(
+        tree, tmp_path, kind: str) -> None:
+    """Terra diff r1: boot QUARANTINES an invalid journal — it never restores
+    one — so refusing removal for such a file strands the operator until a
+    reboot for a reference that cannot exist. The predicate lives in the
+    journal module so this scan and boot cannot disagree about it."""
+    import specialist_bundle_journal
+
     _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
-    (tree["ops"] / "mtg.abc123.json").write_text("{not json", encoding="utf-8")
+    if kind == "bad-json":
+        path = tree["ops"] / f"mtg.{'a1' * 16}.json"
+        path.write_text("{not json", encoding="utf-8")
+    elif kind == "bad-state":
+        path = _write_journal(tree, tmp_path, state="begin")
+    elif kind == "bad-slug":
+        path = _write_journal(tree, tmp_path, slug="not-the-filename-slug")
+    else:
+        path = _write_journal(tree, tmp_path, name="not-a-journal-name.json")
+    assert specialist_bundle_journal.replayable_tuple_files(path) is None
+
+    assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
+
+
+def test_a_journal_that_cannot_be_read_refuses_every_removal(
+        tree, tmp_path, monkeypatch) -> None:
+    """The one journal state that DOES refuse: a read error is unknown, not
+    negative — the same file may read fine at boot and replay its capture."""
+    import specialist_bundle_journal
+
+    _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
+    _write_journal(tree, tmp_path)
+
+    def _boom(path):
+        raise OSError("EIO")
+
+    monkeypatch.setattr(specialist_bundle_journal, "replayable_tuple_files", _boom)
 
     with pytest.raises(SpecialistInstallError) as raised:
         _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
@@ -211,12 +258,30 @@ def test_an_unreadable_journal_refuses_every_removal(tree, tmp_path) -> None:
 
 
 def test_a_quarantined_journal_is_skipped(tree, tmp_path) -> None:
-    """`reconcile_boot` never replays a `.quarantined` file — and it is
-    unparseable JSON here, so if it were scanned at all this would refuse."""
+    """`reconcile_boot` never replays a `.quarantined` file."""
     _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
-    (tree["ops"] / "mtg.abc123.json.quarantined").write_text("{not json", encoding="utf-8")
+    path = _write_journal(tree, tmp_path)
+    path.rename(path.with_suffix(".json.quarantined"))
 
     assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
+
+
+def test_a_tuple_file_that_cannot_be_read_refuses_every_removal(tree, tmp_path) -> None:
+    """Sol diff r1 (S1): `load_instance_tuple` RAISES for a file that exists
+    but cannot be interpreted — it never reports it as absent. Treating that
+    as "no reference" un-pinned a persona a resident's unchanged active
+    binding still named, and the next restart could not load that resident."""
+    _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
+    damaged = tree["bindings"] / "resident-assistant" / "active.yaml"
+    damaged.parent.mkdir(parents=True)
+    damaged.write_text("{{{ not a tuple", encoding="utf-8")
+
+    with pytest.raises(SpecialistInstallError) as raised:
+        _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
+
+    assert raised.value.kind == "references_unavailable"
+    assert "active.yaml" in raised.value.detail
+    assert (tree["personas"] / "casa/newton" / "0.1.0" / "manifest.json").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -491,3 +556,59 @@ def test_applying_a_persona_removed_mid_flight_stages_nothing(
     assert raised.value.kind == "persona_unavailable"
     assert not (instance_root / "desired.yaml").exists()
     assert not (instance_root / "active.yaml").exists()
+
+
+def test_a_damaged_ledger_document_refuses_a_generation_checked_record(tmp_path) -> None:
+    """Sol diff r1 (S2): for the ACKS, "unreadable ⇒ empty" manufactures no
+    consent. For the GENERATIONS the polarity is inverted — an empty read
+    reports generation 0, so a tap that captured 0 before a completed revoke
+    would match and re-record the approval that revoke removed."""
+    from persona_install import (
+        PersonaInstallAckStore, PersonaLedgerInvalid, persona_install_consent_identity,
+    )
+
+    path = tmp_path / "acks.json"
+    acks = PersonaInstallAckStore(path=path)
+    identity = persona_install_consent_identity(
+        persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
+    generations = acks.revocation_generations(persona_id="casa/newton", version="0.1.0")
+    acks.revoke(persona_id="casa/newton", version="0.1.0")
+
+    path.write_text("{ truncated", encoding="utf-8")     # the ledger is damaged
+
+    with pytest.raises(PersonaLedgerInvalid):
+        acks.record(identity=identity, persona_id="casa/newton", version="0.1.0",
+                    checksum="deadbeef", expect_generations=generations)
+
+
+def test_a_damaged_ledger_document_refuses_a_revoke(tmp_path) -> None:
+    """A revoke that rewrote a document it could not interpret would drop
+    every ack the file still validly held and persist a generation derived
+    from an unknown base."""
+    from persona_install import PersonaInstallAckStore, PersonaLedgerInvalid
+
+    path = tmp_path / "acks.json"
+    path.write_text(json.dumps({"schema_version": 99, "acks": {}}), encoding="utf-8")
+
+    with pytest.raises(PersonaLedgerInvalid):
+        PersonaInstallAckStore(path=path).revoke(persona_id="casa/newton")
+
+
+def test_a_revoke_keeps_every_unrelated_approval(tmp_path) -> None:
+    """The other half of the same finding: a revoke must remove exactly what it
+    matched, never everything the ledger held."""
+    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+
+    acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
+    keep = persona_install_consent_identity(
+        persona_id="casa/ellen", version="0.1.0", checksum="cafe")
+    drop = persona_install_consent_identity(
+        persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
+    acks.record(identity=keep, persona_id="casa/ellen", version="0.1.0", checksum="cafe")
+    acks.record(identity=drop, persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
+
+    removed = acks.revoke(persona_id="casa/newton")
+
+    assert [r["persona_id"] for r in removed] == ["casa/newton"]
+    assert acks.is_acked(keep) is True
+    assert acks.is_acked(drop) is False

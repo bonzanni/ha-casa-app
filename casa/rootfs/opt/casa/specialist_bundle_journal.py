@@ -490,6 +490,43 @@ def quarantine_all(*,
     return True
 
 
+def replayable_tuple_files(path: Path) -> "dict[str, Any] | None":
+    """#543: the captured tuple files this journal file would ACTUALLY have
+    restored, or None when it would restore nothing.
+
+    `reconcile_boot` below is the only thing that replays a journal, and it
+    replays exactly one class: a file whose name parses, whose payload is
+    `_valid_payload`, and whose state is "in-progress". Everything else it
+    either prunes (complete) or quarantines WITHOUT rolling back (unparseable,
+    wrong shape, unrecognized state) — and a quarantine that fails to persist
+    retains the file for the next boot to retry, still without restoring it.
+
+    This exists so that `persona_install.persona_references` — which must know
+    whether a journal can put an override binding back on disk before it
+    allows a persona to be removed — asks THIS module rather than
+    re-implementing the predicate and drifting from it (Terra diff r1: the
+    duplicated version disagreed on invalid states and refused removals that
+    nothing could ever justify).
+
+    An OSError is left to propagate: a file that cannot be READ right now may
+    read fine at boot, so its replayability is unknown, not negative — the
+    caller decides what to do with that (removal refuses)."""
+    if path.name.endswith(".quarantined") or re.search(r"\.tmp-[0-9a-f]{32}$", path.name):
+        return None
+    match = JOURNAL_NAME_RE.match(path.name)
+    if match is None:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if not _valid_payload(payload, match.group("slug")):
+        return None
+    if payload["state"] != "in-progress":
+        return None
+    return dict(payload["before"]["tuple_files"])
+
+
 def _valid_payload(payload: Any, slug: str) -> bool:
     """Strict, jsonschema-shaped structural validation (spec §3.1): schema
     shape, `payload["slug"] == filename slug`, and tuple-path containment —

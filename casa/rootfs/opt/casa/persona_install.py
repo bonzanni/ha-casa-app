@@ -207,6 +207,38 @@ class PersonaInstallAckStore:
             out[ident] = rec
         return out
 
+    def _require_valid_document(self) -> None:
+        """#543 (Sol diff r1): a MUTATION that carries a revocation generation
+        must refuse a ledger document it cannot interpret, instead of reading
+        it as the empty baseline.
+
+        The polarity matters and it is the opposite of ``_load``'s. For the
+        ACKS, "unreadable ⇒ empty" manufactures no consent, so it is safe and
+        it is what lets the next successful record rewrite a valid store. For
+        the GENERATIONS it is the other way round: a document that reads as
+        empty reports generation 0, so a consent tap that captured 0 before a
+        completed revoke would match and re-record the approval that revoke
+        removed — and the same empty read would silently drop every unrelated
+        ack the file still held. Refuse both mutations instead. Nothing is
+        authorized in the meantime: ``is_acked`` already reads a damaged
+        document as no acks at all."""
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return                      # no ledger yet — a clean baseline
+        except ValueError as exc:
+            raise PersonaLedgerInvalid(
+                f"{self.path}: the consent ledger is not readable JSON ({exc}); "
+                "refusing to record or revoke consent against it") from exc
+        if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
+            raise PersonaLedgerInvalid(
+                f"{self.path}: the consent ledger has an unrecognized shape or "
+                "schema version; refusing to record or revoke consent against it")
+        if self._load() != (raw.get("acks") or {}):
+            raise PersonaLedgerInvalid(
+                f"{self.path}: the consent ledger's ack records do not validate; "
+                "refusing to record or revoke consent against it")
+
     def _load_revocations(self, *, strict_read: bool = False) -> dict[str, int]:
         """#543: the revocation-generation map, read from the SAME ledger file
         under the SAME lock as the acks.
@@ -290,6 +322,12 @@ class PersonaInstallAckStore:
         rec = {"persona_id": persona_id, "version": version, "checksum": checksum,
                "ts": int(time.time())}
         with _LEDGER_LOCK:
+            if expect_generations is not None:
+                # Only the generation-checked path refuses a damaged document:
+                # a direct record (no generations) keeps the siblings'
+                # documented corruption recovery, where the next successful
+                # write rewrites a valid store.
+                self._require_valid_document()
             revocations = self._load_revocations(strict_read=True)
             if expect_generations is not None:
                 current = (revocations.get(persona_id, 0),
@@ -310,6 +348,10 @@ class PersonaInstallAckStore:
         Returns exactly the records removed — the same shape
         ``uninstall_specialist`` journals for its own ack retirement."""
         with _LEDGER_LOCK:
+            # A revoke must never rewrite a document it could not interpret:
+            # doing so would drop every ack the file still validly held and
+            # persist a generation derived from an unknown base.
+            self._require_valid_document()
             revocations = self._load_revocations(strict_read=True)
             acks = dict(self._load(strict_read=True))
             removed: list[dict[str, Any]] = []
@@ -666,8 +708,8 @@ def _override_ref(tup: Any) -> "str | None":
 
 
 def _journal_references(ops_dir: Path) -> "list[PersonaReference]":
-    """Persona references held by IN-PROGRESS bundle journals (Sol design
-    round 1).
+    """Persona references held by bundle journals that would still be REPLAYED
+    (Sol design round 1).
 
     A journal captures the slug's tuple files before the mutation and
     ``BundleTxn.rollback_disk`` writes those exact bytes back — from the tool
@@ -675,48 +717,43 @@ def _journal_references(ops_dir: Path) -> "list[PersonaReference]":
     on the next boot. So a tuple that is not on disk right now can still be
     restored later: the visible files are not the whole reference universe.
 
-    Fail-closed: a journal file that cannot be read or does not have the shape
-    this scan understands raises, and the caller (removal/prune) then refuses
-    entirely — an unreadable journal is exactly the state whose replay cannot
-    be predicted. ``*.quarantined`` files are skipped because reconcile_boot
-    never replays them, and ``*.tmp-<hex>`` write temporaries are skipped
-    because it deletes them unread."""
+    Which journals those are is NOT decided here — ``replayable_tuple_files``
+    in the journal module is the authority, so this scan and boot cannot drift
+    apart (Terra diff r1: the duplicated predicate treated any non-complete
+    journal as replayable, while boot quarantines an invalid one without ever
+    restoring it, so removals were refused for a state nothing could replay).
+
+    An OSError is the one thing that refuses: a file that cannot be READ now
+    may read fine at boot, so its replayability is unknown rather than
+    negative."""
     import yaml
+    import specialist_bundle_journal
     from personality_binding import verify_instance_tuple
 
     out: list[PersonaReference] = []
-    if not ops_dir.is_dir():
-        return out
-    for path in sorted(ops_dir.iterdir()):
-        if not path.is_file():
-            continue
-        if path.name.endswith(".quarantined") or re.search(r"\.tmp-[0-9a-f]{32}$", path.name):
-            continue
+    try:
+        if not ops_dir.is_dir():
+            return out
+        entries = sorted(ops_dir.iterdir())
+    except OSError as exc:
+        raise SpecialistInstallError(
+            "references_unavailable",
+            f"the bundle journal directory {ops_dir} could not be read ({exc}); a "
+            "journal there may still restore a persona binding, so no persona can "
+            "be removed until it is readable") from exc
+    for path in entries:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            if not path.is_file():
+                continue
+            tuple_files = specialist_bundle_journal.replayable_tuple_files(path)
+        except OSError as exc:
             raise SpecialistInstallError(
                 "references_unavailable",
-                f"bundle journal {path.name} is unreadable ({exc}); it may still "
-                "restore a persona binding, so no persona can be removed until it "
-                "is resolved — the next boot's journal reconciliation clears it",
-            ) from exc
-        if not isinstance(payload, dict):
-            raise SpecialistInstallError(
-                "references_unavailable",
-                f"bundle journal {path.name} has an unrecognized shape; no persona "
-                "can be removed until the next boot's reconciliation clears it")
-        if payload.get("state") == "complete":
-            # reconcile_boot prunes a complete journal WITHOUT rolling back.
+                f"bundle journal {path.name} could not be read ({exc}); it may still "
+                "restore a persona binding, so no persona can be removed until it is "
+                "readable") from exc
+        if not tuple_files:
             continue
-        before = payload.get("before")
-        tuple_files = before.get("tuple_files") if isinstance(before, dict) else None
-        if not isinstance(tuple_files, dict):
-            raise SpecialistInstallError(
-                "references_unavailable",
-                f"bundle journal {path.name} carries no readable before-state; no "
-                "persona can be removed until the next boot's reconciliation "
-                "clears it")
         for filename, content in sorted(tuple_files.items()):
             if not isinstance(content, str) or not content.strip():
                 continue
@@ -724,9 +761,9 @@ def _journal_references(ops_dir: Path) -> "list[PersonaReference]":
                 tup = verify_instance_tuple(yaml.safe_load(content))
             except Exception:  # noqa: BLE001
                 # A captured file that does not parse cannot be restored into a
-                # tuple any loader will read either — restoring it verbatim
-                # leaves the same unparseable bytes, which load_instance_tuple
-                # reports as "no tuple". It pins nothing.
+                # tuple any loader will read either — the restore writes the
+                # same unparseable bytes back. It pins nothing. (Unlike a file
+                # ON DISK, whose read failure may be transient — see _scan.)
                 continue
             ref = _override_ref(tup)
             if ref is not None:
@@ -771,9 +808,17 @@ def persona_references(
 
     def _scan(root: Path, *, filenames: tuple[str, ...], kind: str,
               skip: frozenset[str] = frozenset()) -> None:
-        if not root.is_dir():
-            return
-        for entry in sorted(root.iterdir()):
+        try:
+            if not root.is_dir():
+                return
+            entries = sorted(root.iterdir())
+        except OSError as exc:
+            raise SpecialistInstallError(
+                "references_unavailable",
+                f"{root} could not be read ({exc}); the bindings it holds may still "
+                "name a persona, so no persona can be removed until it is readable"
+            ) from exc
+        for entry in entries:
             if not entry.is_dir() or entry.name in skip:
                 continue
             name = entry.name[len("resident-"):] if kind == "resident" else entry.name
@@ -781,13 +826,25 @@ def persona_references(
                 path = entry / filename
                 if not path.is_file():
                     continue
+                # Sol diff r1 (S1): a tuple file that EXISTS but cannot be
+                # interpreted is NOT evidence of "no reference" — and
+                # load_instance_tuple RAISES (it never returns None for a file
+                # that exists) on a read error, a YAML error, a schema
+                # violation or the pre-guard tombstone. Skipping it silently
+                # un-pinned a persona a resident's unchanged active binding
+                # still named: once a transient read failure cleared, the
+                # binding was readable again and pointed at bytes this removal
+                # had deleted — a resident that cannot boot. Refuse instead;
+                # the refusal names the file, which is also the only way the
+                # operator learns the tuple is damaged.
                 try:
                     tup = load_instance_tuple(path)
-                except Exception:  # noqa: BLE001
-                    # An unparseable tuple file is not a reference: every reader
-                    # in the tree treats it as absent (load_instance_tuple
-                    # returns None / the rollback-tmp promotion unlinks it).
-                    continue
+                except Exception as exc:  # noqa: BLE001
+                    raise SpecialistInstallError(
+                        "references_unavailable",
+                        f"{path} exists but could not be read ({exc}); it may name a "
+                        "persona, so no persona can be removed until it is resolved"
+                    ) from exc
                 ref = _override_ref(tup)
                 if ref is not None:
                     _add(ref, f"{kind}:{name}", filename)
