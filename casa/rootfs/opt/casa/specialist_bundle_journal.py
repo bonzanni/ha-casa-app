@@ -525,8 +525,15 @@ def classify_journal(path: Path) -> "tuple[str, str | None, dict | None]":
     A file that cannot be READ is `JOURNAL_UNREADABLE`, never silently one of
     the other classes — see the verdict list for why its two consumers must
     treat it differently."""
-    if path.name.endswith(".quarantined") or re.search(r"\.tmp-[0-9a-f]{32}$", path.name):
+    if path.name.endswith(".quarantined"):
         return JOURNAL_IGNORED, None, None
+    # Sol diff r4: a `.tmp-<hex>` write temporary is DELETED by the sweep above
+    # before this loop runs, so it normally never reaches here at all. When
+    # that delete FAILS, the pre-feature code fell through to the
+    # unparseable-name branch and quarantined everything — drastic, but it is
+    # the established fail-closed behaviour for an ops directory that cannot be
+    # cleaned, and this refactor is not the place to soften it. Classifying it
+    # `IGNORED` would have quietly changed that.
     match = JOURNAL_NAME_RE.match(path.name)
     if match is None:
         return JOURNAL_UNPARSEABLE, None, None

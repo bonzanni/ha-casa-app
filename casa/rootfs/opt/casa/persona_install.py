@@ -231,9 +231,12 @@ class PersonaInstallAckStore:
                 f"{self.path}: the consent ledger is not readable JSON ({exc}); "
                 "refusing to record or revoke consent against it") from exc
         version = raw.get("schema_version") if isinstance(raw, dict) else None
-        # Sol diff r3: an EXACT integer check — JSON `true` equals 1 in Python,
-        # so a bool would otherwise pass for schema_version 1.
-        if (not isinstance(raw, dict) or isinstance(version, bool)
+        # Sol diff r3/r4: an EXACT integer check. `==` alone admits JSON `true`
+        # AND `1.0`, because both equal 1 in Python — and either one then reads
+        # as generation zero, which is the whole hole this guard exists to
+        # close. `type(...) is int` is deliberate: it excludes bool, which
+        # isinstance would not.
+        if (not isinstance(raw, dict) or type(version) is not int
                 or version != _SCHEMA_VERSION):
             raise PersonaLedgerInvalid(
                 f"{self.path}: the consent ledger has an unrecognized shape or "
@@ -977,15 +980,18 @@ def _installed_versions(personas_root: Path) -> "list[tuple[str, str, Path]]":
     out: list[tuple[str, str, Path]] = []
     if not _is_dir_or_refuse(personas_root):
         return out
+    # Terra diff r4: these three predicates were the last Path.is_dir() calls
+    # left in the disposal paths, so an ambiguous entry silently dropped an
+    # installed persona out of `persona_list` and out of the sweep.
     for namespace in sorted(personas_root.iterdir()):
-        if not namespace.is_dir() or namespace.name.startswith("."):
+        if namespace.name.startswith(".") or not _is_dir_or_refuse(namespace):
             continue
         for name in sorted(namespace.iterdir()):
-            if not name.is_dir():
+            if not _is_dir_or_refuse(name):
                 continue
             persona_id = f"{namespace.name}/{name.name}"
             for version in sorted(name.iterdir()):
-                if not version.is_dir():
+                if not _is_dir_or_refuse(version):
                     continue
                 try:
                     validate_persona_path_segments(persona_id, version.name)
@@ -1062,7 +1068,9 @@ def _remove_installed_persona_locked(
     if resolved.parent.parent.parent != root:
         return {"ok": False, "ref": ref, "kind": "outside_installed_root",
                 "detail": f"{dest} does not resolve to a directory directly under {root}"}
-    if not (dest / "manifest.json").is_file() and not dest.is_dir():
+    # Terra diff r4: "cannot tell" must not become `not_installed` here either
+    # — that reports a persona as absent to the only surface that can remove it.
+    if not _is_file_or_refuse(dest / "manifest.json") and not _is_dir_or_refuse(dest):
         return {"ok": False, "ref": ref, "kind": "not_installed",
                 "detail": f"{ref} is not installed under {root} (image-shipped "
                           "personas are part of the image and are never removed)"}

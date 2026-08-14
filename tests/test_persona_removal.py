@@ -793,3 +793,42 @@ def test_a_bindings_root_that_is_simply_absent_is_empty(tree, tmp_path) -> None:
     shutil.rmtree(tree["bindings"])
 
     assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
+
+
+def test_a_float_schema_version_is_not_version_one(tmp_path) -> None:
+    """Sol diff r4: `==` admits JSON `1.0` as well as `true`, because both
+    equal 1 in Python — and either then reads as generation zero, which is the
+    hole the guard exists to close. The round-3 boolean test did not cover
+    this, so the 'exact check' claim was a false premise."""
+    from persona_install import PersonaInstallAckStore, PersonaLedgerInvalid
+
+    path = tmp_path / "acks.json"
+    path.write_text('{"schema_version": 1.0, "acks": {}}', encoding="utf-8")
+
+    with pytest.raises(PersonaLedgerInvalid):
+        PersonaInstallAckStore(path=path).revoke(persona_id="casa/newton")
+
+
+def test_an_installed_version_that_cannot_be_stat_ed_refuses_removal(
+        tree, tmp_path, monkeypatch) -> None:
+    """Terra diff r4: the enumeration and the removal target were the last
+    predicates still answering "absent" for an ambiguous entry — which reports
+    a persona as not installed to the only surface that can remove it."""
+    import os
+
+    _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
+    target = tree["personas"] / "casa" / "newton" / "0.1.0"
+
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):
+        if str(path).startswith(str(target)):
+            raise OSError(40, "ELOOP")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _stat)
+
+    with pytest.raises(SpecialistInstallError) as raised:
+        _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
+
+    assert raised.value.kind == "references_unavailable"
