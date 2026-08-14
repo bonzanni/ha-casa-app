@@ -38,6 +38,17 @@ from specialist_lifecycle import InstanceState, SpecialistInstance, check_slug_u
 logger = logging.getLogger(__name__)
 
 
+def scheduled_delivery_of(origin: "dict[str, Any] | None") -> bool:
+    """Is *origin* a turn Casa's own schedule fired (#485)?
+
+    The one place the live origin marker is converted into the durable job's
+    boolean. Exact ``True`` only: absence, ``None``, and any truthy stand-in
+    are all "no". ``bool()`` would be wrong here — ``bool("false")`` is True,
+    and a persisted eligibility is not somewhere to be generous.
+    """
+    return (origin or {}).get("_scheduled_delivery") is True
+
+
 # ---------------------------------------------------------------------------
 # Records
 # ---------------------------------------------------------------------------
@@ -312,6 +323,7 @@ class SpecialistRegistry:
             creator_peer=str(origin.get("channel") or ""),
             creator_user_id=self._optional_str(origin.get("user_id")),
             scope_id=str(origin.get("chat_id") or ""),
+            scheduled_delivery=scheduled_delivery_of(origin),
             origin_route_id=self._optional_str(origin.get("cid")),
             origin_device_id=self._optional_str(
                 origin.get("origin_device_id")),
@@ -382,7 +394,7 @@ class SpecialistRegistry:
 
     @staticmethod
     def _origin_from_job(job: VoiceJob) -> dict[str, Any]:
-        return {
+        origin = {
             "role": job.creating_role,
             "channel": job.creator_peer,
             "chat_id": job.scope_id,
@@ -391,6 +403,13 @@ class SpecialistRegistry:
             "user_id": job.creator_user_id,
             "user_text": job.task,
         }
+        # #485: restore scheduled-delivery eligibility from the durable FIELD,
+        # never by inferring it from the scope label's shape. Added only when
+        # actually stored, so an unmarked job's origin stays byte-identical to
+        # what it was before this field existed.
+        if job.scheduled_delivery is True:
+            origin["_scheduled_delivery"] = True
+        return origin
 
 
 # ---------------------------------------------------------------------------

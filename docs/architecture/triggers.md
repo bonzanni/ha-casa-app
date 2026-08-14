@@ -229,6 +229,42 @@ What it does not cover: it does not promise the entry removal *succeeded*. Clean
 deliberately outside the delivery path, so a failure leaves the entry for the sweep rather
 than raising back into the scheduled job.
 
+**INV-TRIG-012**: A scheduled turn may deliver media to the operator only when Casa's own time-based dispatch fired it on the Telegram channel and an operator is configured.
+
+A scheduled turn's `chat_id` is a session-keying **label**, not a chat id — it keys the SDK
+session and the outbound quota scope, so it is never overwritten with a delivery address.
+The turn therefore had nowhere to send a file, and an agent doing scheduled work had to fall
+back to asking the operator to say something first.
+
+Eligibility is a reserved **marker**, stamped by the two time-based dispatch sites — the
+scheduler and the overdue reminder sweep, through one shared helper so the rule cannot drift
+between them — and only for a Telegram-channel trigger. It is deliberately not inferred from
+the message type: the authenticated webhook route dispatches *scheduled*-typed turns too, so
+an inference would have handed third-party webhook content a direct line to the operator's
+DM. Being reserved, the marker is stripped from every externally-supplied context, and a
+turn that reaches the tool without it is refused exactly as before.
+
+Who the operator is gets resolved **per call**, from the same fail-closed identity rule
+every other approval surface uses, rather than stamped into the message when the trigger
+fired. A schedule that fired an hour ago cannot deliver to an identity that has since
+changed, and with no operator configured nobody is the operator, so the turn stays text-only.
+Delivery also requires genuinely direct execution: a delegated specialist inherits its
+parent's whole origin, marker included, and must not inherit the delivery target with it.
+The marker *is* carried back through an asynchronous delegation's completion, because the
+motivating case is a specialist producing the artifact the resident then sends — and because
+a restart resumes that resident from the durable job rather than from the live record, whose
+origin it rebuilds field by field, eligibility is also a stored field on that job
+(INV-JOB-002 in [`jobs-and-delivery.md`](jobs-and-delivery.md)). Restored from an exact
+stored true and nothing else: a job row written before the field existed restores no
+eligibility rather than guessing from the scope label's shape.
+
+What it does not cover: the marker admits **media only**. Raising an interactive question
+from a scheduled turn is a separate problem — a question outlives the turn that asked it,
+which needs durable records and trigger lifecycle ownership — and this invariant makes no
+claim about it. The marker is also read only by the media tool, never by the shared
+transport predicate the protected-action approval path gates on, so nothing here widens who
+can raise an approval.
+
 ## Failure behavior
 
 Reminder-specific failures — an unparseable role file during a sweep, a delivered reminder
@@ -318,6 +354,8 @@ there is none today.
 - `tests/test_agent_loader_trigger_auth.py`
 - `tests/test_casa_reload_triggers_resident.py`
 - `tests/test_config_trigger_tools.py`
+- `tests/test_scheduled_media_delivery.py`
+- `tests/test_scheduled_delivery_durable.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

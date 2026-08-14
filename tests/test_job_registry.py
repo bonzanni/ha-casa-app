@@ -1033,6 +1033,54 @@ async def test_snapshot_without_orphan_ack_field_decodes_as_not_pending(tmp_path
     assert reloaded.get("job-1").orphan_notification_pending is False
 
 
+@pytest.mark.parametrize("marked", [True, False])
+async def test_recovered_orphan_carries_scheduled_delivery_across_restart(
+    tmp_path, marked,
+):
+    """#485 durable round trip: a scheduled turn delegates, Casa restarts, and
+    the resident is resumed from the JSON snapshot — not from the live record.
+    The completion origin is rebuilt field by field here, so eligibility has to
+    come off the durable field or the resumed turn silently cannot send media.
+    An unmarked job must gain nothing."""
+    from casa_core import _notify_recovered_delegations
+
+    registry = await loaded_registry(tmp_path)
+    await registry.create(make_job(
+        id="job-sched",
+        creator_peer="telegram",
+        scope_id="cron-weekly-invoice",
+        origin_device_id=None,
+        execution_state=ExecutionState.ORPHANED,
+        failure=JobFailure("restart_orphan", "Lost on restart"),
+        orphan_notification_pending=True,
+        delivery_sequence=1,
+        scheduled_delivery=marked,
+    ))
+
+    # Reload from disk — this is the restart.
+    reloaded = JobRegistry(tmp_path / "jobs.json")
+    await reloaded.load()
+    assert reloaded.get("job-sched").scheduled_delivery is marked
+
+    sent = []
+
+    class BusProbe:
+        queues = {"concierge": object()}
+
+        async def notify(self, message):
+            sent.append(message)
+
+    await _notify_recovered_delegations(
+        reloaded.all(), reloaded, BusProbe(), assistant_role="concierge",
+    )
+
+    assert len(sent) == 1
+    origin = sent[0].content.origin
+    assert origin.get("_scheduled_delivery", False) is marked
+    # The session label survives either way; eligibility never becomes an address.
+    assert origin["chat_id"] == "cron-weekly-invoice"
+
+
 @pytest.mark.parametrize("failure_phase", ["notify", "ack"])
 async def test_recovered_orphan_failure_isolated_before_later_success(
     tmp_path, caplog, failure_phase,

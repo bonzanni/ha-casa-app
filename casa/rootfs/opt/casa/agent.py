@@ -95,6 +95,23 @@ active_session_registry = None    # SessionRegistry | None, set by casa_core.mai
 # tasks still see the right origin.
 origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 
+# Reserved provenance markers `_process` copies from the bus context onto the
+# turn's origin snapshot. All of them are server-set and stripped from any
+# external context by `provenance.sanitize_external_context`, so whatever
+# reaches here is Casa's own value. A marker NOT named here never reaches
+# `origin_var`, and every gate that reads the origin therefore cannot see it —
+# which is the fail-closed direction, and also why adding a marker means adding
+# it here as well as at its ingress.
+#
+#   synthetic / button_answer  — synthetic turn replay, inline-button answers
+#   _origin_route / _origin_clearance — Release A containment (ingress + tier)
+#   _operator_turn             — #283 live-operator marker for the spawn cap
+#   _scheduled_delivery        — #485 Casa's own schedule fired this turn
+COPIED_CONTEXT_MARKERS = (
+    "synthetic", "button_answer", "_origin_route", "_origin_clearance",
+    "_operator_turn", "_scheduled_delivery",
+)
+
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
 # is the ONLY seam that observes the selected prompt projection + the auto-recall
 # hits, so it stashes those fields here; ``_process`` reads the draft at
@@ -943,8 +960,16 @@ class Agent:
         # into the synthesized turn — otherwise a delegating /invoke would
         # fail-close to public/restricted on resume. These keys are reserved
         # (server-set), so the persisted origin value is the trustworthy one.
+        # #485: `_scheduled_delivery` joins them. A scheduled turn that
+        # delegates comes back through here, and the completion context carries
+        # only cid/chat_id — so without this the resumed resident turn could no
+        # longer deliver what its specialist had just produced, which is the
+        # motivating case (a specialist builds the invoice PDF, the resident
+        # sends it). The completion origin is the persisted, server-built one.
         synth_context = dict(msg.context)
-        for _marker_key in ("_origin_route", "_origin_clearance"):
+        for _marker_key in (
+            "_origin_route", "_origin_clearance", "_scheduled_delivery",
+        ):
             if _marker_key in origin:
                 synth_context[_marker_key] = origin[_marker_key]
 
@@ -1018,14 +1043,7 @@ class Agent:
         # copy here carries only the trustworthy server value into
         # ``origin_var`` — where _build_options (restricted-runtime gate),
         # the recall clearance gate, and delegation synthesis read it.
-        for _marker_key in (
-            "synthetic", "button_answer", "_origin_route", "_origin_clearance",
-            # #283: live-operator marker for the agent-spawn cap — reserved
-            # (server-stamped at telegram ingress, stripped from external
-            # contexts), deliberately NOT copied by the delegation-completion
-            # synthesizer or any trigger/webhook context builder.
-            "_operator_turn",
-        ):
+        for _marker_key in COPIED_CONTEXT_MARKERS:
             if _marker_key in msg.context:
                 origin_snapshot[_marker_key] = msg.context[_marker_key]
         # A4: voice turn budget + progress sink. Set by the SSE/WS handler

@@ -54,6 +54,16 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # forge "invoke"/"private" clearance (spec A0/A4).
     "_origin_route",
     "_origin_clearance",
+    # #485: the scheduled-delivery marker. A resident's own time-based trigger
+    # turn carries a session-keying LABEL in `chat_id`, not a chat id, so
+    # `send_media` had nowhere to deliver. This marker — stamped ONLY by Casa's
+    # two time-based dispatch sites, and only for a telegram-channel trigger —
+    # is what admits it, with the operator identity resolved at the point of
+    # use. Reserved because a caller who could set it would aim a delivery at
+    # the operator's DM from a webhook payload: the authenticated webhook route
+    # dispatches `MessageType.SCHEDULED` too, which is exactly why eligibility
+    # is a marker and never an inference from the message type.
+    "_scheduled_delivery",
     # #283: live-operator turn marker — the agent-spawn cap exempts a spawn
     # ONLY when this is present (absence = agent context, fail closed), so a
     # caller who could set it through an external context would exempt
@@ -76,6 +86,27 @@ def sanitize_external_context(ctx: dict | None) -> dict:
     if not isinstance(ctx, dict) or not ctx:
         return {}
     return {k: v for k, v in ctx.items() if k not in RESERVED_CONTEXT_KEYS}
+
+
+def scheduled_delivery_markers(channel: str | None) -> dict:
+    """The context markers a TIME-BASED scheduled dispatch stamps (#485).
+
+    Both sites that fire a resident's own schedule — the scheduler
+    (``trigger_registry``) and the overdue reminder sweep (``reminders``) —
+    call THIS, so the eligibility rule has one home. Two sites deciding
+    separately is how a reminder ends up able to send an invoice when Casa
+    happened to be up at the due moment and unable to when it was not.
+
+    Only the telegram channel gets the marker: it is the only channel with an
+    operator DM to deliver into. Everything else — voice, an unset channel —
+    returns empty and behaves exactly as before.
+
+    Deliberately NOT stamped here: any operator identity. The marker says
+    "Casa's own schedule fired this"; who the operator IS is resolved at the
+    point of use from the live configuration, so a stale or since-changed id
+    can never be delivered to.
+    """
+    return {"_scheduled_delivery": True} if channel == "telegram" else {}
 
 
 def strict_positive_id(v: object) -> int | None:

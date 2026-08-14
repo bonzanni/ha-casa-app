@@ -242,3 +242,15 @@ class TestSynthesisPreservesOriginMarkers:
         out = self._synth(_make_agent(tmp_path), {})
         assert "_origin_route" not in out.context
         assert "_origin_clearance" not in out.context
+        assert "_scheduled_delivery" not in out.context
+
+    async def test_scheduled_delivery_marker_preserved(self, tmp_path):
+        """#485: scheduled turn -> delegate -> completion resumes the resident.
+        The completion origin is the PERSISTED, server-built one, so its marker
+        is the trustworthy value; without carrying it the resumed turn cannot
+        deliver what the specialist just produced — the motivating case (a
+        specialist builds the invoice PDF) fails at the last step."""
+        out = self._synth(
+            _make_agent(tmp_path), {"_scheduled_delivery": True},
+        )
+        assert out.context["_scheduled_delivery"] is True
