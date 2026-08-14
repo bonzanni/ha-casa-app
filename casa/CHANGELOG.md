@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.201.0] - 2026-08-14
+
+### Added
+
+- Agents and plugins can now send you **text files and zip archives** over
+  Telegram (#565, #482). Until now the only document Casa could attach was a
+  PDF, so anything textual it produced — a CSV ledger, a Markdown report, a
+  JSON export, a diagnostics dump — could only be pasted into the chat, which
+  splits anything long across message after message, and the agent pays for
+  every byte of it out of the same budget it needs for thinking. Now it arrives
+  as a file you can open, forward or keep, and the contents never pass through
+  the agent at all.
+
+  Text files must be valid UTF-8 and carry a `.txt`, `.md`, `.csv`, `.log`,
+  `.json`, `.yaml` or `.yml` name, and are capped at 5 MB — comfortably more
+  than any report, and small enough that Casa never has a huge file in memory.
+  Casa checks that the file really is text, not that it is well-formed: a
+  broken `.json` still arrives, as the broken `.json` it is.
+
+  Archives are capped at 20 MB and must be named `.zip`, which is what keeps
+  this to archives: a `.docx` or a `.jar` is a zip file underneath and would
+  otherwise qualify. Casa checks the archive's signature and that it is long
+  enough to be one, not that every entry inside it is intact — a corrupt zip
+  can still be delivered, and your unzip tool is what will tell you so.
+  Multi-volume archives marked as split are refused, since one volume on its
+  own is unusable.
+
 ## [0.200.0] - 2026-08-14
 
 ### Changed

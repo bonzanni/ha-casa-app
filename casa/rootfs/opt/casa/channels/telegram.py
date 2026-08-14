@@ -3809,6 +3809,8 @@ class TelegramChannel(Channel):
         Dispatches positionally to the kind's PTB send method (§3.1) — each
         takes the media as its 2nd positional arg under a different name
         (document/photo/audio/voice), so positional avoids per-kind kwargs.
+        Several KINDS may share one method: `document` (PDF), `zip` and `text`
+        all send as `document`; the kind, not the method, is what was gated.
         Raises when the channel isn't started (the tool maps that to
         ``channel_unavailable``); lets TelegramError propagate (the tool
         classifies it)."""

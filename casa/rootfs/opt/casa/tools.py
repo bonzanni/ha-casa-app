@@ -395,9 +395,11 @@ def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
 
 @tool(
     "send_media",
-    "Deliver a media file (document/photo/audio/voice) from the plugin outbox "
-    "to the user over the originating channel. Pass the outbox path returned by "
-    "a producer tool; the bytes never enter the model context.",
+    "Deliver a media file from the plugin outbox to the user over the "
+    "originating channel. Kinds: document (PDF only), photo, audio, voice, zip, "
+    "text (UTF-8 .txt/.md/.csv/.log/.json/.yaml/.yml, max 5 MB). Pass the "
+    "outbox path returned by a producer tool; the bytes never enter the model "
+    "context — use this for any artifact you would otherwise paste.",
     {"type": "object",
      "properties": {
          "path": {"type": "string"},

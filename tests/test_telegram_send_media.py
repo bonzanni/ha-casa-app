@@ -23,10 +23,19 @@ def _mk_channel():
     return ch, fake_bot
 
 
-@pytest.mark.parametrize("kind,method", [
+# #482/#565: several KINDS share one method. Keyed by kind, not by method, so
+# the matrix keeps covering every kind the table declares. A named constant
+# rather than an inline literal: the coverage guard below consumes THIS, and
+# reaching into the decorator's metadata instead would silently inspect the
+# wrong mark the day a second one is added to the test.
+_DISPATCH_MATRIX = [
     ("document", "send_document"), ("photo", "send_photo"),
     ("audio", "send_audio"), ("voice", "send_voice"),
-])
+    ("zip", "send_document"), ("text", "send_document"),
+]
+
+
+@pytest.mark.parametrize("kind,method", _DISPATCH_MATRIX)
 async def test_send_media_dispatches_per_kind(kind, method):
     ch, bot = _mk_channel()
     await ch.send_media(b"BYTES", kind, "f.ext", {"chat_id": 555}, caption="hi")
@@ -41,6 +50,14 @@ async def test_send_media_dispatches_per_kind(kind, method):
     assert inp.data == b"BYTES"
     assert inp.filename == "f.ext"
     assert kwargs["caption"] == "hi"
+
+
+async def test_dispatch_matrix_covers_every_declared_kind():
+    """The matrix above is hand-written; this fails the day a kind is added to
+    MEDIA_POLICIES without a row, instead of silently under-covering it."""
+    from media_policies import MEDIA_POLICIES
+
+    assert {kind for kind, _ in _DISPATCH_MATRIX} == set(MEDIA_POLICIES)
 
 
 async def test_send_media_uses_default_chat_when_context_lacks_numeric():
