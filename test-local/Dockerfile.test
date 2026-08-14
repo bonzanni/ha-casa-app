@@ -35,7 +35,7 @@ RUN case "${TARGETARCH}" in \
         arm64) TTYD_ARCH="aarch64" ;; \
         *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac \
-    && curl -fsSL \
+    && curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
        "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${TTYD_ARCH}" \
        -o /usr/bin/ttyd \
     && chmod +x /usr/bin/ttyd

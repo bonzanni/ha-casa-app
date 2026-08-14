@@ -17,6 +17,15 @@ RUN apt-get update \
     && npm cache clean --force
 
 # Install ttyd (not packaged in Debian).
+# GitHub's release CDN failed this fetch twice in a row on one QA run — curl
+# 56 "connection died", then an HTTP error — while the asset served 200 from
+# outside Actions. --retry alone would not have covered the first: curl's
+# default retry set is transient HTTP statuses only, and --retry-all-errors
+# is what extends it to transport errors. --retry-max-time bounds the whole
+# retry loop: a 429/5xx carrying Retry-After overrides --retry-delay (measured
+# on this base image's curl 7.88.1), so without a cap a rate-limiting server
+# could stall every build for as long as it likes. The same flags are on every
+# release-asset fetch below (#545), since the failure mode is not ttyd's.
 ARG TTYD_VERSION=1.7.7
 ARG TARGETARCH
 RUN case "${TARGETARCH}" in \
@@ -24,7 +33,7 @@ RUN case "${TARGETARCH}" in \
         arm64) TTYD_ARCH="aarch64" ;; \
         *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac \
-    && curl -fsSL \
+    && curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
        "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${TTYD_ARCH}" \
        -o /usr/bin/ttyd \
     && chmod +x /usr/bin/ttyd
@@ -37,7 +46,7 @@ RUN set -eux; \
         arm64) GH_ARCH="linux_arm64" ;; \
         *) echo "unsupported arch $(dpkg --print-architecture)"; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/gh.tar.gz \
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 120 -o /tmp/gh.tar.gz \
       "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_${GH_ARCH}.tar.gz"; \
     tar -xzf /tmp/gh.tar.gz -C /tmp; \
     mv /tmp/gh_${GH_CLI_VERSION}_${GH_ARCH}/bin/gh /usr/local/bin/; \
@@ -52,7 +61,7 @@ RUN set -eux; \
         arm64) OP_ARCH="arm64" ;; \
         *) echo "unsupported arch $(dpkg --print-architecture)"; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/op.zip \
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 120 -o /tmp/op.zip \
       "https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_CLI_VERSION}/op_linux_${OP_ARCH}_v${OP_CLI_VERSION}.zip"; \
     unzip /tmp/op.zip -d /usr/local/bin; \
     rm /tmp/op.zip; \
