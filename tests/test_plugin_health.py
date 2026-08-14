@@ -560,10 +560,11 @@ def test_valid_issue_still_reaches_both_surfaces_beside_a_bad_row(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# #559 batch — ONE renderer, ONE limit for both operator-facing surfaces
-# (design r3 D2). Two renderers with the same job had already diverged: the
-# in-band notice switches prefix for an all-reload_required set while the DM
-# did not, so the two never byte-matched for that normal blocking state.
+# ONE renderer, PER-SURFACE limits. Two renderers with the same job had already
+# diverged: the in-band notice switches prefix for an all-reload_required set
+# while the DM did not, so one state was announced two different ways. The
+# limits stay deliberately different (2 in-band, 5 by DM) — see
+# test_dm_names_five_where_the_in_band_notice_names_two.
 # ---------------------------------------------------------------------------
 
 def _row(name, code="env_unresolved", target="resident:assistant", fp=None):

@@ -18,6 +18,11 @@ tools:
     - mcp__casa-framework__engage_executor
     - mcp__casa-framework__ask_user
     - mcp__casa-framework__get_schedule
+    # #555 — read-only plugin health + setup history. The plugin
+    # MUTATION tools stay configurator-only; this is the read half,
+    # so "why isn't that plugin working?" is answered in the turn
+    # instead of by spawning a configurator engagement to ask.
+    - mcp__casa-framework__plugin_status
     - mcp__casa-framework__set_reminder
     - mcp__casa-framework__cancel_reminder
     # #419 — a headless event wake cannot ask for approval; without this

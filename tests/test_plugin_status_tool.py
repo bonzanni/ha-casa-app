@@ -173,14 +173,38 @@ def test_not_grantable_to_a_specialist_engagement():
     assert "plugin_status" not in SPECIALIST_CASA_TOOL_ALLOWLIST
 
 
-def test_granted_to_the_assistant_resident():
+def _shipped_grants(rel: str) -> list:
     import yaml
     from pathlib import Path
-    role = yaml.safe_load(Path(
-        "casa/rootfs/opt/casa/defaults/roles/resident/assistant/role.yaml"
-    ).read_text(encoding="utf-8"))
-    assert ("mcp__casa-framework__plugin_status"
-            in role["tools"]["allowed"])
+    doc = yaml.safe_load(
+        (Path("casa/rootfs/opt/casa/defaults") / rel).read_text(
+            encoding="utf-8"))
+    return doc["tools"]["allowed"]
+
+
+@pytest.mark.parametrize("rel", [
+    # The OPERATIONAL grant list — config_sync copies defaults/agents/** to
+    # /config/agents/**, which is what the running assistant loads. Asserting
+    # only the canonical role artifact below let a first draft of this batch
+    # register the tool and grant it NOWHERE the running agent would read:
+    # the test passed and the tool was unreachable (Sol, diff review r1).
+    "agents/assistant/runtime.yaml",
+    # The canonical role artifact (Personality Phase A).
+    "roles/resident/assistant/role.yaml",
+])
+def test_granted_to_the_assistant_in_both_shipped_artifacts(rel):
+    assert "mcp__casa-framework__plugin_status" in _shipped_grants(rel)
+
+
+def test_selection_through_the_shipped_grants_exposes_it_and_no_mutation_tool():
+    """Assert the OUTCOME of the real filter, not the presence of a string: a
+    grant is only real if select_casa_tools() actually returns the tool."""
+    allowed = frozenset(_shipped_grants("agents/assistant/runtime.yaml"))
+    selected = {t.name for t in tools_mod.select_casa_tools(allowed)}
+    assert "plugin_status" in selected
+    # The read half only — every plugin MUTATION tool stays configurator-only.
+    assert not {n for n in selected
+                if n.startswith("plugin_") and n != "plugin_status"}
 
 
 def test_takes_no_arguments_and_declares_none():

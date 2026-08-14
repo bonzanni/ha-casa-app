@@ -298,8 +298,9 @@ _REASON_FALLBACK = "is not working"
 
 def describe_issue(d: dict) -> str:
     """One operator-facing clause for a report row (§3.10, #551). Never emits
-    the raw reason code: the operator cannot act on an internal identifier and
-    has no way to look one up (there is no health-read tool for any role)."""
+    the raw reason code: the operator cannot act on an internal identifier, and
+    the tool that can now read this report for them (#555's plugin_status)
+    renders through THIS function too, so a code has no reader anywhere."""
     name = d.get("name") or "a plugin"
     code = str(d.get("reason_code") or "")
     # D4 (v0.74.0): a stale binding is an INCOMPLETE UPDATE — the old artifact
