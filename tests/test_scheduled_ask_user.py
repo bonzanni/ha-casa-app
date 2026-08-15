@@ -48,7 +48,8 @@ def _fresh_broker(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_store(monkeypatch, tmp_path):
-    monkeypatch.setattr(scheduled_asks, "_EPOCHS", {})
+    monkeypatch.setattr(scheduled_asks, "_ROLE_EPOCHS", {})
+    monkeypatch.setattr(scheduled_asks, "_TRIGGER_EPOCHS", {})
     # Process-local boot-window state: a fresh process has neither, and the
     # module-level globals would otherwise leak between tests.
     monkeypatch.setattr(scheduled_asks, "_BOOT_REVOCATIONS", [])
@@ -117,7 +118,7 @@ def _scheduled_origin(**overrides) -> dict:
         "message_type": "scheduled",
         "source": "scheduler",
         "_scheduled_delivery": True,
-        "_scheduled_epoch": 0,
+        "_scheduled_epoch": "0:0",
     }
     origin.update(overrides)
     return origin
@@ -492,9 +493,35 @@ class TestAttribution:
 
 class TestLifecycle:
     async def test_stale_epoch_refuses_the_question(self, monkeypatch):
-        scheduled_asks.bump_epoch("assistant")     # epoch is now 1
+        scheduled_asks.bump_role_epoch("assistant")
         payload, channel = await _ask(
-            monkeypatch, origin=_scheduled_origin(_scheduled_epoch=0))
+            monkeypatch, origin=_scheduled_origin(_scheduled_epoch="0:0"))
+        assert payload["kind"] == "trigger_changed"
+        assert channel.posts == []
+
+    async def test_cancelling_one_trigger_does_not_silence_its_siblings(
+        self, monkeypatch,
+    ):
+        """`revoke_trigger` selects one trigger. An in-flight turn of a
+        DIFFERENT trigger of the same role is not stale — refusing it was a
+        role-wide epoch leaking into a per-trigger decision."""
+        stamped = scheduled_asks.epoch_for("assistant", "cron-invoices")
+        scheduled_asks.revoke_trigger(
+            "assistant", "reminder-abcd", "trigger_cancelled")
+
+        payload, _channel = await _ask(monkeypatch, origin=_scheduled_origin(
+            chat_id="cron-invoices", _scheduled_epoch=stamped))
+        assert payload["status"] == "awaiting_user"
+
+    async def test_cancelling_a_trigger_does_refuse_its_own_in_flight_turn(
+        self, monkeypatch,
+    ):
+        stamped = scheduled_asks.epoch_for("assistant", "date-reminder-abcd")
+        scheduled_asks.revoke_trigger(
+            "assistant", "reminder-abcd", "trigger_cancelled")
+
+        payload, channel = await _ask(monkeypatch, origin=_scheduled_origin(
+            chat_id="date-reminder-abcd", _scheduled_epoch=stamped))
         assert payload["kind"] == "trigger_changed"
         assert channel.posts == []
 
@@ -514,9 +541,9 @@ class TestLifecycle:
         assert "trigger_reloaded" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
         # and the epoch moved, so a turn still running cannot ask again
-        assert scheduled_asks.epoch_for("assistant") == 1
+        assert scheduled_asks.epoch_for("assistant", LABEL) == "1:0"
         payload2, channel2 = await _ask(
-            monkeypatch, origin=_scheduled_origin(_scheduled_epoch=0))
+            monkeypatch, origin=_scheduled_origin(_scheduled_epoch="0:0"))
         assert payload2["kind"] == "trigger_changed"
 
     async def test_revoke_role_ignores_another_roles_question(

@@ -173,20 +173,40 @@ def init_store(path: str) -> ScheduledAskStore:
 # process lifetime (it guards an ask created by a turn that is already
 # running), and a persisted counter could only re-open the staleness it exists
 # to close.
-_EPOCHS: dict[str, int] = {}
+#
+# TWO counters, and the pair is the point. A role-wide one, bumped when a
+# role's whole trigger set is replaced, and a per-trigger one, bumped when a
+# single named trigger goes. A single role-wide counter made `revoke_trigger`
+# refuse the in-flight asks of every OTHER trigger of that role — the same
+# over-broad selector that had to be fixed at boot, one level along (Terra, S2).
+_ROLE_EPOCHS: dict[str, int] = {}
+_TRIGGER_EPOCHS: dict[tuple[str, str], int] = {}
 
 
-def epoch_for(role: str) -> int:
-    """The current trigger-lifecycle epoch for *role*."""
-    return _EPOCHS.get(role, 0)
+def epoch_for(role: str, label: str) -> str:
+    """The trigger-lifecycle epoch a firing turn is stamped with.
+
+    ``label`` is the trigger's session label (``f"{type}-{name}"``), which both
+    dispatch sites already build for ``chat_id``. Opaque to every consumer:
+    they only ever compare it for equality.
+    """
+    return (f"{_ROLE_EPOCHS.get(role, 0)}:"
+            f"{_TRIGGER_EPOCHS.get((role, label), 0)}")
 
 
-def bump_epoch(role: str) -> int:
-    _EPOCHS[role] = _EPOCHS.get(role, 0) + 1
-    return _EPOCHS[role]
+def bump_role_epoch(role: str) -> None:
+    """The whole trigger set for *role* was replaced."""
+    _ROLE_EPOCHS[role] = _ROLE_EPOCHS.get(role, 0) + 1
 
 
-def epoch_is_current(role: str, stamped: Any) -> bool:
+def bump_trigger_epochs(role: str, labels: "set[str]") -> None:
+    """One named trigger of *role* went; every other trigger stays current."""
+    for label in labels:
+        key = (role, label)
+        _TRIGGER_EPOCHS[key] = _TRIGGER_EPOCHS.get(key, 0) + 1
+
+
+def epoch_is_current(role: str, label: str, stamped: Any) -> bool:
     """Whether an origin's stamped epoch still names the live trigger set.
 
     Absence is tolerated (returns True): a delegation-completion turn copies
@@ -203,12 +223,11 @@ def epoch_is_current(role: str, stamped: Any) -> bool:
     """
     if stamped is None:
         return True
-    if isinstance(stamped, bool) or not isinstance(stamped, int):
+    if not isinstance(stamped, str):
         return False
-    return stamped == epoch_for(role)
+    return stamped == epoch_for(role, label)
 
 
-# ---------------------------------------------------------------------------
 # the single-owner finish hook
 # ---------------------------------------------------------------------------
 
@@ -385,7 +404,7 @@ def revoke_role(role: str, reason: str = "trigger_changed") -> int:
     """
     from verdict_broker import BROKER
 
-    bump_epoch(role)
+    bump_role_epoch(role)
     _note_boot_revocation(role=role, labels=None)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
@@ -414,7 +433,7 @@ def revoke_trigger(
     from verdict_broker import BROKER
 
     labels = {f"{t}-{name}" for t in _TRIGGER_TYPES}
-    bump_epoch(role)
+    bump_trigger_epochs(role, labels)
     _note_boot_revocation(role=role, labels=labels)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
