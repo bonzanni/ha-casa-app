@@ -387,6 +387,46 @@ async def test_tools_call_terminal_engagement_binds_for_emit_completion() -> Non
         assert text == {"eng": "fin-2"}
 
 
+async def test_tools_call_unbound_emit_completion_still_dispatches() -> None:
+    """#585: with NO engagement claim at all, the grant-gate's terminal
+    exemption still dispatches emit_completion — `engagement_casa_grant_names`
+    returns an empty set for an unbound caller, so every other tool is refused
+    -32004, and only _TERMINAL_BINDING_TOOLS reaches its handler.
+
+    This is the one designed unbound-reachable dispatch on the bridge, and
+    `test-local/e2e/test_mcp_restart_survival.sh` depends on it: it is what
+    lets that probe prove a full forwarder → casa-main → handler round trip
+    across a casa-main bounce without provisioning an engagement. A tightening
+    that closed the exemption would otherwise only surface in the nightly
+    hardening tier, which is exactly how #585 went unnoticed for a week.
+
+    Red case demonstrated: emptying _TERMINAL_BINDING_TOOLS turns this
+    response into -32004 tool_not_granted and fails the test.
+    """
+    reg = _FakeRegistry()
+    app = _make_app(dispatch={"emit_completion": _engagement_aware_tool,
+                              "other": _engagement_aware_tool},
+                    registry=reg)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/internal/tools/call",
+            json={"name": "emit_completion", "arguments": {}},
+        )
+        body = await resp.json()
+        # Dispatched, and bound to NO engagement (the tool's own
+        # not_in_engagement branch is what the e2e probe asserts on).
+        assert json.loads(body["content"][0]["text"]) == {"eng": None}
+
+        # The sibling half: any non-terminal tool from the same unbound
+        # caller is refused before it runs.
+        resp = await client.post(
+            "/internal/tools/call",
+            json={"name": "other", "arguments": {}},
+        )
+        body = await resp.json()
+        assert body["error"]["code"] == -32004
+
+
 def test_pin_inv_tool_001_result_marks_errors_only_for_error_status():
     """Pins INV-TOOL-001: _result infers the outer MCP error only from
     status=="error" or ok is False; other statuses ride as successes.

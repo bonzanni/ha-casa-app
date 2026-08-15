@@ -142,3 +142,50 @@ jobs:
       #   env:
       #     CASA_USE_MOCK_CLAUDE: "1"
       #   run: bash test-local/e2e/test_engagement_D.sh
+
+  # A scheduled-only tier can stay red for a week with nothing to show for it.
+  # tier3-hardening does not run on pull requests and does not run on the push
+  # builds either, so every PR and every release run stayed green while the
+  # nightly failed seven times running (#585) — the failure was found by hand.
+  # This job is the missing signal: one tracking issue, a comment per red
+  # night, nothing at all while the nightly is green.
+  nightly-alarm:
+    needs: [tier1-smoke, tier3-hardening]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File or update the nightly-failure tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          title="Scheduled QA run is failing on main"
+          # Narrow server-side, then compare exactly. Listing open issues and
+          # filtering locally would cap at the page size, so an older tracking
+          # issue past the cap reads as absent and gets duplicated every night;
+          # the exact compare still decides, because `--search` is fuzzy.
+          num="$(gh issue list --state open --search "\"$title\" in:title" \
+                  --limit 1000 --json number,title \
+                  --jq "[.[] | select(.title == \"$title\")] | .[0].number // empty")"
+          note="Scheduled \`qa.yml\` run failed: $RUN_URL (\`$SHA\`)."
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "$note"
+            exit 0
+          fi
+          cat > /tmp/body.md <<EOF
+          $note
+
+          Filed automatically by the \`nightly-alarm\` job in \`qa.yml\`. The scheduled
+          run exercises tiers that pull requests and push builds skip, so a failure
+          here is not visible anywhere else.
+
+          This issue stays open and collects one comment per failing night. Close it
+          once the nightly is green again.
+          EOF
+          gh issue create --title "$title" \
+            --label bug --label severity:medium --body-file /tmp/body.md

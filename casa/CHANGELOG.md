@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.207.1] - 2026-08-15
+
+### Fixed
+
+- **The nightly hardening test run had been failing for a week, and nothing
+  said so** (#585). Casa's heaviest automated checks run once a night rather
+  than on every change, and one of them — the check that restarting Casa's core
+  does not sever its tool connections — had failed every night since
+  2026-08-09. Nothing surfaced it: that tier is skipped on ordinary builds, so
+  every release in that period looked green.
+
+  The failure was in the test, not in Casa. A security change in v0.166.0 made
+  the internal tool bridge refuse a call that does not identify which
+  engagement it belongs to, apart from the one call an ending engagement is
+  allowed to retry anonymously; the test had been making an anonymous call of
+  the refused kind, and is now refused exactly as intended. The test has been repaired to prove the same
+  restart guarantee through a call the bridge is designed to accept, and it now
+  also asserts the refusal itself — both before and after a restart — so the
+  behaviour that broke it is checked rather than merely avoided.
+
+  A failing scheduled run now files a tracking issue and comments on it each
+  night it stays red, so this cannot go unnoticed again. No change to how Casa
+  behaves.
+
 ## [0.207.0] - 2026-08-15
 
 ### Fixed
