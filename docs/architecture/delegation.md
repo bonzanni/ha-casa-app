@@ -10,8 +10,10 @@ last_reviewed: 2026-08-13
 
 How one agent addresses and launches another: the delegation ACL and its alias resolution,
 the `<delegates>` block, the delegation depth cap, and the global cap on agent-spawned
-engagements. Engagement lifecycle itself — creation, terminal transitions, drivers,
-restart — lives in [`architecture/engagements.md`](engagements.md).
+engagements. Engagement lifecycle itself — creation, terminal transitions, the driver
+protocol, restart — lives in [`architecture/engagements.md`](engagements.md), and the OS
+boundary a `claude_code` engagement runs inside is in
+[`architecture/engagement-containment.md`](engagement-containment.md).
 
 ## Mental model
 

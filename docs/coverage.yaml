@@ -86,9 +86,9 @@
 - item: casa/rootfs/opt/casa/engagement_registry.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/engagement_uids.py
-  doc: architecture/engagements.md
+  doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/safe_fs.py
-  doc: architecture/engagements.md
+  doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/event_acks.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_attempts.py
