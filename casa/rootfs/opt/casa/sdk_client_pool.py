@@ -136,7 +136,9 @@ class ManagedSdkClient:
         forwarding every message to ``on_message``, captures the sid,
         and enforces the AR-5 error-result and AR-1 cancellation
         contracts."""
-        from claude_agent_sdk import ResultMessage, SystemMessage
+        from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage
+
+        from error_kinds import ApiErrorTurn, ErrorKind, api_error_kind
 
         assert self.state == "warm", f"run_turn on state={self.state}"
         self.state = "in_turn"
@@ -145,6 +147,7 @@ class ManagedSdkClient:
         self.cid_box.value = cid or "-"
         self.last_used = self._monotonic()
         result_msg = None
+        api_error: ErrorKind | None = None
         try:
             await self._client.query(prompt)
             async for sdk_msg in self._client.receive_response():
@@ -153,6 +156,20 @@ class ManagedSdkClient:
                         data = getattr(sdk_msg, "data", {}) or {}
                         if "session_id" in data:
                             self.sid = data["session_id"]
+                elif isinstance(sdk_msg, AssistantMessage):
+                    # #568: the CLI reports an API-level fault (a refusal
+                    # included) as an ordinary assistant message carrying its
+                    # own error prose. Only a MAIN-LOOP message is the turn's
+                    # verdict — one scoped to a sub-agent
+                    # (``parent_tool_use_id`` set) is that sub-agent's
+                    # problem, and the turn can still answer. First one wins:
+                    # the fault that ended the turn is the earliest, not the
+                    # last thing on the wire.
+                    if (
+                        api_error is None
+                        and getattr(sdk_msg, "parent_tool_use_id", None) is None
+                    ):
+                        api_error = api_error_kind(sdk_msg)
                 elif isinstance(sdk_msg, ResultMessage):
                     result_msg = sdk_msg
                     s = getattr(sdk_msg, "session_id", None)
@@ -166,6 +183,22 @@ class ManagedSdkClient:
             await self._invalidate()
             raise
         self.last_used = self._monotonic()
+        # #568: the result's own stop_reason is the second carrier — read so a
+        # refusal reported ONLY there (no synthesized assistant message) still
+        # ends the turn honestly rather than as an empty success.
+        if api_error is None and getattr(
+            result_msg, "stop_reason", None,
+        ) == "refusal":
+            api_error = ErrorKind.REFUSAL
+        # #568: raise BEFORE the AR-5 text classification below — this carrier
+        # NAMES the fault, where AR-5 can only pattern-match the result prose.
+        # Raising here (rather than after ``turn()`` returns) is what keeps the
+        # refused session from being published and the entry from going back to
+        # warm: the CLI's own refusal advice is to start a new session.
+        if api_error is not None:
+            logger.info("turn ended by api error kind=%s", api_error.value)
+            await self._invalidate()
+            raise ApiErrorTurn(api_error)
         # AR-5: never leave an error-result entry warm; raise retryables.
         if result_msg is not None and getattr(result_msg, "is_error", False):
             await self._invalidate()

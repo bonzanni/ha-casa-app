@@ -66,7 +66,7 @@ from channels import ChannelManager
 from claude_runtime import CLAUDE_CLI_PATH
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
-from error_kinds import _classify_error
+from error_kinds import ApiErrorTurn, _classify_error, api_error_kind
 from mcp_registry import McpServerRegistry
 import sdk_logging
 import specialist_limits
@@ -2135,10 +2135,18 @@ class DelegatedOutput:
     # path, and treating it as a completed turn sent it to the envelope parser
     # to be misreported as a malformed result (Sol review, P1).
     result_message_seen: bool = True
+    # #568: the ``ErrorKind`` value when the CLI ended this run by reporting an
+    # API-level fault (a safety refusal included) as an assistant message. Its
+    # prose is the CLI's, not the specialist's, so it is never this run's
+    # ``text``; recording it here is what stops an empty or partial run being
+    # completed as a successful delegation.
+    api_error: str | None = None
 
     @property
     def run_aborted(self) -> bool:
         """Whether the CLI ended this run without completing the turn."""
+        if self.api_error is not None:
+            return True
         if not self.result_message_seen:
             return True
         return (
@@ -2745,6 +2753,7 @@ async def _run_delegated_agent(
     _msg_count = 0
     _first_tool = False
     text = ""
+    _api_error: str | None = None      # #568
     result_msg: ResultMessage | None = None
     token = None
     # The options build is INSIDE the try (Sol review, Medium): a voice budget
@@ -2774,6 +2783,21 @@ async def _run_delegated_agent(
                     _msg_count += 1
                     _ph.setdefault("first_msg", time.monotonic())
                     if isinstance(sdk_msg, AssistantMessage):
+                        # #568: an API-level fault (safety refusal included)
+                        # arrives as an assistant message whose text block is
+                        # the CLI's own error prose. It is never this
+                        # specialist's answer — record the fault and fold no
+                        # text, so the run reports as aborted rather than as a
+                        # specialist that answered with an error string. A
+                        # sub-agent-scoped fault is that sub-agent's problem;
+                        # the specialist can still answer, so it is suppressed
+                        # without ending the run.
+                        _kind = api_error_kind(sdk_msg)
+                        if _kind is not None:
+                            if (_api_error is None and getattr(
+                                    sdk_msg, "parent_tool_use_id", None) is None):
+                                _api_error = _kind.value
+                            continue
                         for block in getattr(sdk_msg, "content", []):
                             if isinstance(block, TextBlock):
                                 text += block.text
@@ -2861,7 +2885,10 @@ async def _run_delegated_agent(
     # the shared bank, gated by the PARENT channel's write-trust (voice → no
     # write) — design §3, plan 3. Ephemeral specialists have no session
     # registry, so the freshness reaper never sees them; the retain is explicit.
-    if cfg.memory.token_budget > 0 and text:
+    # #568: a run the CLI ended with an API fault did not complete its
+    # exchange — retaining its partial half would durably record a truncated
+    # answer as a finished one.
+    if cfg.memory.token_budget > 0 and text and _api_error is None:
         sem = getattr(agent_mod, "active_semantic_memory", None)
         if sem is not None:
             # #411: fence generation captured synchronously with the exchange
@@ -2889,6 +2916,7 @@ async def _run_delegated_agent(
             if result_msg is not None else None
         ),
         result_message_seen=result_msg is not None,
+        api_error=_api_error,
     )
 
 
@@ -5070,6 +5098,36 @@ async def delegate_to_agent(args: dict) -> dict:
 
         delegated_output = finished.result()
         voice_meta: dict = {}
+        # #568: the CLI ended this run by reporting an API-level fault (a
+        # safety refusal included). The specialist did not answer, so this is
+        # a failed delegation — not a completed one whose text happens to be
+        # empty or half-written. The voice branch below reaches the same
+        # verdict through ``run_aborted``; this arm covers the non-voice one,
+        # which otherwise consumes ``.text`` directly and completes the
+        # durable record as a success. ``kind`` is one of OUR ErrorKind
+        # values, never a CLI string.
+        if not is_voice and delegated_output.api_error is not None:
+            elapsed = time.time() - started_at
+            await _specialist_registry.fail_delegation(
+                delegation_id,
+                RuntimeError(
+                    "specialist run ended with an API error "
+                    f"({delegated_output.api_error})",
+                ),
+            )
+            logger.warning(
+                "Delegation %s → %s ended by an API error kind=%s (%.2fs)",
+                delegation_id[:8], agent_name, delegated_output.api_error,
+                elapsed,
+            )
+            return _result({
+                "status": "error",
+                "delegation_id": delegation_id,
+                "agent": agent_name,
+                "kind": delegated_output.api_error,
+                "message": "The specialist could not complete this task.",
+                "elapsed_s": elapsed,
+            })
         if is_voice:
             # See _run_voice_job_lifecycle: a run the CLI aborted has no
             # envelope to be malformed, and must not be reported as one (#254).
@@ -8408,6 +8466,7 @@ async def _synthesize_answer(
         f"Answer concisely, in at most about {max_tokens} tokens."
     )
     out = ""
+    _api_error = None      # #568
     eng = engagement_var.get(None)
     eng_id = eng.id[:8] if eng is not None else None
     async with ClaudeSDKClient(
@@ -8416,9 +8475,20 @@ async def _synthesize_answer(
         await client.query(prompt)
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
+                # #568: the CLI's own error prose is not a synthesized answer.
+                # Folding it here would hand the caller an "answer" that is a
+                # CLI error string; skipping it alone would hand back "" and be
+                # reported as a successful empty answer. Neither is honest —
+                # raise so the caller reports the synthesis as unavailable.
+                _kind = api_error_kind(msg)
+                if _kind is not None:
+                    _api_error = _api_error or _kind
+                    continue
                 for b in getattr(msg, "content", []):
                     if isinstance(b, TextBlock):
                         out += b.text
+    if _api_error is not None:
+        raise ApiErrorTurn(_api_error)
     out = out.strip()
     # Belt-and-braces hard stop in case the CLI/model still overshoots.
     from tokens import estimate_tokens
@@ -8553,7 +8623,22 @@ async def query_engager(args: dict) -> dict:
     from sensitivity import TIERS as _ALL_TIERS_SYN
     answer = ""
     for _ in range(len(_ALL_TIERS_SYN)):
-        answer = await _synthesize_answer(question, context, max_tokens)
+        try:
+            answer = await _synthesize_answer(question, context, max_tokens)
+        except ApiErrorTurn as exc:
+            # #568: synthesis was refused or faulted upstream. Saying
+            # "unknown" here would assert the engager's memory holds no
+            # answer — a claim this run never established.
+            logger.warning("query_engager synthesis api error kind=%s",
+                           exc.kind.value)
+            return _result({
+                "status": "unavailable", "text": "",
+                "message": (
+                    "The engager's answer could not be synthesized (the "
+                    "model call did not complete). Do not conclude the "
+                    "information doesn't exist."
+                ),
+            })
         if engagement.origin.get("_origin_clearance") == _q_clearance:
             break
         _q_clearance = engagement.origin.get("_origin_clearance")

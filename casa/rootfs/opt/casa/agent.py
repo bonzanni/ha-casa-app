@@ -78,6 +78,7 @@ from error_kinds import (  # noqa: F401 — selected names are re-exported
     VoiceToolLoopError,
     _classify_error,
     _USER_MESSAGES,
+    api_error_kind,
 )
 from voice_turn_guard import VoiceTurnGuard
 
@@ -2211,28 +2212,42 @@ class Agent:
             if isinstance(sdk_msg, ResultMessage):
                 state["usage"] = extract_usage(sdk_msg)
             elif isinstance(sdk_msg, AssistantMessage):
-                # E-2: collect TextBlocks of THIS AssistantMessage.
-                msg_text = "".join(
-                    b.text for b in getattr(sdk_msg, "content", [])
-                    if isinstance(b, TextBlock)
-                )
-                if msg_text:
-                    if state["text"]:
-                        state["text"] += "\n\n"
-                    state["text"] += msg_text
-                # The canonical fold supersedes any in-flight partial for
-                # this message (AR-A/AR-B): reset before computing the
-                # cumulative so a stale partial never bleeds into message
-                # N+1's first delta. Runs unconditionally (even when this
-                # message carried no text, e.g. tool-use-only) so a
-                # tool-only fold never leaves a stale partial dangling —
-                # cum() then equals state["text"] unchanged, which already
-                # matches last_emitted, so no spurious emit follows.
-                state["partial"] = ""
-                cum = _cum()
-                if on_token is not None and cum != state["last_emitted"]:
-                    await on_token(cum)
-                    state["last_emitted"] = cum
+                if api_error_kind(sdk_msg) is not None:
+                    # #568: an API-level fault — a safety refusal included —
+                    # arrives as an assistant message whose text block holds
+                    # the CLI's OWN error prose (an Anthropic Request ID and
+                    # CLI-UI advice among it). That is never the resident
+                    # speaking, so it is neither folded into the reply nor
+                    # streamed. The turn's verdict is raised by
+                    # sdk_client_pool.run_turn_locked; this arm additionally
+                    # covers the sub-agent-scoped case that deliberately lets
+                    # the turn continue — its prose is still not an answer.
+                    # Partial is reset for the same reason the fold below
+                    # resets it: nothing stale may bleed into message N+1.
+                    state["partial"] = ""
+                else:
+                    # E-2: collect TextBlocks of THIS AssistantMessage.
+                    msg_text = "".join(
+                        b.text for b in getattr(sdk_msg, "content", [])
+                        if isinstance(b, TextBlock)
+                    )
+                    if msg_text:
+                        if state["text"]:
+                            state["text"] += "\n\n"
+                        state["text"] += msg_text
+                    # The canonical fold supersedes any in-flight partial for
+                    # this message (AR-A/AR-B): reset before computing the
+                    # cumulative so a stale partial never bleeds into message
+                    # N+1's first delta. Runs unconditionally (even when this
+                    # message carried no text, e.g. tool-use-only) so a
+                    # tool-only fold never leaves a stale partial dangling —
+                    # cum() then equals state["text"] unchanged, which already
+                    # matches last_emitted, so no spurious emit follows.
+                    state["partial"] = ""
+                    cum = _cum()
+                    if on_token is not None and cum != state["last_emitted"]:
+                        await on_token(cum)
+                        state["last_emitted"] = cum
 
         return on_message, state
 
