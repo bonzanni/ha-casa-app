@@ -7,6 +7,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
+
+from config import MODEL_MAP
 import yaml
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
@@ -117,7 +119,7 @@ class TestLoader:
         cfg = reg.get("finance")
         assert cfg is not None
         assert cfg.role == "finance"
-        assert cfg.model == "claude-sonnet-4-6"
+        assert cfg.model == MODEL_MAP["sonnet"]
 
 
 # ---------------------------------------------------------------------------

@@ -227,10 +227,38 @@ def compile_prompt_bundle(
         dependency_digests=binding.dependency_digests,
         effective_config_digest=binding.effective_config_digest,
     )
-    if (binding.binding_digest != expected_digest or binding.stable_agent_id != role.role_id
-            or binding.role_checksum != role.checksum or binding.persona_id != persona.persona_id
-            or binding.persona_version != persona.version or binding.persona_checksum != persona.checksum):
-        raise ValueError(f"loaded binding for {role.role_id} does not match the compiled role+persona")
+    mismatched = [
+        name for name, stored, current in (
+            ("role_checksum", binding.role_checksum, role.checksum),
+            ("stable_agent_id", binding.stable_agent_id, role.role_id),
+            ("persona_id", binding.persona_id, persona.persona_id),
+            ("persona_version", binding.persona_version, persona.version),
+            ("persona_checksum", binding.persona_checksum, persona.checksum),
+            ("binding_digest", binding.binding_digest, expected_digest),
+        ) if stored != current
+    ]
+    if mismatched:
+        # #568: name WHICH field moved. The role checksum covers the role's
+        # RESOLVED model by design (role_slot.normalize_role_for_checksum —
+        # "an HA-option flip with no role.yaml edit still forces a new
+        # checksum"), so a model change — an operator switching
+        # primary_agent_model, or an alias being pointed at a new
+        # generation — invalidates every persisted binding compiled against
+        # the old one. That is the single likeliest cause of a role_checksum
+        # mismatch, and the remedy is to re-materialize the binding, so say
+        # so rather than leaving an operator with an opaque digest compare.
+        hint = ""
+        if "role_checksum" in mismatched:
+            hint = (
+                " — the role checksum covers the resolved model, so this is "
+                "usually a model change (option flip or alias move); "
+                "re-install or upgrade the specialist to re-materialize its "
+                "binding"
+            )
+        raise ValueError(
+            f"loaded binding for {role.role_id} does not match the compiled "
+            f"role+persona (mismatched: {', '.join(mismatched)}){hint}"
+        )
     return CompiledPromptBundle(
         role_id=role.role_id, resolved_model=role.resolved_model.effective,
         text=projections["text"], voice=projections["voice"],
