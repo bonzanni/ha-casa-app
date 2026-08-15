@@ -54,11 +54,17 @@ Emptiness, though, was never the property that needed saying. *Boundedness* is, 
 useful result is exactly as bounded as an empty one: a model handed thirty readable memories
 with nothing on the asked topic concludes "there is no record" just as confidently as one
 handed none, and the filtering that removed the on-topic entry happened server-side, so
-nothing in the result betrays it. Every non-empty slice a model is handed therefore carries
-one shared note saying so — use these entries normally, but they are the view readable here,
-not an inventory of Casa's memory. The note is constant at every tier and on every surface: a
-caveat that appeared only below `private`, or read differently there, would itself be an
-oracle for "something was filtered out of *this* answer".
+nothing in the result betrays it. Every non-empty slice injected into an agent's context
+therefore carries one shared note saying so — use these entries normally, but they are the
+view readable here, not an inventory of Casa's memory. The note is constant at every tier and
+on every surface: a caveat that appeared only below `private`, or read differently there,
+would itself be an oracle for "something was filtered out of *this* answer".
+
+One slice stays deliberately unframed, and it is worth knowing why it is safe: the
+engager-query synthesizer. It is a model, but it never speaks to a person — it may only
+answer from the context it was handed or return `UNKNOWN`, and that `UNKNOWN` becomes the
+already-framed unknown result. The framing is attached where a slice reaches an agent that
+can *say something to someone*, which is where the false denial happens.
 
 **Auto-recall is not "every turn".** It happens when a turn's options are built, which is a
 fresh non-voice session only — a warm reused client skips that path entirely, and voice never
@@ -154,9 +160,9 @@ consumer. A prompt-assembly caller that renders an empty digest as silence (the 
 archive slot) is making no claim, which is fine; a new consumer that words emptiness as
 absence, or hands over a bounded slice unframed, would reintroduce the defect. That is a
 standing risk of a per-consumer contract, so the consumer inventory is itself pinned: a new
-`render_recall` or `delegated_recall` call site fails the suite until it declares how it
-frames a non-empty result. Check the call site you care about rather than assuming it
-propagates.
+`render_recall` or `delegated_recall` call site — or one more inside an existing caller —
+fails the suite until it declares how it frames a non-empty result. Check the call site you
+care about rather than assuming it propagates.
 
 **INV-MEM-002**: A typed hit is readable only when its tags carry exactly one recognised tier at or below the caller's clearance; if every hit is dropped, the result is unavailable rather than empty.
 
@@ -206,24 +212,21 @@ which on Telegram is private — so this tightens what a *newly* stamped origin 
 does not retroactively downgrade engagements created before the markers existed. The clamp
 also cannot un-share what was already disclosed before a lower-clearance sender arrived.
 
-**INV-MEM-010**: No recall result licenses a claim that Casa lacks something: every non-empty readable slice a model is handed is framed as bounded, empty and unknown results carry explicit do-not-assert-absence guidance at every clearance tier, and readable hits that did not fit the render budget are reported as existing rather than absent.
+**INV-MEM-010**: No recall result licenses a claim that Casa lacks something: every non-empty readable slice injected into the context of an agent that speaks to a person is framed as bounded, the sole unframed slice reaches only a synthesizer that can answer from it or return `UNKNOWN`, empty and unknown results carry explicit do-not-assert-absence guidance at every clearance tier, and readable hits that did not fit the render budget are reported as existing rather than absent.
 
 Enforced in the recall tool's empty-digest arms and the engager-query tool's unknown arm,
 which attach explicit guidance in place of a bare empty result; and, on the non-empty side, by
 one shared note (`recall_renderer.READABLE_SLICE_NOTE`) attached by all four consumers of a
 rendered slice — the recall tool's ok-arm as a result `message`, and auto-recall, the
 specialist delegation and the executor lessons block as an instruction line inside the
-injected block.
-
-The engager-query tool needs no non-empty arm of its own: its synthesizer is constrained to
-the supplied context and must answer `UNKNOWN` when that context does not answer the
-question, which routes back to the framed arm.
+injected block. The engager-query synthesizer is the exception described above.
 
 What it does not cover: it is a statement about what the result *says*, not what a model does
 with it — prompt-level honesty remains the model's job. Prompt-assembly consumers that render
 emptiness as *silence* stay outside it, deliberately: absence of a block is not a claim of
 absence, and a framing line with no memories under it would be a header for a search that
-found nothing.
+found nothing. The consumer inventory that guards against a fifth, unframed consumer resolves
+direct calls only; an alias or other indirection escapes it.
 
 **INV-MEM-011**: A clearance downgrade durably invalidates the engagement's session context in the same write that lowers the record — until a fresh session is established at the clamped floor, no path resumes the old session and the record's tool calls are refused at both dispatch choke points.
 

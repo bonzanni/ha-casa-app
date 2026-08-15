@@ -38,11 +38,14 @@ production: a test that reads the constant it is meant to pin asserts nothing.
 `test_every_slice_consumer_is_declared` is the guard against the failure mode
 that produced this issue — a consumer added later that nobody remembers to
 frame. It parses the tree for `render_recall` / `delegated_recall` call sites
-and fails on any that this file has not classified.
+and fails on any that this file has not classified, counts included. Its reach
+is direct calls by name: an alias or other indirection escapes it, so it is
+regression coverage, not a completeness proof.
 """
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -422,44 +425,48 @@ class TestExecutorArchiveBlock:
 # result. A new call site fails the test below until it is declared here —
 # which is the point: #581 existed because three consumers were added over time
 # and none of them inherited the framing the first one grew.
-DECLARED_SLICE_CALLERS: dict[tuple[str, str], str] = {
+DECLARED_SLICE_CALLERS: dict[tuple[str, str], tuple[int, str]] = {
     # render_recall — the typed renderer itself
-    ("tools.py", "recall_memory"): "frames: tool-result message",
-    ("agent.py", "_build_options"): "frames: instruction line in <memory_context>",
+    ("tools.py", "recall_memory"): (1, "frames: tool-result message"),
+    ("agent.py", "_build_options"): (
+        1, "frames: instruction line in <memory_context>"),
     ("delegated_memory.py", "delegated_recall"): (
-        "renders only; its four callers frame (or are exempt) individually"
-    ),
+        1, "renders only; its four callers frame (or are exempt) individually"),
     # delegated_recall — the shared delegated read
     ("tools.py", "_run_delegated_agent"): (
-        "frames: instruction line in <memory_context agent=...>"
-    ),
+        1, "frames: instruction line in <memory_context agent=...>"),
     ("tools.py", "_fetch_executor_archive"): (
-        "frames: instruction line under the lessons heading"
-    ),
+        1, "frames: instruction line under the lessons heading"),
     ("tools.py", "query_engager"): (
-        "exempt: the synthesizer is constrained to the context and must emit "
-        "UNKNOWN when it does not answer, which routes to the framed arm"
+        2,
+        "exempt: both calls (initial + the post-clamp re-read) feed a "
+        "synthesizer constrained to the context, which must emit UNKNOWN when "
+        "it does not answer — that routes to the framed arm",
     ),
     # A DIFFERENT render_recall — semantic_memory's legacy flat "- {text}"
     # renderer for the untyped recall() seam, which no consumer calls. Declared
     # rather than filtered out by name, so that wiring a consumer to the legacy
     # path has to pass through this table too.
     ("hindsight_memory.py", "recall"): (
-        "exempt: legacy untyped recall(); no model-facing consumer calls it"
-    ),
+        1, "exempt: legacy untyped recall(); no model-facing consumer calls it"),
 }
 
 _SLICE_FUNCS = frozenset({"render_recall", "delegated_recall"})
 
 
-def _call_sites(path: Path) -> set[tuple[str, str]]:
-    """(file, enclosing function) for every call to a slice-producing function.
+def _call_sites(path: Path) -> Counter:
+    """(file, enclosing function) -> call count, for every call to a
+    slice-producing function.
 
     Line numbers are deliberately not part of the key — this guard must survive
-    ordinary edits and fail only on a genuinely NEW consumer.
+    ordinary edits and fail only on genuinely NEW work. The COUNT is part of the
+    value (Sol, diff round 1): keyed on the pair alone, a second
+    ``render_recall`` added inside an already-declared function — the cheapest
+    way to grow a new unframed consumer — would collapse into the existing
+    entry and change nothing.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    found: set[tuple[str, str]] = set()
+    found: Counter = Counter()
 
     class _V(ast.NodeVisitor):
         def __init__(self) -> None:
@@ -477,31 +484,52 @@ def _call_sites(path: Path) -> set[tuple[str, str]]:
             fn = node.func
             name = getattr(fn, "id", None) or getattr(fn, "attr", None)
             if name in _SLICE_FUNCS and self.stack:
-                found.add((path.name, self.stack[-1]))
+                found[(path.name, self.stack[-1])] += 1
             self.generic_visit(node)
 
     _V().visit(tree)
     return found
 
 
-def test_every_slice_consumer_is_declared():
-    sites: set[tuple[str, str]] = set()
+def _all_call_sites() -> Counter:
+    sites: Counter = Counter()
     for path in sorted(CASA_ROOT.rglob("*.py")):
-        sites |= _call_sites(path)
-    undeclared = sites - set(DECLARED_SLICE_CALLERS)
+        sites.update(_call_sites(path))
+    return sites
+
+
+def test_every_slice_consumer_is_declared():
+    """What this does and does not prove (Sol + Terra, diff round 1, both named
+    it the weakest part): it resolves DIRECT calls by name, so a new call site,
+    or one more call inside an existing one, fails here. It cannot see a call
+    made through an alias (``r = render_recall; r(...)``) or any other
+    indirection. It is regression coverage against the way this defect actually
+    arose — consumers accreting one at a time — not a proof that every slice
+    reaching a model is framed."""
+    sites = _all_call_sites()
+    undeclared = {k: v for k, v in sites.items() if k not in DECLARED_SLICE_CALLERS}
     assert not undeclared, (
         "a new caller renders a clearance-filtered memory slice and has not "
         "declared how it frames a NON-EMPTY result (#581). Add it to "
         f"DECLARED_SLICE_CALLERS with its disposition: {sorted(undeclared)}"
+    )
+    miscounted = {
+        k: (v, DECLARED_SLICE_CALLERS[k][0])
+        for k, v in sites.items()
+        if v != DECLARED_SLICE_CALLERS[k][0]
+    }
+    assert not miscounted, (
+        "an already-declared function gained or lost a slice-producing call "
+        "(#581). A NEW one there is a new consumer and needs its own framing "
+        "decision; confirm it, then update the count in "
+        f"DECLARED_SLICE_CALLERS. found vs declared: {miscounted}"
     )
 
 
 def test_the_inventory_is_not_vacuous():
     """The guard above passes trivially if the parse finds nothing. Pin that
     it actually resolves the known sites."""
-    sites: set[tuple[str, str]] = set()
-    for path in sorted(CASA_ROOT.rglob("*.py")):
-        sites |= _call_sites(path)
+    sites = _all_call_sites()
     for expected in (
         ("tools.py", "recall_memory"),
         ("agent.py", "_build_options"),
