@@ -85,6 +85,8 @@
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/engagement_registry.py
   doc: architecture/engagements.md
+- item: casa/rootfs/opt/casa/engagement_quiesce.py
+  doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/engagement_uids.py
   doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/safe_fs.py

@@ -432,12 +432,89 @@ async def service_pid(*, engagement_id: str) -> int | None:
 
 
 async def start_service(*, engagement_id: str) -> None:
-    """s6-rc -u change engagement-<id> — brings the service up. Idempotent."""
-    await asyncio.to_thread(
+    """s6-rc -u change engagement-<id> — brings the service up. Idempotent.
+
+    #599 (Sol, design round 4 — reproduced): a bare ``await asyncio.to_thread``
+    is NOT cancellation-complete. Cancelling the awaiting task unwinds the
+    caller — releasing the per-engagement lifecycle fence it holds — while the
+    worker thread keeps running ``s6-rc -u change`` and can bring the service UP
+    afterwards, i.e. after the terminal quiesce ladder observed the uid set
+    empty. The measured shape was ``fence_released=True, worker_finished=False``.
+
+    So the worker is SHIELDED and drained before the cancellation propagates: the
+    up-transition either completes or fails while the caller still holds the
+    fence, and never lands behind its back. The ``CancelledError`` is re-raised
+    afterwards, so callers keep their cancellation semantics.
+    """
+    worker = asyncio.ensure_future(asyncio.to_thread(
         subprocess.run,
         ["s6-rc", "-u", "change", f"engagement-{engagement_id}"],
         check=True,
+    ))
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Drain the shielded worker BEFORE unwinding past the fence. The result
+        # is discarded — the caller is being cancelled — but the transition must
+        # not still be in flight when the fence is released.
+        #
+        # A LOOP, not a single retry (Terra, diff review): a second cancellation
+        # landing on the drain was swallowed and the function then unwound with
+        # the worker still running — reopening the exact hole the shield exists
+        # to close, one level deeper. Absorb cancellations until the worker is
+        # actually done, mirroring ``_write_tombstone_locked``'s
+        # absorb-until-settle loop.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue          # repeated cancel: keep draining
+            except Exception:     # noqa: BLE001 — the transition failed and is
+                break             # no longer in flight; that is what we needed
+        raise
+
+
+async def latch_down(*, engagement_id: str) -> None:
+    """#599 step 1: durably latch the engagement's service DOWN at the supervisor.
+
+    ``s6-svc -D`` (capital) both brings the service down and writes ``./down``
+    into the live servicedir, so the down survives an ``s6-supervise`` restart
+    and the supervisor cannot respawn the run script when the CLI is killed.
+    Deliberately NOT ``s6-rc -d change``: that takes the compile lock path and is
+    unbounded (no ``timeout-kill`` is written into engagement service dirs), and
+    a terminal transition must not be able to block on it.
+    """
+    await asyncio.to_thread(
+        subprocess.run,
+        ["s6-svc", "-D", _service_scandir(engagement_id)],
+        capture_output=True, text=True,
     )
+
+
+async def wanted_down(*, engagement_id: str) -> bool:
+    """#599: is the service's WANTED state down? — the latch-verification probe.
+
+    Deliberately narrower than ``_probe_service_down``: that classifier maps
+    every ``up == "true"`` to ``"up"`` (`_classify_updown`), so while a process
+    is still alive it cannot answer "will s6 put this back?", which is the only
+    question the quiesce ladder needs before it starts killing. Both design
+    reviewers found the same thing independently.
+
+    Returns True ONLY on an affirmative ``wantedup == false``. An absent scandir
+    counts as wanted-down (there is nothing left to respawn); a failed or
+    unparseable query returns False — a query failure is never proof.
+    """
+    scandir = _service_scandir(engagement_id)
+    if not os.path.isdir(scandir):
+        return True
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["s6-svstat", "-o", "wantedup", scandir],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return False
+    return result.stdout.split() == ["false"]
 
 
 async def stop_service(*, engagement_id: str) -> None:

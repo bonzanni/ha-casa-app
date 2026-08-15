@@ -89,7 +89,10 @@ subject.** The allocation, the ownership it implies, and the boundary built on i
 
 Enforced by the registry's terminal transition, which refuses a missing or already-terminal
 record and returns failure; the finalize path performs topic closure, driver teardown and
-notification only on success.
+notification only on success. The winning transition also schedules the engagement's uid
+quiesce, and the funnel waits for it — bounded — before any of those effects, so an
+engagement's own processes stop before the operator is told it ended (INV-CONT-006, in
+[`architecture/engagement-containment.md`](engagement-containment.md)).
 
 The direct status mutators honour the same boundary: each re-checks for a prior terminal
 state under the registry lock and declines to overwrite one — the idle sweep cannot flip a
@@ -234,6 +237,11 @@ are caught and logged. **The terminal state stays committed** — so an engageme
 genuinely finished while no completion message ever reached its topic and no notification
 reached the resident. These are best-effort effects *after* the authoritative state change,
 by design.
+
+**The driver teardown overruns.** It is bounded as a whole — the compile lock, both s6 stops
+and the recompile — and a timeout is logged and stepped over, so the notification and the
+retains behind it still run. The engagement's processes are already dead by then: the kill
+happened at the transition, not here.
 
 **A restart interrupts an engagement.** Persisted records load with `active` rewritten to
 `idle`. Replay is attempted only for the driver kind that supports it. A record whose

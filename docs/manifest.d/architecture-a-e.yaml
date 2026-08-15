@@ -165,6 +165,12 @@
   covers:
     - casa/rootfs/opt/casa/engagement_uids.py::UidAllocator
     - casa/rootfs/opt/casa/engagement_uids.py::UidAllocator.reconstruct
+    - casa/rootfs/opt/casa/engagement_quiesce.py::quiesce_engagement
+    - casa/rootfs/opt/casa/engagement_quiesce.py::kill_uid_until_empty
+    - casa/rootfs/opt/casa/engagement_quiesce.py::live_pids_for_uid
+    - casa/rootfs/opt/casa/drivers/s6_rc.py::latch_down
+    - casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down
+    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.quiesce
     - casa/rootfs/opt/casa/safe_fs.py::open_beneath
     - casa/rootfs/opt/casa/safe_fs.py::read_text_beneath
     - casa/rootfs/opt/casa/safe_fs.py::atomic_write_beneath
@@ -180,14 +186,20 @@
     - tests/test_root_workspace_accessor_inventory.py
     - tests/test_boot_replay.py
     - tests/test_claude_code_driver.py
+    - tests/test_engagement_quiesce.py
+    - tests/test_quiesce_obligation.py
+    - tests/test_quiesce_fence.py
+    - tests/test_quiesce_funnel_order.py
+    - tests/test_s6_quiesce_seams.py
   related: [architecture/engagements.md, architecture/hook-resolution.md, architecture/persistent-state.md]
-  defines_invariants: [INV-CONT-001, INV-CONT-002, INV-CONT-003, INV-CONT-004, INV-CONT-005]
+  defines_invariants: [INV-CONT-001, INV-CONT-002, INV-CONT-003, INV-CONT-004, INV-CONT-005, INV-CONT-006]
   invariant_tests:
     INV-CONT-001: [tests/test_engagement_uids.py::test_allocate_is_monotonic_and_never_reused, tests/test_engagement_uids.py::test_reconstruct_evidence_raises_above_valid_durable, tests/test_engagement_uids.py::test_marker_present_both_copies_lost_refuses_reissue, tests/test_engagement_uids.py::test_first_stage2_upgrade_root_owned_dirs_initialises_not_refuses, tests/test_engagement_uids.py::test_invalid_durable_file_present_no_valid_copy_refuses]
     INV-CONT-002: [tests/test_safe_fs.py::test_refuses_symlink_final_component, tests/test_safe_fs.py::test_refuses_symlink_intermediate_component, tests/test_safe_fs.py::test_owner_uid_mismatch_refused]
     INV-CONT-003: [tests/test_root_workspace_accessor_inventory.py::test_no_control_state_under_workspace_root]
     INV-CONT-004: [tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_when_setpriv_missing, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_uid_sentinel, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_workspace_owner_mismatch, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_missing_passwd_entry, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_unreadable_plugin_dir, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_happy_path_all_checks_pass]
     INV-CONT-005: [tests/test_boot_replay.py::test_scandir_down_covers_service_without_undergoing_record, tests/test_boot_replay.py::test_scandir_unconfirmed_down_refuses_and_never_starts, tests/test_boot_replay.py::test_missing_setpriv_refuses_all_resumes_not_crashloop]
+    INV-CONT-006: [tests/test_engagement_quiesce.py::test_kill_loop_reports_extinct_only_after_observing_empty, tests/test_engagement_quiesce.py::test_a_child_that_appears_only_in_the_second_pass_is_killed, tests/test_engagement_quiesce.py::test_a_survivor_is_reported_not_claimed, tests/test_engagement_quiesce.py::test_an_unverified_latch_is_never_extinct_even_when_empty, tests/test_engagement_quiesce.py::test_missing_pidfd_primitives_signal_nothing, tests/test_engagement_quiesce.py::test_a_zombie_counts_as_extinct, tests/test_quiesce_obligation.py::test_a_terminal_claude_code_record_owes_a_quiesce, tests/test_quiesce_obligation.py::test_mark_error_owes_and_schedules_in_process, tests/test_quiesce_obligation.py::test_a_rolled_back_transition_owes_nothing, tests/test_quiesce_obligation.py::test_an_owing_record_is_exempt_from_terminal_expiry, tests/test_quiesce_obligation.py::test_the_obligation_survives_a_reload, tests/test_quiesce_fence.py::test_a_start_that_resumes_after_the_terminal_commit_is_refused, tests/test_quiesce_fence.py::test_the_ladder_and_a_start_are_serialised_by_the_fence, tests/test_quiesce_fence.py::test_the_ladder_never_needs_the_compile_lock, tests/test_quiesce_funnel_order.py::test_the_kill_precedes_every_operator_visible_effect, tests/test_quiesce_funnel_order.py::test_the_funnel_finishes_when_the_ladder_overruns, tests/test_quiesce_funnel_order.py::test_the_funnel_finishes_when_driver_cancel_hangs, tests/test_s6_quiesce_seams.py::test_a_cancelled_start_drains_its_worker_before_unwinding, tests/test_s6_quiesce_seams.py::test_wanted_down_is_false_while_s6_still_wants_it_up]
 
 - doc: architecture/engagements.md
   summary: Durable engagements — their records, terminal transitions, the driver protocol, and what survives a restart.

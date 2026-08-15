@@ -82,12 +82,10 @@ What it does not cover: specialist and legacy `EngagementRecord`s carry `UNALLOC
 are never chowned or uid-dropped — this applies only to `claude_code` executors. And a uid is
 not a container: a process that is root, or that kept `CAP_DAC_OVERRIDE`, is root-equivalent
 whatever uid it carries, so the boundary bounds only what an ordinary dropped process can
-reach. Two survivor classes follow from that and are mitigated rather than closed — a legacy
-root process from before the drop existed, killed best-effort by the boot sweep below, and a
-process still running under the engagement's own uid after its record has gone terminal,
-where the finalize path issues the service stop without the checked ladder the boot path
-uses, so nothing confirms extinction
-([#599](https://github.com/bonzanni/ha-casa-app/issues/599)).
+reach. One survivor class follows from that and is mitigated rather than closed: a legacy root
+process from before the drop existed, killed best-effort by the boot sweep below. A process
+still running under the engagement's own uid after its record has gone terminal is no longer
+in that company — INV-CONT-006 kills it and says whether it worked.
 
 **INV-CONT-002**: Root's own read and write accessors for engagement workspace files refuse to follow a symlink at the final path component or any intermediate one, and can require the resolved file's owner to match an expected uid.
 
@@ -143,6 +141,40 @@ worked: a rung that lands is followed by the strict probe, and a kill that canno
 delivered ends the ladder in refusal without one. A service the ladder does not confirm down
 either way is refused rather than started.
 
+**INV-CONT-006**: Winning a terminal transition for a `claude_code` engagement schedules a bounded kill of every process under its uid, fenced against any concurrent start, and the record durably owes that work until an enumeration observes that uid set empty; an extinction that cannot be observed is reported, never claimed.
+
+The kill is scheduled by the registry the instant a transition wins — including the direct
+status mutators, which have no finalize funnel behind them — and the funnel waits for it,
+bounded, before its own operator-visible effects. Ordering was the whole defect: the record
+committed, and the CLI then stayed alive through the broker drain, the summary finalize and
+four Telegram round-trips, its casa tools refused by INV-MCP-001 while nothing at all stopped
+its native `Bash`/`Write`/`Edit`.
+
+The uid is the key rather than the process group, because the supervised leader is not
+guaranteed to be its own group leader and a `setsid` child leaves the group entirely, while a
+never-reused uid (INV-CONT-001) names exactly this engagement's processes forever. The ladder
+latches the service down and *verifies* `wantedup` before it claims anything, then `SIGKILL`s
+every member through the pidfd path and re-enumerates until the set is empty. Emptiness is a
+measurement, not an inference: a member may fork after a snapshot and before its signal lands,
+and that child is enumerated and killed on the next pass, because a killed process cannot fork
+again. Zombies count as extinct — a `Z` member cannot execute or write.
+
+What it does not cover: there is no SIGTERM grace, so a narration tail the CLI had buffered is
+lost (the completion text is unaffected — it arrived through the tool call, and the frames the
+completion post drains are read from the s6 log segments on disk). An unverified down-latch
+makes the outcome `NOT_VERIFIED` even when the set empties, because s6 may put a fresh CLI
+back. Where the pidfd primitives are unavailable the ladder signals nothing and reports, rather
+than signalling a bare numeric pid a reused pid could redirect. And a casa death between the
+commit and the ladder leaves the durable obligation to the next boot — bounded by a restart,
+not by seconds.
+
+Two clear scans are two observations, not a proof. They close the fork-race a single scan
+misses — a child created after a snapshot is in the next one — but a process that contrives to
+be invisible at both moments would be missed, and `/proc` offers no atomic membership test to
+close that. A kernel-owned boundary would: a per-engagement cgroup with `cgroup.kill` and
+`populated == 0`. This app declares no privileged or cgroup access today, so the observation is
+what is claimed, and it is claimed as an observation.
+
 ## Failure behavior
 
 **The allocator cannot prove its high-water.** Any failure it cannot bound — a durable copy
@@ -171,6 +203,19 @@ unreadable, refused by the kernel, or already gone. Replay refuses to
 migrate or resume that engagement, marks its record errored best-effort, and never adds it
 to the start loop this boot. Every other engagement proceeds; the refusal is scoped to the
 one service.
+
+**The uid will not go extinct at a terminal transition.** The ladder reports `NOT_VERIFIED`
+naming the surviving pids at ERROR, the record KEEPS its durable obligation, and the finalize
+funnel continues — the operator still gets the completion, the notification and the retains,
+because a containment failure must not become a termination wedge. The next boot finds the
+obligation and runs the same ladder before any resume; the record is exempt from terminal
+expiry until it clears, so neither the obligation nor the uid it names can age out.
+
+**A start is in flight when the transition commits.** The start path re-reads the record's
+status under the lifecycle fence, immediately before the s6 up-transition, and refuses a
+terminal record — a fresh launch surfaces the refusal as a stale launch, a context rebuild
+simply leaves the service down. The fence also serialises the ladder against that start, so
+the two can never interleave.
 
 **Root's accessor meets a symlink.** The read or write raises `SymlinkRefused`, an `OSError`
 subclass, and the caller decides what a refused file means — the accessor never resolves
@@ -205,6 +250,13 @@ one of its paths — an intact, current service pair — resumes without re-rend
 a precondition placed only in the render is not evaluated there. A condition added to one
 path is a hole the others walk straight through.
 
+**A new path that brings an engagement's service up** goes through the fenced starter, which
+re-checks terminal status under the lifecycle fence. There are three start sites today and the
+inventory is the point: a fourth that starts the service directly would be able to resurrect an
+engagement whose uid the ladder has just emptied. The fence must also never be held across an
+acquisition of the compile lock, which the launch path already holds around its whole body —
+that ordering is the difference between a fence and a deadlock.
+
 **A new flag or export in the run script** is added to the template, which every render
 substitutes and whose final line is the `setpriv` exec. Anything appended after that exec
 never runs, and anything that replaces it drops the privilege drop with it.
@@ -217,6 +269,12 @@ never runs, and anything that replaces it drops the privilege drop with it.
 **Source**
 - `casa/rootfs/opt/casa/engagement_uids.py::UidAllocator`
 - `casa/rootfs/opt/casa/engagement_uids.py::UidAllocator.reconstruct`
+- `casa/rootfs/opt/casa/engagement_quiesce.py::quiesce_engagement`
+- `casa/rootfs/opt/casa/engagement_quiesce.py::kill_uid_until_empty`
+- `casa/rootfs/opt/casa/engagement_quiesce.py::live_pids_for_uid`
+- `casa/rootfs/opt/casa/drivers/s6_rc.py::latch_down`
+- `casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.quiesce`
 - `casa/rootfs/opt/casa/safe_fs.py::open_beneath`
 - `casa/rootfs/opt/casa/safe_fs.py::read_text_beneath`
 - `casa/rootfs/opt/casa/safe_fs.py::atomic_write_beneath`
@@ -233,6 +291,11 @@ never runs, and anything that replaces it drops the privilege drop with it.
 - `tests/test_root_workspace_accessor_inventory.py`
 - `tests/test_boot_replay.py`
 - `tests/test_claude_code_driver.py`
+- `tests/test_engagement_quiesce.py`
+- `tests/test_quiesce_obligation.py`
+- `tests/test_quiesce_fence.py`
+- `tests/test_quiesce_funnel_order.py`
+- `tests/test_s6_quiesce_seams.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

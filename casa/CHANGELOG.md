@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.213.0] - 2026-08-16
+
+### Fixed
+
+- **An engagement's own tools stop the moment it ends** (#599). When an
+  engagement finished — completed, cancelled, or failed — Casa recorded it as
+  over straight away, but the program behind it kept running while Casa tidied
+  up: writing the closing summary, updating the topic, closing it. For that
+  whole stretch the engagement could no longer use any of Casa's own tools, and
+  yet nothing stopped it editing files on disk. In the worst case it was still
+  making changes after you had cancelled it and been told it had stopped.
+
+  Ending an engagement now shuts its work down first, before any of the closing
+  messages appear, and checks that nothing is left running rather than assuming
+  it. If Casa restarts mid-way, the engagement remembers it still owes that
+  shutdown and finishes the job on the next start. When Casa genuinely cannot
+  confirm everything stopped, it says so in the log instead of reporting
+  success — and it still delivers your summary and notification either way, so
+  a stubborn engagement can never leave you with no word at all.
+
 ## [0.212.0] - 2026-08-15
 
 ### Fixed
