@@ -892,9 +892,14 @@ class TestCompletionGateSeesTurnsInThePipe:
         could switch off the gate that was already there, and an accepted
         operator message could be committed past with no veto at all.
 
-        Red case: put the in-flight reads back inside the same `try` (both in
-        emit_completion's pre-check and in `_finalize_engagement`'s terminal
-        hook) and this completes the engagement, losing the queued message.
+        What this pins, precisely: the refusal survives, through whichever
+        layer gets there first. With queued depth positive at entry that is the
+        pre-check, so merging the guards in the pre-check ALONE still fails
+        this — but merging them in the terminal hook alone does not, because
+        the hook is never reached. The hook's own guard is pinned by
+        `test_a_failing_in_flight_accessor_keeps_the_TERMINAL_HOOK_gate` below,
+        and the hook is where the invariant actually lives (same division of
+        labour the original gate's tests already record).
         """
         import agent as agent_mod
         drv = _FakeInboundDriver(depth=1, texts=["queued and still unread"])
@@ -931,3 +936,64 @@ class TestCompletionGateSeesTurnsInThePipe:
 
         assert payload["status"] == "acknowledged"
         assert rec.status == "completed"
+
+    async def test_a_failing_in_flight_accessor_keeps_the_TERMINAL_HOOK_gate(
+            self, tmp_path):
+        """The same S1, at the layer that actually enforces it.
+
+        The sibling test above has positive queued depth at entry, so the
+        pre-check refuses and the terminal hook is never reached — mutating the
+        hook's guard alone left every test green, which is precisely the
+        "mutation that fails to mutate" trap. Here the queued message arrives
+        DURING the finalize funnel (as a real delivery does), so the pre-check
+        passes and the hook is the only thing standing between an accepted
+        operator message and a silent terminal commit.
+
+        Red case: merge the hook's two accessor guards back into one and this
+        completes the engagement with an empty annotation.
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0)
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the NEW accessor")
+
+        drv.inbound_in_flight_blocking = _raises
+        drv.inbound_in_flight_texts = _raises
+
+        async def _queued_arrives_during_drain(engagement):
+            drv._depth = 1
+            drv._texts = ["arrived while finalize ran"]
+
+        drv.drain_inbound_spool = _queued_arrives_during_drain
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_a_failing_in_flight_accessor_still_discloses_the_queued_text(
+            self, tmp_path):
+        """The disclosure half of the same layer: an ungated outcome must still
+        list the queued messages when only the new accessors are broken."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=1, texts=["queued, and still owed"])
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the NEW accessor")
+
+        drv.inbound_in_flight_blocking = _raises
+        drv.inbound_in_flight_texts = _raises
+        reg, rec, tch = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec, status="error")     # ungated outcome
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert "queued, and still owed" in posted
