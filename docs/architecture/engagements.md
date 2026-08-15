@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-10
+last_reviewed: 2026-08-15
 ---
 
 # Engagements
@@ -10,8 +10,11 @@ last_reviewed: 2026-08-10
 
 Durable engagements: their records, how they end, and what survives a restart. How agents
 address and launch one another — the delegation ACL, the depth cap, the agent-spawn cap —
-lives in [`architecture/delegation.md`](delegation.md). It does not cover the turn loop
-itself, nor what a driver's underlying runtime does once started.
+lives in [`architecture/delegation.md`](delegation.md). The OS boundary a `claude_code`
+engagement runs inside — its uid, workspace ownership, root's access into that workspace,
+the privilege drop, and the confirmed-down sweep boot replay requires — is
+[`architecture/engagement-containment.md`](engagement-containment.md). It does not cover the
+turn loop itself, nor what a driver's underlying runtime does once started.
 
 ## Mental model
 
@@ -76,10 +79,9 @@ events and may post a bounded LLM interjection into the resident chat — capped
 engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
 budget slot is reserved before evaluation and returned if nothing is posted.
 
-**A `claude_code` engagement gets its own OS identity, not just its own record.** A
-never-reused uid, backed by a durable dual-copy counter, is allocated per engagement, its
-workspace chowned to it and reachable by root only through a no-follow accessor, and the run
-script's final `exec` drops privilege via `setpriv` — see the invariants below for the rest.
+**A `claude_code` record carries an OS uid, and what that uid means is not this document's
+subject.** The allocation, the ownership it implies, and the boundary built on it are in
+[`architecture/engagement-containment.md`](engagement-containment.md).
 
 ## Contracts & invariants
 
@@ -183,9 +185,12 @@ it, or a payload beyond the maximum pipe size, simply falls back to writing in p
 What it does not cover: the bytes after the first, when the payload does not fit. A terminal
 transition landing mid-turn cannot revoke a delivery — closing the writer is itself an
 end-of-input the CLI acts on — so a turn already begun runs until the finalize path's driver
-teardown stops it. A *completion* cannot land in that window, because a message is still
-counted as unread throughout its own write and the gate above refuses; a cancellation can,
-and the truncated turn it produces is stopped by teardown rather than by the write path. The
+teardown *attempts* to stop it, and what that teardown does and does not establish about the
+OS process is in [`architecture/engagement-containment.md`](engagement-containment.md). A *completion*
+cannot land in that window, because a message is still counted as unread throughout its own
+write and INV-ENG-003 refuses; a cancellation can, and what becomes of the truncated turn it
+produces is teardown's business rather than the write path's — INV-CONT-001 states what that
+does and does not settle. The
 admission also expresses no opinion on a record the registry does not know, which is
 unreachable for a live engagement and where the dispatch gate already fails closed.
 
@@ -197,61 +202,6 @@ reserved for the completion notice itself.
 What it does not cover: ordering depends on a bounded drain. If the drain times out, the
 completion is posted anyway with a warning, and if no live sequencer exists the finalize path
 falls back to a direct send that bypasses sequencing entirely.
-
-**INV-CONT-001**: A `claude_code` engagement's uid comes from two independently-written durable high-water copies and is never handed out twice, even if either file is lost.
-
-Reconstruction takes the max of every still-valid durable copy, raised (never lowered) by
-records, dir owners, `casa-eng-*` passwd, and `/proc` ids. With both copies lost, a
-never-removed `initialized` marker present — OR absent but a real uid (`>= UID_BASE`) evidenced —
-poisons (a uid was allocated); marker absent with no real uid inits at base. An unreadable copy
-also poisons.
-
-What it does not cover: specialist and legacy `EngagementRecord`s carry `UNALLOCATED_UID` and
-are never chowned or uid-dropped — this applies only to `claude_code` executors. SCOPE: a
-legacy root survivor keeping `CAP_DAC_OVERRIDE`, or staying root, is root-equivalent
-regardless of uid — out of scope for this stage (Stage 3 mount/AppArmor/pid-namespace work),
-mitigated only by a best-effort kill during the down-first sweep.
-
-**INV-CONT-002**: Root's own read and write accessors for engagement workspace files refuse to follow a symlink at the final path component or any intermediate one, and can require the resolved file's owner to match an expected uid.
-
-Enforced by `safe_fs.py`'s `open_beneath`/`read_text_beneath` and `atomic_write_beneath`,
-preferring `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, falling back to an
-FD-relative `O_NOFOLLOW` walk on a kernel without it.
-
-What it does not cover: root's own reachability into a workspace it already has filesystem
-access to — not a boundary between two non-root uids, which ordinary file permissions after
-`chown_workspace` enforce instead.
-
-**INV-CONT-003**: Root-touched engagement run-state is never joined into the uid-owned workspace root a `claude_code` engagement's own CLI process can reach.
-
-That root is reachable by the subprocess via `--add-dir`, so a control-only file placed there
-would be a symlink-planting target for the process the uid drop exists to contain. Every root
-module touching run-state is held to a fixed allowlist of control-only basenames that must
-never be path-joined to a workspace-root symbol.
-
-What it does not cover: a static, symbol-name-based check over a fixed set of root modules,
-not a full dataflow analysis — it catches established naming for "the workspace root," not an
-arbitrarily renamed variable.
-
-**INV-CONT-004**: The uid-drop preflight refuses to plant or resume a `claude_code` service — never starting it as root, never leaving it to crash-loop under its supervisor — whenever `setpriv` is unavailable, the record's uid is unallocated, the workspace is not owned by that uid, no passwd entry exists for it, or a plugin directory it needs is not world-readable.
-
-Run immediately before planting or resuming a service, so a chain that would otherwise fail
-at `setpriv`-exec time — or worse, silently exec without dropping — is caught earlier, named.
-
-What it does not cover: the preflight checks the *conditions* a drop requires; it does not
-verify the exec'd `claude` process ended up with the expected `Uid`/`CapBnd`, a live property
-confirmed operationally.
-
-**INV-CONT-005**: Boot replay migrates a legacy root run-script to the uid-dropped form, or resumes an existing one, only after confirming the corresponding s6 service is fully down; an unconfirmed-down service refuses the resume.
-
-The confirmation scans the supervised service tree itself rather than trusting the durable
-record, so a service still up — including one with no matching "undergoing" record — is
-never migrated or restarted out from under itself. Only once every service is confirmed down
-does replay re-fold live `/proc` uids into the high-water, before any uid backfill or
-`setpriv` render.
-
-What it does not cover: a service that never registers as fully down refuses the resume
-outright, rather than forcing the old process down itself.
 
 ## Failure behavior
 
@@ -296,7 +246,8 @@ accepting operator messages into an engagement with no consumer (or starting one
 crash-loop under its supervisor). A record still owing a clearance-downgrade context
 rebuild (INV-MEM-011) is never *resumed*: replay drops its session pointer and archive
 cache and re-renders the workspace at the clamped floor first, refusing the same way if
-that fails.
+that fails. Every one of those decisions sits downstream of preconditions this document does
+not own: INV-CONT-004 and INV-CONT-005.
 
 ## Extension points
 
@@ -304,7 +255,10 @@ that fails.
 plus the downgrade-recovery seams (invalidate the live session with confirmed teardown;
 rebuild fresh at the record's current clearance). `start()` may raise `StaleLaunchError`
 at its last suspension point; the launcher then aborts rather than deliver a prompt
-rendered from pre-downgrade materials.
+rendered from pre-downgrade materials. A driver that runs its agent as a separate OS
+process, or that reaches into a workspace as root, owes the rules in
+[`architecture/engagement-containment.md`](engagement-containment.md) as well — the protocol
+says nothing about identity or filesystem reach.
 
 **A new terminal path** should go through the shared finalize funnel to inherit the
 single-winner transition, teardown, notification and retention. Setting a terminal status
@@ -335,8 +289,6 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
 - `casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer`
 - `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
-- `casa/rootfs/opt/casa/engagement_uids.py::UidAllocator`
-- `casa/rootfs/opt/casa/safe_fs.py::read_text_beneath`
 
 **Tests**
 - `tests/test_delegate_to_agent.py`
@@ -345,13 +297,11 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - `tests/test_cancel_engagement_tool.py`
 - `tests/test_engagement_registry.py`
 - `tests/test_observer.py`
-- `tests/test_engagement_uids.py`
-- `tests/test_safe_fs.py`
-- `tests/test_root_workspace_accessor_inventory.py`
 - `tests/test_boot_replay.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
+- [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 <!-- END SOURCEMAP -->

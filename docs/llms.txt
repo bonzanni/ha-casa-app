@@ -10,7 +10,8 @@ Code is the source of truth; these files are a map.
 - [architecture/concurrency-model.md](architecture/concurrency-model.md): What runs concurrently — bus dequeue vs execution, session-key serialization, the lock inventory, and threaded vs loop work.
 - [architecture/configuration.md](architecture/configuration.md): Where configuration comes from, what is version-controlled, what reload can pick up without a restart, and how secrets resolve.
 - [architecture/delegation.md](architecture/delegation.md): How one agent addresses and launches another — the delegation ACL and aliases, the depth cap, and the agent-spawn cap.
-- [architecture/engagements.md](architecture/engagements.md): Durable engagements — their records, terminal transitions, drivers, and what survives a restart.
+- [architecture/engagement-containment.md](architecture/engagement-containment.md): The OS boundary around a claude_code engagement — its never-reused uid, workspace ownership, root's no-follow access, the privilege drop, and the confirmed-down sweep before replay.
+- [architecture/engagements.md](architecture/engagements.md): Durable engagements — their records, terminal transitions, the driver protocol, and what survives a restart.
 - [architecture/eval-framework.md](architecture/eval-framework.md): The evaluation scaffolding — and the fact that its registry ships empty.
 - [architecture/home-assistant-control.md](architecture/home-assistant-control.md): How an agent reads and changes the state of the house — and why the limits on that live in Home Assistant, not here.
 - [architecture/hook-resolution.md](architecture/hook-resolution.md): The hook-resolution path — credential-bound identity, per-executor policy maps and their fail-closed fallbacks, and the claude_code containment floor.
