@@ -73,10 +73,17 @@ from a detached task of its own. All of them converge on the shared bank —
 which is why the wipe cannot be "delete the bank" alone.
 
 **The wipe is one operation, two doors, one consent posture.** The
-orchestrator claims every key, drains in-flight bank writers behind an
-exclusive fence, drops the retry spool, drops every session pointer *without
-retaining it* (retiring saves first — exactly the residue a wipe must not
-leave), deletes the bank, and reports counts. The terminal door
+orchestrator first closes *turn admission* and drains every in-flight turn
+(INV-CONC-005) — until that holds, a turn the client pool never owned can
+re-arm a session pointer after the wipe has reported completion, and a
+first-ever turn on a key is not even visible to enumerate. It then claims
+every key, drains in-flight bank writers behind an exclusive fence, drops the
+retry spool, drops every session pointer *without retaining it* (retiring
+saves first — exactly the residue a wipe must not leave), deletes the bank,
+and reports counts. Both drains are bounded and fail closed: turns or writers
+that do not finish in time abort the wipe with nothing deleted, because a wipe
+that cannot prove it drained everything must not report that it deleted
+everything. The terminal door
 (`casactl memory-wipe --yes` → `POST /admin/memory/wipe`) is root-gated by
 the same peer-credential check as every admin route; the agent door (the
 `wipe_memory` tool) posts an Approve/Cancel keyboard to the configured
@@ -188,10 +195,12 @@ publish a session in exactly that window.
 
 What it does not cover: claims are in-memory, so a restart clears them (a
 retirement in flight at crash time is finished by the reaper's ordinary
-machinery, not by the claim); and a bypass-path turn that outlives the
-entire retirement re-registers its session afterwards — the pre-existing
-close-ordering carve-out in
-[`architecture/turn-loop.md`](turn-loop.md) (INV-TURN-006).
+machinery, not by the claim). A claim's *lifetime* is also shorter than the
+turn it defends against — it is released when the retirement returns, so a
+turn still running at that moment publishes freely. Claims are therefore no
+longer the load-bearing protection: turn admission (INV-CONC-005) is, and it
+holds until every turn has drained. The claims remain because they still
+cover the background retain paths, which are not turns.
 
 **INV-MEM-014**: The wipe executes only on the configured operator's explicit consent at its consent-bearing door, and no durable pre-wipe writer survives it: the spool is dropped, every claimed pointer is dropped without retention, and a bank writer that straddles the wipe discards — retaining nothing and spooling nothing.
 

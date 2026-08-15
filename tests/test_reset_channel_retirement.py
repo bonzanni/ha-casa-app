@@ -160,3 +160,45 @@ async def test_inflight_old_turn_republish_refused_then_reset_completes(
 
     sem.retain.assert_awaited_once()
     assert reg.get("telegram-42") is None
+
+
+async def test_a_wipe_during_the_flush_close_makes_the_reset_discard(
+    tmp_path, monkeypatch,
+):
+    """#578 (Sol design-r2 S1): the fence's capture-point contract, applied to
+    the one caller that snapshots earlier than ``save_session``'s entry.
+
+    ``reset_channel`` commits to its source data at its snapshot, then awaits
+    ``notify_reset``. ``save_session`` used to capture the fence generation at
+    its OWN entry — after that await — so a wipe completing in the window was
+    invisible to it: the captured generation already matched the post-wipe
+    value, ``StaleGeneration`` never fired, and the reset retained a pre-wipe
+    transcript into the bank the wipe had just emptied, behind a report that
+    said the wipe completed.
+
+    Red case: bump the generation during the flush-close (what a completing
+    wipe does at ``memory_wipe.py``'s exclusive section) and require the retain
+    to be DISCARDED. Fails when ``save_session`` captures its own generation.
+    """
+    from memory_wipe import FENCE
+
+    reg = _reg(tmp_path)
+    await _register(reg, "telegram-42", "sid-old")
+
+    async def wipe_completes_mid_close(key):
+        # Exactly what _ExclusiveSection.__aenter__ does once writers drain.
+        FENCE._generation += 1
+
+    reg.add_reset_listener(wipe_completes_mid_close)
+    sem = AsyncMock()
+
+    async def fake_classify(content: str) -> str:
+        return "public"
+    monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
+    before = FENCE._generation
+    try:
+        with patch("session_saver.get_session_messages", return_value=_MSGS):
+            await reset_channel("telegram-42", reg, sem, channel="telegram")
+        sem.retain.assert_not_awaited()
+    finally:
+        FENCE._generation = before

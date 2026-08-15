@@ -31,6 +31,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from rw_barrier import RwBarrier
+
 logger = logging.getLogger(__name__)
 
 # How long the wipe waits for in-flight retains to drain before aborting.
@@ -60,10 +62,10 @@ class RetainFence:
 
     def __init__(self) -> None:
         self._generation = 0
-        self._active_shared = 0
-        self._no_shared = asyncio.Event()
-        self._no_shared.set()
-        self._exclusive = asyncio.Lock()
+        # #578: the readers/writer core is shared with session_gate's
+        # TurnAdmission. It carries the cancellation repair below, which a
+        # second hand-written copy could silently omit.
+        self._barrier = RwBarrier()
 
     def generation(self) -> int:
         """Capture point contract (#411 design r3/r4): call this in the SAME
@@ -85,24 +87,20 @@ class RetainFence:
 
     async def _enter_shared(self, entered_generation: int) -> None:
         # Block while a wipe holds/awaits exclusivity, then re-check the
-        # generation: a writer that slept through a wipe discards.
-        while self._exclusive.locked():
-            async with self._exclusive:
-                pass  # wait for the wipe to finish, then release immediately
+        # generation: a writer that slept through a wipe discards. The check
+        # and the increment share a no-await block, so a wipe cannot land
+        # between them.
+        await self._barrier.wait_for_exclusive_clear()
         if entered_generation != self._generation:
             raise StaleGeneration(
                 f"retain fence generation moved "
                 f"({entered_generation} -> {self._generation}); pre-wipe "
                 f"work discarded"
             )
-        self._active_shared += 1
-        self._no_shared.clear()
+        self._barrier.enter_shared()
 
     def _exit_shared(self) -> None:
-        self._active_shared -= 1
-        if self._active_shared <= 0:
-            self._active_shared = 0
-            self._no_shared.set()
+        self._barrier.exit_shared()
 
     def exclusive_wipe(self) -> "_ExclusiveSection":
         """``async with fence.exclusive_wipe():`` — drain writers (bounded),
@@ -133,29 +131,25 @@ class _ExclusiveSection:
         self._fence = fence
 
     async def __aenter__(self) -> None:
-        await self._fence._exclusive.acquire()
+        # Sol diff-r1: a CANCELLATION during the drain (shutdown killing the
+        # wipe task, an admin client dropping) left the exclusive lock held
+        # forever — every later retain and wipe then deadlocked. Any
+        # exceptional exit must release the lock. That repair now lives in
+        # RwBarrier.acquire_exclusive, shared with TurnAdmission (#578), so
+        # neither barrier can drift away from it.
         try:
-            await asyncio.wait_for(
-                self._fence._no_shared.wait(),
-                timeout=_EXCLUSIVE_DRAIN_TIMEOUT_S,
+            await self._fence._barrier.acquire_exclusive(
+                drain_timeout_s=_EXCLUSIVE_DRAIN_TIMEOUT_S,
             )
         except (asyncio.TimeoutError, TimeoutError):
-            self._fence._exclusive.release()
             raise WipeAborted(
                 "in-flight memory writers did not drain within "
                 f"{_EXCLUSIVE_DRAIN_TIMEOUT_S:.0f}s; nothing was deleted"
             ) from None
-        except BaseException:
-            # Sol diff-r1: a CANCELLATION during the drain (shutdown killing
-            # the wipe task, an admin client dropping) left the exclusive
-            # lock held forever — every later retain and wipe then
-            # deadlocked. Any exceptional exit releases the lock.
-            self._fence._exclusive.release()
-            raise
         self._fence._generation += 1
 
     async def __aexit__(self, *exc) -> bool:
-        self._fence._exclusive.release()
+        self._fence._barrier.release_exclusive()
         return False
 
 
@@ -183,16 +177,56 @@ class WipeReport:
 async def wipe_long_term_memory(
     *, registry, semantic_memory, fence: RetainFence, bank: str,
     retry_dir: str | Path = _COLD_RETAIN_RETRY_DIR,
+    admission=None,
 ) -> WipeReport:
     """The one wipe orchestrator (#411, design v3 Part C).
 
-    Order matters and is pinned by tests: claims first (racing turns steer
-    fresh and dying sids cannot re-register), then the exclusive fence
-    (in-flight writers drained, generation bumped — pre-wipe writers that
-    resume later DISCARD), then the durable spool, then the session pointers
-    (sid-guarded: a steered-fresh session registered mid-wipe SURVIVES),
-    then the bank itself. Claims release in ``finally`` so no exit path can
-    leave a key steering fresh forever."""
+    Order matters and is pinned by tests: TURN ADMISSION first (#578 — see
+    below), then claims (racing turns steer fresh and dying sids cannot
+    re-register), then the exclusive fence (in-flight writers drained,
+    generation bumped — pre-wipe writers that resume later DISCARD), then the
+    durable spool, then the session pointers (sid-guarded: a steered-fresh
+    session registered mid-wipe SURVIVES), then the bank itself. Claims
+    release in ``finally`` so no exit path can leave a key steering fresh
+    forever.
+
+    #578: the whole body runs with turn admission held EXCLUSIVELY, so no turn
+    is running and none can start. Before this, joining an in-flight turn was
+    ``notify_reset``'s job, and its only listener anywhere is the client
+    pool's ``close_key`` — so a turn the pool never owned (a SCHEDULED turn, a
+    webhook one-shot, a ``PoolUnavailable`` fallback) was not joined, and
+    re-armed the session pointer once the claims released, after this function
+    had reported completion. Closing admission BEFORE the keys are enumerated
+    also covers a FIRST-EVER turn on a key, which is running with no registry
+    entry for ``all_entries`` to find.
+
+    The drain is bounded and fails CLOSED: turns that do not finish in time
+    raise :class:`WipeAborted` with nothing deleted, matching the spool
+    enumeration below. A wipe that cannot prove it drained everything must not
+    claim it deleted everything.
+
+    ``admission`` is injectable for tests; production passes nothing and gets
+    the process-wide singleton.
+    """
+    from session_gate import TURN_ADMISSION, AdmissionTimeout
+
+    if admission is None:
+        admission = TURN_ADMISSION
+    try:
+        async with admission.exclusive():
+            return await _wipe_locked(
+                registry=registry, semantic_memory=semantic_memory,
+                fence=fence, bank=bank, retry_dir=retry_dir,
+            )
+    except AdmissionTimeout as exc:
+        raise WipeAborted(f"{exc}") from None
+
+
+async def _wipe_locked(
+    *, registry, semantic_memory, fence: RetainFence, bank: str,
+    retry_dir: str | Path,
+) -> WipeReport:
+    """The wipe body, run with turn admission already held exclusively."""
     report = WipeReport()
     claims: dict[str, tuple[object, str | None]] = {}
     # 1. Claim every key in one no-await sweep.

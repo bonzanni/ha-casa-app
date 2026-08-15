@@ -306,6 +306,11 @@ class TestSingleFlight:
         assert done == ["wipe-finished"]
 
 
+async def _retain_roundtrip(fence):
+    async with fence.retaining(fence.generation()):
+        pass
+
+
 class TestDiffR1Fixes:
     async def test_cancel_during_drain_releases_exclusive(self):
         """Sol diff-r1: a wipe cancelled while draining must not leave the
@@ -331,9 +336,12 @@ class TestDiffR1Fixes:
             await x
         release.set()
         await w
-        # The fence is usable: a writer retains and a wipe completes.
-        async with fence.retaining(fence.generation()):
-            pass
+        # The fence is usable: a writer retains and a wipe completes. BOTH are
+        # bounded — with the release omitted the retain blocks forever, and a
+        # red case that hangs is not a red case (it wedges CI instead of
+        # reporting). #578: the release now lives in RwBarrier.acquire_exclusive,
+        # shared with TurnAdmission; mutating it there fails this test too.
+        await asyncio.wait_for(_retain_roundtrip(fence), timeout=1)
         await asyncio.wait_for(fence.exclusive_wipe().__aenter__(), timeout=1)
 
     async def test_unremovable_spool_record_aborts_before_deletion(
