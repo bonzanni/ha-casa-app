@@ -10,7 +10,10 @@
   cancelled — in the moments before that, the cancellation found nothing to
   cancel yet, and the question was then restored anyway: still tappable, on
   behalf of a schedule that no longer existed. Such a question is now closed
-  cleanly instead, and the agent is told the trigger changed.
+  cleanly instead, and the agent is told the trigger changed — and only the
+  questions that cancellation actually covered: cancelling one reminder leaves
+  the other questions that agent is waiting on alone. An approval request
+  raised in the same window retires a pending scheduled question too.
 
 ## [0.206.0] - 2026-08-15
 

@@ -49,6 +49,10 @@ def _fresh_broker(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_store(monkeypatch, tmp_path):
     monkeypatch.setattr(scheduled_asks, "_EPOCHS", {})
+    # Process-local boot-window state: a fresh process has neither, and the
+    # module-level globals would otherwise leak between tests.
+    monkeypatch.setattr(scheduled_asks, "_BOOT_REVOCATIONS", [])
+    monkeypatch.setattr(scheduled_asks, "_BOOT_RECONCILED", False)
     store = scheduled_asks.ScheduledAskStore(str(tmp_path / "scheduled_asks.json"))
     monkeypatch.setattr(scheduled_asks, "STORE", store)
     return store
@@ -659,11 +663,78 @@ class TestBootReconcile:
         counts = await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
         assert counts["restored"] == 1
 
+    async def test_cancelling_one_trigger_leaves_the_roles_others_alone(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """`revoke_trigger` selects ONE trigger's questions; the boot-window
+        guard has to select the same ones. Keying it on the role (whose epoch
+        that call also bumps) discarded every other question the role was
+        waiting on."""
+        await _fresh_store.put(self._rec(
+            rid="mine", session_scope="date-reminder-abcd"))
+        await _fresh_store.put(self._rec(
+            rid="sibling", session_scope="cron-invoices"))
+        scheduled_asks.revoke_trigger(
+            "assistant", "reminder-abcd", "trigger_cancelled")
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["revoked_before_reconcile"] == 1
+        assert counts["restored"] == 1
+        assert [d["request_id"] for d in channel.scheduled_dispatches] == ["mine"]
+        assert _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["sibling"]
+
+    async def test_a_pre_reconcile_challenge_cancellation_is_honoured(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """An authorization challenge raised before Telegram is ready cancels
+        nothing (the broker is empty) — and if that challenge is itself gone by
+        reconcile time, `require_idle` has nothing to refuse against either, so
+        the machine question would be restored into a lane it had already
+        yielded (INV-JOB-008)."""
+        await _fresh_store.put(self._rec())
+        assert scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge") == 0
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["revoked_before_reconcile"] == 1
+        assert counts.get("restored", 0) == 0
+        assert _fresh_store.all() == []
+
+    async def test_markers_do_not_outlive_the_reconcile(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """After the pass every surviving record is in the broker, so the
+        markers describe nothing invisible any more — a later boot-window
+        marker must not settle a question asked afterwards."""
+        scheduled_asks.revoke_role("assistant", "trigger_reloaded")
+        await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+
+        # A revocation after the window records NOTHING — the caller's own
+        # broker scan is authoritative from here on, and a marker that kept
+        # accumulating would both leak and mis-settle a later record.
+        scheduled_asks.revoke_role("assistant", "trigger_reloaded")
+        scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge")
+        assert scheduled_asks._BOOT_REVOCATIONS == []
+
+        await _fresh_store.put(self._rec(rid="later"))
+        counts = await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        assert counts["restored"] == 1
+
     def test_the_store_exposes_no_query_surface(self):
         """A by-role/by-chat reader would be the invitation to answer a LIVE
         decision from the lagging store; the broker is the authority for that."""
         assert not hasattr(scheduled_asks.ScheduledAskStore, "for_role")
         assert not hasattr(scheduled_asks.ScheduledAskStore, "for_chat")
+
+    async def test_boot_markers_are_bounded(self, _fresh_broker):
+        """A deploy with no Telegram channel never runs the reconciler, so the
+        retirement flag never flips and the cap is the only bound."""
+        for i in range(scheduled_asks._BOOT_REVOCATIONS_MAX + 10):
+            scheduled_asks.revoke_role(f"role-{i}", "trigger_reloaded")
+        assert (len(scheduled_asks._BOOT_REVOCATIONS)
+                == scheduled_asks._BOOT_REVOCATIONS_MAX)
 
     async def test_a_changed_operator_is_not_restored(self, _fresh_store):
         await _fresh_store.put(self._rec())
