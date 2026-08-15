@@ -498,17 +498,37 @@ class TestFinalizeResultMapping:
 
 
 class _FakeInboundDriver:
-    """Minimal claude_code-driver stand-in for the G4 completion gate."""
-    def __init__(self, depth=0, reservations=0, texts=()):
+    """Minimal claude_code-driver stand-in for the G4 completion gate.
+
+    #591: `in_flight_*` mirrors the real driver's split — `_texts`/`_depth` are
+    the QUEUED population (nothing has been handed to the CLI), `_in_flight` is
+    the population already written into its stdin FIFO with no turn_start
+    evidence back, and `_in_flight_blocking` is the sub-population still young
+    enough to veto. They are separate fields for the same reason the accessors
+    are separate methods: a test that cannot express "delivered but not taken
+    up" cannot exercise the defect.
+    """
+    def __init__(self, depth=0, reservations=0, texts=(),
+                 in_flight=(), in_flight_blocking=None):
         self._depth = depth
         self._resv = reservations
         self._texts = list(texts)
+        self._in_flight = list(in_flight)
+        self._in_flight_blocking = (
+            len(self._in_flight) if in_flight_blocking is None
+            else in_flight_blocking)
         self.refusals: list[str] = []
         self.cancelled_intents: list[tuple] = []
+        self.forced_boundaries: list[str] = []
 
     def inbound_unread_depth(self, eng_id): return self._depth
     def inbound_reservations(self, eng_id): return self._resv
     def inbound_unread_texts(self, eng_id): return list(self._texts)
+    def inbound_in_flight_texts(self, eng_id): return list(self._in_flight)
+    def inbound_in_flight_blocking(self, eng_id): return self._in_flight_blocking
+
+    async def force_completion_turn_boundary(self, engagement):
+        self.forced_boundaries.append(engagement.id)
     def record_completion_refusal(self, eng_id):
         self.refusals.append(eng_id); return len(self.refusals)
     def cancel_send_intent(self, eng_id, request_id):
@@ -638,7 +658,10 @@ class TestCompletionInboundGate:
         posted = "".join(str(c.args) + str(c.kwargs)
                          for c in (list(tch.send_to_topic.call_args_list)
                                    + list(tch.send_response_to_topic.call_args_list)))
-        assert "never read" in posted
+        # #591: the copy claims what Casa can evidence (no turn start recorded)
+        # rather than asserting the message was never read — which is not
+        # provable for an envelope already handed to the CLI.
+        assert "no turn start recorded" in posted
         assert "msg-that-was-never-read" in posted
 
     async def test_race_message_lands_between_gate_and_flip(
@@ -663,3 +686,314 @@ class TestCompletionInboundGate:
         # the pre-registered consumption debt was rolled back
         assert any(r[1].startswith("emit_completion:")
                    for r in drv.cancelled_intents) or drv.cancelled_intents == []
+
+
+class TestCompletionGateSeesTurnsInThePipe:
+    """#591 — INV-ENG-003 extended to the population the gate could not see.
+
+    An envelope written into the engagement's stdin FIFO whose turn has not
+    started yet counted as nothing: `unread_*` excludes `delivered` (right for
+    the ask gate — it may already have been read), so a completion could pass
+    the gate, commit terminal, and only then have the CLI begin the turn that
+    was already in the pipe. The record was `completed`, so its casa tools were
+    refused — but nothing stopped its ordinary Bash/Write/Edit.
+    """
+
+    _setup = TestCompletionInboundGate._setup
+    _emit = TestCompletionInboundGate._emit
+
+    async def test_in_flight_message_refuses_completion(self, tmp_path):
+        """Red case: revert the pre-check to `_depth > 0 or _resv > 0` and the
+        refusal still comes — from the terminal hook — so ALSO neuter the
+        hook's `blocking` term and this completes, which is the bug."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0, in_flight=["already in the pipe"])
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_in_flight_arriving_after_the_precheck_is_still_vetoed(
+            self, tmp_path):
+        """The hook is where the invariant actually lives: delivery can happen
+        during the finalize funnel's own awaits (the spool drain, a forced
+        reload), long after the pre-check said the spool was clean."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0)
+        reg, rec, _ = await self._setup(tmp_path, drv)
+
+        async def _delivered_during_drain(engagement):
+            drv._in_flight = ["pumped while finalize ran"]
+            drv._in_flight_blocking = 1
+
+        drv.drain_inbound_spool = _delivered_during_drain
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_in_flight_alone_never_forces_a_turn_boundary(self, tmp_path):
+        """The D3 escalation kills the CLI so a QUEUED envelope pumps at the
+        respawn. An in-flight envelope is already past that boundary, and the
+        kill is guarded to the very epoch holding it — so a turn that consumed
+        it a moment earlier would die mid-work and the message would never be
+        redelivered (`consumed` ⇒ no redelivery, the #341 hazard).
+
+        Red case: drop the `_depth > 0 or _resv > 0` condition from the
+        escalation and this fails on the second refusal.
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0, in_flight=["in the pipe"])
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            first = await self._emit(rec)
+            second = await self._emit(rec)      # 2nd consecutive → escalates
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert first["kind"] == second["kind"] == "unread_inbound"
+        assert drv.forced_boundaries == [], (
+            "an in-flight envelope must never trigger the epoch kill")
+
+    async def test_queued_input_still_escalates(self, tmp_path):
+        """Mutation guard for the test above: the escalation must still fire
+        for the population it was built for, or the scoping change would have
+        silently disabled D3 altogether."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=1, texts=["queued, never delivered"])
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec)
+            await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert drv.forced_boundaries == [rec.id]
+
+    async def test_expired_in_flight_completes_but_is_disclosed(self, tmp_path):
+        """The fail-open bound, at the gate. A delivery whose turn never starts
+        stops vetoing (`blocking` drops to 0) but stays in the annotation — the
+        engagement completes AND the operator is told, rather than the
+        engagement becoming impossible to complete."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(
+            depth=0, in_flight=["delivered an hour ago, no turn"],
+            in_flight_blocking=0)
+        reg, rec, tch = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "completed"
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert "delivered an hour ago, no turn" in posted, (
+            "an expired veto must not become a silent loss")
+
+    async def test_cancel_discloses_an_in_flight_message(self, tmp_path):
+        """The half of #591 that needs no concurrency at all: /cancel is
+        ungated by design, so the message dies with the engagement — and until
+        now the operator was never told, because the snapshot only ever looked
+        at the queued population.
+
+        Red case: drop `in_flight` from `unread_snapshot` and the text vanishes
+        from the topic post, restoring the silence.
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0, in_flight=["msg-in-the-pipe"])
+        reg, rec, tch = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")   # ungated outcome
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "error"
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert "msg-in-the-pipe" in posted
+        assert "no turn start recorded" in posted
+
+    async def test_both_populations_are_counted_once_each(self, tmp_path):
+        """A queued message and an in-flight one are two messages, not one and
+        not three — the count in the annotation is what the operator reads."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(
+            depth=1, texts=["still queued"], in_flight=["in the pipe"])
+        reg, rec, tch = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert "2 operator message(s)" in posted
+        assert "still queued" in posted and "in the pipe" in posted
+
+    async def test_a_driver_without_the_new_accessors_still_completes(
+            self, tmp_path):
+        """Fail-open, unchanged: the in-casa driver and every older duck driver
+        expose no in-flight accessors, and must not be gated by their absence
+        or by a MagicMock's truthiness."""
+        import agent as agent_mod
+
+        class _LegacyDriver:
+            def inbound_unread_depth(self, eng_id): return 0
+            def inbound_reservations(self, eng_id): return 0
+            def inbound_unread_texts(self, eng_id): return []
+            def register_completion_consumption(self, eng_id, args): pass
+            async def drain_inbound_spool(self, engagement): pass
+
+        drv = _LegacyDriver()
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "completed"
+
+    async def test_a_mock_driver_cannot_fabricate_an_in_flight_depth(
+            self, tmp_path):
+        """`int(MagicMock()) == 1` bit this gate once already. A non-int/list
+        return reads as empty, never as a fabricated depth."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver()
+        drv.inbound_in_flight_blocking = lambda eng_id: MagicMock()
+        drv.inbound_in_flight_texts = lambda eng_id: MagicMock()
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "completed"
+
+    async def test_a_failing_in_flight_accessor_keeps_the_old_gate(
+            self, tmp_path):
+        """Found in diff review (Terra, S1). The new in-flight reads first
+        shared a try/except with the queued and reservation reads, so a raise
+        from EITHER new accessor reset all of them to zero — adding a gate
+        could switch off the gate that was already there, and an accepted
+        operator message could be committed past with no veto at all.
+
+        What this pins, precisely: the refusal survives, through whichever
+        layer gets there first. With queued depth positive at entry that is the
+        pre-check, so merging the guards in the pre-check ALONE still fails
+        this — but merging them in the terminal hook alone does not, because
+        the hook is never reached. The hook's own guard is pinned by
+        `test_a_failing_in_flight_accessor_keeps_the_TERMINAL_HOOK_gate` below,
+        and the hook is where the invariant actually lives (same division of
+        labour the original gate's tests already record).
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=1, texts=["queued and still unread"])
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the NEW accessor")
+
+        drv.inbound_in_flight_blocking = _raises
+        drv.inbound_in_flight_texts = _raises
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_a_failing_old_accessor_still_fails_open(self, tmp_path):
+        """The other side of the split guard, unchanged from before: a broken
+        driver must not wedge termination forever."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver()
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the OLD accessor")
+
+        drv.inbound_unread_texts = _raises
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "completed"
+
+    async def test_a_failing_in_flight_accessor_keeps_the_TERMINAL_HOOK_gate(
+            self, tmp_path):
+        """The same S1, at the layer that actually enforces it.
+
+        The sibling test above has positive queued depth at entry, so the
+        pre-check refuses and the terminal hook is never reached — mutating the
+        hook's guard alone left every test green, which is precisely the
+        "mutation that fails to mutate" trap. Here the queued message arrives
+        DURING the finalize funnel (as a real delivery does), so the pre-check
+        passes and the hook is the only thing standing between an accepted
+        operator message and a silent terminal commit.
+
+        Red case: merge the hook's two accessor guards back into one and this
+        completes the engagement with an empty annotation.
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0)
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the NEW accessor")
+
+        drv.inbound_in_flight_blocking = _raises
+        drv.inbound_in_flight_texts = _raises
+
+        async def _queued_arrives_during_drain(engagement):
+            drv._depth = 1
+            drv._texts = ["arrived while finalize ran"]
+
+        drv.drain_inbound_spool = _queued_arrives_during_drain
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_a_failing_in_flight_accessor_still_discloses_the_queued_text(
+            self, tmp_path):
+        """The disclosure half of the same layer: an ungated outcome must still
+        list the queued messages when only the new accessors are broken."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=1, texts=["queued, and still owed"])
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the NEW accessor")
+
+        drv.inbound_in_flight_blocking = _raises
+        drv.inbound_in_flight_texts = _raises
+        reg, rec, tch = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec, status="error")     # ungated outcome
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert "queued, and still owed" in posted

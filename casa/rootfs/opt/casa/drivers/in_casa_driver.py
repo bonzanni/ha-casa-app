@@ -20,7 +20,9 @@ from claude_agent_sdk import (
 )
 
 from drivers.driver_protocol import DriverProtocol, StaleLaunchError
-from error_kinds import api_error_kind
+from error_kinds import (
+    ApiErrorTurn, ErrorKind, api_error_kind, result_api_error_kind,
+)
 from engagement_registry import EngagementRecord
 import sdk_logging
 
@@ -397,6 +399,11 @@ class InCasaDriver(DriverProtocol):
         stream_truncated = False
         idx = 0  # Phase 4b: per-turn AssistantMessage counter.
         started_ms = time.monotonic() * 1000  # Phase 4b: turn duration anchor.
+        # #595: the kind of API-level fault that ENDED this turn, if any, and
+        # the terminal result that may carry it instead. Collected here and
+        # raised after the stream drains — see the raise below for why.
+        api_error: ErrorKind | None = None
+        result_msg: Any = None
         # Per-call tool name lookup so log_tool_result can render name=.
         tool_names_by_id: dict[str, str] = {}
         token = engagement_var.set(engagement)
@@ -478,23 +485,40 @@ class InCasaDriver(DriverProtocol):
                             "phase4b dispatch failed: %s", dispatch_exc,
                             exc_info=True,
                         )
-                    # Phase 3b streaming — Task 6 output bound for specialists.
-                    if isinstance(sdk_msg, AssistantMessage) and not stream_truncated:
-                        # #568: an API-level fault (a safety refusal included)
-                        # arrives as an assistant message whose text block is
-                        # the CLI's own error prose — a request id and
-                        # terminal-UI advice. Streaming it would post that into
-                        # the engagement's topic as the agent's words. Skip it
-                        # and log the kind; the turn then produces no text and
-                        # the empty-turn warning below (which already names a
-                        # model refusal as a cause) is the operator's signal.
+                    # #568: an API-level fault (a safety refusal included)
+                    # arrives as an assistant message whose text block is the
+                    # CLI's own error prose — a request id and terminal-UI
+                    # advice. Streaming it would post that into the
+                    # engagement's topic as the agent's words, so it is never
+                    # streamed. #595: it is also RECORDED, so the turn can end
+                    # with the kind the fault actually was.
+                    #
+                    # Detected outside the ``not stream_truncated`` branch on
+                    # purpose (Sol design r2): once a specialist's output has
+                    # been clipped that branch stops running, and a fault after
+                    # the clip would have been invisible — the turn would end
+                    # as a truncated success. Main-loop faults only, exactly as
+                    # ``sdk_client_pool.run_turn_locked``: one scoped to a
+                    # sub-agent (``parent_tool_use_id`` set) is that
+                    # sub-agent's problem and the turn can still answer, though
+                    # its prose is not an answer either and is still skipped.
+                    # First one wins — the fault that ended the turn is the
+                    # earliest, not the last thing on the wire.
+                    if isinstance(sdk_msg, AssistantMessage):
                         _api_kind = api_error_kind(sdk_msg)
                         if _api_kind is not None:
+                            if (api_error is None and getattr(
+                                    sdk_msg, "parent_tool_use_id", None) is None):
+                                api_error = _api_kind
                             logger.warning(
                                 "engagement %s turn ended by an API error "
                                 "kind=%s", engagement.id[:8], _api_kind.value,
                             )
                             continue
+                    elif isinstance(sdk_msg, ResultMessage):
+                        result_msg = sdk_msg
+                    # Phase 3b streaming — Task 6 output bound for specialists.
+                    if isinstance(sdk_msg, AssistantMessage) and not stream_truncated:
                         msg_text = "".join(
                             b.text for b in getattr(sdk_msg, "content", [])
                             if isinstance(b, TextBlock)
@@ -525,6 +549,28 @@ class InCasaDriver(DriverProtocol):
         final = accumulated.strip()
         if final:
             await stream.finalize(final)
+
+        # #595: the result's own stop_reason is the second carrier — read so a
+        # refusal reported ONLY there (no synthesized assistant message) still
+        # ends the turn honestly rather than as an empty success. Same pair of
+        # carriers every other read loop in the codebase handles.
+        if api_error is None:
+            api_error = result_api_error_kind(result_msg)
+        if api_error is not None:
+            # Raised AFTER the stream is drained and whatever legitimate text
+            # preceded the fault has been finalized: that text has already been
+            # posted progressively and cannot be retracted, so leaving it
+            # un-finalized would strand a partial edit in the topic. Raising at
+            # all is the point of #595 — without it the turn returns normally
+            # having produced nothing, and the engagement's terminal record
+            # says `driver_start_failed` (or nothing), making a safety refusal
+            # indistinguishable from a crash. The kind travels on the exception
+            # so classification happens once, where the evidence is.
+            logger.warning(
+                "engagement %s: turn ended by an API fault kind=%s",
+                engagement.id[:8], api_error.value,
+            )
+            raise ApiErrorTurn(api_error)
 
         # G-4 (v0.33.0): exploration2 found a configurator engagement
         # that finalized outcome=error 24s after system_init with zero

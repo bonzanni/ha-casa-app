@@ -3763,3 +3763,344 @@ class TestTurnDeliveryAdmission:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+
+# ---------------------------------------------------------------------------
+# #591 / #592 — the terminal question is not the ask question
+#
+# `unread_*` answers "is the operator still waiting to be answered?", for which
+# excluding a `delivered` envelope is right (it may already have been read —
+# Sol g4-r1-5). The TERMINAL question is "is there operator input in flight
+# that no turn has taken up?", and for that the same exclusion is wrong: the
+# completion gate could commit while a turn sat in the engagement's stdin FIFO,
+# and the no-silent-loss annotation never mentioned it.
+# ---------------------------------------------------------------------------
+
+
+class TestInFlightIsADifferentQuestion:
+
+    async def _delivered(self, tmp_path, text="operator message"):
+        """A spool with one envelope in the `delivered` state (written into the
+        FIFO, no turn_start evidence yet)."""
+        writer = _FakeWriter(True)
+        s = _make_spool(tmp_path, writer=writer, current_epoch=lambda: 7)
+        await s.enqueue(text, tg_message_id=11)
+        await s.on_spawn()                      # arms the reader → pumps
+        assert writer.calls == [text], "envelope was not delivered"
+        return s
+
+    async def test_delivered_is_in_flight_and_not_unread(self, tmp_path):
+        """The split itself. Red case: make `_in_flight` return [] and the
+        completion gate is blind again exactly as #591 reported."""
+        s = await self._delivered(tmp_path)
+
+        assert s.unread_texts() == [], "the ask gate's answer must not change"
+        assert s.unread_depth() == 0
+        assert s.in_flight_texts() == ["operator message"]
+        assert s.in_flight_blocking_depth(60.0) == 1
+
+    async def test_turn_start_ends_the_in_flight_window(self, tmp_path):
+        """`consumed` requires positive turn_start evidence — that, and only
+        that, is what stops an envelope counting."""
+        s = await self._delivered(tmp_path)
+        await s.on_turn_start()
+
+        assert s.in_flight_texts() == []
+        assert s.in_flight_blocking_depth(60.0) == 0
+        assert s.unread_texts() == []
+
+    async def test_envelope_being_written_is_already_unread(self, tmp_path):
+        """Why there is no third carrier, and why the first design's `_writing`
+        marker was cut: throughout the awaited write the envelope is still
+        `queued`, so `unread_*` already sees it. Counting it as in-flight too
+        would report one operator message TWICE in the terminal annotation.
+
+        This is also the whole of #592 for a COMPLETION: a payload larger than
+        the pipe buffer suspends mid-write, and the gate is already closed over
+        that suspension.
+        """
+        release = asyncio.Event()
+        observed: dict = {}
+        s = None
+
+        async def _blocking_writer(text):
+            observed["unread"] = s.unread_texts()
+            observed["in_flight"] = s.in_flight_texts()
+            await release.wait()
+            return True
+
+        s = _make_spool(tmp_path, writer=_blocking_writer)
+        await s.enqueue("mid-write message")
+        pump = asyncio.create_task(s.on_spawn())
+        await asyncio.sleep(0)                  # let the writer start
+        while "unread" not in observed:
+            await asyncio.sleep(0)
+
+        assert observed["unread"] == ["mid-write message"], (
+            "a mid-write envelope must still be visible to the existing gate")
+        assert observed["in_flight"] == [], (
+            "a mid-write envelope counted twice — annotation would duplicate it")
+
+        release.set()
+        await asyncio.wait_for(pump, timeout=5)
+        assert s.in_flight_texts() == ["mid-write message"]
+        assert s.unread_texts() == []
+
+    async def test_initial_prompt_is_never_in_flight(self, tmp_path):
+        """The launch prompt is the task, not an unanswered operator message —
+        excluded from both populations, as it already is from `unread_*`."""
+        writer = _FakeWriter(True)
+        s = _make_spool(tmp_path, writer=writer)
+        await s.enqueue("the initial task", is_initial=True)
+        await s.on_spawn()
+
+        assert writer.calls == ["the initial task"]
+        assert s.in_flight_texts() == []
+        assert s.in_flight_blocking_depth(60.0) == 0
+
+    async def test_a_respawn_never_drops_the_envelope_from_both_populations(
+            self, tmp_path):
+        """A respawn reverts `delivered → queued` and immediately re-pumps, so
+        the envelope crosses between the two populations. What must hold is
+        that it is always in exactly ONE of them — a gap would be the same
+        silence #591 is about, one state later.
+
+        Both outcomes of the redelivery are covered: the write succeeds (back
+        to in-flight for the new epoch) and the write fails (retained as
+        unread, which is what re-arms the D3 escalation).
+        """
+        s = await self._delivered(tmp_path)
+        await s.on_spawn()                      # reverts, then redelivers
+        assert s.in_flight_texts() == ["operator message"]
+        assert s.unread_texts() == []
+
+        failing = _FakeWriter(False)
+        s2 = _make_spool(tmp_path, writer=failing,
+                         spool_path=str(tmp_path / "s2.jsonl"))
+        await s2.enqueue("operator message")
+        await s2.on_spawn()                     # write refused → stays queued
+        assert failing.calls == ["operator message"]
+        assert s2.unread_texts() == ["operator message"]
+        assert s2.in_flight_texts() == []
+
+    async def test_stale_delivery_stops_vetoing_but_is_still_disclosed(
+            self, tmp_path):
+        """The fail-open bound. A turn that never starts must not make a
+        successful completion impossible for the life of the engagement — but
+        the operator is still told about the message.
+
+        Red case: drop the age comparison and this fails, because the veto
+        would then hold forever on a delivery nothing will ever consume.
+        """
+        s = await self._delivered(tmp_path)
+        env = [e for e in s._envelopes if e.state == "delivered"][0]
+        env.delivered_monotonic -= 3600.0        # an hour with no turn_start
+
+        assert s.in_flight_blocking_depth(60.0) == 0, "veto must not be eternal"
+        assert s.in_flight_texts() == ["operator message"], (
+            "an expired veto must not become a silent loss")
+
+    async def test_delivered_without_a_stamp_never_vetoes(self, tmp_path):
+        """A `delivered` row read back from the spool file at boot carries no
+        stamp (the field is deliberately not persisted). Unknown age reads as
+        stale — annotate, never veto — because vetoing on an unknowable age is
+        the wedge this bound exists to prevent."""
+        s = await self._delivered(tmp_path)
+        env = [e for e in s._envelopes if e.state == "delivered"][0]
+        env.delivered_monotonic = None           # as _load() reconstructs it
+
+        assert s.in_flight_blocking_depth(60.0) == 0
+        assert s.in_flight_texts() == ["operator message"]
+
+    async def test_stamp_is_not_persisted(self, tmp_path):
+        """Pins the reason above, at the serialisation boundary."""
+        import json
+        s = await self._delivered(tmp_path)
+        rows = [json.loads(line) for line in
+                (tmp_path / ".inbound_spool.jsonl").read_text().splitlines()
+                if line.strip()]
+
+        assert rows, "spool file was never written"
+        assert all("delivered_monotonic" not in r for r in rows)
+
+
+class TestInFlightDriverSurface:
+    def _driver(self):
+        import drivers.claude_code_driver as ccd
+        d = ccd.ClaudeCodeDriver.__new__(ccd.ClaudeCodeDriver)
+        d._inbound = {}
+        return d
+
+    def test_no_spool_reads_as_empty(self):
+        """Same fail-open shape as every other inbound accessor: an engagement
+        with no spool has no opinion, it does not have a fabricated depth."""
+        d = self._driver()
+        assert d.inbound_in_flight_texts("nope") == []
+        assert d.inbound_in_flight_blocking("nope") == 0
+
+
+class TestLargeTurnIsWrittenWhole:
+    """#592 — a turn larger than the pipe buffer used to be written in pieces,
+    suspending between them. The suspension is a real scheduling point at which
+    an ungated terminal transition can commit, and the remainder is then
+    written to a record that is already terminal; nothing can revoke it,
+    because closing the writer is itself an EOF the CLI acts on.
+
+    So the fix removes the suspension instead of guarding it: grow the pipe so
+    the payload fits and the first `os.write` completes it.
+    """
+
+    @staticmethod
+    def _fifo_with_reader(eng_id):
+        import os
+
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir(eng_id)
+        fifo = fifo_path(eng_id)
+        os.mkfifo(fifo)
+        # A reader that never reads: the payload has to fit in the pipe itself.
+        return fifo, os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+
+    async def test_payload_larger_than_the_default_buffer_writes_in_full(
+            self, tmp_path):
+        """Red case: delete the `_grow_pipe_to_fit` call and this returns False
+        — the write stalls at the 64 KiB default capacity and gives up at the
+        deadline, having delivered a truncated prefix.
+        """
+        import fcntl
+        import os
+        from types import SimpleNamespace
+
+        from drivers.claude_code_driver import ClaudeCodeDriver
+
+        rec = SimpleNamespace(id="eng-big-turn", topic_id=7)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        assert fcntl.fcntl(rfd, fcntl.F_GETPIPE_SZ) < 200 * 1024, (
+            "test is void — this pipe already fits the payload by default")
+
+        driver = ClaudeCodeDriver(
+            engagements_root=str(tmp_path), send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://unused")
+        payload = "x" * (200 * 1024)
+
+        ok = await asyncio.wait_for(
+            driver._write_to_fifo(rec, payload, timeout_s=2.0), timeout=10.0)
+
+        assert ok is True
+        assert os.read(rfd, 1024 * 1024) == (payload + "\n").encode()
+
+    async def test_ordinary_turn_is_unaffected(self, tmp_path):
+        """Mutation guard: the grow must be a no-op for a normal turn, not a
+        capacity change on every write."""
+        import fcntl
+        from types import SimpleNamespace
+
+        from drivers.claude_code_driver import ClaudeCodeDriver
+
+        rec = SimpleNamespace(id="eng-small-turn", topic_id=7)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        before = fcntl.fcntl(rfd, fcntl.F_GETPIPE_SZ)
+
+        driver = ClaudeCodeDriver(
+            engagements_root=str(tmp_path), send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://unused")
+        assert await driver._write_to_fifo(rec, "hello", timeout_s=2.0) is True
+        assert fcntl.fcntl(rfd, fcntl.F_GETPIPE_SZ) == before
+
+    async def test_a_kernel_that_refuses_the_grow_costs_nothing(
+            self, tmp_path, monkeypatch):
+        """The grow is strictly best-effort: EPERM above pipe-max-size, EBUSY,
+        a kernel without F_SETPIPE_SZ. A refusal must cost the delivery
+        nothing.
+
+        The REAL helper runs here — an earlier version of this test stubbed it
+        out with a no-op, which proved only that a no-op is harmless and would
+        have passed even if the helper's own exception handling regressed
+        (Terra, diff review). `fcntl.fcntl` is made to raise instead, so the
+        failure happens where a kernel refusal would.
+        """
+        import fcntl
+        from types import SimpleNamespace
+
+        import drivers.claude_code_driver as ccd
+
+        def _refuse(*a, **k):
+            raise OSError(1, "Operation not permitted")
+
+        rec = SimpleNamespace(id="eng-grow-fails", topic_id=7)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        monkeypatch.setattr(fcntl, "fcntl", _refuse)
+
+        driver = ccd.ClaudeCodeDriver(
+            engagements_root=str(tmp_path), send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://unused")
+        assert await driver._write_to_fifo(rec, "small", timeout_s=2.0) is True
+        monkeypatch.undo()
+        assert self._drain_all(rfd) == b"small\n"
+
+    @staticmethod
+    def _drain_all(rfd):
+        import os
+        try:
+            return os.read(rfd, 1024 * 1024)
+        except BlockingIOError:
+            return b""
+
+    def test_grow_helper_never_raises(self):
+        """Every failure path of the helper itself, on a fd that is not a pipe
+        at all (EINVAL/ENOTTY territory) and on a closed one (EBADF)."""
+        import os
+
+        from drivers.claude_code_driver import _grow_pipe_to_fit
+
+        r, w = os.open(os.devnull, os.O_RDONLY), os.open(os.devnull, os.O_WRONLY)
+        try:
+            _grow_pipe_to_fit(w, 1024 * 1024, "eng-not-a-pipe")
+        finally:
+            os.close(r); os.close(w)
+        _grow_pipe_to_fit(w, 1024 * 1024, "eng-closed-fd")   # EBADF
+
+    async def test_a_denied_grow_on_an_oversized_payload_degrades_not_breaks(
+            self, tmp_path, monkeypatch):
+        """Terra, diff review r2: the refusal test above uses a small payload,
+        so it proves the exception handling and not the BEHAVIOUR when a
+        kernel denies the grow for a payload that needs it.
+
+        The contract for that case is explicit — fall back to exactly what the
+        code did before #592: write what fits, keep trying to the deadline,
+        report failure so the spool retains the envelope and redelivers it. The
+        one thing it must not do is raise, hang past the deadline, or claim
+        success over a truncated delivery.
+        """
+        import fcntl
+        import time
+        from types import SimpleNamespace
+
+        import drivers.claude_code_driver as ccd
+
+        real_fcntl = fcntl.fcntl
+
+        def _deny_growth_only(fd, op, *a):
+            if op == fcntl.F_SETPIPE_SZ:
+                raise OSError(1, "Operation not permitted")
+            return real_fcntl(fd, op, *a)
+
+        rec = SimpleNamespace(id="eng-denied-grow", topic_id=7)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        monkeypatch.setattr(fcntl, "fcntl", _deny_growth_only)
+
+        driver = ccd.ClaudeCodeDriver(
+            engagements_root=str(tmp_path), send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://unused")
+
+        started = time.monotonic()
+        ok = await asyncio.wait_for(
+            driver._write_to_fifo(rec, "x" * (200 * 1024), timeout_s=1.0,
+                                  poll_s=0.05),
+            timeout=10.0)
+        elapsed = time.monotonic() - started
+        monkeypatch.undo()
+
+        assert ok is False, (
+            "a partially written turn must be reported as not delivered")
+        assert elapsed < 5.0, "the deadline must still bound the write"

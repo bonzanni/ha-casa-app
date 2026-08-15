@@ -44,6 +44,19 @@ _ORDINARY_LANE_CAP = 10
 _PRIORITY_LANE_CAP = 3
 _SPOOL_FILENAME = ".inbound_spool.jsonl"
 
+# #591: how long an envelope that has been handed to the CLI, with no
+# ``turn_start`` evidence back, may veto a successful completion.
+#
+# DERIVED, not measured: ``_write_to_fifo`` already budgets 20 s for a reader
+# to appear and for the write to clear, so a delivery whose turn has not
+# started after three times that budget is not "about to start" — it is
+# evidence that nothing will consume it. The value bounds a veto only; past it
+# the completion proceeds and the operator is still told (``in_flight_texts``
+# is deliberately unbounded). ``in_flight_blocking_depth`` logs a WARN every
+# time the bound actually releases an envelope, so production says whether this
+# number is right instead of it staying a guess.
+_IN_FLIGHT_VETO_WINDOW_S = 60.0
+
 # Exact operator-facing copies (§3 "Exact copies"; wording is binding).
 _REDIRECT_PREFIX = (
     "[OPERATOR REDIRECT — drop your current agenda, re-plan from this message]"
@@ -205,6 +218,32 @@ async def _completion_noop_poster() -> int | None:
     return None
 
 
+def _grow_pipe_to_fit(fd: int, needed: int, engagement_id: str) -> None:
+    """#592: best-effort grow of a pipe so ``needed`` bytes fit in one write.
+
+    Never raises and never shrinks. A pipe that already holds enough capacity
+    is left alone (``F_SETPIPE_SZ`` below the buffered byte count is EBUSY, and
+    there is nothing to gain). Every failure mode — no ``F_SETPIPE_SZ`` on this
+    platform, a request above ``/proc/sys/fs/pipe-max-size`` (EPERM), a bad fd —
+    leaves the caller on its existing partial-write loop.
+    """
+    try:
+        import fcntl
+
+        set_sz = getattr(fcntl, "F_SETPIPE_SZ", None)
+        get_sz = getattr(fcntl, "F_GETPIPE_SZ", None)
+        if set_sz is None or get_sz is None:
+            return
+        if fcntl.fcntl(fd, get_sz) >= needed:
+            return
+        fcntl.fcntl(fd, set_sz, needed)
+    except (OSError, ValueError, ImportError) as exc:
+        logger.debug(
+            "engagement %s: pipe grow to %d bytes declined (%s) — falling back "
+            "to the partial-write loop", engagement_id[:8], needed, exc,
+        )
+
+
 def _is_redirect(text: str) -> bool:
     """§3 redirect detection: ``STOP`` as the (case-insensitive) first line, or
     a ``redirect:`` prefix."""
@@ -280,6 +319,16 @@ class _Envelope:
     # ran the visual settle) — delivery never re-settles. ``None`` (field
     # absent on legacy spooled envelopes) keeps the delivery-time settle path.
     answer_anchor_mid: int | None = None
+    # #591: monotonic stamp of the moment this envelope became ``delivered``.
+    # Used ONLY to bound how long an envelope no turn has taken up may veto a
+    # completion (see ``in_flight_blocking_depth``). DELIBERATELY absent from
+    # ``_ENVELOPE_PERSIST_FIELDS``: a restart reverts every ``delivered``
+    # envelope to ``queued`` (``recover``), so a persisted stamp could only ever
+    # describe a state that no longer exists. ``None`` therefore means "age
+    # unknown" and reads as STALE — never vetoes, still annotated. That is the
+    # fail-open direction on the one path where it is observable: a persisted
+    # ``delivered`` row loaded at boot, before the scheduled ``recover()`` runs.
+    delivered_monotonic: float | None = None
 
     def to_line(self) -> str:
         return json.dumps(
@@ -507,6 +556,75 @@ class _InboundSpool:
         entry means the operator is waiting — the ask is refused."""
         return sum(1 for e in self._lane_members() if not e.is_initial)
 
+    # -- #591 in-flight reads (a DIFFERENT question) -----------------------
+
+    def _in_flight(self) -> list[_Envelope]:
+        """Envelopes handed to the CLI that no turn has taken up yet.
+
+        This answers a different question from ``unread_*`` and that is the
+        whole point of it existing. ``unread_*`` answers the ASK gate's
+        question — *is the operator still waiting to be answered?* — for which
+        excluding ``delivered`` is right, because a delivered envelope may well
+        have been read (Sol g4-r1-5, still standing). The TERMINAL question is
+        *is there operator input in flight that will only be taken up after I
+        commit?*, and for that the same exclusion is wrong: ``delivered`` means
+        the bytes are in the engagement's stdin FIFO with no ``turn_start``
+        evidence back yet.
+
+        Note what is NOT here: an envelope being written right now. Throughout
+        ``_write_fifo`` the envelope is still ``queued`` (``_pump`` promotes it
+        only after a successful write), so it is already inside ``unread_*``.
+        The union ``unread ∪ in_flight`` is therefore gapless from before the
+        FIFO open until ``on_turn_start`` consumes it, with no third carrier.
+        """
+        return [
+            e for e in self._envelopes
+            if e.state == "delivered" and e.notice == "none" and not e.is_initial
+        ]
+
+    def in_flight_texts(self) -> list[str]:
+        """Texts of every in-flight envelope, at any age — the population the
+        terminal no-silent-loss annotation must disclose. Unbounded on purpose:
+        an envelope that stops vetoing (below) is still one the operator was
+        never answered on, and dropping it from the annotation would restore
+        exactly the silence #591 is about."""
+        return [e.text for e in self._in_flight()]
+
+    def in_flight_blocking_depth(self, max_age_s: float) -> int:
+        """Count of in-flight envelopes YOUNG enough to veto a completion.
+
+        The veto is bounded in time and the annotation is not, because the two
+        answer to different failure modes. A delivered envelope normally
+        becomes ``consumed`` within a second — the CLI reads the line and its
+        ``system/init`` frame reaches the relay. One that has sat undelivered
+        to a turn for far longer is evidence that the turn is never going to
+        start, and an unbounded veto on a state no event will clear makes a
+        successful completion impossible for the life of the engagement, which
+        is the fail-open property this hook is built around ("a driver bug must
+        not wedge termination forever"). Past the window the completion goes
+        through AND the operator is told, which is the honest degradation.
+
+        An envelope with no stamp reads as stale (see ``delivered_monotonic``).
+        """
+        now = time.monotonic()
+        blocking = 0
+        for env in self._in_flight():
+            if env.delivered_monotonic is None:
+                continue                       # age unknown ⇒ never vetoes
+            age = now - env.delivered_monotonic
+            if age < max_age_s:
+                blocking += 1
+            else:
+                # The bound actually released one — the value below is a
+                # derivation, not a measurement, so say when it bites.
+                logger.warning(
+                    "engagement %s: in-flight operator envelope has had no "
+                    "turn_start for %.0fs (> %.0fs) — no longer vetoing "
+                    "completion; it stays in the terminal annotation",
+                    self._engagement_id[:8], age, max_age_s,
+                )
+        return blocking
+
     # -- enqueue -----------------------------------------------------------
 
     async def enqueue(
@@ -689,6 +807,7 @@ class _InboundSpool:
             if env.state == "delivered":
                 env.state = "queued"
                 env.delivery_epoch = None
+                env.delivered_monotonic = None      # #591: back to ``unread``
                 reverted = True
         if reverted:
             self._persist_quiet()
@@ -726,6 +845,7 @@ class _InboundSpool:
             if env.state == "delivered":
                 env.state = "queued"
                 env.delivery_epoch = None
+                env.delivered_monotonic = None      # #591: back to ``unread``
                 reverted = True
         if reverted:
             self._persist_quiet()
@@ -765,6 +885,10 @@ class _InboundSpool:
                     break
                 env.state = "delivered"
                 env.delivery_epoch = self._current_epoch()
+                # #591: stamp the instant it left ``unread`` for ``in_flight``.
+                # Set in the SAME suspension-free stretch as the state change,
+                # so no coroutine can observe a delivered envelope with no age.
+                env.delivered_monotonic = time.monotonic()
                 self.reader_ready = False           # one message per FIFO EOF
                 self._persist_quiet()
                 # §4/§A3: thread this turn to the ANCHOR the message answered,
@@ -1820,6 +1944,28 @@ class ClaudeCodeDriver(DriverProtocol):
                         await self.post_topic_notice(engagement, copy)
                         return False
                     await asyncio.sleep(poll_s)
+            # #592 — give the admission below something whole to fence. A
+            # non-blocking write only ever writes what fits: for a payload
+            # larger than the pipe's capacity the write is PARTIAL and the loop
+            # below suspends on ``BlockingIOError``, which is a real scheduling
+            # point at which an ungated terminal transition (a /cancel, a reap)
+            # can commit — and the remainder is then written to a record that
+            # is already terminal. Nothing can revoke it: closing the writer is
+            # itself an EOF the CLI acts on, so abandoning the remainder
+            # delivers a TRUNCATED turn rather than no turn. The fix is
+            # therefore to remove the suspension rather than to guard it —
+            # grow the pipe so the whole payload fits and the first
+            # ``os.write`` completes it, which is what makes the first-byte
+            # admission cover the WHOLE turn for any payload the kernel lets us
+            # fit. The pipe is empty here (one message per FIFO EOF, and the
+            # reader is a freshly spawned CLI).
+            #
+            # Strictly best-effort: EPERM (above /proc/sys/fs/pipe-max-size),
+            # EBUSY, no ``F_SETPIPE_SZ`` on this platform, or a pipe that is
+            # unexpectedly non-empty all fall back to the loop below, which is
+            # exactly today's behaviour. The import is local for the same
+            # reason — an optimisation must not be able to fail driver load.
+            _grow_pipe_to_fit(fd, len(data), engagement.id)
             # #588 — the delivery admission, and the ONLY point at which it can
             # be made. The open above succeeds only once the CLI holds the FIFO
             # open for reading, and the CLI cannot observe a byte until the
@@ -1847,9 +1993,7 @@ class ClaudeCodeDriver(DriverProtocol):
                     "engagement", engagement.id[:8],
                 )
                 return False
-            # Reader exists; write non-blocking under the same deadline. Turns
-            # are far below the 64KB pipe buffer, so the first write virtually
-            # always completes fully.
+            # Reader exists; write non-blocking under the same deadline.
             view = memoryview(data)
             while view:
                 try:
@@ -3026,6 +3170,22 @@ class ClaudeCodeDriver(DriverProtocol):
         """G4 D4: queued-unseen operator texts ([] when no spool)."""
         spool = self._inbound.get(engagement_id)
         return spool.unread_texts() if spool is not None else []
+
+    def inbound_in_flight_texts(self, engagement_id: str) -> list[str]:
+        """#591: texts of operator envelopes already handed to the CLI that no
+        turn has taken up ([] when no spool). Disclosure population — every
+        age. See ``_InboundSpool._in_flight``."""
+        spool = self._inbound.get(engagement_id)
+        return spool.in_flight_texts() if spool is not None else []
+
+    def inbound_in_flight_blocking(self, engagement_id: str) -> int:
+        """#591: how many in-flight envelopes are young enough to veto a
+        completion (0 when no spool). Bounded by ``_IN_FLIGHT_VETO_WINDOW_S``
+        so a turn that never starts cannot make completion impossible."""
+        spool = self._inbound.get(engagement_id)
+        if spool is None:
+            return 0
+        return spool.in_flight_blocking_depth(_IN_FLIGHT_VETO_WINDOW_S)
 
     def reserve_inbound(self, engagement_id: str) -> None:
         """G4 D2: SYNCHRONOUS ingress reservation — taken by the trusted
