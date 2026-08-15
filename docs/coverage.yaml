@@ -199,6 +199,8 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/runtime.py
   doc: architecture/overview.md
+- item: casa/rootfs/opt/casa/rw_barrier.py
+  doc: architecture/concurrency-model.md
 - item: casa/rootfs/opt/casa/sdk_client_pool.py
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/sdk_logging.py
@@ -209,6 +211,8 @@
   doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/scheduled_asks.py
   doc: architecture/jobs-and-delivery.md
+- item: casa/rootfs/opt/casa/session_gate.py
+  doc: architecture/concurrency-model.md
 - item: casa/rootfs/opt/casa/session_registry.py
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/session_saver.py

@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.208.0] - 2026-08-15
+
+### Fixed
+
+- **A memory wipe could report success while leaving a conversation
+  resumable** (#578). Wiping long-term memory is meant to end every stored
+  conversation as well as delete the facts. It drops each conversation's
+  pointer and, before doing so, waits for any reply that is still being
+  written on that conversation. It only knew how to wait for replies handled
+  by Casa's pool of warm assistant processes, which is most of them but not
+  all: a reply triggered by a schedule, by a webhook, or by a fallback taken
+  when the pool is unavailable runs on its own process the pool has never seen.
+  Such a reply finished after the wipe had already reported completion and
+  restored the pointer it had just removed, leaving that conversation
+  resumable with all of its pre-wipe content still in place. A conversation
+  starting for the very first time was less visible still, having no stored
+  pointer for the wipe to find at all.
+
+  A wipe now suspends new replies and waits for every one already in progress,
+  whichever way it is being handled, before it removes anything. If a reply
+  does not finish in time the wipe stops and reports that it deleted nothing,
+  rather than reporting a success it did not deliver. Starting a fresh
+  conversation with `/new` is covered by the same rule, and no longer retains a
+  transcript into memory that a wipe running alongside it has just emptied.
+
+- **A configuration reload could split one conversation across two assistant
+  processes** (#579). Reloading Casa replaces its assistant while any reply
+  still being written continues on the old one. The replacement had no way to
+  know that, so a message arriving during the changeover could start a second
+  process on the same conversation. Both then wrote to it, and turns could be
+  lost. Conversations are now held to one writer at a time by something that
+  outlives a reload, so a reply in progress is finished before the next one
+  starts, whichever assistant handles it.
+
 ## [0.207.1] - 2026-08-15
 
 ### Fixed

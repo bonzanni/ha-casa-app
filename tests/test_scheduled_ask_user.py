@@ -801,33 +801,22 @@ class TestBootReconcile:
 
 
 class TestSessionWriteGate:
-    def test_classification(self):
-        import agent as agent_mod
-        from bus import BusMessage, MessageType
-
-        def _msg(mtype, ctx):
-            return BusMessage(type=mtype, source="s", target="assistant",
-                              content="x", channel="telegram", context=ctx)
-
-        # the firing turn, and the ask continuation
-        assert agent_mod._needs_session_gate(
-            _msg(MessageType.SCHEDULED, {"chat_id": LABEL}))
-        # the delegation completion for a scheduled turn — a pooled REQUEST
-        # that keying on the message type alone would have missed
-        assert agent_mod._needs_session_gate(
-            _msg(MessageType.REQUEST,
-                 {"chat_id": LABEL, "_scheduled_delivery": True}))
-        # an ordinary DM turn
-        assert not agent_mod._needs_session_gate(
-            _msg(MessageType.CHANNEL_IN, {"chat_id": "500"}))
+    # #573 classified WHICH turns take the gate (scheduled ones, plus the
+    # delegation-completion REQUEST that keying on message type alone missed).
+    # v0.208.0 (#579) deleted that classifier: the gate is unconditional,
+    # because the pool entry lock it deferred to for ordinary turns serializes
+    # only within ONE pool and a reload builds a second one over the same key.
+    # The replacement binding — that every turn takes it, scheduled or not —
+    # lives in tests/test_session_key_authority.py; what remains here is the
+    # scheduled turns' own stake in the shared gate.
 
     async def test_gate_serialises_and_releases(self):
-        import agent as agent_mod
+        import session_gate
 
         order: list[str] = []
 
         async def _hold(name, delay):
-            async with agent_mod.session_write_gate("k"):
+            async with session_gate.session_write_gate("k"):
                 order.append(f"{name}-in")
                 await asyncio.sleep(delay)
                 order.append(f"{name}-out")
@@ -836,7 +825,7 @@ class TestSessionWriteGate:
         assert order in (["a-in", "a-out", "b-in", "b-out"],
                          ["b-in", "b-out", "a-in", "a-out"])
         # refcounted: nothing is retained once released
-        assert "k" not in agent_mod._SESSION_GATES
+        assert "k" not in session_gate._SESSION_GATES
 
     async def test_two_scheduled_turns_never_run_concurrently(self, tmp_path):
         """The outcome, not the arrangement: two SCHEDULED turns dispatched at

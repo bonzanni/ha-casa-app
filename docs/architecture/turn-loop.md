@@ -91,9 +91,11 @@ stays off its path), while a reset waits for the whole close, because the discon
 what flushes the CLI transcript the reset's save is about to read — and because a still-
 finishing old turn could otherwise re-register the session the reset just removed.
 
-What it does not cover: it joins *invalidation* generations only. A reset has no ordering
-relationship with a turn dispatched after it on the same key beyond what the entry lock and
-the channel's own serialization provide.
+What it does not cover: it joins *invalidation* generations only, and only for clients this
+pool owns — a turn on a path the pool never saw has no entry lock to join. Ordering against
+turns in general is not this hook's job: a reset takes the per-key write gate and turn
+admission for its whole body (INV-CONC-004, INV-CONC-005), which is what orders it against
+turns dispatched before or after it on the same key, on any path.
 
 ## Failure behavior
 

@@ -7,7 +7,6 @@ import dataclasses
 import json
 import logging
 import time
-from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,6 +55,7 @@ from recall_renderer import (
 from speaker_provenance import UserProvenance, provenance_from_mapping
 from session_saver import freshness_window, retain_cold_session, save_session
 from semantic_memory import NoOpSemanticMemory, RecallUnavailable, SemanticMemory
+from session_gate import session_write_gate
 from session_registry import (
     SessionRegistry,
     _is_uuid_scope,
@@ -84,51 +84,17 @@ from voice_turn_guard import VoiceTurnGuard
 logger = logging.getLogger(__name__)
 
 
-# #573: one writer per scheduled session.
+# #573/#578/#579: the per-session-key write gate and the process-wide turn
+# admission barrier both live in `session_gate` — module scope a reload cannot
+# replace and no turn path can route around. Imported here (rather than
+# defined here) so `memory_wipe` and `session_saver` can reach the same
+# instances without the lazy-import cycle this module already works around.
 #
-# A SCHEDULED turn bypasses the warm client pool (AR-6) and so takes no
-# cross-turn lock, while a delegation completion for that same session is
-# re-synthesized as a pooled REQUEST and a scheduled ask's answer arrives as a
-# second SCHEDULED turn. Nothing made those three mutually exclusive: two of
-# them could resume one SDK session id concurrently and fork it. This gate
-# serializes every turn that can touch such a session, keyed by channel_key,
-# and is held across the SDK attempt AND the registry publish — the bypass
-# path publishes its new sid after the attempt returns, so releasing earlier
-# would let the next turn read the predecessor.
-#
-# Refcounted rather than a plain dict-of-locks: the key space is per-boot
-# unbounded, and an entry that nothing holds is deleted rather than retained.
-_SESSION_GATES: "dict[str, list]" = {}
-
-
-@asynccontextmanager
-async def session_write_gate(channel_key: str):
-    entry = _SESSION_GATES.get(channel_key)
-    if entry is None:
-        entry = [asyncio.Lock(), 0]
-        _SESSION_GATES[channel_key] = entry
-    entry[1] += 1
-    try:
-        async with entry[0]:
-            yield
-    finally:
-        entry[1] -= 1
-        if entry[1] <= 0 and _SESSION_GATES.get(channel_key) is entry:
-            del _SESSION_GATES[channel_key]
-
-
-def _needs_session_gate(msg: BusMessage) -> bool:
-    """Whether *msg* can touch a scheduled session's SDK session.
-
-    Both arms are Casa-owned and unspoofable: the message type is set by the
-    dispatcher, and ``_scheduled_delivery`` is stripped from every external
-    context. Keying on the message type alone missed the delegation-completion
-    REQUEST, which is the pooled half of the race.
-    """
-    return (
-        msg.type == MessageType.SCHEDULED
-        or msg.context.get("_scheduled_delivery") is True
-    )
+# #573 introduced the gate for SCHEDULED turns only. v0.208.0 makes it
+# unconditional: the pool entry lock serializes turns within ONE pool, and a
+# reload builds a second pool over the same key (#579), so the pool cannot be
+# the serializer. See session_gate's module docstring for the mandated lock
+# order.
 
 # Module-level driver/provider/registry references written by casa_core.main
 # so tool handlers can reach them without circular imports.
@@ -508,6 +474,15 @@ def _retain_fence():
     stub agent's collaborators need not know the fence exists."""
     from memory_wipe import FENCE
     return FENCE
+
+
+def _turn_admission():
+    """The process-wide turn-admission barrier (#578), read at call time for
+    the same reason as the fence above: a module-level ``from … import`` binds
+    the instance once, and a test that needs the wipe and the turn to share a
+    barrier must be able to substitute one."""
+    import session_gate
+    return session_gate.TURN_ADMISSION
 
 
 def _memory_bank() -> str:
@@ -1433,17 +1408,29 @@ class Agent:
                     )
 
             attempt = _attempt_pooled_turn if use_pool else _attempt_bypass_turn
-            # #573: a turn that can touch a SCHEDULED session runs under the
-            # per-session write gate, and holds it across BOTH the attempt (with
-            # its stale-resume recovery and PoolUnavailable fallback) and the
-            # registry publish below — the bypass path publishes its new sid
-            # after the attempt returns, so a gate released at the end of the
-            # attempt would still let the next turn resume the predecessor.
-            _gate = (
-                session_write_gate(channel_key) if _needs_session_gate(msg)
-                else nullcontext()
-            )
-            async with _gate:
+            # #573/#579: EVERY turn runs under the per-session write gate, and
+            # holds it across BOTH the attempt (with its stale-resume recovery
+            # and PoolUnavailable fallback) and the registry publish below —
+            # the bypass path publishes its new sid after the attempt returns,
+            # so a gate released at the end of the attempt would still let the
+            # next turn resume the predecessor. #573 took this gate for
+            # scheduled turns only, leaving ordinary turns to the pool entry
+            # lock; that lock serializes within ONE pool, and a reload builds a
+            # second pool over the same key, so two clients could resume one
+            # session (#579).
+            #
+            # #578: admission is held across the same window, OUTSIDE the gate
+            # (the order is TurnAdmission -> session_write_gate -> RetainFence
+            # -> pool entry lock, and inverting it deadlocks). It is what lets
+            # a memory wipe drain an in-flight turn on ANY path, including one
+            # the client pool never owned and one whose key has no registry
+            # entry yet to enumerate. Deliberately NOT the whole of _process:
+            # both resume decisions live inside this block (the pooled one
+            # under the entry lock, the bypass one at the registry read above),
+            # so a turn that waits out a wipe re-reads an emptied registry and
+            # starts fresh.
+            async with _turn_admission().admitted(), \
+                    session_write_gate(channel_key):
                 try:
                     response_text, sdk_session_id, usage, used_resume, \
                         session_published = \

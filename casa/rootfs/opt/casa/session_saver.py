@@ -145,6 +145,7 @@ async def save_session(
     channel_key: str, registry, semantic_memory, *, directory: str, channel: str,
     expected_sid: str | None = None,
     expected_generation: object = _GEN_UNCONDITIONAL,
+    fence_generation: int | None = None,
 ) -> bool:
     """Idempotently retain an ended session to long-term memory (design §4.2; tier
     model §2.4; personality Task 10). Channels that fail write-trust (voice —
@@ -167,18 +168,30 @@ async def save_session(
     an unguarded claim can land on a NEWER registration and then be
     unreleasable once the downstream guards decline) and every conditional
     mutation below against a re-registration of the SAME sid, which
-    ``expected_sid`` cannot see."""
+    ``expected_sid`` cannot see.
+
+    ``fence_generation`` (#578): the retain-fence generation the caller
+    captured in the SAME no-await block as its own snapshot, exactly as
+    :func:`retain_cold_session` already takes it. A caller that decides WHICH
+    session to save before this call — ``reset_channel`` snapshots, then
+    awaits the flush-close — must pass its own capture, or the fence's
+    capture-point contract is broken: capturing here would be *after* an await
+    that follows the decision, so a wipe completing in that window would
+    already have bumped the generation, ``StaleGeneration`` would not fire,
+    and this would retain a pre-wipe transcript into the bank the wipe just
+    emptied. Omitted means "this call IS the decision point"."""
     from agent import snapshot_session_entry
     from memory_wipe import FENCE, StaleGeneration
 
     if not writes_to_bank(channel):
         return False  # recall-only channel (e.g. voice): never persists facts
-    # #411: inline writer — capture the fence generation at entry, before
-    # reading any source data. A memory wipe completing between here and the
-    # retain below makes this save DISCARD (the operator consented to
-    # deleting exactly this content); the registry entry is gone by then
-    # (the wipe removed it), so nothing retries the discarded save.
-    fence_generation = FENCE.generation()
+    # #411: capture the fence generation before reading any source data. A
+    # memory wipe completing between the capture and the retain below makes
+    # this save DISCARD (the operator consented to deleting exactly this
+    # content); the registry entry is gone by then (the wipe removed it), so
+    # nothing retries the discarded save.
+    if fence_generation is None:
+        fence_generation = FENCE.generation()
     if not await registry.try_begin_save(
         channel_key, expected_generation=expected_generation,
     ):
@@ -446,6 +459,34 @@ async def retain_cold_session(
 async def reset_channel(
     channel_key: str, registry, semantic_memory, *, channel: str,
 ) -> None:
+    """Explicit reset: the admission/gate wrapper around :func:`_reset_locked`.
+
+    #578: a reset holds turn admission (shared) and the per-key write gate for
+    its whole body, in that order — the mandated global order is
+    ``TurnAdmission -> session_write_gate -> RetainFence -> pool entry lock``,
+    and this function goes on to enter the fence through ``save_session`` and
+    a pool entry lock through ``notify_reset``. Taking the fence before a gate
+    anywhere is a permanent deadlock.
+
+    Admission matters here even though a reset is not a turn: a wipe that
+    drained every turn but not a concurrent reset can still be followed by
+    that reset's retain (see the capture-point note in ``save_session``).
+    Holding it shared makes the wipe's drain wait for the reset, and a reset
+    that starts after a wipe finds no entry and has nothing to retire.
+    """
+    from session_gate import session_write_gate
+    import agent as _agent
+
+    async with _agent._turn_admission().admitted(), \
+            session_write_gate(channel_key):
+        await _reset_locked(
+            channel_key, registry, semantic_memory, channel=channel,
+        )
+
+
+async def _reset_locked(
+    channel_key: str, registry, semantic_memory, *, channel: str,
+) -> None:
     """Explicit reset (design §4.2 #2, correction C2): retain the current session,
     then drop the pointer so the next turn starts fresh. Role + transcript
     directory are derived from the registry entry (the caller — e.g. the Telegram
@@ -471,13 +512,21 @@ async def reset_channel(
     # exactly what this reset exists to retire. One more pass picks it up,
     # and THAT pass claims in its no-await block, so a second materialization
     # can only be a steered-fresh turn, which must survive.
+    from memory_wipe import FENCE
+
     for _pass in (1, 2):
-        # Snapshot + claim with NO await in between.
+        # Snapshot + claim + fence capture with NO await in between. The fence
+        # capture belongs HERE, not at save_session's entry (#578): this is the
+        # point that commits the reset to its pre-wipe source data, and the
+        # flush-close below is an await that follows it. Capturing later reads
+        # a generation a concurrent wipe may already have bumped, which is
+        # precisely the state the StaleGeneration defense cannot see.
         snapshot = snapshot_session_entry(registry.get(channel_key))
         token = (
             registry.begin_retirement(channel_key, snapshot.sdk_session_id)
             if snapshot is not None else None
         )
+        fence_generation = FENCE.generation()
         try:
             # AR-4 (pooling spec): close any warm SDK client for this key —
             # disconnect sends stdin EOF, which is what makes the CLI flush
@@ -509,6 +558,7 @@ async def reset_channel(
                 channel_key, registry, semantic_memory,
                 directory=directory, channel=channel,
                 expected_sid=snapshot.sdk_session_id,
+                fence_generation=fence_generation,
             )
             await registry.remove(
                 channel_key, expected_sid=snapshot.sdk_session_id,
