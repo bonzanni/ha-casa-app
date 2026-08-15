@@ -259,7 +259,9 @@ class TriggerRegistry:
                     # so a turn still running when its trigger is deleted or
                     # rewritten can no longer raise a question for it.
                     **scheduled_delivery_markers(
-                        trig.channel, scheduled_asks.epoch_for(role)),
+                        trig.channel,
+                        scheduled_asks.epoch_for(
+                            role, f"{trig.type}-{trig.name}")),
                 },
             )
             await self._bus.send(msg)

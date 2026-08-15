@@ -936,8 +936,12 @@ async def ask_user(args: dict) -> dict:
         # longer exists.
         import scheduled_asks
 
+        # The label is this turn's own session key — the trigger it came from.
+        # Comparing per (role, label) is what keeps a cancelled reminder from
+        # silencing the role's other schedules mid-turn.
         if not scheduled_asks.epoch_is_current(
-            origin.get("role"), origin.get("_scheduled_epoch"),
+            origin.get("role"), str(origin.get("chat_id") or ""),
+            origin.get("_scheduled_epoch"),
         ):
             return _result({
                 "status": "error", "kind": "trigger_changed",

@@ -947,7 +947,8 @@ async def sweep_reminders(runtime, now: datetime) -> int:
                         # trigger-lifecycle epoch.
                         **scheduled_delivery_markers(
                             entry.get("channel", ""),
-                            scheduled_asks.epoch_for(role)),
+                            scheduled_asks.epoch_for(
+                                role, f"date-{name}")),
                     },
                 ))
             except Exception:  # noqa: BLE001

@@ -48,7 +48,12 @@ def _fresh_broker(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_store(monkeypatch, tmp_path):
-    monkeypatch.setattr(scheduled_asks, "_EPOCHS", {})
+    monkeypatch.setattr(scheduled_asks, "_ROLE_EPOCHS", {})
+    monkeypatch.setattr(scheduled_asks, "_TRIGGER_EPOCHS", {})
+    # Process-local boot-window state: a fresh process has neither, and the
+    # module-level globals would otherwise leak between tests.
+    monkeypatch.setattr(scheduled_asks, "_BOOT_REVOCATIONS", [])
+    monkeypatch.setattr(scheduled_asks, "_BOOT_RECONCILED", False)
     store = scheduled_asks.ScheduledAskStore(str(tmp_path / "scheduled_asks.json"))
     monkeypatch.setattr(scheduled_asks, "STORE", store)
     return store
@@ -113,7 +118,7 @@ def _scheduled_origin(**overrides) -> dict:
         "message_type": "scheduled",
         "source": "scheduler",
         "_scheduled_delivery": True,
-        "_scheduled_epoch": 0,
+        "_scheduled_epoch": "0:0",
     }
     origin.update(overrides)
     return origin
@@ -488,9 +493,35 @@ class TestAttribution:
 
 class TestLifecycle:
     async def test_stale_epoch_refuses_the_question(self, monkeypatch):
-        scheduled_asks.bump_epoch("assistant")     # epoch is now 1
+        scheduled_asks.bump_role_epoch("assistant")
         payload, channel = await _ask(
-            monkeypatch, origin=_scheduled_origin(_scheduled_epoch=0))
+            monkeypatch, origin=_scheduled_origin(_scheduled_epoch="0:0"))
+        assert payload["kind"] == "trigger_changed"
+        assert channel.posts == []
+
+    async def test_cancelling_one_trigger_does_not_silence_its_siblings(
+        self, monkeypatch,
+    ):
+        """`revoke_trigger` selects one trigger. An in-flight turn of a
+        DIFFERENT trigger of the same role is not stale — refusing it was a
+        role-wide epoch leaking into a per-trigger decision."""
+        stamped = scheduled_asks.epoch_for("assistant", "cron-invoices")
+        scheduled_asks.revoke_trigger(
+            "assistant", "reminder-abcd", "trigger_cancelled")
+
+        payload, _channel = await _ask(monkeypatch, origin=_scheduled_origin(
+            chat_id="cron-invoices", _scheduled_epoch=stamped))
+        assert payload["status"] == "awaiting_user"
+
+    async def test_cancelling_a_trigger_does_refuse_its_own_in_flight_turn(
+        self, monkeypatch,
+    ):
+        stamped = scheduled_asks.epoch_for("assistant", "date-reminder-abcd")
+        scheduled_asks.revoke_trigger(
+            "assistant", "reminder-abcd", "trigger_cancelled")
+
+        payload, channel = await _ask(monkeypatch, origin=_scheduled_origin(
+            chat_id="date-reminder-abcd", _scheduled_epoch=stamped))
         assert payload["kind"] == "trigger_changed"
         assert channel.posts == []
 
@@ -510,9 +541,9 @@ class TestLifecycle:
         assert "trigger_reloaded" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
         # and the epoch moved, so a turn still running cannot ask again
-        assert scheduled_asks.epoch_for("assistant") == 1
+        assert scheduled_asks.epoch_for("assistant", LABEL) == "1:0"
         payload2, channel2 = await _ask(
-            monkeypatch, origin=_scheduled_origin(_scheduled_epoch=0))
+            monkeypatch, origin=_scheduled_origin(_scheduled_epoch="0:0"))
         assert payload2["kind"] == "trigger_changed"
 
     async def test_revoke_role_ignores_another_roles_question(
@@ -628,6 +659,109 @@ class TestBootReconcile:
         assert counts["settled_before_crash"] == 1
         assert channel.scheduled_dispatches == []   # at-most-once
         assert _fresh_store.all() == []
+
+    async def test_a_revocation_during_the_boot_window_is_not_undone(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """The one state the broker cannot answer for the store: records exist
+        on disk and `_live` is empty until this reconcile runs, so a revoke in
+        that window cancels nothing. Restoring the question anyway would leave
+        a cancelled trigger's keyboard answerable."""
+        await _fresh_store.put(self._rec())
+        # A reload / reminder-cancel lands before Telegram is ready.
+        assert scheduled_asks.revoke_role("assistant", "trigger_reloaded") == 0
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts.get("restored", 0) == 0
+        assert counts["revoked_before_reconcile"] == 1
+        assert "trigger_changed" in channel.scheduled_dispatches[0]["text"]
+        assert _fresh_store.all() == []
+        assert _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+
+    async def test_an_untouched_role_is_still_restored(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """The guard above must not swallow the normal case: another role's
+        revocation says nothing about this record."""
+        await _fresh_store.put(self._rec())
+        scheduled_asks.revoke_role("butler", "trigger_reloaded")
+        counts = await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        assert counts["restored"] == 1
+
+    async def test_cancelling_one_trigger_leaves_the_roles_others_alone(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """`revoke_trigger` selects ONE trigger's questions; the boot-window
+        guard has to select the same ones. Keying it on the role (whose epoch
+        that call also bumps) discarded every other question the role was
+        waiting on."""
+        await _fresh_store.put(self._rec(
+            rid="mine", session_scope="date-reminder-abcd"))
+        await _fresh_store.put(self._rec(
+            rid="sibling", session_scope="cron-invoices"))
+        scheduled_asks.revoke_trigger(
+            "assistant", "reminder-abcd", "trigger_cancelled")
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["revoked_before_reconcile"] == 1
+        assert counts["restored"] == 1
+        assert [d["request_id"] for d in channel.scheduled_dispatches] == ["mine"]
+        assert _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["sibling"]
+
+    async def test_a_pre_reconcile_challenge_cancellation_is_honoured(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """An authorization challenge raised before Telegram is ready cancels
+        nothing (the broker is empty) — and if that challenge is itself gone by
+        reconcile time, `require_idle` has nothing to refuse against either, so
+        the machine question would be restored into a lane it had already
+        yielded (INV-JOB-008)."""
+        await _fresh_store.put(self._rec())
+        assert scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge") == 0
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["revoked_before_reconcile"] == 1
+        assert counts.get("restored", 0) == 0
+        assert _fresh_store.all() == []
+
+    async def test_markers_do_not_outlive_the_reconcile(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """After the pass every surviving record is in the broker, so the
+        markers describe nothing invisible any more — a later boot-window
+        marker must not settle a question asked afterwards."""
+        scheduled_asks.revoke_role("assistant", "trigger_reloaded")
+        await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+
+        # A revocation after the window records NOTHING — the caller's own
+        # broker scan is authoritative from here on, and a marker that kept
+        # accumulating would both leak and mis-settle a later record.
+        scheduled_asks.revoke_role("assistant", "trigger_reloaded")
+        scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge")
+        assert scheduled_asks._BOOT_REVOCATIONS == []
+
+        await _fresh_store.put(self._rec(rid="later"))
+        counts = await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        assert counts["restored"] == 1
+
+    def test_the_store_exposes_no_query_surface(self):
+        """A by-role/by-chat reader would be the invitation to answer a LIVE
+        decision from the lagging store; the broker is the authority for that."""
+        assert not hasattr(scheduled_asks.ScheduledAskStore, "for_role")
+        assert not hasattr(scheduled_asks.ScheduledAskStore, "for_chat")
+
+    async def test_boot_markers_are_bounded(self, _fresh_broker):
+        """A deploy with no Telegram channel never runs the reconciler, so the
+        retirement flag never flips and the cap is the only bound."""
+        for i in range(scheduled_asks._BOOT_REVOCATIONS_MAX + 10):
+            scheduled_asks.revoke_role(f"role-{i}", "trigger_reloaded")
+        assert (len(scheduled_asks._BOOT_REVOCATIONS)
+                == scheduled_asks._BOOT_REVOCATIONS_MAX)
 
     async def test_a_changed_operator_is_not_restored(self, _fresh_store):
         await _fresh_store.put(self._rec())

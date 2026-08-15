@@ -3267,7 +3267,7 @@ class TelegramChannel(Channel):
 
     async def _dispatch_scheduled_continuation(
         self, *, session_scope: str, target_role: str, request_id: str,
-        text: str, epoch: int | None = None,
+        text: str, epoch: str | None = None,
         _sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> bool:
         """Deliver a scheduled ask's TERMINAL outcome back into the session

@@ -102,6 +102,12 @@ class ScheduledAskStore:
                 self._data = {}
 
     # -- reads (synchronous, in-memory) ------------------------------------
+    #
+    # Deliberately only `get` and `all`, and `all` has ONE caller: the boot
+    # reconciler. There is no by-role / by-chat query, because a live decision
+    # must never be answered from here — the store is written after an await
+    # and lags the broker, which is the authority for what is live. A query
+    # method is the invitation to forget that, so there isn't one.
 
     def get(self, rid: str) -> dict[str, Any] | None:
         rec = self._data.get(rid)
@@ -109,16 +115,6 @@ class ScheduledAskStore:
 
     def all(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self._data.values()]
-
-    def for_role(self, role: str, session_scope: str | None = None) -> list[dict]:
-        return [
-            dict(r) for r in self._data.values()
-            if r.get("role") == role
-            and (session_scope is None or r.get("session_scope") == session_scope)
-        ]
-
-    def for_chat(self, chat_id: int) -> list[dict[str, Any]]:
-        return [dict(r) for r in self._data.values() if r.get("chat_id") == chat_id]
 
     # -- writes -------------------------------------------------------------
 
@@ -177,20 +173,40 @@ def init_store(path: str) -> ScheduledAskStore:
 # process lifetime (it guards an ask created by a turn that is already
 # running), and a persisted counter could only re-open the staleness it exists
 # to close.
-_EPOCHS: dict[str, int] = {}
+#
+# TWO counters, and the pair is the point. A role-wide one, bumped when a
+# role's whole trigger set is replaced, and a per-trigger one, bumped when a
+# single named trigger goes. A single role-wide counter made `revoke_trigger`
+# refuse the in-flight asks of every OTHER trigger of that role — the same
+# over-broad selector that had to be fixed at boot, one level along (Terra, S2).
+_ROLE_EPOCHS: dict[str, int] = {}
+_TRIGGER_EPOCHS: dict[tuple[str, str], int] = {}
 
 
-def epoch_for(role: str) -> int:
-    """The current trigger-lifecycle epoch for *role*."""
-    return _EPOCHS.get(role, 0)
+def epoch_for(role: str, label: str) -> str:
+    """The trigger-lifecycle epoch a firing turn is stamped with.
+
+    ``label`` is the trigger's session label (``f"{type}-{name}"``), which both
+    dispatch sites already build for ``chat_id``. Opaque to every consumer:
+    they only ever compare it for equality.
+    """
+    return (f"{_ROLE_EPOCHS.get(role, 0)}:"
+            f"{_TRIGGER_EPOCHS.get((role, label), 0)}")
 
 
-def bump_epoch(role: str) -> int:
-    _EPOCHS[role] = _EPOCHS.get(role, 0) + 1
-    return _EPOCHS[role]
+def bump_role_epoch(role: str) -> None:
+    """The whole trigger set for *role* was replaced."""
+    _ROLE_EPOCHS[role] = _ROLE_EPOCHS.get(role, 0) + 1
 
 
-def epoch_is_current(role: str, stamped: Any) -> bool:
+def bump_trigger_epochs(role: str, labels: "set[str]") -> None:
+    """One named trigger of *role* went; every other trigger stays current."""
+    for label in labels:
+        key = (role, label)
+        _TRIGGER_EPOCHS[key] = _TRIGGER_EPOCHS.get(key, 0) + 1
+
+
+def epoch_is_current(role: str, label: str, stamped: Any) -> bool:
     """Whether an origin's stamped epoch still names the live trigger set.
 
     Absence is tolerated (returns True): a delegation-completion turn copies
@@ -207,12 +223,11 @@ def epoch_is_current(role: str, stamped: Any) -> bool:
     """
     if stamped is None:
         return True
-    if isinstance(stamped, bool) or not isinstance(stamped, int):
+    if not isinstance(stamped, str):
         return False
-    return stamped == epoch_for(role)
+    return stamped == epoch_for(role, label)
 
 
-# ---------------------------------------------------------------------------
 # the single-owner finish hook
 # ---------------------------------------------------------------------------
 
@@ -326,6 +341,55 @@ def _is_scheduled(req: Any) -> bool:
     return req.meta.get("scheduled") is True
 
 
+# The one thing the broker cannot answer: from process start until
+# ``reconcile_at_boot`` runs, records sit on disk and the live map is empty, so
+# a revocation in that window cancels nothing. Each revocation therefore leaves
+# a process-local MARKER of what it revoked, and the reconciler settles a record
+# that matches one instead of restoring it. This is not the deleted store scan
+# in another coat: markers are in-memory, written by the same synchronous call
+# that decides, and read by exactly one consumer, once — the reconciler clears
+# them when it finishes, after which the broker is authoritative again.
+#
+# The markers carry the SELECTOR each revocation actually used. An earlier
+# version keyed this on the role epoch, which `revoke_trigger` bumps role-wide:
+# cancelling one reminder then discarded every other question that role was
+# waiting on (Sol + Terra, both S2). The epoch keeps its own, separate job —
+# refusing an ask from a turn that is still running under the old trigger set.
+_BOOT_REVOCATIONS: list[dict] = []
+_BOOT_RECONCILED = False
+
+# Belt-and-braces bound. On a deploy with no Telegram channel the reconciler is
+# never scheduled, so nothing would ever flip the flag below; such a deploy also
+# has no scheduled asks at all, which makes every marker there inert — but an
+# unbounded list fed by every reload is still a leak.
+_BOOT_REVOCATIONS_MAX = 256
+
+
+def _note_boot_revocation(**selector: Any) -> None:
+    if _BOOT_RECONCILED:
+        # The window is over: every surviving record is registered in the
+        # broker, so the caller's own broker scan already saw it.
+        return
+    _BOOT_REVOCATIONS.append(selector)
+    while len(_BOOT_REVOCATIONS) > _BOOT_REVOCATIONS_MAX:
+        _BOOT_REVOCATIONS.pop(0)
+
+
+def _revoked_before_reconcile(rec: dict) -> bool:
+    """Did a revocation land before this record could be restored?"""
+    for sel in _BOOT_REVOCATIONS:
+        if "chat_id" in sel:
+            if rec.get("chat_id") == sel["chat_id"]:
+                return True
+            continue
+        if sel.get("role") != rec.get("role"):
+            continue
+        labels = sel.get("labels")
+        if labels is None or rec.get("session_scope") in labels:
+            return True
+    return False
+
+
 def revoke_role(role: str, reason: str = "trigger_changed") -> int:
     """Every trigger of *role* was removed or rewritten.
 
@@ -340,7 +404,8 @@ def revoke_role(role: str, reason: str = "trigger_changed") -> int:
     """
     from verdict_broker import BROKER
 
-    bump_epoch(role)
+    bump_role_epoch(role)
+    _note_boot_revocation(role=role, labels=None)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
         predicate=lambda r: _is_scheduled(r) and r.meta.get("target_role") == role,
@@ -368,7 +433,8 @@ def revoke_trigger(
     from verdict_broker import BROKER
 
     labels = {f"{t}-{name}" for t in _TRIGGER_TYPES}
-    bump_epoch(role)
+    bump_trigger_epochs(role, labels)
+    _note_boot_revocation(role=role, labels=labels)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
         predicate=lambda r: (
@@ -392,6 +458,7 @@ def cancel_for_chat(chat_id: int, reason: str) -> int:
     from verdict_broker import BROKER
 
     scope = f"dm:{chat_id}"
+    _note_boot_revocation(chat_id=chat_id)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
         predicate=lambda r: _is_scheduled(r) and r.scope == scope,
@@ -470,6 +537,25 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
             await store.drop(rid)
             continue
 
+        # The one state in which the broker cannot answer for the store: from
+        # process start until this reconcile runs, records exist on disk and
+        # `_live` is empty, so a revocation in that window cancels nothing —
+        # `revoke_role`/`revoke_trigger` scan the broker by design (they must
+        # be atomic with registration, which the store cannot be). Without
+        # this, a trigger reloaded or a reminder cancelled during the boot
+        # window would have its question restored here and left answerable.
+        #
+        # The marker each revocation leaves is what closes it — carrying the
+        # SELECTOR that revocation used, so cancelling one reminder settles
+        # that reminder's question and restores the role's others.
+        if _revoked_before_reconcile(rec):
+            counts["revoked_before_reconcile"] = (
+                counts.get("revoked_before_reconcile", 0) + 1)
+            await _settle(channel, rec, kind="cancelled",
+                          reason="trigger_changed", chosen=None,
+                          edit_text=_expired_body(rec.get("body") or ""))
+            continue
+
         # Identity at the point of use (#485 doctrine): the operator may have
         # changed while Casa was down. A keyboard bound to the previous one
         # must not be restored — the broker's actor binding would honour it.
@@ -509,5 +595,12 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
         BROKER.set_finish_hook(req, make_finish_hook(channel, rec))
         counts["restored"] += 1
 
+    # Past this point every surviving record is registered in the broker, so
+    # the broker is authoritative again and the markers describe nothing that
+    # is still invisible. Retired here rather than at each read so a revocation
+    # landing DURING the pass still settles a record the loop has not reached.
+    global _BOOT_RECONCILED
+    _BOOT_RECONCILED = True
+    _BOOT_REVOCATIONS.clear()
     logger.info("scheduled asks reconciled at boot: %s", counts)
     return counts

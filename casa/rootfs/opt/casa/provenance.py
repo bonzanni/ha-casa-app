@@ -95,7 +95,7 @@ def sanitize_external_context(ctx: dict | None) -> dict:
 
 
 def scheduled_delivery_markers(
-    channel: str | None, epoch: int | None = None,
+    channel: str | None, epoch: str | None = None,
 ) -> dict:
     """The context markers a TIME-BASED scheduled dispatch stamps (#485).
 
@@ -114,8 +114,9 @@ def scheduled_delivery_markers(
     point of use from the live configuration, so a stale or since-changed id
     can never be delivered to.
 
-    ``epoch`` (#573) is the caller's trigger-lifecycle epoch for the role
-    (``scheduled_asks.epoch_for``). It rides along so ``ask_user`` can refuse
+    ``epoch`` (#573) is the caller's trigger-lifecycle epoch for this trigger
+    (``scheduled_asks.epoch_for(role, label)`` — an opaque string compared only
+    for equality). It rides along so ``ask_user`` can refuse
     to raise a keyboard for a trigger that was removed or rewritten after this
     turn was dispatched. Omitted (``None``) it is simply absent, which every
     consumer tolerates — a turn without one is a turn nothing can revoke.

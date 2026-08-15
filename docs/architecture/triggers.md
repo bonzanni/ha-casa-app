@@ -265,7 +265,8 @@ claim about it. That problem is now solved separately, and the same marker is wh
 it: the durable question, its terminal outcomes and its attention-lane manners are
 INV-JOB-006/007/008 in [`jobs-and-delivery.md`](jobs-and-delivery.md), and the epoch that
 stops a removed trigger's still-running turn from raising one rides alongside the marker
-from the same shared helper. The marker is also read only by those two tools, never by the shared
+from the same shared helper — per role AND per trigger, so cancelling one reminder does not
+silence the turns of the role's other schedules. The marker is also read only by those two tools, never by the shared
 transport predicate the protected-action approval path gates on, so nothing here widens who
 can raise an approval.
 
