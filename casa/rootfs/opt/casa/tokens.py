@@ -10,8 +10,11 @@ of billing model:
 * :func:`extract_usage` + :func:`format_turn_summary` — one-line
   per-turn telemetry of ``input / output / cache_read / cache_write``.
   Useful for prompt-cache validation (cache hit visibility) and
-  200k-context-window proximity. No derived metrics, no warnings —
-  raw counts only; operators do their own analysis from logs.
+  context-window proximity. The window is per-model and no longer one
+  number — the opus/sonnet aliases carry 1M, haiku 200k (#568) — which
+  is another reason this module reports raw counts and derives nothing.
+  No derived metrics, no warnings; operators do their own analysis from
+  logs.
 
 All counters are in-process; restart resets them. No env vars, no
 metrics endpoint, no dashboard surface (spec §5.3, §9.3).

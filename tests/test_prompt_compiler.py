@@ -118,6 +118,33 @@ def test_binding_digest_mismatch_is_rejected(role_factory, persona_factory, bind
         )
 
 
+def test_a_role_checksum_mismatch_names_the_model_as_the_likely_cause(
+        role_factory, persona_factory, binding_factory) -> None:
+    """#568: the role checksum covers the RESOLVED model by design, so a model
+    change — an operator flipping ``primary_agent_model``, or an alias being
+    pointed at a new generation — invalidates every persisted binding compiled
+    against the old one. The failure is loud and per-specialist, but it used to
+    read as an opaque digest compare; it must name the field that moved and the
+    remedy, or an operator has no way from the message to the fix."""
+    import dataclasses
+
+    role, persona = role_factory(), persona_factory()
+    binding = binding_factory(role, persona)
+    # NOT "1" * 64 — that is the role fixture's OWN stub checksum, so the
+    # "stale" binding would have matched and this test would have asserted
+    # nothing while appearing to pass.
+    stale = dataclasses.replace(binding, role_checksum="sha256:" + "2" * 64)
+    with pytest.raises(ValueError) as caught:
+        compile_prompt_bundle(
+            role=role, persona=persona, binding=stale,
+            platform_frame="Platform.\n", safety_kernel="Safety.\n",
+        )
+    message = str(caught.value)
+    assert "role_checksum" in message, message
+    assert "resolved model" in message, message
+    assert "re-install or upgrade" in message, message
+
+
 def test_projection_doctrine_excludes_sibling_projections(
         role_factory, persona_factory, binding_factory) -> None:
     """#355: the shipped doctrines nest all three projection headings under

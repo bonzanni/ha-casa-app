@@ -24,6 +24,15 @@
   The voice agents stay on Haiku deliberately: speed is what matters on that
   channel, voice turns are short, and a bigger window buys nothing there.
 
+  **If you have installed a specialist, re-install or upgrade it after this
+  update.** A specialist's identity is bound to the model it was installed
+  against, so changing the model leaves that binding stale and the specialist
+  will not activate until it is re-materialised. It fails loudly and on its
+  own — nothing else stops working — and the message now says which part
+  moved and what to do about it. This is not new to this release: changing
+  `primary_agent_model` in the add-on options has always done the same thing.
+  Tracked in #597.
+
 ## [0.210.0] - 2026-08-15
 
 ### Fixed
