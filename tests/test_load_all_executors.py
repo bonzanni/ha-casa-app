@@ -7,6 +7,8 @@ import textwrap
 
 import pytest
 
+from config import MODEL_MAP
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -103,7 +105,7 @@ class TestLoadAllExecutors:
         assert "configurator" in out
         d = out["configurator"]
         assert d.type == "configurator"
-        assert d.model == "claude-sonnet-4-6"
+        assert d.model == MODEL_MAP["sonnet"]
         assert d.driver == "in_casa"
         assert d.enabled is True
         assert d.prompt_template_path.endswith("prompt.md")

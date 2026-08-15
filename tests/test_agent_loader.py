@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from config import MODEL_MAP
+
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -250,7 +252,7 @@ class TestHappyPath:
         # ha_option/primary_agent_model (default "opus"), and no env var is
         # set in this test, so the resolved model is opus, not the old
         # literal "sonnet".
-        assert cfg.model == "claude-opus-4-6"
+        assert cfg.model == MODEL_MAP["opus"]
         assert cfg.resolved_model == "opus"
         assert "telegram" in cfg.channels
         # Composed prompt surfaces each section.

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from config import MODEL_MAP
+
 from agent_loader import LoadError, _read_yaml, _validate
 
 try:
@@ -461,17 +463,18 @@ class TestExecutorModelBootParity:
         roles_dir = self._seed(tmp_path, "agree", defn_model="sonnet")
         loaded, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
-        assert loaded["agree"].model == "claude-sonnet-4-6"
+        assert loaded["agree"].model == MODEL_MAP["sonnet"]
 
     def test_equivalent_full_model_id_loads(self, tmp_path):
         """Comparison is on RESOLVED SDK IDs, so a full ID that resolves to the
         same model as the role's shortname is NOT a mismatch. Comparing raw text
         would false-flag this and fail a perfectly valid executor."""
         from agent_loader import load_all_executors
-        roles_dir = self._seed(tmp_path, "fullid", defn_model="claude-sonnet-4-6")
+        roles_dir = self._seed(
+            tmp_path, "fullid", defn_model=MODEL_MAP["sonnet"])
         loaded, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
-        assert loaded["fullid"].model == "claude-sonnet-4-6"
+        assert loaded["fullid"].model == MODEL_MAP["sonnet"]
 
     def test_mismatched_model_is_reported_not_loaded(self, tmp_path):
         """The bug this closes: definition.yaml quietly wins over the artifact."""
@@ -484,7 +487,8 @@ class TestExecutorModelBootParity:
         )
         assert [name for name, _ in failed] == ["drift"]
         message = failed[0][1]
-        assert "claude-opus-4-6" in message and "claude-sonnet-4-6" in message, (
+        assert (MODEL_MAP["opus"] in message
+                and MODEL_MAP["sonnet"] in message), (
             f"the error must name both resolved models; got: {message}"
         )
 

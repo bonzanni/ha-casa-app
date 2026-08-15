@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.211.0] - 2026-08-15
+
+### Changed
+
+- **`opus` and `sonnet` now mean Claude Opus 5 and Claude Sonnet 5** (#568).
+  The two model choices behind `primary_agent_model` and the executors move up
+  a generation. The option values are unchanged — `opus`, `sonnet` and `haiku`
+  still mean what they meant — and so is the price per token.
+
+  The practical difference is room. Both models carry a one-million-token
+  context window where the previous pair carried two hundred thousand, so a
+  conversation, a long document or a large piece of work can stay in view five
+  times longer before anything has to be summarised away to make space.
+
+  Two things to expect. Opus 5 thinks before answering by default, which the
+  previous Opus did only when asked, so a turn can spend a little more on
+  reasoning and take slightly longer. And Sonnet 5 counts tokens differently
+  from Sonnet 4.6 — the same text comes to roughly a third more tokens — so if
+  you have tuned a specialist's memory budget by hand, it now buys less text
+  than the number suggests.
+
+  The voice agents stay on Haiku deliberately: speed is what matters on that
+  channel, voice turns are short, and a bigger window buys nothing there.
+
 ## [0.210.0] - 2026-08-15
 
 ### Fixed
