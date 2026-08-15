@@ -102,7 +102,7 @@
     INV-CONC-002: [tests/test_bus.py::test_reregister_preserves_queue_and_rebinds_handler, tests/test_bus.py::test_start_agent_loop_spawns_tracked_consumer]
     INV-CONC-003: [tests/test_sdk_client_pool_pool.py::test_invalidation_serializes_same_key_until_active_turn_releases, tests/test_sdk_client_pool_pool.py::test_concurrent_first_turns_single_connect]
     INV-CONC-004: [tests/test_scheduled_ask_user.py::TestSessionWriteGate::test_two_scheduled_turns_never_run_concurrently, tests/test_session_key_authority.py::TestUnconditionalGate::test_an_ordinary_dm_turn_holds_the_gate_and_admission, tests/test_session_key_authority.py::TestReloadTwoPools::test_a_second_pool_cannot_resume_a_live_session]
-    INV-CONC-005: [tests/test_session_key_authority.py::TestWipeDrainsEveryPath::test_a_bypass_turn_cannot_rearm_the_pointer, tests/test_session_key_authority.py::TestWipeDrainsEveryPath::test_a_first_ever_turn_cannot_survive_the_wipe, tests/test_session_key_authority.py::TestResetVersusWipe::test_a_wipe_and_a_reset_do_not_deadlock]
+    INV-CONC-005: [tests/test_session_key_authority.py::TestWipeDrainsEveryPath::test_a_bypass_turn_cannot_rearm_the_pointer, tests/test_session_key_authority.py::TestWipeDrainsEveryPath::test_a_first_ever_turn_cannot_survive_the_wipe, tests/test_session_key_authority.py::TestResetVersusWipe::test_a_wipe_and_a_reset_do_not_deadlock, tests/test_session_key_authority.py::TestResetVersusWipe::test_the_wipe_takes_no_session_gate]
 
 - doc: architecture/configuration.md
   summary: Where configuration comes from, what is version-controlled, what reload can pick up without a restart, and how secrets resolve.

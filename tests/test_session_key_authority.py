@@ -407,14 +407,29 @@ class TestReloadTwoPools:
 
         monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
 
-        # ONE registry, as a reload keeps: the pointer is what the replacement
-        # pool reads to decide it may resume.
+        # ONE registry, as a reload keeps, PRE-SEEDED with a live pointer. The
+        # seed is load-bearing: with an empty registry both turns would start
+        # FRESH sessions, so an unfixed tree would show two clients but no
+        # shared session id — proving concurrency, not the fork. What #579
+        # actually costs is two clients resuming the SAME id, so the assertion
+        # below is on `options.resume`, not on the client count alone.
         registry = SessionRegistry(str(tmp_path / "sessions.json"))
+        key = build_scoped_session_key("telegram", "assistant", "42")
+        await registry.register(
+            channel_key=key, agent=resident_role_id("assistant"),
+            sdk_session_id="sid-live", binding_digest=RESIDENT_DIGEST,
+            speaker_provenance=resident_prov("assistant"),
+            user_provenance=resident_prov("assistant"),
+        )
         old_agent = _make_agent(registry)
         new_agent = _make_agent(registry)      # what _construct_agent builds
         try:
             in_flight = asyncio.create_task(old_agent.handle_message(_msg("one")))
             await asyncio.wait_for(started.wait(), timeout=2)
+            assert clients[0].options.resume == "sid-live", (
+                "the first turn did not resume the live pointer, so this test "
+                "is not set up to observe a fork"
+            )
 
             # The reload lands; a new message for the SAME key is handled by
             # the replacement agent while the old turn is still running.
@@ -422,23 +437,35 @@ class TestReloadTwoPools:
                 new_agent.handle_message(_msg("two")),
             )
             await asyncio.sleep(0.05)
-
-            assert len(clients) == 1, (
-                "the replacement pool started a second client for a session "
-                "key whose turn is still in flight on the old pool"
-            )
+            # Snapshotted, not asserted here: the count is the MECHANISM, and
+            # asserting it mid-flight would short-circuit before the outcome
+            # assertion below ever runs. On a broken tree the fork is what
+            # costs turns, so the fork is what fails first.
+            concurrent_clients = len(clients)
 
             release.set()
             await asyncio.wait_for(
                 asyncio.gather(in_flight, after_reload), timeout=5,
             )
 
-            key = build_scoped_session_key("telegram", "assistant", "42")
+            # THE fork assertion: no two clients ever resumed one session id.
+            resumed = [c.options.resume for c in clients if c.options.resume]
+            assert len(resumed) == len(set(resumed)), (
+                f"two clients resumed the same session id: {resumed}"
+            )
+            assert concurrent_clients == 1, (
+                "the replacement pool started a second client for a session "
+                "key whose turn is still in flight on the old pool"
+            )
+            # And they ran in sequence: the second resumed what the first
+            # published, rather than the pointer the first started from.
+            assert clients[1].options.resume == clients[0]._sid, (
+                "the second turn did not resume the first turn's published "
+                "session, so they did not serialize"
+            )
             entry = registry.get(key)
             assert entry is not None
-            # Whichever ran second published last; the point is that they ran
-            # in sequence, so exactly one session id is live for the key.
-            assert entry["sdk_session_id"] in {c._sid for c in clients}
+            assert entry["sdk_session_id"] == clients[1]._sid
         finally:
             release.set()
             await old_agent.aclose()
@@ -452,10 +479,65 @@ class TestResetVersusWipe:
     gate, while ``/new`` took the gate and then entered the fence's shared side
     through ``save_session``. AB/BA — a permanent resident deadlock, found
     independently by both design reviewers. The mandated order is now
-    ``TurnAdmission -> session_write_gate -> RetainFence -> pool entry lock``,
-    and every assertion here is bounded so a reintroduced inversion FAILS the
-    suite instead of hanging it.
+    ``TurnAdmission -> session_write_gate -> RetainFence -> pool entry lock``.
+
+    What each test below actually pins, stated precisely because the
+    distinction was a diff-review finding:
+
+    - The two completion tests pin that the shipped COMBINATION cannot
+      deadlock, in both orders, on a bounded timeout rather than a hang.
+      Verified by reconstructing r1 wholesale (``/new`` exempt from admission
+      AND the wipe acquiring a per-key gate inside the fence), which makes both
+      fail. They do NOT isolate the ordering: with admission held, a wipe and a
+      reset never overlap, so re-adding the gate acquisition ALONE would leave
+      them green — there would be no deadlock left for them to catch.
+    - ``test_the_wipe_takes_no_session_gate`` is what pins the ordering
+      property itself: the wipe holds no per-key gate, which is what removes
+      the cycle at its root rather than ordering around it.
     """
+
+    async def test_the_wipe_takes_no_session_gate(
+        self, tmp_path, fresh_admission, fresh_fence, monkeypatch,
+    ):
+        """The root-cause property, pinned directly.
+
+        r1's deadlock existed because the wipe waited for a per-key gate while
+        holding the fence. The shipped design does not order that acquisition
+        more carefully — it removes it: turn admission has already drained
+        every turn, so there is nothing left for a per-key gate to exclude.
+        A wipe that starts acquiring session gates again has reintroduced the
+        AB/BA hazard even if no test deadlocks that day.
+        """
+        import session_gate
+
+        acquired = []
+        real_gate = session_gate.session_write_gate
+
+        def recording_gate(channel_key):
+            acquired.append(channel_key)
+            return real_gate(channel_key)
+
+        monkeypatch.setattr(session_gate, "session_write_gate", recording_gate)
+
+        registry = SessionRegistry(str(tmp_path / "sessions.json"))
+        for scope in ("42", "43"):
+            await registry.register(
+                channel_key=f"telegram-{scope}",
+                agent=resident_role_id("assistant"),
+                sdk_session_id=f"sid-{scope}", binding_digest=RESIDENT_DIGEST,
+                speaker_provenance=resident_prov("assistant"),
+                user_provenance=resident_prov("assistant"),
+            )
+        report = await _run_wipe(registry, WipeableMemory(), fresh_fence)
+
+        assert report.session_entries_dropped == 2, (
+            "the wipe did not do its work, so 'took no gate' proves nothing"
+        )
+        assert acquired == [], (
+            f"the wipe acquired session gate(s) {acquired} — it holds the "
+            "RetainFence while it runs, so waiting for a per-key gate "
+            "reintroduces the r1 AB/BA deadlock against /new"
+        )
 
     async def test_a_wipe_and_a_reset_do_not_deadlock(
         self, tmp_path, fresh_admission, fresh_fence, monkeypatch,
