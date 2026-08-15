@@ -134,7 +134,6 @@
     - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items
     - casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel
     - casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin
-    - casa/rootfs/opt/casa/channel_policy.py::writes_to_bank
     - casa/rootfs/opt/casa/recall_renderer.py::render_recall
     - casa/rootfs/opt/casa/recall_health.py::observed_recall
     - casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch
@@ -166,6 +165,7 @@
   when_changing: session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, the retry spool, or the memory wipe
   covers:
     - casa/rootfs/opt/casa/memory_provenance.py::build_retain_items
+    - casa/rootfs/opt/casa/channel_policy.py::writes_to_bank
     - casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope
     - casa/rootfs/opt/casa/timekeeping.py::split_time_envelope
     - casa/rootfs/opt/casa/session_saver.py::save_session

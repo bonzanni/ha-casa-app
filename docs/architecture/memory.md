@@ -336,7 +336,6 @@ any-match filter).
 - `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
-- `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`

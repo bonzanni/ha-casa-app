@@ -281,6 +281,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 
 **Source**
 - `casa/rootfs/opt/casa/memory_provenance.py::build_retain_items`
+- `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
 - `casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope`
 - `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
 - `casa/rootfs/opt/casa/session_saver.py::save_session`

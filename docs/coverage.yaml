@@ -506,7 +506,7 @@
 - item: casa/rootfs/opt/casa/channel_authz.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channel_policy.py
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/channel_trust.py
   doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/channels/__init__.py
