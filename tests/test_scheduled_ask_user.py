@@ -523,14 +523,33 @@ class TestLifecycle:
         assert _fresh_broker.pending(
             namespace="resident_ask", scope=f"dm:{OPERATOR}") != []
 
-    async def test_revoke_trigger_is_scoped_to_one_label(
+    async def test_revoke_trigger_is_scoped_to_one_trigger_name(
         self, monkeypatch, _fresh_broker,
     ):
-        await _ask(monkeypatch)
+        await _ask(monkeypatch)                       # session label cron-invoices
         assert scheduled_asks.revoke_trigger(
-            "assistant", "date-something-else", "trigger_cancelled") == 0
+            "assistant", "something-else", "trigger_cancelled") == 0
         assert scheduled_asks.revoke_trigger(
-            "assistant", LABEL, "trigger_cancelled") == 1
+            "assistant", "invoices", "trigger_cancelled") == 1
+
+    @pytest.mark.parametrize("trigger_type", ["date", "cron", "interval"])
+    async def test_cancelling_by_name_finds_the_question_whatever_the_type(
+        self, monkeypatch, _fresh_broker, trigger_type,
+    ):
+        """A cancellation site knows the reminder's NAME, not its type — and a
+        REPEATING reminder is derived into a `cron` trigger, not a `date` one
+        (`reminders.derive_recurrence`). Rebuilding `date-<name>` at the call
+        site left a cancelled repeating reminder's keyboard answerable."""
+        name = "reminder-abcd"
+        payload, channel = await _ask(monkeypatch, origin=_scheduled_origin(
+            chat_id=f"{trigger_type}-{name}"))
+        assert scheduled_asks.revoke_trigger(
+            "assistant", name, "trigger_cancelled") == 1
+        await _fresh_broker.drain_hooks()
+        await wait_until(lambda: channel.scheduled_dispatches)
+        assert _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+        assert channel.scheduled_dispatches[0]["request_id"] == payload["request_id"]
 
 
 # ---------------------------------------------------------------------------

@@ -1033,7 +1033,7 @@ def _reconcile_registrations(runtime, registry, role: str, path: str,
             registry.remove_job_for(role, name)
             # #573: the entry is gone, so any question that job raised is
             # revoked with it (settled: keyboard retired, session told).
-            scheduled_asks.revoke_trigger(role, f"date-{name}", "trigger_removed")
+            scheduled_asks.revoke_trigger(role, name, "trigger_removed")
 
     # Direction 2: an entry with no job must be registered.
     for entry in entries:

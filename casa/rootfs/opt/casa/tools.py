@@ -6093,7 +6093,7 @@ async def cancel_reminder(args: dict) -> dict:
     # cannot post a new one for the reminder just cancelled.
     try:
         import scheduled_asks
-        scheduled_asks.revoke_trigger(role, f"date-{name}", "trigger_cancelled")
+        scheduled_asks.revoke_trigger(role, name, "trigger_cancelled")
     except Exception:  # noqa: BLE001
         logger.warning("cancel_reminder: scheduled-ask revocation failed for "
                        "%s:%s", role, name, exc_info=True)

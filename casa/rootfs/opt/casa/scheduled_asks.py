@@ -347,21 +347,34 @@ def revoke_role(role: str, reason: str = "trigger_changed") -> int:
     ))
 
 
+# The three time-based trigger types. A trigger's session label is
+# ``f"{type}-{name}"``, and a caller that knows only the NAME cannot know which
+# type it was: a repeating reminder is derived into a `cron` trigger
+# (`reminders.derive_recurrence`), a one-off into a `date` one. Matching all
+# three is what keeps a cancel-by-name honest — asking callers to rebuild the
+# label is how a cancelled repeating reminder kept an answerable question.
+_TRIGGER_TYPES = ("date", "cron", "interval")
+
+
 def revoke_trigger(
-    role: str, session_scope: str, reason: str = "trigger_changed",
+    role: str, name: str, reason: str = "trigger_changed",
 ) -> int:
-    """One named trigger of *role* was removed (a cancelled reminder, a job
-    the sweep reconciled away). ``session_scope`` is the ``f"{type}-{name}"``
-    label that trigger dispatches under."""
+    """One NAMED trigger of *role* was removed — a cancelled reminder, or a job
+    the reminder sweep reconciled away.
+
+    Takes the trigger name, never a session label: the label encodes the
+    trigger's TYPE, which a cancellation site does not reliably know.
+    """
     from verdict_broker import BROKER
 
+    labels = {f"{t}-{name}" for t in _TRIGGER_TYPES}
     bump_epoch(role)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
         predicate=lambda r: (
             _is_scheduled(r)
             and r.meta.get("target_role") == role
-            and r.meta.get("session_scope") == session_scope
+            and r.meta.get("session_scope") in labels
         ),
     ))
 
