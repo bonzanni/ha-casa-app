@@ -2980,24 +2980,51 @@ def _attach_completion_callback(
             return
         complete: DelegationComplete | None = None
         try:
-            text = t.result().text
-            bounded, output_truncated = specialist_limits.truncate_output(text)
-            if output_truncated:
-                logger.warning(
-                    "delegated agent %s output truncated: %d > %d chars "
-                    "(spec §4.6)", record.agent, len(text),
-                    specialist_limits._MAX_OUTPUT_CHARS,
+            output = t.result()
+            # #568: the CLI ended this run by reporting an API-level fault (a
+            # safety refusal included) — the specialist never answered. The
+            # notification the delegating resident narrates from must say so;
+            # reporting status="ok" hands it an empty (or half-written) answer
+            # to present to the household as the specialist's own. Mirrors the
+            # sync path's verdict in delegate_to_agent.
+            if output.api_error is not None:
+                complete = DelegationComplete(
+                    delegation_id=record.id,
+                    agent=record.agent,
+                    status="error",
+                    kind=output.api_error,
+                    message="The specialist could not complete this task.",
+                    origin=record.origin,
+                    elapsed_s=time.time() - record.started_at,
                 )
-            complete = DelegationComplete(
-                delegation_id=record.id,
-                agent=record.agent,
-                status="ok",
-                text=bounded,
-                origin=record.origin,
-                elapsed_s=time.time() - record.started_at,
-                output_truncated=output_truncated,
-            )
-            loop.create_task(_specialist_registry.complete_delegation(record.id))
+                loop.create_task(_specialist_registry.fail_delegation(
+                    record.id,
+                    RuntimeError(
+                        "specialist run ended with an API error "
+                        f"({output.api_error})",
+                    ),
+                ))
+            else:
+                text = output.text
+                bounded, output_truncated = specialist_limits.truncate_output(
+                    text)
+                if output_truncated:
+                    logger.warning(
+                        "delegated agent %s output truncated: %d > %d chars "
+                        "(spec §4.6)", record.agent, len(text),
+                        specialist_limits._MAX_OUTPUT_CHARS,
+                    )
+                complete = DelegationComplete(
+                    delegation_id=record.id,
+                    agent=record.agent,
+                    status="ok",
+                    text=bounded,
+                    origin=record.origin,
+                    elapsed_s=time.time() - record.started_at,
+                    output_truncated=output_truncated,
+                )
+                loop.create_task(
+                    _specialist_registry.complete_delegation(record.id))
         except Exception as exc:
             kind = _classify_error(exc).value
             complete = DelegationComplete(

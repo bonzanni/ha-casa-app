@@ -501,6 +501,64 @@ async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
     assert "safeguards flagged" not in payload
 
 
+async def test_async_delegation_completion_reports_an_api_error_as_failed(
+    monkeypatch,
+):
+    """The async / degraded-sync completion callback consumed ``.text`` and
+    notified ``status="ok"`` — so the delegating resident was handed an empty
+    answer to narrate to the household as the specialist's own."""
+    import tools
+    from specialist_registry import DelegationRecord
+
+    notified: list = []
+    failed: list = []
+    completed: list = []
+
+    class _Registry:
+        async def fail_delegation(self, did, exc):
+            failed.append((did, exc))
+
+        async def complete_delegation(self, did):
+            completed.append(did)
+
+        async def cancel_delegation(self, did):
+            pass
+
+    class _Bus:
+        async def notify(self, msg):
+            notified.append(msg)
+
+    monkeypatch.setattr(tools, "_specialist_registry", _Registry())
+    monkeypatch.setattr(tools, "_bus", _Bus())
+
+    record = DelegationRecord(
+        id="d-1", agent="finance", started_at=0.0,
+        origin={"role": "assistant", "channel": "telegram", "chat_id": "lr"},
+    )
+    task: asyncio.Task = asyncio.create_task(_delegated_api_error_result())
+    await task
+    tools._attach_completion_callback(task, record)
+    await asyncio.sleep(0)      # let the done-callback's tasks be scheduled
+    await asyncio.sleep(0)
+
+    assert completed == []
+    assert [d for d, _ in failed] == ["d-1"]
+    assert len(notified) == 1
+    complete = notified[0].content
+    assert complete.status == "error"
+    assert complete.kind == ErrorKind.REFUSAL.value
+    assert "Request ID" not in (complete.message or "")
+
+
+async def _delegated_api_error_result():
+    """A finished specialist run whose CLI ended it with a refusal."""
+    import tools
+
+    return tools.DelegatedOutput(
+        text="", run_subtype="success", api_error=ErrorKind.REFUSAL.value,
+    )
+
+
 async def test_synthesize_answer_raises_instead_of_answering_with_cli_prose(
     monkeypatch,
 ):
