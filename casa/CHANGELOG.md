@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.212.0] - 2026-08-15
+
+### Fixed
+
+- **A message sent to an engagement just as it ends is no longer lost in
+  silence** (#591). An engagement could finish while a message you had just
+  sent was already on its way to it — close enough to be out of the queue, not
+  yet close enough for the agent to have started reading it. Two things went
+  wrong in that moment: the agent was allowed to declare the work complete, and
+  the closing summary, which lists the messages that were never picked up,
+  did not mention it. Both are fixed. A completion now waits for a message
+  already on its way, and every engagement that ends — completed, cancelled or
+  failed — lists it.
+
+  The wording of that list changed with it. It used to say the messages were
+  never read; it now says no turn started for them before the engagement ended,
+  which is what Casa can actually tell. In the narrow case where the agent had
+  just begun reading, the old wording was not true.
+
+- **A very large message is delivered whole, or not at all** (#592). Anything
+  bigger than a pipeful used to be handed over in pieces, and an engagement
+  cancelled between two of them left the agent holding half a message it could
+  still act on. Casa now makes room for the whole message before writing the
+  first byte of it.
+
+- **An engagement stopped by Claude's safety system says so** (#595). When a
+  turn ended in an API-level fault — a safety refusal, a rate limit, an
+  overload — the engagement recorded a generic startup failure, so a refusal
+  and a crash looked identical after the fact. The specific reason is now
+  carried through to the engagement's record and to whoever started it, as it
+  already was everywhere else since 0.210.0. A refusal mid-engagement still
+  only fails that turn; the engagement stays open for you to try again.
+
 ## [0.211.0] - 2026-08-15
 
 ### Changed

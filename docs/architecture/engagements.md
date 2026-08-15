@@ -40,6 +40,18 @@ messages are unread or reserved — an agent cannot declare victory over a quest
 read. Failure and cancellation deliberately bypass that gate, because something going wrong
 must always be able to end.
 
+**"Unread" and "in flight" are different questions, and the gate needs both.** A message that
+has left the queue but not yet reached a turn — written into the engagement's stdin FIFO,
+with no turn-start evidence back — is invisible to the unread accounting, deliberately: that
+accounting also answers the ask gate's question, *is the operator still waiting to be
+answered?*, and a delivered message may well have been read. The terminal question is a
+different one, *is there operator input in flight that will only be taken up after I commit?*,
+and the same exclusion is wrong for it. So the driver answers both separately rather than
+changing what "unread" means. The completion gate refuses on either, and the annotation
+described below discloses both. There is no third state to track for a message being written
+right now: it is still queued throughout its own write, so the unread accounting already
+holds it.
+
 **Much less survives a restart than the word "durable" suggests.** The record persists;
 concurrency permits, live drivers, output sequencers, inbound reservations and various
 in-flight maps do not. A record found `active` at startup is rewritten to `idle`, because no
@@ -113,17 +125,39 @@ belongs to creation and the finalize path specifically. And the cancellation com
 itself best-effort on the disk side — if the compensating write fails, the on-disk ghost row
 remains until the boot reconcile and reap TTL retire it.
 
-**INV-ENG-003**: A successful completion is refused while unread inbound messages or inbound reservations exist, when the driver exposes its inbound state.
+**INV-ENG-003**: A successful completion is refused while unread inbound messages, inbound messages in flight to the engagement's CLI, or inbound reservations exist, when the driver exposes its inbound state.
 
 Enforced both as a pre-check and again as a hook inside the transition itself, so the
-condition is re-evaluated at the moment the state changes rather than only before it.
+condition is re-evaluated at the moment the state changes rather than only before it. The
+hook is where the invariant actually lives: delivery can happen during the finalize path's
+own awaits, long after the pre-check found the spool clean.
+
+The in-flight half of the refusal is bounded in time, and that asymmetry is deliberate. A
+delivered message normally reaches a turn within a second; one that has not after far longer
+is evidence that no turn is coming, and a veto on a state nothing will clear would make a
+successful completion impossible for the rest of the engagement's life — the opposite of this
+hook's fail-open contract. Past the bound the completion proceeds and the message is still
+disclosed. Each expiry is logged, so the bound is answerable to production rather than
+permanently a guess.
 
 What it does not cover: failed and cancelled outcomes intentionally skip the gate, and so
 does the operator's own complete command — only the completion *tool* arms the gate, so an
 operator marking an engagement complete finalizes past unread input deliberately. The gate
 also exists only where the driver implements the inbound accessors — today that is the
 claude-code driver alone, so an interactive in-casa specialist completion has no unread-input
-gate. Accessor failures fail open with a warning rather than wedging termination.
+gate. Accessor failures fail open with a warning rather than wedging termination. The
+escalation that forces a turn boundary after repeated refusals stays scoped to the queued
+population: a queued message cannot move until a respawn re-arms delivery, which is what the
+escalation forces, while an in-flight one is already past that boundary and killing its epoch
+could destroy a message a turn had just consumed.
+
+**A message that dies with the engagement is disclosed, not swallowed.** Every terminal
+outcome posts the messages no turn ever took up into the topic — both populations, at any
+age, excerpted and counted. The claim it makes is what the system can evidence: that no turn
+start was *recorded* for them before the engagement ended. It does not claim they were never
+read, because that is not provable for a message already handed to the CLI — the CLI can read
+the line and emit its init frame before the relay processes it, and a cancellation landing in
+that interval would otherwise assert something false about a message the agent did see.
 
 **INV-ENG-009**: A `claude_code` turn is admitted before its first byte reaches the engagement — a record found idle is `active` by then, and a terminal record is not written to at all.
 
@@ -137,11 +171,23 @@ follows behind it — the authority check reads the in-memory record, and a pers
 lands costs only that a later restart re-idles the record, after which the same redelivery
 admits it again.
 
-What it does not cover: the bytes after the first. A terminal transition landing mid-turn
-cannot revoke a delivery — closing the writer is itself an end-of-input the CLI acts on — so
-a turn already begun runs until the finalize path's driver teardown stops it. The admission
-also expresses no opinion on a record the registry does not know, which is unreachable for a
-live engagement and where the dispatch gate already fails closed.
+A turn that fits the pipe is written by a single non-blocking write, so in practice the
+admission covers the whole of it rather than only its first byte. That is not luck: a payload
+larger than the pipe's capacity would be written in pieces, and the suspension between them
+is a real scheduling point at which an ungated terminal transition can commit, leaving the
+remainder to be written to a record that is already terminal. Since a delivery cannot be
+revoked, the fix is to remove the suspension rather than guard it — the pipe is grown to fit
+the payload before the first write. The growth is strictly best-effort: a kernel that refuses
+it, or a payload beyond the maximum pipe size, simply falls back to writing in pieces.
+
+What it does not cover: the bytes after the first, when the payload does not fit. A terminal
+transition landing mid-turn cannot revoke a delivery — closing the writer is itself an
+end-of-input the CLI acts on — so a turn already begun runs until the finalize path's driver
+teardown stops it. A *completion* cannot land in that window, because a message is still
+counted as unread throughout its own write and the gate above refuses; a cancellation can,
+and the truncated turn it produces is stopped by teardown rather than by the write path. The
+admission also expresses no opinion on a record the registry does not know, which is
+unreachable for a live engagement and where the dispatch gate already fails closed.
 
 **INV-ENG-005**: Once the output sequencer is terminalized, ordinary narration and unresolved sends cannot post below the completion.
 

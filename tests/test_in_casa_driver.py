@@ -947,3 +947,212 @@ async def test_start_rolls_back_client_when_first_turn_cancelled(monkeypatch):
         "client leaked in _clients after cancelled start")
     assert rec.id not in drv._ctx_stack and rec.id not in drv._locks
     assert closed, "client was never closed on cancelled first turn"
+
+
+# ---------------------------------------------------------------------------
+# #595 — an engagement turn ended by an API fault carries its kind out
+#
+# v0.210.0 (#568) stopped the CLI's own error prose being streamed into the
+# engagement topic as the agent's words, but the kind died there: the turn
+# returned normally having produced nothing, so a safety refusal and a crash
+# both landed as `driver_start_failed` (or as nothing at all). These pin the
+# carrier. The envelopes come from tests/test_agent_api_error_message.py, which
+# holds the shapes MEASURED off the wire against the real CLI — a hand-built
+# stub would only prove the driver agrees with my guess about the SDK.
+# ---------------------------------------------------------------------------
+
+from test_agent_api_error_message import (          # noqa: E402
+    _MODEL_NOT_FOUND_ENVELOPE, _parsed, _refusal_envelope,
+)
+
+
+def _mk_result_msg(*, stop_reason=None):
+    """A terminal ResultMessage — the SECOND carrier of a refusal."""
+    from claude_agent_sdk import ResultMessage
+    m = ResultMessage.__new__(ResultMessage)
+    m.session_id = "sid-in-casa"        # type: ignore[attr-defined]
+    m.is_error = False                  # type: ignore[attr-defined]
+    m.result = ""                       # type: ignore[attr-defined]
+    m.stop_reason = stop_reason         # type: ignore[attr-defined]
+    return m
+
+
+def _client_of(*messages):
+    """A ClaudeSDKClient double that replays exactly ``messages``."""
+    class _FakeClient:
+        def __init__(self, options): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def query(self, prompt): pass
+
+        async def receive_response(self):
+            for m in messages:
+                yield m
+
+        async def close(self): pass
+    return _FakeClient
+
+
+class TestInCasaApiFaultCarriesItsKind:
+    """#595. Red case for every test here: delete the `raise ApiErrorTurn`
+    in `_deliver_turn` and each one fails — `start()` returns cleanly and the
+    caller has nothing to classify, which is exactly the reported defect."""
+
+    async def test_refusal_raises_with_the_refusal_kind(self, monkeypatch):
+        from error_kinds import ApiErrorTurn, ErrorKind
+        from drivers.in_casa_driver import InCasaDriver
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_parsed(_refusal_envelope())))
+        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+
+        with pytest.raises(ApiErrorTurn) as excinfo:
+            await drv.start(_make_record(), prompt="hi",
+                            options=ClaudeAgentOptions(model="sonnet"))
+        assert excinfo.value.kind is ErrorKind.REFUSAL
+
+    async def test_unknown_api_error_value_falls_through_to_api_error(
+            self, monkeypatch):
+        """`model_not_found` is not in the retryable table and the namespace is
+        open — an unrecognised value must classify as API_ERROR, not vanish."""
+        from error_kinds import ApiErrorTurn, ErrorKind
+        from drivers.in_casa_driver import InCasaDriver
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_parsed(_MODEL_NOT_FOUND_ENVELOPE)))
+        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+
+        with pytest.raises(ApiErrorTurn) as excinfo:
+            await drv.start(_make_record(), prompt="hi",
+                            options=ClaudeAgentOptions(model="sonnet"))
+        assert excinfo.value.kind is ErrorKind.API_ERROR
+
+    async def test_result_stop_reason_is_the_second_carrier(self, monkeypatch):
+        """A refusal reported ONLY on the terminal result — no synthesized
+        assistant message — must not come back as an empty success."""
+        from error_kinds import ApiErrorTurn, ErrorKind
+        from drivers.in_casa_driver import InCasaDriver
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_result_msg(stop_reason="refusal")))
+        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+
+        with pytest.raises(ApiErrorTurn) as excinfo:
+            await drv.start(_make_record(), prompt="hi",
+                            options=ClaudeAgentOptions(model="sonnet"))
+        assert excinfo.value.kind is ErrorKind.REFUSAL
+
+    async def test_fault_after_output_truncation_still_raises(self, monkeypatch):
+        """Found in design review (Sol r2). The detection used to sit inside
+        `if isinstance(...) and not stream_truncated:`, so once a specialist's
+        output was clipped the classifier stopped running and a later fault
+        ended the turn as a truncated SUCCESS.
+
+        Red case: move the `api_error_kind` check back inside the
+        `not stream_truncated` branch and this test fails with "DID NOT RAISE".
+        """
+        import specialist_limits
+        from error_kinds import ApiErrorTurn, ErrorKind
+        from drivers.in_casa_driver import InCasaDriver
+
+        over_cap = _mk_assistant(
+            "x" * (specialist_limits._MAX_OUTPUT_CHARS + 10))
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(over_cap, _parsed(_refusal_envelope())))
+        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        # kind="specialist" is what arms the output cap.
+        rec = _make_record(kind="specialist")
+
+        with pytest.raises(ApiErrorTurn) as excinfo:
+            await drv.start(rec, prompt="hi",
+                            options=ClaudeAgentOptions(model="sonnet"))
+        assert excinfo.value.kind is ErrorKind.REFUSAL
+        assert rec.origin.get("stream_output_truncated") is True, (
+            "test no longer exercises the truncated-stream path")
+
+    async def test_sub_agent_scoped_fault_does_not_end_the_turn(
+            self, monkeypatch):
+        """A fault scoped to a sub-agent (`parent_tool_use_id` set) is that
+        sub-agent's problem — the turn can still answer. Its prose is still
+        never streamed, because it is still not the agent speaking."""
+        from drivers.in_casa_driver import InCasaDriver
+
+        scoped = _parsed(_refusal_envelope(parent_tool_use_id="toolu_01"))
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(scoped, _mk_assistant("here is the real answer")))
+        factory, handle = _mk_factory_with_fake_handle()
+        drv = InCasaDriver(topic_stream_factory=factory)
+
+        await drv.start(_make_record(), prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+
+        handle.finalize.assert_awaited_once_with("here is the real answer")
+        posted = "".join(str(c) for c in handle.emit.await_args_list)
+        assert "Request ID" not in posted, (
+            "the CLI's error prose was streamed as the agent's words")
+
+    async def test_text_before_the_fault_is_finalized_then_raised(
+            self, monkeypatch):
+        """Text that reached Telegram before the fault cannot be retracted, so
+        the stream is finalized (coherent last edit) BEFORE the raise."""
+        from error_kinds import ApiErrorTurn
+        from drivers.in_casa_driver import InCasaDriver
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("partial work so far"),
+                       _parsed(_refusal_envelope())))
+        factory, handle = _mk_factory_with_fake_handle()
+        drv = InCasaDriver(topic_stream_factory=factory)
+
+        with pytest.raises(ApiErrorTurn):
+            await drv.start(_make_record(), prompt="hi",
+                            options=ClaudeAgentOptions(model="sonnet"))
+        handle.finalize.assert_awaited_once_with("partial work so far")
+
+    async def test_a_clean_turn_still_returns_normally(self, monkeypatch):
+        """Mutation check: the raise must fire on the fault, not on every
+        turn. Without this, a guard that always raised would pass every test
+        above."""
+        from drivers.in_casa_driver import InCasaDriver
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("all good"),
+                       _mk_result_msg(stop_reason="end_turn")))
+        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        rec = _make_record()
+
+        await drv.start(rec, prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+        assert drv.is_alive(rec) is True
+
+    async def test_send_user_turn_raises_too(self, monkeypatch):
+        """The per-turn caller (`_deliver_turn_bg`) posts a topic notice and
+        leaves the engagement LIVE — a mid-engagement refusal is one turn's
+        failure, not the engagement's. Pin that it raises at all."""
+        from error_kinds import ApiErrorTurn
+        from drivers.in_casa_driver import InCasaDriver
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("first turn fine")))
+        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        rec = _make_record()
+        await drv.start(rec, prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+
+        # Second turn refuses: swap the scripted stream on the live client.
+        async def _refusing(*a, **k):
+            yield _parsed(_refusal_envelope())
+        drv._clients[rec.id].receive_response = _refusing
+
+        with pytest.raises(ApiErrorTurn):
+            await drv.send_user_turn(rec, "please do the thing")
+        assert drv.is_alive(rec) is True, (
+            "a refused turn must not tear the engagement's client down")

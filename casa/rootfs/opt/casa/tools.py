@@ -67,7 +67,8 @@ from claude_runtime import CLAUDE_CLI_PATH
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
 from error_kinds import (
-    ApiErrorTurn, _classify_error, api_error_kind, result_api_error_kind,
+    ApiErrorTurn, _USER_MESSAGES, _classify_error, api_error_kind,
+    result_api_error_kind,
 )
 from mcp_registry import McpServerRegistry
 import sdk_logging
@@ -4878,6 +4879,21 @@ async def delegate_to_agent(args: dict) -> dict:
                 return _result({
                     "status": "error", "kind": "clearance_changed_during_launch",
                     "message": str(exc)})
+            except ApiErrorTurn as exc:
+                # #595: the launch turn ended in an API-level fault — a safety
+                # refusal, a rate limit, an overload. The driver carries the
+                # resolved kind, so the terminal record names it instead of
+                # flattening every one of them into `driver_start_failed`,
+                # where a refusal and a crash read identically. The teardown is
+                # the generic branch's: `InCasaDriver.start`'s M14 rollback has
+                # already closed the client, `mark_error` releases the permit.
+                _kind = exc.kind.value
+                await _engagement_registry.mark_error(
+                    rec.id, kind=_kind, message=str(exc))
+                await _abort_engagement_topic(channel, rec.id, topic_id)
+                return _result({"status": "error", "kind": _kind,
+                                "message": _USER_MESSAGES.get(
+                                    exc.kind, str(exc))})
             except Exception as exc:  # noqa: BLE001
                 await _engagement_registry.mark_error(rec.id, kind="driver_start_failed",
                                                       message=str(exc))
@@ -7250,6 +7266,19 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                     "status": "error", "kind": "clearance_changed_during_launch",
                     "message": str(exc),
                 })
+            except ApiErrorTurn as exc:
+                # #595: as in the interactive-specialist launch above — the
+                # carried kind reaches the terminal record, so `refusal` and
+                # `api_error` are distinguishable from a crash here too.
+                _kind = exc.kind.value
+                await _engagement_registry.mark_error(
+                    rec.id, kind=_kind, message=str(exc),
+                )
+                await _abort_engagement_topic(channel, rec.id, topic_id)
+                return _result({
+                    "status": "error", "kind": _kind,
+                    "message": _USER_MESSAGES.get(exc.kind, str(exc)),
+                })
             except Exception as exc:  # noqa: BLE001
                 await _engagement_registry.mark_error(
                     rec.id, kind="driver_start_failed", message=str(exc),
@@ -7491,15 +7520,34 @@ async def _finalize_engagement(
             _hr = (driver.inbound_reservations(engagement.id)
                    if hasattr(driver, "inbound_reservations") else 0)
             resv = _hr if type(_hr) is int else 0
+            # #591: the accessors above answer "is the operator still waiting
+            # to be answered?", which deliberately excludes an envelope already
+            # written into the CLI's stdin FIFO. That is the right answer for
+            # the ask gate and the wrong one here, twice over: such an envelope
+            # is work that will only be taken up AFTER this transition commits,
+            # and if the engagement ends first nobody ever tells the operator
+            # it died unread. Both new reads are strictly typed so a duck or
+            # mock driver reads as empty rather than fabricating a depth.
+            _ift = (driver.inbound_in_flight_texts(engagement.id)
+                    if hasattr(driver, "inbound_in_flight_texts") else [])
+            in_flight = ([t for t in _ift if isinstance(t, str)]
+                         if type(_ift) is list else [])
+            _ifb = (driver.inbound_in_flight_blocking(engagement.id)
+                    if hasattr(driver, "inbound_in_flight_blocking") else 0)
+            blocking = _ifb if type(_ifb) is int else 0
         except Exception:  # noqa: BLE001 — fail open
             logger.warning(
                 "finalize engagement %s: inbound accessors failed — "
                 "gate skipped", engagement.id[:8], exc_info=True)
             return None
-        unread_snapshot[:] = list(texts)
-        if inbound_gate and (texts or resv):
+        # Disclosure covers BOTH populations at any age; the veto counts only
+        # in-flight young enough to still be arriving (see the driver's
+        # in_flight_blocking_depth — an unbounded veto here could make a
+        # successful completion impossible, which this hook must never do).
+        unread_snapshot[:] = list(texts) + list(in_flight)
+        if inbound_gate and (texts or blocking or resv):
             return (f"unread_inbound depth={len(texts)} "
-                    f"reservations={resv}")
+                    f"in_flight={blocking} reservations={resv}")
         return None
 
     if _engagement_registry is not None:
@@ -7637,9 +7685,20 @@ async def _finalize_engagement(
                         "\n\n⚠️ This engagement took an action before you "
                         "responded — please review."
                     )
-                # G4 D4 (v0.96.0): surface operator messages that were NEVER
-                # read (queued at terminalization — cancel/reap/error paths;
-                # a gated completion cannot reach here with unread input).
+                # G4 D4 (v0.96.0): surface operator messages no turn ever took
+                # up (queued at terminalization — cancel/reap/error paths; a
+                # gated completion cannot reach here with unread input), plus
+                # (#591) any already written into the CLI's stdin FIFO with no
+                # turn_start evidence back.
+                #
+                # The copy claims what Casa can actually evidence. "Never read"
+                # is not provable for the second population: the CLI can read
+                # the line and emit its init frame before the relay processes
+                # it, so a /cancel landing in that interval would assert
+                # something false about a message the agent did see. What is
+                # always true is that no turn start was RECORDED for them
+                # before the engagement ended (``consumed`` requires exactly
+                # that evidence) — so that is what it says.
                 # TOPIC-ONLY (never in `text`, which flows to the bus
                 # notification and semantic memory) and BOUNDED to one
                 # message: excerpts + count, full texts stay in the durable
@@ -7655,8 +7714,9 @@ async def _finalize_engagement(
                         _parts.append(f"• {_ex}")
                     _more = len(unread_snapshot) - len(_parts)
                     summary_text += (
-                        f"\n\n⚠️ {len(unread_snapshot)} operator "
-                        "message(s) were never read by this engagement:\n"
+                        f"\n\n⚠️ {len(unread_snapshot)} operator message(s) "
+                        "had no turn start recorded before this engagement "
+                        "ended — they may never have been read:\n"
                         + "\n".join(_parts)
                         + (f"\n…and {_more} more (kept in the engagement's "
                            "inbound spool file)." if _more > 0 else "")
@@ -8313,14 +8373,19 @@ async def emit_completion(args: dict) -> dict:
             _d = driver.inbound_unread_depth(engagement.id)
             _r = (driver.inbound_reservations(engagement.id)
                   if hasattr(driver, "inbound_reservations") else 0)
+            # #591: an envelope already in the CLI's stdin FIFO is work this
+            # completion would commit ahead of, so it refuses here too.
+            _f = (driver.inbound_in_flight_blocking(engagement.id)
+                  if hasattr(driver, "inbound_in_flight_blocking") else 0)
         except Exception:  # noqa: BLE001 — fail open, never wedge completion
-            _d = _r = 0
+            _d = _r = _f = 0
         # STRICT int typing (fail open otherwise): a duck/mock driver whose
         # accessors return non-ints must read as "no unread input", never as
         # a fabricated depth (int(MagicMock()) == 1 bit us in the gate).
         _depth = _d if type(_d) is int else 0
         _resv = _r if type(_r) is int else 0
-        if _depth > 0 or _resv > 0:
+        _flight = _f if type(_f) is int else 0
+        if _depth > 0 or _resv > 0 or _flight > 0:
             try:
                 _rn = (driver.record_completion_refusal(engagement.id)
                        if hasattr(driver, "record_completion_refusal") else 1)
@@ -8330,7 +8395,18 @@ async def emit_completion(args: dict) -> dict:
             # D3: from the 2nd consecutive refusal, force a turn boundary so
             # the queued envelope actually pumps (delivery re-arms only at
             # spawn) instead of livelocking on doctrine alone.
-            if _n >= 2 and hasattr(driver, "force_completion_turn_boundary"):
+            #
+            # #591: gated on the QUEUED population only, never on in-flight
+            # alone. The escalation exists because a queued envelope cannot
+            # move until a respawn re-arms delivery — an in-flight one is
+            # already past that boundary and needs nothing forced. Killing its
+            # epoch would be actively harmful: the kill is guarded to the very
+            # epoch holding the envelope, so a turn that consumed it a moment
+            # earlier dies mid-work and the message is never redelivered
+            # (consumed ⇒ no redelivery — the #341 hazard). The in-flight veto
+            # is bounded in time instead, which is what stops it livelocking.
+            if (_depth > 0 or _resv > 0) and _n >= 2 and hasattr(
+                    driver, "force_completion_turn_boundary"):
                 try:
                     await driver.force_completion_turn_boundary(engagement)
                 except Exception:  # noqa: BLE001 — escalation is best-effort
