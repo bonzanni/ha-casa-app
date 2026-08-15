@@ -583,6 +583,24 @@ def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
         "fault — #568"
     )
 
+    # The count and its note are a DECLARATION: they force the decision to be
+    # made and reviewed when a loop is added, which is the same contract
+    # memory.md's recall-consumer inventory carries. They cannot prove the
+    # handling is correct — that would need static analysis of each loop — but
+    # this much is checkable in code rather than in a comment: a module that
+    # reads the SDK must at least consult the classifier.
+    unclassified = [
+        name for name in declared
+        if not re.search(
+            r"api_error_kind",
+            next(p for p in root.rglob("*.py") if p.name == name).read_text(),
+        )
+    ]
+    assert not unclassified, (
+        f"{sorted(unclassified)} read the SDK but never call api_error_kind — "
+        "a declared loop must consult the classifier, not just claim to — #568"
+    )
+
 
 async def test_normal_turn_is_untouched(agent_fixture, monkeypatch):
     """The gate must not fire on a good answer."""
