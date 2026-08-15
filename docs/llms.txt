@@ -17,8 +17,8 @@ Code is the source of truth; these files are a map.
 - [architecture/http-surface.md](architecture/http-surface.md): The two HTTP servers, what each exposes, and how an inbound request is authenticated.
 - [architecture/jobs-and-delivery.md](architecture/jobs-and-delivery.md): Durable background jobs — execution vs delivery state, restart reconciliation, and the leased claim/ack protocol.
 - [architecture/mcp-and-tools.md](architecture/mcp-and-tools.md): How tools reach an agent, and where authorization for a tool call actually happens.
-- [architecture/memory-lifecycle.md](architecture/memory-lifecycle.md): Retention lifecycle — how a conversation becomes long-term memory, how a reset retires it, and how the operator-consented wipe removes everything.
-- [architecture/memory.md](architecture/memory.md): Long-term memory — how a fact is written, who may read it back, and what a caller is told when the store cannot answer.
+- [architecture/memory-lifecycle.md](architecture/memory-lifecycle.md): Retention lifecycle — how a conversation becomes long-term memory, how each item is labelled on the way in, how a reset retires it, and how the operator-consented wipe removes everything.
+- [architecture/memory.md](architecture/memory.md): Recall — who may read a stored fact back, how it is rendered, and what a caller may claim from what comes back.
 - [architecture/observability.md](architecture/observability.md): How work is traced across components, what reaches a log, and what the health surfaces actually assert.
 - [architecture/overview.md](architecture/overview.md): What Casa is made of — supervised services, the three agent tiers, and where configuration enters.
 - [architecture/persistent-state.md](architecture/persistent-state.md): What the application writes to disk, how it treats a missing or corrupt file, and what that means for recovery.

@@ -86,12 +86,22 @@ class TestRecallMemoryEmptyIsNotAbsence:
         assert "match" in low or "exist" in low
         assert "narrow" in low or "refine" in low or "specific" in low
 
-    async def test_nonempty_digest_stays_clean(self, monkeypatch):
+    async def test_nonempty_digest_is_framed_too(self, monkeypatch):
+        """#581 replaced ``test_nonempty_digest_stays_clean``, which asserted
+        the opposite. "No guidance noise on the happy path" read as a tidiness
+        win; it was the defect. Emptiness was never the property that needed
+        framing — boundedness is, and a non-empty slice is exactly as bounded.
+        The full contract lives in tests/test_recall_readable_slice_framing.py;
+        this pins that the ok-arm did not revert to a bare digest."""
         import tools
         _setup(monkeypatch, channel="telegram", hits=(_hit(),))
-        out = _text(await tools.recall_memory.handler({"query": "temp?"}))
-        assert "thermostat at 20C" in out
-        assert "not proof" not in out.lower()
+        import json
+        res = json.loads(_text(await tools.recall_memory.handler({"query": "temp?"})))
+        assert "thermostat at 20C" in res["memory"]
+        assert "not a complete inventory" in res["message"].lower()
+        # The digest itself still asserts nothing (the note is where "no
+        # record" appears, as the phrase it forbids).
+        assert "no record" not in res["memory"].lower()
 
 
 class TestQueryEngagerUnknownIsNotAbsence:

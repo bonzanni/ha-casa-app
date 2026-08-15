@@ -1451,8 +1451,12 @@ class TestTokenBudgetMonitoring:
             current_speaker=SpeakerProvenance(speaker_kind="system"),
             surface="text", clearance="private", token_budget=1000,
         )
+        # #581: the block now opens with the memory-use instruction line, and
+        # that line is inside the budget accounting exactly as the digest is.
+        from recall_renderer import READABLE_SLICE_PROMPT_LINE
         expected = estimate_tokens(
-            f"<memory_context>\n{digest}\n</memory_context>"
+            f"<memory_context>\n{READABLE_SLICE_PROMPT_LINE}\n{digest}\n"
+            f"</memory_context>"
         )
         expected_channel_key = build_scoped_session_key("telegram", "assistant", "123")
         assert observed == [(f"{expected_channel_key}-assistant", expected, 1000)]

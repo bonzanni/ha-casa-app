@@ -22,13 +22,17 @@ enforcement point. Where one does not, the agent's judgement is the control.
 
 ## The rules, and what each rests on
 
-**Never assert absence from silence.** If a recall returns nothing, that may mean nothing was
-found, nothing was *readable from your surface*, memory could not be consulted, or a result
-existed and did not fit the rendering budget. The recall tools now say which of these they
-can establish — an empty result arrives with explicit guidance, and readable matches that
-did not fit are reported as existing (INV-MEM-010) — but no empty result, at any clearance,
-proves absence. Say "I did not find" or "nothing I can share here" rather than "there is
-no", and say "I could not check" when that is what happened. See `architecture/memory.md`.
+**Never assert absence from silence — and a full answer is a kind of silence too.** If a
+recall returns nothing, that may mean nothing was found, nothing was *readable from your
+surface*, memory could not be consulted, or a result existed and did not fit the rendering
+budget. The recall tools now say which of these they can establish — an empty result arrives
+with explicit guidance, and readable matches that did not fit are reported as existing
+(INV-MEM-010) — but no empty result, at any clearance, proves absence. Neither does a
+*non-empty* one: what came back is the slice readable where you are asking, so a topic
+missing from a list of thirty other memories is not a topic Casa has nothing on, and every
+such slice now carries a note saying so. Say "I did not find" or "nothing I can share here"
+rather than "there is no", and say "I could not check" when that is what happened. See
+`architecture/memory.md`.
 
 **A protected-tool approval covers one action with one argument set.** That authorization is
 single-use and bound to the exact canonical arguments. If a call is denied and you change

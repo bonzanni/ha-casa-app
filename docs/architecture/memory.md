@@ -8,11 +8,14 @@ last_reviewed: 2026-08-10
 
 ## Scope
 
-Long-term memory: how a fact is written, who may read it back, and what a caller is told
-when the store cannot answer. It covers the memory seam, the sensitivity model, and the
-provenance carried on a recalled fact. It does not cover the SDK session transcript, which
-is short-term context on a different lifecycle, and it does not describe the memory backend's
-own internals — those live outside this repository.
+Long-term memory on the way *out*: who may read a stored fact back, how it is rendered, what
+a caller is told when the store cannot answer, and what a caller may claim from what comes
+back. It covers the memory seam, the sensitivity model as a read control, and the provenance
+carried on a recalled fact. How a fact is written and labelled — tier classification, speaker
+provenance, content addressing, and the retention lifecycle around them — is
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md). It does not cover the SDK session
+transcript, which is short-term context on a different lifecycle, and it does not describe
+the memory backend's own internals — those live outside this repository.
 
 ## Mental model
 
@@ -37,7 +40,7 @@ exceed the token budget, and if the *first* entry is already too large, nothing 
 So a rendered `""` may mean no hits, or may mean hits that did not fit. Code that treats an
 empty render as evidence of absence is making a claim the render cannot support.
 
-**And an empty result does not prove absence, at any clearance.** The recall request carries
+**And no result proves absence, at any clearance — empty or not.** The recall request carries
 the caller's readable tiers as a server-side tag filter, so a hit above the caller's clearance
 is dropped *by the backend* and a clearance-blocked search returns the same well-formed empty
 as a genuine miss. Even at the highest clearance, server-side token truncation and the types
@@ -46,6 +49,22 @@ zero-hit result carries guidance that absence is unknowable and must not be asse
 result whose readable hits exist but did not fit the render budget says so and asks for a
 narrower query — the one existence claim an empty render *can* support, since those hits
 already passed the clearance filter.
+
+Emptiness, though, was never the property that needed saying. *Boundedness* is, and a large
+useful result is exactly as bounded as an empty one: a model handed thirty readable memories
+with nothing on the asked topic concludes "there is no record" just as confidently as one
+handed none, and the filtering that removed the on-topic entry happened server-side, so
+nothing in the result betrays it. Every non-empty slice injected into an agent's context
+therefore carries one shared note saying so — use these entries normally, but they are the
+view readable here, not an inventory of Casa's memory. The note is constant at every tier and
+on every surface: a caveat that appeared only below `private`, or read differently there,
+would itself be an oracle for "something was filtered out of *this* answer".
+
+One slice stays deliberately unframed, and it is worth knowing why it is safe: the
+engager-query synthesizer. It is a model, but it never speaks to a person — it may only
+answer from the context it was handed or return `UNKNOWN`, and that `UNKNOWN` becomes the
+already-framed unknown result. The framing is attached where a slice reaches an agent that
+can *say something to someone*, which is where the false denial happens.
 
 **Auto-recall is not "every turn".** It happens when a turn's options are built, which is a
 fresh non-voice session only — a warm reused client skips that path entirely, and voice never
@@ -111,23 +130,14 @@ existed has none, so it keeps channel-keyed clearance — on Telegram, private �
 finishes.
 
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
-channels retain to the shared bank, and *when* a conversation is retained, reset, or
-wiped is the retention lifecycle: [`architecture/memory-lifecycle.md`](memory-lifecycle.md)
-owns the freshness windows, the save guard protocol (INV-MEM-006), the retirement claims
-(INV-MEM-013), and the operator-consented wipe (INV-MEM-014).
-
-**Retention deduplicates.** Retained facts are content-addressed, so the same speaker
-saying the same thing across sessions collapses to one stored document — and agent-side
-deduplication ignores persona version, so a persona upgrade does not mint duplicate
-memories.
-
-Content addressing only holds because the hash input is the utterance and nothing else.
-Every sent user turn carries a per-turn time envelope, and the transcript echoes it back —
-hashed as-is, that second-precision timestamp would mint a fresh document for the same
-sentence in every session. Retention therefore splits the envelope off user turns at the
-transcript-readback boundary: stored text and document id are both envelope-free, and the
-turn's wall-clock time survives out-of-band as the retain item's timestamp. The composer
-and splitter are a pinned pair, so the envelope's shape cannot drift from what is stripped.
+channels retain to the shared bank; *when* a conversation is retained, reset, or wiped is
+the retention lifecycle, and so is everything about how a fact is *labelled* on the way in —
+tier classification, provenance, and the content addressing that deduplicates it.
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md) owns the freshness windows, the
+save guard protocol (INV-MEM-006), the write-side tag and provenance gate (INV-MEM-004), the
+content-addressing contract (INV-MEM-009), the tier-classifier parse (INV-MEM-012), the
+retirement claims (INV-MEM-013), and the operator-consented wipe (INV-MEM-014). What this
+document owns is the other direction: what comes back, and what a caller may claim from it.
 
 **Mental-model overlays cannot be tier-filtered at all**, because they are bank-wide
 summaries rather than individually tagged facts. That is why they are exposed only at the
@@ -143,12 +153,16 @@ malformed envelopes, and the no-op implementation raises rather than returning e
 backend is configured.
 
 What it does not cover: **individual call sites may still collapse the distinction after the
-fact.** The two model-facing consumers no longer do — `recall_memory` and `query_engager`
-scope their empty results explicitly (INV-MEM-010) — but the invariant holds at the seam,
-for typed recall, not at every consumer. A prompt-assembly caller that renders an empty
-digest as silence (the executor archive slot) is making no claim, which is fine; a new
-consumer that words emptiness as absence would reintroduce the defect. Check the call site
-you care about rather than assuming it propagates.
+fact.** The model-facing consumers no longer do — `recall_memory` and `query_engager` scope
+their empty results explicitly, and every consumer of a rendered slice frames its non-empty
+one (INV-MEM-010) — but the invariant holds at the seam, for typed recall, not at every
+consumer. A prompt-assembly caller that renders an empty digest as silence (the executor
+archive slot) is making no claim, which is fine; a new consumer that words emptiness as
+absence, or hands over a bounded slice unframed, would reintroduce the defect. That is a
+standing risk of a per-consumer contract, so the consumer inventory is itself pinned: a new
+`render_recall` or `delegated_recall` call site — or one more inside an existing caller —
+fails the suite until it declares how it frames a non-empty result. Check the call site you
+care about rather than assuming it propagates.
 
 **INV-MEM-002**: A typed hit is readable only when its tags carry exactly one recognised tier at or below the caller's clearance; if every hit is dropped, the result is unavailable rather than empty.
 
@@ -171,20 +185,17 @@ origin. Delegated recall honours a route its caller passes, but falls back to ch
 clearance for every caller that passes none — check the call site before assuming a
 delegated read is origin-filtered.
 
-**INV-MEM-004**: A caller cannot inject a sensitivity tier or a provenance tag through ordinary application tags.
+**INV-MEM-004**, **INV-MEM-005**, **INV-MEM-006**, **INV-MEM-009** and **INV-MEM-012** — the
+write-side tag and provenance gate, write trust, the save/reset guard protocol, the
+content-addressing contract and the tier-classifier parse — are declared in
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the retirement
+claims (INV-MEM-013) and the wipe contract (INV-MEM-014).
 
-Enforced in the retain-item builder, which refuses reserved tag namespaces before doing any
-classification or I/O, and validates the speaker provenance it is given.
-
-What it does not cover, and this is worth stating plainly: it protects the *write* path from
-its own callers. It does not authenticate what the backend returns. On read, a syntactically
-valid provenance tag is trusted and is not cross-checked against the duplicate copy stored in
-the item's metadata. A recalled fact can therefore carry a speaker identity that the read path
-has not independently established.
-
-**INV-MEM-005** and **INV-MEM-006** — write trust and the save/reset guard protocol —
-are declared in [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with
-the retirement claims (INV-MEM-013) and the wipe contract (INV-MEM-014).
+One consequence of INV-MEM-004 belongs on the read side and is easy to miss: it protects the
+*write* path from its own callers, and does not authenticate what the backend returns. On
+read, a syntactically valid provenance tag is trusted and is not cross-checked against the
+duplicate copy stored in the item's metadata, so a recalled fact can carry a speaker identity
+the read path has not independently established.
 
 **INV-MEM-008**: An engagement's reads resolve clearance from the origin markers its own record carries, and a steering turn from a lower-clearance sender clamps those markers down permanently.
 
@@ -201,26 +212,21 @@ which on Telegram is private — so this tightens what a *newly* stamped origin 
 does not retroactively downgrade engagements created before the markers existed. The clamp
 also cannot un-share what was already disclosed before a lower-clearance sender arrived.
 
-**INV-MEM-009**: The per-turn time envelope never reaches the content-addressed document id or the stored memory text — an identical utterance retained from any session collapses to one document — and the turn's wall-clock time is carried out-of-band on the retain item.
+**INV-MEM-010**: No recall result licenses a claim that Casa lacks something: every non-empty readable slice injected into the context of an agent that speaks to a person is framed as bounded, the sole unframed slice reaches only a synthesizer that can answer from it or return `UNKNOWN`, empty and unknown results carry explicit do-not-assert-absence guidance at every clearance tier, and readable hits that did not fit the render budget are reported as existing rather than absent.
 
-Enforced at the transcript-readback boundary, which splits a single leading envelope off each
-user turn before the retain-item builder hashes or stores it. The envelope's composer and
-splitter are a pinned pair; a round-trip test fails the moment the composed shape drifts from
-what the splitter recognises.
+Enforced in the recall tool's empty-digest arms and the engager-query tool's unknown arm,
+which attach explicit guidance in place of a bare empty result; and, on the non-empty side, by
+one shared note (`recall_renderer.READABLE_SLICE_NOTE`) attached by all four consumers of a
+rendered slice — the recall tool's ok-arm as a result `message`, and auto-recall, the
+specialist delegation and the executor lessons block as an instruction line inside the
+injected block. The engager-query synthesizer is the exception described above.
 
-What it does not cover: documents retained before the split existed keep their enveloped text
-and stale ids — the bank converges only as facts are re-said. Writers that bypass the
-transcript readback (delegated retains) never carried the envelope in the first place.
-
-**INV-MEM-010**: An empty recall result never asserts non-existence: the model-facing recall tools scope their empty and unknown results at every clearance tier, and readable hits that did not fit the render budget are reported as existing rather than absent.
-
-Enforced in the recall tool's empty-digest arms and the engager-query tool's unknown arm, which
-attach explicit do-not-assert-absence guidance in place of a bare empty result.
-
-What it does not cover: it is a statement about what the tool result *says*, not what a model
-does with it — prompt-level honesty remains the model's job. Prompt-assembly consumers that
-render emptiness as silence are outside it, deliberately: absence of a block is not a claim
-of absence.
+What it does not cover: it is a statement about what the result *says*, not what a model does
+with it — prompt-level honesty remains the model's job. Prompt-assembly consumers that render
+emptiness as *silence* stay outside it, deliberately: absence of a block is not a claim of
+absence, and a framing line with no memories under it would be a header for a search that
+found nothing. The consumer inventory that guards against a fifth, unframed consumer resolves
+direct calls only; an alias or other indirection escapes it.
 
 **INV-MEM-011**: A clearance downgrade durably invalidates the engagement's session context in the same write that lowers the record — until a fresh session is established at the clamped floor, no path resumes the old session and the record's tool calls are refused at both dispatch choke points.
 
@@ -234,17 +240,6 @@ What it does not cover: output of a turn already running at clamp time, content 
 posted to the (group-readable) topic, and a pre-clamp nested child's own record — the
 deliberate residuals listed above. The completion tool stays reachable while the rebuild is
 pending, its output being in-flight-turn residual.
-
-**INV-MEM-012**: A tier-classifier reply yields a tier only when it is a single line holding one (possibly decorated) tier token, or when a multi-line reply's final non-empty line is the literal `Tier: <word>` answer line whose earlier tier-token or Tier-label lines all resolve to the same tier; prose tier words, conflicts, and unresolvable labels yield no tier; the item defaults to private.
-
-Enforced in `parse_tier`: the single-line arm full-matches one decorated token, never
-searching leftmost and never spanning lines; the answer-line arm accepts only the
-literal final line the prompt mandates, and an earlier answer-like line only when it
-resolves to the same tier — never "last one wins". Replaces retired MEM 007,
-whose statement the answer-line arm falsifies.
-
-What it does not cover: a classifier confidently declaring the wrong tier is believed —
-a parser contract, not accuracy; the eval set owns accuracy.
 
 **INV-MEM-015**: The lessons block injected into an executor's prompt at launch carries only summaries stamped with that launch's own procedural epoch; a summary is stamped at finalize with the epoch persisted on its engagement's record at create, never with the finalize-time definition.
 
@@ -294,17 +289,12 @@ silence.
 dedicated reason rather than calling the backend. Genuine zero-hit results count as successes
 and reset it; only unavailability counts as failure.
 
-**Tier classification fails.** Retention classifies each item with a bounded LLM pass; a
-backend error retries once; an unparseable reply is re-asked once with the format mandate
-restated, then falls to *private* with a log warning, and the save logs one aggregate
-N-defaulted-of-M line. "Unparseable" is strict: only a single-line (possibly decorated)
-tier token or a final `Tier: <word>` line with agreeing earlier answers parses —
-anything else (prose, conflicts) is ambiguity. The write is not lost, but the fact
-goes invisible below the highest clearance — absence on voice and friends surfaces.
-
 Failures on the *write* side — a save that fails, a spooled retry, a corrupt session
-registry, a wipe whose drain times out — are the retention lifecycle's:
-[`architecture/memory-lifecycle.md`](memory-lifecycle.md).
+registry, a wipe whose drain times out, a tier classification that cannot be parsed — are the
+retention lifecycle's: [`architecture/memory-lifecycle.md`](memory-lifecycle.md). The last of
+those has a read-side consequence worth knowing here: an unparseable classification defaults
+the item to *private*, so the write is not lost but the fact goes invisible below the highest
+clearance — absence on voice and friends surfaces.
 
 ## Extension points
 
@@ -324,10 +314,8 @@ prior results found", it must not collapse unavailable into silence.
 **A new render surface** means extending the surface type and the provenance view together,
 since what may be disclosed is decided per surface.
 
-**A new writer** should build its items through the retain-item builder. Calling the seam's
-retain directly bypasses tier tagging, provenance validation and the write-trust check at
-once — and see [`architecture/memory-lifecycle.md`](memory-lifecycle.md) for the retain
-fence a writer must also enter.
+**A new writer** is the retention lifecycle's:
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md).
 
 **Scoping what a recall surfaces** is a caller-side decision: the backend's only content
 filter is the sensitivity tags, so a caller that must narrow further (the executor archive
@@ -348,10 +336,6 @@ any-match filter).
 - `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
-- `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
-- `casa/rootfs/opt/casa/memory_provenance.py::build_retain_items`
-- `casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope`
-- `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`
@@ -364,10 +348,9 @@ any-match filter).
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`
 - `tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction`
 - `tests/test_channel_policy.py`
-- `tests/test_memory_provenance.py`
 - `tests/test_agent_auto_recall_unavailable.py`
-- `tests/test_time_envelope.py`
 - `tests/test_recall_empty_verdict.py`
+- `tests/test_recall_readable_slice_framing.py`
 - `tests/test_executor_epoch.py`
 
 **Related**
