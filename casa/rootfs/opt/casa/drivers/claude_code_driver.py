@@ -1820,6 +1820,33 @@ class ClaudeCodeDriver(DriverProtocol):
                         await self.post_topic_notice(engagement, copy)
                         return False
                     await asyncio.sleep(poll_s)
+            # #588 — the delivery admission, and the ONLY point at which it can
+            # be made. The open above succeeds only once the CLI holds the FIFO
+            # open for reading, and the CLI cannot observe a byte until the
+            # write below: this is the one instant at which "a turn is genuinely
+            # about to be delivered" and "the engagement has seen nothing of it"
+            # are both true. `begin_turn_delivery` is SYNCHRONOUS on purpose —
+            # there must be no suspension point between the open, this call and
+            # the first `os.write`, because that is what stops any other
+            # coroutine on this loop (an inbound MCP tool call, a terminal
+            # transition) from running in between. Do not make it awaited.
+            #
+            # It flips a record boot reconcile left `idle` back to `active`, so
+            # a turn REDELIVERED to a respawned CLI carries the engagement's
+            # tool authority instead of being refused `tool_not_granted` by the
+            # bridge grant-gate; and it refuses delivery outright once the
+            # record is terminal. The fence covers the FIRST byte only — a
+            # terminal transition landing mid-write cannot revoke a turn already
+            # begun (a pipe has no rollback, and closing the writer is itself an
+            # EOF the CLI acts on). Stopping an in-flight turn is what
+            # `_finalize_engagement`'s `driver.cancel` teardown is for.
+            begin = getattr(self._registry, "begin_turn_delivery", None)
+            if begin is not None and not begin(engagement.id):
+                logger.info(
+                    "engagement %s: not delivering a turn to a terminal "
+                    "engagement", engagement.id[:8],
+                )
+                return False
             # Reader exists; write non-blocking under the same deadline. Turns
             # are far below the 64KB pipe buffer, so the first write virtually
             # always completes fully.

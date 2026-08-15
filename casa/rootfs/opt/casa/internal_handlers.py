@@ -189,6 +189,12 @@ def _make_internal_tools_call_handler(
     EXCEPT the _TERMINAL_BINDING_TOOLS allowlist (emit_completion), whose
     terminal records still bind so retries reach the idempotency check
     (v0.74.2).
+
+    #587: the two ways a call can be refused are reported distinctly —
+    -32006 `engagement_not_live` when a caller authenticated against a known
+    record that is not bindable, -32004 `tool_not_granted` when a bound
+    engagement lacks the grant (and for an unbound caller, which has no
+    record to describe).
     """
     async def handler(request: web.Request) -> web.Response:
         try:
@@ -238,6 +244,14 @@ def _make_internal_tools_call_handler(
         # allowlist (v0.74.2), so a duplicate/racing emit_completion delivery
         # gets the honest `already_terminal` from the tool's idempotency check.
         engagement = None
+        # #587: the record's status, set ONLY when the caller proved possession
+        # of a known record's token and the record still did not bind — a
+        # refusal the grant-gate below would otherwise report as a missing
+        # grant, which is a lie about a record that may hold it. Captured here
+        # rather than re-read later so the branch cannot depend on whether
+        # `rec` was ever assigned.
+        unbound_status: str | None = None
+        authenticated_unbound = False
         if eng_id:
             try:
                 rec = engagement_registry.get(eng_id)
@@ -278,6 +292,37 @@ def _make_internal_tools_call_handler(
                 if (getattr(rec, "status", None) == "active"
                         or name in _TERMINAL_BINDING_TOOLS):
                     engagement = rec
+                else:
+                    authenticated_unbound = True
+                    unbound_status = getattr(rec, "status", None)
+
+        # #587: an authenticated record that did not BIND is a different
+        # refusal from "bound, but not granted this tool", and answering both
+        # with `tool_not_granted` describes the first one falsely — the record
+        # may well hold the grant; what it is not is LIVE. Binding requires
+        # `status == "active"`, so this is the state a caller reaches when its
+        # engagement has gone terminal (or, before #588's delivery admission,
+        # when a restart left it `idle`) while a turn was still in flight. The
+        # refusal itself is unchanged and still fails closed; only its
+        # attribution improves, and that attribution cost real investigation
+        # time twice while #585 was being diagnosed. Distinct code, following
+        # `context_rebuild_pending`'s -32005 precedent. An UNBOUND caller (no
+        # id, or an id the registry cannot resolve) keeps -32004: there is no
+        # record to describe, and that is the fail-closed case INV-MCP-001
+        # states. Terminal-binding tools never arrive here — a terminal record
+        # binds for them.
+        if authenticated_unbound and name not in _TERMINAL_BINDING_TOOLS:
+            status = unbound_status
+            logger.warning(
+                "internal /tools/call: refused %r for engagement %s: record is "
+                "not live (status=%r) — the tool was not run; this is NOT a "
+                "grant failure", name, str(eng_id)[:8], status,
+            )
+            return web.json_response(
+                {"error": {"code": -32006,
+                           "message": "engagement_not_live: the engagement is "
+                                      f"{status!r}, not active"}}
+            )
 
         # v0.166.0 bridge grant-gate: dispatch only a tool the AUTHENTICATED
         # engagement is actually granted, and fail CLOSED when no active

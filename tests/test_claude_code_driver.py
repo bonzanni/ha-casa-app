@@ -3576,3 +3576,190 @@ class TestProceduralEpochRevalidation:
 
         await drv.start(rec, prompt="system prompt body", options=defn)
         assert (tmp_path / "engagements" / rec.id / "CLAUDE.md").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="mkfifo Linux-only")
+class TestTurnDeliveryAdmission:
+    """#588 — the record must be `active` before the engagement's CLI can see
+    the first byte of a turn.
+
+    A casa-main restart leaves a queued-but-unconsumed operator turn behind.
+    Boot reconcile rewrites the record `active→idle`, the respawned CLI blocks
+    on its stdin FIFO, and the inbound spool pumps the turn straight in — with
+    nothing on that path calling `update_user_turn`, which is what the ordinary
+    Telegram arrival path uses. The turn then ran against an `idle` record, and
+    the bridge grant-gate (active-only binding) refused every non-terminal casa
+    tool it called as `tool_not_granted`, including `query_engager`, which the
+    engagement holds. `emit_completion` is gate-exempt, so the turn still ended
+    and nothing looked stuck.
+
+    The admission is deliberately placed between the FIFO open (which succeeds
+    only once the CLI is reading) and the first write (the first thing the CLI
+    can observe), with NO suspension point in between. These tests pin that
+    placement from both sides.
+    """
+
+    class _SpyRegistry:
+        """`begin_turn_delivery` is a PLAIN FUNCTION returning a bool, not a
+        coroutine — so if production code ever awaits the seam (which would
+        reopen the very window it closes), every test here fails with
+        `TypeError: object bool can't be used in an 'await' expression`."""
+
+        def __init__(self, *, admit=True, on_call=None):
+            self._admit = admit
+            self._on_call = on_call
+            self.calls: list[str] = []
+
+        def begin_turn_delivery(self, engagement_id):
+            self.calls.append(engagement_id)
+            if self._on_call is not None:
+                self._on_call()
+            return self._admit
+
+    def _driver(self, tmp_path, sent, registry=None):
+        from drivers.claude_code_driver import ClaudeCodeDriver
+
+        async def send(topic_id, text):
+            sent.append((topic_id, text))
+        return ClaudeCodeDriver(
+            engagements_root=str(tmp_path), send_to_topic=send,
+            casa_framework_mcp_url="http://unused", registry=registry,
+        )
+
+    @staticmethod
+    def _fifo_with_reader(eng_id):
+        """Return (fifo_path, reader_fd). A NON-BLOCKING reader fd, not a
+        reader thread: the test can then ask 'has anything been written yet?'
+        with no scheduler race at all."""
+        import os
+
+        from drivers.workspace import fifo_path, provision_control_dir
+        provision_control_dir(eng_id)
+        fifo = fifo_path(eng_id)
+        os.mkfifo(fifo)
+        return fifo, os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+
+    @staticmethod
+    def _drain(rfd):
+        import os
+        try:
+            return os.read(rfd, 65536)
+        except BlockingIOError:
+            return b""
+
+    async def test_admission_precedes_the_first_byte(self, tmp_path):
+        """Red case A. The seam reads the FIFO from the other end while it
+        runs: nothing may have been written yet. Moving the admission after
+        the write makes this read return the turn, deterministically."""
+        from types import SimpleNamespace
+
+        rec = SimpleNamespace(id="eng-admit-order", topic_id=7)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        seen_at_admission: list[bytes] = []
+        reg = self._SpyRegistry(
+            on_call=lambda: seen_at_admission.append(self._drain(rfd)))
+        sent: list = []
+        driver = self._driver(tmp_path, sent, registry=reg)
+
+        ok = await asyncio.wait_for(
+            driver._write_to_fifo(rec, "hi there", timeout_s=5.0), timeout=5.0)
+
+        assert ok is True
+        assert reg.calls == [rec.id]
+        assert seen_at_admission == [b""], (
+            "the CLI had already been handed bytes when the record was "
+            f"admitted: {seen_at_admission!r}")
+        assert self._drain(rfd) == b"hi there\n"
+
+    async def test_no_reader_never_admits(self, tmp_path):
+        """Red case B. The mirror of A: no reader means no delivery, so the
+        record must NOT be made `active`. This is what kills the naive
+        placement (admit at pump time, before the open): the 20 s ENXIO retry
+        can expire with the turn never delivered, and a claude_code record is
+        never idled again by the daily sweep."""
+        import os
+        from types import SimpleNamespace
+
+        from drivers.workspace import fifo_path, provision_control_dir
+
+        rec = SimpleNamespace(id="eng-admit-noreader", topic_id=7)
+        provision_control_dir(rec.id)
+        os.mkfifo(fifo_path(rec.id))
+        reg = self._SpyRegistry()
+        sent: list = []
+        driver = self._driver(tmp_path, sent, registry=reg)
+
+        ok = await asyncio.wait_for(
+            driver._write_to_fifo(
+                rec, "hi", timeout_s=1.0, poll_s=0.05, retained=True),
+            timeout=5.0)
+
+        assert ok is False
+        assert reg.calls == []
+
+    async def test_terminal_record_is_never_handed_a_turn(self, tmp_path):
+        """A terminal record refuses delivery outright: `_finalize_engagement`
+        commits the terminal status well before it tears the driver down, so a
+        queued turn could otherwise be pumped into a still-live CLI and run
+        against a cancelled engagement."""
+        from types import SimpleNamespace
+
+        rec = SimpleNamespace(id="eng-admit-terminal", topic_id=7)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        reg = self._SpyRegistry(admit=False)
+        sent: list = []
+        driver = self._driver(tmp_path, sent, registry=reg)
+
+        ok = await asyncio.wait_for(
+            driver._write_to_fifo(rec, "run this", timeout_s=5.0), timeout=5.0)
+
+        assert ok is False
+        assert reg.calls == [rec.id]
+        assert self._drain(rfd) == b"", "a terminal engagement was handed a turn"
+        # Not the no-reader path: that notice promises an automatic retry, and
+        # there is nothing to retry here.
+        assert sent == []
+        assert rec.id not in driver._last_turn_ts
+
+    async def test_redelivery_after_restart_reactivates_the_record(
+            self, tmp_path):
+        """Red case D — the composition, with the real registry and the real
+        spool. An engagement whose record boot reconcile left `idle`, with a
+        turn still queued: arming the spool (what a respawned CLI's `spawn`
+        control frame does) must deliver the turn AND leave the record
+        `active`, so the grant-gate binds it."""
+        from engagement_registry import EngagementRegistry
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "eng.json"), bus=None)
+        rec = await reg.create(
+            "executor", "plugin-developer", "claude_code", "t",
+            {"channel": "telegram"}, None)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        sent: list = []
+        driver = self._driver(tmp_path, sent, registry=reg)
+        (tmp_path / rec.id).mkdir(exist_ok=True)
+
+        tasks = []
+        try:
+            driver._spawn_background_tasks(rec)
+            tasks = list(driver._tasks[rec.id])
+            spool = driver._inbound[rec.id]
+            # A turn arrives and is spooled while no CLI is reading.
+            await spool.enqueue("what is the status?")
+            assert self._drain(rfd) == b""
+            # casa-main restarts: boot reconcile idles the record.
+            await reg.mark_idle(rec.id)
+            assert reg.get(rec.id).status == "idle"
+            # The respawned CLI's spawn frame arms the spool, which redelivers.
+            await asyncio.wait_for(spool.on_spawn(), timeout=5.0)
+
+            assert self._drain(rfd) == b"what is the status?\n"
+            assert reg.get(rec.id).status == "active", (
+                "the redelivered turn ran against an idle record — every "
+                "non-terminal casa tool it calls is refused")
+        finally:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

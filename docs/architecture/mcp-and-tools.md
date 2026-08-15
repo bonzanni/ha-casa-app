@@ -107,9 +107,20 @@ the engagement record's `tools_allowed` unioned with the kind-mandatory casa-fra
 options builder hands the session, so an interactive specialist's empty record still admits
 its own `query_engager`.
 
+The two ways a call can be refused are reported distinctly, because they are different
+facts about the caller. A bound engagement that lacks the grant is told the tool is not
+granted. A caller that authenticated against a known record which is not *bindable* — the
+record has gone terminal, or a restart left it idle — is told the engagement is not live,
+under its own code, because that record may well hold the grant and the honest reason for
+the refusal is its liveness. Both fail closed identically; only the attribution differs, and
+it differs because the merged message twice sent an investigation down the grant path.
+Whether a record is bindable is decided by the engagement lifecycle, where a turn delivered
+to an engagement's CLI is what restores `active` (INV-ENG-009).
+
 What it does not cover: tool-local checks still apply on top; a terminal-binding subset
-(`emit_completion`) dispatches even unbound, for completion retries; and it binds the
-*engagement identity*, not the OS process. Before stage 2 a root `claude_code` subprocess
+(`emit_completion`) dispatches even unbound, for completion retries; an unbound caller — no
+id, or an id the registry cannot resolve — keeps the not-granted refusal, since there is no
+record to describe; and it binds the *engagement identity*, not the OS process. Before stage 2 a root `claude_code` subprocess
 could read a live sibling's credential file and authenticate as it; per-engagement uid
 allocation plus `0700` workspace ownership close that OS-level path now. The grant check
 remains the control for what an authenticated caller — however it got a valid token — invokes.

@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.209.0] - 2026-08-15
+
+### Fixed
+
+- **An engagement resumed after a restart lost its tools for that turn**
+  (#588). When Casa restarts while a message you sent to an engagement is
+  still waiting to be picked up, that message is redelivered to the
+  engagement once it comes back. The engagement ran the turn — but with none
+  of the tools it is entitled to. Every one of them was refused, and the
+  refusal blamed a missing permission, when in fact the engagement held the
+  permission perfectly well; what it had lost was its live status, which the
+  restart cleared and the redelivery never restored. The turn still finished,
+  so nothing looked broken from the outside: the engagement simply answered
+  you without being able to read the conversation or use anything it needed.
+
+  Handing a message to an engagement now restores its live status first, at
+  the moment the message is passed across and before the engagement can see
+  any of it. The same step declines to deliver a message to an engagement
+  that has already finished or been cancelled.
+
+- **A refusal said "not permitted" when it meant "not running"** (#587).
+  Tool calls from an engagement that has ended were refused with the same
+  message used for a tool the engagement is genuinely not allowed to use.
+  The two now read differently, so a log line points at the real cause
+  instead of sending an investigation after a permission that was never
+  missing.
+
+### Changed
+
+- The restart-survival test now provisions a real engagement and has *it*
+  make the calls across a restart, including one it is permitted to make and
+  one made after a restart that delivers nothing (#586). Every call the test
+  made before was anonymous, which is not how an engagement talks to Casa —
+  so the failure above could not have been caught by it. While writing it,
+  the helper that substitutes a stand-in CLI for tests was found to have been
+  silently ineffective: the real CLI shadowed it on the path. It is now
+  replaced properly, and the image build fails if it is not.
+
 ## [0.208.0] - 2026-08-15
 
 ### Fixed

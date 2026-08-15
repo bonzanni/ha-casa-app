@@ -363,6 +363,15 @@ class EngagementRegistry:
         self._records: dict[str, EngagementRecord] = {}
         self._topic_index: dict[int, str] = {}
         self._lock = asyncio.Lock()
+        # #588: strong refs for the background tombstone persists scheduled by
+        # ``begin_turn_delivery`` (which may not await). Without a reference the
+        # loop may drop a running task mid-write.
+        self._deferred_persists: set[Any] = set()
+        # #529 / #588 (Sol, diff review r3): whether the LAST tombstone write
+        # settled successfully. Strict callers consult it to decide whether a
+        # failure owes a rollback, so it must never be unset (AttributeError in
+        # an except block) or carry a previous write's verdict.
+        self._last_tombstone_ok = False
 
     async def load(self) -> None:
         """Read the tombstone into memory. Called once at startup."""
@@ -576,6 +585,11 @@ class EngagementRegistry:
         callers hold ``self._lock``, so the flag cannot be clobbered between
         this return/raise and their read.
         """
+        # Reset BEFORE the snapshot is built (Sol, diff review r3): a raise
+        # during construction would otherwise leave the previous write's
+        # verdict in place, and a strict caller consulting it would skip a
+        # rollback it owes — no write happened at all.
+        self._last_tombstone_ok = False
         cutoff = time.time() - _TERMINAL_RETENTION_DAYS * 86400
         snapshot = []
         for rec in self._records.values():
@@ -615,7 +629,6 @@ class EngagementRegistry:
                 "context_rebuild_pending": rec.context_rebuild_pending,
                 "context_generation": rec.context_generation,
             })
-        self._last_tombstone_ok = False
         write = asyncio.ensure_future(
             asyncio.to_thread(self._write_tombstone, snapshot),
         )
@@ -963,16 +976,44 @@ class EngagementRegistry:
                 _restore_origin_field(rec, "error_kind", snap_error_kind)
                 _restore_origin_field(rec, "error_message", snap_error_message)
 
+            # #588 (Sol, diff review): commit the terminal fields in memory
+            # HERE, synchronously, before any suspension point. They used to be
+            # set inside the task below — but ``asyncio.ensure_future`` only
+            # SCHEDULES a coroutine, so its first line ran at the ``await
+            # asyncio.shield(task)``, leaving a window between the snapshot and
+            # the mutation. ``begin_turn_delivery`` reads (and writes) status
+            # WITHOUT this lock by design, so in that window it observed the
+            # pre-transition status, admitted a turn and flipped the record
+            # ``active`` — and ``_restore()`` then put the snapshotted status
+            # back, leaving a delivered turn running against a record whose
+            # status says otherwise. That is precisely the authority loss this
+            # release fixes, re-entering through the rollback path. Committing
+            # first means a lock-free reader in that window sees the TERMINAL
+            # status and declines to deliver, so the restore below has nothing
+            # to overwrite.
+            rec.status = new_status
+            rec.completed_at = new_completed
+            if new_status == "error":
+                rec.origin["error_kind"] = error_kind or "emit_completion_error"
+                rec.origin["error_message"] = error_message
+
             async def _mutate_and_persist() -> bool:
-                rec.status = new_status
-                rec.completed_at = new_completed
-                if new_status == "error":
-                    rec.origin["error_kind"] = error_kind or "emit_completion_error"
-                    rec.origin["error_message"] = error_message
                 try:
                     await self._write_tombstone_locked(strict=True)
-                except Exception:
-                    _restore()
+                # BaseException, not Exception (Sol, diff review r2): the
+                # rollback must be cancellation-complete. Committing the fields
+                # above — before the task exists — means EVERY later failure
+                # path owes a restore, and a `CancelledError` (a repeated
+                # cancellation reaches the write through the gather below) is
+                # not an `Exception`, so it used to escape leaving memory
+                # terminal while disk still said live — the INV-ENG-002 split
+                # this path exists to prevent. Guarded by
+                # ``_last_tombstone_ok`` exactly as ``set_channel_state``
+                # does (#529): a cancellation whose settled write COMMITTED
+                # keeps the mutation, because memory and disk already agree.
+                except BaseException:
+                    if not self._last_tombstone_ok:
+                        _restore()
                     raise
                 # Task 6 (spec §4.6): release the permit ONLY after the
                 # terminal status is durably committed — the strict path can
@@ -987,9 +1028,21 @@ class EngagementRegistry:
                 return await asyncio.shield(task)
             except asyncio.CancelledError:
                 if not task.done():
-                    # Let the inner mutate+persist (and, on failure, the
-                    # rollback) finish under the lock before honoring the
-                    # cancel — never a torn memory/disk pair.
+                    # Let the inner persist (and, on failure, the rollback)
+                    # finish under the lock before honoring the cancel — never
+                    # a torn memory/disk pair.
+                    #
+                    # A REPEATED cancellation was raised as a hazard here
+                    # (Terra, diff review r3): cancel the gather, the lock
+                    # releases while the record still carries its transient
+                    # terminal status, and another writer persists it. MEASURED
+                    # against this code: it does not happen. Cancelling the
+                    # gather cancels its child, but the child cannot complete
+                    # until `_write_tombstone_locked`'s own absorb-until-settle
+                    # loop sees its `to_thread` write settle — so the gather
+                    # keeps waiting and the lock stays held however many
+                    # cancellations arrive. Pinned end-to-end by
+                    # test_repeated_cancellation_holds_the_lock_until_the_write_settles.
                     await asyncio.gather(task, return_exceptions=True)
                 raise
 
@@ -1004,6 +1057,92 @@ class EngagementRegistry:
                 return
             rec.status = "idle"
             await self._write_tombstone_locked()
+
+    def begin_turn_delivery(self, engagement_id: str) -> bool:
+        """#588: may this record receive a turn right now — and if so, say so.
+
+        ``True`` means "deliver"; a record found ``idle`` is flipped back to
+        ``active`` first, because a turn entering the engagement's stdin FIFO
+        IS the engagement becoming live again. The ordinary Telegram arrival
+        path already does that flip on the way in (``update_user_turn``), but a
+        turn REDELIVERED to a respawned CLI after a restart has no such caller:
+        boot reconcile rewrote the record ``active→idle`` (see ``load``), the
+        spool reverts its stale ``delivered`` envelope to ``queued`` and pumps
+        it straight into the FIFO, and nothing on that path touched the record.
+        The turn then ran against an ``idle`` record, and the bridge grant-gate
+        — which binds only ``active`` — refused every non-terminal casa tool it
+        called as ``tool_not_granted``, including tools the engagement holds.
+
+            terminal -> False   (the engagement is over; do not deliver)
+            idle     -> True, flipped to ``active``
+            active   -> True    (unchanged)
+            unknown  -> True    (no opinion — see below)
+
+        SYNCHRONOUS BY CONTRACT — it must never become a coroutine and must
+        never await. The caller runs it between opening the FIFO for writing
+        (which succeeds only once the CLI is reading) and writing the first
+        byte, and the ABSENCE of a suspension point is the whole guarantee: no
+        other coroutine on casa-main's loop — no inbound MCP tool call, no
+        terminal transition — can run in between. Any await here (a lock, a
+        tombstone write) reopens exactly the window this closes, and would also
+        park the delivery behind unbounded registry I/O while holding the FIFO
+        writer open. Durability is therefore deferred to a background persist:
+        the grant-gate reads the in-memory record, so authority is already
+        restored, and a write that never lands costs only that another restart
+        re-idles the record — after which the same redelivery re-flips it.
+
+        Timestamps are deliberately untouched. A redelivery is not a new user
+        turn; re-stamping ``last_user_turn_ts`` on every restart would postpone
+        the idle reminder indefinitely. That is why ``update_user_turn`` is not
+        reused here.
+
+        An UNKNOWN record delivers rather than refusing: records leave
+        ``_records`` only on a ``create()`` rollback, so this is unreachable for
+        a live engagement, and making delivery hostage to registry knowledge
+        would risk silently dropping operator turns for no authority gain — the
+        bridge gate already fails closed for an id it cannot resolve.
+
+        What this does NOT promise (design review r3-r5, stated so it is not
+        mistaken for more): it fences the FIRST byte only. A terminal
+        transition landing after delivery has begun cannot revoke the turn — a
+        pipe has no rollback, and closing the writer is itself an EOF the CLI
+        acts on. Stopping an in-flight turn is ``driver.cancel``'s job, which
+        the finalize path already does.
+        """
+        rec = self._records.get(engagement_id)
+        if rec is None:
+            return True
+        if rec.status in _TERMINAL_STATUSES:
+            return False
+        if rec.status == "idle":
+            rec.status = "active"
+            self._schedule_tombstone_persist()
+        return True
+
+    def _schedule_tombstone_persist(self) -> None:
+        """Best-effort durable catch-up for a mutation committed in memory.
+
+        Fire-and-forget by design: the only caller is ``begin_turn_delivery``,
+        which may not await. Failures are logged and dropped — the in-memory
+        record is what every authority check reads, and the next mutation's own
+        write carries this one along (the snapshot is rebuilt from memory).
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return                      # no loop (sync test context) — nothing to do
+
+        async def _persist() -> None:
+            try:
+                async with self._lock:
+                    await self._write_tombstone_locked()
+            except Exception as exc:  # noqa: BLE001 — best-effort by contract
+                logger.warning(
+                    "deferred tombstone persist failed: %s", exc)
+
+        task = loop.create_task(_persist())
+        self._deferred_persists.add(task)
+        task.add_done_callback(self._deferred_persists.discard)
 
     async def update_user_turn(self, engagement_id: str, ts: float) -> None:
         async with self._lock:

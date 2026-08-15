@@ -160,10 +160,11 @@ async def test_tools_call_engagement_id_binds_contextvar() -> None:
 
 async def test_tools_call_inactive_engagement_is_rejected_fail_closed() -> None:
     """Defense-in-depth: only UNDERGOING (status=='active') engagements bind.
-    A finalized/cancelled record does not bind, and v0.166.0's grant-gate then
-    fails closed for a non-terminal tool — the tool never runs. (Before the
-    gate this dispatched with engagement=None; the binding rule is unchanged,
-    only the consequence of being unbound.)"""
+    A finalized/cancelled record does not bind and the tool never runs.
+
+    #587: the refusal now NAMES that reason (-32006 engagement_not_live)
+    instead of borrowing the grant-gate's -32004 tool_not_granted, which
+    described a record that may well hold the grant as ungranted."""
     reg = _FakeRegistry()
     rec = _FakeRecord(eng_id="fin-1", status="completed")
     reg.add(rec)
@@ -175,7 +176,9 @@ async def test_tools_call_inactive_engagement_is_rejected_fail_closed() -> None:
                   "engagement_token": rec.auth_token},
         )
         body = await resp.json()
-        assert "tool_not_granted" in body["error"]["message"]
+        assert body["error"]["code"] == -32006, body
+        assert "engagement_not_live" in body["error"]["message"]
+        assert "tool_not_granted" not in body["error"]["message"]
 
 
 async def test_tools_call_handler_exception_returns_error_object() -> None:
@@ -441,3 +444,117 @@ def test_pin_inv_tool_001_result_marks_errors_only_for_error_status():
     for payload in ({"status": "unavailable"}, {"status": "pending"},
                     {"status": "acknowledged"}, {"ok": True}):
         assert _result(payload).get("is_error") is not True
+
+
+class TestNotLiveIsDistinctFromNotGranted:
+    """#587 — the bridge answered two different refusals with one message.
+
+    A caller that authenticates correctly against a known record which is not
+    BINDABLE got `-32004 tool_not_granted`, describing a record that may hold
+    the grant as ungranted. Binding requires `status == "active"`, so this is
+    reachable whenever a non-terminal call arrives for a record that has gone
+    terminal — a cancellation or completion landing while the engagement's CLI
+    still has a turn in flight. The refusal itself was always correct and
+    fail-closed; only its attribution was wrong, and that attribution sent the
+    #585 investigation down the grant path twice.
+    """
+
+    @staticmethod
+    def _granted_record(eng_id, status):
+        rec = _FakeRecord(eng_id=eng_id, status=status)
+        # Explicitly HOLDS the grant, so a `tool_not_granted` answer would be
+        # a statement the record itself contradicts.
+        rec.tools_allowed = ("mcp__casa-framework__eng",)
+        return rec
+
+    @pytest.mark.parametrize("status", ["completed", "cancelled", "error",
+                                        "idle"])
+    async def test_authenticated_but_unbindable_says_not_live(self, status):
+        reg = _FakeRegistry()
+        rec = self._granted_record("held-1", status)
+        reg.add(rec)
+        app = _make_app(dispatch={"eng": _engagement_aware_tool}, registry=reg)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/internal/tools/call",
+                json={"name": "eng", "arguments": {},
+                      "engagement_id": "held-1",
+                      "engagement_token": rec.auth_token},
+            )
+            body = await resp.json()
+        assert body["error"]["code"] == -32006, body
+        assert "engagement_not_live" in body["error"]["message"]
+        assert status in body["error"]["message"], body
+        assert "tool_not_granted" not in body["error"]["message"]
+
+    async def test_bound_but_ungranted_still_says_not_granted(self):
+        """The other half of the split, unchanged: a LIVE record that genuinely
+        lacks the grant keeps -32004, because there the message is true."""
+        reg = _FakeRegistry()
+        rec = _FakeRecord(eng_id="live-1", status="active")
+        rec.tools_allowed = ()          # holds nothing
+        reg.add(rec)
+        app = _make_app(dispatch={"eng": _engagement_aware_tool}, registry=reg)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/internal/tools/call",
+                json={"name": "eng", "arguments": {},
+                      "engagement_id": "live-1",
+                      "engagement_token": rec.auth_token},
+            )
+            body = await resp.json()
+        assert body["error"]["code"] == -32004, body
+        assert "tool_not_granted" in body["error"]["message"]
+
+    async def test_unbound_caller_still_says_not_granted(self):
+        """An id the registry cannot resolve has no record to describe, so the
+        unbound fail-closed refusal INV-MCP-001 states is unchanged — and the
+        restart-survival probe still asserts exactly that."""
+        reg = _FakeRegistry()
+        app = _make_app(dispatch={"eng": _engagement_aware_tool}, registry=reg)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/internal/tools/call",
+                json={"name": "eng", "arguments": {},
+                      "engagement_id": "no-such"},
+            )
+            body = await resp.json()
+        assert body["error"]["code"] == -32004, body
+        assert "tool_not_granted" in body["error"]["message"]
+
+    async def test_terminal_binding_tool_is_not_refused_as_not_live(self):
+        """emit_completion binds even on a terminal record (v0.74.2), so a
+        completion retry must reach the tool's own idempotency check rather
+        than the new refusal."""
+        reg = _FakeRegistry()
+        rec = self._granted_record("done-1", "completed")
+        reg.add(rec)
+        app = _make_app(
+            dispatch={"emit_completion": _engagement_aware_tool}, registry=reg)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/internal/tools/call",
+                json={"name": "emit_completion", "arguments": {},
+                      "engagement_id": "done-1",
+                      "engagement_token": rec.auth_token},
+            )
+            body = await resp.json()
+        assert "error" not in body, body
+        assert json.loads(body["content"][0]["text"]) == {"eng": "done-1"}
+
+    async def test_a_bad_token_still_fails_authentication_first(self):
+        """The new refusal must not become an oracle: it is reached only AFTER
+        the token check, so a forged id never learns a record's liveness."""
+        reg = _FakeRegistry()
+        reg.add(self._granted_record("held-2", "cancelled"))
+        app = _make_app(dispatch={"eng": _engagement_aware_tool}, registry=reg)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/internal/tools/call",
+                json={"name": "eng", "arguments": {},
+                      "engagement_id": "held-2",
+                      "engagement_token": "tok-forged"},
+            )
+            body = await resp.json()
+        assert body["error"]["code"] == -32003, body
+        assert "engagement_auth_failed" in body["error"]["message"]

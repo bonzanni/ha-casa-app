@@ -19,6 +19,20 @@ v0.64.0: no `Remote Control URL:` boot banner — the real headless CLI
 never prints one (non-TTY stdout degrades it to --print mode; the
 `--remote-control` flag was dropped from the run template). The parser
 still tolerates the flag for old harnesses.
+
+#586: two additions, both load-bearing for the restart-survival probe.
+
+`/mock casa_call <tool>` makes a REAL authenticated MCP call the way a real
+engagement does — reading the credential pair out of the workspace's own
+`.mcp.json` and POSTing to the bridge — and records the raw response in the
+workspace so the probe can assert on it. That is the one thing the probe
+could not do before: every call it made was unbound.
+
+Each turn now also opens with a `{"type": "system", "subtype": "init"}`
+stream-json frame, which is what the real CLI emits and what Casa's topic
+relay turns into `turn_start`. Without it a delivered inbound envelope never
+becomes `consumed`, so every s6 respawn reverts it to `queued` and redelivers
+it — an endless turn loop rather than a probe.
 """
 
 from __future__ import annotations
@@ -29,6 +43,8 @@ import os
 import pathlib
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 
 
@@ -90,7 +106,81 @@ def _handle_plugin_subcommand(argv: list[str]) -> "int | None":
     return 1
 
 
+_CASA_CALL_PREFIX = ".mock_casa_call."
+
+
+def _pinned_cli_version() -> str:
+    """The version `claude_runtime.verify_effective_cli` insists on.
+
+    casa-main fails CLOSED at boot when `claude --version` does not match its
+    pin — a production guard against an unexpected CLI. In the mock image the
+    substitution IS intended, so the mock answers the pin. Read out of the
+    source rather than hardcoded: a literal here would drift on the next CLI
+    bump and break every mock-gated e2e with an unrelated-looking boot crash.
+    """
+    try:
+        with open("/opt/casa/claude_runtime.py", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("CLAUDE_CLI_VERSION"):
+                    return line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return "0.0.0"
+
+
+def _casa_call(tool: str) -> dict:
+    """#586: call `tool` over the casa-framework bridge as THIS engagement.
+
+    The credential pair lives in the workspace's `.mcp.json`, exactly where a
+    real CLI's MCP client reads it from — so this exercises header forwarding
+    and per-engagement token verification, not a test double.
+    """
+    try:
+        with open("./.mcp.json", encoding="utf-8") as fh:
+            server = json.load(fh)["mcpServers"]["casa-framework"]
+        url = server["url"]
+        headers = dict(server.get("headers") or {})
+    except Exception as exc:  # noqa: BLE001 — recorded, not raised
+        return {"mock_error": f"unusable .mcp.json: {exc}"}
+
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool, "arguments": {}},
+    }).encode("utf-8")
+    headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # A JSON-RPC error still arrives with a 200 from the bridge; anything
+        # else is a transport failure and is recorded as such.
+        try:
+            return json.loads(exc.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return {"mock_error": f"http {exc.code}"}
+    except Exception as exc:  # noqa: BLE001
+        return {"mock_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _record_casa_call(payload: dict) -> str:
+    """Write the response to the next free numbered file in the workspace.
+
+    Numbered rather than overwritten: a turn is one CLI process, so the probe
+    reads the file its step produced instead of racing a later one.
+    """
+    n = len([p for p in os.listdir(".") if p.startswith(_CASA_CALL_PREFIX)])
+    path = f"{_CASA_CALL_PREFIX}{n:03d}.json"
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    return path
+
+
 def main() -> int:
+    if "--version" in sys.argv[1:]:
+        print(f"{_pinned_cli_version()} (Claude Code)", flush=True)
+        return 0
+
     # Handle plugin subcommands before the remote-control parser.
     rc = _handle_plugin_subcommand(sys.argv[1:])
     if rc is not None:
@@ -125,6 +215,20 @@ def main() -> int:
     for line in sys.stdin:
         text = line.rstrip("\n")
         if not text:
+            continue
+        # A turn begins. The real CLI opens every turn with this stream-json
+        # frame and Casa's topic relay converts it into `turn_start`, which is
+        # the ONLY evidence that marks the delivered inbound envelope
+        # `consumed`. Emit it before handling the turn (see module docstring).
+        print(json.dumps({
+            "type": "system", "subtype": "init", "session_id": sid,
+        }), flush=True)
+        # #586: authenticated MCP call from inside the engagement.
+        if text.startswith("/mock casa_call"):
+            tool = (text[len("/mock casa_call"):].strip()
+                    or "list_engagement_workspaces")
+            path = _record_casa_call(_casa_call(tool))
+            print(f"(mock) casa_call {tool} -> {path}", flush=True)
             continue
         # Trigger: emit_completion
         if text.startswith("/mock emit_completion"):
