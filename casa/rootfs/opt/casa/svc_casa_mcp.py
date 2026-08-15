@@ -11,6 +11,15 @@ respawns; mid-restart tool calls return -32000 casa_temporarily_unavailable
 drop (which the CC MCP HTTP client surfaces as a fatal handshake failure
 on the next request).
 
+Read "survives" precisely (#585): the value is that the WINDOW is clean,
+not that one CLI process spans it. A casa-main-only respawn does leave the
+previous generation's engagement longrun up and calling — whatever it
+sends while the socket is down is what the -32000 path answers — but the
+new casa-main's boot replay then drives every DISCOVERED engagement
+service to a confirmed down (casa_core.py step 0) and restarts only the
+ongoing engagements it resumes. So the process making post-restart calls
+is a respawned CLI, not the one that made the pre-restart calls.
+
 Lifecycle (s6-rc-supervised):
 - Bring up HTTP listener on 127.0.0.1:8100 immediately (no wait for casa-main).
 - Per request: connect to /run/casa/internal.sock, POST the translated body,
