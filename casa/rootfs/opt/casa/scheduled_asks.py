@@ -102,6 +102,12 @@ class ScheduledAskStore:
                 self._data = {}
 
     # -- reads (synchronous, in-memory) ------------------------------------
+    #
+    # Deliberately only `get` and `all`, and `all` has ONE caller: the boot
+    # reconciler. There is no by-role / by-chat query, because a live decision
+    # must never be answered from here — the store is written after an await
+    # and lags the broker, which is the authority for what is live. A query
+    # method is the invitation to forget that, so there isn't one.
 
     def get(self, rid: str) -> dict[str, Any] | None:
         rec = self._data.get(rid)
@@ -109,16 +115,6 @@ class ScheduledAskStore:
 
     def all(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self._data.values()]
-
-    def for_role(self, role: str, session_scope: str | None = None) -> list[dict]:
-        return [
-            dict(r) for r in self._data.values()
-            if r.get("role") == role
-            and (session_scope is None or r.get("session_scope") == session_scope)
-        ]
-
-    def for_chat(self, chat_id: int) -> list[dict[str, Any]]:
-        return [dict(r) for r in self._data.values() if r.get("chat_id") == chat_id]
 
     # -- writes -------------------------------------------------------------
 
@@ -468,6 +464,26 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
             continue
         if state != STATE_LIVE:
             await store.drop(rid)
+            continue
+
+        # The one state in which the broker cannot answer for the store: from
+        # process start until this reconcile runs, records exist on disk and
+        # `_live` is empty, so a revocation in that window cancels nothing —
+        # `revoke_role`/`revoke_trigger` scan the broker by design (they must
+        # be atomic with registration, which the store cannot be). Without
+        # this, a trigger reloaded or a reminder cancelled during the boot
+        # window would have its question restored here and left answerable.
+        #
+        # The epoch is what closes it, and it needs no store read: epochs are
+        # process-local and start at zero, so a NON-ZERO epoch for this role
+        # means something revoked its triggers during THIS boot, before the
+        # reconcile got here.
+        if epoch_for(str(rec.get("role") or "")) != 0:
+            counts["revoked_before_reconcile"] = (
+                counts.get("revoked_before_reconcile", 0) + 1)
+            await _settle(channel, rec, kind="cancelled",
+                          reason="trigger_changed", chosen=None,
+                          edit_text=_expired_body(rec.get("body") or ""))
             continue
 
         # Identity at the point of use (#485 doctrine): the operator may have

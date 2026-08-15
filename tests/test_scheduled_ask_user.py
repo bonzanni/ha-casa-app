@@ -629,6 +629,42 @@ class TestBootReconcile:
         assert channel.scheduled_dispatches == []   # at-most-once
         assert _fresh_store.all() == []
 
+    async def test_a_revocation_during_the_boot_window_is_not_undone(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """The one state the broker cannot answer for the store: records exist
+        on disk and `_live` is empty until this reconcile runs, so a revoke in
+        that window cancels nothing. Restoring the question anyway would leave
+        a cancelled trigger's keyboard answerable."""
+        await _fresh_store.put(self._rec())
+        # A reload / reminder-cancel lands before Telegram is ready.
+        assert scheduled_asks.revoke_role("assistant", "trigger_reloaded") == 0
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts.get("restored", 0) == 0
+        assert counts["revoked_before_reconcile"] == 1
+        assert "trigger_changed" in channel.scheduled_dispatches[0]["text"]
+        assert _fresh_store.all() == []
+        assert _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+
+    async def test_an_untouched_role_is_still_restored(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """The guard above must not swallow the normal case: another role's
+        revocation says nothing about this record."""
+        await _fresh_store.put(self._rec())
+        scheduled_asks.revoke_role("butler", "trigger_reloaded")
+        counts = await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        assert counts["restored"] == 1
+
+    def test_the_store_exposes_no_query_surface(self):
+        """A by-role/by-chat reader would be the invitation to answer a LIVE
+        decision from the lagging store; the broker is the authority for that."""
+        assert not hasattr(scheduled_asks.ScheduledAskStore, "for_role")
+        assert not hasattr(scheduled_asks.ScheduledAskStore, "for_chat")
+
     async def test_a_changed_operator_is_not_restored(self, _fresh_store):
         await _fresh_store.put(self._rec())
         channel = _FakeChannel(operator=OPERATOR + 1)

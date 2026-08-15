@@ -134,6 +134,15 @@ The boot reconciler restores a `live` record with its remaining timeout and the 
 broker binding, settles an expired, unconfirmed or operator-changed one, and drops a
 `settling` one in silence.
 
+One asymmetry is worth stating, because it is the seam between the two halves of this
+design. Revocation reads the broker, never the record file (INV-JOB-008) — but from process
+start until this reconcile runs, records exist on disk and the broker is empty, so a
+revocation landing in that window cancels nothing. The reconciler therefore settles, rather
+than restores, any record whose role's lifecycle epoch has already moved: epochs are
+process-local and start at zero, so a non-zero one means this role's triggers were revoked
+during this boot. The rule stays intact — no live decision reads the store — and the one
+state where the broker cannot speak for it is handled where the store is legitimately read.
+
 What it does not cover: exactly-once. The crash window between "decided" and "dispatched"
 resolves toward at-most-once — the opposite of INV-JOB-004's choice, and deliberately so: a
 duplicated answer makes a resident act twice on one confirmation, while a lost one leaves an

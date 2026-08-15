@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.206.1] - 2026-08-15
+
+### Fixed
+
+- **A schedule edited during Casa's first seconds could leave its question on
+  screen** (#573 follow-up). Pending questions are restored shortly after a
+  restart, once Telegram is ready. If a schedule was reloaded — or a reminder
+  cancelled — in the moments before that, the cancellation found nothing to
+  cancel yet, and the question was then restored anyway: still tappable, on
+  behalf of a schedule that no longer existed. Such a question is now closed
+  cleanly instead, and the agent is told the trigger changed.
+
 ## [0.206.0] - 2026-08-15
 
 ### Added
