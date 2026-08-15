@@ -4007,27 +4007,44 @@ class TestLargeTurnIsWrittenWhole:
         assert await driver._write_to_fifo(rec, "hello", timeout_s=2.0) is True
         assert fcntl.fcntl(rfd, fcntl.F_GETPIPE_SZ) == before
 
-    async def test_grow_failure_leaves_the_write_on_the_old_path(
+    async def test_a_kernel_that_refuses_the_grow_costs_nothing(
             self, tmp_path, monkeypatch):
         """The grow is strictly best-effort: EPERM above pipe-max-size, EBUSY,
-        no F_SETPIPE_SZ on the platform. A refusal must cost nothing."""
+        a kernel without F_SETPIPE_SZ. A refusal must cost the delivery
+        nothing.
+
+        The REAL helper runs here — an earlier version of this test stubbed it
+        out with a no-op, which proved only that a no-op is harmless and would
+        have passed even if the helper's own exception handling regressed
+        (Terra, diff review). `fcntl.fcntl` is made to raise instead, so the
+        failure happens where a kernel refusal would.
+        """
+        import fcntl
         from types import SimpleNamespace
 
         import drivers.claude_code_driver as ccd
 
-        def _boom(fd, needed, eng_id):
-            raise AssertionError("must not escape")
+        def _refuse(*a, **k):
+            raise OSError(1, "Operation not permitted")
 
         rec = SimpleNamespace(id="eng-grow-fails", topic_id=7)
         _fifo, rfd = self._fifo_with_reader(rec.id)
-        monkeypatch.setattr(
-            ccd, "_grow_pipe_to_fit",
-            lambda fd, needed, eng_id: None)     # as if every attempt declined
+        monkeypatch.setattr(fcntl, "fcntl", _refuse)
 
         driver = ccd.ClaudeCodeDriver(
             engagements_root=str(tmp_path), send_to_topic=AsyncMock(),
             casa_framework_mcp_url="http://unused")
         assert await driver._write_to_fifo(rec, "small", timeout_s=2.0) is True
+        monkeypatch.undo()
+        assert self._drain_all(rfd) == b"small\n"
+
+    @staticmethod
+    def _drain_all(rfd):
+        import os
+        try:
+            return os.read(rfd, 1024 * 1024)
+        except BlockingIOError:
+            return b""
 
     def test_grow_helper_never_raises(self):
         """Every failure path of the helper itself, on a fd that is not a pipe

@@ -883,3 +883,51 @@ class TestCompletionGateSeesTurnsInThePipe:
 
         assert payload["status"] == "acknowledged"
         assert rec.status == "completed"
+
+    async def test_a_failing_in_flight_accessor_keeps_the_old_gate(
+            self, tmp_path):
+        """Found in diff review (Terra, S1). The new in-flight reads first
+        shared a try/except with the queued and reservation reads, so a raise
+        from EITHER new accessor reset all of them to zero — adding a gate
+        could switch off the gate that was already there, and an accepted
+        operator message could be committed past with no veto at all.
+
+        Red case: put the in-flight reads back inside the same `try` (both in
+        emit_completion's pre-check and in `_finalize_engagement`'s terminal
+        hook) and this completes the engagement, losing the queued message.
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=1, texts=["queued and still unread"])
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the NEW accessor")
+
+        drv.inbound_in_flight_blocking = _raises
+        drv.inbound_in_flight_texts = _raises
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_a_failing_old_accessor_still_fails_open(self, tmp_path):
+        """The other side of the split guard, unchanged from before: a broken
+        driver must not wedge termination forever."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver()
+
+        def _raises(eng_id):
+            raise RuntimeError("driver bug in the OLD accessor")
+
+        drv.inbound_unread_texts = _raises
+        reg, rec, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "completed"

@@ -7520,14 +7520,27 @@ async def _finalize_engagement(
             _hr = (driver.inbound_reservations(engagement.id)
                    if hasattr(driver, "inbound_reservations") else 0)
             resv = _hr if type(_hr) is int else 0
-            # #591: the accessors above answer "is the operator still waiting
-            # to be answered?", which deliberately excludes an envelope already
-            # written into the CLI's stdin FIFO. That is the right answer for
-            # the ask gate and the wrong one here, twice over: such an envelope
-            # is work that will only be taken up AFTER this transition commits,
-            # and if the engagement ends first nobody ever tells the operator
-            # it died unread. Both new reads are strictly typed so a duck or
-            # mock driver reads as empty rather than fabricating a depth.
+        except Exception:  # noqa: BLE001 — fail open
+            logger.warning(
+                "finalize engagement %s: inbound accessors failed — "
+                "gate skipped", engagement.id[:8], exc_info=True)
+            return None
+        # #591: the accessors above answer "is the operator still waiting to be
+        # answered?", which deliberately excludes an envelope already written
+        # into the CLI's stdin FIFO. That is the right answer for the ask gate
+        # and the wrong one here, twice over: such an envelope is work that will
+        # only be taken up AFTER this transition commits, and if the engagement
+        # ends first nobody ever tells the operator it died unread. Both reads
+        # are strictly typed so a duck or mock driver reads as empty rather than
+        # fabricating a depth.
+        #
+        # Guarded SEPARATELY from the reads above (Terra, diff review): sharing
+        # their try meant a failure in either of these two erased the queued and
+        # reservation values that had already been read successfully, so adding
+        # a gate would have been able to DISABLE the gate that was there — and
+        # an accepted operator message could then be committed past with no veto
+        # at all. A failure here now costs only the new coverage.
+        try:
             _ift = (driver.inbound_in_flight_texts(engagement.id)
                     if hasattr(driver, "inbound_in_flight_texts") else [])
             in_flight = ([t for t in _ift if isinstance(t, str)]
@@ -7535,11 +7548,12 @@ async def _finalize_engagement(
             _ifb = (driver.inbound_in_flight_blocking(engagement.id)
                     if hasattr(driver, "inbound_in_flight_blocking") else 0)
             blocking = _ifb if type(_ifb) is int else 0
-        except Exception:  # noqa: BLE001 — fail open
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
             logger.warning(
-                "finalize engagement %s: inbound accessors failed — "
-                "gate skipped", engagement.id[:8], exc_info=True)
-            return None
+                "finalize engagement %s: in-flight accessors failed — the "
+                "unread gate below still stands", engagement.id[:8],
+                exc_info=True)
+            in_flight, blocking = [], 0
         # Disclosure covers BOTH populations at any age; the veto counts only
         # in-flight young enough to still be arriving (see the driver's
         # in_flight_blocking_depth — an unbounded veto here could make a
@@ -8373,12 +8387,18 @@ async def emit_completion(args: dict) -> dict:
             _d = driver.inbound_unread_depth(engagement.id)
             _r = (driver.inbound_reservations(engagement.id)
                   if hasattr(driver, "inbound_reservations") else 0)
-            # #591: an envelope already in the CLI's stdin FIFO is work this
-            # completion would commit ahead of, so it refuses here too.
+        except Exception:  # noqa: BLE001 — fail open, never wedge completion
+            _d = _r = 0
+        # #591: an envelope already in the CLI's stdin FIFO is work this
+        # completion would commit ahead of, so it refuses here too. Guarded
+        # separately from the reads above for the reason given in
+        # _finalize_engagement's terminal hook — a new accessor's failure must
+        # not be able to switch off the gate that already existed.
+        try:
             _f = (driver.inbound_in_flight_blocking(engagement.id)
                   if hasattr(driver, "inbound_in_flight_blocking") else 0)
-        except Exception:  # noqa: BLE001 — fail open, never wedge completion
-            _d = _r = _f = 0
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            _f = 0
         # STRICT int typing (fail open otherwise): a duck/mock driver whose
         # accessors return non-ints must read as "no unread input", never as
         # a fabricated depth (int(MagicMock()) == 1 bit us in the gate).
