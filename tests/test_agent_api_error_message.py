@@ -535,38 +535,53 @@ def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
 
     root = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
 
-    # module -> why this loop is safe. Every entry was checked by hand.
+    # module -> (number of receive_response call sites, why each is safe).
+    # The COUNT is load-bearing: keying on the filename alone would let a
+    # second loop inside an already-declared module pass undeclared, which is
+    # exactly how the fourth one was missed (Terra, closing round).
     declared = {
-        # Reads BOTH carriers and raises ApiErrorTurn; the pool then drops the
-        # entry and the turn is classified (INV-TURN-007).
-        "sdk_client_pool.py": "raises ApiErrorTurn for the resident turn",
-        # Two loops: the delegated specialist run and query_engager synthesis.
-        # Both read both carriers and raise.
-        "tools.py": "raises ApiErrorTurn from the delegated run and synthesis",
+        # 1) run_turn_locked — reads BOTH carriers and raises ApiErrorTurn, so
+        #    the pool drops the entry and the turn is classified
+        #    (INV-TURN-007). 2) _interrupt_and_drain — drains an aborted turn
+        #    to its terminal result and folds no text.
+        "sdk_client_pool.py": (2, "raises ApiErrorTurn for the resident turn"),
+        # 1) the delegated specialist run and 2) query_engager synthesis —
+        #    both read both carriers and raise.
+        "tools.py": (2, "raises from the delegated run and from synthesis"),
         # Suppresses the prose; the JSON parse then fails and the caller's
-        # existing handler suppresses the interjection — which IS the honest
-        # outcome for an observer that could not decide.
-        "observer.py": "suppresses; an undecidable interjection is dropped",
+        # existing handler suppresses the interjection — the honest outcome
+        # for an observer that could not decide.
+        "observer.py": (1, "suppresses; an undecidable interjection is dropped"),
         # Suppresses the prose so it is never streamed into the engagement's
         # topic, and logs the kind. The engagement's TERMINAL kind is still
         # the generic one — tracked separately, see #595.
-        "in_casa_driver.py": "suppresses; empty-turn warning is the signal",
+        "in_casa_driver.py": (1, "suppresses; empty-turn warning is the signal"),
     }
 
     found = {
-        path.name
+        path.name: len(re.findall(r"\.receive_response\(", path.read_text()))
         for path in root.rglob("*.py")
         if re.search(r"\.receive_response\(", path.read_text())
     }
 
-    undeclared = found - set(declared)
+    undeclared = set(found) - set(declared)
     assert not undeclared, (
         f"new SDK read loop(s) in {sorted(undeclared)}: declare how each one "
         "handles an API-level fault (api_error_kind + result_api_error_kind) "
         "before adding it here — #568"
     )
-    stale = set(declared) - found
+    stale = set(declared) - set(found)
     assert not stale, f"declared but no longer reads the SDK: {sorted(stale)}"
+    drifted = {
+        name: (found[name], count)
+        for name, (count, _why) in declared.items()
+        if found[name] != count
+    }
+    assert not drifted, (
+        f"read-loop count changed {drifted} (found, declared): a NEW loop in "
+        "an already-declared module must declare how it handles an API-level "
+        "fault — #568"
+    )
 
 
 async def test_normal_turn_is_untouched(agent_fixture, monkeypatch):
