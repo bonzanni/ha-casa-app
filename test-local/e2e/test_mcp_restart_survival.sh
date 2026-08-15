@@ -35,24 +35,43 @@
 # now asserted rather than merely worked around — and M-7 additionally
 # shows a casa-main restart does not reopen it.
 #
-# WHAT THIS PROBE DOES NOT COVER
-# ------------------------------
-# It does not exercise a real engagement CLI across the bounce: no
-# authenticated call, no surviving subprocess, no reused MCP connection.
-# Closing that gap needs a provisioned mock-CLI engagement driving the
-# calls itself; tracked in #586.
+# THE ENGAGEMENT-SIDE BLOCK, M-8..M-11 (#586)
+# -------------------------------------------
+# M-1..M-7 make only UNBOUND calls, so they cannot see the path a real
+# engagement uses: no credential pair, no granted non-terminal tool, no CLI
+# subprocess. M-8..M-11 provision ONE real `claude_code` engagement through
+# production code (real workspace, real `.mcp.json` credential, real s6
+# service, real mock-CLI subprocess under its own dropped uid) and have THAT
+# process make the calls.
 #
-# Do NOT close it by making an authenticated post-bounce call pass as-is.
-# Boot reconcile lands every reloaded ACTIVE record in `idle`
-# (engagement_registry.py; terminal records stay terminal), and for a
-# NON-TERMINAL tool the handler binds only `active`
-# (internal_handlers.py) — so an authenticated non-terminal call is
-# refused -32004 today, and that refusal is a DEFECT, not a contract to
-# assert: the inbound spool can redeliver a queued turn to the respawned
-# CLI without anything flipping the record back to `active` (#588). A
-# probe written against today's behaviour would pin the bug. (The steps
-# above cannot show it: `emit_completion` is exempt from both the status
-# binding and the grant gate, so it answers the same either way.)
+# What each step proves, and what it does not:
+#
+#   M-9  the delivery seam confers authority. casa-main reloads the record
+#        (boot reconcile rewrites `active`->`idle`), boot replay respawns the
+#        CLI, the inbound spool redelivers the queued turn, and the turn's
+#        authenticated call to a GRANTED non-terminal tool DISPATCHES. Before
+#        #588 the record stayed `idle` and every such call was refused
+#        -32004, blaming a grant the engagement holds. The step asserts the
+#        boot-reconcile log line too: without it the step could be green
+#        having never exercised the defect at all.
+#   M-10 the same call on an ordinarily-`active` record dispatches.
+#   M-11 the same call, after a bounce that redelivers nothing, is refused
+#        -32006 engagement_not_live (#587).
+#
+# M-10 and M-11 inject their turn STRAIGHT INTO the control FIFO. That is a
+# turn delivery, it just bypasses `_write_to_fifo` — so neither step says
+# anything about the delivery seam, and neither is claimed to. Held constant
+# across the pair, the injection makes the record's liveness the only
+# variable: live dispatches, not-live is refused, and the refusal names the
+# real reason. The ORDERING guarantee inside the seam (the record is `active`
+# before the CLI can see the first byte) is not provable here at all — an
+# e2e cannot make that race deterministic — and is pinned instead by the unit
+# red cases in tests/test_claude_code_driver.py::TestTurnDeliveryAdmission.
+#
+# The result assertion is identity-bearing: `list_engagement_workspaces`
+# filters its listing to the CALLER's own engagement when a record is bound
+# (tools.py), so "exactly one workspace, and it is ours" cannot be produced
+# by an unbound dispatch, by the forwarder, or by a stub.
 #
 # Mock-CLI gated (CASA_USE_MOCK_CLAUDE=1). Auto-skips otherwise.
 
@@ -162,5 +181,244 @@ POST_GATED=$(call_tool 41 list_engagement_workspaces)
 echo "  post-bounce unbound: $POST_GATED"
 assert_gated "M-7" "$POST_GATED"
 pass "M-7 restart did not reopen the grant-gate"
+
+# ---------------------------------------------------------------------------
+# M-8..M-11 — the engagement side (#586). See the header for what each proves.
+# ---------------------------------------------------------------------------
+
+in_c() { MSYS_NO_PATHCONV=1 docker exec "$NAME" "$@"; }
+
+# Response files the mock CLI writes, newest last. They are dotfiles in the
+# uid-owned workspace, so `ls -a`.
+casa_call_files() {
+    in_c sh -c "ls -a /data/engagements/$EID/ 2>/dev/null | grep '^\.mock_casa_call\.' | sort" \
+        2>/dev/null || true
+}
+
+# Wait for a response file NEWER than the ones already present, and echo it.
+# `prev` is the output of an earlier casa_call_files.
+wait_for_new_casa_call() {
+    local prev="$1" timeout="${2:-60}" now newest
+    local end=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+        now="$(casa_call_files)"
+        if [ "$now" != "$prev" ]; then
+            newest="$(printf '%s\n' "$now" | tail -1)"
+            [ -n "$newest" ] && { printf '%s\n' "$newest"; return 0; }
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# The engagement is bound => the listing is filtered to its OWN workspace.
+assert_own_workspace() {
+    local label="$1" file="$2"
+    in_c sh -c "cat /data/engagements/$EID/$file" | EID="$EID" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+assert "error" not in d, d
+payload = json.loads(d["result"]["content"][0]["text"])
+ws = payload["workspaces"]
+assert len(ws) == 1, f"expected exactly the caller own workspace, got {ws}"
+assert ws[0]["engagement_id"] == os.environ["EID"], ws
+' || {
+        in_c sh -c "cat /data/engagements/$EID/$file" >&2
+        fail "$label expected a dispatched result listing only this engagement"
+    }
+}
+
+echo "=== M-8: provision a real engagement with a turn queued for it ==="
+# casa-main goes down FIRST: the harness below is the only live UidAllocator on
+# the counter file while it runs, and casa-main cannot rewrite
+# /data/engagements.json from its own in-memory state over the new record.
+MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -d change svc-casa
+sleep 1
+
+read -r -d '' PROVISION_PY <<'PY' || true
+"""Provision ONE claude_code engagement, then leave a turn queued with its
+service down. Everything happens in a SINGLE process: a second process would
+load() the tombstone again, and load() is what performs the `active -> idle`
+boot reconcile — which is casa-main's job to do, and log, when it comes up."""
+import asyncio
+import json
+import subprocess
+import sys
+
+sys.path.insert(0, "/opt/casa")
+
+MCP_URL = "http://127.0.0.1:8100/mcp/casa-framework"
+GRANT = "mcp__casa-framework__list_engagement_workspaces"
+
+
+async def main():
+    import casa_core
+    import private_state
+    from engagement_registry import EngagementRegistry
+    from engagement_uids import UID_BASE, UidAllocator
+    from executor_registry import ExecutorRegistry
+    from drivers.claude_code_driver import ClaudeCodeDriver
+    from drivers.workspace import inbound_spool_path
+
+    # casa-main does this at boot before replaying anything: the allocator
+    # refuses to hand a uid to a dropped engagement while credential-class
+    # paths are readable beyond root. This harness stands in for casa-main, so
+    # it runs the same repair rather than racing how far boot got.
+    private_state.enforce()
+
+    alloc = UidAllocator("/data/engagement-uids.json")
+    reg = EngagementRegistry(
+        tombstone_path="/data/engagements.json", bus=None, uid_allocator=alloc)
+    await reg.load()
+    known, dir_owners = casa_core._gather_reconstruct_evidence(
+        reg, data_dir="/data")
+    alloc.reconstruct(known, dir_owners)
+
+    # The definition boot replay will re-derive this engagement from, VERBATIM:
+    # a hand-built fixture would render a different settings floor and could be
+    # refused at resume for a reason that has nothing to do with this probe.
+    exec_reg = ExecutorRegistry("/config/agents/executors")
+    exec_reg.load()
+    defn = exec_reg.definition_any("plugin-developer")
+    assert defn is not None, f"no definition; have {exec_reg.list_types_any()}"
+    assert defn.driver == "claude_code", defn.driver
+
+    rec = await reg.create(
+        kind="executor", role_or_type="plugin-developer", driver="claude_code",
+        task="restart-survival probe", topic_id=None,
+        origin={"channel": "telegram", "chat_id": "1"},
+        tools_allowed=(GRANT,),
+    )
+    # Fail as SETUP, loudly: without an injected + reconstructed allocator the
+    # record keeps the sentinel uid and start() refuses at the uid preflight,
+    # which would otherwise surface much later as an unexplained empty probe.
+    assert rec.allocated_uid >= UID_BASE, (
+        f"no uid allocated ({rec.allocated_uid})")
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    drv = ClaudeCodeDriver(
+        engagements_root="/data/engagements", send_to_topic=_noop,
+        casa_framework_mcp_url=MCP_URL, registry=reg,
+        executor_defn_lookup=exec_reg.definition_any,
+    )
+    await drv.start(rec, prompt="probe launch", options=defn)
+    await asyncio.sleep(3.0)
+
+    # Take the CLI away, so the turn below finds no reader and stays `queued`
+    # for casa-main to redeliver. (It is also a live check that no admission
+    # happens without a reader: the write below times out.)
+    subprocess.run(["s6-rc", "-d", "change", f"engagement-{rec.id}"],
+                   capture_output=True, text=True)
+    await asyncio.sleep(1.0)
+
+    disposition = await drv._inbound[rec.id].enqueue(
+        "/mock casa_call list_engagement_workspaces")
+    assert disposition == "queued", disposition
+
+    states = [json.loads(ln)["state"]
+              for ln in open(inbound_spool_path(rec.id)) if ln.strip()]
+    assert "queued" in states, f"nothing left to redeliver: {states}"
+
+    on_disk = {r["id"]: r["status"]
+               for r in json.load(open("/data/engagements.json"))}
+    assert on_disk[rec.id] == "active", (
+        "the record must reach casa-main as 'active' so ITS load() performs "
+        f"the boot reconcile: {on_disk[rec.id]}")
+
+    print("ENGAGEMENT_ID=" + rec.id)
+    print("OK")
+
+asyncio.run(main())
+PY
+
+PROV_TMP="$(mktemp)"
+printf '%s\n' "$PROVISION_PY" > "$PROV_TMP"
+MSYS_NO_PATHCONV=1 docker cp "$PROV_TMP" "$NAME:/tmp/_provision.py" >/dev/null
+rm -f "$PROV_TMP"
+# The enqueue deliberately waits out the no-reader deadline (~20s).
+if ! PROV_OUT=$(MSYS_NO_PATHCONV=1 docker exec "$NAME" \
+        /opt/casa/venv/bin/python /tmp/_provision.py 2>&1); then
+    printf '%s\n' "$PROV_OUT" >&2
+    fail "M-8 provisioning harness exited non-zero"
+fi
+printf '%s\n' "$PROV_OUT" | tail -5 >&2
+EID="$(printf '%s\n' "$PROV_OUT" | sed -n 's/^ENGAGEMENT_ID=//p')"
+[ -n "$EID" ] || fail "M-8 harness printed no engagement id"
+pass "M-8 provisioned engagement ${EID:0:8} with a turn queued"
+
+echo "=== M-9: casa-main back up — the redelivered turn must carry authority ==="
+BEFORE_M9="$(casa_call_files)"
+MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -u change svc-casa
+for i in $(seq 1 20); do
+    if MSYS_NO_PATHCONV=1 docker exec "$NAME" test -S /run/casa/internal.sock; then
+        echo "  socket ready after ${i}s"
+        break
+    fi
+    sleep 1
+done
+
+# The record must actually have BEEN idled — otherwise this step could pass
+# without ever exercising the defect.
+if ! wait_for_text_in_log "$NAME" "boot reconcile: engagement ${EID:0:8}" 30; then
+    fail "M-9 casa-main never reconciled ${EID:0:8} active->idle; nothing was proved"
+fi
+pass "M-9a boot reconcile idled the record (the state the defect needs)"
+
+# A turn redelivered before casa-main's internal socket is serving gets the
+# designed retryable -32000, so wait for a DISPATCHED answer rather than
+# asserting on the first file to appear. Redelivery is at-least-once by
+# construction (an envelope clears only on positive turn_start evidence), so
+# there may legitimately be more than one.
+M9_FILE="$(wait_for_new_casa_call "$BEFORE_M9" 60)" \
+    || fail "M-9 the redelivered turn produced no MCP call at all"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if in_c sh -c "cat /data/engagements/$EID/$M9_FILE" | grep -q '"result"'; then
+        break
+    fi
+    sleep 2
+    M9_FILE="$(casa_call_files | tail -1)"
+done
+echo "  m-9 response file: $M9_FILE"
+assert_own_workspace "M-9" "$M9_FILE"
+pass "M-9 redelivered turn dispatched a granted non-terminal tool as itself"
+
+echo "=== M-10: the same call on a live record ==="
+BEFORE_M10="$(casa_call_files)"
+MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c \
+    "printf '/mock casa_call list_engagement_workspaces\n' > /data/engagement-ctl/$EID/stdin.fifo"
+M10_FILE="$(wait_for_new_casa_call "$BEFORE_M10" 30)" \
+    || fail "M-10 the injected turn produced no MCP call"
+assert_own_workspace "M-10" "$M10_FILE"
+pass "M-10 authenticated granted call from the engagement dispatches"
+
+echo "=== M-11: same call, record not live — refused as NOT LIVE, not ungranted ==="
+MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -d change svc-casa
+sleep 2
+MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -u change svc-casa
+for i in $(seq 1 20); do
+    if MSYS_NO_PATHCONV=1 docker exec "$NAME" test -S /run/casa/internal.sock; then
+        break
+    fi
+    sleep 1
+done
+sleep 8
+BEFORE_M11="$(casa_call_files)"
+MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c \
+    "printf '/mock casa_call list_engagement_workspaces\n' > /data/engagement-ctl/$EID/stdin.fifo"
+M11_FILE="$(wait_for_new_casa_call "$BEFORE_M11" 30)" \
+    || fail "M-11 the injected turn produced no MCP call"
+in_c sh -c "cat /data/engagements/$EID/$M11_FILE" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d.get("error", {}).get("code") == -32006, d
+assert "engagement_not_live" in d["error"]["message"], d
+assert "tool_not_granted" not in d["error"]["message"], d
+' || {
+    in_c sh -c "cat /data/engagements/$EID/$M11_FILE" >&2
+    fail "M-11 expected -32006 engagement_not_live"
+}
+pass "M-11 a record with no delivered turn is refused as not live"
 
 echo "=== ALL PASS — mcp_restart_survival ==="

@@ -171,10 +171,11 @@ async def test_react_no_inbound_yields_no_current_inbound(wired):
 @pytest.mark.asyncio
 async def test_react_terminated_engagement_no_reaction(wired):
     """A STALE target present in the map, but the engagement is terminated:
-    the internal handler binds no active record, so v0.166.0's grant-gate
-    rejects the call before react runs — NO reaction can ever fire on a
-    finished engagement. (The react tool's own no_current_inbound guard remains
-    as defense in depth; the bridge now stops the call one step earlier.)"""
+    the internal handler binds no active record, so the call is rejected
+    before react runs — NO reaction can ever fire on a finished engagement.
+    (The react tool's own no_current_inbound guard remains as defense in
+    depth; the bridge stops the call one step earlier.) #587: the refusal
+    names the record's liveness rather than the grant."""
     await wired.ch.handle_update(_mk_update(message_id=101))
     await _drain(wired.ch)
     # stale target is present
@@ -183,7 +184,8 @@ async def test_react_terminated_engagement_no_reaction(wired):
     await wired.reg.mark_cancelled(wired.rec.id)
 
     payload = await wired.react(wired.rec.id, "👍")
-    assert "tool_not_granted" in payload["error"]["message"]
+    assert payload["error"]["code"] == -32006, payload
+    assert "engagement_not_live" in payload["error"]["message"]
     assert wired.bot.reactions == []               # non-live rejection = guarantee
 
 

@@ -1702,3 +1702,298 @@ class TestChannelStateStrictAndInitial:
     async def test_initial_emoji_unknown_engagement_is_noop(self, tmp_path):
         reg, _rec = await self._mk(tmp_path)
         await reg.set_initial_state_emoji("nope", "🟢")  # no boom
+
+
+class TestBeginTurnDelivery:
+    """#588 — the delivery admission seam.
+
+    A turn REDELIVERED to a respawned CLI after a casa-main restart used to
+    run against a record boot reconcile had rewritten `active→idle`: the
+    bridge grant-gate binds only `active`, so every non-terminal casa tool
+    that turn called was refused `tool_not_granted`, including tools the
+    engagement genuinely holds. Nothing on the redelivery path called
+    `update_user_turn`, which is what the ordinary Telegram arrival path uses
+    to flip the record on the way in.
+    """
+
+    async def _mk(self, tmp_path, name="e.json"):
+        from engagement_registry import EngagementRegistry
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / name), bus=None)
+        rec = await reg.create(
+            "executor", "plugin-developer", "claude_code", "t", {}, 1)
+        return reg, rec
+
+    async def test_seam_is_not_a_coroutine_function(self):
+        """The whole guarantee is that no suspension point exists between the
+        caller's FIFO open and its first write. An `async def` here — however
+        harmless it looked — reopens exactly the window this closes."""
+        import inspect
+
+        from engagement_registry import EngagementRegistry
+
+        assert not inspect.iscoroutinefunction(
+            EngagementRegistry.begin_turn_delivery)
+
+    async def test_idle_record_is_reactivated(self, tmp_path):
+        reg, rec = await self._mk(tmp_path)
+        await reg.mark_idle(rec.id)
+        assert rec.status == "idle"
+        assert reg.begin_turn_delivery(rec.id) is True
+        assert rec.status == "active"
+
+    async def test_reactivation_does_not_restamp_the_user_turn_clock(
+            self, tmp_path):
+        """A redelivery is not a new user turn. Re-stamping the clock (which
+        is why `update_user_turn` is NOT reused) would push the idle-reminder
+        threshold out by the age of the engagement on every restart."""
+        reg, rec = await self._mk(tmp_path)
+        await reg.update_last_idle_reminder(rec.id, 4242.0)
+        await reg.mark_idle(rec.id)
+        before_turn = rec.last_user_turn_ts
+        before_reminder = rec.last_idle_reminder_ts
+        reg.begin_turn_delivery(rec.id)
+        assert rec.last_user_turn_ts == before_turn
+        assert rec.last_idle_reminder_ts == before_reminder
+
+    async def test_active_record_is_admitted_untouched(self, tmp_path):
+        reg, rec = await self._mk(tmp_path)
+        assert rec.status == "active"
+        before = rec.last_user_turn_ts
+        assert reg.begin_turn_delivery(rec.id) is True
+        assert rec.status == "active"
+        assert rec.last_user_turn_ts == before
+
+    @pytest.mark.parametrize("terminal", ["completed", "cancelled", "error"])
+    async def test_terminal_record_is_refused_and_never_resurrected(
+            self, tmp_path, terminal):
+        """Each terminal status checked ALONE: a single `status != "idle"`
+        guard is what makes resurrection unrepresentable, and a mutation that
+        relaxed it to `status not in TERMINAL` would still pass a test that
+        only ever looked at `completed`."""
+        reg, rec = await self._mk(tmp_path, name=f"{terminal}.json")
+        rec.status = terminal
+        assert reg.begin_turn_delivery(rec.id) is False
+        assert rec.status == terminal
+
+    async def test_unknown_record_is_admitted(self, tmp_path):
+        """Records leave `_records` only on a create() rollback, so this is
+        unreachable for a live engagement — and refusing here would make
+        delivery hostage to registry knowledge for no authority gain, since
+        the bridge gate already fails closed for an id it cannot resolve."""
+        reg, _rec = await self._mk(tmp_path)
+        assert reg.begin_turn_delivery("no-such-engagement") is True
+
+    async def test_reactivation_reaches_disk(self, tmp_path):
+        """Durability is deferred, not dropped: the seam may not await, so it
+        schedules the tombstone write instead of performing it."""
+        path = tmp_path / "persist.json"
+        reg, rec = await self._mk(tmp_path, name="persist.json")
+        await reg.mark_idle(rec.id)
+        assert json.loads(path.read_text())[0]["status"] == "idle"
+        reg.begin_turn_delivery(rec.id)
+        # The in-memory flip is immediate; the write lands on the next loop
+        # pass (and authority never waited for it).
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if json.loads(path.read_text())[0]["status"] == "active":
+                break
+        assert json.loads(path.read_text())[0]["status"] == "active"
+
+    async def test_persist_failure_does_not_break_the_flip(
+            self, tmp_path, monkeypatch):
+        """The grant-gate reads the in-memory record, so a failed write costs
+        only that another restart re-idles the record — after which the same
+        redelivery re-flips it. It must never raise into the delivery path."""
+        reg, rec = await self._mk(tmp_path, name="fail.json")
+        await reg.mark_idle(rec.id)
+
+        async def _boom(*_a, **_kw):
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(reg, "_write_tombstone_locked", _boom)
+        assert reg.begin_turn_delivery(rec.id) is True
+        assert rec.status == "active"
+        await asyncio.sleep(0.05)          # let the deferred task run + fail
+
+    async def test_admission_during_a_failing_strict_transition_is_refused(
+            self, tmp_path):
+        """The lock-free seam must never observe a status a rollback is about
+        to overwrite.
+
+        `try_transition_terminal(strict=True)` snapshots the record's fields
+        and restores them if the tombstone write fails. Its mutation used to
+        live inside a task created with `asyncio.ensure_future`, which only
+        SCHEDULES a coroutine — so the first line of that task ran at the
+        `await asyncio.shield(task)`, and in between the record still carried
+        its pre-transition status. `begin_turn_delivery` does not take the
+        registry lock, so it ran in that window, admitted a turn and flipped
+        the record `active`; the restore then put `idle` back, leaving a
+        delivered turn against a record whose status strips its authority —
+        #588 re-entering through the rollback path (found by Sol on the diff).
+        """
+        reg, rec = await self._mk(tmp_path, name="strict-race.json")
+        await reg.mark_idle(rec.id)
+        admitted: list[bool] = []
+
+        # The write FAILS, so the rollback this test is about actually runs
+        # (Terra, diff review r2: without this the test exercised the window
+        # but never the restore it names).
+        async def _failing_write(*_a, **_kw):
+            reg._last_tombstone_ok = False
+            raise OSError("disk gone")
+
+        reg._write_tombstone_locked = _failing_write   # type: ignore[method-assign]
+
+        task = asyncio.ensure_future(
+            reg.try_transition_terminal(rec.id, "cancelled", strict=True))
+        # Let the transition run up to its first suspension point — which is
+        # exactly the window this guards.
+        await asyncio.sleep(0)
+        admitted.append(reg.begin_turn_delivery(rec.id))
+
+        outcome = await asyncio.gather(task, return_exceptions=True)
+
+        assert admitted == [False], (
+            "a turn was admitted against a record mid-terminal-transition; "
+            "the rollback would then strip the authority it was given")
+        assert isinstance(outcome[0], OSError), outcome
+        # And the rollback did its own job: a refused persist leaves the record
+        # exactly as it was, never half-terminal.
+        assert rec.status == "idle", rec.status
+        assert rec.completed_at is None, rec.completed_at
+
+    async def test_cancelled_strict_write_that_failed_rolls_back(
+            self, tmp_path):
+        """INV-ENG-002 under cancellation, not just under error.
+
+        Committing the terminal fields before the persist task (above) means
+        every later failure path owes a restore — including a `CancelledError`,
+        which a repeated cancellation delivers into the write through the
+        gather in the caller's cancellation branch. `except Exception` does not
+        catch it, so the record was left terminal in memory while disk still
+        said live (found by Sol, diff review r2).
+        """
+        reg, rec = await self._mk(tmp_path, name="cancel-rollback.json")
+        await reg.mark_idle(rec.id)
+
+        async def _cancelled_failed_write(*_a, **_kw):
+            reg._last_tombstone_ok = False       # settled, and it FAILED
+            raise asyncio.CancelledError()
+
+        reg._write_tombstone_locked = _cancelled_failed_write  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            await reg.try_transition_terminal(rec.id, "cancelled", strict=True)
+
+        assert rec.status == "idle", (
+            "a cancelled strict transition whose write failed left the record "
+            f"terminal in memory while disk says otherwise: {rec.status}")
+        assert rec.completed_at is None
+
+    async def test_cancelled_strict_write_that_committed_keeps_the_transition(
+            self, tmp_path):
+        """The other half of the guard: when the settled write DID commit,
+        memory and disk already agree, so a cancellation arriving afterwards
+        must not undo a terminal state that is durably on disk."""
+        reg, rec = await self._mk(tmp_path, name="cancel-committed.json")
+
+        async def _cancelled_committed_write(*_a, **_kw):
+            reg._last_tombstone_ok = True        # settled, and it COMMITTED
+            raise asyncio.CancelledError()
+
+        reg._write_tombstone_locked = _cancelled_committed_write  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            await reg.try_transition_terminal(rec.id, "completed", strict=True)
+
+        assert rec.status == "completed", rec.status
+
+    async def test_repeated_cancellation_holds_the_lock_until_the_write_settles(
+            self, tmp_path):
+        """A competing writer must never see the transient terminal status.
+
+        The strict path commits the terminal fields in memory, then persists;
+        on failure it rolls them back. Between those two the record carries a
+        status no one else may act on or persist.
+
+        Raised in review (Terra, diff r3) as a hazard: a REPEATED cancellation
+        cancels the caller's `gather`, `async with self._lock` exits while the
+        persist is still in flight, and another writer reads the transient
+        value. Measured against this code, it does not happen — cancelling the
+        gather cancels its child, but the child cannot complete until
+        `_write_tombstone_locked`'s absorb-until-settle loop sees its
+        uncancellable `to_thread` write settle, so the gather keeps waiting.
+
+        Be honest about what this test is: the property is real and worth
+        pinning, but it is provided by the WRITE helper, not by this caller —
+        so it does NOT discriminate the caller's cancellation shape. It is a
+        regression guard on the absorb-until-settle behaviour those two rely
+        on. It drives the real writer (gated, then failing) rather than a
+        double that supplies the settlement state.
+        """
+        import threading
+
+        reg, rec = await self._mk(tmp_path, name="cancel-lock.json")
+        await reg.mark_idle(rec.id)
+
+        release = threading.Event()
+
+        def _gated_failing_write(_snapshot):
+            release.wait(timeout=5)
+            raise OSError("disk gone")
+
+        reg._write_tombstone = _gated_failing_write  # type: ignore[method-assign]
+
+        observed: list[str] = []
+
+        async def competitor():
+            async with reg._lock:
+                observed.append(rec.status)
+
+        task = asyncio.ensure_future(
+            reg.try_transition_terminal(rec.id, "cancelled", strict=True))
+        for _ in range(5):
+            await asyncio.sleep(0)         # reach the in-flight write
+        comp = asyncio.ensure_future(competitor())   # queued on the lock
+        # Cancel repeatedly: one of these lands while the caller is waiting for
+        # the persist task to settle, which is the case a single gather bailed
+        # out of.
+        for _ in range(20):
+            task.cancel()
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
+
+        assert observed == [], (
+            "the lock was released while the persist was still in flight; a "
+            f"competing writer read the transient terminal status: {observed}")
+
+        release.set()
+        await asyncio.gather(task, comp, return_exceptions=True)
+
+        assert observed == ["idle"], observed
+        assert rec.status == "idle", rec.status
+
+    async def test_rollback_runs_when_the_write_raises_before_it_settles(
+            self, tmp_path):
+        """`_last_tombstone_ok` must describe THIS write, not the last one.
+
+        The rollback is guarded by that flag so a cancellation whose write
+        COMMITTED keeps its mutation. The flag used to be reset only after the
+        tombstone snapshot had been built — so a raise during construction left
+        the previous (successful) write's `True` in place, the guard read it,
+        and a strict transition kept a terminal status in memory although no
+        write had happened at all (found by Sol, diff review r3).
+        """
+        reg, rec = await self._mk(tmp_path, name="stale-flag.json")
+        await reg.mark_idle(rec.id)
+        assert reg._last_tombstone_ok is True, "precondition: a write succeeded"
+
+        # Make snapshot CONSTRUCTION raise, before any write is scheduled.
+        rec.plugin_artifacts = (object(),)   # type: ignore[assignment]
+        with pytest.raises(TypeError):
+            await reg.try_transition_terminal(rec.id, "cancelled", strict=True)
+
+        assert rec.status == "idle", (
+            "no write happened, so the transition owed a rollback: "
+            f"{rec.status}")
+        assert rec.completed_at is None

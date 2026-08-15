@@ -95,7 +95,7 @@
   related: [architecture/plugins.md, architecture/hook-resolution.md, architecture/http-surface.md]
   defines_invariants: [INV-MCP-001, INV-MCP-002, INV-MCP-003, INV-MCP-004, INV-MCP-005, INV-MCP-009, INV-MCP-010]
   invariant_tests:
-    INV-MCP-001: [tests/test_pin_g4_invariants.py::test_pin_inv_mcp_001_internal_dispatch_enforces_engagement_grant, tests/test_bridge_tools_allowed_gate.py::test_ungranted_tool_is_rejected]
+    INV-MCP-001: [tests/test_pin_g4_invariants.py::test_pin_inv_mcp_001_internal_dispatch_enforces_engagement_grant, tests/test_bridge_tools_allowed_gate.py::test_ungranted_tool_is_rejected, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_authenticated_but_unbindable_says_not_live, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_bound_but_ungranted_still_says_not_granted, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_unbound_caller_still_says_not_granted]
     INV-MCP-002: [tests/test_unix_socket_runner.py::test_unix_runner_creates_socket_with_mode_0600, tests/test_casa_engagement_channel.py::TestChannelServerTransportIsTcp8100::test_channel_server_posts_to_8100_not_unix_socket, tests/test_svc_casa_mcp.py::test_svc_admin_reload_not_reachable_on_8100]
     INV-MCP-003: [tests/test_role_scoped_mcp.py::test_casa_framework_factory_exposes_only_granted_tools, tests/test_svc_casa_mcp.py::test_svc_tools_list_uses_static_snapshot]
     INV-MCP-004: [tests/test_engagement_auth_token.py::test_forged_id_without_token_is_rejected_and_tool_never_runs]

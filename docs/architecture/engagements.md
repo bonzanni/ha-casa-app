@@ -45,6 +45,17 @@ concurrency permits, live drivers, output sequencers, inbound reservations and v
 in-flight maps do not. A record found `active` at startup is rewritten to `idle`, because no
 live driver survived to make `active` true.
 
+**A turn being handed to the CLI is what makes a `claude_code` record live again.** An
+operator turn that was queued but never consumed is redelivered to the respawned CLI after a
+restart, and that delivery — not the restart, and not the respawn — is what returns the
+record to `active`. The distinction is load-bearing rather than bookkeeping: the tool
+authority an engagement holds over the internal dispatch path is bound to a record that is
+`active` (INV-MCP-001), so a turn delivered against an idled record would run stripped of
+every non-terminal tool the engagement owns, and the refusal would blame its grant. The same
+decision refuses the delivery outright once the record is terminal. It covers the first byte
+only: a terminal transition landing after a turn has begun cannot revoke it, because a pipe
+has no rollback — stopping an in-flight turn is the finalize path's driver teardown.
+
 **Durable is not indefinite, and engagements can speak up unprompted.** A daily sweep
 suspends a live session after a day idle and posts recurring idle reminders (three days for
 a specialist, seven for an executor, refiring weekly); terminal tombstones age out after
@@ -113,6 +124,24 @@ operator marking an engagement complete finalizes past unread input deliberately
 also exists only where the driver implements the inbound accessors — today that is the
 claude-code driver alone, so an interactive in-casa specialist completion has no unread-input
 gate. Accessor failures fail open with a warning rather than wedging termination.
+
+**INV-ENG-009**: A `claude_code` turn is admitted before its first byte reaches the engagement — a record found idle is `active` by then, and a terminal record is not written to at all.
+
+The admission sits between opening the engagement's stdin FIFO for writing — which succeeds
+only once its CLI is reading — and writing the first byte, which is the first thing that CLI
+can observe. That is the only instant at which the delivery is certain and the engagement
+has seen nothing of it. It is deliberately synchronous: with no suspension point between the
+open, the decision and the first write, no inbound tool call and no terminal transition can
+interleave, which is what makes the ordering a guarantee rather than a race. Durability
+follows behind it — the authority check reads the in-memory record, and a persist that never
+lands costs only that a later restart re-idles the record, after which the same redelivery
+admits it again.
+
+What it does not cover: the bytes after the first. A terminal transition landing mid-turn
+cannot revoke a delivery — closing the writer is itself an end-of-input the CLI acts on — so
+a turn already begun runs until the finalize path's driver teardown stops it. The admission
+also expresses no opinion on a record the registry does not know, which is unreachable for a
+live engagement and where the dispatch gate already fails closed.
 
 **INV-ENG-005**: Once the output sequencer is terminalized, ordinary narration and unresolved sends cannot post below the completion.
 
