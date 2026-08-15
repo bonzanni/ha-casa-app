@@ -511,13 +511,30 @@ class TestResetVersusWipe:
         import session_gate
 
         acquired = []
-        real_gate = session_gate.session_write_gate
 
-        def recording_gate(channel_key):
-            acquired.append(channel_key)
-            return real_gate(channel_key)
+        class RecordingGates(dict):
+            """Instruments the shared ``_SESSION_GATES`` mapping rather than
+            the ``session_write_gate`` callable.
 
-        monkeypatch.setattr(session_gate, "session_write_gate", recording_gate)
+            Deliberate: patching the callable only catches callers that look
+            it up on the module at call time. A ``from session_gate import
+            session_write_gate`` alias bound at import time keeps the original
+            function and would slip past unseen — which is exactly how a
+            reintroduction is most likely to be written. Every alias, however
+            bound, reaches this one dict.
+            """
+
+            def get(self, key, default=None):
+                acquired.append(key)
+                return super().get(key, default)
+
+            def __setitem__(self, key, value):
+                acquired.append(key)
+                super().__setitem__(key, value)
+
+        monkeypatch.setattr(
+            session_gate, "_SESSION_GATES", RecordingGates(),
+        )
 
         registry = SessionRegistry(str(tmp_path / "sessions.json"))
         for scope in ("42", "43"):
