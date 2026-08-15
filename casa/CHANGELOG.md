@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.207.0] - 2026-08-15
+
+### Fixed
+
+- **Casa could still tell you "there's no record of that" about something it
+  simply can't read from where you're asking** (#581). v0.172.0 fixed this for
+  searches that came back *empty*, and that turned out to be the wrong half of
+  the problem. When a search comes back with plenty of memories — just nothing
+  on the topic you asked about — the agent drew exactly the same false
+  conclusion, because a memory above your surface's clearance is filtered out
+  before Casa ever sees it, leaving no trace in the result.
+
+  Observed on the voice channel, which reads household-shared facts but not
+  private ones: asked where a private note was kept, the butler answered "No
+  record of that. I don't have it stored in memory." Thirty-three other
+  memories had come back in the same search.
+
+  Everything a memory search hands an agent now says what it is — the view
+  readable where you are asking, not an inventory of Casa's memory — so an
+  agent that can't find your topic says it has nothing it can share on that
+  here, rather than that Casa has never been told. That covers all four places
+  memories reach an agent: the recall tool, the memories loaded automatically
+  at the start of a conversation, the ones a specialist is given when it's
+  asked to help, and the notes an executor gets from past work. The wording is
+  identical everywhere and at every clearance, so it never becomes a hint that
+  something was withheld from a particular answer.
+
+  The butler's and assistant's own instructions carried a stale rule from
+  before v0.172.0 that let them declare "Casa doesn't have that" on an empty
+  result — the opposite of what the tool now tells them. Both now say to use
+  what came back and answer directly, and to claim absence in neither case.
+
 ## [0.206.1] - 2026-08-15
 
 ### Fixed

@@ -10,11 +10,13 @@ last_reviewed: 2026-08-13
 
 How a conversation becomes long-term memory and how it stops being one: the
 freshness windows that make a session save-eligible, the claim-and-guard
-protocol that retains it exactly once, the explicit reset, the durable retry
-spool, and the operator-consented wipe that removes everything. What a fact
-looks like once stored — tiers, provenance, recall — is
-[`architecture/memory.md`](memory.md); the warm-client pool whose resume
-decision this lifecycle steers is
+protocol that retains it exactly once, how each item is labelled on the way in
+(its sensitivity tier, its speaker provenance, and the content addressing that
+deduplicates it), the explicit reset, the durable retry spool, and the
+operator-consented wipe that removes everything. What happens to a stored fact
+on the way back out — read clearance, rendering, and what a caller may claim
+from a result — is [`architecture/memory.md`](memory.md); the warm-client pool
+whose resume decision this lifecycle steers is
 [`architecture/turn-loop.md`](turn-loop.md).
 
 ## Mental model
@@ -27,7 +29,25 @@ freshness windows that decide when a session stops being resumable and
 becomes save-eligible are environment-tunable (`FRESHNESS_VOICE_MINUTES`,
 default 30; `FRESHNESS_TELEGRAM_HOURS`, default 12). Retained facts are
 content-addressed, so the same speaker saying the same thing across sessions
-collapses to one stored document.
+collapses to one stored document — and agent-side deduplication ignores
+persona version, so a persona upgrade does not mint duplicate memories.
+
+Content addressing only holds because the hash input is the utterance and
+nothing else. Every sent user turn carries a per-turn time envelope, and the
+transcript echoes it back — hashed as-is, that second-precision timestamp
+would mint a fresh document for the same sentence in every session. Retention
+therefore splits the envelope off user turns at the transcript-readback
+boundary: stored text and document id are both envelope-free, and the turn's
+wall-clock time survives out-of-band as the retain item's timestamp. The
+composer and splitter are a pinned pair, so the envelope's shape cannot drift
+from what is stripped.
+
+**Each item is labelled before it is stored, and the labels are not the
+caller's to choose.** A bounded LLM pass classifies the item's sensitivity
+tier, and its speaker provenance is recorded from what the turn actually
+established. Both live in reserved tag namespaces that ordinary application
+tags may not reach, so a caller cannot promote its own fact to a tier the
+classifier did not give it or attribute it to someone it did not come from.
 
 **A registry key names a conversation slot, not a session.** A new turn can
 re-register the slot at any suspension point, so every step of the save
@@ -78,6 +98,19 @@ that content.
 
 ## Contracts & invariants
 
+**INV-MEM-004**: A caller cannot inject a sensitivity tier or a provenance tag through ordinary application tags.
+
+Enforced in the retain-item builder, which refuses reserved tag namespaces
+before doing any classification or I/O, and validates the speaker provenance
+it is given.
+
+What it does not cover, and this is worth stating plainly: it protects the
+*write* path from its own callers. It does not authenticate what the backend
+returns. On read, a syntactically valid provenance tag is trusted and is not
+cross-checked against the duplicate copy stored in the item's metadata. A
+recalled fact can therefore carry a speaker identity that the read path has
+not independently established — see [`architecture/memory.md`](memory.md).
+
 **INV-MEM-005**: Only write-trusted channels retain to the shared bank.
 
 Enforced by the channel write-policy check, consulted by every production
@@ -111,6 +144,30 @@ What it does not cover: a caller that passes no expected id gets the
 unconditional behavior; and a turn still running on the *same* session when
 a reset saves it can have its tail exchanges miss retention — the reset
 drops the pointer (its contract) and nothing saves that session again.
+
+**INV-MEM-009**: The per-turn time envelope never reaches the content-addressed document id or the stored memory text — an identical utterance retained from any session collapses to one document — and the turn's wall-clock time is carried out-of-band on the retain item.
+
+Enforced at the transcript-readback boundary, which splits a single leading
+envelope off each user turn before the retain-item builder hashes or stores
+it. The envelope's composer and splitter are a pinned pair; a round-trip test
+fails the moment the composed shape drifts from what the splitter recognises.
+
+What it does not cover: documents retained before the split existed keep their
+enveloped text and stale ids — the bank converges only as facts are re-said.
+Writers that bypass the transcript readback (delegated retains) never carried
+the envelope in the first place.
+
+**INV-MEM-012**: A tier-classifier reply yields a tier only when it is a single line holding one (possibly decorated) tier token, or when a multi-line reply's final non-empty line is the literal `Tier: <word>` answer line whose earlier tier-token or Tier-label lines all resolve to the same tier; prose tier words, conflicts, and unresolvable labels yield no tier; the item defaults to private.
+
+Enforced in `parse_tier`: the single-line arm full-matches one decorated
+token, never searching leftmost and never spanning lines; the answer-line arm
+accepts only the literal final line the prompt mandates, and an earlier
+answer-like line only when it resolves to the same tier — never "last one
+wins". Replaces retired MEM 007, whose statement the answer-line arm
+falsifies.
+
+What it does not cover: a classifier confidently declaring the wrong tier is
+believed — a parser contract, not accuracy; the eval set owns accuracy.
 
 **INV-MEM-013**: While a retirement claim is live on a key, no resume-decision site resumes the dying session, no registration re-arms its id, and one owner ending its claim never strips another owner's protection.
 
@@ -172,6 +229,16 @@ so failure spools a durable retry record instead; the freshness sweep drives
 retries and gives up loudly after a bounded number of attempts. An
 unreadable record is dropped, not retried forever.
 
+**Tier classification fails.** Retention classifies each item with a bounded
+LLM pass; a backend error retries once; an unparseable reply is re-asked once
+with the format mandate restated, then falls to *private* with a log warning,
+and the save logs one aggregate N-defaulted-of-M line. "Unparseable" is
+strict: only a single-line (possibly decorated) tier token or a final
+`Tier: <word>` line with agreeing earlier answers parses — anything else
+(prose, conflicts) is ambiguity. The write is not lost, but the fact goes
+invisible below the highest clearance — absence on voice and friends
+surfaces.
+
 **The session registry file is corrupt at boot.** An unparseable file is
 renamed aside and the process starts with an empty registry; a parseable
 file with structurally corrupt individual entries quarantines just those
@@ -213,6 +280,9 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
+- `casa/rootfs/opt/casa/memory_provenance.py::build_retain_items`
+- `casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope`
+- `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
 - `casa/rootfs/opt/casa/session_saver.py::save_session`
 - `casa/rootfs/opt/casa/session_saver.py::reset_channel`
 - `casa/rootfs/opt/casa/session_saver.py::retain_cold_session`
@@ -241,6 +311,8 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `tests/test_retain_fence_writers.py`
 - `tests/test_wipe_memory_tool.py`
 - `tests/test_admin_memory_wipe_route.py`
+- `tests/test_memory_provenance.py`
+- `tests/test_time_envelope.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)

@@ -2704,8 +2704,16 @@ async def _run_delegated_agent(
                 digest = ""
                 memory_block = unavailable_note
             if digest:
+                # #581: the slice a specialist is handed is filtered at the
+                # DELEGATING turn's clearance, so a topic missing from it may
+                # simply sit above that floor — the block says so rather than
+                # letting the specialist report absence to the caller. The
+                # EMPTY case stays silent (no block at all): absence of a
+                # block is not a claim of absence.
+                from recall_renderer import READABLE_SLICE_PROMPT_LINE
                 memory_block = (
                     f'<memory_context agent="{cfg.role}">\n'
+                    f"{READABLE_SLICE_PROMPT_LINE}\n"
                     f"{digest}\n"
                     f"</memory_context>\n\n"
                 )
@@ -5709,7 +5717,7 @@ async def recall_memory(args: dict) -> dict:
     )
     from hindsight_ids import bank_id
     from recall_health import default_telemetry, observed_recall
-    from recall_renderer import render_recall
+    from recall_renderer import READABLE_SLICE_NOTE, render_recall
     try:
         hits = await observed_recall(
             path="direct_tool", telemetry=default_telemetry(),
@@ -5784,7 +5792,17 @@ async def recall_memory(args: dict) -> dict:
                 "anything you can share on that here."
             ),
         })
-    return _result({"status": "ok", "memory": digest})
+    # #581: a NON-EMPTY digest needs the same scoping as the two empty arms
+    # above. #472 attached the framing to emptiness, but the readable slice is
+    # clearance-bounded whatever its size — the observed failure was 33
+    # readable hits returned, the one on-topic record dropped server-side, and
+    # the agent answering "no record of a wall safe". The note is CONSTANT at
+    # every tier: varying it would itself be an oracle for "something was
+    # filtered here", and truncation and the types filter hide content at the
+    # top tier too.
+    return _result({
+        "status": "ok", "memory": digest, "message": READABLE_SLICE_NOTE,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -6590,10 +6608,18 @@ async def _fetch_executor_archive(
     # #215: one subordination line — lessons are observations from prior
     # engagements; the versioned doctrine files prevail wherever they
     # disagree. Covers the same-epoch case where a lesson is merely wrong.
+    #
+    # #581 (Sol, design round 1): the block is a clearance-filtered AND
+    # epoch-filtered slice, so an executor reading it must not conclude that a
+    # topic it does not mention is a topic Casa has nothing on. The empty case
+    # above still returns "" — that renders as no block at all, which is
+    # silence rather than a claim (see this function's docstring).
+    from recall_renderer import READABLE_SLICE_PROMPT_LINE
     return (
         "## Prior engagements (lessons learned)\n"
         "These are observations from prior engagements. Where they disagree "
         "with your doctrine files, the doctrine prevails.\n"
+        f"{READABLE_SLICE_PROMPT_LINE}\n"
         f"{digest}"
     )
 

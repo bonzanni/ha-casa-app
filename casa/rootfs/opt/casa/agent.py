@@ -48,7 +48,11 @@ from timekeeping import compose_time_envelope, resolve_tz
 from hindsight_ids import bank_id
 from sensitivity import clearance_for_origin, readable_tiers
 from personality_types import SpeakerProvenance
-from recall_renderer import provenance_view, render_recall
+from recall_renderer import (
+    READABLE_SLICE_PROMPT_LINE,
+    provenance_view,
+    render_recall,
+)
 from speaker_provenance import UserProvenance, provenance_from_mapping
 from session_saver import freshness_window, retain_cold_session, save_session
 from semantic_memory import NoOpSemanticMemory, RecallUnavailable, SemanticMemory
@@ -1848,7 +1852,16 @@ class Agent:
         if overlay_digest:
             parts.append(f"<peer_overlay>\n{overlay_digest}\n</peer_overlay>")
         if facts:
-            parts.append(f"<memory_context>\n{facts}\n</memory_context>")
+            # #581: auto-recall reads at the turn's clearance — per SENDER on
+            # telegram — so the injected slice is bounded, and a model that
+            # treats it as all of memory answers "no record" for a fact it
+            # simply cannot read. One instruction line says so. The empty case
+            # injects no block at all, which stays deliberately silent:
+            # absence of a block is not a claim of absence.
+            parts.append(
+                f"<memory_context>\n{READABLE_SLICE_PROMPT_LINE}\n{facts}\n"
+                f"</memory_context>"
+            )
         memory_blocks = "\n".join(parts)
 
         if memory_blocks:

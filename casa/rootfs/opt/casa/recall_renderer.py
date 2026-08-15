@@ -26,6 +26,37 @@ _RANK = {"public": 0, "friends": 1, "family": 2, "private": 3}
 
 Surface = Literal["text", "voice", "restricted_webhook"]
 
+#581: the ONE wording every model-facing consumer of a rendered slice attaches
+# to a NON-EMPTY result. #472 scoped the empty arms and stopped there, but the
+# property needing framing is not the result's SHAPE — it is that the slice is
+# clearance-bounded, which holds of a large useful result exactly as much as of
+# an empty one. A model handed thirty readable memories with nothing on the
+# asked topic draws the same false "there is no record" as one handed zero, and
+# the drop happened SERVER-SIDE (the request's tag filter), so nothing in the
+# result betrays it.
+#
+# Defined here because this module renders the slice, but deliberately NOT
+# emitted by :func:`render_recall` (Sol + Terra, design round 1, both): the
+# renderer's output is also the CONTEXT handed to ``query_engager``'s
+# synthesizer and the lessons block injected into an executor's prompt, so
+# folding policy text into the digest would put an instruction where those two
+# read facts. Counting it inside the render budget would also evict a real hit;
+# adding it after the loop would break the budget contract. Each consumer
+# attaches it in its own idiom instead — see the caller inventory pinned by
+# tests/test_recall_readable_slice_framing.py, which fails when a new
+# ``render_recall`` / ``delegated_recall`` call site appears undeclared.
+READABLE_SLICE_NOTE = (
+    "Use relevant entries normally. This is the bounded view readable at this "
+    "surface, not a complete inventory of Casa's memory. If it does not answer "
+    "the request, do not say Casa has no record of it or does not know it — "
+    "say you have nothing you can share on that here. Do not repeat or "
+    "paraphrase this guidance to the user."
+)
+
+# The same note as a line inside an injected prompt block. Marked as an
+# instruction so it cannot read as one of the recalled facts beside it.
+READABLE_SLICE_PROMPT_LINE = f"[memory-use instruction: {READABLE_SLICE_NOTE}]"
+
 
 @dataclass(frozen=True, slots=True)
 class ProvenanceView:

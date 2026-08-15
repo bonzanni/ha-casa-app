@@ -116,7 +116,7 @@
 - item: casa/rootfs/opt/casa/hindsight_memory.py
   doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/hindsight_provenance_contract.py
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/hooks.py
   doc: architecture/mcp-and-tools.md
 - item: casa/rootfs/opt/casa/ingress_identity.py
@@ -132,7 +132,7 @@
 - item: casa/rootfs/opt/casa/mcp_envelope.py
   doc: architecture/mcp-and-tools.md
 - item: casa/rootfs/opt/casa/memory_provenance.py
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/memory_wipe.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/observer.py
@@ -216,7 +216,7 @@
 - item: casa/rootfs/opt/casa/session_sweeper.py
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/speaker_provenance.py
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_bundle_journal.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_component.py
@@ -560,7 +560,7 @@
 - item: casa/rootfs/opt/casa/system_requirements/venv.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/tier_classifier.py
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/timekeeping.py
   doc: reference/operator-options.md
 - item: casa/rootfs/opt/casa/trait_renderer.py
@@ -684,7 +684,7 @@
 - item: schema:runtime.v1.json
   doc: architecture/agent-taxonomy.md
 - item: schema:speaker-provenance.v1.json
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: schema:specialist-component.v1.json
   doc: architecture/specialist-lifecycle.md
 - item: schema:triggers.v1.json
