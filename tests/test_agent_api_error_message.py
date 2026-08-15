@@ -521,6 +521,54 @@ async def test_delegated_result_only_refusal_also_ends_the_run(
     assert caught.value.kind is ErrorKind.REFUSAL
 
 
+def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
+    """The inventory of read loops is itself pinned.
+
+    Three review rounds each found one more loop that folded assistant text
+    without reading the API-fault carriers — the recurrence was coverage, not
+    mechanism. A NEW ``receive_response()`` call site now fails this test until
+    it is declared here, the same way memory.md pins its recall-consumer
+    inventory (INV-MEM-010's "declare how you frame a non-empty result").
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
+
+    # module -> why this loop is safe. Every entry was checked by hand.
+    declared = {
+        # Reads BOTH carriers and raises ApiErrorTurn; the pool then drops the
+        # entry and the turn is classified (INV-TURN-007).
+        "sdk_client_pool.py": "raises ApiErrorTurn for the resident turn",
+        # Two loops: the delegated specialist run and query_engager synthesis.
+        # Both read both carriers and raise.
+        "tools.py": "raises ApiErrorTurn from the delegated run and synthesis",
+        # Suppresses the prose; the JSON parse then fails and the caller's
+        # existing handler suppresses the interjection — which IS the honest
+        # outcome for an observer that could not decide.
+        "observer.py": "suppresses; an undecidable interjection is dropped",
+        # Suppresses the prose so it is never streamed into the engagement's
+        # topic, and logs the kind. The engagement's TERMINAL kind is still
+        # the generic one — tracked separately, see #595.
+        "in_casa_driver.py": "suppresses; empty-turn warning is the signal",
+    }
+
+    found = {
+        path.name
+        for path in root.rglob("*.py")
+        if re.search(r"\.receive_response\(", path.read_text())
+    }
+
+    undeclared = found - set(declared)
+    assert not undeclared, (
+        f"new SDK read loop(s) in {sorted(undeclared)}: declare how each one "
+        "handles an API-level fault (api_error_kind + result_api_error_kind) "
+        "before adding it here — #568"
+    )
+    stale = set(declared) - found
+    assert not stale, f"declared but no longer reads the SDK: {sorted(stale)}"
+
+
 async def test_normal_turn_is_untouched(agent_fixture, monkeypatch):
     """The gate must not fire on a good answer."""
     monkeypatch.setattr(

@@ -8448,6 +8448,7 @@ async def _synthesize_answer(
     )
     out = ""
     _api_error = None      # #568
+    _synth_result = None
     eng = engagement_var.get(None)
     eng_id = eng.id[:8] if eng is not None else None
     async with ClaudeSDKClient(
@@ -8468,6 +8469,12 @@ async def _synthesize_answer(
                 for b in getattr(msg, "content", []):
                     if isinstance(b, TextBlock):
                         out += b.text
+            elif isinstance(msg, ResultMessage):
+                _synth_result = msg
+    # The second carrier, as in every other read loop: a refusal reported only
+    # on the terminal result must not come back as a successful empty answer.
+    if _api_error is None:
+        _api_error = result_api_error_kind(_synth_result)
     if _api_error is not None:
         raise ApiErrorTurn(_api_error)
     out = out.strip()
