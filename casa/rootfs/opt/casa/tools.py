@@ -66,7 +66,9 @@ from channels import ChannelManager
 from claude_runtime import CLAUDE_CLI_PATH
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
-from error_kinds import ApiErrorTurn, _classify_error, api_error_kind
+from error_kinds import (
+    ApiErrorTurn, _classify_error, api_error_kind, result_api_error_kind,
+)
 from mcp_registry import McpServerRegistry
 import sdk_logging
 import specialist_limits
@@ -2874,6 +2876,11 @@ async def _run_delegated_agent(
     # text is something each of them must remember to read — and in review two
     # of the four did not. Raising here also precedes the retain below, so a
     # half-finished exchange is never written to memory as a complete one.
+    # The second carrier, read exactly as the resident turn reads it
+    # (sdk_client_pool.run_turn_locked): a refusal reported ONLY on the
+    # terminal result must still end this run, not return an empty success.
+    if _api_error is None:
+        _api_error = result_api_error_kind(result_msg)
     if _api_error is not None:
         logger.warning(
             "delegated agent %s run ended by an API error kind=%s",

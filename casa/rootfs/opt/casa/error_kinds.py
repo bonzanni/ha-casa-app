@@ -86,6 +86,22 @@ def api_error_kind(sdk_msg: object) -> ErrorKind | None:
     return _API_ERROR_KINDS.get(str(error), ErrorKind.API_ERROR)
 
 
+def result_api_error_kind(result_msg: object) -> ErrorKind | None:
+    """The :class:`ErrorKind` a terminal ``ResultMessage`` reports, or ``None``.
+
+    The **second carrier**. A decline normally arrives as the synthesized
+    assistant message :func:`api_error_kind` reads, but the terminal result
+    carries the stop reason too, and a stream that ends with only the latter
+    must still end its run honestly rather than as an empty success. Every
+    read loop that consumes assistant text uses this alongside
+    :func:`api_error_kind`, so the two carriers are handled the same way
+    wherever a turn or a run can end.
+    """
+    if getattr(result_msg, "stop_reason", None) == "refusal":
+        return ErrorKind.REFUSAL
+    return None
+
+
 def _classify_error(exc: Exception) -> ErrorKind:
     """Classify an exception into an ErrorKind for routing recovery."""
     if isinstance(exc, ApiErrorTurn):

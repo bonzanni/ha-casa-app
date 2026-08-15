@@ -138,7 +138,9 @@ class ManagedSdkClient:
         contracts."""
         from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage
 
-        from error_kinds import ApiErrorTurn, ErrorKind, api_error_kind
+        from error_kinds import (
+            ApiErrorTurn, ErrorKind, api_error_kind, result_api_error_kind,
+        )
 
         assert self.state == "warm", f"run_turn on state={self.state}"
         self.state = "in_turn"
@@ -186,10 +188,8 @@ class ManagedSdkClient:
         # #568: the result's own stop_reason is the second carrier — read so a
         # refusal reported ONLY there (no synthesized assistant message) still
         # ends the turn honestly rather than as an empty success.
-        if api_error is None and getattr(
-            result_msg, "stop_reason", None,
-        ) == "refusal":
-            api_error = ErrorKind.REFUSAL
+        if api_error is None:
+            api_error = result_api_error_kind(result_msg)
         # #568: raise BEFORE the AR-5 text classification below — this carrier
         # NAMES the fault, where AR-5 can only pattern-match the result prose.
         # Raising here (rather than after ``turn()`` returns) is what keeps the

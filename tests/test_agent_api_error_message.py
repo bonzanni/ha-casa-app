@@ -228,9 +228,16 @@ class _FakeSdkClient:
         return None
 
     async def receive_response(self):
+        saw_result = False
         for item in type(self)._script:
+            if isinstance(item, _SDKResultMessage):
+                saw_result = True
             yield item
-        yield _mk_result("sid-delegated")
+        if not saw_result:
+            # Only synthesize a terminal result when the script has none — an
+            # unconditional one would overwrite a scripted result's stop_reason
+            # and make the second-carrier test vacuous.
+            yield _mk_result("sid-delegated")
 
 
 async def _noop():
@@ -466,6 +473,54 @@ async def test_a_refused_turn_does_not_leave_its_session_resumable(
     )
 
 
+async def test_a_non_refusal_fault_keeps_the_session_resumable(
+    agent_fixture, monkeypatch,
+):
+    """Discriminates the REFUSAL-only half of the clear's condition.
+
+    A transient or configuration fault is no reason to discard a conversation
+    the next turn could continue — only a decline poisons it.
+    """
+    agent = agent_fixture
+    monkeypatch.setattr(
+        "sdk_client_pool._default_make_client",
+        WarmTurnFactory([
+            [_mk_assistant("First answer.")],
+            [_parsed(_MODEL_NOT_FOUND_ENVELOPE)],      # API_ERROR, not a refusal
+        ]),
+    )
+    with patch_retry_sleep():
+        await agent.handle_message(_msg("hello"))
+        key = build_scoped_session_key("telegram", "butler", "lr")
+        second = await agent.handle_message(_msg("again"))
+
+    assert second is not None
+    assert second.content == _USER_MESSAGES[ErrorKind.API_ERROR]
+    assert agent._session_registry.get(key)["sdk_session_id"] == "sid-attempt-1"
+
+
+async def test_delegated_result_only_refusal_also_ends_the_run(
+    tmp_path, monkeypatch,
+):
+    """The second carrier, on the specialist path.
+
+    The resident turn reads a refusal reported only on the terminal result;
+    the delegated runner must too, or a declined specialist run returns an
+    empty success that every one of its four consumers records as a completed
+    delegation.
+    """
+    import tools
+    from error_kinds import ApiErrorTurn
+
+    monkeypatch.setattr(
+        tools, "ClaudeSDKClient",
+        _FakeSdkClient.of(_mk_result("sid-delegated", stop_reason="refusal")),
+    )
+    with pytest.raises(ApiErrorTurn) as caught:
+        await _run_delegated()
+    assert caught.value.kind is ErrorKind.REFUSAL
+
+
 async def test_normal_turn_is_untouched(agent_fixture, monkeypatch):
     """The gate must not fire on a good answer."""
     monkeypatch.setattr(
@@ -568,6 +623,15 @@ async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
         _FakeSdkClient.of(_parsed(_refusal_envelope())),
     )
 
+    failed: list = []
+    real_fail = reg.fail_delegation
+
+    async def _recording_fail(did, exc):
+        failed.append(did)
+        return await real_fail(did, exc)
+
+    monkeypatch.setattr(reg, "fail_delegation", _recording_fail)
+
     result = await _with_origin(
         tools.delegate_to_agent.handler({
             "agent": "finance", "task": "draft invoice",
@@ -576,6 +640,8 @@ async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
         _origin(),
     )
 
+    # The durable record must agree with what the caller was told.
+    assert len(failed) == 1
     payload = result["content"][0]["text"]
     assert '"status": "error"' in payload
     assert ErrorKind.REFUSAL.value in payload
