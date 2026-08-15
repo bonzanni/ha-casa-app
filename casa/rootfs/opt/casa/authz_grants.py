@@ -571,6 +571,24 @@ class ChallengeCoordinator:
             "_scope": scope,
         }
         meta.update(meta_extra or {})
+        # #573: the operator's attention lane spans two scopes. A live
+        # SCHEDULED question in `dm:{chat_id}` is machine-timed and the
+        # operator did not ask for it, so it yields to this human-facing
+        # challenge — cancelled HERE, in the same no-await block as the
+        # registration below, and selected from the broker's own live map
+        # rather than from the durable record file (which is written after an
+        # await, and so can miss an ask that just won its lane). An operator's
+        # own `ask_user` question carries no `scheduled` marker and is left
+        # exactly as it was.
+        try:
+            import scheduled_asks
+
+            scheduled_asks.cancel_for_chat(chat_id, "operator_challenge")
+        except Exception:  # noqa: BLE001 — never block a challenge on this
+            logger.warning(
+                "authz challenge: scheduled-ask cancellation failed for "
+                "chat_id=%s", chat_id, exc_info=True,
+            )
         req, _created = broker.register(
             namespace="resident_ask", scope=scope, request_id=rid,
             timeout_s=(_CHALLENGE_TTL_S if timeout_s is None else timeout_s),

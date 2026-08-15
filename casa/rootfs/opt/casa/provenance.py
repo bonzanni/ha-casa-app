@@ -64,6 +64,12 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # dispatches `MessageType.SCHEDULED` too, which is exactly why eligibility
     # is a marker and never an inference from the message type.
     "_scheduled_delivery",
+    # #573: the trigger-lifecycle epoch of the schedule that fired this turn.
+    # `ask_user` refuses to raise a keyboard when it is stale, which is how a
+    # trigger deleted or rewritten WHILE its turn was already running stops
+    # producing questions. Reserved for the same reason as the marker above: a
+    # caller who could set it would hand itself a fresh-looking epoch.
+    "_scheduled_epoch",
     # #283: live-operator turn marker — the agent-spawn cap exempts a spawn
     # ONLY when this is present (absence = agent context, fail closed), so a
     # caller who could set it through an external context would exempt
@@ -88,7 +94,9 @@ def sanitize_external_context(ctx: dict | None) -> dict:
     return {k: v for k, v in ctx.items() if k not in RESERVED_CONTEXT_KEYS}
 
 
-def scheduled_delivery_markers(channel: str | None) -> dict:
+def scheduled_delivery_markers(
+    channel: str | None, epoch: int | None = None,
+) -> dict:
     """The context markers a TIME-BASED scheduled dispatch stamps (#485).
 
     Both sites that fire a resident's own schedule — the scheduler
@@ -105,8 +113,19 @@ def scheduled_delivery_markers(channel: str | None) -> dict:
     "Casa's own schedule fired this"; who the operator IS is resolved at the
     point of use from the live configuration, so a stale or since-changed id
     can never be delivered to.
+
+    ``epoch`` (#573) is the caller's trigger-lifecycle epoch for the role
+    (``scheduled_asks.epoch_for``). It rides along so ``ask_user`` can refuse
+    to raise a keyboard for a trigger that was removed or rewritten after this
+    turn was dispatched. Omitted (``None``) it is simply absent, which every
+    consumer tolerates — a turn without one is a turn nothing can revoke.
     """
-    return {"_scheduled_delivery": True} if channel == "telegram" else {}
+    if channel != "telegram":
+        return {}
+    markers: dict = {"_scheduled_delivery": True}
+    if epoch is not None:
+        markers["_scheduled_epoch"] = epoch
+    return markers
 
 
 def strict_positive_id(v: object) -> int | None:

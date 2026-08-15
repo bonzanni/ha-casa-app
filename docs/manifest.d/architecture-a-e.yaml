@@ -86,15 +86,18 @@
     - casa/rootfs/opt/casa/bus.py::MessageBus.start_agent_loop
     - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn
     - casa/rootfs/opt/casa/reload.py::_RWLock
+    - casa/rootfs/opt/casa/agent.py::session_write_gate
   tests:
     - tests/test_bus.py
     - tests/test_sdk_client_pool_pool.py
-  related: [architecture/turn-loop.md, architecture/configuration.md, architecture/engagements.md]
-  defines_invariants: [INV-CONC-001, INV-CONC-002, INV-CONC-003]
+    - tests/test_scheduled_ask_user.py
+  related: [architecture/turn-loop.md, architecture/configuration.md, architecture/engagements.md, architecture/jobs-and-delivery.md]
+  defines_invariants: [INV-CONC-001, INV-CONC-002, INV-CONC-003, INV-CONC-004]
   invariant_tests:
     INV-CONC-001: [tests/test_bus.py::test_handlers_dispatch_concurrently, tests/test_bus.py::test_priority_ordering]
     INV-CONC-002: [tests/test_bus.py::test_reregister_preserves_queue_and_rebinds_handler, tests/test_bus.py::test_start_agent_loop_spawns_tracked_consumer]
     INV-CONC-003: [tests/test_sdk_client_pool_pool.py::test_invalidation_serializes_same_key_until_active_turn_releases, tests/test_sdk_client_pool_pool.py::test_concurrent_first_turns_single_connect]
+    INV-CONC-004: [tests/test_scheduled_ask_user.py::TestSessionWriteGate::test_two_scheduled_turns_never_run_concurrently, tests/test_scheduled_ask_user.py::TestSessionWriteGate::test_classification]
 
 - doc: architecture/configuration.md
   summary: Where configuration comes from, what is version-controlled, what reload can pick up without a restart, and how secrets resolve.

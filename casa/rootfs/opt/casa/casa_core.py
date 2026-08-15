@@ -3029,6 +3029,9 @@ _OPERATOR_NOTICE_LOCK = asyncio.Lock()
 # is deliberately out of scope.
 _placeholder_notified: set[str] = set()
 
+# #573: strong references for the boot scheduled-ask reconcile task.
+_SCHEDULED_ASK_TASKS: set = set()
+
 
 async def notify_placeholder_rewrites(channel_manager: Any) -> None:
     """Tell the operator that a ``${...}``-bearing triggers.yaml was rewritten.
@@ -3446,6 +3449,12 @@ async def main() -> None:
 
     # 3. Message bus
     bus = MessageBus()
+
+    # #573: durable pending-ask records. Installed BEFORE any trigger can fire
+    # (the scheduler starts later) so a scheduled ask never runs against an
+    # uninitialised store; reconciled after the Telegram channel is ready.
+    import scheduled_asks
+    scheduled_asks.init_store(os.path.join(DATA_DIR, "scheduled_asks.json"))
 
     # 4. Session registry + TTL sweeper (spec 5.2 §6)
     sessions_path = os.path.join(DATA_DIR, "sessions.json")
@@ -4156,6 +4165,27 @@ async def main() -> None:
             "Plan 4a boot-replay failed — claude_code engagements may be "
             "in an inconsistent state: %s", exc,
         )
+
+    # #573: reconcile durable scheduled-ask records. Gated on the same Telegram
+    # readiness event as the replay above — every disposition either edits a
+    # keyboard or restores one, and both need a live bot. A restored record's
+    # keyboard stays honest across the restart; an expired, orphaned or
+    # operator-changed one is settled and its scheduled session told.
+    if _telegram_ready is not None:
+        async def _reconcile_scheduled_asks() -> None:
+            try:
+                await _telegram_ready.wait()
+                await scheduled_asks.reconcile_at_boot(telegram_channel)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — never fatal at boot
+                logger.warning("scheduled-ask reconciliation failed: %s", exc)
+
+        _sa_task = asyncio.create_task(_reconcile_scheduled_asks())
+        # Strong reference for the task's lifetime (a bare create_task result
+        # is garbage-collectable mid-flight).
+        _SCHEDULED_ASK_TASKS.add(_sa_task)
+        _sa_task.add_done_callback(_SCHEDULED_ASK_TASKS.discard)
 
     # v0.79.0 (§3): terminal boot-reconciliation — drain terminal engagements
     # whose inbound spool still holds pending receipts/notices.

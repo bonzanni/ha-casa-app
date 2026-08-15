@@ -10,9 +10,11 @@ last_reviewed: 2026-07-31
 
 The durable background-job lifecycle behind deferred voice work: what a job persists, how
 execution and delivery are tracked separately, what a restart reconciles, and the leased
-claim/acknowledge protocol that gets an answer to a device. It does not cover how a job's
-turn runs (the turn loop), the socket transport itself (the voice channel), or what the
-result may disclose beyond where that decision is enforced.
+claim/acknowledge protocol that gets an answer to a device — and the other durable
+obligation shaped the same way, a question a resident's schedule asked the operator and is
+waiting on. It does not cover how a job's turn runs (the turn loop), the socket transport
+itself (the voice channel), or what the result may disclose beyond where that decision is
+enforced.
 
 ## Mental model
 
@@ -56,6 +58,14 @@ completed result is retained at most fifteen minutes (a specialist's shorter pri
 expiry wins); a route holds at most five live-or-ready jobs; a claim leases for fifteen
 seconds with five-second renewals, and a nacked endpoint parks re-offers for thirty. These
 decide admission, expiry and redelivery latency — none is operator-configurable.
+
+**A scheduled question is a durable obligation, not a message.** When a resident's own
+schedule asks the operator something, the question outlives the turn that asked it: the
+broker holding it is in-memory, so a record on disk is what keeps a keyboard on screen
+honest across a restart, and what guarantees the waiting session is eventually told
+*something*. It is the same disk-leads discipline as a job, with the opposite duplicate
+policy (INV-JOB-006), and it is deliberately timid about the operator's attention —
+a machine-timed question yields to a human one in both directions (INV-JOB-008).
 
 **Cancellation has a physical boundary.** Ready or claimed work cancels; authorized work
 enters a stopping/revocation handshake; playing or delivered is too late — a cancellation
@@ -115,6 +125,45 @@ Enforced in the coordinator's offer pass. A head with no recorded deliverable en
 modality is never offered and blocks its queue until TTL expiry sweeps it (the
 non-starvation half is INV-VOICE-006's territory).
 
+**INV-JOB-006**: A scheduled question's durable record is written before its keyboard is posted and moved to settling before any terminal action, so a restart restores an unexpired question and never replays a settled one.
+
+Enforced by the record's compare-and-set state machine: `posting` before the post, `live`
+once the message id is known, `settling` before the first terminal edit, dropped after the
+terminal continuation is dispatched. Deletion is not the acknowledgement — `settling` is.
+The boot reconciler restores a `live` record with its remaining timeout and the identical
+broker binding, settles an expired, unconfirmed or operator-changed one, and drops a
+`settling` one in silence.
+
+What it does not cover: exactly-once. The crash window between "decided" and "dispatched"
+resolves toward at-most-once — the opposite of INV-JOB-004's choice, and deliberately so: a
+duplicated answer makes a resident act twice on one confirmation, while a lost one leaves an
+unanswered question in a session that keeps working. A record still `posting` at boot may
+also leave an orphaned keyboard on screen, which a tap answers with "expired".
+
+**INV-JOB-007**: Every terminal outcome of a scheduled question — answered, expired, or cancelled for any reason — is delivered back to the session that asked, as a machine-authored scheduled turn.
+
+Enforced by the scheduled ask's finish hook, the single owner of the keyboard edit, the
+continuation and the record. The continuation reproduces the *firing* turn's shape (the
+session label as chat id, the same scheduled-delivery marker, the epoch the question was
+asked under) and carries no trusted user origin: the operator's tap is reported in the
+turn's content, never as its speaker, so it cannot relabel a machine-authored session.
+
+What it does not cover: the shutdown cancel, which settles nothing, edits nothing and leaves
+the record for the next boot — the keyboard is still on screen and the question is still
+honest. Nor does it cover a bus enqueue that is accepted and then never runs.
+
+**INV-JOB-008**: A scheduled question never displaces a live operator question: it is admitted only into an idle attention lane, and an authorization challenge cancels a live scheduled one before registering its own.
+
+Enforced synchronously in the broker: registration with an idle requirement across both
+halves of the lane (plain asks and authorization challenges are separate scopes), and a
+predicate cancel from the challenge's own no-await block. Refused, the tool answers
+`operator_busy` and asks nothing. The direction is one-way by design — a human question
+supersedes a machine one, never the reverse.
+
+What it does not cover: selection from the durable record file. Live decisions read the
+broker, which is synchronous; the record file is written after an await and would miss an
+ask that had just won its lane.
+
 ## Failure behavior
 
 **Execution fails — an exception, an aborted run, or an invalid structured result.** A safe
@@ -169,14 +218,19 @@ long an attempt may hold.
 - `casa/rootfs/opt/casa/channels/voice/delivery.py::VoiceDeliveryCoordinator`
 - `casa/rootfs/opt/casa/voice_job_result.py::parse_voice_job_result`
 - `casa/rootfs/opt/casa/voice_job_result.py::spoken_text_for`
+- `casa/rootfs/opt/casa/scheduled_asks.py::ScheduledAskStore`
+- `casa/rootfs/opt/casa/scheduled_asks.py::make_finish_hook`
+- `casa/rootfs/opt/casa/scheduled_asks.py::reconcile_at_boot`
 
 **Tests**
 - `tests/test_job_registry.py`
 - `tests/test_voice_delivery.py`
 - `tests/test_voice_job_result.py`
+- `tests/test_scheduled_ask_user.py`
 
 **Related**
 - [`architecture/voice.md`](../architecture/voice.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/triggers.md`](../architecture/triggers.md)
 <!-- END SOURCEMAP -->

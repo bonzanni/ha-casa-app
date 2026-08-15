@@ -47,6 +47,10 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # authenticated webhook route dispatches MessageType.SCHEDULED too,
         # which is why eligibility is this marker and never the message type.
         "_scheduled_delivery",
+        # #573: the trigger-lifecycle epoch the schedule fired under. A caller
+        # who could set it would hand itself a fresh-looking epoch and raise a
+        # question on behalf of a trigger that no longer exists.
+        "_scheduled_epoch",
     })
 
 

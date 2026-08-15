@@ -426,8 +426,10 @@ def _scheduled_operator_target(origin: dict) -> "tuple[int, int] | None":
 
     Deliberately NOT part of ``turn_provenance()``: that predicate is shared
     with the protected-action authorization hook (``authz_grants``), and
-    widening it would widen who can raise an approval. Only ``send_media``
-    consults this.
+    widening it would widen who can raise an approval. Its consumers are named
+    one by one: ``send_media`` (#485) and the scheduled arm of ``ask_user``
+    (#573) — the second reuses this helper verbatim rather than inventing a
+    second eligibility rule that could drift from it.
     """
     from provenance import strict_positive_id
 
@@ -778,11 +780,119 @@ def _ask_user_validate(args: dict) -> tuple[str | None, list[str] | None, float 
     return question, list(options), timeout_s, None
 
 
+async def _ask_user_scheduled(
+    *, channel, origin: dict, rid: str, scope: str, body: str,
+    options: list, chat_id: int, operator_id: int, target_role,
+    timeout_s: float,
+) -> dict:
+    """The scheduled arm of ``ask_user`` (#573).
+
+    Differs from the operator-DM arm in four ways, each of them the reason
+    this needed its own issue:
+
+    * it never SUPERSEDES. A machine-timed question must not displace a live
+      human one, so it registers with ``require_idle`` across BOTH halves of
+      the operator's attention lane (``dm:`` plain asks and ``authz:``
+      protected-action challenges) and refuses with ``operator_busy``;
+    * it writes a DURABLE record before the keyboard is posted, so a restart
+      neither loses the request nor leaves a tappable keyboard with nothing
+      behind it;
+    * its finish hook dispatches on EVERY terminal outcome, not just an
+      answer, back into the scheduled session — an unanswered question that
+      told nobody would leave that session waiting forever;
+    * the continuation is a machine-authored SCHEDULED turn, so the operator's
+      tap never relabels the session's authorship.
+    """
+    import time as _time
+
+    import scheduled_asks
+    from verdict_broker import BROKER
+
+    req, _created = BROKER.register(
+        namespace="resident_ask", scope=scope, request_id=rid,
+        timeout_s=timeout_s, detached=True, supersede=False,
+        require_idle=True, idle_scopes=(f"authz:{chat_id}",),
+        meta=scheduled_asks.broker_meta({
+            "rid": rid, "scope": scope, "chat_id": chat_id,
+            "operator_id": operator_id, "role": target_role,
+            "session_scope": str(origin.get("chat_id") or ""),
+            "options": list(options),
+            "epoch": origin.get("_scheduled_epoch"),
+        }),
+    )
+    if req is None:
+        return _result({
+            "status": "error", "kind": "operator_busy",
+            "message": (
+                "the operator already has a pending question; this one was "
+                "not asked — try again on the next run"
+            ),
+        })
+
+    record = {
+        "rid": rid,
+        "state": scheduled_asks.STATE_POSTING,
+        "role": target_role,
+        "session_scope": str(origin.get("chat_id") or ""),
+        "scope": scope,
+        "chat_id": chat_id,
+        "operator_id": operator_id,
+        "message_id": None,
+        "options": list(options),
+        "body": body,
+        "epoch": origin.get("_scheduled_epoch"),
+        "created_at": _time.time(),
+        "expires_at": _time.time() + timeout_s,
+    }
+    store = scheduled_asks.STORE
+    if store is not None:
+        await store.put(record)
+
+    async def _post():
+        return await channel.post_dm_keyboard(
+            chat_id=chat_id, request_id=rid, text=body, options=list(options),
+            short_labels=True,
+        )
+
+    def _finish_factory(message_id: int):
+        return scheduled_asks.make_finish_hook(
+            channel, {**record, "message_id": message_id},
+        )
+
+    await BROKER.ensure_posted(req, _post, _finish_factory)
+
+    message_id = req.meta.get("message_id")
+    if message_id is None:
+        # _run_setup already unregistered the request (post returned None or
+        # raised), and `unregister` fires no hook — so this is the one path
+        # that owns its own record cleanup.
+        if store is not None:
+            await store.drop(rid)
+        return _result({
+            "status": "error", "kind": "delivery_failed",
+            "message": "could not deliver the question to the operator",
+        })
+    # Compare-and-set from `posting`: the request can terminalize DURING its
+    # own post (an immediate cancel, a zero-ish timeout), in which case the
+    # hook has already settled and dropped the record and this write must not
+    # resurrect it.
+    if store is not None:
+        await store.set_state(
+            rid, scheduled_asks.STATE_LIVE, message_id=message_id,
+        )
+    return _result({"status": "awaiting_user", "request_id": rid,
+                    "delivered_to": "operator_dm"})
+
+
 @tool(
     "ask_user",
     "Ask the operator a multiple-choice question with tappable buttons in "
     "their DM. Two-turn: returns awaiting_user immediately; the answer "
-    "arrives as the user's next message. NOT an authorization mechanism: an "
+    "arrives as the user's next message. Works from one of your own scheduled "
+    "trigger turns too — there the answer (or a timeout, or a cancellation) "
+    "comes back into that same scheduled session, and if the operator already "
+    "has a question open you get operator_busy instead. NOT an authorization "
+    "mechanism: an "
     "Approve tapped here commits NO consent, however the question is "
     "worded — to re-surface a plugin-consent DM use consent_reprompt.",
     ASK_USER_SCHEMA,
@@ -795,8 +905,22 @@ async def ask_user(args: dict) -> dict:
 
     from provenance import strict_positive_id, turn_provenance
 
+    origin = _snapshot_origin()
     prov = turn_provenance()
-    if prov.transport not in ("dm", "button") or prov.execution != "direct":
+    # #573: a resident's own scheduled telegram turn may ask too. Its origin
+    # carries a session LABEL where a chat id would be, so it fails the DM gate
+    # by construction; admission comes from the SAME fail-closed #485 helper
+    # `send_media` uses (Casa-stamped marker + telegram + no engagement +
+    # execution_role == role + a configured operator), never from an inference.
+    _scheduled_target = (
+        _scheduled_operator_target(origin)
+        if (prov.transport not in ("dm", "button") or prov.execution != "direct")
+        else None
+    )
+    scheduled = _scheduled_target is not None
+    if not scheduled and (
+        prov.transport not in ("dm", "button") or prov.execution != "direct"
+    ):
         return _result({
             "status": "error", "kind": "unsupported_origin",
             "message": (
@@ -805,9 +929,27 @@ async def ask_user(args: dict) -> dict:
             ),
         })
 
-    origin = _snapshot_origin()
-    chat_id = strict_positive_id(origin.get("chat_id"))
-    operator_id = strict_positive_id(origin.get("user_id"))
+    if scheduled:
+        # The trigger that fired this turn may have been deleted or rewritten
+        # while the turn was already running. Raising its question anyway would
+        # put a keyboard in the operator's DM on behalf of a schedule that no
+        # longer exists.
+        import scheduled_asks
+
+        if not scheduled_asks.epoch_is_current(
+            origin.get("role"), origin.get("_scheduled_epoch"),
+        ):
+            return _result({
+                "status": "error", "kind": "trigger_changed",
+                "message": (
+                    "the trigger that started this turn has been changed or "
+                    "removed; the question was not asked"
+                ),
+            })
+        chat_id, operator_id = _scheduled_target
+    else:
+        chat_id = strict_positive_id(origin.get("chat_id"))
+        operator_id = strict_positive_id(origin.get("user_id"))
     if chat_id is None or operator_id is None:
         return _result({
             "status": "error", "kind": "unsupported_origin",
@@ -834,6 +976,14 @@ async def ask_user(args: dict) -> dict:
     # and the settle edits derive from this one ``body`` so they can never
     # disagree (mirrors the engagement single-source discipline).
     body = render_ask_body(None, question, list(options))
+
+    if scheduled:
+        return await _ask_user_scheduled(
+            channel=channel, origin=origin, rid=rid, scope=scope, body=body,
+            options=list(options), chat_id=chat_id, operator_id=operator_id,
+            target_role=target_role, timeout_s=timeout_s,
+        )
+
     # Static meta BEFORE post (register() shallow-copies whatever dict we
     # pass, so the complete dict is supplied up front rather than mutated
     # after the fact). No `on_commit_sync` — plain asks record nothing at
@@ -5936,6 +6086,17 @@ async def cancel_reminder(args: dict) -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("cancel_reminder: job removal failed for %s:%s",
                        role, name, exc_info=True)
+
+    # #573: a cancelled reminder must not leave a question it raised hanging in
+    # the operator's DM. Revoking settles it — keyboard retired, scheduled
+    # session told — and bumps the epoch so a firing turn still in flight
+    # cannot post a new one for the reminder just cancelled.
+    try:
+        import scheduled_asks
+        scheduled_asks.revoke_trigger(role, name, "trigger_cancelled")
+    except Exception:  # noqa: BLE001
+        logger.warning("cancel_reminder: scheduled-ask revocation failed for "
+                       "%s:%s", role, name, exc_info=True)
 
     logger.info("reminder cancelled: role=%s name=%s", role, name)
     return _result({"status": "ok", "name": name})

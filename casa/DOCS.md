@@ -398,6 +398,16 @@ reply in the same DM answers it too. An unanswered question expires after a
 few minutes, and starting a fresh session (`/new`) cancels any question
 still pending.
 
+Since v0.206.0 a turn fired by one of an agent's own schedules can ask too —
+the weekly pass that sends you an invoice can ask *Confirm / Wrong / Later*
+about it. A scheduled question yields to you in both directions: it is not
+asked at all while you already have a question or an approval waiting, and an
+approval request raised later retires it. It is recorded on disk, so its
+buttons still work after a restart; if it expires, is superseded, or the
+schedule that asked it is edited away, the agent is told what happened instead
+of waiting on an answer that will never arrive. Your tap is reported to the
+agent as part of that scheduled run, not as a message from you.
+
 ## Engagements (v0.11.0)
 
 Casa supports **engagements** — bounded conversational threads where a

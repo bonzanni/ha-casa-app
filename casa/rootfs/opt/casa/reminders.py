@@ -105,6 +105,7 @@ from atomic_io import atomic_write_text
 from config import (_ENV_RE, dump_yaml_declared_text,
                     load_yaml_declared_text, text_has_lone_placeholder)
 from provenance import scheduled_delivery_markers
+import scheduled_asks
 
 
 def _under_pass_lock(fn):
@@ -942,8 +943,11 @@ async def sweep_reminders(runtime, now: datetime) -> int:
                         # #485: the SAME rule the scheduler applies — a
                         # reminder delivered late (the restart case this sweep
                         # exists for) must be able to send exactly what it
-                        # could have sent on time.
-                        **scheduled_delivery_markers(entry.get("channel", "")),
+                        # could have sent on time. #573: and under the same
+                        # trigger-lifecycle epoch.
+                        **scheduled_delivery_markers(
+                            entry.get("channel", ""),
+                            scheduled_asks.epoch_for(role)),
                     },
                 ))
             except Exception:  # noqa: BLE001
@@ -1027,6 +1031,9 @@ def _reconcile_registrations(runtime, registry, role: str, path: str,
                 "triggers.yaml", name, role,
             )
             registry.remove_job_for(role, name)
+            # #573: the entry is gone, so any question that job raised is
+            # revoked with it (settled: keyboard retired, session told).
+            scheduled_asks.revoke_trigger(role, name, "trigger_removed")
 
     # Direction 2: an entry with no job must be registered.
     for entry in entries:
