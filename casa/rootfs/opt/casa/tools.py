@@ -2135,18 +2135,10 @@ class DelegatedOutput:
     # path, and treating it as a completed turn sent it to the envelope parser
     # to be misreported as a malformed result (Sol review, P1).
     result_message_seen: bool = True
-    # #568: the ``ErrorKind`` value when the CLI ended this run by reporting an
-    # API-level fault (a safety refusal included) as an assistant message. Its
-    # prose is the CLI's, not the specialist's, so it is never this run's
-    # ``text``; recording it here is what stops an empty or partial run being
-    # completed as a successful delegation.
-    api_error: str | None = None
 
     @property
     def run_aborted(self) -> bool:
         """Whether the CLI ended this run without completing the turn."""
-        if self.api_error is not None:
-            return True
         if not self.result_message_seen:
             return True
         return (
@@ -2753,7 +2745,7 @@ async def _run_delegated_agent(
     _msg_count = 0
     _first_tool = False
     text = ""
-    _api_error: str | None = None      # #568
+    _api_error = None      # #568 — the ErrorKind, when the CLI faulted
     result_msg: ResultMessage | None = None
     token = None
     # The options build is INSIDE the try (Sol review, Medium): a voice budget
@@ -2796,7 +2788,7 @@ async def _run_delegated_agent(
                         if _kind is not None:
                             if (_api_error is None and getattr(
                                     sdk_msg, "parent_tool_use_id", None) is None):
-                                _api_error = _kind.value
+                                _api_error = _kind
                             continue
                         for block in getattr(sdk_msg, "content", []):
                             if isinstance(block, TextBlock):
@@ -2873,6 +2865,22 @@ async def _run_delegated_agent(
                 cfg.role, cost_usd=cost_usd, usage=usage,
             )
 
+    # #568: the CLI ended this run by reporting an API-level fault (a safety
+    # refusal included) — this specialist never answered. RAISE rather than
+    # returning the fault beside the text: this runner has four consumers (the
+    # sync branch, the async/degraded completion callback, and both voice
+    # paths), every one of which already classifies an exception with
+    # `_classify_error` and fails its durable record, while a field beside the
+    # text is something each of them must remember to read — and in review two
+    # of the four did not. Raising here also precedes the retain below, so a
+    # half-finished exchange is never written to memory as a complete one.
+    if _api_error is not None:
+        logger.warning(
+            "delegated agent %s run ended by an API error kind=%s",
+            _known_role(getattr(cfg, "role", None)), _api_error.value,
+        )
+        raise ApiErrorTurn(_api_error)
+
     # Task 6 (spec §4.6): output bounding is applied by the CALLER (see
     # `specialist_limits.truncate_output` at the sync-result / async-
     # DelegationComplete assembly sites) rather than here, so the
@@ -2885,10 +2893,7 @@ async def _run_delegated_agent(
     # the shared bank, gated by the PARENT channel's write-trust (voice → no
     # write) — design §3, plan 3. Ephemeral specialists have no session
     # registry, so the freshness reaper never sees them; the retain is explicit.
-    # #568: a run the CLI ended with an API fault did not complete its
-    # exchange — retaining its partial half would durably record a truncated
-    # answer as a finished one.
-    if cfg.memory.token_budget > 0 and text and _api_error is None:
+    if cfg.memory.token_budget > 0 and text:
         sem = getattr(agent_mod, "active_semantic_memory", None)
         if sem is not None:
             # #411: fence generation captured synchronously with the exchange
@@ -2916,7 +2921,6 @@ async def _run_delegated_agent(
             if result_msg is not None else None
         ),
         result_message_seen=result_msg is not None,
-        api_error=_api_error,
     )
 
 
@@ -2980,51 +2984,24 @@ def _attach_completion_callback(
             return
         complete: DelegationComplete | None = None
         try:
-            output = t.result()
-            # #568: the CLI ended this run by reporting an API-level fault (a
-            # safety refusal included) — the specialist never answered. The
-            # notification the delegating resident narrates from must say so;
-            # reporting status="ok" hands it an empty (or half-written) answer
-            # to present to the household as the specialist's own. Mirrors the
-            # sync path's verdict in delegate_to_agent.
-            if output.api_error is not None:
-                complete = DelegationComplete(
-                    delegation_id=record.id,
-                    agent=record.agent,
-                    status="error",
-                    kind=output.api_error,
-                    message="The specialist could not complete this task.",
-                    origin=record.origin,
-                    elapsed_s=time.time() - record.started_at,
+            text = t.result().text
+            bounded, output_truncated = specialist_limits.truncate_output(text)
+            if output_truncated:
+                logger.warning(
+                    "delegated agent %s output truncated: %d > %d chars "
+                    "(spec §4.6)", record.agent, len(text),
+                    specialist_limits._MAX_OUTPUT_CHARS,
                 )
-                loop.create_task(_specialist_registry.fail_delegation(
-                    record.id,
-                    RuntimeError(
-                        "specialist run ended with an API error "
-                        f"({output.api_error})",
-                    ),
-                ))
-            else:
-                text = output.text
-                bounded, output_truncated = specialist_limits.truncate_output(
-                    text)
-                if output_truncated:
-                    logger.warning(
-                        "delegated agent %s output truncated: %d > %d chars "
-                        "(spec §4.6)", record.agent, len(text),
-                        specialist_limits._MAX_OUTPUT_CHARS,
-                    )
-                complete = DelegationComplete(
-                    delegation_id=record.id,
-                    agent=record.agent,
-                    status="ok",
-                    text=bounded,
-                    origin=record.origin,
-                    elapsed_s=time.time() - record.started_at,
-                    output_truncated=output_truncated,
-                )
-                loop.create_task(
-                    _specialist_registry.complete_delegation(record.id))
+            complete = DelegationComplete(
+                delegation_id=record.id,
+                agent=record.agent,
+                status="ok",
+                text=bounded,
+                origin=record.origin,
+                elapsed_s=time.time() - record.started_at,
+                output_truncated=output_truncated,
+            )
+            loop.create_task(_specialist_registry.complete_delegation(record.id))
         except Exception as exc:
             kind = _classify_error(exc).value
             complete = DelegationComplete(
@@ -5125,36 +5102,6 @@ async def delegate_to_agent(args: dict) -> dict:
 
         delegated_output = finished.result()
         voice_meta: dict = {}
-        # #568: the CLI ended this run by reporting an API-level fault (a
-        # safety refusal included). The specialist did not answer, so this is
-        # a failed delegation — not a completed one whose text happens to be
-        # empty or half-written. The voice branch below reaches the same
-        # verdict through ``run_aborted``; this arm covers the non-voice one,
-        # which otherwise consumes ``.text`` directly and completes the
-        # durable record as a success. ``kind`` is one of OUR ErrorKind
-        # values, never a CLI string.
-        if not is_voice and delegated_output.api_error is not None:
-            elapsed = time.time() - started_at
-            await _specialist_registry.fail_delegation(
-                delegation_id,
-                RuntimeError(
-                    "specialist run ended with an API error "
-                    f"({delegated_output.api_error})",
-                ),
-            )
-            logger.warning(
-                "Delegation %s → %s ended by an API error kind=%s (%.2fs)",
-                delegation_id[:8], agent_name, delegated_output.api_error,
-                elapsed,
-            )
-            return _result({
-                "status": "error",
-                "delegation_id": delegation_id,
-                "agent": agent_name,
-                "kind": delegated_output.api_error,
-                "message": "The specialist could not complete this task.",
-                "elapsed_s": elapsed,
-            })
         if is_voice:
             # See _run_voice_job_lifecycle: a run the CLI aborted has no
             # envelope to be malformed, and must not be reported as one (#254).

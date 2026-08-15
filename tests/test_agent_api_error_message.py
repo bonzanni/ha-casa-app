@@ -47,7 +47,8 @@ from channels import ChannelManager
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from error_kinds import _USER_MESSAGES, ErrorKind
 from mcp_registry import McpServerRegistry
-from session_registry import SessionRegistry
+from session_reg_helpers import RESIDENT_DIGEST, resident_prov, resident_role_id
+from session_registry import SessionRegistry, build_scoped_session_key
 
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
@@ -175,6 +176,34 @@ class QueuedScriptFactory:
         return ScriptedClient(options, script, sid=f"sid-attempt-{self.constructed}")
 
 
+class WarmTurnClient(ScriptedClient):
+    """One client, a script per TURN — what the pool actually does on warm
+    reuse (a per-construction script would replay turn 1 forever)."""
+
+    def __init__(self, options, turn_scripts: list[list], sid: str) -> None:
+        super().__init__(options, [], sid=sid)
+        self._turns = list(turn_scripts)
+
+    async def receive_response(self):
+        self._script = self._turns.pop(0) if self._turns else []
+        async for item in super().receive_response():
+            yield item
+
+
+class WarmTurnFactory:
+    """Constructs ONE client carrying every turn's script."""
+
+    def __init__(self, turn_scripts: list[list]) -> None:
+        self._turns = turn_scripts
+        self.constructed = 0
+
+    def __call__(self, options) -> WarmTurnClient:
+        self.constructed += 1
+        return WarmTurnClient(
+            options, self._turns, sid=f"sid-attempt-{self.constructed}",
+        )
+
+
 class _FakeSdkClient:
     """A ``ClaudeSDKClient`` substitute for the non-pooled read loops
     (delegated specialist runs, ``_synthesize_answer``, the observer), which
@@ -202,6 +231,10 @@ class _FakeSdkClient:
         for item in type(self)._script:
             yield item
         yield _mk_result("sid-delegated")
+
+
+async def _noop():
+    return None
 
 
 async def _run_delegated():
@@ -244,6 +277,14 @@ def _make_agent(tmp_path, role: str = "butler") -> Agent:
         character=CharacterConfig(name="Test"),
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
         memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        # A resumable identity — without these the resume decision refuses
+        # every stored entry and no turn ever resumes, which would make the
+        # refused-session test below assert nothing (mirrors
+        # tests/test_agent_pooling.py's fixture).
+        role_id=resident_role_id(role),
+        kind="resident",
+        binding_digest=RESIDENT_DIGEST,
+        speaker_provenance=resident_prov(role),
     )
     return Agent(
         config=cfg,
@@ -390,6 +431,41 @@ async def test_result_stop_reason_refusal_is_the_second_carrier(
     assert out.content == _USER_MESSAGES[ErrorKind.REFUSAL]
 
 
+async def test_a_refused_turn_does_not_leave_its_session_resumable(
+    agent_fixture, monkeypatch,
+):
+    """Dropping the pool entry unbinds the client, not the conversation.
+
+    The registry still named the session the refused turn was resuming, so the
+    next turn on that key resumed the very conversation that was declined —
+    with the declined message still in it. The CLI's own refusal advice is to
+    start a new session.
+    """
+    agent = agent_fixture
+    factory = WarmTurnFactory([
+        [_mk_assistant("First answer.")],          # turn 1 registers a session
+        [_parsed(_refusal_envelope())],            # turn 2 RESUMES it, refused
+    ])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+
+    with patch_retry_sleep():
+        first = await agent.handle_message(_msg("hello"))
+        assert first is not None and first.content == "First answer."
+        key = build_scoped_session_key("telegram", "butler", "lr")
+        assert agent._session_registry.get(key)["sdk_session_id"] == (
+            "sid-attempt-1"
+        )
+
+        second = await agent.handle_message(_msg("and again?"))
+
+    assert second is not None
+    assert second.content == _USER_MESSAGES[ErrorKind.REFUSAL]
+    entry = agent._session_registry.get(key) or {}
+    assert not entry.get("sdk_session_id"), (
+        "the refused conversation is still registered for resume"
+    )
+
+
 async def test_normal_turn_is_untouched(agent_fixture, monkeypatch):
     """The gate must not fire on a good answer."""
     monkeypatch.setattr(
@@ -414,15 +490,15 @@ async def test_delegated_specialist_api_error_is_not_its_answer(
     """
     import tools
 
+    from error_kinds import ApiErrorTurn
+
     monkeypatch.setattr(
         tools, "ClaudeSDKClient",
         _FakeSdkClient.of(_parsed(_refusal_envelope())),
     )
-    output = await _run_delegated()
-
-    assert output.text == ""
-    assert output.api_error == ErrorKind.REFUSAL.value
-    assert output.run_aborted is True
+    with pytest.raises(ApiErrorTurn) as caught:
+        await _run_delegated()
+    assert caught.value.kind is ErrorKind.REFUSAL
 
 
 async def test_delegated_specialist_partial_text_before_an_api_error_is_dropped(
@@ -431,6 +507,9 @@ async def test_delegated_specialist_partial_text_before_an_api_error_is_dropped(
     """Half an answer is not an answer — and must not be retained as one."""
     import tools
 
+    from error_kinds import ApiErrorTurn
+
+    retained: list = []
     monkeypatch.setattr(
         tools, "ClaudeSDKClient",
         _FakeSdkClient.of(
@@ -438,14 +517,17 @@ async def test_delegated_specialist_partial_text_before_an_api_error_is_dropped(
             _parsed(_refusal_envelope()),
         ),
     )
-    output = await _run_delegated()
+    monkeypatch.setattr(
+        tools, "retain_delegated",
+        lambda *a, **k: retained.append(a) or _noop(),
+    )
 
-    assert output.api_error == ErrorKind.REFUSAL.value
-    assert output.run_aborted is True
-    # The partial IS carried (callers fail the run on run_aborted), but the
-    # CLI's prose never is.
-    assert "Request ID" not in output.text
-    assert "safeguards flagged" not in output.text
+    with pytest.raises(ApiErrorTurn):
+        await _run_delegated()
+
+    # The run raises before the retain, so no half-exchange is written to the
+    # memory bank as a completed one.
+    assert retained == []
 
 
 async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
@@ -535,8 +617,8 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
         id="d-1", agent="finance", started_at=0.0,
         origin={"role": "assistant", "channel": "telegram", "chat_id": "lr"},
     )
-    task: asyncio.Task = asyncio.create_task(_delegated_api_error_result())
-    await task
+    task: asyncio.Task = asyncio.create_task(_delegated_api_error_run())
+    await asyncio.gather(task, return_exceptions=True)
     tools._attach_completion_callback(task, record)
     await asyncio.sleep(0)      # let the done-callback's tasks be scheduled
     await asyncio.sleep(0)
@@ -550,13 +632,11 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
     assert "Request ID" not in (complete.message or "")
 
 
-async def _delegated_api_error_result():
-    """A finished specialist run whose CLI ended it with a refusal."""
-    import tools
+async def _delegated_api_error_run():
+    """A specialist run the CLI ended with a refusal — the runner raises."""
+    from error_kinds import ApiErrorTurn
 
-    return tools.DelegatedOutput(
-        text="", run_subtype="success", api_error=ErrorKind.REFUSAL.value,
-    )
+    raise ApiErrorTurn(ErrorKind.REFUSAL)
 
 
 async def test_synthesize_answer_raises_instead_of_answering_with_cli_prose(

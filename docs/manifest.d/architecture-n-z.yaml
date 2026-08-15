@@ -360,7 +360,7 @@
     INV-TURN-004: [tests/test_agent_process.py::test_memory_failure_does_not_break_response]
     INV-TURN-005: [tests/test_retry.py::test_cancelled_error_propagates_immediately, tests/test_retry.py]
     INV-TURN-006: [tests/test_sdk_client_pool_pool.py::test_close_key_joins_inflight_invalidation_flush]
-    INV-TURN-007: [tests/test_agent_api_error_message.py::test_refusal_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_api_error_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_refusal_is_not_retried, tests/test_agent_api_error_message.py::test_result_stop_reason_refusal_is_the_second_carrier, tests/test_agent_api_error_message.py::test_subagent_api_error_suppresses_text_without_failing_the_turn]
+    INV-TURN-007: [tests/test_agent_api_error_message.py::test_refusal_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_api_error_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_refusal_is_not_retried, tests/test_agent_api_error_message.py::test_result_stop_reason_refusal_is_the_second_carrier, tests/test_agent_api_error_message.py::test_subagent_api_error_suppresses_text_without_failing_the_turn, tests/test_agent_api_error_message.py::test_a_refused_turn_does_not_leave_its_session_resumable]
 
 - doc: architecture/voice.md
   summary: How speech becomes a turn and the answer gets back — transports, auth, turn budget, deferred delivery.

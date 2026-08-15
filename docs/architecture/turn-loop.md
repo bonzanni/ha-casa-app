@@ -111,16 +111,25 @@ the set of values the CLI can emit is open, and at least one it does emit is abs
 SDK's own literal type for that field. A refusal is classified to its own kind and is
 deliberately outside the retried set — the decline is deterministic, so further attempts buy
 nothing but latency — while a fault the CLI names as transient maps back onto the retried
-kinds. The turn's session is not published and the pool entry is dropped, so the next turn on
-that channel starts fresh rather than resuming the conversation that was declined.
+kinds.
+
+A refused turn also gives up the conversation it was in. Dropping the pool entry unbinds the
+*client*, not the *conversation*: the session registry would still name the session the turn
+resumed, so the next turn on that key would resume the very conversation that was declined,
+with the declined message still in it. The refusal therefore clears that registration —
+under the same guards as the stale-resume recovery, so a concurrent turn's newer session
+survives, and for a refusal only, since a transient fault is no reason to discard a
+conversation the next turn could continue.
 
 What it does not cover: a fault scoped to a sub-agent rather than the main loop is suppressed
 without ending the turn, because the resident may still answer; the result message's stop
-reason is read as a second carrier, so a refusal reported only there is still classified; and
-this is a statement about the *turn* boundary — the same suppression is applied
-independently at each of the other places assistant text is folded (delegated specialist
-runs, engager synthesis, the observer), where the honest outcome is that path's own failure,
-not a turn error.
+reason is read as a second carrier, so a refusal reported only there is still classified; text
+already streamed to a channel before the fault stays delivered, since it cannot be recalled;
+and this is a statement about the *turn* boundary. The other read loops that fold assistant
+text apply the same suppression and then report *their own* failure rather than a turn error:
+a delegated specialist run raises, so all four of its consumers fail the delegation with the
+carried kind through the exception paths they already had, and engager synthesis raises rather
+than answering with an empty string that would read as "the engager remembers nothing".
 
 ## Failure behavior
 

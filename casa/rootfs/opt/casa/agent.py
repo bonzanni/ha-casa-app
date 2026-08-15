@@ -74,6 +74,7 @@ from tokens import (
     format_turn_summary,
 )
 from error_kinds import (  # noqa: F401 — selected names are re-exported
+    ApiErrorTurn,
     ErrorKind,
     VoiceToolLoopError,
     _classify_error,
@@ -1369,6 +1370,29 @@ class Agent:
                     return await retry_sdk_call(
                         attempt_fn, on_retry=self._log_retry,
                     )
+                except ApiErrorTurn as exc:
+                    # #568: dropping the pool entry unbinds the CLIENT, not the
+                    # CONVERSATION — the registry still names the session this
+                    # turn was resuming, so the next turn on this key would
+                    # resume the very conversation that was just declined, with
+                    # the declined message still in it. The CLI's own refusal
+                    # advice is to start a new session; make that true here.
+                    # Guarded exactly like the stale-resume clear below (#349/
+                    # #526): only while the entry still carries the sid this
+                    # attempt resumed AND no registration has landed since, so
+                    # a concurrent same-key turn's session survives.
+                    # Refusal only: a transient API fault is not a reason to
+                    # discard a conversation the next turn could continue.
+                    if exc.kind is ErrorKind.REFUSAL and last_resume["sid"]:
+                        logger.info(
+                            "refused turn: clearing resumed session "
+                            "channel_key=%s", channel_key,
+                        )
+                        await self._session_registry.clear_sdk_session(
+                            channel_key, expected_sid=last_resume["sid"],
+                            expected_generation=last_resume["gen"],
+                        )
+                    raise
                 except ProcessError as exc:
                     if last_resume["sid"] is None:
                         raise
