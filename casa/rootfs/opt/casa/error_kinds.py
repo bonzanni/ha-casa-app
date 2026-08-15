@@ -21,6 +21,8 @@ class ErrorKind(Enum):
     MEMORY_ERROR = "memory_error"
     CHANNEL_ERROR = "channel_error"
     VOICE_TOOL_LOOP = "voice_tool_loop"
+    REFUSAL = "refusal"
+    API_ERROR = "api_error"
     UNKNOWN = "unknown"
 
 
@@ -31,12 +33,79 @@ _USER_MESSAGES: dict[ErrorKind, str] = {
     ErrorKind.MEMORY_ERROR: "Memory service is unavailable, but I can still respond without context.",
     ErrorKind.CHANNEL_ERROR: "There was an issue sending the response.",
     ErrorKind.VOICE_TOOL_LOOP: "I couldn't resolve that cleanly. Try naming the device again.",
+    ErrorKind.REFUSAL: "That request was declined by Claude's safety system. Rephrasing it usually helps.",
+    ErrorKind.API_ERROR: "The Claude API returned an error, so I couldn't finish that. Please try again later.",
     ErrorKind.UNKNOWN: "Sorry, something went wrong while processing your request.",
 }
 
 
+class ApiErrorTurn(RuntimeError):
+    """The CLI ended a turn by reporting an API-level fault (#568).
+
+    Carries the already-resolved :class:`ErrorKind` so classification happens
+    once, where the evidence is, rather than by matching on message text.
+    """
+
+    def __init__(self, kind: ErrorKind, detail: str = "") -> None:
+        super().__init__(detail or kind.value)
+        self.kind = kind
+
+
+#: CLI ``error`` values that name a transient fault worth another attempt.
+#: Every other value — and there are many, the namespace is open (``model_not_found``
+#: was measured on the wire and is not even in the SDK's ``AssistantMessageError``
+#: literal) — falls through to the non-retryable :data:`ErrorKind.API_ERROR`, so an
+#: unrecognised value fails closed rather than being retried three times.
+_API_ERROR_KINDS: dict[str, ErrorKind] = {
+    "rate_limit": ErrorKind.RATE_LIMIT,
+    "overloaded": ErrorKind.RATE_LIMIT,
+    "server_error": ErrorKind.SDK_ERROR,
+    "connection_error": ErrorKind.SDK_ERROR,
+}
+
+
+def api_error_kind(sdk_msg: object) -> ErrorKind | None:
+    """The :class:`ErrorKind` an ``AssistantMessage`` reports, or ``None``.
+
+    The Claude Code CLI does not raise for an API-level fault — it synthesizes
+    an ordinary ``assistant`` message whose single content block holds its own
+    user-facing error string, and stamps the envelope with ``error:"<value>"``
+    (surfaced by the SDK as ``AssistantMessage.error``). A safety refusal is the
+    same construction with ``message.stop_reason:"refusal"`` on top. Both were
+    read off the wire against CLI 2.1.233.
+
+    Callers pass an ``AssistantMessage``; the gate is the *truthiness* of
+    ``error``, never membership in a known set, because the set of values the
+    CLI can emit is open.
+    """
+    error = getattr(sdk_msg, "error", None)
+    if not error:
+        return None
+    if getattr(sdk_msg, "stop_reason", None) == "refusal":
+        return ErrorKind.REFUSAL
+    return _API_ERROR_KINDS.get(str(error), ErrorKind.API_ERROR)
+
+
+def result_api_error_kind(result_msg: object) -> ErrorKind | None:
+    """The :class:`ErrorKind` a terminal ``ResultMessage`` reports, or ``None``.
+
+    The **second carrier**. A decline normally arrives as the synthesized
+    assistant message :func:`api_error_kind` reads, but the terminal result
+    carries the stop reason too, and a stream that ends with only the latter
+    must still end its run honestly rather than as an empty success. Every
+    read loop that consumes assistant text uses this alongside
+    :func:`api_error_kind`, so the two carriers are handled the same way
+    wherever a turn or a run can end.
+    """
+    if getattr(result_msg, "stop_reason", None) == "refusal":
+        return ErrorKind.REFUSAL
+    return None
+
+
 def _classify_error(exc: Exception) -> ErrorKind:
     """Classify an exception into an ErrorKind for routing recovery."""
+    if isinstance(exc, ApiErrorTurn):
+        return exc.kind
     if isinstance(exc, VoiceToolLoopError):
         return ErrorKind.VOICE_TOOL_LOOP
     if isinstance(exc, asyncio.TimeoutError):

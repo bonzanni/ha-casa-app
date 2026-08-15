@@ -343,6 +343,12 @@ _DEFAULT_ERROR_LINES = {
     "sdk_error":     "[flat] I couldn't reach my brain.",
     "memory_error":  "",
     "channel_error": "[flat] Something went wrong.",
+    # #568: a refused or API-faulted turn reaches this table like any other
+    # kind. Without a line the sink speaks an empty string — silence is the
+    # worst outcome on the voice channel, and it is exactly what the raw CLI
+    # error text must NOT be replaced by.
+    "refusal":       "[flat] That one was declined. Try asking it differently.",
+    "api_error":     "[flat] Claude returned an error. Try again in a moment.",
     "unknown":       "[flat] Sorry, something went wrong.",
     # S-1 (2026-07-15, cid 93f501bb): a turn that completes with ZERO spoken
     # output (e.g. max_turns exhausted on ToolSearch round-trips) must never

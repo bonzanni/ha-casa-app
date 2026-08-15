@@ -97,6 +97,40 @@ turns in general is not this hook's job: a reset takes the per-key write gate an
 admission for its whole body (INV-CONC-004, INV-CONC-005), which is what orders it against
 turns dispatched before or after it on the same key, on any path.
 
+**INV-TURN-007**: An API-level fault the CLI reports as an assistant message never becomes agent text; it ends the turn as a classified error, and a safety refusal is not retried.
+
+The CLI does not raise for an API-level fault. It synthesizes an ordinary assistant message
+whose single content block holds its own user-facing error string — an Anthropic request id
+and terminal-UI advice among it — stamps the envelope with an `error` value, and for a
+safety decline sets that message's stop reason to `refusal`. Both arrive through the SDK as a
+normal assistant message, which is why the accumulator that folds assistant text into the
+reply is where CLI prose would otherwise be spoken in persona position.
+
+The gate is the *truthiness* of the envelope's error field, never membership in a known set:
+the set of values the CLI can emit is open, and at least one it does emit is absent from the
+SDK's own literal type for that field. A refusal is classified to its own kind and is
+deliberately outside the retried set — the decline is deterministic, so further attempts buy
+nothing but latency — while a fault the CLI names as transient maps back onto the retried
+kinds.
+
+A refused turn also gives up the conversation it was in. Dropping the pool entry unbinds the
+*client*, not the *conversation*: the session registry would still name the session the turn
+resumed, so the next turn on that key would resume the very conversation that was declined,
+with the declined message still in it. The refusal therefore clears that registration —
+under the same guards as the stale-resume recovery, so a concurrent turn's newer session
+survives, and for a refusal only, since a transient fault is no reason to discard a
+conversation the next turn could continue.
+
+What it does not cover: a fault scoped to a sub-agent rather than the main loop is suppressed
+without ending the turn, because the resident may still answer; the result message's stop
+reason is read as a second carrier, so a refusal reported only there is still classified; text
+already streamed to a channel before the fault stays delivered, since it cannot be recalled;
+and this is a statement about the *turn* boundary. The other read loops that fold assistant
+text apply the same suppression and then report *their own* failure rather than a turn error:
+a delegated specialist run raises, so all four of its consumers fail the delegation with the
+carried kind through the exception paths they already had, and engager synthesis raises rather
+than answering with an empty string that would read as "the engager remembers nothing".
+
 ## Failure behavior
 
 **The model call fails transiently.** Retried with exponential backoff up to a small attempt
@@ -176,6 +210,7 @@ the same way.
 - `tests/test_agent_process.py::test_telegram_channel_autorecalls_on_fresh_session`
 - `tests/test_sdk_client_pool_pool.py`
 - `tests/test_retry.py`
+- `tests/test_agent_api_error_message.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

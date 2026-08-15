@@ -206,6 +206,7 @@ class Observer:
         from claude_agent_sdk import (
             AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock,
         )
+        from error_kinds import api_error_kind
         import sdk_logging
         system = (
             "You are Ellen's observer. Decide whether to interject in the main "
@@ -240,6 +241,15 @@ class Observer:
                 await client.query(body)
                 async for msg in client.receive_response():
                     if isinstance(msg, AssistantMessage):
+                        # #568: the CLI reports API-level faults (a safety
+                        # refusal included) as an assistant message holding
+                        # its own error prose. Folding it would feed CLI text
+                        # to the JSON parse below; skipping leaves ``out``
+                        # short, the parse fails, and the caller's existing
+                        # handler suppresses the interjection — the right
+                        # outcome for an observer that could not decide.
+                        if api_error_kind(msg) is not None:
+                            continue
                         for b in getattr(msg, "content", []):
                             if isinstance(b, TextBlock):
                                 out += b.text

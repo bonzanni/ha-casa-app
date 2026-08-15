@@ -74,10 +74,12 @@ from tokens import (
     format_turn_summary,
 )
 from error_kinds import (  # noqa: F401 — selected names are re-exported
+    ApiErrorTurn,
     ErrorKind,
     VoiceToolLoopError,
     _classify_error,
     _USER_MESSAGES,
+    api_error_kind,
 )
 from voice_turn_guard import VoiceTurnGuard
 
@@ -1368,6 +1370,29 @@ class Agent:
                     return await retry_sdk_call(
                         attempt_fn, on_retry=self._log_retry,
                     )
+                except ApiErrorTurn as exc:
+                    # #568: dropping the pool entry unbinds the CLIENT, not the
+                    # CONVERSATION — the registry still names the session this
+                    # turn was resuming, so the next turn on this key would
+                    # resume the very conversation that was just declined, with
+                    # the declined message still in it. The CLI's own refusal
+                    # advice is to start a new session; make that true here.
+                    # Guarded exactly like the stale-resume clear below (#349/
+                    # #526): only while the entry still carries the sid this
+                    # attempt resumed AND no registration has landed since, so
+                    # a concurrent same-key turn's session survives.
+                    # Refusal only: a transient API fault is not a reason to
+                    # discard a conversation the next turn could continue.
+                    if exc.kind is ErrorKind.REFUSAL and last_resume["sid"]:
+                        logger.info(
+                            "refused turn: clearing resumed session "
+                            "channel_key=%s", channel_key,
+                        )
+                        await self._session_registry.clear_sdk_session(
+                            channel_key, expected_sid=last_resume["sid"],
+                            expected_generation=last_resume["gen"],
+                        )
+                    raise
                 except ProcessError as exc:
                     if last_resume["sid"] is None:
                         raise
@@ -2211,28 +2236,42 @@ class Agent:
             if isinstance(sdk_msg, ResultMessage):
                 state["usage"] = extract_usage(sdk_msg)
             elif isinstance(sdk_msg, AssistantMessage):
-                # E-2: collect TextBlocks of THIS AssistantMessage.
-                msg_text = "".join(
-                    b.text for b in getattr(sdk_msg, "content", [])
-                    if isinstance(b, TextBlock)
-                )
-                if msg_text:
-                    if state["text"]:
-                        state["text"] += "\n\n"
-                    state["text"] += msg_text
-                # The canonical fold supersedes any in-flight partial for
-                # this message (AR-A/AR-B): reset before computing the
-                # cumulative so a stale partial never bleeds into message
-                # N+1's first delta. Runs unconditionally (even when this
-                # message carried no text, e.g. tool-use-only) so a
-                # tool-only fold never leaves a stale partial dangling —
-                # cum() then equals state["text"] unchanged, which already
-                # matches last_emitted, so no spurious emit follows.
-                state["partial"] = ""
-                cum = _cum()
-                if on_token is not None and cum != state["last_emitted"]:
-                    await on_token(cum)
-                    state["last_emitted"] = cum
+                if api_error_kind(sdk_msg) is not None:
+                    # #568: an API-level fault — a safety refusal included —
+                    # arrives as an assistant message whose text block holds
+                    # the CLI's OWN error prose (an Anthropic Request ID and
+                    # CLI-UI advice among it). That is never the resident
+                    # speaking, so it is neither folded into the reply nor
+                    # streamed. The turn's verdict is raised by
+                    # sdk_client_pool.run_turn_locked; this arm additionally
+                    # covers the sub-agent-scoped case that deliberately lets
+                    # the turn continue — its prose is still not an answer.
+                    # Partial is reset for the same reason the fold below
+                    # resets it: nothing stale may bleed into message N+1.
+                    state["partial"] = ""
+                else:
+                    # E-2: collect TextBlocks of THIS AssistantMessage.
+                    msg_text = "".join(
+                        b.text for b in getattr(sdk_msg, "content", [])
+                        if isinstance(b, TextBlock)
+                    )
+                    if msg_text:
+                        if state["text"]:
+                            state["text"] += "\n\n"
+                        state["text"] += msg_text
+                    # The canonical fold supersedes any in-flight partial for
+                    # this message (AR-A/AR-B): reset before computing the
+                    # cumulative so a stale partial never bleeds into message
+                    # N+1's first delta. Runs unconditionally (even when this
+                    # message carried no text, e.g. tool-use-only) so a
+                    # tool-only fold never leaves a stale partial dangling —
+                    # cum() then equals state["text"] unchanged, which already
+                    # matches last_emitted, so no spurious emit follows.
+                    state["partial"] = ""
+                    cum = _cum()
+                    if on_token is not None and cum != state["last_emitted"]:
+                        await on_token(cum)
+                        state["last_emitted"] = cum
 
         return on_message, state
 

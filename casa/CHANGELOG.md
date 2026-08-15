@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.210.0] - 2026-08-15
+
+### Fixed
+
+- **A declined or failed request was answered with Claude's internal error
+  text** (#568). When the Claude API declines a request, or the call fails
+  in certain ways, the Claude CLI does not report an error — it writes its
+  own message and hands it back as if the assistant had said it. Casa passed
+  that straight on, so a household could receive something like *"API Error:
+  Claude's safeguards flagged this message… Try rephrasing the request in a
+  new session or change your model. Request ID: req_…"* in the resident's
+  own voice, complete with an internal request identifier and instructions
+  meant for someone sitting at a terminal.
+
+  Casa now recognises those messages for what they are. A declined request
+  is answered plainly — *"That request was declined by Claude's safety
+  system. Rephrasing it usually helps."* — and other API failures get their
+  own short, honest line. Neither is retried when retrying cannot help, and
+  a declined conversation is not resumed on the next message. On the voice
+  channel each has its own spoken line, so a declined request is never met
+  with silence.
+
+  The same text was also being passed off as an answer in three other
+  places: a specialist you delegated to now reports a failed task instead of
+  handing back an empty or half-written one; an executor asking the engager
+  a question is told the answer could not be produced instead of being told
+  the engager remembers nothing; and a half-finished exchange is no longer
+  written to memory as if it had completed.
+
 ## [0.209.0] - 2026-08-15
 
 ### Fixed

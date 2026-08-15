@@ -20,6 +20,7 @@ from claude_agent_sdk import (
 )
 
 from drivers.driver_protocol import DriverProtocol, StaleLaunchError
+from error_kinds import api_error_kind
 from engagement_registry import EngagementRecord
 import sdk_logging
 
@@ -479,6 +480,21 @@ class InCasaDriver(DriverProtocol):
                         )
                     # Phase 3b streaming — Task 6 output bound for specialists.
                     if isinstance(sdk_msg, AssistantMessage) and not stream_truncated:
+                        # #568: an API-level fault (a safety refusal included)
+                        # arrives as an assistant message whose text block is
+                        # the CLI's own error prose — a request id and
+                        # terminal-UI advice. Streaming it would post that into
+                        # the engagement's topic as the agent's words. Skip it
+                        # and log the kind; the turn then produces no text and
+                        # the empty-turn warning below (which already names a
+                        # model refusal as a cause) is the operator's signal.
+                        _api_kind = api_error_kind(sdk_msg)
+                        if _api_kind is not None:
+                            logger.warning(
+                                "engagement %s turn ended by an API error "
+                                "kind=%s", engagement.id[:8], _api_kind.value,
+                            )
+                            continue
                         msg_text = "".join(
                             b.text for b in getattr(sdk_msg, "content", [])
                             if isinstance(b, TextBlock)

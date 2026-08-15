@@ -66,7 +66,9 @@ from channels import ChannelManager
 from claude_runtime import CLAUDE_CLI_PATH
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
-from error_kinds import _classify_error
+from error_kinds import (
+    ApiErrorTurn, _classify_error, api_error_kind, result_api_error_kind,
+)
 from mcp_registry import McpServerRegistry
 import sdk_logging
 import specialist_limits
@@ -2745,6 +2747,7 @@ async def _run_delegated_agent(
     _msg_count = 0
     _first_tool = False
     text = ""
+    _api_error = None      # #568 — the ErrorKind, when the CLI faulted
     result_msg: ResultMessage | None = None
     token = None
     # The options build is INSIDE the try (Sol review, Medium): a voice budget
@@ -2774,6 +2777,21 @@ async def _run_delegated_agent(
                     _msg_count += 1
                     _ph.setdefault("first_msg", time.monotonic())
                     if isinstance(sdk_msg, AssistantMessage):
+                        # #568: an API-level fault (safety refusal included)
+                        # arrives as an assistant message whose text block is
+                        # the CLI's own error prose. It is never this
+                        # specialist's answer — record the fault and fold no
+                        # text, so the run reports as aborted rather than as a
+                        # specialist that answered with an error string. A
+                        # sub-agent-scoped fault is that sub-agent's problem;
+                        # the specialist can still answer, so it is suppressed
+                        # without ending the run.
+                        _kind = api_error_kind(sdk_msg)
+                        if _kind is not None:
+                            if (_api_error is None and getattr(
+                                    sdk_msg, "parent_tool_use_id", None) is None):
+                                _api_error = _kind
+                            continue
                         for block in getattr(sdk_msg, "content", []):
                             if isinstance(block, TextBlock):
                                 text += block.text
@@ -2848,6 +2866,27 @@ async def _run_delegated_agent(
             _specialist_telemetry.record_cost(
                 cfg.role, cost_usd=cost_usd, usage=usage,
             )
+
+    # #568: the CLI ended this run by reporting an API-level fault (a safety
+    # refusal included) — this specialist never answered. RAISE rather than
+    # returning the fault beside the text: this runner has four consumers (the
+    # sync branch, the async/degraded completion callback, and both voice
+    # paths), every one of which already classifies an exception with
+    # `_classify_error` and fails its durable record, while a field beside the
+    # text is something each of them must remember to read — and in review two
+    # of the four did not. Raising here also precedes the retain below, so a
+    # half-finished exchange is never written to memory as a complete one.
+    # The second carrier, read exactly as the resident turn reads it
+    # (sdk_client_pool.run_turn_locked): a refusal reported ONLY on the
+    # terminal result must still end this run, not return an empty success.
+    if _api_error is None:
+        _api_error = result_api_error_kind(result_msg)
+    if _api_error is not None:
+        logger.warning(
+            "delegated agent %s run ended by an API error kind=%s",
+            _known_role(getattr(cfg, "role", None)), _api_error.value,
+        )
+        raise ApiErrorTurn(_api_error)
 
     # Task 6 (spec §4.6): output bounding is applied by the CALLER (see
     # `specialist_limits.truncate_output` at the sync-result / async-
@@ -8408,6 +8447,8 @@ async def _synthesize_answer(
         f"Answer concisely, in at most about {max_tokens} tokens."
     )
     out = ""
+    _api_error = None      # #568
+    _synth_result = None
     eng = engagement_var.get(None)
     eng_id = eng.id[:8] if eng is not None else None
     async with ClaudeSDKClient(
@@ -8416,9 +8457,26 @@ async def _synthesize_answer(
         await client.query(prompt)
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
+                # #568: the CLI's own error prose is not a synthesized answer.
+                # Folding it here would hand the caller an "answer" that is a
+                # CLI error string; skipping it alone would hand back "" and be
+                # reported as a successful empty answer. Neither is honest —
+                # raise so the caller reports the synthesis as unavailable.
+                _kind = api_error_kind(msg)
+                if _kind is not None:
+                    _api_error = _api_error or _kind
+                    continue
                 for b in getattr(msg, "content", []):
                     if isinstance(b, TextBlock):
                         out += b.text
+            elif isinstance(msg, ResultMessage):
+                _synth_result = msg
+    # The second carrier, as in every other read loop: a refusal reported only
+    # on the terminal result must not come back as a successful empty answer.
+    if _api_error is None:
+        _api_error = result_api_error_kind(_synth_result)
+    if _api_error is not None:
+        raise ApiErrorTurn(_api_error)
     out = out.strip()
     # Belt-and-braces hard stop in case the CLI/model still overshoots.
     from tokens import estimate_tokens
@@ -8553,7 +8611,22 @@ async def query_engager(args: dict) -> dict:
     from sensitivity import TIERS as _ALL_TIERS_SYN
     answer = ""
     for _ in range(len(_ALL_TIERS_SYN)):
-        answer = await _synthesize_answer(question, context, max_tokens)
+        try:
+            answer = await _synthesize_answer(question, context, max_tokens)
+        except ApiErrorTurn as exc:
+            # #568: synthesis was refused or faulted upstream. Saying
+            # "unknown" here would assert the engager's memory holds no
+            # answer — a claim this run never established.
+            logger.warning("query_engager synthesis api error kind=%s",
+                           exc.kind.value)
+            return _result({
+                "status": "unavailable", "text": "",
+                "message": (
+                    "The engager's answer could not be synthesized (the "
+                    "model call did not complete). Do not conclude the "
+                    "information doesn't exist."
+                ),
+            })
         if engagement.origin.get("_origin_clearance") == _q_clearance:
             break
         _q_clearance = engagement.origin.get("_origin_clearance")
