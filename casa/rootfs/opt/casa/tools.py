@@ -7449,6 +7449,15 @@ class FinalizeResult(enum.Enum):
         return self is FinalizeResult.FINALIZED
 
 
+# #599: how long the finalize funnel waits for the scheduled uid quiesce before
+# continuing, and how long it gives the whole driver teardown. Both are bounds on
+# the funnel, NOT on the ladder: the ladder carries its own monotonic budget and
+# reports its own outcome, and this wait is deliberately slacker than that budget
+# so an outer bound can never pre-empt the ladder's own reporting.
+_QUIESCE_FUNNEL_TIMEOUT_S = 5.0
+_DRIVER_CANCEL_TIMEOUT_S = 20.0
+
+
 async def _finalize_engagement(
     engagement: EngagementRecord,
     *,
@@ -7603,6 +7612,31 @@ async def _finalize_engagement(
     # delegate_to_agent's interactive branch (which also null it out).
     if engagement.permit is not None:
         engagement.permit.release()
+
+    # #599: the instant THIS call won the terminal flip, WAIT for the uid
+    # quiesce the registry scheduled with that very transition — before the
+    # broker cancel, before the summary finalize, before every Telegram
+    # round-trip below. Until this release the engagement's CLI stayed alive for
+    # that whole span: its casa tools were refused (INV-MCP-001 binds authority
+    # to ``active``) while nothing stopped its native Bash/Write/Edit, and the
+    # only stop was an unbounded ``s6-rc -d change`` at the very end.
+    #
+    # Bounded, and it never wedges: the ladder is registry-owned and reports its
+    # own outcome, so an overrun here simply continues the funnel. The wait is
+    # shielded, so a cancellation of THIS funnel does not cancel containment —
+    # it does not make the funnel's own tail uncancellable, which is
+    # pre-existing behaviour for every await after the commit.
+    if _engagement_registry is not None:
+        _awaiter = getattr(_engagement_registry, "await_quiesce", None)
+        if callable(_awaiter):
+            try:
+                await _awaiter(engagement.id, _QUIESCE_FUNNEL_TIMEOUT_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — never abort finalize
+                logger.warning(
+                    "finalize engagement %s: awaiting the uid quiesce failed: %s",
+                    engagement.id[:8], exc)
 
     # r5-B6: the instant THIS call won the terminal flip, cancel pending
     # broker requests so a late ask/permission tap can't be answered
@@ -7811,7 +7845,20 @@ async def _finalize_engagement(
     # 3. Tear down driver client
     if driver is not None:
         try:
-            await driver.cancel(engagement)
+            # #599 (Sol, design round 3): bound the WHOLE teardown, not just
+            # its ``stop_service``. ``cancel`` waits on ``_compile_lock``, then
+            # on ``s6-rc -d change``, the logger stop and a recompile — none of
+            # them bounded, all of them ahead of the bus notification and the
+            # retains below. The uid is already dead by here (the ladder ran at
+            # the commit), so a timeout costs only a leftover service source
+            # dir, which the orphan sweep already owns.
+            await asyncio.wait_for(
+                driver.cancel(engagement), _DRIVER_CANCEL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.error(
+                "finalize engagement %s: driver.cancel exceeded %.0fs — "
+                "continuing so the notification and retains still run",
+                engagement.id[:8], _DRIVER_CANCEL_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "finalize engagement %s: driver.cancel failed: %s",

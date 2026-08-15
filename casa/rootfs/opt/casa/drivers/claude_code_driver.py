@@ -29,7 +29,8 @@ from drivers.workspace import (
     session_id_path, stderr_path, stream_cursor_path, write_casa_meta,
 )
 from engagement_registry import EngagementRecord, normalize_stale_mid_entry
-from engagement_uids import UID_BASE, owner_uid_or_none, prune_identity
+from engagement_uids import (
+    UID_BASE, UNALLOCATED_UID, owner_uid_or_none, prune_identity)
 import plugin_outbox
 import private_state
 from safe_fs import SymlinkRefused, list_dir_beneath, open_beneath
@@ -1087,6 +1088,21 @@ class ClaudeCodeDriver(DriverProtocol):
         # ``advance_interaction_state`` (Task 7) lives on this registry; the
         # inbound queue reaches for it via getattr (no-op until it exists).
         self._registry = registry
+        # #599: per-engagement LIFECYCLE fence. Held by every live start path
+        # (which re-checks terminal status under it, immediately before the
+        # s6 up-transition) and by the terminal quiesce ladder for the whole of
+        # its latch/kill/re-enumerate run. Whichever side wins is correct: a
+        # start that wins is killed by the ladder that follows; a ladder that
+        # wins makes the start find a terminal record and refuse.
+        #
+        # LOCK ORDER — ``_compile_lock`` -> fence -> registry, never the
+        # reverse. ``start()`` already holds the compile lock around its whole
+        # body, so the ladder must NEVER hold this fence across an acquisition
+        # of ``_compile_lock`` (that is why ``driver.cancel`` runs OUTSIDE it),
+        # and the registry must only ever SCHEDULE the ladder rather than await
+        # it under its own lock. Both were reproduced as deadlock/escape paths
+        # in design review before the code existed.
+        self._lifecycle_locks: dict[str, asyncio.Lock] = {}
         # Per-engagement background tasks (respawn poller, session-id capture,
         # ALWAYS-on live topic-stream relay, DEBUG log relay).
         self._tasks: dict[str, list[asyncio.Task]] = {}
@@ -1434,7 +1450,11 @@ class ClaudeCodeDriver(DriverProtocol):
                 # (rolled back by the handler below), so the operator never sees
                 # an engagement running without its summary anchor.
                 await self._post_initial_summary(engagement)
-                await s6_rc.start_service(engagement_id=engagement.id)
+                if not await self._start_service_fenced(engagement):
+                    from drivers.driver_protocol import StaleLaunchError
+                    raise StaleLaunchError(
+                        f"engagement {engagement.id[:8]} went terminal while "
+                        "its launch was in flight")
             except BaseException as start_exc:  # noqa: BLE001 — rollback is
                 # opportunistic. Sol r2 (#363 family): BaseException, not
                 # Exception — a task CANCELLATION mid-launch (compile, summary
@@ -1696,8 +1716,104 @@ class ClaudeCodeDriver(DriverProtocol):
         ws_path = str(Path(self._engagements_root) / engagement.id)
         await asyncio.to_thread(
             refresh_claude_md, ws_path, defn=defn, rec=engagement)
-        await s6_rc.start_service(engagement_id=engagement.id)
+        if not await self._start_service_fenced(engagement):
+            # The engagement ended while the rebuild was in flight; leaving the
+            # service down is the correct outcome, and the caller's pending flag
+            # is moot for a terminal record.
+            return
         self._spawn_background_tasks(engagement)
+
+    def _lifecycle_lock(self, engagement_id: str) -> asyncio.Lock:
+        """The per-engagement start/quiesce fence (#599). Created on demand and
+        kept for the process lifetime of the engagement — the map is dropped
+        with the rest of the per-engagement state at teardown."""
+        lock = self._lifecycle_locks.get(engagement_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._lifecycle_locks[engagement_id] = lock
+        return lock
+
+    def _is_terminal_now(self, engagement_id: str) -> bool:
+        """Re-read the record's status from the registry. Used under the fence,
+        immediately before an s6 up-transition — the record may have gone
+        terminal during the long awaits that precede a start."""
+        lookup = getattr(self._registry, "get", None)
+        rec = lookup(engagement_id) if callable(lookup) else None
+        if rec is None:
+            return False        # unknown record: no opinion (existing behaviour)
+        return getattr(rec, "status", "") in ("completed", "cancelled", "error")
+
+    async def _start_service_fenced(self, engagement: EngagementRecord) -> bool:
+        """Bring the service up under the lifecycle fence, refusing a terminal
+        record. Returns False when the start was refused.
+
+        Both design reviewers reproduced the hole this closes, from different
+        entry points: a start already in flight (paused in ``_post_initial_summary``
+        or in ``rebuild_fresh_context``) resumed AFTER a terminal transition had
+        committed and after the quiesce ladder observed the uid set empty, and
+        put a fresh CLI back under that uid. Terminal status blocks turn
+        admission (INV-ENG-009); it did not block work already in flight.
+        """
+        async with self._lifecycle_lock(engagement.id):
+            if self._is_terminal_now(engagement.id):
+                logger.warning(
+                    "engagement %s: refusing to start a terminal record — the "
+                    "engagement ended while this launch was in flight",
+                    engagement.id[:8])
+                return False
+            await s6_rc.start_service(engagement_id=engagement.id)
+            return True
+
+    async def quiesce(self, engagement: EngagementRecord) -> bool:
+        """#599: kill every process under this engagement's uid, bounded and
+        observed. Returns True only on an observed extinction.
+
+        Scheduled by the registry the instant a terminal transition wins, so it
+        runs BEFORE the finalize funnel's operator-visible effects rather than
+        after four Telegram round-trips and an unbounded ``s6-rc -d change``.
+        Never raises: a ladder that raised inside a terminal transition would
+        wedge the funnel it exists to protect.
+
+        The fence is held for the latch/kill/verify run only, and released
+        before anything that takes ``_compile_lock`` — ``driver.cancel`` stays
+        outside it (a reproduced deadlock in design review otherwise).
+        """
+        import engagement_quiesce
+
+        uid = getattr(engagement, "allocated_uid", UNALLOCATED_UID)
+        try:
+            async with self._lifecycle_lock(engagement.id):
+                result = await engagement_quiesce.quiesce_engagement(
+                    engagement_id=engagement.id,
+                    uid=uid,
+                    latch_down=s6_rc.latch_down,
+                    wanted_down=s6_rc.wanted_down,
+                )
+        except Exception:  # noqa: BLE001 — never propagate into a transition
+            logger.warning("engagement %s: uid quiesce raised",
+                           engagement.id[:8], exc_info=True)
+            return False
+        # #599 (both reviewers, re-review): retire the fence HERE, by the holder
+        # that just released it. ``cancel`` runs outside the fence and may have
+        # already passed by — normal finalization calls it exactly once — so
+        # "the next teardown will retire it" was simply untrue for a fence still
+        # held at that moment, leaking one Lock per overrun. Identity-checked so
+        # a fence a NEW holder has since taken is never dropped underneath it.
+        _fence = self._lifecycle_locks.get(engagement.id)
+        if _fence is not None and not _fence.locked():
+            if self._lifecycle_locks.get(engagement.id) is _fence:
+                self._lifecycle_locks.pop(engagement.id, None)
+        if result.extinct and self._registry is not None:
+            clear = getattr(self._registry, "clear_quiesce_pending", None)
+            if callable(clear):
+                try:
+                    await clear(engagement.id)
+                except Exception:  # noqa: BLE001 — a failed clear costs one
+                    # idempotent re-run at the next boot, nothing more.
+                    logger.warning(
+                        "engagement %s: clearing the quiesce obligation failed",
+                        engagement.id[:8], exc_info=True)
+        return result.extinct
 
     async def cancel(self, engagement: EngagementRecord) -> None:
         """Teardown for a terminal transition (cancelled or completed).
@@ -1774,6 +1890,15 @@ class ClaudeCodeDriver(DriverProtocol):
         self._away_refusals.pop(engagement.id, None)
         # A2b: drop the force-end backstop state on teardown.
         self._forced_suspend_epochs.pop(engagement.id, None)
+        # #599: the lifecycle fence dies with the engagement — but ONLY once no
+        # one holds it. ``cancel`` runs outside the fence and can overtake a
+        # ladder whose bound the funnel already gave up waiting on; popping the
+        # lock then would hand the next caller a FRESH lock and silently end the
+        # mutual exclusion the fence exists for. A still-held fence is left in
+        # place (one asyncio.Lock, retired by the next teardown for this id).
+        _fence = self._lifecycle_locks.get(engagement.id)
+        if _fence is None or not _fence.locked():
+            self._lifecycle_locks.pop(engagement.id, None)
         self._away_suspend_fired.discard(engagement.id)
         self._away_force_cooldown_until.pop(engagement.id, None)  # F3
         # Whole-branch gate r3: cancel IN PLACE — never pop-then-cancel. The

@@ -39,6 +39,7 @@ from claude_runtime import (
 )
 from config import AgentConfig
 from config_git import init_repo, snapshot_manual_edits
+import engagement_quiesce
 from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, UidAllocator, UidStateError, owner_uid_or_none,
 )
@@ -866,6 +867,37 @@ async def replay_undergoing_engagements(
         # root process reads siblings regardless of uid — closed by Stage 3
         # mount/AppArmor, not this uid-isolation fix.) A missing allocator (unit
         # fakes) skips the refold; production always wires one.
+        # #599: discharge every OUTSTANDING uid-quiesce obligation before any
+        # resume. A casa death between a terminal commit and its ladder leaves
+        # the obligation durable on the record (``quiesce_pending``, exempt from
+        # terminal expiry precisely so it survives to be found here); this is
+        # where it is honoured. Runs after the down-first sweep, so each service
+        # is already confirmed down and the ladder kills leftovers rather than
+        # racing a live supervisor. Bounded and reporting: unlike the
+        # best-effort uid kill above, an extinction that cannot be observed is
+        # logged as an ERROR and the obligation STAYS on the record for the next
+        # boot rather than being silently dropped.
+        for _owing in list(registry.records_owing_quiesce()):
+            try:
+                _q = await engagement_quiesce.quiesce_engagement(
+                    engagement_id=_owing.id,
+                    uid=getattr(_owing, "allocated_uid", UNALLOCATED_UID),
+                    latch_down=s6_rc.latch_down,
+                    wanted_down=s6_rc.wanted_down,
+                )
+            except Exception as exc:  # noqa: BLE001 — never abort boot replay
+                logger.warning(
+                    "boot replay: uid quiesce for %s raised: %s",
+                    _owing.id[:8], exc)
+                continue
+            if _q.extinct:
+                try:
+                    await registry.clear_quiesce_pending(_owing.id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "boot replay: clearing the quiesce obligation for %s "
+                        "failed: %s", _owing.id[:8], exc)
+
         _refold_failed = False
         if _uid_allocator is not None:
             try:
@@ -4139,6 +4171,11 @@ async def main() -> None:
         ))
     claude_code_driver._publish_bus_event = _publish_driver_bus_event
     agent_mod.active_claude_code_driver = claude_code_driver
+    # #599: the registry schedules the uid-quiesce ladder the instant a terminal
+    # transition wins — including the direct ``mark_*`` mutators, which have no
+    # finalize funnel behind them. Wired HERE because the owner is the driver
+    # and the driver only exists at this point in boot.
+    engagement_registry.set_quiesce_owner(claude_code_driver.quiesce)
     runtime.claude_code_driver = claude_code_driver
     # Stash runtime on agent module so reload handlers and tools find it.
     agent_mod.active_runtime = runtime

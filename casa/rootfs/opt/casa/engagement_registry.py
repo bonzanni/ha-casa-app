@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from atomic_io import atomic_write_json
-from engagement_uids import UNALLOCATED_UID
+from engagement_uids import UID_BASE, UNALLOCATED_UID
 from sensitivity import TIERS
 
 logger = logging.getLogger(__name__)
@@ -311,6 +311,13 @@ class EngagementRecord:
     # a live engagement a different one); legacy rows predating this field
     # load with the sentinel via ``load()``'s ``.get``-default.
     allocated_uid: int = UNALLOCATED_UID
+    # #599: this record went terminal and still OWES a verified kill of every
+    # process under ``allocated_uid``. Set in the same durable write as the
+    # terminal status (so a record can never be terminal and owe nothing), and
+    # cleared ONLY when an enumeration observes that uid set empty. A record
+    # carrying it is exempt from the terminal-retention expiry below: dropping
+    # it would delete both the obligation and the uid mapping recovery needs.
+    quiesce_pending: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +379,16 @@ class EngagementRegistry:
         # failure owes a rollback, so it must never be unset (AttributeError in
         # an except block) or carry a previous write's verdict.
         self._last_tombstone_ok = False
+        # #599: injected owner that discharges a terminal record's uid-quiesce
+        # obligation — ``async def (record) -> bool`` (True == observed
+        # extinct). Optional so every existing construction site and test keeps
+        # working; with none configured a record still records the durable
+        # obligation and boot recovery discharges it.
+        self._quiesce_owner: Any | None = None
+        # Strong refs to in-flight discharge tasks, keyed by engagement, so the
+        # loop cannot drop one mid-kill and so the finalize funnel can await the
+        # one its own transition scheduled.
+        self._quiesce_tasks: dict[str, Any] = {}
 
     async def load(self) -> None:
         """Read the tombstone into memory. Called once at startup."""
@@ -442,6 +459,7 @@ class EngagementRegistry:
                     allocated_uid=int(row.get("allocated_uid", UNALLOCATED_UID)),
                     context_rebuild_pending=bool(
                         row.get("context_rebuild_pending", False)),
+                    quiesce_pending=bool(row.get("quiesce_pending", False)),
                     context_generation=int(
                         row.get("context_generation", 0) or 0),
                 )
@@ -595,7 +613,12 @@ class EngagementRegistry:
         for rec in self._records.values():
             if (rec.status in ("completed", "cancelled", "error")
                     and rec.completed_at is not None
-                    and rec.completed_at < cutoff):
+                    and rec.completed_at < cutoff
+                    # #599: a record still owing a uid quiesce is NEVER expired.
+                    # Dropping it would delete the obligation AND the
+                    # ``allocated_uid`` boot recovery needs to discharge it, so
+                    # an unkillable survivor would become invisible at 30 days.
+                    and not rec.quiesce_pending):
                 continue
             snapshot.append({
                 "id": rec.id,
@@ -627,6 +650,7 @@ class EngagementRegistry:
                 "topic_title": rec.topic_title,
                 "allocated_uid": rec.allocated_uid,
                 "context_rebuild_pending": rec.context_rebuild_pending,
+                "quiesce_pending": rec.quiesce_pending,
                 "context_generation": rec.context_generation,
             })
         write = asyncio.ensure_future(
@@ -847,6 +871,103 @@ class EngagementRegistry:
                     logger.warning("engagement %s %s release raised",
                                    rec.id[:8], field, exc_info=True)
 
+    def set_quiesce_owner(self, owner) -> None:
+        """Wire the #599 discharge owner (casa_core, once the driver exists)."""
+        self._quiesce_owner = owner
+
+    def _owes_quiesce(self, rec: "EngagementRecord") -> bool:
+        """Only a ``claude_code`` record with a REAL allocated uid has an OS
+        identity to quiesce. Specialists, in-casa and legacy records carry the
+        sentinel and never had a process of their own."""
+        return rec.driver == "claude_code" and rec.allocated_uid >= UID_BASE
+
+    def _schedule_quiesce_locked(self, rec: "EngagementRecord") -> None:
+        """Start the discharge for a record that JUST won a terminal transition.
+
+        Called under ``self._lock`` and MUST NOT await: the ladder takes the
+        per-engagement lifecycle fence and then reads registry state, so awaiting
+        it here would hold the registry lock across a fence acquisition and
+        invert the documented order (fence -> registry). Scheduling only is what
+        keeps that order intact.
+
+        Called once the record IS terminal for this process, in one of two
+        shapes, and the difference is deliberate (Sol, re-review — the earlier
+        comment claimed only the first):
+
+        * the strict path schedules after a DURABLE write, so a rolled-back
+          transition — which leaves the record live — never schedules a kill of
+          a live engagement's processes;
+        * the direct mutators schedule in a ``finally``, which also covers a
+          non-strict write that FAILED. That is intended: the non-strict
+          contract leaves the in-memory flip standing, so every reader in this
+          process already treats the engagement as over and its tools as
+          refused, and leaving its native tools alive is exactly the defect this
+          change exists to remove.
+        """
+        if self._quiesce_owner is None or not rec.quiesce_pending:
+            return
+        existing = self._quiesce_tasks.get(rec.id)
+        if existing is not None and not existing.done():
+            return                      # already discharging; never two ladders
+        task = asyncio.ensure_future(self._quiesce_owner(rec))
+        self._quiesce_tasks[rec.id] = task
+
+        def _retire(t, eid=rec.id):
+            if self._quiesce_tasks.get(eid) is t:
+                self._quiesce_tasks.pop(eid, None)
+        task.add_done_callback(_retire)
+
+    async def await_quiesce(self, engagement_id: str, timeout: float) -> bool:
+        """Wait for a scheduled discharge, bounded — the finalize funnel uses it
+        so the operator-visible effects follow the kill.
+
+        The task is REGISTRY-owned and shielded here, so an outer cancellation of
+        the funnel does not cancel the ladder: containment completes either way.
+        It does NOT make the funnel's own tail uncancellable — that is
+        pre-existing behaviour for every await after the terminal commit.
+        Returns True only on an observed extinction.
+
+        With no task in flight the DURABLE flag is the answer, and it is the
+        honest one: it is cleared only by an observed extinction, so an absent
+        task plus a cleared obligation means the ladder already finished and
+        succeeded — a fast ladder retires its own task before the funnel gets
+        here, and reading "not extinct" for that would be simply wrong. A record
+        that never owed one has nothing outstanding either.
+        """
+        task = self._quiesce_tasks.get(engagement_id)
+        if task is None:
+            rec = self._records.get(engagement_id)
+            return rec is not None and not rec.quiesce_pending
+        try:
+            return bool(await asyncio.wait_for(asyncio.shield(task), timeout))
+        except asyncio.TimeoutError:
+            logger.warning(
+                "engagement %s: uid quiesce still running at the funnel's "
+                "bound — continuing; the ladder reports its own outcome",
+                engagement_id[:8])
+            return False
+        except Exception:  # noqa: BLE001 — the ladder logs its own failure
+            return False
+
+    async def clear_quiesce_pending(self, engagement_id: str) -> None:
+        """#599: discharge the obligation — ONLY after an observed extinction.
+
+        Best-effort persistence: a failed write costs one idempotent re-run of
+        the ladder at the next boot, which enumerates a dead uid, finds nothing
+        and clears it then.
+        """
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None or not rec.quiesce_pending:
+                return
+            rec.quiesce_pending = False
+            await self._write_tombstone_locked()
+
+    def records_owing_quiesce(self) -> list["EngagementRecord"]:
+        """Every record whose uid-quiesce obligation is still outstanding —
+        boot recovery's work list."""
+        return [r for r in self._records.values() if r.quiesce_pending]
+
     async def mark_completed(self, engagement_id: str, completed_at: float) -> None:
         async with self._lock:
             rec = self._records.get(engagement_id)
@@ -854,8 +975,15 @@ class EngagementRegistry:
                 return  # #326: never overwrite a terminal winner
             rec.status = "completed"
             rec.completed_at = completed_at
+            rec.quiesce_pending = self._owes_quiesce(rec)
             self._release_permit(rec)
-            await self._write_tombstone_locked()
+            try:
+                await self._write_tombstone_locked()
+            finally:
+                # #599 (Sol, diff review): the write can SETTLE and then re-raise
+                # a cancellation, which would skip this and leave a durably
+                # terminal record owing a kill with no in-process owner.
+                self._schedule_quiesce_locked(rec)
 
     async def mark_cancelled(self, engagement_id: str) -> None:
         async with self._lock:
@@ -864,8 +992,12 @@ class EngagementRegistry:
                 return  # #326: never overwrite a terminal winner
             rec.status = "cancelled"
             rec.completed_at = time.time()
+            rec.quiesce_pending = self._owes_quiesce(rec)
             self._release_permit(rec)
-            await self._write_tombstone_locked()
+            try:
+                await self._write_tombstone_locked()
+            finally:
+                self._schedule_quiesce_locked(rec)
 
     async def mark_error(self, engagement_id: str, kind: str, message: str) -> bool:
         """Returns True when THIS call flipped the record to ``error`` — like
@@ -882,8 +1014,12 @@ class EngagementRegistry:
             rec.completed_at = time.time()
             rec.origin["error_kind"] = kind
             rec.origin["error_message"] = message
+            rec.quiesce_pending = self._owes_quiesce(rec)
             self._release_permit(rec)
-            await self._write_tombstone_locked()
+            try:
+                await self._write_tombstone_locked()
+            finally:
+                self._schedule_quiesce_locked(rec)
             return True
 
     async def try_transition_terminal(
@@ -960,8 +1096,12 @@ class EngagementRegistry:
                 # executor engagements, permit=None). Safe before the write:
                 # the non-strict path has no rollback, so the record is
                 # committed-terminal in memory regardless of persist outcome.
+                rec.quiesce_pending = self._owes_quiesce(rec)
                 self._release_permit(rec)
-                await self._write_tombstone_locked()
+                try:
+                    await self._write_tombstone_locked()
+                finally:
+                    self._schedule_quiesce_locked(rec)
                 return True
 
             # STRICT: full-field snapshot + shield-and-await + rollback-on-fail.
@@ -969,12 +1109,17 @@ class EngagementRegistry:
             snap_completed = rec.completed_at
             snap_error_kind = rec.origin.get("error_kind", _FIELD_MISSING)
             snap_error_message = rec.origin.get("error_message", _FIELD_MISSING)
+            snap_quiesce_pending = rec.quiesce_pending
 
             def _restore() -> None:
                 rec.status = snap_status
                 rec.completed_at = snap_completed
                 _restore_origin_field(rec, "error_kind", snap_error_kind)
                 _restore_origin_field(rec, "error_message", snap_error_message)
+                # #599: a rolled-back transition leaves the record LIVE, and a
+                # live record owes nothing — restoring this with the rest is
+                # what keeps "terminal" and "owes a quiesce" inseparable.
+                rec.quiesce_pending = snap_quiesce_pending
 
             # #588 (Sol, diff review): commit the terminal fields in memory
             # HERE, synchronously, before any suspension point. They used to be
@@ -993,6 +1138,7 @@ class EngagementRegistry:
             # to overwrite.
             rec.status = new_status
             rec.completed_at = new_completed
+            rec.quiesce_pending = self._owes_quiesce(rec)
             if new_status == "error":
                 rec.origin["error_kind"] = error_kind or "emit_completion_error"
                 rec.origin["error_message"] = error_message
@@ -1014,6 +1160,16 @@ class EngagementRegistry:
                 except BaseException:
                     if not self._last_tombstone_ok:
                         _restore()
+                    else:
+                        # #599: the write SETTLED and a cancellation then landed
+                        # (``_write_tombstone_locked`` re-raises it after
+                        # recording the verdict). The record is durably terminal
+                        # and durably owing, so its discharge must be scheduled
+                        # before unwinding — the same hole diff review found in
+                        # the direct mutators, in the path the finalize funnel
+                        # itself takes.
+                        self._release_permit(rec)
+                        self._schedule_quiesce_locked(rec)
                     raise
                 # Task 6 (spec §4.6): release the permit ONLY after the
                 # terminal status is durably committed — the strict path can
@@ -1021,6 +1177,12 @@ class EngagementRegistry:
                 # releasing a still-live engagement's permit would free its
                 # scope slot while the interactive specialist is still running.
                 self._release_permit(rec)
+                # #599: the obligation is now durable, so the discharge may
+                # start. Inside the persist task (not after the shield below)
+                # because a cancellation landing on the shield would otherwise
+                # skip registration and leave a durable obligation with no
+                # in-process owner until the next boot (Terra, design round 4).
+                self._schedule_quiesce_locked(rec)
                 return True
 
             task = asyncio.ensure_future(_mutate_and_persist())
