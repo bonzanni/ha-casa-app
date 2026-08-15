@@ -4059,3 +4059,48 @@ class TestLargeTurnIsWrittenWhole:
         finally:
             os.close(r); os.close(w)
         _grow_pipe_to_fit(w, 1024 * 1024, "eng-closed-fd")   # EBADF
+
+    async def test_a_denied_grow_on_an_oversized_payload_degrades_not_breaks(
+            self, tmp_path, monkeypatch):
+        """Terra, diff review r2: the refusal test above uses a small payload,
+        so it proves the exception handling and not the BEHAVIOUR when a
+        kernel denies the grow for a payload that needs it.
+
+        The contract for that case is explicit — fall back to exactly what the
+        code did before #592: write what fits, keep trying to the deadline,
+        report failure so the spool retains the envelope and redelivers it. The
+        one thing it must not do is raise, hang past the deadline, or claim
+        success over a truncated delivery.
+        """
+        import fcntl
+        import time
+        from types import SimpleNamespace
+
+        import drivers.claude_code_driver as ccd
+
+        real_fcntl = fcntl.fcntl
+
+        def _deny_growth_only(fd, op, *a):
+            if op == fcntl.F_SETPIPE_SZ:
+                raise OSError(1, "Operation not permitted")
+            return real_fcntl(fd, op, *a)
+
+        rec = SimpleNamespace(id="eng-denied-grow", topic_id=7)
+        _fifo, rfd = self._fifo_with_reader(rec.id)
+        monkeypatch.setattr(fcntl, "fcntl", _deny_growth_only)
+
+        driver = ccd.ClaudeCodeDriver(
+            engagements_root=str(tmp_path), send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://unused")
+
+        started = time.monotonic()
+        ok = await asyncio.wait_for(
+            driver._write_to_fifo(rec, "x" * (200 * 1024), timeout_s=1.0,
+                                  poll_s=0.05),
+            timeout=10.0)
+        elapsed = time.monotonic() - started
+        monkeypatch.undo()
+
+        assert ok is False, (
+            "a partially written turn must be reported as not delivered")
+        assert elapsed < 5.0, "the deadline must still bound the write"
