@@ -79,6 +79,14 @@ jobs:
           bash test-local/e2e/test_engagement_E.sh
       - name: Delegation E-block
         run: bash test-local/e2e/test_delegation_E.sh
+      # #603: the settling evidence for the terminal uid quiesce (#599). In
+      # tier2 rather than tier3 on purpose — tier3 does not run on pull
+      # requests, and a containment guarantee that is only checked on a
+      # schedule can be red for a week before anyone notices.
+      - name: Engagement terminal quiesce (#603)
+        env:
+          CASA_USE_MOCK_CLAUDE: "1"
+        run: bash test-local/e2e/test_engagement_quiesce.sh
       - name: HA delegation
         run: |
           pip install aiohttp
