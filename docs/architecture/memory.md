@@ -323,10 +323,11 @@ drops lessons from another doctrine epoch — INV-MEM-015) filters the typed hit
 recall and render, never by adding tags to the request (an added tag *broadens* an
 any-match filter).
 
-**One archive recall per launch.** A recall is relevance-ranked and bounded, so two of them
-are not two copies of one answer: an executor handed both is handed two versions of what
-happened last time. A launch fetches once — into the first turn for an in-process executor,
-into the workspace instructions for one with a workspace, never both.
+**One archive recall per launch.** A recall is relevance-ranked and bounded, so two are not
+two copies of one answer: an executor handed both is handed two accounts of what happened
+last time. A memory-enabled launch recalls once — into the first turn for an in-process
+executor, into the workspace instructions for one with a workspace, never both. Without
+memory it recalls nothing; replay and clearance rebuild re-render the cached block.
 
 ## Source & test map
 

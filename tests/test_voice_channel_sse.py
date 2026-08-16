@@ -285,6 +285,131 @@ async def _sse_frames(resp) -> list[dict]:
     return frames
 
 
+class _PartialThenRaisingBus:
+    """#594 round 2: voices a real block, then raises OUT OF `_bus.request`.
+
+    This is the transport-level failure — a turn timeout, a shutdown — that
+    never reaches `Agent.handle_message`'s classified error branch, so it lands
+    in the handler's own outer `except`. Both reviewers reproduced an
+    unretracted error frame here.
+    """
+
+    async def request(self, msg, timeout):
+        await msg.context["_on_token"]("[confident] The kitchen lights are off.")
+        raise RuntimeError("transport-level failure after partial output")
+
+
+class _RetractionCfg:
+    """Minimal agent config for the composition itself."""
+
+    class tts:
+        tag_dialect = "square_brackets"
+
+    role = "butler"
+    channels: list[str] = ["ha_voice"]
+
+    def __init__(self, **voice_errors):
+        self.voice_errors = dict(voice_errors)
+
+
+async def _emit(cfg, *, already_spoke: bool) -> str:
+    """Drive the production `emit_error_line` and return the spoken text."""
+    from channels.voice.channel import VoiceChannel as _VC
+
+    seen: list = []
+
+    async def _sink(kind, spoken):
+        seen.append((kind, spoken))
+
+    channel = _VC(
+        bus=None, default_agent="butler", webhook_secret="",
+        sse_path="/api/converse", ws_path="/api/converse/ws",
+        agent_configs={"butler": cfg}, memory=_DummyMemory(), idle_timeout=300,
+    )
+    ctx = {"_error_sink": _sink, "_spoken_any": lambda: already_spoke}
+    assert await channel.emit_error_line("unknown", ctx, cfg) is True
+    return seen[0][1]
+
+
+@pytest.fixture
+async def sse_transport_error_after_speech_app(tmp_path):
+    """A real SSE route whose bus raises after voicing a block."""
+    from config import (
+        AgentConfig, CharacterConfig, MemoryConfig, SessionConfig,
+        ToolsConfig, TTSConfig,
+    )
+
+    cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT,
+        role="butler", model="claude-haiku-4-5", system_prompt="Butler.",
+        character=CharacterConfig(name="Tina"), tools=ToolsConfig(),
+        memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+        session=SessionConfig(strategy="pooled", idle_timeout=300),
+        tts=TTSConfig(tag_dialect="square_brackets"),
+        voice_errors={"unknown": "[apologetic] Tina could not finish that."},
+        channels=["ha_voice"],
+    )
+    channel = VoiceChannel(
+        bus=MessageBus(), default_agent="butler",
+        webhook_secret=VOICE_TEST_SECRET,
+        sse_path="/api/converse", ws_path="/api/converse/ws",
+        agent_configs={"butler": cfg}, memory=_DummyMemory(), idle_timeout=300,
+    )
+    channel._bus = _PartialThenRaisingBus()
+    app = web.Application(middlewares=[cid_middleware])
+    channel.register_routes(app)
+    async with TestClient(TestServer(app)) as _raw_client:
+        yield SigningVoiceClient(_raw_client)
+
+
+@pytest.mark.asyncio
+class TestTransportFaultAfterSpeechIsRetracted:
+    """#594 round 2 (Sol + Terra, both S1): a failure that never reaches the
+    agent's classified error branch — the 300s bus timeout is the reachable
+    one — took the handler's own error path and skipped the retraction."""
+
+    async def test_a_transport_level_fault_after_speech_is_retracted(
+        self, sse_transport_error_after_speech_app,
+    ):
+        client = sse_transport_error_after_speech_app
+        resp = await client.post(
+            "/api/converse",
+            json={"prompt": "hi", "agent_role": "butler", "scope_id": "s"},
+        )
+        assert resp.status == 200
+        frames = await _sse_frames(resp)
+        assert [f for f in frames if f["event"] == "block"], frames
+        errors = [f for f in frames if f["event"] == "error"]
+        assert len(errors) == 1, frames
+        assert "disregard" in errors[0]["data"]["spoken"].lower(), errors[0]
+
+
+@pytest.mark.asyncio
+class TestRetractionComposition:
+    """A retraction with no reason after it is one of the outcomes #594
+    exists to prevent — it must never be produced by the fix itself."""
+
+    async def test_an_error_line_with_no_speakable_content_is_not_retracted(self):
+        """Sol reproduced this: a schema-valid line that renders to nothing
+        left the listener hearing only 'Disregard that —'."""
+        spoken = await _emit(_RetractionCfg(unknown=" "), already_spoke=True)
+        assert "disregard" not in spoken.lower(), spoken
+
+    async def test_a_persona_can_switch_the_retraction_off(self):
+        """`voice_errors: {retraction: ""}` is an explicit decision, not an
+        absent key — documented in voice.md, so it has to be true."""
+        cfg = _RetractionCfg(retraction="", unknown="[flat] reason")
+        spoken = await _emit(cfg, already_spoke=True)
+        assert "disregard" not in spoken.lower(), spoken
+        assert "reason" in spoken
+
+    async def test_a_persona_can_reword_the_retraction(self):
+        cfg = _RetractionCfg(retraction="[flat] Scratch that —",
+                             unknown="[flat] reason")
+        spoken = await _emit(cfg, already_spoke=True)
+        assert "scratch that" in spoken.lower(), spoken
+        assert spoken.lower().index("scratch") < spoken.lower().index("reason")
+
+
 @pytest.mark.asyncio
 class TestPartialThenFaultIsRetracted:
     """#594 — a half-spoken answer followed by an error line, with nothing

@@ -864,10 +864,21 @@ class VoiceChannel(Channel):
             # Pool entry already created above, stays alive per spec §10.3.
             raise
         except Exception as exc:
+            # #594 (Sol + Terra diff-r1, S1): a fault that never reaches
+            # `Agent.handle_message`'s classified branch lands here — the
+            # reachable one is the 300s `MessageBus.request` timeout, which is
+            # exactly a fault arriving AFTER partial speech. This path composed
+            # its own frame and so skipped the retraction, leaving the listener
+            # holding a half-answer Casa did not stand behind. It still writes
+            # unconditionally — this is the last resort, and a silent failure
+            # here is worse than a late one — but the text now goes through the
+            # same composition the sink uses.
             line = self._error_line(cfg, exc)
             await _write_sse(response, "error", {
                 "kind": _classify_error(exc).value,
-                "spoken": adapter.render(line) if line else "",
+                "spoken": self._with_retraction(
+                    cfg, adapter, adapter.render(line) if line else "",
+                    already_spoke=speech_block_sent),
             })
 
         return response
@@ -902,6 +913,41 @@ class VoiceChannel(Channel):
         lines = getattr(cfg, "voice_errors", {}) or {}
         return lines.get(kind) or _DEFAULT_ERROR_LINES.get(kind, "")
 
+    @staticmethod
+    def _with_retraction(
+        cfg: Any, adapter: Any, spoken: str, *, already_spoke: bool,
+    ) -> str:
+        """#594: prefix a retraction when this turn already voiced speech.
+
+        Composition ONLY — it never decides who writes the frame or whether
+        one is written. That separation is the point: the two transports'
+        last-resort error paths must keep writing unconditionally (a handoff
+        whose own write failed still owes the caller an error frame — see
+        ``test_failed_handoff_write_does_not_fake_a_terminal_success``),
+        while the ordinary sink keeps its write lock and handoff suppression.
+        Routing those paths through the sink to reuse this text was tried and
+        silently swallowed both cases.
+
+        Two guards, both reproduced by review before they were written:
+
+        - an error line with no speakable content (``" "``, or a bare tag a
+          dialect strips) is NOT retracted — a retraction with no reason
+          after it is precisely the outcome this change exists to prevent;
+        - an explicitly empty ``voice_errors.retraction`` switches it off,
+          while an ABSENT key takes the default. ``_error_line_for_kind``'s
+          ``get(kind) or default`` cannot tell those apart, and here the
+          difference is a decision the persona made.
+        """
+        if not already_spoke or not spoken.strip():
+            return spoken
+        lines = getattr(cfg, "voice_errors", {}) or {}
+        retraction = (
+            lines["retraction"] if "retraction" in lines
+            else _DEFAULT_ERROR_LINES["retraction"]
+        )
+        rendered = adapter.render(retraction) if retraction else ""
+        return f"{rendered} {spoken}" if rendered.strip() else spoken
+
     async def emit_error_line(
         self, kind: str, context: dict, agent_cfg: Any,
     ) -> bool:
@@ -930,15 +976,10 @@ class VoiceChannel(Channel):
         adapter = TagDialectAdapter(agent_cfg.tts.tag_dialect)
         spoken = adapter.render(line) if line else ""
         spoken_any = context.get("_spoken_any")
-        if callable(spoken_any) and spoken_any():
-            retraction = VoiceChannel._error_line_for_kind(
-                agent_cfg, "retraction")
-            if retraction:
-                rendered = adapter.render(retraction)
-                # A retraction alone still says something true; an error line
-                # alone is the pre-#594 behaviour. Either half missing must
-                # not produce a stray separator.
-                spoken = f"{rendered} {spoken}".strip() if spoken else rendered
+        spoken = VoiceChannel._with_retraction(
+            agent_cfg, adapter, spoken,
+            already_spoke=bool(callable(spoken_any) and spoken_any()),
+        )
         await sink(kind, spoken)
         return True
 
@@ -1478,11 +1519,21 @@ class VoiceChannel(Channel):
                 handoff.cancel()
             raise
         except Exception as exc:
+            # #594 — the socket twin of the SSE branch above. Routing this
+            # through `emit_error_line`'s sink instead (as both reviewers
+            # prescribed) was tried and reverted: the sink suppresses an
+            # ordinary foreground error once a handoff is committed, which is
+            # right for the agent's error branch and wrong here — a handoff
+            # whose own write FAILED still owes the caller an error frame
+            # (`test_failed_handoff_write_does_not_fake_a_terminal_success`).
+            # So this keeps writing unconditionally and borrows only the text.
             line = self._error_line(cfg, exc)
             await ws.send_json({
                 "type": "error", "utterance_id": uid,
                 "kind": _classify_error(exc).value,
-                "spoken": adapter.render(line) if line else "",
+                "spoken": self._with_retraction(
+                    cfg, adapter, adapter.render(line) if line else "",
+                    already_spoke=speech_block_sent),
             })
 
 async def _write_sse(response: web.StreamResponse, event: str, data: dict) -> None:

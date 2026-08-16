@@ -297,6 +297,44 @@ class _PartialThenErrorBus:
         return None
 
 
+class _PartialThenRaisingBus:
+    """Voices a real block, then raises OUT OF `request` — the transport-level
+    failure (a 300s turn timeout, a shutdown) that never reaches the agent's
+    classified error branch and so lands in the handler's own outer `except`."""
+
+    async def request(self, msg: BusMessage, timeout: float) -> None:
+        await msg.context["_on_token"]("[confident] The kitchen lights are off.")
+        raise RuntimeError("transport-level failure after partial output")
+
+
+@pytest.mark.asyncio
+class TestWSTransportFaultAfterSpeechIsRetracted:
+    async def test_a_transport_level_fault_after_speech_is_retracted(self):
+        """#594 round 2 (Sol + Terra, S1): this path composed its own frame
+        and skipped the retraction on both transports."""
+        cfg = _FakeCfg()
+        channel = VoiceChannel(
+            bus=None, default_agent="butler", webhook_secret="",
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            idle_timeout=300,
+        )
+        channel._bus = _PartialThenRaisingBus()
+        ws = _RecordingWs()
+
+        await channel._run_ws_utterance(
+            ws, {"agent_role": "butler", "text": "are the lights off?"},
+            "utterance-1", asyncio.get_running_loop().time() + 20,
+        )
+
+        assert "block" in [f["type"] for f in ws.frames], ws.frames
+        errors = [f for f in ws.frames if f["type"] == "error"]
+        assert len(errors) == 1, ws.frames
+        spoken = errors[0]["spoken"].lower()
+        assert "disregard that" in spoken, errors[0]
+        assert "sorry, something went wrong" in spoken, errors[0]
+
+
 @pytest.mark.asyncio
 class TestWSPartialThenFaultIsRetracted:
     async def test_the_error_frame_retracts_the_speech_already_voiced(self):

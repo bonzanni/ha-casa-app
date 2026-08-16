@@ -85,6 +85,113 @@ def _patch_uid_drop_ok(monkeypatch):
     monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
 
 
+class TestArchiveFetchedByTheDriver:
+    """#583: the launch's ONE archive recall belongs to the driver.
+
+    The engager-side half is pinned in
+    ``tests/test_engage_executor_tool.py::TestExecutorArchiveFetchedOncePerLaunch``,
+    which mocks the driver and so counts zero. On its own that cannot tell
+    "the engager stopped fetching" from "nobody fetches at all" — delete the
+    driver's fetch and it stays green (Terra, diff round). This is the other
+    half: the real ``start``, counting the fetch it actually performs.
+    """
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
+    )
+    async def test_a_memory_enabled_launch_fetches_the_archive_exactly_once(
+        self, monkeypatch, tmp_path,
+    ):
+        from config import ExecutorMemoryConfig
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers import claude_code_driver as ccd
+        import tools as tools_mod
+
+        calls: list = []
+
+        async def _counting_fetch(**kwargs):
+            calls.append(kwargs)
+            return "## Prior engagements\n- a lesson"
+
+        monkeypatch.setattr(tools_mod, "_fetch_executor_archive", _counting_fetch)
+
+        # Stop the launch at provisioning: everything under test has already
+        # happened by then, and this keeps the test off s6 and the FIFO.
+        class _Sentinel(RuntimeError):
+            pass
+
+        async def _stop(**kwargs):
+            raise _Sentinel("stop after the fetch")
+
+        monkeypatch.setattr(ccd, "provision_workspace", _stop)
+
+        defn = _make_defn(tmp_path)
+        defn.memory = ExecutorMemoryConfig(enabled=True, token_budget=500)
+        rec = _make_record(allocated_uid=200005)
+        rec.procedural_epoch = "epoch-1"
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+        )
+        (tmp_path / "engagements").mkdir()
+
+        with pytest.raises(_Sentinel):
+            await drv.start(rec, prompt="first turn", options=defn)
+
+        assert len(calls) == 1, calls
+        # Filtered at the RECORD's own markers and epoch — that is why this is
+        # the copy kept, rather than the engager's.
+        assert calls[0]["task"] == rec.task
+        assert "epoch-1" in str(calls[0]["epoch_tag"])
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
+    )
+    async def test_a_memory_disabled_launch_fetches_nothing(
+        self, monkeypatch, tmp_path,
+    ):
+        """No shipped claude_code executor opts in, so this is the path every
+        launch takes today — it must stay at zero recalls, not one."""
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        from drivers import claude_code_driver as ccd
+        import tools as tools_mod
+
+        calls: list = []
+
+        async def _counting_fetch(**kwargs):
+            calls.append(kwargs)
+            return ""
+
+        monkeypatch.setattr(tools_mod, "_fetch_executor_archive", _counting_fetch)
+
+        class _Sentinel(RuntimeError):
+            pass
+
+        async def _stop(**kwargs):
+            raise _Sentinel("stop after the fetch")
+
+        monkeypatch.setattr(ccd, "provision_workspace", _stop)
+
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+        )
+        (tmp_path / "engagements").mkdir()
+
+        with pytest.raises(_Sentinel):
+            await drv.start(
+                _make_record(allocated_uid=200005),
+                prompt="first turn", options=_make_defn(tmp_path),
+            )
+
+        assert calls == []
+
+
 class TestStart:
     @pytest.mark.skipif(
         sys.platform == "win32",

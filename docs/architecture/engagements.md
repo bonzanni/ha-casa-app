@@ -270,12 +270,13 @@ says nothing about identity or filesystem reach.
 
 **`start()`'s `prompt` is the first turn, for every driver.** For an in-process engagement
 that is the opening user message; for one that runs its agent in a workspace it is the text
-enqueued to the inbound spool. It is *not* the workspace's standing instructions, which the
-driver renders separately from the executor's own template. The two are therefore distinct
-surfaces, and a launcher that interpolates something into one has not put it in the other —
-which is why the prior-engagement archive is fetched on exactly one of those paths per
-driver rather than both (see
-[`architecture/memory.md`](memory.md) for which, and why the duplicate mattered).
+enqueued to the inbound spool (an empty one is suppressed rather than delivered as a blank
+turn). It is *not* the workspace's standing instructions, which the driver renders
+separately from the executor's own template. The two are therefore distinct surfaces, and a
+launcher that interpolates something into one has not put it in the other — which is why a
+memory-enabled launch fetches the prior-engagement archive on exactly one of those paths
+per driver rather than both (see [`architecture/memory.md`](memory.md) for which, and why
+the duplicate mattered).
 
 **A new terminal path** should go through the shared finalize funnel to inherit the
 single-winner transition, teardown, notification and retention. Setting a terminal status

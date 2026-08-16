@@ -55,8 +55,11 @@ class DriverProtocol(ABC):
         backwards. Because the two are rendered separately, a value the
         engager interpolates into ``prompt`` reaches only the first turn, and
         a value the driver passes to ``provision_workspace`` reaches only
-        ``CLAUDE.md``. The prior-engagement archive is fetched on exactly one
-        of those paths per driver — the driver's, for ``claude_code``.
+        ``CLAUDE.md``. A memory-enabled launch therefore fetches the
+        prior-engagement archive on exactly one of those paths per driver —
+        the driver's, for ``claude_code``. (An executor that does not opt into
+        memory fetches on neither, and replay re-renders from the block the
+        launch cached rather than fetching again.)
         """
 
     @abstractmethod

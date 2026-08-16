@@ -124,21 +124,34 @@ A turn can stream a partial answer and *then* fault, so the error line that foll
 correction of something Casa already said, not a substitute for it. Without one, the
 listener is left holding a statement Casa never stood behind.
 
-Enforced in `emit_error_line`, which composes the retraction ahead of the persona error
-line and hands the sink a single string. The predicate is the transport's own
-`speech_block_sent`, which flips only when a real speech block is actually written — so the
-"still working" progress notice, which is not an answer, correctly does not arm it, and a
-turn that voiced nothing gets its error line unchanged. Composed in that one place, not in
-the two sinks, so the SSE and socket transports cannot drift apart.
+Enforced by one composition step that every error path shares — the sink used by the
+agent's classified error branch, and each transport's own last-resort handler, which is
+where a turn that times out in the bus lands. That path composed its own frame and so
+skipped the retraction until the reviewers reproduced it; the *text* is now shared while
+each path keeps writing its own frame. That separation is deliberate: the socket sink
+suppresses an ordinary foreground error once a handoff is committed, which is right for
+the agent's branch and wrong for a last resort, because a handoff whose own write failed
+still owes the caller an error.
+
+The predicate is the transport's own `speech_block_sent`. It is set for real speech blocks
+and not for the "still working" progress notice, which is not an answer — so a turn that
+voiced nothing gets its error line unchanged. The two transports set it at slightly
+different moments (the socket before awaiting its write, SSE after), which matters for
+handoff selection rather than here: it is monotonic, and both are read at error time.
 
 **One frame, not two.** The retraction and its reason are a single `error` frame whose
 spoken text carries both sentences. Emitting them as two writes would let the first land
 and the second fail — a client disconnecting between them leaves the listener with a
 retraction of nothing, which is worse than the contradiction it was meant to fix.
 
-What it does not cover: text already spoken cannot be unsaid, only corrected. The retraction
-is overridable per persona through `voice_errors`, and a persona that blanks it gets the
-pre-existing behaviour back.
+**Never a retraction with no reason.** An error line can be schema-valid and still render
+to nothing — whitespace, or a bare dialect tag that rendering strips. Retracting into that
+silence produces the very outcome above, so a line with no speakable content is left
+exactly as it was, unretracted.
+
+What it does not cover: text already spoken cannot be unsaid, only corrected. The wording
+is overridable per persona through `voice_errors`; setting `retraction` to an empty string
+switches retractions off for that persona, while omitting the key takes the default.
 
 ## Failure behavior
 
