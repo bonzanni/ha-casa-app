@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.216.0] - 2026-08-16
+
+### Fixed
+
+- **A half-spoken answer that then fails is taken back out loud** (#594). Casa
+  speaks a reply as it is being written, so when a turn fails partway through
+  you have already heard the first half — and until now the error line simply
+  followed it, leaving you holding an answer Casa never stood behind with
+  nothing to say which half to believe. The error is now spoken as a correction
+  of what was just said, in one breath. It is careful about when: only if
+  something really was delivered to you, never for the "still working" notice,
+  and never when the error itself has no words in it — being told to disregard
+  something, with no reason given, would be worse than the contradiction. Each
+  agent can word the retraction itself, or switch it off, alongside its other
+  spoken error lines.
+
+- **A delegated job no longer starts holding two versions of its own history**
+  (#583). A job allowed to remember previous work is handed a digest of lessons
+  from earlier runs. Jobs that run in their own workspace were handed that
+  digest twice, looked up separately moments apart — and because the lookup is
+  relevance-ranked and size-bounded, the two copies could legitimately differ.
+  Such a job could therefore begin by reading two accounts of what happened
+  last time, with the caveat about how much weight to give them repeated twice
+  over. It is now looked up once per run.
+
 ## [0.215.0] - 2026-08-16
 
 ### Fixed

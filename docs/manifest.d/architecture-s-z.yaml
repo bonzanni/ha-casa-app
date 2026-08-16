@@ -166,7 +166,7 @@
     - tests/test_voice_channel_ws.py
     - tests/test_voice_context_sanitize.py
   related: [architecture/overview.md, architecture/http-surface.md, architecture/turn-loop.md]
-  defines_invariants: [INV-VOICE-001, INV-VOICE-002, INV-VOICE-003, INV-VOICE-004, INV-VOICE-005, INV-VOICE-006]
+  defines_invariants: [INV-VOICE-001, INV-VOICE-002, INV-VOICE-003, INV-VOICE-004, INV-VOICE-005, INV-VOICE-006, INV-VOICE-007]
   invariant_tests:
     INV-VOICE-001: [tests/test_voice_auth_failclosed.py::test_sse_turn_rejected_and_never_dispatched, tests/test_voice_auth_failclosed.py::test_ws_upgrade_rejected, tests/test_voice_auth_failclosed.py::test_catalog_rejected, tests/test_voice_auth_failclosed.py::test_mis_signed_turn_rejected, tests/test_voice_malformed_input.py::test_sse_non_ascii_signature_is_401, tests/test_voice_malformed_input.py::test_ws_non_ascii_signature_is_401]
     INV-VOICE-002: [tests/test_voice_channel_ws.py::test_pin_inv_voice_002_text_only_agent_refused_on_every_voice_path, tests/test_voice_channel_ws.py::test_invalid_stt_start_is_a_noop]
@@ -174,3 +174,4 @@
     INV-VOICE-004: [tests/test_voice_routes.py::test_missing_voice_handoff_capability_fails_registration_closed, tests/test_voice_routes.py::test_any_unknown_capability_fails_the_whole_registration_closed, tests/test_voice_routes.py::test_protocol_requires_exact_json_integer_two]
     INV-VOICE-005: [tests/test_voice_context_sanitize.py::test_the_delivery_offer_comes_only_from_the_frame, tests/test_voice_context_sanitize.py::test_route_capability_comes_only_from_server_connection]
     INV-VOICE-006: [tests/test_voice_delivery.py::test_an_unknown_modality_is_treated_as_no_endpoint, tests/test_voice_delivery.py::test_a_job_with_no_recorded_endpoint_is_never_offered]
+    INV-VOICE-007: [tests/test_voice_channel_sse.py::TestPartialThenFaultIsRetracted::test_the_error_frame_retracts_the_speech_already_voiced, tests/test_voice_channel_sse.py::TestPartialThenFaultIsRetracted::test_a_turn_that_voiced_nothing_is_not_retracted, tests/test_voice_channel_ws.py::TestWSPartialThenFaultIsRetracted::test_the_error_frame_retracts_the_speech_already_voiced]

@@ -117,6 +117,51 @@ authenticated, not because they were verified.
 Enforced in the delivery coordinator's offer path. A job whose modality is unknown waits and
 expires rather than being sent as speech on the assumption that speech is what was wanted.
 
+**INV-VOICE-007**: An error line that follows speech already voiced in the same turn is spoken as a retraction of it, in one frame.
+
+A voice write is irreversible — the bytes are on the wire and the listener has heard them.
+A turn can stream a partial answer and *then* fault, so the error line that follows is a
+correction of something Casa already said, not a substitute for it. Without one, the
+listener is left holding a statement Casa never stood behind.
+
+Enforced by one composition step that every error path shares — the sink used by the
+agent's classified error branch, and each transport's own last-resort handler, which is
+where a turn that times out in the bus lands. That path composed its own frame and so
+skipped the retraction until the reviewers reproduced it; the *text* is now shared while
+each path keeps writing its own frame. That separation is deliberate: the socket sink
+suppresses an ordinary foreground error once a handoff is committed, which is right for
+the agent's branch and wrong for a last resort, because a handoff whose own write failed
+still owes the caller an error.
+
+**Delivery, not selection.** The predicate is a per-turn witness that only a *completed*
+speech write records. It is deliberately not the flag the handlers already keep for handoff
+selection — which the socket sets *before* starting a write, so that no tool can claim a
+handoff while speech is in flight, and which SSE, having no handoff to protect, sets after.
+Those are different questions, and answering the second with the first retracts speech
+nobody heard: a socket write the transport rejects marks speech selected though nothing
+arrived, and on either transport the final tail block — the only speech an answer with no
+sentence boundary produces — delivers without changing selection at all. Both were
+reproduced against the borrowed flag before the witness replaced it. The "still working"
+progress notice records nothing, because it is not an answer, so a turn that voiced only
+that gets its error line unchanged.
+
+**One frame, not two.** The retraction and its reason are a single `error` frame whose
+spoken text carries both sentences. Emitting them as two writes would let the first land
+and the second fail — a client disconnecting between them leaves the listener with a
+retraction of nothing, which is worse than the contradiction it was meant to fix.
+
+**Never a retraction with no reason.** An error line can be schema-valid and still say
+nothing aloud — whitespace, or a bare `[tag]`, which is a delivery instruction rather than a
+sentence. Retracting into that silence produces the very outcome above, so a line with
+nothing speakable in it is left exactly as it was, and a retraction with nothing speakable
+in it is not prefixed. Both are judged on the canonical text rather than the rendered
+string, because a tag-preserving dialect renders `[flat]` to a non-empty string the listener
+still hears nothing of.
+
+What it does not cover: text already spoken cannot be unsaid, only corrected. The wording
+is overridable per persona through `voice_errors`; setting `retraction` to an empty string
+switches retractions off for that persona, while omitting the key takes the default.
+
 ## Failure behavior
 
 **No secret, or a bad signature.** All voice routes return unauthorised for a missing,

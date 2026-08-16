@@ -7153,8 +7153,21 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         # Semantic-recall memory injection (design §3, plan 3): when the executor
         # opts in (defn.memory.enabled=True, off by default), fetch prior-engagement
         # lessons from the shared `casa` bank at the origin channel's read-clearance.
+        #
+        # #583: NOT for claude_code, which fetches its own copy in
+        # ``ClaudeCodeDriver.start`` (drivers/claude_code_driver.py) for the
+        # workspace CLAUDE.md. Doing both meant two INDEPENDENT recalls per
+        # launch — different inputs (task_text vs engagement.task, this launch's
+        # epoch vs the record's persisted one), at different times, across the
+        # workspace provisioning in between. A recall is relevance-ranked and
+        # bounded, so the two could legitimately return different slices and
+        # show one executor two versions of what happened last time. The
+        # driver's is the copy kept: it survives context compaction and is
+        # already filtered at the record's own origin markers. The slot below
+        # is still substituted (with ""), so no literal placeholder can reach
+        # the FIFO prompt.
         executor_memory_block = ""
-        if defn.memory.enabled:
+        if defn.memory.enabled and defn.driver != "claude_code":
             executor_memory_block = await _fetch_executor_archive(
                 task=task_text,
                 origin_channel=origin.get("channel", "telegram"),

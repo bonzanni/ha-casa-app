@@ -281,6 +281,204 @@ async def unsigned_route_ws_app():
         yield client, channel
 
 
+class _PartialThenErrorBus:
+    """#594: voices a real block, then faults through the PRODUCTION error
+    path (``emit_error_line``), which is the only caller of ``_error_sink``
+    outside tests. Calling the sink directly would skip the composition
+    under test and pass for the wrong reason."""
+
+    def __init__(self, channel, cfg) -> None:
+        self._channel = channel
+        self._cfg = cfg
+
+    async def request(self, msg: BusMessage, timeout: float) -> None:
+        await msg.context["_on_token"]("[confident] The kitchen lights are off.")
+        await self._channel.emit_error_line("unknown", msg.context, self._cfg)
+        return None
+
+
+class _FailingDoneWs(_RecordingWs):
+    """Everything writes except the terminal `done`, which fails."""
+
+    async def send_json(self, frame: dict) -> None:
+        self.frames.append(frame)
+        if frame["type"] == "done":
+            raise ConnectionResetError("closing transport")
+        await asyncio.sleep(0)
+        self.write_completed.set()
+
+
+class _TailOnlySpeechBus:
+    """Streams text with NO sentence boundary, so the prosodic splitter holds
+    it and the whole answer reaches the wire as the FINAL TAIL block — the one
+    write that did not mark the turn as having spoken."""
+
+    async def request(self, msg: BusMessage, timeout: float) -> BusMessage:
+        await msg.context["_on_token"]("[confident] The kitchen lights are off")
+        return BusMessage(
+            type=MessageType.RESPONSE, source="butler", target="voice",
+            content="[confident] The kitchen lights are off",
+            channel="voice", context=msg.context,
+        )
+
+
+@pytest.mark.asyncio
+class TestTailBlockCountsAsSpeech:
+    """#594 round 3 (Terra, S1): the final tail block puts real speech on the
+    wire without setting `speech_block_sent`, so a failure AFTER it — the
+    terminal `done` write — took the last-resort path believing nothing had
+    been said, and spoke an unretracted error over a delivered answer."""
+
+    async def test_a_fault_after_a_tail_only_answer_is_retracted(self):
+        cfg = _FakeCfg()
+        channel = VoiceChannel(
+            bus=None, default_agent="butler", webhook_secret="",
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            idle_timeout=300,
+        )
+        channel._bus = _TailOnlySpeechBus()
+        ws = _FailingDoneWs()
+
+        await channel._run_ws_utterance(
+            ws, {"agent_role": "butler", "text": "are the lights off?"},
+            "utterance-1", asyncio.get_running_loop().time() + 20,
+        )
+
+        kinds = [f["type"] for f in ws.frames]
+        # Setup premise: the answer reached the wire as a FINAL block, and the
+        # terminal write then failed. Without both, this case did not run.
+        blocks = [f for f in ws.frames if f["type"] == "block"]
+        assert blocks and blocks[-1].get("final") is True, ws.frames
+        assert "done" in kinds, ws.frames
+        errors = [f for f in ws.frames if f["type"] == "error"]
+        assert len(errors) == 1, ws.frames
+        assert "disregard that" in errors[0]["spoken"].lower(), errors[0]
+
+
+class _RejectingBlockWs(_RecordingWs):
+    """The first speech block is REJECTED by the transport — selected, never
+    delivered. The listener heard nothing."""
+
+    async def send_json(self, frame: dict) -> None:
+        self.frames.append(frame)
+        if frame["type"] == "block":
+            raise ConnectionResetError("closing transport")
+        await asyncio.sleep(0)
+        self.write_completed.set()
+
+
+@pytest.mark.asyncio
+class TestRetractionFollowsDeliveryNotSelection:
+    """#594 round 3 (Sol, S1): the handlers set `speech_block_sent` BEFORE
+    starting the write, on purpose — it answers "was speech selected", which
+    is what handoff selection needs. It is not an answer to "did the listener
+    hear anything", and using it as one retracts speech nobody received."""
+
+    async def test_a_rejected_block_write_is_not_retracted(self):
+        cfg = _FakeCfg()
+        channel = VoiceChannel(
+            bus=None, default_agent="butler", webhook_secret="",
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            idle_timeout=300,
+        )
+        channel._bus = _PartialThenErrorBusStreamOnly()
+        ws = _RejectingBlockWs()
+
+        await channel._run_ws_utterance(
+            ws, {"agent_role": "butler", "text": "are the lights off?"},
+            "utterance-1", asyncio.get_running_loop().time() + 20,
+        )
+
+        errors = [f for f in ws.frames if f["type"] == "error"]
+        assert len(errors) == 1, ws.frames
+        assert "disregard" not in errors[0]["spoken"].lower(), (
+            "retracted speech the listener never received: %r" % errors[0])
+
+
+class _PartialThenErrorBusStreamOnly:
+    """Streams one complete sentence and returns; the transport decides
+    whether it lands."""
+
+    async def request(self, msg: BusMessage, timeout: float) -> BusMessage:
+        await msg.context["_on_token"]("[confident] The kitchen lights are off.")
+        return BusMessage(
+            type=MessageType.RESPONSE, source="butler", target="voice",
+            content="[confident] The kitchen lights are off.",
+            channel="voice", context=msg.context,
+        )
+
+
+class _PartialThenRaisingBus:
+    """Voices a real block, then raises OUT OF `request` — the transport-level
+    failure (a 300s turn timeout, a shutdown) that never reaches the agent's
+    classified error branch and so lands in the handler's own outer `except`."""
+
+    async def request(self, msg: BusMessage, timeout: float) -> None:
+        await msg.context["_on_token"]("[confident] The kitchen lights are off.")
+        raise RuntimeError("transport-level failure after partial output")
+
+
+@pytest.mark.asyncio
+class TestWSTransportFaultAfterSpeechIsRetracted:
+    async def test_a_transport_level_fault_after_speech_is_retracted(self):
+        """#594 round 2 (Sol + Terra, S1): this path composed its own frame
+        and skipped the retraction on both transports."""
+        cfg = _FakeCfg()
+        channel = VoiceChannel(
+            bus=None, default_agent="butler", webhook_secret="",
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            idle_timeout=300,
+        )
+        channel._bus = _PartialThenRaisingBus()
+        ws = _RecordingWs()
+
+        await channel._run_ws_utterance(
+            ws, {"agent_role": "butler", "text": "are the lights off?"},
+            "utterance-1", asyncio.get_running_loop().time() + 20,
+        )
+
+        assert "block" in [f["type"] for f in ws.frames], ws.frames
+        errors = [f for f in ws.frames if f["type"] == "error"]
+        assert len(errors) == 1, ws.frames
+        spoken = errors[0]["spoken"].lower()
+        assert "disregard that" in spoken, errors[0]
+        assert "sorry, something went wrong" in spoken, errors[0]
+
+
+@pytest.mark.asyncio
+class TestWSPartialThenFaultIsRetracted:
+    async def test_the_error_frame_retracts_the_speech_already_voiced(self):
+        """The WS transport owes the same retraction as SSE — it maintains
+        its own ``speech_block_sent``, so the wiring is per-transport."""
+        cfg = _FakeCfg()
+        channel = VoiceChannel(
+            bus=None, default_agent="butler", webhook_secret="",
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            idle_timeout=300,
+        )
+        channel._bus = _PartialThenErrorBus(channel, cfg)
+        ws = _RecordingWs()
+
+        await channel._run_ws_utterance(
+            ws, {"agent_role": "butler", "text": "are the lights off?"},
+            "utterance-1", asyncio.get_running_loop().time() + 20,
+        )
+
+        kinds = [f["type"] for f in ws.frames]
+        # Setup premise, asserted: real speech reached the socket first.
+        assert "block" in kinds, ws.frames
+        errors = [f for f in ws.frames if f["type"] == "error"]
+        assert len(errors) == 1, ws.frames
+        spoken = errors[0]["spoken"].lower()
+        assert "disregard that" in spoken, errors[0]
+        assert "sorry, something went wrong" in spoken, errors[0]
+        assert spoken.index("disregard that") < spoken.index("sorry, something")
+
+
 @pytest.mark.asyncio
 class TestWSTurn:
     async def test_handoff_suppresses_a_late_foreground_error(self):

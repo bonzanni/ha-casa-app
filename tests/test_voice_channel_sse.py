@@ -201,6 +201,367 @@ async def agent_error_voice_app(tmp_path):
     loop_task.cancel()
 
 
+@pytest.fixture
+async def agent_partial_then_error_voice_app(tmp_path):
+    """#594: a real Agent that STREAMS a partial answer and only then faults.
+
+    The listener has already heard the first half — voice writes are
+    irreversible — so the error line that follows contradicts speech Casa
+    already stood behind. Same wiring as ``agent_error_voice_app``; the only
+    difference is that ``_process`` emits real speech before raising.
+    """
+    from agent import Agent
+    from config import (
+        AgentConfig, CharacterConfig, MemoryConfig, SessionConfig,
+        ToolsConfig, TTSConfig,
+    )
+    from mcp_registry import McpServerRegistry
+    from session_registry import SessionRegistry
+    from channels import ChannelManager
+
+    bus = MessageBus()
+
+    cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT,
+        role="butler",
+        model="claude-haiku-4-5",
+        system_prompt="Butler.",
+        character=CharacterConfig(name="Tina"),
+        tools=ToolsConfig(),
+        memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+        session=SessionConfig(strategy="pooled", idle_timeout=300),
+        tts=TTSConfig(tag_dialect="square_brackets"),
+        voice_errors={"unknown": "[apologetic] Tina could not finish that."},
+        channels=["ha_voice"],
+    )
+
+    channel_manager = ChannelManager()
+    voice_channel = VoiceChannel(
+        bus=bus,
+        default_agent="butler",
+        webhook_secret=VOICE_TEST_SECRET,
+        sse_path="/api/converse",
+        ws_path="/api/converse/ws",
+        agent_configs={"butler": cfg},
+        memory=_DummyMemory(),
+        idle_timeout=300,
+    )
+    channel_manager.register(voice_channel)
+
+    agent = Agent(
+        config=cfg,
+        session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
+        mcp_registry=McpServerRegistry(),
+        channel_manager=channel_manager,
+    )
+
+    async def _stream_then_raise(msg, on_token=None, **kwargs):
+        if on_token is not None:
+            # A complete sentence, so the prosodic splitter flushes a REAL
+            # block — which is what puts bytes on the wire.
+            await on_token("[confident] The kitchen lights are off.")
+        raise RuntimeError("SDK-style failure after partial output")
+
+    agent._process = _stream_then_raise  # type: ignore[assignment]
+
+    bus.register("butler", agent.handle_message)
+    loop_task = asyncio.create_task(bus.run_agent_loop("butler"))
+
+    app = web.Application(middlewares=[cid_middleware])
+    voice_channel.register_routes(app)
+    async with TestClient(TestServer(app)) as _raw_client:
+        client = SigningVoiceClient(_raw_client)
+        yield client
+    loop_task.cancel()
+
+
+async def _sse_frames(resp) -> list[dict]:
+    frames: list[dict] = []
+    async for line in resp.content:
+        s = line.decode("utf-8").rstrip("\r\n")
+        if s.startswith("event:"):
+            frames.append({"event": s.split(":", 1)[1].strip()})
+        elif s.startswith("data:"):
+            frames[-1]["data"] = json.loads(s.split(":", 1)[1].strip())
+    return frames
+
+
+class _PartialThenRaisingBus:
+    """#594 round 2: voices a real block, then raises OUT OF `_bus.request`.
+
+    This is the transport-level failure — a turn timeout, a shutdown — that
+    never reaches `Agent.handle_message`'s classified error branch, so it lands
+    in the handler's own outer `except`. Both reviewers reproduced an
+    unretracted error frame here.
+    """
+
+    async def request(self, msg, timeout):
+        await msg.context["_on_token"]("[confident] The kitchen lights are off.")
+        raise RuntimeError("transport-level failure after partial output")
+
+
+class _RetractionCfg:
+    """Minimal agent config for the composition itself."""
+
+    role = "butler"
+    channels: list[str] = ["ha_voice"]
+
+    def __init__(self, dialect="square_brackets", **voice_errors):
+        self.voice_errors = dict(voice_errors)
+        self.tts = type("_TTS", (), {"tag_dialect": dialect})()
+
+
+async def _emit(cfg, *, already_spoke: bool) -> str:
+    """Drive the production `emit_error_line` and return the spoken text."""
+    from channels.voice.channel import VoiceChannel as _VC
+
+    seen: list = []
+
+    async def _sink(kind, spoken):
+        seen.append((kind, spoken))
+
+    channel = _VC(
+        bus=None, default_agent="butler", webhook_secret="",
+        sse_path="/api/converse", ws_path="/api/converse/ws",
+        agent_configs={"butler": cfg}, memory=_DummyMemory(), idle_timeout=300,
+    )
+    ctx = {"_error_sink": _sink, "_spoken_any": lambda: already_spoke}
+    assert await channel.emit_error_line("unknown", ctx, cfg) is True
+    return seen[0][1]
+
+
+@pytest.fixture
+async def sse_transport_error_after_speech_app(tmp_path):
+    """A real SSE route whose bus raises after voicing a block."""
+    from config import (
+        AgentConfig, CharacterConfig, MemoryConfig, SessionConfig,
+        ToolsConfig, TTSConfig,
+    )
+
+    cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT,
+        role="butler", model="claude-haiku-4-5", system_prompt="Butler.",
+        character=CharacterConfig(name="Tina"), tools=ToolsConfig(),
+        memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+        session=SessionConfig(strategy="pooled", idle_timeout=300),
+        tts=TTSConfig(tag_dialect="square_brackets"),
+        voice_errors={"unknown": "[apologetic] Tina could not finish that."},
+        channels=["ha_voice"],
+    )
+    channel = VoiceChannel(
+        bus=MessageBus(), default_agent="butler",
+        webhook_secret=VOICE_TEST_SECRET,
+        sse_path="/api/converse", ws_path="/api/converse/ws",
+        agent_configs={"butler": cfg}, memory=_DummyMemory(), idle_timeout=300,
+    )
+    channel._bus = _PartialThenRaisingBus()
+    app = web.Application(middlewares=[cid_middleware])
+    channel.register_routes(app)
+    async with TestClient(TestServer(app)) as _raw_client:
+        yield SigningVoiceClient(_raw_client)
+
+
+@pytest.mark.asyncio
+class TestTransportFaultAfterSpeechIsRetracted:
+    """#594 round 2 (Sol + Terra, both S1): a failure that never reaches the
+    agent's classified error branch — the 300s bus timeout is the reachable
+    one — took the handler's own error path and skipped the retraction."""
+
+    async def test_a_transport_level_fault_after_speech_is_retracted(
+        self, sse_transport_error_after_speech_app,
+    ):
+        client = sse_transport_error_after_speech_app
+        resp = await client.post(
+            "/api/converse",
+            json={"prompt": "hi", "agent_role": "butler", "scope_id": "s"},
+        )
+        assert resp.status == 200
+        frames = await _sse_frames(resp)
+        assert [f for f in frames if f["event"] == "block"], frames
+        errors = [f for f in frames if f["event"] == "error"]
+        assert len(errors) == 1, frames
+        assert "disregard" in errors[0]["data"]["spoken"].lower(), errors[0]
+
+
+class _TailOnlySpeechBus:
+    """Streams text with NO sentence boundary, so the splitter holds all of it
+    and the answer reaches the wire only as the FINAL TAIL block."""
+
+    async def request(self, msg, timeout):
+        await msg.context["_on_token"]("[confident] The kitchen lights are off")
+        return None
+
+
+@pytest.mark.asyncio
+class TestSSETailBlockCountsAsSpeech:
+    """#594 round 3 — the SSE twin of the socket's tail case. Found by
+    mutating each delivery-recording site separately: this one killed no test,
+    so the socket's coverage was standing in for it."""
+
+    async def test_a_fault_after_a_tail_only_answer_is_retracted(
+        self, monkeypatch,
+    ):
+        from channels.voice import channel as channel_mod
+        from config import (
+            AgentConfig, CharacterConfig, MemoryConfig, SessionConfig,
+            ToolsConfig, TTSConfig,
+        )
+
+        writes: list[dict] = []
+        real_write = channel_mod._write_sse
+
+        async def _write_then_fail_on_done(response, event, data):
+            writes.append({"event": event, "data": data})
+            if event == "done":
+                raise ConnectionResetError("closing transport")
+            await real_write(response, event, data)
+
+        monkeypatch.setattr(channel_mod, "_write_sse", _write_then_fail_on_done)
+
+        cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT,
+            role="butler", model="claude-haiku-4-5", system_prompt="Butler.",
+            character=CharacterConfig(name="Tina"), tools=ToolsConfig(),
+            memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+            session=SessionConfig(strategy="pooled", idle_timeout=300),
+            tts=TTSConfig(tag_dialect="square_brackets"),
+            voice_errors={"sdk_error": "[flat] Tina could not finish that."},
+            channels=["ha_voice"],
+        )
+        channel = VoiceChannel(
+            bus=MessageBus(), default_agent="butler",
+            webhook_secret=VOICE_TEST_SECRET,
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=_DummyMemory(),
+            idle_timeout=300,
+        )
+        channel._bus = _TailOnlySpeechBus()
+        app = web.Application(middlewares=[cid_middleware])
+        channel.register_routes(app)
+        async with TestClient(TestServer(app)) as raw:
+            client = SigningVoiceClient(raw)
+            resp = await client.post(
+                "/api/converse",
+                json={"prompt": "hi", "agent_role": "butler", "scope_id": "s"},
+            )
+            await resp.read()
+
+        blocks = [w for w in writes if w["event"] == "block"]
+        assert blocks and blocks[-1]["data"].get("final") is True, writes
+        assert any(w["event"] == "done" for w in writes), writes
+        errors = [w for w in writes if w["event"] == "error"]
+        assert len(errors) == 1, writes
+        assert "disregard" in errors[0]["data"]["spoken"].lower(), errors[0]
+
+
+@pytest.mark.asyncio
+class TestRetractionComposition:
+    """A retraction with no reason after it is one of the outcomes #594
+    exists to prevent — it must never be produced by the fix itself."""
+
+    async def test_an_error_line_with_no_speakable_content_is_not_retracted(self):
+        """Sol reproduced this: a schema-valid line that renders to nothing
+        left the listener hearing only 'Disregard that —'."""
+        spoken = await _emit(_RetractionCfg(unknown=" "), already_spoke=True)
+        assert "disregard" not in spoken.lower(), spoken
+
+    async def test_a_persona_can_switch_the_retraction_off(self):
+        """`voice_errors: {retraction: ""}` is an explicit decision, not an
+        absent key — documented in voice.md, so it has to be true."""
+        cfg = _RetractionCfg(retraction="", unknown="[flat] reason")
+        spoken = await _emit(cfg, already_spoke=True)
+        assert "disregard" not in spoken.lower(), spoken
+        assert "reason" in spoken
+
+    async def test_a_tag_only_error_line_is_not_retracted(self):
+        """Sol re-review, S1: `"[flat]"` is a delivery instruction with no
+        sentence after it. Under `square_brackets` it renders to a non-empty
+        string, so an emptiness check on the RENDERED text passes it through
+        and the listener hears a retraction with no reason."""
+        spoken = await _emit(_RetractionCfg(unknown="[flat]"), already_spoke=True)
+        assert "disregard" not in spoken.lower(), spoken
+
+    @pytest.mark.parametrize("dialect", ["square_brackets", "parens", "none"])
+    async def test_a_nested_tag_only_line_is_not_retracted_in_any_dialect(
+        self, dialect,
+    ):
+        """Both reviewers, round 4: the leading-tag pattern stops at the first
+        `]`, so `"[flat [warm]]"` used to leave `"]"` behind and be read as a
+        reason — the listener heard `Disregard that — ]`."""
+        spoken = await _emit(
+            _RetractionCfg(dialect=dialect, unknown="[flat [warm]]"),
+            already_spoke=True,
+        )
+        assert "disregard" not in spoken.lower(), (dialect, spoken)
+
+    async def test_a_tag_only_retraction_is_not_prefixed(self):
+        """The mirror: a retraction that says nothing aloud must not be
+        counted as having retracted anything."""
+        cfg = _RetractionCfg(retraction="[flat]", unknown="[flat] reason")
+        spoken = await _emit(cfg, already_spoke=True)
+        assert "reason" in spoken
+        assert spoken.strip().startswith("[flat] reason"), spoken
+
+    async def test_a_persona_can_reword_the_retraction(self):
+        cfg = _RetractionCfg(retraction="[flat] Scratch that —",
+                             unknown="[flat] reason")
+        spoken = await _emit(cfg, already_spoke=True)
+        assert "scratch that" in spoken.lower(), spoken
+        assert spoken.lower().index("scratch") < spoken.lower().index("reason")
+
+
+@pytest.mark.asyncio
+class TestPartialThenFaultIsRetracted:
+    """#594 — a half-spoken answer followed by an error line, with nothing
+    marking the first half as void, leaves the listener holding a statement
+    Casa did not stand behind."""
+
+    async def test_the_error_frame_retracts_the_speech_already_voiced(
+        self, agent_partial_then_error_voice_app,
+    ):
+        client = agent_partial_then_error_voice_app
+        resp = await client.post(
+            "/api/converse",
+            json={"prompt": "hi", "agent_role": "butler", "scope_id": "s"},
+        )
+        assert resp.status == 200
+        frames = await _sse_frames(resp)
+
+        blocks = [f for f in frames if f["event"] == "block"]
+        errors = [f for f in frames if f["event"] == "error"]
+        # Premise of the test, asserted as SETUP: real speech reached the
+        # wire before the fault. Without this the case under test never ran.
+        assert blocks, f"no speech was voiced; frames={frames}"
+        assert "kitchen lights are off" in blocks[0]["data"]["text"].lower()
+
+        # ONE error frame carries both sentences — a retraction and its
+        # reason must not be two writes that can split.
+        assert len(errors) == 1, f"expected one error frame, got {errors}"
+        spoken = errors[0]["data"]["spoken"]
+        assert "could not finish" in spoken.lower(), spoken
+        low = spoken.lower()
+        assert "disregard" in low or "ignore" in low, (
+            f"nothing retracts the speech already voiced: {spoken!r}")
+        # The retraction comes FIRST — it is a correction of what was said.
+        assert low.index("disregard" if "disregard" in low else "ignore") \
+            < low.index("could not finish"), spoken
+
+    async def test_a_turn_that_voiced_nothing_is_not_retracted(
+        self, agent_error_voice_app,
+    ):
+        """Nothing was heard, so there is nothing to take back — the error
+        line must stay exactly as it is."""
+        client = agent_error_voice_app
+        resp = await client.post(
+            "/api/converse",
+            json={"prompt": "hi", "agent_role": "butler", "scope_id": "s"},
+        )
+        frames = await _sse_frames(resp)
+        errors = [f for f in frames if f["event"] == "error"]
+        assert len(errors) == 1
+        spoken = errors[0]["data"]["spoken"]
+        assert "Natural-path Tina voice failure" in spoken
+        low = spoken.lower()
+        assert "disregard" not in low and "ignore" not in low, spoken
+
+
 @pytest.mark.asyncio
 class TestSSE:
     async def test_full_turn_emits_blocks_then_done(self, voice_app):
