@@ -56,7 +56,18 @@
 #        having never exercised the defect at all.
 #   M-10 the same call on an ordinarily-`active` record dispatches.
 #   M-11 the same call, after a bounce that redelivers nothing, is refused
-#        -32006 engagement_not_live (#587).
+#        -32006 engagement_not_live (#587). "Redelivers nothing" is ARRANGED,
+#        not assumed (#614): the step drains the spool BEFORE the bounce, and
+#        after it requires both an empty spool AND a record `idle` on disk.
+#        All three fail as SETUP, distinctly from the product assertion —
+#        because the state this step needs is one the system does not otherwise
+#        guarantee, and a step that cannot reach it must say so rather than
+#        blame the code it is pointed at.
+#
+#        The post-bounce spool check alone is NOT enough, and a mutation check
+#        proved it: a redelivery that lands and COMPLETES before the first poll
+#        re-empties the spool while the record stays `active`. That is why the
+#        status is read too, and why it is read asymmetrically (see M-11).
 #
 # M-10 and M-11 inject their turn STRAIGHT INTO the control FIFO. That is a
 # turn delivery, it just bypasses `_write_to_fifo` — so neither step says
@@ -72,6 +83,12 @@
 # filters its listing to the CALLER's own engagement when a record is bound
 # (tools.py), so "exactly one workspace, and it is ours" cannot be produced
 # by an unbound dispatch, by the forwarder, or by a stub.
+#
+# M-11 carries that property in the OTHER direction too (#614). Identifying the
+# turn by "the response-file set changed" is satisfied by a turn Casa
+# redelivered, so M-11 stamps a nonce on its own call and asserts on the
+# response bearing it. Its refusal is then unambiguously an answer to the turn
+# it injected, not to somebody else's.
 #
 # Mock-CLI gated (CASA_USE_MOCK_CLAUDE=1). Auto-skips otherwise.
 
@@ -209,6 +226,78 @@ wait_for_new_casa_call() {
         sleep 1
     done
     return 1
+}
+
+# Wait for the response file carrying `_probe_token == $2`, and echo it (#614).
+# Unlike wait_for_new_casa_call, a turn Casa REDELIVERED cannot satisfy this:
+# only the turn the caller injected carries the nonce.
+wait_for_token_casa_call() {
+    local token="$1" timeout="${2:-30}" f
+    local end=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+        for f in $(casa_call_files); do
+            if in_c sh -c "cat /data/engagements/$EID/$f 2>/dev/null" \
+                | TOKEN="$token" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if d.get("_probe_token") == os.environ["TOKEN"] else 1)
+' 2>/dev/null; then
+                printf '%s\n' "$f"; return 0
+            fi
+        done
+        sleep 1
+    done
+    return 1
+}
+
+# Echo the engagement's blocking inbound envelopes — those in state `queued` or
+# `delivered`, the two that `_InboundSpool.on_spawn` redelivers on the next CLI
+# spawn. "" means the spool holds nothing that a bounce could redeliver.
+#
+# FAIL-CLOSED (Sol r1 Q3): a spool that cannot be read or parsed echoes
+# `UNREADABLE`, never "". A read that could not happen returns the same
+# emptiness as a read that found nothing, and only one of them means the
+# premise holds. The file itself is written temp+fsync+os.replace
+# (claude_code_driver.py `_persist`), so a torn read is not expected — this is
+# belt-and-braces, not an observed failure.
+blocking_envelopes() {
+    local spool="/data/engagement-ctl/$EID/.inbound_spool.jsonl" raw
+    # Absent is UNREADABLE, not empty: by this point M-8 has enqueued through
+    # the spool, and `_prune` rewrites the file empty rather than removing it,
+    # so a missing file is an anomaly and must not read as "nothing pending".
+    if ! in_c test -f "$spool" >/dev/null 2>&1; then
+        printf 'UNREADABLE\n'; return 0
+    fi
+    raw="$(in_c sh -c "cat '$spool'" 2>/dev/null)" || {
+        printf 'UNREADABLE\n'; return 0
+    }
+    printf '%s\n' "$raw" | python3 -c '
+import json, sys
+out = []
+for ln in sys.stdin:
+    ln = ln.strip()
+    if not ln:
+        continue
+    try:
+        d = json.loads(ln)
+    except Exception:
+        print("UNREADABLE"); sys.exit(0)
+    # Mirror the product: `_Envelope.from_line` defaults a MISSING state to
+    # "queued", so a row without one is redeliverable and must read as blocking
+    # here too — treating it as nonblocking would be a fail-OPEN in the one
+    # helper whose job is to fail closed. Any state this harness does not
+    # recognise is UNREADABLE for the same reason: an unclassifiable row is not
+    # an absent one.
+    st = d.get("state", "queued")
+    if st not in ("queued", "delivered", "consumed"):
+        print("UNREADABLE"); sys.exit(0)
+    if st in ("queued", "delivered"):
+        out.append("%s/seq%s" % (st, d.get("seq")))
+print(",".join(out))
+' 2>/dev/null || printf 'UNREADABLE\n'
 }
 
 # The engagement is bound => the listing is filtered to its OWN workspace.
@@ -394,6 +483,36 @@ assert_own_workspace "M-10" "$M10_FILE"
 pass "M-10 authenticated granted call from the engagement dispatches"
 
 echo "=== M-11: same call, record not live — refused as NOT LIVE, not ungranted ==="
+# #614 — M-11's premise is that this bounce redelivers NOTHING, and that is not
+# a property of the bounce. Boot replay's down-first sweep respawns the CLI on
+# every casa-main restart; `_InboundSpool.on_spawn` reverts any envelope still
+# `delivered` to `queued` and pumps it; and that write goes through
+# `_write_to_fifo`, whose synchronous `begin_turn_delivery` correctly flips a
+# boot-reconciled `idle` record straight back to `active` (#588). So the premise
+# holds only while the spool is empty ACROSS the bounce — which the step used to
+# assume, and lost the race on in CI.
+#
+# Drained BEFORE the bounce, not after. Nothing re-idles a record except boot
+# reconcile, so once a redelivery has re-armed it, waiting afterwards can only
+# ever time out. The envelope being waited on is M-8's, redelivered at M-9 —
+# M-10 wrote straight to the FIFO and created none.
+#
+# Waited on, not deleted: draining by hand would make the step hermetic and
+# erase the at-least-once redelivery this block exists to exercise.
+echo "  M-11 setup: waiting for the spool to hold nothing redeliverable"
+M11_DRAIN_END=$(( $(date +%s) + 30 ))
+while :; do
+    M11_PENDING="$(blocking_envelopes)"
+    [ -z "$M11_PENDING" ] && break
+    if [ "$(date +%s)" -ge "$M11_DRAIN_END" ]; then
+        fail "M-11 SETUP: the M-8 envelope never cleared (spool still \
+'$M11_PENDING' after 30s) — either turn_start evidence is not reaching the \
+spool or the relay is merely slow. The step did NOT reach the state it tests; \
+this is not a product failure."
+    fi
+    sleep 1
+done
+
 MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -d change svc-casa
 sleep 2
 MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -u change svc-casa
@@ -403,12 +522,71 @@ for i in $(seq 1 20); do
     fi
     sleep 1
 done
-sleep 8
-BEFORE_M11="$(casa_call_files)"
+
+# Confirm the premise survived the bounce — a condition, not the flat `sleep 8`
+# this replaces. With an empty spool there is nothing for `on_spawn` to pump, so
+# the only two callers that can re-arm a record (`begin_turn_delivery`, reached
+# only through `_write_to_fifo`; and `update_user_turn`, reached only from an
+# inbound Telegram message) are both unreachable here.
+M11_CONFIRM_END=$(( $(date +%s) + 30 ))
+while :; do
+    M11_PENDING="$(blocking_envelopes)"
+    [ -z "$M11_PENDING" ] && break
+    if [ "$(date +%s)" -ge "$M11_CONFIRM_END" ]; then
+        fail "M-11 SETUP: the bounce carried a redelivery (spool '$M11_PENDING') \
+— the record is live by design and the refusal under test is unreachable."
+    fi
+    sleep 1
+done
+
+# The spool check above is NECESSARY but not SUFFICIENT, and a mutation check
+# proved it: a redelivery that lands and COMPLETES before the first poll leaves
+# the spool empty again while the record stays `active`, so the confirm passed
+# and the step still reported a correct dispatch as a product failure.
+#
+# The record's on-disk status closes that, but only in one direction. Read
+# ASYMMETRICALLY:
+#
+#   `active`     ⇒ SETUP failure. Sound: after boot reconcile writes `idle`,
+#                  the only thing that writes `active` back is
+#                  `begin_turn_delivery`, so disk-`active` implies the record
+#                  the gate binds on is active.
+#   `idle`       ⇒ proves NOTHING on its own. `begin_turn_delivery` persists
+#                  through a fire-and-forget task (`_schedule_tombstone_persist`),
+#                  so disk can read `idle` while memory is already `active`.
+#                  What makes `idle` trustworthy HERE is the drained spool: with
+#                  nothing to pump, `begin_turn_delivery` is unreachable.
+#   anything else ⇒ SETUP failure (fail closed; an unreadable status is not an
+#                  idle one).
+#
+# So neither signal is load-bearing alone: the pre-bounce drain makes the state
+# unreachable, and this check refuses to proceed if it happened anyway.
+M11_STATUS="$(in_c sh -c 'cat /data/engagements.json 2>/dev/null' \
+    | EID="$EID" python3 -c '
+import json, os, sys
+try:
+    print({r["id"]: r["status"] for r in json.load(sys.stdin)}.get(
+        os.environ["EID"], "ABSENT"))
+except Exception:
+    print("UNREADABLE")
+' 2>/dev/null || printf 'UNREADABLE\n')"
+if [ "$M11_STATUS" != "idle" ]; then
+    fail "M-11 SETUP: record status is '$M11_STATUS', not 'idle' — the bounce \
+did not leave it dormant (a redelivery re-armed it, or the status is \
+unreadable). The refusal under test is unreachable and this is NOT a product \
+failure."
+fi
+echo "  M-11 setup ok: spool clear across the bounce, record idle"
+
+# The nonce is what makes this assertion read ITS OWN turn. Waiting for the
+# response-file SET to change — what this step used to do — is satisfied just as
+# well by a turn Casa redelivered, and that is how a correct dispatch came to be
+# read as M-11's answer.
+M11_TOKEN="m11-$$-$(date +%s)"
 MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c \
-    "printf '/mock casa_call list_engagement_workspaces\n' > /data/engagement-ctl/$EID/stdin.fifo"
-M11_FILE="$(wait_for_new_casa_call "$BEFORE_M11" 30)" \
-    || fail "M-11 the injected turn produced no MCP call"
+    "printf '/mock casa_call list_engagement_workspaces $M11_TOKEN\n' > /data/engagement-ctl/$EID/stdin.fifo"
+M11_FILE="$(wait_for_token_casa_call "$M11_TOKEN" 30)" \
+    || fail "M-11 the injected turn produced no MCP call carrying $M11_TOKEN"
 in_c sh -c "cat /data/engagements/$EID/$M11_FILE" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
