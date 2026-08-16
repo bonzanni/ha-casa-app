@@ -302,14 +302,12 @@ class _PartialThenRaisingBus:
 class _RetractionCfg:
     """Minimal agent config for the composition itself."""
 
-    class tts:
-        tag_dialect = "square_brackets"
-
     role = "butler"
     channels: list[str] = ["ha_voice"]
 
-    def __init__(self, **voice_errors):
+    def __init__(self, dialect="square_brackets", **voice_errors):
         self.voice_errors = dict(voice_errors)
+        self.tts = type("_TTS", (), {"tag_dialect": dialect})()
 
 
 async def _emit(cfg, *, already_spoke: bool) -> str:
@@ -479,6 +477,19 @@ class TestRetractionComposition:
         and the listener hears a retraction with no reason."""
         spoken = await _emit(_RetractionCfg(unknown="[flat]"), already_spoke=True)
         assert "disregard" not in spoken.lower(), spoken
+
+    @pytest.mark.parametrize("dialect", ["square_brackets", "parens", "none"])
+    async def test_a_nested_tag_only_line_is_not_retracted_in_any_dialect(
+        self, dialect,
+    ):
+        """Both reviewers, round 4: the leading-tag pattern stops at the first
+        `]`, so `"[flat [warm]]"` used to leave `"]"` behind and be read as a
+        reason — the listener heard `Disregard that — ]`."""
+        spoken = await _emit(
+            _RetractionCfg(dialect=dialect, unknown="[flat [warm]]"),
+            already_spoke=True,
+        )
+        assert "disregard" not in spoken.lower(), (dialect, spoken)
 
     async def test_a_tag_only_retraction_is_not_prefixed(self):
         """The mirror: a retraction that says nothing aloud must not be

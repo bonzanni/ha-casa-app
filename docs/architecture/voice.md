@@ -135,10 +135,11 @@ still owes the caller an error.
 
 **Delivery, not selection.** The predicate is a per-turn witness that only a *completed*
 speech write records. It is deliberately not the flag the handlers already keep for handoff
-selection, which they set *before* starting a write so that no tool can claim a handoff
-while speech is in flight. Those are different questions, and answering the second with the
-first retracts speech nobody heard: a write the transport rejects sets the selection flag
-though nothing arrived, and the final tail block — the only speech an answer with no
+selection — which the socket sets *before* starting a write, so that no tool can claim a
+handoff while speech is in flight, and which SSE, having no handoff to protect, sets after.
+Those are different questions, and answering the second with the first retracts speech
+nobody heard: a socket write the transport rejects marks speech selected though nothing
+arrived, and on either transport the final tail block — the only speech an answer with no
 sentence boundary produces — delivers without changing selection at all. Both were
 reproduced against the borrowed flag before the witness replaced it. The "still working"
 progress notice records nothing, because it is not an answer, so a turn that voiced only

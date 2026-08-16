@@ -367,12 +367,14 @@ _DEFAULT_ERROR_LINES = {
 class _SpeechDelivered:
     """#594: whether real speech actually REACHED the listener this turn.
 
-    Deliberately NOT ``speech_block_sent``, which both handlers set BEFORE
-    starting a write — on purpose, so a tool cannot claim a handoff while a
-    speech write is in flight. That flag answers "was speech selected", which
-    is the right question for handoff selection and the wrong one for a
-    retraction: a write the transport rejects selects speech the listener
-    never hears, and the final tail block delivers speech without changing
+    Deliberately NOT ``speech_block_sent``, which answers "was speech
+    SELECTED". The socket handler sets that flag before starting its write, on
+    purpose, so a tool cannot claim a handoff while speech is in flight; SSE,
+    which has no handoff reservation to protect, sets it after. Selection is
+    the right question for handoff exclusion and the wrong one for a
+    retraction, and both halves of that mismatch were reproduced: a socket
+    write the transport rejects selects speech the listener never hears, and
+    on either transport the final tail block delivers speech without changing
     selection at all. Three review rounds found the same shape of defect while
     the retraction borrowed that flag, so it now has one that answers its own
     question — recorded only by a site that has COMPLETED a speech write, and
@@ -1004,13 +1006,12 @@ class VoiceChannel(Channel):
         #594: when this turn has ALREADY put real speech on the wire, the
         error line is a correction of something the listener heard, so it is
         prefixed with a retraction. The predicate is the transport's own
-        ``_spoken_any`` (each handler's ``speech_block_sent``, which flips
-        only when a real block is actually written — never for the
-        "still working" progress notice). Composed here rather than in the
-        two sinks so SSE and WS cannot drift, and emitted as ONE frame: a
-        retraction and its reason must not be two writes that can split,
-        leaving a listener with a retraction of nothing (Sol/Terra design
-        round, D3-S2).
+        ``_spoken_any`` — its :class:`_SpeechDelivered` witness, recorded only
+        by a COMPLETED speech write, never by the "still working" progress
+        notice. Composed here rather than in the two sinks so SSE and WS cannot
+        drift, and emitted as ONE frame: a retraction and its reason must not
+        be two writes that can split, leaving a listener with a retraction of
+        nothing (Sol/Terra design round, D3-S2).
         """
         sink = context.get("_error_sink")
         if sink is None:
