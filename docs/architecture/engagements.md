@@ -278,6 +278,11 @@ memory-enabled launch fetches the prior-engagement archive on exactly one of tho
 per driver rather than both (see [`architecture/memory.md`](memory.md) for which, and why
 the duplicate mattered).
 
+Nothing after the launch fetches it again. A replay that re-renders the workspace reuses the
+block the launch cached, and a clearance rebuild *clears* that block rather than refetching
+— a refetch there would read at the clearance the rebuild has just left, which is the thing
+the rebuild exists to stop.
+
 **A new terminal path** should go through the shared finalize funnel to inherit the
 single-winner transition, teardown, notification and retention. Setting a terminal status
 directly gets none of that.

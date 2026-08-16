@@ -383,6 +383,76 @@ class TestTransportFaultAfterSpeechIsRetracted:
         assert "disregard" in errors[0]["data"]["spoken"].lower(), errors[0]
 
 
+class _TailOnlySpeechBus:
+    """Streams text with NO sentence boundary, so the splitter holds all of it
+    and the answer reaches the wire only as the FINAL TAIL block."""
+
+    async def request(self, msg, timeout):
+        await msg.context["_on_token"]("[confident] The kitchen lights are off")
+        return None
+
+
+@pytest.mark.asyncio
+class TestSSETailBlockCountsAsSpeech:
+    """#594 round 3 — the SSE twin of the socket's tail case. Found by
+    mutating each delivery-recording site separately: this one killed no test,
+    so the socket's coverage was standing in for it."""
+
+    async def test_a_fault_after_a_tail_only_answer_is_retracted(
+        self, monkeypatch,
+    ):
+        from channels.voice import channel as channel_mod
+        from config import (
+            AgentConfig, CharacterConfig, MemoryConfig, SessionConfig,
+            ToolsConfig, TTSConfig,
+        )
+
+        writes: list[dict] = []
+        real_write = channel_mod._write_sse
+
+        async def _write_then_fail_on_done(response, event, data):
+            writes.append({"event": event, "data": data})
+            if event == "done":
+                raise ConnectionResetError("closing transport")
+            await real_write(response, event, data)
+
+        monkeypatch.setattr(channel_mod, "_write_sse", _write_then_fail_on_done)
+
+        cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT,
+            role="butler", model="claude-haiku-4-5", system_prompt="Butler.",
+            character=CharacterConfig(name="Tina"), tools=ToolsConfig(),
+            memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+            session=SessionConfig(strategy="pooled", idle_timeout=300),
+            tts=TTSConfig(tag_dialect="square_brackets"),
+            voice_errors={"sdk_error": "[flat] Tina could not finish that."},
+            channels=["ha_voice"],
+        )
+        channel = VoiceChannel(
+            bus=MessageBus(), default_agent="butler",
+            webhook_secret=VOICE_TEST_SECRET,
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=_DummyMemory(),
+            idle_timeout=300,
+        )
+        channel._bus = _TailOnlySpeechBus()
+        app = web.Application(middlewares=[cid_middleware])
+        channel.register_routes(app)
+        async with TestClient(TestServer(app)) as raw:
+            client = SigningVoiceClient(raw)
+            resp = await client.post(
+                "/api/converse",
+                json={"prompt": "hi", "agent_role": "butler", "scope_id": "s"},
+            )
+            await resp.read()
+
+        blocks = [w for w in writes if w["event"] == "block"]
+        assert blocks and blocks[-1]["data"].get("final") is True, writes
+        assert any(w["event"] == "done" for w in writes), writes
+        errors = [w for w in writes if w["event"] == "error"]
+        assert len(errors) == 1, writes
+        assert "disregard" in errors[0]["data"]["spoken"].lower(), errors[0]
+
+
 @pytest.mark.asyncio
 class TestRetractionComposition:
     """A retraction with no reason after it is one of the outcomes #594
@@ -401,6 +471,22 @@ class TestRetractionComposition:
         spoken = await _emit(cfg, already_spoke=True)
         assert "disregard" not in spoken.lower(), spoken
         assert "reason" in spoken
+
+    async def test_a_tag_only_error_line_is_not_retracted(self):
+        """Sol re-review, S1: `"[flat]"` is a delivery instruction with no
+        sentence after it. Under `square_brackets` it renders to a non-empty
+        string, so an emptiness check on the RENDERED text passes it through
+        and the listener hears a retraction with no reason."""
+        spoken = await _emit(_RetractionCfg(unknown="[flat]"), already_spoke=True)
+        assert "disregard" not in spoken.lower(), spoken
+
+    async def test_a_tag_only_retraction_is_not_prefixed(self):
+        """The mirror: a retraction that says nothing aloud must not be
+        counted as having retracted anything."""
+        cfg = _RetractionCfg(retraction="[flat]", unknown="[flat] reason")
+        spoken = await _emit(cfg, already_spoke=True)
+        assert "reason" in spoken
+        assert spoken.strip().startswith("[flat] reason"), spoken
 
     async def test_a_persona_can_reword_the_retraction(self):
         cfg = _RetractionCfg(retraction="[flat] Scratch that —",

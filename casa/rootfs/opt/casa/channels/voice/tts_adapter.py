@@ -22,6 +22,21 @@ _LEADING_TAGS_RE = re.compile(r"^(?:\s*\[[^\]]*\]\s*)+")
 _ANY_SQUARE_TAG_RE = re.compile(r"\[([^\]]+)\]")
 
 
+def has_speech(block: str) -> bool:
+    """True when *block* carries words, not only canonical ``[tag]`` atoms.
+
+    #594: a configured line can be schema-valid and still say nothing aloud —
+    ``"[flat]"`` is a delivery instruction with no sentence after it. Under
+    dialect ``none`` rendering already reduces that to ``""``, but under
+    ``square_brackets`` and ``parens`` the rendered string stays non-empty
+    while the listener hears nothing, so testing the RENDERED text for
+    emptiness answers the wrong question. Decided on the CANONICAL form, with
+    the same leading-tag definition rendering itself uses, so the answer does
+    not vary with the persona's dialect.
+    """
+    return bool(_LEADING_TAGS_RE.sub("", block or "").strip())
+
+
 class TagDialectAdapter:
     def __init__(self, dialect: str) -> None:
         if dialect not in _VALID:

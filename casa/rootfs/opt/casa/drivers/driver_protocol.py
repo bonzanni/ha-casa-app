@@ -57,9 +57,10 @@ class DriverProtocol(ABC):
         a value the driver passes to ``provision_workspace`` reaches only
         ``CLAUDE.md``. A memory-enabled launch therefore fetches the
         prior-engagement archive on exactly one of those paths per driver —
-        the driver's, for ``claude_code``. (An executor that does not opt into
-        memory fetches on neither, and replay re-renders from the block the
-        launch cached rather than fetching again.)
+        the driver's, for ``claude_code``. An executor that does not opt into
+        memory fetches on neither, and nothing after the launch fetches at
+        all: a replay that re-renders reuses the cached block, and a clearance
+        rebuild clears it rather than refetching at the clearance it left.
         """
 
     @abstractmethod

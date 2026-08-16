@@ -35,7 +35,7 @@ from channels.voice.catalog import (
 from channels.voice.prosodic import Block, ProsodicSplitter
 from channels.voice.routes import VoiceRouteRegistry, VoiceWsConnection
 from channels.voice.session import VoiceSessionPool
-from channels.voice.tts_adapter import TagDialectAdapter
+from channels.voice.tts_adapter import TagDialectAdapter, has_speech
 import voice_phrases
 from job_registry import JobTransitionError, VoiceJob
 from semantic_memory import SemanticMemory
@@ -363,6 +363,36 @@ _DEFAULT_ERROR_LINES = {
     "retraction":    "[flat] Disregard that —",
 }
 
+
+class _SpeechDelivered:
+    """#594: whether real speech actually REACHED the listener this turn.
+
+    Deliberately NOT ``speech_block_sent``, which both handlers set BEFORE
+    starting a write — on purpose, so a tool cannot claim a handoff while a
+    speech write is in flight. That flag answers "was speech selected", which
+    is the right question for handoff selection and the wrong one for a
+    retraction: a write the transport rejects selects speech the listener
+    never hears, and the final tail block delivers speech without changing
+    selection at all. Three review rounds found the same shape of defect while
+    the retraction borrowed that flag, so it now has one that answers its own
+    question — recorded only by a site that has COMPLETED a speech write, and
+    read only by the retraction.
+    """
+
+    __slots__ = ("_delivered",)
+
+    def __init__(self) -> None:
+        self._delivered = False
+
+    def record(self) -> None:
+        self._delivered = True
+
+    def delivered(self) -> bool:
+        return self._delivered
+
+    def __bool__(self) -> bool:
+        return self._delivered
+
 # A4 (spec A4): voice turn-budget envelope. INTEGRATION_TIMEOUT_TOTAL is
 # the total wall-clock time the voice transport (SSE/WS plus any fronting
 # proxy) gives one turn before ITS OWN timeout would fire — a synchronous
@@ -686,6 +716,7 @@ class VoiceChannel(Channel):
         write_lock = asyncio.Lock()
         speech_block_sent = False
         progress_sent = False
+        spoke = _SpeechDelivered()   # #594 — delivery, not selection
         first_block_logged = False
         # #257: two debts to the NEXT wire frame, both mutated only under
         # write_lock. `carry_sep` is whitespace the CURRENT splitter epoch
@@ -766,6 +797,7 @@ class VoiceChannel(Channel):
                     fallback_gap = ""
                     _log_first_block()
                     speech_block_sent = True
+                    spoke.record()
 
         async def _progress_sink(text: str) -> None:
             # A4: deterministic "still working" block for a mid-turn
@@ -815,9 +847,9 @@ class VoiceChannel(Channel):
                 "cid": request["cid"],
                 "_on_token": on_token,
                 "_error_sink": _error_sink,
-                # #594: a callable, so it reads the LIVE speech_block_sent at
-                # error time rather than its value at dispatch.
-                "_spoken_any": lambda: speech_block_sent,
+                # #594: read at error time, and answering "did the listener
+                # hear anything", not "was speech selected".
+                "_spoken_any": spoke.delivered,
                 "_voice_deadline": voice_deadline,
                 "_progress_sink": _progress_sink,
                 # SSE can complete only the live request. It never advertises
@@ -848,6 +880,11 @@ class VoiceChannel(Channel):
                 })
                 fallback_gap = ""
                 _log_first_block()
+                # #594: for an answer with no sentence boundary the splitter
+                # held ALL of it until this flush, so this is the only speech
+                # the listener gets — and the terminal `done` write after it
+                # can still fail. Selection is untouched: this is delivery.
+                spoke.record()
             elif not speech_block_sent:
                 # S-1: zero spoken output for the whole turn — emit a typed
                 # empty_turn error line instead of a silent bare `done`
@@ -877,8 +914,7 @@ class VoiceChannel(Channel):
             await _write_sse(response, "error", {
                 "kind": _classify_error(exc).value,
                 "spoken": self._with_retraction(
-                    cfg, adapter, adapter.render(line) if line else "",
-                    already_spoke=speech_block_sent),
+                    cfg, adapter, line, already_spoke=bool(spoke)),
             })
 
         return response
@@ -915,9 +951,10 @@ class VoiceChannel(Channel):
 
     @staticmethod
     def _with_retraction(
-        cfg: Any, adapter: Any, spoken: str, *, already_spoke: bool,
+        cfg: Any, adapter: Any, line: str, *, already_spoke: bool,
     ) -> str:
-        """#594: prefix a retraction when this turn already voiced speech.
+        """Render *line* (canonical form), prefixed by a retraction when this
+        turn already put speech in the listener's ear (#594).
 
         Composition ONLY — it never decides who writes the frame or whether
         one is written. That separation is the point: the two transports'
@@ -928,25 +965,31 @@ class VoiceChannel(Channel):
         Routing those paths through the sink to reuse this text was tried and
         silently swallowed both cases.
 
-        Two guards, both reproduced by review before they were written:
+        Takes the CANONICAL line rather than a rendered one so both guards can
+        ask whether something is actually *spoken*, which a rendered string
+        cannot answer under a tag-preserving dialect (:func:`has_speech`):
 
-        - an error line with no speakable content (``" "``, or a bare tag a
-          dialect strips) is NOT retracted — a retraction with no reason
-          after it is precisely the outcome this change exists to prevent;
-        - an explicitly empty ``voice_errors.retraction`` switches it off,
-          while an ABSENT key takes the default. ``_error_line_for_kind``'s
-          ``get(kind) or default`` cannot tell those apart, and here the
-          difference is a decision the persona made.
+        - an error line with nothing speakable in it is never retracted — a
+          retraction with no reason after it is precisely the outcome this
+          change exists to prevent;
+        - a retraction with nothing speakable in it is not prefixed, and an
+          explicitly empty ``voice_errors.retraction`` switches retractions
+          off entirely, while an ABSENT key takes the default.
+          ``_error_line_for_kind``'s ``get(kind) or default`` cannot tell an
+          absent key from an empty one, and here that difference is a decision
+          the persona made.
         """
-        if not already_spoke or not spoken.strip():
+        spoken = adapter.render(line) if line else ""
+        if not already_spoke or not has_speech(line):
             return spoken
         lines = getattr(cfg, "voice_errors", {}) or {}
         retraction = (
             lines["retraction"] if "retraction" in lines
             else _DEFAULT_ERROR_LINES["retraction"]
         )
-        rendered = adapter.render(retraction) if retraction else ""
-        return f"{rendered} {spoken}" if rendered.strip() else spoken
+        if not has_speech(retraction):
+            return spoken
+        return f"{adapter.render(retraction)} {spoken}"
 
     async def emit_error_line(
         self, kind: str, context: dict, agent_cfg: Any,
@@ -974,10 +1017,9 @@ class VoiceChannel(Channel):
             return False
         line = VoiceChannel._error_line_for_kind(agent_cfg, kind)
         adapter = TagDialectAdapter(agent_cfg.tts.tag_dialect)
-        spoken = adapter.render(line) if line else ""
         spoken_any = context.get("_spoken_any")
         spoken = VoiceChannel._with_retraction(
-            agent_cfg, adapter, spoken,
+            agent_cfg, adapter, line,
             already_spoke=bool(callable(spoken_any) and spoken_any()),
         )
         await sink(kind, spoken)
@@ -1275,6 +1317,7 @@ class VoiceChannel(Channel):
         write_lock = asyncio.Lock()
         speech_block_sent = False
         progress_sent = False
+        spoke = _SpeechDelivered()   # #594 — delivery, not selection
         # #257: see the SSE handler — epoch-owned vs progress-owed whitespace.
         carry_sep = ""
         fallback_gap = ""
@@ -1357,6 +1400,9 @@ class VoiceChannel(Channel):
                         "type": "block", "utterance_id": uid,
                         "text": text, "final": False,
                     })
+                    # AFTER the write: `speech_block_sent` above is set before
+                    # it on purpose (handoff selection), this is not.
+                    spoke.record()
                     fallback_gap = ""
                     _log_first_block()
 
@@ -1436,9 +1482,9 @@ class VoiceChannel(Channel):
                 "cid": new_cid(),
                 "_on_token": on_token,
                 "_error_sink": _error_sink,
-                # #594: a callable, so it reads the LIVE speech_block_sent at
-                # error time rather than its value at dispatch.
-                "_spoken_any": lambda: speech_block_sent,
+                # #594: read at error time, and answering "did the listener
+                # hear anything", not "was speech selected".
+                "_spoken_any": spoke.delivered,
                 "_voice_deadline": voice_deadline,
                 "_progress_sink": _progress_sink,
                 "_voice_handoff_reservation": reservation,
@@ -1498,6 +1544,8 @@ class VoiceChannel(Channel):
                 })
                 fallback_gap = ""
                 _log_first_block()
+                # #594 — the socket twin of the SSE tail write.
+                spoke.record()
             elif not speech_block_sent:
                 # S-1: zero spoken output — typed empty_turn error, never a
                 # silent bare `done`. See the SSE handler for rationale.
@@ -1532,8 +1580,7 @@ class VoiceChannel(Channel):
                 "type": "error", "utterance_id": uid,
                 "kind": _classify_error(exc).value,
                 "spoken": self._with_retraction(
-                    cfg, adapter, adapter.render(line) if line else "",
-                    already_spoke=speech_block_sent),
+                    cfg, adapter, line, already_spoke=bool(spoke)),
             })
 
 async def _write_sse(response: web.StreamResponse, event: str, data: dict) -> None:

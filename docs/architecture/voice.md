@@ -133,21 +133,29 @@ suppresses an ordinary foreground error once a handoff is committed, which is ri
 the agent's branch and wrong for a last resort, because a handoff whose own write failed
 still owes the caller an error.
 
-The predicate is the transport's own `speech_block_sent`. It is set for real speech blocks
-and not for the "still working" progress notice, which is not an answer — so a turn that
-voiced nothing gets its error line unchanged. The two transports set it at slightly
-different moments (the socket before awaiting its write, SSE after), which matters for
-handoff selection rather than here: it is monotonic, and both are read at error time.
+**Delivery, not selection.** The predicate is a per-turn witness that only a *completed*
+speech write records. It is deliberately not the flag the handlers already keep for handoff
+selection, which they set *before* starting a write so that no tool can claim a handoff
+while speech is in flight. Those are different questions, and answering the second with the
+first retracts speech nobody heard: a write the transport rejects sets the selection flag
+though nothing arrived, and the final tail block — the only speech an answer with no
+sentence boundary produces — delivers without changing selection at all. Both were
+reproduced against the borrowed flag before the witness replaced it. The "still working"
+progress notice records nothing, because it is not an answer, so a turn that voiced only
+that gets its error line unchanged.
 
 **One frame, not two.** The retraction and its reason are a single `error` frame whose
 spoken text carries both sentences. Emitting them as two writes would let the first land
 and the second fail — a client disconnecting between them leaves the listener with a
 retraction of nothing, which is worse than the contradiction it was meant to fix.
 
-**Never a retraction with no reason.** An error line can be schema-valid and still render
-to nothing — whitespace, or a bare dialect tag that rendering strips. Retracting into that
-silence produces the very outcome above, so a line with no speakable content is left
-exactly as it was, unretracted.
+**Never a retraction with no reason.** An error line can be schema-valid and still say
+nothing aloud — whitespace, or a bare `[tag]`, which is a delivery instruction rather than a
+sentence. Retracting into that silence produces the very outcome above, so a line with
+nothing speakable in it is left exactly as it was, and a retraction with nothing speakable
+in it is not prefixed. Both are judged on the canonical text rather than the rendered
+string, because a tag-preserving dialect renders `[flat]` to a non-empty string the listener
+still hears nothing of.
 
 What it does not cover: text already spoken cannot be unsaid, only corrected. The wording
 is overridable per persona through `voice_errors`; setting `retraction` to an empty string
