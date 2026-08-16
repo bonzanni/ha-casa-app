@@ -46,8 +46,17 @@ class DriverProtocol(ABC):
         - ``in_casa`` driver: ``options`` is a ``ClaudeAgentOptions`` and
           ``prompt`` is the first user turn.
         - ``claude_code`` driver: ``options`` is the ``ExecutorDefinition``
-          and ``prompt`` is the system-prompt body (will be written to
-          ``CLAUDE.md``, not passed as a turn).
+          and ``prompt`` is the INITIAL TURN — enqueued to the engagement's
+          inbound spool, falling back to a direct FIFO write. It is NOT the
+          workspace ``CLAUDE.md``: ``provision_workspace`` renders that from
+          the executor's own template and the driver's own arguments.
+
+        #583: that distinction is load-bearing, and this docstring had it
+        backwards. Because the two are rendered separately, a value the
+        engager interpolates into ``prompt`` reaches only the first turn, and
+        a value the driver passes to ``provision_workspace`` reaches only
+        ``CLAUDE.md``. The prior-engagement archive is fetched on exactly one
+        of those paths per driver — the driver's, for ``claude_code``.
         """
 
     @abstractmethod

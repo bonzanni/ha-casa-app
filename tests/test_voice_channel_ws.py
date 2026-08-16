@@ -281,6 +281,53 @@ async def unsigned_route_ws_app():
         yield client, channel
 
 
+class _PartialThenErrorBus:
+    """#594: voices a real block, then faults through the PRODUCTION error
+    path (``emit_error_line``), which is the only caller of ``_error_sink``
+    outside tests. Calling the sink directly would skip the composition
+    under test and pass for the wrong reason."""
+
+    def __init__(self, channel, cfg) -> None:
+        self._channel = channel
+        self._cfg = cfg
+
+    async def request(self, msg: BusMessage, timeout: float) -> None:
+        await msg.context["_on_token"]("[confident] The kitchen lights are off.")
+        await self._channel.emit_error_line("unknown", msg.context, self._cfg)
+        return None
+
+
+@pytest.mark.asyncio
+class TestWSPartialThenFaultIsRetracted:
+    async def test_the_error_frame_retracts_the_speech_already_voiced(self):
+        """The WS transport owes the same retraction as SSE — it maintains
+        its own ``speech_block_sent``, so the wiring is per-transport."""
+        cfg = _FakeCfg()
+        channel = VoiceChannel(
+            bus=None, default_agent="butler", webhook_secret="",
+            sse_path="/api/converse", ws_path="/api/converse/ws",
+            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            idle_timeout=300,
+        )
+        channel._bus = _PartialThenErrorBus(channel, cfg)
+        ws = _RecordingWs()
+
+        await channel._run_ws_utterance(
+            ws, {"agent_role": "butler", "text": "are the lights off?"},
+            "utterance-1", asyncio.get_running_loop().time() + 20,
+        )
+
+        kinds = [f["type"] for f in ws.frames]
+        # Setup premise, asserted: real speech reached the socket first.
+        assert "block" in kinds, ws.frames
+        errors = [f for f in ws.frames if f["type"] == "error"]
+        assert len(errors) == 1, ws.frames
+        spoken = errors[0]["spoken"].lower()
+        assert "disregard that" in spoken, errors[0]
+        assert "sorry, something went wrong" in spoken, errors[0]
+        assert spoken.index("disregard that") < spoken.index("sorry, something")
+
+
 @pytest.mark.asyncio
 class TestWSTurn:
     async def test_handoff_suppresses_a_late_foreground_error(self):

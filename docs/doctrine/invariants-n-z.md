@@ -89,3 +89,4 @@ The index is sharded by family letter: see also [`doctrine/invariants.md`](invar
 | `INV-VOICE-004` | A route registers only with the expected protocol version and exactly the full capability set. | [`architecture/voice.md`](../architecture/voice.md) |
 | `INV-VOICE-005` | Caller-supplied context cannot mint trusted route, device, job-control, handoff or delivery values. | [`architecture/voice.md`](../architecture/voice.md) |
 | `INV-VOICE-006` | Deferred delivery sends only the modality recorded on the job; an unrecognised or absent modality is never guessed. | [`architecture/voice.md`](../architecture/voice.md) |
+| `INV-VOICE-007` | An error line that follows speech already voiced in the same turn is spoken as a retraction of it, in one frame. | [`architecture/voice.md`](../architecture/voice.md) |

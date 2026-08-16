@@ -964,6 +964,113 @@ class TestEngageExecutorClaudeCode:
         pass
 
 
+class TestExecutorArchiveFetchedOncePerLaunch:
+    """#583: a memory-enabled ``claude_code`` executor used to receive the
+    prior-engagement archive TWICE, from two independent recalls that can
+    return different snapshots — ``engage_executor``'s (interpolated into the
+    initial FIFO prompt) and ``ClaudeCodeDriver.start``'s (written into the
+    workspace ``CLAUDE.md``). The driver's is the copy that survives context
+    compaction and is filtered at the record's own origin markers, so the
+    engager's fetch is the one that goes.
+
+    These assert the CALL COUNT, not the rendered status: the defect was two
+    successful fetches, which no status distinguishes from one.
+    """
+
+    async def _launch(self, monkeypatch, tmp_path, *, driver_name):
+        """Drive one engage_executor launch; return (fetch_calls, driver)."""
+        from config import ExecutorMemoryConfig
+        from tools import engage_executor, init_tools
+        import agent as agent_mod
+        import tools as tools_mod
+
+        defn = _mock_executor_def(
+            type="plugin-developer", driver=driver_name,
+            memory=ExecutorMemoryConfig(enabled=True, token_budget=500),
+        )
+        reg = MagicMock()
+        reg.get = MagicMock(return_value=defn)
+        reg.list_types = MagicMock(return_value=["plugin-developer"])
+
+        er = MagicMock()
+        mock_rec = MagicMock()
+        mock_rec.id = "abcd1234" + "0" * 24
+        mock_rec.topic_id = 42
+        er.create = AsyncMock(return_value=mock_rec)
+        er.mark_error = AsyncMock()
+        er.set_channel_state = AsyncMock()
+        er.set_initial_state_emoji = AsyncMock()
+        er.set_procedural_epoch = AsyncMock()
+
+        channel = await _setup(
+            reg, tmp_path=tmp_path,
+            prompt_template="task={task} mem={executor_memory}",
+        )
+        cm = MagicMock()
+        cm.get = MagicMock(return_value=channel)
+        init_tools(
+            channel_manager=cm, bus=MagicMock(),
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=er,
+            executor_registry=reg,
+        )
+
+        calls: list = []
+
+        async def _counting_fetch(**kwargs):
+            calls.append(kwargs)
+            return "ARCHIVE-BLOCK-MARKER"
+
+        monkeypatch.setattr(
+            tools_mod, "_fetch_executor_archive", _counting_fetch)
+
+        driver = MagicMock(start=AsyncMock())
+        monkeypatch.setattr(
+            agent_mod, "active_claude_code_driver", driver, raising=False)
+        monkeypatch.setattr(
+            agent_mod, "active_engagement_driver", driver, raising=False)
+
+        token = agent_mod.origin_var.set({
+            "role": "assistant", "channel": "telegram",
+            "chat_id": "c1", "cid": "x", "user_text": "hi",
+        })
+        try:
+            await engage_executor.handler({
+                "executor_type": "plugin-developer",
+                "task": "Add a Skill for the casa-probe-foo plugin",
+                "context": "none",
+            })
+        finally:
+            agent_mod.origin_var.reset(token)
+        return calls, driver
+
+    async def test_a_claude_code_launch_does_not_fetch_the_archive(
+        self, monkeypatch, tmp_path,
+    ):
+        """The engager performs ZERO archive recalls for claude_code — the
+        driver's own fetch is the launch's single recall."""
+        calls, driver = await self._launch(
+            monkeypatch, tmp_path, driver_name="claude_code")
+        assert calls == []
+        driver.start.assert_awaited_once()
+        prompt = driver.start.await_args.kwargs["prompt"]
+        # The slot is still substituted — a literal placeholder must never
+        # reach the FIFO.
+        assert "{executor_memory}" not in prompt
+        assert "ARCHIVE-BLOCK-MARKER" not in prompt
+
+    async def test_an_in_casa_launch_still_fetches_the_archive_exactly_once(
+        self, monkeypatch, tmp_path,
+    ):
+        """in_casa has no second fetch anywhere, so its ONE recall stays —
+        this is the half the change must not take with it."""
+        calls, driver = await self._launch(
+            monkeypatch, tmp_path, driver_name="in_casa")
+        assert len(calls) == 1
+        driver.start.assert_awaited_once()
+        assert "ARCHIVE-BLOCK-MARKER" in driver.start.await_args.kwargs["prompt"]
+
+
 class TestU3TopicTitle:
     """E-12 (v0.37.0) Task 22: U3 state-encoded topic title at engagement open.
 

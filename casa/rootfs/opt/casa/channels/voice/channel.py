@@ -355,6 +355,12 @@ _DEFAULT_ERROR_LINES = {
     # end as a bare `done` — a voice user just hears silence.
     "empty_turn":    "[apologetic] Sorry, I lost my train of thought — "
                      "could you ask that again?",
+    # #594: NOT an error kind — the sentence prepended to whichever error line
+    # above is spoken, when this turn already voiced real speech. A voice write
+    # is irreversible, so a fault after a partial answer otherwise leaves the
+    # listener holding a statement Casa never stood behind. Overridable per
+    # persona through `voice_errors` like any other line.
+    "retraction":    "[flat] Disregard that —",
 }
 
 # A4 (spec A4): voice turn-budget envelope. INTEGRATION_TIMEOUT_TOTAL is
@@ -809,6 +815,9 @@ class VoiceChannel(Channel):
                 "cid": request["cid"],
                 "_on_token": on_token,
                 "_error_sink": _error_sink,
+                # #594: a callable, so it reads the LIVE speech_block_sent at
+                # error time rather than its value at dispatch.
+                "_spoken_any": lambda: speech_block_sent,
                 "_voice_deadline": voice_deadline,
                 "_progress_sink": _progress_sink,
                 # SSE can complete only the live request. It never advertises
@@ -902,6 +911,17 @@ class VoiceChannel(Channel):
         the error was delivered to the client (caller should suppress
         normal text delivery). Returns False if no sink is present
         (e.g. this was called outside a live SSE/WS request).
+
+        #594: when this turn has ALREADY put real speech on the wire, the
+        error line is a correction of something the listener heard, so it is
+        prefixed with a retraction. The predicate is the transport's own
+        ``_spoken_any`` (each handler's ``speech_block_sent``, which flips
+        only when a real block is actually written — never for the
+        "still working" progress notice). Composed here rather than in the
+        two sinks so SSE and WS cannot drift, and emitted as ONE frame: a
+        retraction and its reason must not be two writes that can split,
+        leaving a listener with a retraction of nothing (Sol/Terra design
+        round, D3-S2).
         """
         sink = context.get("_error_sink")
         if sink is None:
@@ -909,6 +929,16 @@ class VoiceChannel(Channel):
         line = VoiceChannel._error_line_for_kind(agent_cfg, kind)
         adapter = TagDialectAdapter(agent_cfg.tts.tag_dialect)
         spoken = adapter.render(line) if line else ""
+        spoken_any = context.get("_spoken_any")
+        if callable(spoken_any) and spoken_any():
+            retraction = VoiceChannel._error_line_for_kind(
+                agent_cfg, "retraction")
+            if retraction:
+                rendered = adapter.render(retraction)
+                # A retraction alone still says something true; an error line
+                # alone is the pre-#594 behaviour. Either half missing must
+                # not produce a stray separator.
+                spoken = f"{rendered} {spoken}".strip() if spoken else rendered
         await sink(kind, spoken)
         return True
 
@@ -1365,6 +1395,9 @@ class VoiceChannel(Channel):
                 "cid": new_cid(),
                 "_on_token": on_token,
                 "_error_sink": _error_sink,
+                # #594: a callable, so it reads the LIVE speech_block_sent at
+                # error time rather than its value at dispatch.
+                "_spoken_any": lambda: speech_block_sent,
                 "_voice_deadline": voice_deadline,
                 "_progress_sink": _progress_sink,
                 "_voice_handoff_reservation": reservation,

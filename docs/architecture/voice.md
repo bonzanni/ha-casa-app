@@ -117,6 +117,29 @@ authenticated, not because they were verified.
 Enforced in the delivery coordinator's offer path. A job whose modality is unknown waits and
 expires rather than being sent as speech on the assumption that speech is what was wanted.
 
+**INV-VOICE-007**: An error line that follows speech already voiced in the same turn is spoken as a retraction of it, in one frame.
+
+A voice write is irreversible — the bytes are on the wire and the listener has heard them.
+A turn can stream a partial answer and *then* fault, so the error line that follows is a
+correction of something Casa already said, not a substitute for it. Without one, the
+listener is left holding a statement Casa never stood behind.
+
+Enforced in `emit_error_line`, which composes the retraction ahead of the persona error
+line and hands the sink a single string. The predicate is the transport's own
+`speech_block_sent`, which flips only when a real speech block is actually written — so the
+"still working" progress notice, which is not an answer, correctly does not arm it, and a
+turn that voiced nothing gets its error line unchanged. Composed in that one place, not in
+the two sinks, so the SSE and socket transports cannot drift apart.
+
+**One frame, not two.** The retraction and its reason are a single `error` frame whose
+spoken text carries both sentences. Emitting them as two writes would let the first land
+and the second fail — a client disconnecting between them leaves the listener with a
+retraction of nothing, which is worse than the contradiction it was meant to fix.
+
+What it does not cover: text already spoken cannot be unsaid, only corrected. The retraction
+is overridable per persona through `voice_errors`, and a persona that blanks it gets the
+pre-existing behaviour back.
+
 ## Failure behavior
 
 **No secret, or a bad signature.** All voice routes return unauthorised for a missing,
