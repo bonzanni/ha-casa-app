@@ -169,6 +169,18 @@ entry *and* in the entry they would replace. That is not a convenience — the c
 runs in a separate process, and its hand edit of this file discarded reminders silently
 (INV-TRIG-011 in [`architecture/triggers.md`](triggers.md)).
 
+An update is a WHOLE-ENTRY replacement, so a field the caller does not send is a field that
+disappears. For most keys that is fine: the operator reads the diff and can put it back. A
+webhook's `auth` is the exception, and is carried forward when the replacement omits it,
+because the tool projects only the fields it was handed — an edit that touches nothing but
+`clearance` arrives with no `auth` at all. Dropping it re-defaults the trigger to
+`hmac_body` against the global secret, so the route silently changes what verifies it while
+the caller's existing signatures are refused. The same holds one level down: losing just
+`secret_owner: provider` flips ownership to Casa, which then mints into a slot the operator
+fills by hand and can neither regenerate nor import. Omission means leave it alone, not make
+it mine; changing the mode or the owner stays available by sending a block that says so. The
+replacement's own `type` still decides — a webhook turned into a schedule keeps no `auth`.
+
 One-shot firing itself — dropping the scheduler job, and removing the entry only when the
 agent owns it — is INV-TRIG-009, and it lives with the registry that implements it
 ([`architecture/triggers.md`](triggers.md)): it governs every one-shot trigger, including

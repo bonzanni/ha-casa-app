@@ -235,6 +235,70 @@ class TestReloadError:
         assert result["message"] == "deliberate failure"
 
 
+class TestSecretReportNeverWedgesReloadAdmission:
+    """#609 (Terra, final review). Moving the filesystem probe off the event
+    loop was only half the fix: awaiting it while the per-scope key lock and
+    the global RW lock are BOTH held merely relocates the hang. A hung `/data`
+    would then block a pending full-reload writer and, behind it in FIFO
+    order, every later reader — a diagnostic wedging reload admission.
+
+    So the snapshot is taken under the lock and the probe runs after both are
+    released. Asserted as a HAPPENS-BEFORE, not a duration, so it cannot pass
+    or fail on timing luck: a full reload must COMPLETE while an earlier
+    read-scope dispatch is still inside its probe."""
+
+    async def test_a_hung_probe_does_not_block_a_full_reload(self, monkeypatch):
+        import threading
+        from types import SimpleNamespace
+
+        import reload as reload_mod
+        import webhook_auth
+        from reload import dispatch
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _hanging_probe(*a, **kw):
+            entered.set()
+            release.wait(10)
+            return ("absent", "no file at this name")
+
+        async def _noop_handler(runtime, role=None, **kw):
+            return ["did_work"]
+
+        monkeypatch.setattr(webhook_auth, "probe_secret", _hanging_probe)
+        monkeypatch.setitem(reload_mod._HANDLERS, "triggers", _noop_handler)
+        monkeypatch.setitem(reload_mod._HANDLERS, "full", _noop_handler)
+
+        runtime = _make_runtime()
+        spec = SimpleNamespace(name="vm", type="webhook", clearance="public",
+                               auth={"mode": "static_header", "header": "X-API-Key",
+                                     "tolerance_secs": 300, "secret_owner": "casa"})
+        runtime.role_configs["assistant"] = SimpleNamespace(triggers=[spec])
+        runtime.trigger_registry.webhook_names_for.return_value = ["vm"]
+        runtime.trigger_registry.get_webhook_target.return_value = "assistant"
+        runtime.trigger_registry.get_clearance.return_value = "public"
+        runtime.trigger_registry.get_auth_policy.return_value = dict(spec.auth)
+
+        probing = asyncio.create_task(
+            dispatch("triggers", runtime=runtime, role="assistant"))
+        try:
+            for _ in range(500):                      # wait to be inside the probe
+                if entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert entered.is_set(), "the probe never ran; the test proves nothing"
+
+            # role=None so this dispatch snapshots nothing and cannot itself hang.
+            full = await asyncio.wait_for(
+                dispatch("full", runtime=runtime), timeout=5)
+            assert full["status"] == "ok"
+            assert not probing.done(), "premise: the first dispatch is still probing"
+        finally:
+            release.set()
+            await asyncio.wait_for(probing, timeout=10)
+
+
 class TestLockSerialization:
     async def test_same_scope_serializes(self, monkeypatch):
         # Two concurrent dispatches for the same scope must run sequentially.

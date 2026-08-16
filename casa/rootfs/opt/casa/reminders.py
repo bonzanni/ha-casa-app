@@ -690,6 +690,54 @@ def _refuse_placeholder_rewrite(text: "str | None", path: str, verb: str) -> Non
         )
 
 
+def _carry_forward_secret_owner(previous: dict, entry: dict) -> dict:
+    """Keep a declared ``auth`` that the replacement omits (#609).
+
+    This is a WHOLE-ENTRY replacement, so a field the caller does not send is a
+    field that disappears. For every other key that is harmless — the operator
+    sees the diff and can put it back. For ``secret_owner`` it is not:
+    ``provider`` means Casa must never mint here because the operator placed
+    that credential by hand and Casa can neither regenerate nor import it.
+    Losing the word flips ownership to the ``casa`` default, and since #609
+    mints at registration, the next reload then OCCUPIES the slot. Because a
+    casa-minted token also satisfies the provider validation rule, the report
+    reads the route healthy while every request signed with the operator's
+    real credential is refused.
+
+    Omission therefore means "leave it alone", not "make it mine". That holds
+    for the whole ``auth`` block as well as for ``secret_owner`` inside it:
+    ``config_trigger_upsert`` projects only the fields it was handed, so an
+    edit that touches nothing but ``clearance`` arrives with no ``auth`` at
+    all, and dropping it re-defaults the trigger to ``hmac_body``/``casa`` —
+    the route then verifies against the global secret while the integrator's
+    existing signatures are refused, and the report calls it healthy.
+
+    Changing the mode or the owner stays available by sending an ``auth``
+    block that says so.
+    """
+    prior = previous.get("auth") if isinstance(previous, dict) else None
+    if not isinstance(prior, dict):
+        return entry
+    # The replacement's own `type` decides: a webhook turned into a schedule
+    # must not keep an auth block, and the schema would refuse one anyway.
+    kind = entry.get("type", previous.get("type") if isinstance(previous, dict) else None)
+    if kind != "webhook":
+        return entry
+    auth = entry.get("auth")
+    if auth is None:
+        # The whole block was omitted — the shape `config_trigger_upsert`
+        # produces for an edit that never mentioned auth at all, since it
+        # projects only the fields it was handed. Dropping it silently
+        # re-defaults the trigger to `hmac_body`/`casa`, which changes what
+        # verifies the route while the report reads healthy.
+        return {**entry, "auth": dict(prior)}
+    if not isinstance(auth, dict):
+        return entry
+    if "secret_owner" in auth or "secret_owner" not in prior:
+        return entry
+    return {**entry, "auth": {**auth, "secret_owner": prior["secret_owner"]}}
+
+
 @_under_pass_lock
 def upsert_entry(path: str, entry: dict) -> str:
     """Add *entry*, or replace the existing entry of the same ``name``.
@@ -759,6 +807,7 @@ def upsert_entry(path: str, entry: dict) -> str:
     candidate = dict(doc)
     entries = list(doc["triggers"])
     if matches:
+        entry = _carry_forward_secret_owner(doc["triggers"][matches[0]], entry)
         entries[matches[0]] = entry
         outcome = "replaced"
     else:

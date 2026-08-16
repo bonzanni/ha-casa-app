@@ -20,6 +20,7 @@ mirrors the L4 lesson in the Telegram update handler.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
@@ -175,15 +176,35 @@ def _publish(name: str, value: bytes, secrets_dir: Path) -> None:
     """Atomically publish ``value`` at ``name`` via staging + linkat.
 
     The final name never holds a partial file: a private staging file is
-    written and fsynced, then hard-linked into place (``EEXIST`` if a
-    concurrent winner already published — never clobbered).
+    written IN FULL (short writes are looped, #622) and fsynced, then
+    hard-linked into place (``EEXIST`` if a concurrent winner already
+    published — never clobbered). A write that cannot complete raises with
+    the staging file removed and the final name untouched, so the name stays
+    mintable once the filesystem recovers.
     """
     secrets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     staging = secrets_dir / f".tmp-{os.getpid()}-{secrets.token_hex(8)}"
     fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(fd, value)
+        # #622: a single ``os.write`` may consume FEWER bytes than requested.
+        # Discarding the return staged a partial value, fsynced it, and linked
+        # it into place as the live slot — permanently, because ``os.link``
+        # below never clobbers and nothing in Casa unlinks a resident slot. The
+        # trigger then 401s forever and its name can never be reused. Loop
+        # until the whole buffer is on the fd, so a genuinely exhausted disk
+        # RAISES here instead, before anything is published.
+        buf = memoryview(value)
+        while buf:
+            buf = buf[os.write(fd, buf):]
         os.fsync(fd)
+    except BaseException:
+        # Leave no partial staging file: `_sweep_orphans` would only remove it
+        # 60s later, and until then it is a readable fragment of a secret.
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise
     finally:
         os.close(fd)
     dir_fd = os.open(secrets_dir, os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -204,6 +225,59 @@ def _publish(name: str, value: bytes, secrets_dir: Path) -> None:
 def read_secret(name: str, *, owner: str, secrets_dir: Path) -> bytes | None:
     """Read the live secret for ``name`` (fail-closed)."""
     return _read_final(name, owner, Path(secrets_dir))
+
+
+# The auth modes that carry a PER-TRIGGER secret under ``secrets_dir``.
+# ``hmac_body`` is deliberately absent: it verifies against the one global
+# secret and writes nothing here. This module owns secret semantics, so it
+# owns the constant; `trigger_reconcile` aliases it rather than restating it.
+PER_TRIGGER_SECRET_MODES = ("static_header", "timestamped_hmac")
+
+
+def probe_secret(name: str, *, owner: str, secrets_dir: Path) -> tuple[str, str]:
+    """Classify the slot for ``name`` into one of FOUR states, with a reason.
+
+    ``_read_final`` answers a different question — "give me bytes I may verify
+    with" — and collapses five distinct conditions to ``None``: absent,
+    unreadable, non-regular, symlinked, and present-but-invalid. That is right
+    for the request path, which must fail closed on all of them, and wrong for
+    anything that decides what to DO about a slot, because only ``absent``
+    may be minted into and only ``absent`` may be reported as "not there yet".
+
+    ENOENT is the ONLY absent condition. ENOTDIR in particular must not read
+    as absent: it means a regular file sits where ``secrets_dir`` should be,
+    and ``ensure_secret`` would then raise ``EEXIST`` from ``mkdir`` on every
+    single pass, forever.
+
+    Returns ``(state, detail)`` where state is ``readable`` | ``absent`` |
+    ``unreadable`` | ``invalid``. ``detail`` never contains secret bytes — a
+    byte count or an errno name, never the value.
+    """
+    path = Path(secrets_dir) / name
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return "absent", "no file at this name"
+    except OSError as exc:
+        return "unreadable", f"{errno.errorcode.get(exc.errno, exc.errno)} opening the file"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return "unreadable", "not a regular file"
+        raw = os.read(fd, _PROVIDER_MAX + 1)
+    except OSError as exc:
+        return "unreadable", f"{errno.errorcode.get(exc.errno, exc.errno)} reading the file"
+    finally:
+        os.close(fd)
+    if _valid_value(owner, raw):
+        return "readable", f"{len(raw)} bytes, valid for owner {owner!r}"
+    if owner == "casa":
+        return "invalid", (
+            f"{len(raw)} bytes; a casa secret must be exactly "
+            f"{_CASA_TOKEN_LEN} ASCII characters")
+    return "invalid", (
+        f"{len(raw)} bytes; a provider secret must be 1-{_PROVIDER_MAX} "
+        f"printable ASCII characters")
 
 
 def retire_secret(name: str, *, secrets_dir: Path) -> None:
@@ -289,8 +363,19 @@ def _write_ident(name: str, identity: str, secrets_dir: Path) -> bool:
         fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
                      0o600)
         try:
-            os.write(fd, identity.encode("ascii"))
+            # #622 — a truncated `.ident` is worse than an absent one: it reads
+            # as a MISMATCHED identity, and `ensure_secret_for_identity` retires
+            # and re-mints on mismatch.
+            buf = memoryview(identity.encode("ascii"))
+            while buf:
+                buf = buf[os.write(fd, buf):]
             os.fsync(fd)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         finally:
             os.close(fd)
         os.replace(tmp, _ident_path(name, secrets_dir))
@@ -395,8 +480,17 @@ def _write_state(name: str, phase: str, owner: str, secrets_dir: Path) -> None:
     tmp = secrets_dir / f".rot-{os.getpid()}-{secrets.token_hex(8)}"
     fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(fd, payload)
+        # #622 — same short-write hazard as `_publish`.
+        buf = memoryview(payload)
+        while buf:
+            buf = buf[os.write(fd, buf):]
         os.fsync(fd)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     finally:
         os.close(fd)
     os.replace(tmp, _state_path(name, secrets_dir))

@@ -126,8 +126,18 @@ class CasaRuntime:
     # in place (clear+update) so the captured references see fresh policies —
     # never rebind this attr. Defaulted (None) so narrow test stand-ins keep
     # compiling; a None map means "no boot map to refresh" and reload skips
-    # the rebuild. MUST stay the final field (dataclass-ordering rule).
+    # the rebuild. New defaulted fields are APPENDED after this one.
     executor_cc_policies: dict | None = None
+
+    # #609: whether the ONE global webhook secret is usable. `hmac_body`
+    # triggers verify against it, and it is blank when the option holds an
+    # unresolved op:// reference or generation failed — in which case every
+    # request to such a trigger 401s permanently. Decided at boot beside the
+    # value itself (the handlers close over a `main()` local, so nothing else
+    # can see it) and restart-only, exactly like the closure. Defaults False:
+    # a report that cannot establish the secret is usable must not claim it is.
+    # Appended, per this file's convention that new defaulted fields go last.
+    webhook_global_secret_usable: bool = False
 
     def refresh_personality_maps(self) -> None:
         """Re-derive the four personality maps from ``role_configs`` and

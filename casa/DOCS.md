@@ -122,6 +122,16 @@ returns `401` rather than serving open.
 - `timestamped_hmac` — a `t=<unix>,v0=<hex>` signature (default header
   `ElevenLabs-Signature`) within a tolerance window.
 
+The per-trigger secret is generated when the trigger is registered — at startup
+and on any reload that installs triggers — so it exists before the first call
+rather than being created by it. Reading the value currently means reaching the
+file on the host (for example through the terminal app); no Casa surface hands
+it to you. If you would rather supply the value yourself, declare
+`secret_owner: provider` on a `timestamped_hmac` trigger and place the file by
+hand: Casa never writes a slot it does not own. Set that at creation time —
+changing the owner of an existing trigger is not supported, so delete it and
+create it under a new name instead.
+
 A turn started by a `/webhook/{name}` trigger is treated as **untrusted
 third-party content**: it runs in a restricted runtime (no shell, filesystem,
 network, plugins, or hooks — only public-clearance memory recall and an

@@ -9086,17 +9086,26 @@ async def casa_reload_triggers(args: dict) -> dict:
 
     from reload import dispatch
     result = await dispatch("triggers", runtime=runtime, role=role)
-    if result.get("status") == "ok":
-        result.setdefault("role", role)
-        # Back-compat: emit registered=[trigger_names] from runtime.role_configs / specialists
-        try:
-            cfg = runtime.role_configs.get(role)
-            if cfg is None:
-                cfg = runtime.specialist_registry.all_configs().get(role)
-            if cfg is not None and getattr(cfg, "triggers", None):
-                result["registered"] = [t.name for t in cfg.triggers]
-        except Exception:  # noqa: BLE001 — best-effort surfacing
-            pass
+    result.setdefault("role", role)
+    # Back-compat: emit registered=[trigger_names] from runtime.role_configs /
+    # specialists.
+    #
+    # #609, two corrections. (1) This used to sit inside `if status == "ok"`,
+    # so the surface that explains a failed reload was withheld by the very
+    # failure it explains — and the same gate withheld the per-trigger secret
+    # rows attached alongside it. Both read state that does not depend on the
+    # reload having succeeded. (2) The old guard was `getattr(cfg, "triggers")`
+    # TRUTHINESS, so a role with an empty trigger list omitted the key
+    # entirely — indistinguishable from "the config could not be read" and from
+    # "the specialist is disabled". An empty list says the thing it means.
+    try:
+        cfg = runtime.role_configs.get(role)
+        if cfg is None:
+            cfg = runtime.specialist_registry.all_configs().get(role)
+        if cfg is not None:
+            result["registered"] = [t.name for t in (getattr(cfg, "triggers", None) or [])]
+    except Exception as exc:  # noqa: BLE001 — say so rather than dropping it
+        result["registered_error"] = f"{type(exc).__name__}: {exc}"
     return _result(result)
 
 

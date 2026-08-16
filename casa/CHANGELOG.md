@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.217.0] - 2026-08-16
+
+### Fixed
+
+- **A webhook trigger's secret now exists the moment you create it** (#609).
+  Asking for a webhook in chat could produce a trigger that was committed,
+  reloaded and reported live while its secret did not exist yet — and the only
+  thing that would create it was a call to the webhook, which could not succeed
+  without it. Casa now generates the secret when the trigger is registered, so
+  the setup instructions are true when you are given them. Verification never
+  creates one, so an unprovisioned webhook is refused rather than quietly
+  provisioning itself from whatever call arrives first.
+
+- **A reload now tells you the state of each trigger's secret.** Reloading
+  triggers reports, per trigger, whether a secret is present, still waiting for
+  one you supply, or unreadable — and says which of those Casa can fix and which
+  it cannot. It reports what a request would actually do rather than what the
+  configuration file says, so a route running on settings the file no longer
+  matches is named instead of reading healthy. The report is included when a
+  reload fails too, since that is when you most want it.
+
+- **An interrupted write can no longer leave a permanently broken secret**
+  (#622). If the disk filled at exactly the wrong moment, Casa could store a
+  half-written secret, report nothing wrong, and never be able to repair it —
+  the webhook would refuse every call from then on and the name could never be
+  reused. A partial write is now refused outright, leaving the name free.
+
+- **Editing a webhook no longer takes over a secret you provided yourself.**
+  Changing one field of a webhook trigger — its clearance, say — could silently
+  hand ownership of its secret to Casa, which would then replace your value with
+  its own on the next reload. Fields you do not mention are left alone.
+
+### Known limitations
+
+- Deleting a webhook trigger still leaves its secret behind, so a new trigger
+  created later under the same name inherits it (#620). This was already true
+  and is unchanged here.
+- There is still no way to read a generated secret from inside Casa; it has to
+  be read from the host filesystem (#621).
+
 ## [0.216.0] - 2026-08-16
 
 ### Fixed

@@ -274,6 +274,28 @@ the current set is four.
 plugin prefix. Declaring the webhook channel on the resident is *not* checked for webhooks —
 the channel gate is scheduled-only (see INV-TRIG-001).
 
+Its **secret exists from the moment the trigger is registered**, which is what makes the
+setup instruction true when it is given. `static_header` and `timestamped_hmac` are backed
+by a per-trigger file; `hmac_body` rides the one global secret and writes nothing. Casa
+mints only what it owns: a slot declared `secret_owner: provider` is never written, because
+Casa can neither regenerate nor import that value. Minting runs *after* registration — the
+cross-role name-collision check lives there, and minting first would write into another
+role's slot for a registration about to be refused — and it only ever creates a file that is
+absent. It never deletes, replaces or overwrites one, and it never raises: a filesystem
+fault leaves the trigger registered and refusing requests rather than silently changing
+which routes exist.
+
+Every reload envelope that touches registration therefore carries `trigger_secrets`, one
+row per trigger, plus counts. The rows are derived from the **registry** — what a request is
+actually verified with — and from a real read of the file, never from the declaration alone:
+those are different questions, and a route can run at a clearance or an auth mode the file
+no longer says. A row states what a request would do, so `readable` means bytes are present
+that satisfy the owner's rule, not that the integration works. `awaiting_import` says
+plainly that no Casa surface can place a provider secret; `invalid` and `unreadable` say
+plainly that the file cannot be repaired or removed through any Casa surface. The report
+rides the error envelope too — it exists to explain a failed pass, so withholding it on
+failure would withhold it exactly when it is wanted.
+
 **A new plugin trigger** needs the manifest declaration, an assigned target that accepts
 webhooks, secret backing, and operator consent — and reconciliation must then run. The
 declaration itself has hard rails a plugin author cannot discover from the routing model:
@@ -304,6 +326,7 @@ there is none today.
 
 **Source**
 - `casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry`
+- `casa/rootfs/opt/casa/resident_trigger_secrets.py`
 - `casa/rootfs/opt/casa/casa_core.py::_make_webhook_handler`
 - `casa/rootfs/opt/casa/tools.py::config_trigger_upsert`
 - `casa/rootfs/opt/casa/tools.py::config_trigger_delete`
@@ -316,6 +339,8 @@ there is none today.
 - `tests/test_agent_loader_trigger_auth.py`
 - `tests/test_casa_reload_triggers_resident.py`
 - `tests/test_config_trigger_tools.py`
+- `tests/test_resident_trigger_secrets.py`
+- `tests/test_webhook_secrets.py`
 - `tests/test_scheduled_media_delivery.py`
 - `tests/test_scheduled_delivery_durable.py`
 

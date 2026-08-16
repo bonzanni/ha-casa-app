@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
 import plugin_triggers
+import webhook_auth
 from plugin_triggers import ack_identity
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,9 @@ _GLOBAL_SECRET_PATH = Path("/data/webhook_secret")
 _RECONCILE_LOCK = asyncio.Lock()
 
 # Per-trigger auth modes backed by a casa-minted per-trigger secret file.
-_PER_TRIGGER_SECRET_MODES = ("static_header", "timestamped_hmac")
+# ONE definition, owned by the module that owns secret semantics (#609) —
+# the resident mint reads the same tuple, so the two halves cannot drift.
+_PER_TRIGGER_SECRET_MODES = webhook_auth.PER_TRIGGER_SECRET_MODES
 
 
 # -- injectable defaults (module functions so tests can monkeypatch) ---------

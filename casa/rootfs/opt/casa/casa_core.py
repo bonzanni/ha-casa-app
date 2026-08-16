@@ -2290,15 +2290,23 @@ def _make_webhook_handler(
         if mode == "hmac_body":
             return webhook_secret.encode() if webhook_secret else b""
         owner = policy.get("secret_owner", "casa")
-        # casa: mint-if-absent so the operator can read + provision it;
-        # provider: read-only (imported out of band). Sol shipB-r1 P1-6: a
-        # filesystem failure here (unwritable/full secrets dir) must degrade
-        # to an EMPTY secret — which never authenticates (401) — not a 500.
+        # #609 — READ-ONLY. This used to mint-if-absent, which made the first
+        # inbound REQUEST the thing that created a casa secret: a trigger was
+        # reported live and committed while its secret did not exist, and the
+        # only way to create it was a call that could not succeed without it.
+        # Minting now happens at registration (`resident_trigger_secrets`), and
+        # this path must not be a second mechanism — otherwise a route can be
+        # served from whatever file happens to survive. An unprovisioned route
+        # is a 401, not a mint.
+        #
+        # Sol shipB-r1 P1-6 still applies: a filesystem failure here
+        # (unreadable/full secrets dir) must degrade to an EMPTY secret — which
+        # never authenticates (401) — not a 500.
         try:
-            got = webhook_auth.ensure_secret(
+            got = webhook_auth.read_secret(
                 name, owner=owner, secrets_dir=secrets_dir)
         except Exception:  # noqa: BLE001 — fail closed, never fail open/500
-            logger.warning("webhook secret read/mint failed (%s)", name,
+            logger.warning("webhook secret read failed (%s)", name,
                            exc_info=True)
             return b""
         if got:
@@ -2738,6 +2746,45 @@ async def notify_config_sync(
             json.dump(report, fh)
     except OSError as exc:
         logger.warning("config_sync notify: could not mark report notified: %s", exc)
+
+
+async def _boot_mint_resident_trigger_secrets(
+    *, role_configs: dict, secrets_dir: Any,
+) -> list[tuple[str, str]]:
+    """Boot seam for #609: create the missing casa-owned per-trigger webhook
+    secrets right after resident triggers register.
+
+    Extracted from ``main()`` so it is unit-testable — ``main()`` has no
+    execution coverage past its third statement, and step 13b sits outside
+    every ``try`` in it.
+
+    NEVER fatal, and that is a measured decision rather than a preference. On
+    a healthy install this is a pure READ: ``ensure_secret`` is only reached
+    for a slot the probe called ``absent``, so the only boot that can fail is
+    one where a secret is missing AND ``/data`` is unwritable. Aborting there
+    would trade Telegram, voice, every reminder and every engagement for one
+    webhook that would 401 either way — and an exception escaping ``main()``
+    does not restart Casa, it STOPS the app (``svc-casa/finish`` calls
+    ``bashio::addon.stop`` for any exit code but 0/256). Every sibling boot
+    degradation in this file does the same. The failure is carried by a WARN
+    and by the report on the next reload, which is also the retry.
+    """
+    try:
+        import resident_trigger_secrets
+        failures = await asyncio.to_thread(
+            resident_trigger_secrets.mint_for_specs,
+            [t for cfg in role_configs.values() for t in (cfg.triggers or [])],
+            secrets_dir=secrets_dir,
+        )
+        for name, reason in failures:
+            logger.warning(
+                "boot: webhook trigger %r has no usable secret and could not be "
+                "minted (%s) — requests to it will be refused until the next "
+                "reload or restart succeeds", name, reason)
+        return failures
+    except Exception:  # noqa: BLE001 — never fatal; see the docstring
+        logger.warning("boot resident trigger-secret mint failed", exc_info=True)
+        return []
 
 
 async def _boot_reconcile_plugin_triggers(
@@ -3989,6 +4036,12 @@ async def main() -> None:
     # Blank it: every authenticated request is rejected loudly instead.
     from webhook_auth import usable_webhook_secret
     _usable = usable_webhook_secret(webhook_secret)
+    # #609: the report must be able to say that an `hmac_body` webhook rides a
+    # global secret that is BLANK — in which case every request to it 401s
+    # permanently. The handlers close over the `main()` local below, so this is
+    # the only place the fact is known; WEBHOOK_SECRET is restart-only, so a
+    # boot-frozen flag is exactly as fresh as the closure.
+    runtime.webhook_global_secret_usable = bool(_usable)
     if webhook_secret and not _usable:
         logger.error(
             "webhook secret is an unresolved op:// reference — refusing to use "
@@ -4664,6 +4717,16 @@ async def main() -> None:
                 "Registered %d trigger(s) for agent '%s'",
                 len(cfg.triggers), role,
             )
+
+    # 13b'. #609: mint the per-trigger webhook secrets for the triggers just
+    # registered. AFTER registration, so `register_agent`'s cross-role webhook
+    # name collision test has already refused a name this role may not have —
+    # minting first would write a casa token into another role's slot for a
+    # registration that is then rejected.
+    import trigger_reconcile as _trigger_reconcile
+    await _boot_mint_resident_trigger_secrets(
+        role_configs=role_configs, secrets_dir=_trigger_reconcile.SECRETS_DIR,
+    )
 
     # 13c. Release B: plugin-declared webhook triggers — reconcile the
     # overlay after resident triggers register, before the server starts.
