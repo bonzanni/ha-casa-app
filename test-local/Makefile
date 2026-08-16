@@ -43,7 +43,7 @@ test-tier1: build
 	cd $(ROOT) && bash test-local/e2e/test_voice_ws.sh
 
 test-tier2: test-tier1
-	cd $(ROOT) && python -m pytest tests/ -m "unit and not docker and not slow"
+	cd $(ROOT) && $(MAKE) suite-run PYTEST_ARGS='-m "unit and not docker and not slow"'
 	cd $(ROOT) && bash test-local/e2e/test_invoke_sessions.sh
 	cd $(ROOT) && bash test-local/e2e/test_external_surface.sh
 	cd $(ROOT) && bash test-local/e2e/test_specialist_delegation.sh
@@ -51,7 +51,7 @@ test-tier2: test-tier1
 	cd $(ROOT) && bash test-local/e2e/test_engagement_E.sh
 
 test-tier3:
-	cd $(ROOT) && python -m pytest tests/ -m "slow" || true
+	cd $(ROOT) && $(MAKE) suite-run PYTEST_ARGS='-m "slow"' || true
 	cd $(ROOT) && bash test-local/e2e/test_concurrency.sh
 	cd $(ROOT) && CASA_USE_MOCK_CLAUDE=1 bash test-local/e2e/test_mcp_restart_survival.sh
 
