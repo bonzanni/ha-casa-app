@@ -1,0 +1,23 @@
+{
+  "casa/ellen@0.1.0": {
+    "persona_checksum": "sha256:15b91873c08b1b704e7b4e7785b21359d88e3a16a8ba05e799dc7b23db7b60ef",
+    "text_bytes": 1207,
+    "text_sha256": "sha256:d1c0234b9ca978124e0b8d80097e05b03bec11b3c351530056391ce1c983d129",
+    "voice_bytes": 1207,
+    "voice_sha256": "sha256:d1c0234b9ca978124e0b8d80097e05b03bec11b3c351530056391ce1c983d129"
+  },
+  "casa/gary@0.1.0": {
+    "persona_checksum": "sha256:13b6974e810dcc5a98aadb828963d16554ffe3d4fd4dfc7339b12792003c819f",
+    "text_bytes": 1214,
+    "text_sha256": "sha256:284648f88697cecb76013b34662ebdeb254f11810650cd3527f2447cf8464a18",
+    "voice_bytes": 1214,
+    "voice_sha256": "sha256:284648f88697cecb76013b34662ebdeb254f11810650cd3527f2447cf8464a18"
+  },
+  "casa/tina@0.1.0": {
+    "persona_checksum": "sha256:4772af59ecbedd845281131a3f52051b570e4f6f76a4866564aa3eb0bb12e068",
+    "text_bytes": 1197,
+    "text_sha256": "sha256:012d702a28e271693fa6f6e222044eaeb2a98b5634ee876215bd9ce6213ca625",
+    "voice_bytes": 1197,
+    "voice_sha256": "sha256:012d702a28e271693fa6f6e222044eaeb2a98b5634ee876215bd9ce6213ca625"
+  }
+}

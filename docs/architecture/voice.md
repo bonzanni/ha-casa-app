@@ -128,10 +128,15 @@ Enforced by one composition step that every error path shares — the sink used 
 agent's classified error branch, and each transport's own last-resort handler, which is
 where a turn that times out in the bus lands. That path composed its own frame and so
 skipped the retraction until the reviewers reproduced it; the *text* is now shared while
-each path keeps writing its own frame. That separation is deliberate: the socket sink
-suppresses an ordinary foreground error once a handoff is committed, which is right for
-the agent's branch and wrong for a last resort, because a handoff whose own write failed
-still owes the caller an error.
+each path keeps writing its own frame. That separation is deliberate, and the reason is
+selection, not delivery: the socket sink suppresses a foreground error once the handoff
+future is resolved, and a last resort must not inherit that guard — because the ordinary
+way into that branch is a turn that faulted in the bus, arriving after the *unused* handoff
+future was cancelled and so already counted as resolved, on a socket that still works,
+where the frame is the listener's only telling. When the handoff's own write was refused by the
+transport's closing-state guard, the last-resort frame is attempted and cannot arrive
+either: that guard refuses before any byte and never unlatches. The durable job is
+re-offered on reconnect instead (#619).
 
 **Delivery, not selection.** The predicate is a per-turn witness that only a *completed*
 speech write records. It is deliberately not the flag the handlers already keep for handoff

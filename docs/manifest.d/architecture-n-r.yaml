@@ -56,6 +56,7 @@
     - casa/rootfs/opt/casa/agent_loader.py::_compose_prompt
     - casa/rootfs/opt/casa/role_slot.py
     - casa/rootfs/opt/casa/prompt_compiler.py::compile_projection_set
+    - casa/rootfs/opt/casa/markdown_sections.py::root_sections
     - casa/rootfs/opt/casa/persona_install.py::persona_references
     - casa/rootfs/opt/casa/persona_install.py::require_persona_present
     - casa/rootfs/opt/casa/persona_install.py::remove_installed_persona
@@ -71,8 +72,10 @@
     - tests/test_personality_admin_handlers.py
     - tests/test_persona_apply_resident_staging.py
     - tests/test_response_shape_write_guard.py
+    - tests/test_prompt_compiler.py
+    - tests/test_persona_pack.py
   related: [architecture/agent-taxonomy.md, architecture/turn-loop.md]
-  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-008]
+  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-008, INV-PERS-009]
   invariant_tests:
     INV-PERS-001: [tests/test_tools_specialist_options.py::test_build_specialist_options_prefers_compiled_bundle_when_present]
     INV-PERS-002: [tests/test_persona_pack.py::test_pin_inv_pers_002_capability_claims_are_not_semantically_validated]
@@ -82,6 +85,7 @@
     INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
     INV-PERS-007: [tests/test_persona_apply_resident_staging.py::test_resident_apply_stages_and_does_not_promote, tests/test_persona_apply_resident_staging.py::test_resident_apply_writes_nothing_when_the_candidate_cannot_compile]
     INV-PERS-008: [tests/test_response_shape_write_guard.py::TestResponseShapeWriteGuard::test_denies_every_write_primitive_on_every_resident, tests/test_response_shape_write_guard.py::TestTheFileIsActuallyDead::test_every_resident_role_requires_a_persona]
+    INV-PERS-009: [tests/test_prompt_compiler.py::test_a_nested_subsection_reaches_the_text_projection_exactly_once, tests/test_prompt_compiler.py::test_a_second_root_and_its_subsection_each_reach_text_once, tests/test_prompt_compiler.py::test_a_section_authored_above_core_is_emitted_once_and_only_once, tests/test_persona_pack.py::test_root_sections_returns_the_prefix_minimum_rows_in_document_order]
 
 - doc: architecture/plugin-events.md
   summary: Plugin-emitted domain events — casa-minted generations, per-subscriber delivery receipts, and consent-gated headless wakes.

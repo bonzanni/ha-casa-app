@@ -30,6 +30,7 @@ import yaml
 from canonical_bytes import canonical_json_bytes, canonical_text, checksum_bytes
 from markdown_sections import (
     MarkdownSectionError,
+    root_sections,
     select_markdown_sections,
     sections,
     validate_markdown,
@@ -1224,6 +1225,45 @@ def test_letter_angle_bracket_comparison_in_persona_yaml_fails(tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
+    ("levels", "expected"),
+    [
+        ((1, 2, 3), [(1, "H0")]),
+        ((2, 1, 2), [(2, "H0"), (1, "H1")]),
+        ((1, 2, 1, 2), [(1, "H0"), (1, "H2")]),
+        ((3, 1), [(3, "H0"), (1, "H1")]),
+    ],
+)
+def test_root_sections_returns_the_prefix_minimum_rows_in_document_order(
+        levels: tuple[int, ...], expected: list[tuple[int, str]]) -> None:
+    """#611. A span is a root exactly when no other span contains it, which
+    ``_section_spans`` makes a pure function of the level sequence: a span ends
+    at the next heading of the same-or-shallower level, so a span is a root iff
+    its level is <= every level before it.
+
+    Before ``root_sections`` existed this collected as
+    ``ImportError: cannot import name 'root_sections'`` — a COLLECTION error,
+    not an assertion failure, so it never read as a passing test.
+
+    The parameters are NOT interchangeable, which is the point of having four.
+    Measured, one mutation at a time: ``<=`` -> ``<`` reds ONLY (1,2,1,2);
+    initialising ``shallowest = 1`` and dropping the ``is None`` disjunct reds
+    (2,1,2) and (3,1); and both ``root_sections := sections`` and deleting the
+    ``shallowest = level`` update red (1,2,3), (2,1,2) and (1,2,1,2) -- those
+    two are the same mutation in effect, since without the update
+    ``shallowest`` stays ``None`` and every span is kept. (3,1) is the only
+    parameter that tells the ``shallowest = 1`` mutation apart from those."""
+    doc = "".join("#" * level + f" H{index}\n\nbody{index}\n\n"
+                  for index, level in enumerate(levels))
+    assert len(sections(doc)) == len(levels), "premise: one section per heading"
+    assert [(level, name) for level, name, _ in root_sections(doc)] == expected
+    # Bodies are returned verbatim from `sections`, never re-rendered: without
+    # this an implementation that truncated or reflowed a body would pass.
+    flat = {(level, name): body for level, name, body in sections(doc)}
+    assert all(flat[(level, name)] == body
+               for level, name, body in root_sections(doc))
+
+
+@pytest.mark.parametrize(
     "html_fragment",
     [
         "<b>html</b>",
@@ -1372,3 +1412,65 @@ def test_pin_inv_pers_002_capability_claims_are_not_semantically_validated(tmp_p
 
     loaded = load_persona_pack(pack, manifest_path)
     assert claim in loaded.markdown
+
+
+# ===========================================================================
+# #611 — the compiled persona BODY of every shipped pack, pinned to exact
+# bytes. This is the only assertion in the batch that proves the render-once
+# change did not move the shipped VOICE bytes, which is the release's central
+# safety claim.
+# ===========================================================================
+
+_PERSONA_BODY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "persona_body_v1.json"
+
+
+def _shipped_packs():
+    from persona_pack import load_persona_pack as _load
+    packs = []
+    for namespace, slug, version in sorted(_slot_default_persona_refs()):
+        version_dir = _REAL_PERSONAS_DIR / namespace / slug / version
+        packs.append(_load(version_dir / "pack", version_dir / "manifest.json"))
+    return packs
+
+
+@pytest.mark.parametrize("surface", ["text", "voice"])
+def test_each_shipped_persona_body_is_exact_bytes(surface: str) -> None:
+    """#611. The TEXT half is red on the pre-fix tree (tina/ellen/gary were
+    1369/1372/1380 bytes, carrying every nested subsection twice). The VOICE
+    half was already green and must STAY green — voice is byte-identical
+    across this change for all three packs, which is what makes the change
+    safe to ship without touching a single binding.
+
+    The two surfaces are written out SEPARATELY even though all three packs
+    happen to produce equal values for both. That equality is ACCIDENTAL —
+    each pack ships two quirks and no examples, so the text-only extras all
+    render empty and ``quirks[:2]`` happens to be all of them. Asserting
+    ``text == voice`` would dress a coincidence as an invariant."""
+    from prompt_compiler import _persona_body
+
+    fixture = json.loads(_PERSONA_BODY_FIXTURE.read_text())
+    packs = _shipped_packs()
+    assert packs, "premise: the image ships at least one persona pack"
+    for pack in packs:
+        row = fixture[f"{pack.persona_id}@{pack.version}"]
+        body = _persona_body(pack, surface).encode("utf-8")
+        assert (len(body), checksum_bytes(body)) == (
+            row[f"{surface}_bytes"], row[f"{surface}_sha256"]), pack.persona_id
+
+
+def test_the_persona_body_fixture_names_the_packs_it_was_computed_from() -> None:
+    """Binds each fixture row to the pack checksum it was computed from, so a
+    persona edit is caught as a FIXTURE-drift failure and not only as an opaque
+    byte diff that invites 'refreshing' the golden to whatever the tree now
+    produces.
+
+    It does not claim to fail FIRST: the exact-byte parametrization above runs
+    before it and already names the pack in its assertion message. This is the
+    separate binding — bytes alone cannot tell an intended persona edit from a
+    renderer regression, and the checksum can. Mirrors the trait-renderer
+    fixture's version pin."""
+    fixture = json.loads(_PERSONA_BODY_FIXTURE.read_text())
+    packs = _shipped_packs()
+    assert set(fixture) == {f"{p.persona_id}@{p.version}" for p in packs}
+    for pack in packs:
+        assert fixture[f"{pack.persona_id}@{pack.version}"]["persona_checksum"] == pack.checksum
