@@ -39,7 +39,8 @@ NO recipe matches, say so in the topic and ask before improvising.
 - `delegate/wire`, `delegate/unwire` — a resident's delegation entries.
 - `resident/update`, `resident/grant_ha_tools` — changes to the three fixed residents. (`resident/create`, `resident/delete`: retired stubs — residents are fixed.)
 - `executor/enable`, `executor/disable`, `executor/edit-definition`, `executor/scaffold` — executor lifecycle.
-- `prompt/edit`, `response-shape/edit`, `voice/edit`, `disclosure/edit` — per-agent prose/policy file edits.
+- `prompt/edit`, `voice/edit`, `disclosure/edit` — per-agent prose/policy file edits.
+- `response-shape/edit` — why a resident's response shape is NOT edited here, and what to do instead.
 - `config/reconcile-defaults` — reconcile operator config after a default sync overwrote it.
 
 ## Communication

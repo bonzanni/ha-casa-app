@@ -11,7 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 import jsonschema
@@ -184,6 +184,88 @@ def _validate(
         ) from exc
 
 
+def _without_inert_webhook_prose(data: Any, source: str) -> Any:
+    """*data* with `prompt`/`prompt_file` removed from every `type: webhook`
+    entry, warning once per entry it strips. Returns *data* unchanged when
+    there is nothing to strip.
+
+    #608. A webhook turn is built from the trigger name and the request
+    payload; these fields are never delivered (:func:`_build_triggers` sets
+    `prompt_text = ""` for a webhook). The schema now REFUSES them, which is
+    what makes `config_trigger_upsert` fail loudly instead of persisting a
+    field nothing reads — but that refusal must not reach a document already
+    on disk. Such documents exist: the typed tool offered the field and the
+    old schema accepted it, so an install can be carrying one right now, and
+    for it the refusal would be **boot-fatal** (`_validate` raises `LoadError`,
+    `load_all_agents` propagates the first one, and a resident load failure
+    takes the whole boot down with it). Worse, `config_sync`'s entry salvage
+    drops an entry that fails validation unless the image ships it — so the
+    operator's webhook trigger would silently DISAPPEAR on upgrade.
+
+    Copies rather than mutates. `config_sync`'s entry merge re-emits the very
+    document it validated, so mutating here would rewrite the operator's file
+    as a side effect of reading it.
+
+    This is the same shape as `path` on a webhook, which is deprecated,
+    ignored, and warned about at load rather than rejected out of an existing
+    document (:func:`_normalize_webhook_auth`).
+    """
+    triggers = data.get("triggers") if isinstance(data, dict) else None
+    if not isinstance(triggers, list):
+        return data
+
+    def _inert(entry: object) -> bool:
+        return (isinstance(entry, dict) and entry.get("type") == "webhook"
+                and ("prompt" in entry or "prompt_file" in entry))
+
+    if not any(_inert(t) for t in triggers):
+        return data
+    for t in triggers:
+        if _inert(t):
+            logger.warning(
+                "%s: webhook trigger %r carries a prompt, which a webhook turn "
+                "never receives — its turn is built from the trigger name and "
+                "the request payload. The field is ignored; remove it by "
+                "re-running config_trigger_upsert for this trigger without it.",
+                source, t.get("name", "?"),
+            )
+    cleaned = dict(data)
+    # The predicate is re-applied per entry rather than testing membership of a
+    # precomputed hit list: `in` on a list of dicts compares by VALUE, so two
+    # structurally identical entries would answer for each other. That happens
+    # to be harmless here (equal entries need the same treatment), but it makes
+    # the strip's correctness depend on a coincidence rather than on the rule.
+    cleaned["triggers"] = [
+        {k: v for k, v in t.items() if k not in ("prompt", "prompt_file")}
+        if _inert(t) else t
+        for t in triggers
+    ]
+    return cleaned
+
+
+def validate_persisted(
+    data: dict[str, Any], schema_name: str, source: str, *, version: str = "v1",
+) -> None:
+    """:func:`_validate` for a document being READ from disk.
+
+    The one seam every reader of a TRIGGER document uses — the resident loader,
+    the pre-commit gate's agents walk, and both `config_sync` validators — so
+    the tolerance cannot be applied in one place and forgotten in another
+    (#608; `config_sync` was the pair this fix originally missed, and missing
+    it meant silently deleting an operator's trigger on upgrade). The gate's
+    `policies/` walk still calls :func:`_validate` directly and is correct to:
+    that map never yields the triggers schema.
+
+    Writers deliberately do NOT come through here. `reminders._schema_error`
+    calls :func:`_validate` directly, so a NEW entry is judged by the strict
+    schema. Tolerance is a property of reading what is already on disk, never
+    of judging what is about to be written — unify the two and the refusal
+    this exists to enable stops happening at all.
+    """
+    _validate(_without_inert_webhook_prose(data, source) if schema_name == "triggers"
+              else data, schema_name, source, version=version)
+
+
 # --- Pre-commit schema gate (E-G v0.31.0) ----------------------------------
 
 # Maps a schema-bearing YAML filename in ``agents/<role>/`` to the schema name
@@ -293,7 +375,10 @@ def validate_config_repo(
                     continue
                 path = os.path.join(root, name)
                 try:
-                    _validate(_read_yaml(path), schema_name, path)
+                    # #608: the gate's contract is that passing it guarantees a
+                    # green boot validation, so it must read with exactly the
+                    # tolerance boot reads with — one helper, not two.
+                    validate_persisted(_read_yaml(path), schema_name, path)
                 except LoadError as exc:
                     errors.append(str(exc))
 
@@ -1310,7 +1395,7 @@ def load_agent_from_dir(
     trig_path = os.path.join(agent_dir, "triggers.yaml")
     if os.path.exists(trig_path):
         trig_data = _read_yaml(trig_path)
-        _validate(trig_data, "triggers", trig_path)
+        validate_persisted(trig_data, "triggers", trig_path)   # #608
         cfg.triggers = _build_triggers(trig_data, agent_dir=agent_dir)
 
     # hooks.yaml — optional.
@@ -1376,6 +1461,36 @@ def load_agent_from_dir(
     return cfg
 
 
+def make_candidate_compile_validator(role: Any) -> Callable[[Any, Any], None]:
+    """The #339 compile proof for *role*, as a callable.
+
+    ONE definition, shared by boot reconciliation
+    (:func:`_activate_resident_binding`) and by ``tools.persona_apply``
+    (#607). Two copies of "does this candidate compile" drift, and the copy
+    that drifts is the one that admits a binding the loader then rejects —
+    which is the whole failure this proof exists to prevent.
+
+    Reads the platform frame and safety kernel EAGERLY, so a broken image
+    fails here rather than inside the caller's lock. Raises ``ValueError``
+    (via ``compile_prompt_bundle``) for a candidate that exceeds an
+    admission ceiling or fails the binding-integrity check; ``OSError`` if
+    the image-owned frame/kernel files are unreadable.
+    """
+    from prompt_compiler import compile_prompt_bundle
+
+    personality_dir = Path(SCHEMA_DIR).parent / "personality"
+    platform_frame = (personality_dir / "platform-frame.md").read_text(encoding="utf-8")
+    safety_kernel = (personality_dir / "safety-kernel.md").read_text(encoding="utf-8")
+
+    def _prove(persona: Any, binding: Any) -> None:
+        compile_prompt_bundle(
+            role=role, persona=persona, binding=binding,
+            platform_frame=platform_frame, safety_kernel=safety_kernel,
+        )
+
+    return _prove
+
+
 def _activate_resident_binding(
     cfg: AgentConfig, role_from_path: str, bindings_dir: str | None,
     *, binding_commit: bool = True,
@@ -1432,16 +1547,13 @@ def _activate_resident_binding(
     platform_frame = (Path(SCHEMA_DIR).parent / "personality" / "platform-frame.md").read_text(encoding="utf-8")
     safety_kernel = (Path(SCHEMA_DIR).parent / "personality" / "safety-kernel.md").read_text(encoding="utf-8")
 
-    def _prove_candidate_compiles(persona, binding) -> None:
-        # #339 (the poisoned-active fix): the same admission-ceiling compile
-        # the loader runs after reconcile, applied to the CANDIDATE before
-        # desired -> active promotion. A candidate that cannot compile is
-        # discarded by reconcile and the retained active keeps running,
-        # instead of being committed and failing every subsequent boot.
-        compile_prompt_bundle(
-            role=cfg.role_slot, persona=persona, binding=binding,
-            platform_frame=platform_frame, safety_kernel=safety_kernel,
-        )
+    # #339 (the poisoned-active fix): the same admission-ceiling compile the
+    # loader runs after reconcile, applied to the CANDIDATE before
+    # desired -> active promotion. A candidate that cannot compile is
+    # discarded by reconcile and the retained active keeps running, instead of
+    # being committed and failing every subsequent boot. #607: the factory is
+    # shared with tools.persona_apply so both prove the same thing.
+    _prove_candidate_compiles = make_candidate_compile_validator(cfg.role_slot)
 
     try:
         active_tuple = reconcile_resident_binding(

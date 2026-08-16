@@ -1455,6 +1455,7 @@ def test_cas_pin_roots_pins_an_override_bound_specialists_component_root(tmp_pat
     apply_persona_override(
         target_role_id="specialist:mtg", persona=persona, role=role,
         instance_dir_root=specialists_dir / "mtg",
+        candidate_validator=lambda persona, binding: None,
     )
     pinned = cas_pin_roots(specialists_dir)
     assert v1.root_digest in pinned  # the component blob is STILL pinned post-override
@@ -1494,6 +1495,7 @@ def test_persona_pin_roots_includes_a_resident_override_binding(
     apply_persona_override(
         target_role_id="resident:assistant", persona=persona, role=role,
         instance_dir_root=bindings_dir / "resident-assistant",
+        candidate_validator=lambda persona, binding: None,
     )
 
     pinned = persona_pin_roots(bindings_dir=bindings_dir, specialists_dir=tmp_path / "specialists")
@@ -1526,6 +1528,7 @@ def test_persona_pin_roots_includes_an_override_bound_specialist(tmp_path: Path,
     apply_persona_override(
         target_role_id="specialist:mtg", persona=persona, role=role,
         instance_dir_root=specialists_dir / "mtg",
+        candidate_validator=lambda persona, binding: None,
     )
 
     pinned = persona_pin_roots(bindings_dir=tmp_path / "bindings", specialists_dir=specialists_dir)

@@ -1888,6 +1888,17 @@ def _build_executor_options(
                for e in (hooks_cfg.pre_tool_use or [])):
         resolved_hooks["PreToolUse"].append(trigger_file_write_guard_matcher())
 
+    # #610: agents/<role>/response_shape.yaml is READ BY NOTHING for a
+    # persona-bound resident — the compiled bundle replaces the composed prompt
+    # this file feeds (INV-PERS-001) — so an edit here is committed and
+    # reported live while changing nothing the model sees. Code-side for the
+    # same reason as its neighbours: `hooks_file:` is a config-editable pointer
+    # the configurator may legitimately rewrite.
+    from hooks import response_shape_write_guard_matcher
+    if not any(e.get("policy") == "response_shape_write_guard"
+               for e in (hooks_cfg.pre_tool_use or [])):
+        resolved_hooks["PreToolUse"].append(response_shape_write_guard_matcher())
+
     if plugin_paths is not None:
         sdk_plugins = [{"type": "local", "path": p} for p in plugin_paths]
         # #429: the resume path attaches artifacts by PATH, with no
@@ -11424,8 +11435,11 @@ async def persona_install_commit(args: dict) -> dict:
 @tool(
     "persona_apply",
     "Apply an installed persona as an override binding to a resident slot (assistant/butler/"
-    "concierge) or an installed specialist slug. Restart-to-swap: takes effect on the target "
-    "agent's next restart (residents) or next casa_reload (specialists).",
+    "concierge) or an installed specialist slug. The persona is compiled for the target's "
+    "surfaces first: one that exceeds an admission ceiling is refused with nothing written "
+    "(ok:false, kind:incompatible). For a RESIDENT the accepted binding is STAGED, not "
+    "activated — it takes effect on that resident's next restart. For a specialist it is "
+    "committed and activated by the next casa_reload.",
     {"type": "object", "properties": {
         "target_role_id": {"type": "string"}, "persona_id": {"type": "string"},
         "persona_version": {"type": "string"}}, "required": ["target_role_id", "persona_id", "persona_version"]},
@@ -11490,10 +11504,26 @@ async def persona_apply(args: dict) -> dict:
     # and the loader would then reject the persisted binding.
     role = materialize_role(
         source=load_role_artifact(role_dir), options=_ha_model_options())
+    # #607: the SAME compile proof boot reconciliation runs
+    # (agent_loader.make_candidate_compile_validator), so a persona that blows
+    # an admission ceiling is refused here — with nothing written — instead of
+    # being committed active and killing every subsequent boot. Built on this
+    # thread and handed in; the factory reads the image-owned platform frame
+    # and safety kernel eagerly, so a broken image raises OSError here rather
+    # than inside the materialize lock. Imported HERE rather than relying on
+    # the resident branch's binding — a specialist target never enters that
+    # branch, and the name would be unbound.
+    import agent_loader
+
     try:
-        committed = await asyncio.to_thread(
+        validator = agent_loader.make_candidate_compile_validator(role)
+    except OSError as exc:
+        return _result({"ok": False, "kind": "image_incomplete", "detail": str(exc)})
+    try:
+        staged = await asyncio.to_thread(
             apply_persona_override, target_role_id=args["target_role_id"], persona=persona,
-            role=role, instance_dir_root=instance_dir_root)
+            role=role, instance_dir_root=instance_dir_root,
+            candidate_validator=validator)
     except ValueError as exc:
         return _result({"ok": False, "kind": "incompatible", "detail": str(exc)})
     except SpecialistInstallError as exc:
@@ -11505,8 +11535,13 @@ async def persona_apply(args: dict) -> dict:
         # tool otherwise accepted. Without this clause that escaped as an
         # unstructured MCP error instead of the tool's {ok, kind} contract.
         return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+    # #607: for a resident this is now the STAGED tuple — `restart_required`
+    # describes something that has not happened yet, which is what the tool
+    # description and recipes/persona/apply.md have always claimed. A
+    # specialist is still committed active (its branch is unchanged) and
+    # reports restart_required: false, activated by casa_reload.
     return _result({"ok": True, "target_role_id": args["target_role_id"],
-                     "binding_digest": committed.binding.binding_digest,
+                     "binding_digest": staged.binding.binding_digest,
                      "restart_required": kind == "resident"})
 
 

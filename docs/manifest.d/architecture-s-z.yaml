@@ -1,0 +1,176 @@
+# Manifest shard (#367) — architecture documents S-Z. Loaded with the root
+# docs/manifest.yaml by scripts/verify_docs.py; same entry format.
+
+- doc: architecture/specialist-lifecycle.md
+  summary: Specialist install/upgrade/rollback — instance tuples, the store, consent receipts, materialization, the crash journal.
+  when_changing: specialist install identity, consent, materialization, or bundle-transaction recovery
+  covers:
+    - casa/rootfs/opt/casa/specialist_install.py::commit_specialist_install
+    - casa/rootfs/opt/casa/specialist_install.py::compute_install_root_digest
+    - casa/rootfs/opt/casa/specialist_install.py::sweep_staging_aged
+    - casa/rootfs/opt/casa/specialist_materialize.py::current_specialist_roles_dir
+    - casa/rootfs/opt/casa/specialist_materialize.py::materialize_specialist_operational_files
+    - casa/rootfs/opt/casa/specialist_receipt.py::compute_receipt_digest
+    - casa/rootfs/opt/casa/specialist_bundle_journal.py::reconcile_boot
+    - casa/rootfs/opt/casa/specialist_registry.py::InstalledSpecialistIndex
+    - casa/rootfs/opt/casa/system_requirements/tarball.py::install_tarball
+    - casa/rootfs/opt/casa/system_requirements/manifest.py::ensure_bin_claim
+  tests:
+    - tests/test_specialist_install.py
+    - tests/test_specialist_lifecycle_matrix.py
+    - tests/test_specialist_materialize.py
+    - tests/test_specialist_bundle_journal.py
+    - tests/test_system_requirements_installer_tarball.py
+  related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md]
+  defines_invariants: [INV-SPEC-001, INV-SPEC-002, INV-SPEC-003, INV-SPEC-004, INV-SPEC-005, INV-SPEC-006, INV-SPEC-007, INV-SPEC-008, INV-SPEC-009]
+  invariant_tests:
+    INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
+    INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]
+    INV-SPEC-002: [tests/test_specialist_lifecycle_matrix.py::test_fresh_install_missing_config_is_pending_configuration_with_no_active_tuple]
+    INV-SPEC-003: [tests/test_specialist_lifecycle_matrix.py::test_upgrade_failure_leaves_the_complete_active_tuple_running, tests/test_specialist_install.py::test_rollback_restores_the_prior_tuple]
+    INV-SPEC-004: [tests/test_specialist_materialize.py::test_materialize_operational_files_repeat_call_swaps_atomically_and_gcs_old_version]
+    INV-SPEC-005: [tests/test_specialist_consent_receipt.py::test_pin_inv_spec_005_tampered_receipt_loads_as_none]
+    INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses]
+    INV-SPEC-007: [tests/test_system_requirements_installer_tarball.py::test_failed_reinstall_preserves_existing_install, tests/test_system_requirements_installer_tarball.py::test_invalid_install_cmd_shape_checked_before_touching_install]
+    INV-SPEC-009: [tests/test_personality_binding.py::test_verify_instance_tuple_rejects_a_digest_not_derived_from_the_snapshot, tests/test_personality_binding.py::test_atomic_write_refuses_a_mismatched_tuple_as_a_backstop, tests/test_specialist_install.py::test_boot_sweep_tombstones_an_already_sanitized_pre_guard_digest, tests/test_specialist_bundle_journal.py::test_begin_sanitizes_captured_tuple_files]
+
+- doc: architecture/telegram.md
+  summary: How Telegram messages become turns — transports, authentication, the per-topic causal log, keyboards, and rendering.
+  when_changing: Telegram transport, callback namespaces, topic output ordering, or message rendering
+  covers:
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel
+    - casa/rootfs/opt/casa/channels/telegram.py::_parse_callback_data
+    - casa/rootfs/opt/casa/channels/telegram.py::_split_message
+    - casa/rootfs/opt/casa/casa_core.py::_make_telegram_update_handler
+    - casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer
+    - casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged
+    - casa/rootfs/opt/casa/verdict_broker.py::VerdictBroker
+  tests:
+    - tests/test_telegram_update_handler.py
+    - tests/test_telegram_dm_settle.py
+    - tests/test_tg_richtext_remnants.py
+    - tests/test_verdict_broker.py
+    - tests/test_telegram_new_reset.py
+    - tests/test_telegram_supervisor.py
+    - tests/test_telegram_split.py
+  related: [architecture/overview.md, architecture/engagements.md, architecture/http-surface.md]
+  defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-005, INV-TG-006, INV-TG-007]
+  invariant_tests:
+    INV-TG-001: [tests/test_telegram_update_handler.py::test_no_secret_configured_rejects, tests/test_telegram_update_handler.py::test_wrong_token_403_and_not_processed, tests/test_telegram_update_handler.py::test_correct_token_200]
+    INV-TG-002: [tests/test_telegram_inline_callback.py::test_wrong_user_refused_without_claiming, tests/test_verdict_broker.py::test_claim_forbidden_on_actor_mismatch, tests/test_channel_internal_handlers.py::test_permission_verdict_route_gone]
+    INV-TG-003: [tests/test_verdict_broker.py::test_claim_does_not_resolve_until_commit_and_stale_after_retire]
+    INV-TG-004: [tests/test_output_sequencer.py::test_serialized_still_mutually_exclusive_across_tasks]
+    INV-TG-005: [tests/test_tg_richtext.py::test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets]
+    INV-TG-006: [tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_notice_survives_a_delivery_that_sent_nothing, tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_head_delivered_then_raise_does_not_repeat_the_notice, tests/test_telegram_delivery_outcome.py::TestSend::test_send_without_app_reports_not_delivered]
+    INV-TG-007: [tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_plain_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_rich_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_entity_fallback_retry_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_empty_markup_survives_to_the_wire]
+
+- doc: architecture/tools-interface.md
+  summary: The mutation interface — the one tool registry, result envelopes, and which failures roll back versus report.
+  when_changing: adding a tool, a tool's result contract, plugin mutation sequencing, or completion semantics
+  covers:
+    - casa/rootfs/opt/casa/tools.py::create_casa_tools
+    - casa/rootfs/opt/casa/tools.py::_result
+    - casa/rootfs/opt/casa/tools.py::select_casa_tools
+    - casa/rootfs/opt/casa/tools.py::emit_completion
+    - casa/rootfs/opt/casa/tools.py::plugin_add
+    - casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler
+    - casa/rootfs/opt/casa/mcp_envelope.py::_tool_schema
+  tests:
+    - tests/test_internal_handlers.py
+    - tests/test_plugin_tools.py
+    - tests/test_emit_completion_tool.py
+    - tests/test_assistant_prompts.py
+  related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugins.md]
+  defines_invariants: [INV-TOOL-001, INV-TOOL-002, INV-TOOL-003, INV-TOOL-004, INV-TOOL-005]
+  invariant_tests:
+    INV-TOOL-001: [tests/test_internal_handlers.py::test_pin_inv_tool_001_result_marks_errors_only_for_error_status]
+    INV-TOOL-002: [tests/test_internal_handlers.py::test_tools_call_inactive_engagement_is_rejected_fail_closed, tests/test_internal_handlers.py::test_tools_call_terminal_engagement_binds_for_emit_completion]
+    INV-TOOL-003: [tests/test_plugin_tools.py::test_envelope_pre_activation_failure_is_pinned_shape]
+    INV-TOOL-004: [tests/test_plugin_tools.py::test_envelope_committed_but_not_ready]
+    INV-TOOL-005: [tests/test_assistant_prompts.py::test_shipped_setup_prompt_carries_the_liveness_prohibition, tests/test_assistant_prompts.py::test_no_shipped_prompt_reverts_to_a_known_liveness_claim, tests/test_assistant_prompts.py::test_setup_handback_prompts_defer_to_the_tools_own_result, tests/test_assistant_prompts.py::test_assistant_refuses_to_relay_a_connection_verdict, tests/test_assistant_prompts.py::test_liveness_prohibition_reaches_a_persona_bound_assistant]
+
+- doc: architecture/triggers.md
+  summary: What makes an agent act without a person speaking — a resident's scheduled and webhook triggers, and who may write the file they live in.
+  when_changing: trigger types, resident webhook routing, one-shot firing and cleanup, or scheduling
+  covers:
+    - casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry
+    - casa/rootfs/opt/casa/casa_core.py::_make_webhook_handler
+    - casa/rootfs/opt/casa/tools.py::config_trigger_upsert
+    - casa/rootfs/opt/casa/tools.py::config_trigger_delete
+    - casa/rootfs/opt/casa/hooks.py::make_trigger_file_write_guard
+    - casa/rootfs/opt/casa/agent_loader.py::validate_persisted
+  tests:
+    - tests/test_webhook_trigger_prompt_refused.py
+    - tests/test_config_triggers_schema.py
+    - tests/test_agent_loader_trigger_auth.py
+    - tests/test_casa_reload_triggers_resident.py
+    - tests/test_config_trigger_tools.py
+    - tests/test_scheduled_media_delivery.py
+    - tests/test_scheduled_delivery_durable.py
+  related: [architecture/plugin-triggers.md, architecture/http-surface.md, architecture/overview.md, architecture/reminders.md]
+  defines_invariants: [INV-TRIG-001, INV-TRIG-002, INV-TRIG-009, INV-TRIG-011, INV-TRIG-012, INV-TRIG-013]
+  invariant_tests:
+    INV-TRIG-001: [tests/test_trigger_registry.py::test_interval_channel_must_be_registered_on_agent]
+    INV-TRIG-002: [tests/test_pin_g4_invariants.py::test_pin_inv_trig_002_plugin_namespace_reserved_in_user_schema, tests/test_trigger_registry.py::test_duplicate_trigger_name_same_agent_rejected, tests/test_trigger_registry.py::test_cross_role_webhook_name_collision_rejected]
+    INV-TRIG-009: [tests/test_trigger_registry_date.py::test_firing_an_agent_owned_one_shot_removes_job_and_entry, tests/test_trigger_registry_date.py::test_firing_an_OPERATORS_one_shot_drops_the_job_but_not_the_entry, tests/test_trigger_registry_date.py::test_firing_a_one_shot_frees_its_job_id]
+    INV-TRIG-013: [tests/test_webhook_trigger_prompt_refused.py::test_the_upsert_writer_refuses_and_writes_nothing, tests/test_webhook_trigger_prompt_refused.py::test_the_writer_stays_strict_when_the_reader_is_tolerant]
+    INV-TRIG-012: [tests/test_scheduled_media_delivery.py::TestDispatchSitesStamp::test_scheduler_dispatch_stamps_the_marker, tests/test_scheduled_media_delivery.py::TestDispatchSitesStamp::test_reminder_sweep_stamps_the_marker, tests/test_scheduled_media_delivery.py::TestSendMediaFromScheduledTurn::test_delivers_to_the_operator_dm, tests/test_scheduled_media_delivery.py::TestSendMediaFromScheduledTurn::test_unmarked_scheduled_turn_still_refused, tests/test_scheduled_media_delivery.py::test_marker_is_reserved_and_stripped_from_external_context, tests/test_scheduled_delivery_durable.py::TestOriginReconstruction::test_marked_job_restores_the_marker, tests/test_job_registry.py::test_recovered_orphan_carries_scheduled_delivery_across_restart]
+    INV-TRIG-011: [tests/test_hooks.py::TestTriggerFileWriteGuard::test_denies_every_write_capable_primitive, tests/test_hooks.py::TestTriggerFileWriteGuard::test_denies_a_bash_write_form, tests/test_hooks.py::TestTriggerFileWriteGuard::test_guard_is_code_mandatory_for_executors_and_residents, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_relative_path_resolves_against_the_SESSION_cwd, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_a_relative_path_with_no_reported_cwd_fails_CLOSED, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_every_historical_bash_bypass_is_closed, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_reads_still_pass, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_the_file_tools_stay_precise, tests/test_config_trigger_tools.py::test_configurator_writers_serialize_under_the_pass_lock, tests/test_config_sync_reminder_race.py::test_reminder_survives_concurrent_reconcile_clobber]
+
+- doc: architecture/turn-loop.md
+  summary: How one inbound message becomes one agent turn, and what bounds it.
+  when_changing: the turn lifecycle, the warm client pool, retry behaviour, or turn teardown
+  covers:
+    - casa/rootfs/opt/casa/agent.py::Agent._process
+    - casa/rootfs/opt/casa/agent.py::Agent._build_options
+    - casa/rootfs/opt/casa/agent.py::Agent.aclose
+    - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn
+    - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.close_key
+    - casa/rootfs/opt/casa/sdk_client_pool.py::ManagedSdkClient
+    - casa/rootfs/opt/casa/sdk_client_pool.py::PoolUnavailable
+    - casa/rootfs/opt/casa/retry.py::retry_sdk_call
+    - casa/rootfs/opt/casa/retry.py::compute_backoff_ms
+  tests:
+    - tests/test_agent_process.py::test_session_id_is_channel_plus_role
+    - tests/test_agent_process.py::test_telegram_channel_autorecalls_on_fresh_session
+    - tests/test_sdk_client_pool_pool.py
+    - tests/test_retry.py
+    - tests/test_agent_api_error_message.py
+  related: [architecture/overview.md, architecture/agent-taxonomy.md]
+  defines_invariants: [INV-TURN-001, INV-TURN-002, INV-TURN-003, INV-TURN-004, INV-TURN-005, INV-TURN-006, INV-TURN-007]
+  invariant_tests:
+    INV-TURN-001: [tests/test_sdk_client_pool_pool.py::test_sid_mismatch_reconnects_on_registry_sid]
+    INV-TURN-002: [tests/test_sdk_client_pool_client.py::test_error_result_nonretryable_returns_but_invalidates]
+    INV-TURN-003: [tests/test_sdk_client_pool_client.py::test_cancel_interrupts_drains_and_stays_warm]
+    INV-TURN-004: [tests/test_agent_process.py::test_memory_failure_does_not_break_response]
+    INV-TURN-005: [tests/test_retry.py::test_cancelled_error_propagates_immediately, tests/test_retry.py]
+    INV-TURN-006: [tests/test_sdk_client_pool_pool.py::test_close_key_joins_inflight_invalidation_flush]
+    INV-TURN-007: [tests/test_agent_api_error_message.py::test_refusal_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_api_error_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_refusal_is_not_retried, tests/test_agent_api_error_message.py::test_result_stop_reason_refusal_is_the_second_carrier, tests/test_agent_api_error_message.py::test_subagent_api_error_suppresses_text_without_failing_the_turn, tests/test_agent_api_error_message.py::test_a_refused_turn_does_not_leave_its_session_resumable, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_refusal_raises_with_the_refusal_kind, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_fault_after_output_truncation_still_raises, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_sub_agent_scoped_fault_does_not_end_the_turn]
+
+- doc: architecture/voice.md
+  summary: How speech becomes a turn and the answer gets back — transports, auth, turn budget, deferred delivery.
+  when_changing: voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery
+  covers:
+    - casa/rootfs/opt/casa/channels/voice/channel.py::VoiceChannel
+    - casa/rootfs/opt/casa/channels/voice/channel.py::sanitize_delivery_offer
+    - casa/rootfs/opt/casa/channels/voice/catalog.py::build_voice_agent_catalog
+    - casa/rootfs/opt/casa/channels/voice/routes.py::VoiceRouteRegistry
+    - casa/rootfs/opt/casa/channels/voice/delivery.py::VoiceDeliveryCoordinator
+    - casa/rootfs/opt/casa/channels/voice/session.py::VoiceSessionPool
+    - casa/rootfs/opt/casa/channel_authz.py::agent_allowed_on
+  tests:
+    - tests/test_voice_auth_failclosed.py
+    - tests/test_voice_malformed_input.py
+    - tests/test_voice_agent_catalog.py
+    - tests/test_voice_channel_sse.py
+    - tests/test_voice_channel_ws.py
+    - tests/test_voice_context_sanitize.py
+  related: [architecture/overview.md, architecture/http-surface.md, architecture/turn-loop.md]
+  defines_invariants: [INV-VOICE-001, INV-VOICE-002, INV-VOICE-003, INV-VOICE-004, INV-VOICE-005, INV-VOICE-006]
+  invariant_tests:
+    INV-VOICE-001: [tests/test_voice_auth_failclosed.py::test_sse_turn_rejected_and_never_dispatched, tests/test_voice_auth_failclosed.py::test_ws_upgrade_rejected, tests/test_voice_auth_failclosed.py::test_catalog_rejected, tests/test_voice_auth_failclosed.py::test_mis_signed_turn_rejected, tests/test_voice_malformed_input.py::test_sse_non_ascii_signature_is_401, tests/test_voice_malformed_input.py::test_ws_non_ascii_signature_is_401]
+    INV-VOICE-002: [tests/test_voice_channel_ws.py::test_pin_inv_voice_002_text_only_agent_refused_on_every_voice_path, tests/test_voice_channel_ws.py::test_invalid_stt_start_is_a_noop]
+    INV-VOICE-003: [tests/test_voice_agent_catalog.py::test_catalog_rejects_overflow_without_truncating]
+    INV-VOICE-004: [tests/test_voice_routes.py::test_missing_voice_handoff_capability_fails_registration_closed, tests/test_voice_routes.py::test_any_unknown_capability_fails_the_whole_registration_closed, tests/test_voice_routes.py::test_protocol_requires_exact_json_integer_two]
+    INV-VOICE-005: [tests/test_voice_context_sanitize.py::test_the_delivery_offer_comes_only_from_the_frame, tests/test_voice_context_sanitize.py::test_route_capability_comes_only_from_server_connection]
+    INV-VOICE-006: [tests/test_voice_delivery.py::test_an_unknown_modality_is_treated_as_no_endpoint, tests/test_voice_delivery.py::test_a_job_with_no_recorded_endpoint_is_never_offered]

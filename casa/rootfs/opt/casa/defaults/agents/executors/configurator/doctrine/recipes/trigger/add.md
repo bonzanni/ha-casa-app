@@ -14,7 +14,11 @@ Triggers are per-agent scheduled or webhook-driven events. Residents only (speci
 5. **Channel?** interval/cron: telegram or voice (must be a channel the agent
    already owns). **A webhook trigger requires the agent to declare the
    `webhook` channel.**
-6. **Prompt?** (interval/cron only) One imperative sentence.
+6. **Prompt?** (interval/cron/date only) One imperative sentence. **A webhook
+   trigger has no prompt and the schema refuses one** — see "Webhook triggers"
+   below for what its turn actually receives. If the operator describes what
+   the agent should *do* when a webhook fires, tell them that before writing
+   it: the instruction cannot be stored on the trigger.
 7. **Webhook auth?** (webhook only) how does the caller authenticate — see below.
 
 ## Write the trigger — `config_trigger_upsert`, never a hand edit
@@ -76,6 +80,18 @@ Five fields: minute hour day month day_of_week. "0 7 * * 1-5" = 7:00 on weekdays
 - **Endpoint:** `POST /webhook/<name>` on port 18065 (publicly, the operator's
   configured `public_url`). There is no `path` field — the trigger NAME is the
   endpoint. Names must be unique across all agents' webhooks.
+- **The turn is driven by the payload, not by an instruction.** A firing
+  delivers one user message — the trigger name and the request body — and
+  nothing else. `prompt`/`prompt_file` are **refused by the schema** for a
+  webhook: `config_trigger_upsert` fails and writes nothing, rather than
+  storing an instruction that would be committed and then discarded at every
+  firing. So the agent decides what to do from the payload plus its own
+  doctrine. If an operator wants specific behaviour on a specific hook, that
+  belongs in the resident's own instructions, not on the trigger.
+  (An older document may still carry one from before this rule; it loads with
+  a warning naming the trigger, and is ignored exactly as it always was.
+  Clear it by re-running `config_trigger_upsert` for that trigger without the
+  field — an upsert replaces the whole entry, it does not merge.)
 - **Auth is per-trigger and fail-closed** (spec A1). Pick the mode that fits the
   caller:
   - `hmac_body` (default) — caller sends `X-Webhook-Signature` = HMAC-SHA256 hex

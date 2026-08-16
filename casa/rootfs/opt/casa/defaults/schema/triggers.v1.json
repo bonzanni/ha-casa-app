@@ -84,6 +84,14 @@
             }
           },
           {
+            "$comment": "#608: a webhook turn is built from the trigger NAME and the request payload (casa_core's webhook dispatch); `prompt`/`prompt_file` are never read for one — agent_loader._build_triggers sets prompt_text = \"\" and says so. The field was accepted here and offered on config_trigger_upsert's typed surface, so the model wrote an operator's instruction into it, the writer persisted it, the commit recorded it and the dispatch discarded it, with no warning at any layer. Refusing it here is what turns that silent drop into an error the configurator relays while the operator is still in the conversation. `required: [type]` is deliberate and unlike the sibling clauses: without it this condition also matches an entry that OMITS type, and the resulting forbidden-prompt complaint would mask the real fault (the missing type). Readers do NOT get this rejection — agent_loader.validate_persisted strips the field with a warning first, because a document already carrying one predates this rule and must keep loading.",
+            "if": {"required": ["type"], "properties": {"type": {"const": "webhook"}}},
+            "then": {"not": {"anyOf": [
+              {"required": ["prompt"]},
+              {"required": ["prompt_file"]}
+            ]}}
+          },
+          {
             "$comment": "#396: one_shot is meaningful ONLY for date triggers. Allowing it on cron/interval would promise a self-removal that cannot happen — the cleanup callback only removes the entry it just fired, so a recurring one would survive and re-fire after every restart. Deliberately NOT tied to `managed_by` (#398 release 2): an operator may author a dated one-shot of their own, and the two fields answer different questions — one_shot is what the trigger does, managed_by is who owns it.",
             "if": {"required": ["one_shot"], "properties": {"one_shot": {"const": true}}},
             "then": {"properties": {"type": {"const": "date"}}}

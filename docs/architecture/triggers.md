@@ -8,12 +8,14 @@ last_reviewed: 2026-08-08
 
 ## Scope
 
-What makes an agent act without a person speaking: scheduled triggers, webhook triggers,
-and the plugin-declared triggers that need an operator's approval before they route. It does
+What makes an agent act without a person speaking: a resident's scheduled and webhook
+triggers, how they are registered and fired, and who may write the file they live in. It does
 not cover what the resulting turn does, nor webhook authentication mechanics, which belong to
-the HTTP surface. Plugin-declared *authorization callbacks* share this document's
-wildcard-route, overlay and durable-consent shape but produce no turn and grant no access —
-they are `architecture/callbacks.md`. **Reminders** are scheduled triggers and ride the
+the HTTP surface. What a **plugin-declared** trigger must satisfy before it routes — the
+overlay, its preconditions and the operator approval gating them — is
+[`architecture/plugin-triggers.md`](plugin-triggers.md); plugin-declared *authorization
+callbacks* share that shape but produce no turn and grant no access, and are
+`architecture/callbacks.md`. **Reminders** are scheduled triggers and ride the
 registration, firing and one-shot cleanup described here — not the webhook, overlay or
 consent machinery. Who may write one, how a due one is delivered, and what happens to one
 whose moment passed while Casa was down are their own subject:
@@ -41,10 +43,6 @@ instead produced a fresh way to delete a live operator trigger every time it was
 name in the path is looked up against a registry, and an unknown name is refused before any
 authentication happens.
 
-**Plugin trigger routing is an overlay, replaced atomically.** It is a data structure, not a
-set of registered routes, and reconciliation swaps the whole thing at once rather than
-mutating entries. Resident registrations are untouched by that swap.
-
 **Cron fields follow the crontab convention, including day-of-week numbering.** A numeric
 day-of-week uses cron's 0/7 = Sunday; registration translates it into day names before it
 reaches the scheduler, whose own 3.x numbering starts the week on Monday — passing the
@@ -59,26 +57,6 @@ process; it cannot resurrect what was never recorded. Past-dated *reminders* are
 exception, and only because they do not rely on the scheduler to remember — a recurring
 reminder's missed occurrence is lost like any other
 ([`architecture/reminders.md`](reminders.md)).
-
-**A plugin's declared webhook does not route because the plugin is installed.** Declaration
-is only intrinsic validity. Routing additionally requires the target to exist and accept
-webhooks, the plugin to be assigned to that target, a secret to back the chosen
-authentication mode, and a durable operator approval bound to the exact trigger identity.
-Until all of those hold, the name is not in the overlay and the route returns not-found.
-
-**Approval is all-or-nothing per plugin.** If one declared trigger fails any check, none of
-that plugin's triggers route. Partial routing is deliberately not offered.
-
-**Approval and the secret it authorizes land at different moments.** The acknowledgement
-persists in the operator's tap; the per-trigger secret is minted by the reconcile that
-follows. Routing is unaffected — the overlay swaps in the same reconcile — but anything
-deciding whether a plugin's ingress is *usable by an external service*, the setup-tool
-dispatch gate above all, has to read the minted secret rather than infer it from the
-approval (INV-PLUG-011 in [`plugin-setup.md`](plugin-setup.md)).
-
-**One reconcile pass sees one registry snapshot.** The plugins, their manifests and each
-target's assignment authority are served from a single pinned resolution, so a registry
-reload landing mid-pass cannot make the overlay compose two generations.
 
 **A resident's trigger file has two writers, and only one of them is allowed to be an
 agent's hand.** Reminders are ordinary entries in the operator's own `triggers.yaml`, so the
@@ -111,25 +89,19 @@ dispatches without any channel-declaration check at all.
 Enforced by rejecting a name already owned by another role, and structurally by the schema
 reserving the plugin prefix so a user trigger can never take a plugin-shaped name.
 
-**INV-TRIG-003**: A plugin's triggers route only as a complete set, and only when target, assignment, secret backing and a persisted operator approval all hold.
+**INV-TRIG-013**: A webhook trigger carries no prompt — writing one is refused, while a document already holding one still loads, with a warning, and delivers nothing extra.
 
-Enforced during reconciliation, which computes the desired set and refuses with a specific
-reason for each missing precondition.
+A webhook turn is built from the trigger name and the request body; only a scheduled turn
+carries stored prose. The two directions must not be unified. The *writer* is strict, so an
+instruction the dispatch would discard is refused while the operator is still in the
+conversation rather than committed and dropped at every firing. A *reader* is tolerant,
+because documents written before the rule exist: judging those strictly would make a
+resident's config unloadable — and boot with it — while the config reconciler's entry
+salvage would go further and drop the trigger outright. One normalization serves every read
+path, so a file cannot pass one and fail another.
 
-What it does not cover: intrinsic validation happens earlier and separately, and passing it
-means only that the declaration is well-formed.
-
-**INV-TRIG-004**: A trigger approval is persisted and bound to an exact identity, and an unreadable or mismatched approval store yields no approvals.
-
-Enforced by an atomic write, and by a load path that treats anything malformed or
-identity-mismatched as zero approvals rather than trusting it. This approval outlives a
-restart — as do the specialist and persona install acknowledgements, which keep their own
-stores — so it fails closed on read.
-
-"Exact identity" is a specific tuple: plugin, artifact id, effective name, target, and the
-normalized auth policy. **Clearance is not in it** — a clearance change on a trigger installs
-under the old approval without renewed consent. Everything in the tuple, including any auth
-mode, header or tolerance change, does invalidate the approval.
+What it does not cover: cleanup. A stored prompt stays on disk, warning at each boot, until
+the operator replaces that entry through the typed tool, which rewrites it whole.
 
 **INV-TRIG-011**: An agent's file-tool write whose path *resolves* to a resident's `triggers.yaml` is refused, and every writer of that file — the typed tools, the reminder tools, and the config reconciler's whole pass — serializes its read-modify-write under one process lock.
 
@@ -200,11 +172,6 @@ thread, which rewrites the same file with no coordination (#458); the shell resi
 and an alias the check cannot see through — a hard link, or a symlink retargeted after it
 (#460). The claim is about the route an agent is actually told to take, and that route is
 closed exactly.
-
-**INV-TRIG-005**: Reconciliation replaces the entire plugin overlay in a single rebind.
-
-There is no window in which the overlay is half-updated. Names absent from the new set stop
-routing immediately.
 
 **INV-TRIG-009**: Firing a one-shot trigger unconditionally drops its scheduler job, and removes its `triggers.yaml` entry only when the agent owns that entry.
 
@@ -287,10 +254,6 @@ request.
 corresponding status. A malformed body that is not valid JSON is *not* refused — it is
 absorbed as text and dispatched, once authenticated.
 
-**Reconciliation raises.** The overlay is replaced with an empty one before the exception
-propagates, so a failure removes plugin routing rather than leaving a stale set. Note that
-some comments elsewhere describe the opposite; the swap is what happens.
-
 **A resident's trigger registration fails at boot.** It is not caught, so it stops boot.
 The pre-commit config gate replays the same registration into a throwaway registry, so a
 trigger set that passes the schema but cannot register — duplicate names, an undeclared
@@ -301,9 +264,6 @@ with *no* triggers — the fail-closed state the reload error reports. The one e
 scheduler that refuses to *remove* an existing job: re-registration then refuses, the stuck
 job stays live and tracked while the role's webhook entries are already unregistered, and
 the error names exactly the jobs that remain.
-
-**The approval store is missing or corrupt.** Treated as no approvals. Pending routes stay
-absent rather than opening.
 
 ## Extension points
 
@@ -344,18 +304,15 @@ there is none today.
 
 **Source**
 - `casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry`
-- `casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry.replace_plugin_overlay`
-- `casa/rootfs/opt/casa/trigger_reconcile.py::compute_desired`
-- `casa/rootfs/opt/casa/trigger_acks.py::TriggerAckStore`
-- `casa/rootfs/opt/casa/plugin_triggers.py::parse_and_validate`
 - `casa/rootfs/opt/casa/casa_core.py::_make_webhook_handler`
 - `casa/rootfs/opt/casa/tools.py::config_trigger_upsert`
 - `casa/rootfs/opt/casa/tools.py::config_trigger_delete`
 - `casa/rootfs/opt/casa/hooks.py::make_trigger_file_write_guard`
+- `casa/rootfs/opt/casa/agent_loader.py::validate_persisted`
 
 **Tests**
+- `tests/test_webhook_trigger_prompt_refused.py`
 - `tests/test_config_triggers_schema.py`
-- `tests/test_trigger_consent.py`
 - `tests/test_agent_loader_trigger_auth.py`
 - `tests/test_casa_reload_triggers_resident.py`
 - `tests/test_config_trigger_tools.py`
@@ -363,9 +320,8 @@ there is none today.
 - `tests/test_scheduled_delivery_durable.py`
 
 **Related**
-- [`architecture/plugins.md`](../architecture/plugins.md)
+- [`architecture/plugin-triggers.md`](../architecture/plugin-triggers.md)
 - [`architecture/http-surface.md`](../architecture/http-surface.md)
 - [`architecture/overview.md`](../architecture/overview.md)
-- [`architecture/callbacks.md`](../architecture/callbacks.md)
 - [`architecture/reminders.md`](../architecture/reminders.md)
 <!-- END SOURCEMAP -->

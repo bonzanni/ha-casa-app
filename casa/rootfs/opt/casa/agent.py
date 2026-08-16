@@ -1973,11 +1973,19 @@ class Agent:
         # its reminder tools write that file from Casa's loop, and a shell
         # redirect from the CLI child cannot be serialized against them. Both
         # paths lead to config_trigger_upsert / set_reminder instead.
-        from hooks import trigger_file_write_guard_matcher
+        # #610: and its own response_shape.yaml, which is read by nothing once
+        # it is bundle-bound — every resident is, from first boot. A shell
+        # redirect from the CLI child would otherwise be committed and reported
+        # live while the prompt digest never moves.
+        from hooks import (
+            response_shape_write_guard_matcher,
+            trigger_file_write_guard_matcher,
+        )
         hooks["PreToolUse"] = [
             *hooks.get("PreToolUse", []),
             agent_home_settings_guard_matcher(),
             trigger_file_write_guard_matcher(),
+            response_shape_write_guard_matcher(),
         ]
 
         # Unified plugin architecture: the resolver turns this agent's

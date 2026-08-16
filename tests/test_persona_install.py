@@ -461,6 +461,7 @@ def test_apply_persona_override_resident_sets_override_source_as_root(
     committed = apply_persona_override(
         target_role_id="resident:assistant", persona=persona, role=role,
         instance_dir_root=tmp_path / "bindings" / "resident-assistant",
+        candidate_validator=lambda persona, binding: None,
     )
     assert committed.root == "casa/ellen@0.1.0"
     assert committed.binding.mode == "override"
@@ -612,6 +613,7 @@ def test_apply_persona_override_specialist_preserves_root_and_dependency_state(
     committed = apply_persona_override(
         target_role_id="specialist:mtg-n1d", persona=persona, role=role,
         instance_dir_root=specialists_dir / "mtg-n1d",
+        candidate_validator=lambda persona, binding: None,
     )
     assert committed.root == active_before.root  # component root UNCHANGED
     assert committed.binding.mode == "override"
@@ -636,6 +638,7 @@ def test_apply_persona_override_specialist_without_active_tuple_raises(tmp_path:
         apply_persona_override(
             target_role_id="specialist:never-installed", persona=persona, role=role,
             instance_dir_root=tmp_path / "specialists" / "never-installed",
+            candidate_validator=lambda persona, binding: None,
         )
     assert raised.value.kind == "no_active_tuple"
 

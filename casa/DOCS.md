@@ -693,7 +693,8 @@ Ellen opens a topic `#[configurator] <short task>` in your engagement supergroup
 
 - hard - Supervisor app restart (~10-15s). Agent-shape changes, runtime, policy corpus.
 - soft - In-process casa_reload_triggers(role). Trigger-only edits; no downtime.
-- none - Prompt, response_shape, doctrine edits take effect on next turn.
+- none - Prompt and doctrine edits take effect on the next turn. (How a resident
+  writes or speaks is not a config edit at all — that comes from its persona.)
 
 Hard reload: Ellen verifies the reload landed on her resumed turn, then narrates.
 
