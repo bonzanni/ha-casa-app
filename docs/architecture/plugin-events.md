@@ -147,6 +147,20 @@ What it does not cover: the emitter's own artifact id is deliberately excluded f
 identity — an emitter-side upgrade that leaves its declared event name unchanged never
 forces its subscribers to re-consent.
 
+An approval also **rewrites the stored health report**, on both the success and the failure
+path of the reconcile it fires. The `event_pending_ack` rows are recomputed statelessly from
+the live ack store, but the report a tool reads is only rewritten where something asks for
+it, so without this an approved subscription kept telling the operator it was waiting for
+their approval — while it was already delivering — until an unrelated plugin mutation, reload
+or reboot happened by. That is worse than a stale file: the assistant's read-only status tool
+reports from it, so it contradicted the re-prompt tool, which correctly found nothing
+pending. The failure path owes the same rewrite because the ack is durable before the
+reconcile runs, so a compute failure there would leave the report saying "waiting for
+approval" while the consent message says delivery could not be started. The regeneration
+runs after the reconcile lock is released and holds the plugin-tools guard, since the report
+lock orders the write and not the computation before it — the trigger and callback consent
+paths do the same.
+
 **INV-EV-004**: Every delivery record eventually reaches `done` carrying exactly one durable outcome, redelivered on a fixed six-slot ladder until receipt or budget exhaustion.
 
 Enforced by `update_delivery_nudge`'s conditional read-merge-write (refuses unless the

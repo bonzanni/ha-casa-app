@@ -1007,8 +1007,14 @@ app past 0.78.0.
   reconstructed yet; a reload (or the configurator's own post-update reload)
   clears it.
 - **Health at a glance** — `/data/plugin-health.json` summarizes current plugin
-  issues; Casa also DMs the operator when a *new* issue appears and affected
-  agents prepend a one-line first-contact notice.
+  issues; Casa also DMs the operator when a *new* issue appears, and remembers
+  only the problems that message actually named. Your agents can prepend a
+  one-line notice to a reply about a blocking problem of their own that the
+  direct message did not name — because it was behind the "and N more" tail, or
+  because the message never got through — so the same warning does not normally
+  arrive on both. Nothing that was not named is treated as told, so it can be
+  named the next time Casa checks (a restart, a plugin change, a reload). For
+  the complete list at any moment, ask your assistant.
 
 ## Installing a specialist from a repository
 

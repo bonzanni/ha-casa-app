@@ -645,10 +645,19 @@ def _guard(spool: Any, desired: DesiredCallbacks, plugin: str,
 async def _regen_health_safe() -> None:
     """Regenerate the plugin-health report (no operator notify) so a
     just-acked callback's stale ``callback_pending_ack`` clears immediately
-    instead of lingering until the next plugin mutation/boot. Never raises."""
+    instead of lingering until the next plugin mutation/boot. Never raises.
+
+    Runs under ``tools._plugin_tools_guard()`` (#582 batch, Sol/Terra design
+    r1): the report lock serializes the WRITE, not the computation preceding
+    it, so a pass that started before a concurrent plugin mutation committed
+    would otherwise write its older result last and delete the row that
+    mutation just added — reproduced against the real writer, with nothing
+    scheduling another regeneration to repair it. Taken only after
+    ``_RECONCILE_LOCK`` is released, so the two are never nested here."""
     try:
         import tools
-        await asyncio.to_thread(tools._regenerate_plugin_health, [])
+        async with tools._plugin_tools_guard():
+            await asyncio.to_thread(tools._regenerate_plugin_health, [])
     except Exception:  # noqa: BLE001
         logger.warning("post-consent plugin-health regen failed", exc_info=True)
 

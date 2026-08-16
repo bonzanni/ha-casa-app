@@ -64,7 +64,8 @@ def test_carry_forward_dedup_and_reappearance(tmp_path):
 
     rA = plugin_health.write_report(issues=[x], warnings=[], path=p)
     assert plugin_health.new_fingerprints(rA) == [fp_x]
-    plugin_health.mark_notified([fp_x], path=p)
+    plugin_health.mark_notified([fp_x], path=p,
+                                generation=rA["generation"])
 
     rB = plugin_health.write_report(issues=[x], warnings=[], path=p)
     assert plugin_health.new_fingerprints(rB) == []          # stays notified
@@ -444,8 +445,12 @@ def test_concurrent_regeneration_keeps_just_marked_fingerprint(tmp_path, monkeyp
     t.start()
     try:
         assert in_registry_state.wait(timeout=5)
-        # The notification lands while the regeneration is mid-flight.
-        plugin_health.mark_notified([fp_x], path=p)
+        # The notification lands while the regeneration is mid-flight. Its
+        # generation is the one on disk right now — the in-flight write has not
+        # published yet, so this mark is still describing the current report.
+        plugin_health.mark_notified(
+            [fp_x], path=p,
+            generation=plugin_health.load_report(p)["generation"])
     finally:
         release.set()
         t.join(timeout=5)
@@ -608,3 +613,146 @@ def test_render_notice_is_render_line_over_this_roles_issues(tmp_path):
     assert notice == plugin_health.render_line(
         [_row("mine"), _row("everyones", target=None)])
     assert "theirs" not in notice
+
+
+# ---------------------------------------------------------------------------
+# #559 — the in-band notice carries what the DM has not named
+# ---------------------------------------------------------------------------
+
+
+def test_report_generation_increments_on_every_write(tmp_path):
+    p = tmp_path / "health.json"
+    r1 = plugin_health.write_report(issues=[_issue()], warnings=[], path=p)
+    r2 = plugin_health.write_report(issues=[_issue()], warnings=[], path=p)
+    assert r2["generation"] == r1["generation"] + 1
+
+
+def test_mark_notified_is_skipped_when_the_report_moved_on(tmp_path):
+    """#559 (Sol/Terra design r1): `mark_notified` used to append whatever it
+    was handed, so a row that RESOLVED while its DM was in flight had its
+    fingerprint written back into a report that no longer contained it. On
+    recurrence `write_report`'s prune then KEEPS that marker — the row reads as
+    already announced, the DM is suppressed, and with the notice filter below
+    the operator hears about it on neither surface.
+
+    The delivered report's generation is the fence: marking applies only while
+    the report the DM described is still the current one."""
+    p = tmp_path / "health.json"
+    x = _issue()
+    fp = plugin_health.fingerprint(x)
+    delivered = plugin_health.write_report(issues=[x], warnings=[], path=p)
+
+    plugin_health.write_report(issues=[], warnings=[], path=p)   # x resolved
+    plugin_health.mark_notified([fp], path=p,
+                                generation=delivered["generation"])
+    assert plugin_health.load_report(p)["notified_fingerprints"] == []
+
+    # ...and the recurrence is announced, because nothing marked it.
+    recurred = plugin_health.write_report(issues=[x], warnings=[], path=p)
+    assert plugin_health.new_fingerprints(recurred) == [fp]
+
+
+def test_mark_notified_applies_and_preserves_the_generation(tmp_path):
+    p = tmp_path / "health.json"
+    x = _issue()
+    fp = plugin_health.fingerprint(x)
+    delivered = plugin_health.write_report(issues=[x], warnings=[], path=p)
+    plugin_health.mark_notified([fp], path=p,
+                                generation=delivered["generation"])
+    after = plugin_health.load_report(p)
+    assert after["notified_fingerprints"] == [fp]
+    # marking changes no rows, so it is not a new generation
+    assert after["generation"] == delivered["generation"]
+
+
+def test_a_legacy_report_that_moved_mid_send_is_still_fenced(tmp_path):
+    """Sol/Terra diff r1: the first shape of this fence took an OPTIONAL
+    generation defaulting to None, which made "the caller passed nothing"
+    indistinguishable from "the report predates the field" — so across the
+    upgrade that introduced it, the fence switched itself off in exactly the
+    window it exists for. A report with no generation is a real value to
+    compare, not a missing argument."""
+    p = tmp_path / "health.json"
+    x = _issue()
+    fp = plugin_health.fingerprint(x)
+    plugin_health.write_report(issues=[x], warnings=[], path=p)
+    legacy = json.loads(p.read_text())
+    del legacy["generation"]                    # a report written before v0.214.0
+    p.write_text(json.dumps(legacy))
+    delivered = plugin_health.load_report(p).get("generation")
+    assert delivered is None
+
+    plugin_health.write_report(issues=[x], warnings=[], path=p)   # regen mid-send
+    plugin_health.mark_notified([fp], path=p, generation=delivered)
+    assert plugin_health.load_report(p)["notified_fingerprints"] == []
+
+
+def test_a_legacy_report_that_did_not_move_still_marks(tmp_path):
+    """The other half: an untouched pre-v0.214.0 report still accepts its mark,
+    so the upgrade costs at most one duplicate DM and never a lost one."""
+    p = tmp_path / "health.json"
+    x = _issue()
+    plugin_health.write_report(issues=[x], warnings=[], path=p)
+    legacy = json.loads(p.read_text())
+    del legacy["generation"]
+    p.write_text(json.dumps(legacy))
+    plugin_health.mark_notified([plugin_health.fingerprint(x)], path=p,
+                                generation=None)
+    assert plugin_health.load_report(p)["notified_fingerprints"] != []
+
+
+def test_a_warning_is_never_carried_by_the_in_band_notice(tmp_path):
+    """The boundary the contract prose has to state exactly: `render_notice`
+    selects `issues` only. A warning truncated behind the DM's "and N more"
+    therefore stays unmarked and waits for a later DM — it is not carried
+    in-band the way a truncated blocking issue for that role is."""
+    p = tmp_path / "health.json"
+    plugin_health.write_report(
+        issues=[], warnings=[_issue(name="w", target="resident:assistant")],
+        path=p)
+    assert plugin_health.render_notice("assistant", p) is None
+
+
+def test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice(
+        tmp_path):
+    """The other half of that boundary (Sol diff r2): the notice selects rows
+    targeted at ITS role or at none, so an `executor:*` row has no in-band
+    surface either — no resident's or specialist's notice matches it. Stated
+    because the prose would otherwise promise in-band carriage for every
+    truncated blocking issue, which is true only for the targets a role
+    answers to."""
+    p = tmp_path / "health.json"
+    plugin_health.write_report(
+        issues=[_issue(name="x", target="executor:configurator")],
+        warnings=[], path=p)
+    assert plugin_health.render_notice("configurator", p) is None
+    assert plugin_health.render_notice("assistant", p) is None
+
+
+def test_notice_omits_rows_the_dm_already_named(tmp_path):
+    """The contract this batch states: the DM is the operator's record of a
+    problem, named once; the in-band notice carries what the DM has NOT named.
+    Filtering per ROW (rather than suppressing the whole notice) is what makes
+    the two surfaces' different row sets stop mattering — the DM named `dm`,
+    the notice still has `fresh` to say."""
+    p = tmp_path / "health.json"
+    dm_row = _issue(name="dm", target="resident:assistant")
+    fresh = _issue(name="fresh", target="resident:assistant")
+    plugin_health.write_report(issues=[dm_row, fresh], warnings=[], path=p)
+    plugin_health.mark_notified(
+        [plugin_health.fingerprint(dm_row)], path=p,
+        generation=plugin_health.load_report(p)["generation"])
+    notice = plugin_health.render_notice("assistant", p)
+    assert "fresh" in notice
+    assert "dm" not in notice
+
+
+def test_notice_is_none_when_every_row_was_named(tmp_path):
+    p = tmp_path / "health.json"
+    rows = [_issue(name="a", target="resident:assistant"),
+            _issue(name="b", target=None)]
+    plugin_health.write_report(issues=rows, warnings=[], path=p)
+    plugin_health.mark_notified(
+        [plugin_health.fingerprint(r) for r in rows], path=p,
+        generation=plugin_health.load_report(p)["generation"])
+    assert plugin_health.render_notice("assistant", p) is None

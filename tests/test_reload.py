@@ -733,6 +733,87 @@ class TestReloadPluginEnv:
         assert os.environ["KEY"] == "new-secret"
         secrets_resolver.resolve.cache_clear()  # never leak the fake into other tests
 
+    async def test_failed_resolution_leaves_the_variable_unset(self, monkeypatch):
+        """#580: an op:// reference that cannot be resolved is not a value.
+
+        The literal used to be installed instead, and a `.mcp.json` writing the
+        DEFAULTED form `${VAR:-default}` then expanded to the literal — measured
+        on the pinned CLI (2.1.220), only an UNSET variable takes the default,
+        so the MCP server was launched holding `op://vault/item/field` where a
+        credential belongs. Absence is what the boot path already produces
+        (casa_core step 1b assigns inside its try)."""
+        from reload import dispatch, register_handler, reload_plugin_env
+        register_handler("plugin_env", reload_plugin_env)
+        import tools as tools_mod
+        monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                            lambda extra: None)
+
+        def _boom(value):
+            raise RuntimeError("op read failed: service account revoked")
+
+        monkeypatch.setattr("plugin_env_conf.read_entries",
+                            lambda: {"CASA_PLUGIN_X": "op://v/i/f"})
+        monkeypatch.setattr("secrets_resolver.resolve", _boom)
+        monkeypatch.setenv("CASA_PLUGIN_X", "op://v/i/f")
+
+        runtime = _make_runtime()
+        result = await dispatch("plugin_env", runtime=runtime)
+        assert result["status"] == "ok"      # the reload itself still succeeds
+        assert "CASA_PLUGIN_X" not in os.environ
+
+    async def test_failed_resolution_pops_a_previously_resolved_value(
+            self, monkeypatch):
+        """#345's rotation contract: the reload re-reads the vault precisely so
+        a REVOKED credential stops being served. Keeping the last good value on
+        a failed re-resolution would restore exactly the silent no-op that fix
+        removed, so absence — which withholds the plugin loudly — is the fail
+        direction."""
+        from reload import dispatch, register_handler, reload_plugin_env
+        register_handler("plugin_env", reload_plugin_env)
+        import tools as tools_mod
+        monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                            lambda extra: None)
+
+        def _boom(value):
+            raise RuntimeError("op read failed")
+
+        monkeypatch.setattr("plugin_env_conf.read_entries",
+                            lambda: {"CASA_PLUGIN_Y": "op://v/i/f"})
+        monkeypatch.setattr("secrets_resolver.resolve", _boom)
+        monkeypatch.setenv("CASA_PLUGIN_Y", "the-previous-secret")
+
+        runtime = _make_runtime()
+        await dispatch("plugin_env", runtime=runtime)
+        assert "CASA_PLUGIN_Y" not in os.environ
+
+    async def test_failed_resolution_is_counted_in_the_actions(self, monkeypatch):
+        """The reload result is what the configurator reads back, so a variable
+        the reload could NOT apply must be visible there — `set_N_vars` counts
+        what was actually set, never what was attempted."""
+        from reload import dispatch, register_handler, reload_plugin_env
+        register_handler("plugin_env", reload_plugin_env)
+        import tools as tools_mod
+        monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                            lambda extra: None)
+
+        def _resolve(value):
+            if value.startswith("op://"):
+                raise RuntimeError("op read failed")
+            return value
+
+        monkeypatch.setattr("plugin_env_conf.read_entries",
+                            lambda: {"PLAIN_A": "a", "REF_B": "op://v/i/f"})
+        monkeypatch.setattr("secrets_resolver.resolve", _resolve)
+        monkeypatch.delenv("PLAIN_A", raising=False)
+        monkeypatch.delenv("REF_B", raising=False)
+
+        runtime = _make_runtime()
+        result = await dispatch("plugin_env", runtime=runtime)
+        assert "set_1_vars" in result["actions"]
+        assert "unresolved_1_vars" in result["actions"]
+        assert os.environ["PLAIN_A"] == "a"
+        assert "REF_B" not in os.environ
+
     async def test_regenerates_plugin_health_after_env_applied(self, monkeypatch):
         """P4b (2026-07-18 self-containment plan): a secrets-only repair must
         clear a stale-red plugin-health.json — reload regenerates + notifies

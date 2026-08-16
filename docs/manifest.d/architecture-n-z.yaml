@@ -174,6 +174,9 @@
     - casa/rootfs/opt/casa/plugin_store.py::artifact_verdict
     - casa/rootfs/opt/casa/plugin_store.py::manifest_protected_tools
     - casa/rootfs/opt/casa/plugin_grants.py::protected_map
+    - casa/rootfs/opt/casa/plugin_health.py::render_notice
+    - casa/rootfs/opt/casa/plugin_health.py::mark_notified
+    - casa/rootfs/opt/casa/casa_core.py::notify_plugin_health
     - casa/rootfs/opt/casa/authz_grants.py::GrantKey
     - casa/rootfs/opt/casa/authz_grants.py::GrantStore
     - casa/rootfs/opt/casa/plugin_boot.py::main
@@ -184,8 +187,10 @@
     - tests/test_authz_grants.py
     - tests/test_authz_hook.py
     - tests/test_plugin_boot.py
+    - tests/test_plugin_health.py
+    - tests/test_plugin_health_notify.py
   related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md]
-  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007]
+  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007, INV-PLUG-013]
   invariant_tests:
     INV-PLUG-001: [tests/test_plugin_registry.py::test_artifact_id_mismatch_is_per_entry_skip]
     INV-PLUG-002: [tests/test_pin_plugin_invariants.py::test_pin_inv_plug_002_checksum_drift_and_symlinked_locations]
@@ -194,6 +199,7 @@
     INV-PLUG-005: [tests/test_authz_hook.py::test_restart_loses_grants_fresh_store_rechallenges]
     INV-PLUG-006: [tests/test_agent_plugin_binding.py::test_executor_options_have_plugins_but_no_grants_no_callback]
     INV-PLUG-007: [tests/test_authz_hook.py::test_non_operator_sender_is_denied_with_no_challenge, tests/test_authz_hook.py::test_non_operator_with_live_grant_consumes_nothing, tests/test_authz_hook.py::test_accept_all_mode_denies_protected_tools_for_everyone]
+    INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]
 
 - doc: architecture/specialist-lifecycle.md
   summary: Specialist install/upgrade/rollback — instance tuples, the store, consent receipts, materialization, the crash journal.

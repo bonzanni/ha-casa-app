@@ -101,12 +101,59 @@ def test_every_password_typed_option_is_in_the_boot_resolution_list() -> None:
     options" — the list must cover ALL of them. context7_api_key (password? in
     config.yaml, exported as CONTEXT7_API_KEY by svc-casa/run) was missing, so
     an op:// value reached the context7 MCP server as the literal reference."""
-    import inspect
-
     import casa_core
 
-    source = inspect.getsource(casa_core.main)
-    block = source.split("_PASSWORD_ENV_VARS = (", 1)[1].split(")", 1)[0]
-    for var in ("CLAUDE_CODE_OAUTH_TOKEN", "TELEGRAM_BOT_TOKEN",
-                "WEBHOOK_SECRET", "CONTEXT7_API_KEY"):
-        assert f'"{var}"' in block, var
+    assert set(casa_core._PASSWORD_ENV_VARS) == {
+        "CLAUDE_CODE_OAUTH_TOKEN", "TELEGRAM_BOT_TOKEN",
+        "WEBHOOK_SECRET", "CONTEXT7_API_KEY"}
+
+
+def test_a_plugin_facing_option_is_unset_when_its_reference_fails(
+        monkeypatch) -> None:
+    """#580: `CONTEXT7_API_KEY` is in `CASA_OWNED_ENV_OPTIONS` — the map of env
+    names a PLUGIN may reference and Casa supplies — so its consumer is an MCP
+    server, and the CLI hands whatever the variable holds straight to it. An
+    unresolvable reference must therefore leave the variable ABSENT: a bare
+    `${VAR}` reference then withholds the plugin, and a `${VAR:-default}` one
+    takes its default instead of expanding to the literal."""
+    import casa_core
+
+    def _boom(value):
+        raise RuntimeError("op read failed")
+
+    monkeypatch.setattr("secrets_resolver.resolve", _boom)
+    env = {"CONTEXT7_API_KEY": "op://v/i/f"}
+    failed = casa_core._resolve_password_options(env)
+    assert failed == ["CONTEXT7_API_KEY"]
+    assert "CONTEXT7_API_KEY" not in env
+
+
+def test_a_casa_consumed_option_keeps_the_literal_when_its_reference_fails(
+        monkeypatch) -> None:
+    """The counterpart rule, and the reason it is not "pop every secret":
+    `TELEGRAM_BOT_TOKEN` is read as `if telegram_token:` (casa_core.py), so an
+    ABSENT token builds no Telegram channel at all — silently removing the
+    operator's only notification surface. The literal instead constructs the
+    channel and fails loudly on connect. No plugin server receives it."""
+    import casa_core
+
+    def _boom(value):
+        raise RuntimeError("op read failed")
+
+    monkeypatch.setattr("secrets_resolver.resolve", _boom)
+    env = {"TELEGRAM_BOT_TOKEN": "op://v/i/f"}
+    failed = casa_core._resolve_password_options(env)
+    assert failed == ["TELEGRAM_BOT_TOKEN"]
+    assert env["TELEGRAM_BOT_TOKEN"] == "op://v/i/f"
+
+
+def test_a_resolved_password_option_is_replaced_with_its_value(
+        monkeypatch) -> None:
+    import casa_core
+
+    monkeypatch.setattr("secrets_resolver.resolve",
+                        lambda v: "plaintext" if v.startswith("op://") else v)
+    env = {"CONTEXT7_API_KEY": "op://v/i/f", "WEBHOOK_SECRET": "literal"}
+    assert casa_core._resolve_password_options(env) == []
+    assert env["CONTEXT7_API_KEY"] == "plaintext"
+    assert env["WEBHOOK_SECRET"] == "literal"

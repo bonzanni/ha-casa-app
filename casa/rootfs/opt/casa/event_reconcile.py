@@ -436,6 +436,31 @@ async def revoke_and_unroute(subscriber: str, emitter: str = "",
     return removed
 
 
+async def _regen_health_safe() -> None:
+    """Regenerate the plugin-health report (no operator notify) so a just-acked
+    subscription's stale ``event_pending_ack`` clears immediately instead of
+    lingering until the next plugin mutation, reload or boot (#582).
+    ``current_issues()`` recomputes fresh from the persisted acks + resolver, so
+    the routed subscription drops out of the report. Never raises — a health
+    refresh must not break the reconcile.
+
+    Runs under ``tools._plugin_tools_guard()`` (Sol/Terra design r1): the report
+    LOCK serializes the write, not the computation that precedes it, so a pass
+    that started before a concurrent plugin mutation committed would otherwise
+    write its older result last and delete the row that mutation just added —
+    reproduced against the real writer, and nothing schedules another
+    regeneration to repair it. The guard is taken only AFTER
+    ``_RECONCILE_LOCK`` has been released, so no task ever holds the reconcile
+    lock while waiting for the plugin-tools lock.
+    """
+    try:
+        import tools
+        async with tools._plugin_tools_guard():
+            await asyncio.to_thread(tools._regenerate_plugin_health, [])
+    except Exception:  # noqa: BLE001
+        logger.warning("post-consent plugin-health regen failed", exc_info=True)
+
+
 def _kick_worker() -> None:
     try:
         import event_episodes
@@ -505,7 +530,7 @@ def _fire_consent_prompts(pending: "list[dict]", *, role_configs: dict,
         live_runtime = getattr(agent_mod, "active_runtime", None)
         await reconcile_plugin_events(
             live_runtime, acks=acks, resolver=resolver, entries=entries,
-            prompt=False)
+            prompt=False, regen_health=True)
 
     for p in pending:
         try:
@@ -531,7 +556,7 @@ async def reconcile_plugin_events(
     channel_manager: Any = None, acks: Any = None,
     resolver: "Callable[[str | None], Any] | None" = None,
     entries: "Callable[[], list[dict]] | None" = None,
-    prompt: bool = True,
+    prompt: bool = True, regen_health: bool = False,
 ) -> "list[dict]":
     """Compute + publish under ONE reconcile lock (mirrors
     ``callback_reconcile.py:613`` exactly, including holding the lock for
@@ -557,8 +582,16 @@ async def reconcile_plugin_events(
     :data:`event_spool.ROUTING_UNAVAILABLE` (never an empty map — decision
     26), kick the worker so it re-evaluates under the sentinel, then
     propagate the exception so the caller logs/surfaces it. No spool
-    mutation happens here, ever (decision 12)."""
-    global _routed
+    mutation happens here, ever (decision 12).
+
+    ``regen_health`` (set by the consent-approve reconciles, #582) rewrites
+    plugin-health after the pass so a freshly-acked subscription's stale
+    ``event_pending_ack`` clears at once. The mutation/boot/reload/revoke paths
+    leave it False — they regenerate health themselves — so there is no
+    double-regen. It fires on the FAILURE path too (Sol design r1): the ack is
+    already durable when this runs, so a compute failure would otherwise leave
+    the report saying "waiting for your approval" while the consent DM says
+    delivery could not be started."""
     if role_configs is None:
         role_configs = getattr(runtime, "role_configs", None) or {}
     if channel_manager is None:
@@ -569,54 +602,67 @@ async def reconcile_plugin_events(
         return compute_desired(role_configs=role_configs, acks=acks,
                                resolver=resolver, entries=entries)
 
-    async with _RECONCILE_LOCK:
-        try:
-            desired = await asyncio.to_thread(_compute)
-        except Exception:
-            # Fail closed to the SENTINEL, never an empty map (decision 26)
-            # — an empty map is an authoritative result that would license
-            # the worker's destructive sweep.
-            _routed = event_spool.ROUTING_UNAVAILABLE
-            _kick_worker()
-            raise
-
-        if not desired.registry_valid:
-            # Same fail-closed treatment as a raised exception (Critical-1)
-            # — an invalid registry snapshot is a FAILURE TO KNOW, not a
-            # computed empty, so it must never license the destructive
-            # sweep an authoritative {} would. Unlike the exception branch
-            # this is a normal (non-crash) outcome, so it does not raise —
-            # callers read ``desired.issues`` as usual.
-            _routed = event_spool.ROUTING_UNAVAILABLE
-            _kick_worker()
-            return desired.issues
-
-        _routed = desired.routed
-
-        if desired.prunable:
-            # Opportunistic prune (adjudication-f): only on a pass trusted
-            # enough to know the COMPLETE keep-set (decision mirrors
-            # callback_reconcile's own valid_identities/prunable
-            # suppression) — an ack whose identity no installed
-            # subscriber's declaration can still compute is stale.
+    async def _locked_pass() -> "list[dict]":
+        global _routed
+        async with _RECONCILE_LOCK:
             try:
-                removed = await asyncio.to_thread(
-                    acks.prune_stale, desired.valid_identities)
-                if removed:
-                    logger.info("pruned %d stale event ack(s)", len(removed))
-            except Exception:  # noqa: BLE001 — an opportunistic prune must
-                # never break the reconcile; the next pass retries.
-                logger.warning("event ack prune failed", exc_info=True)
+                desired = await asyncio.to_thread(_compute)
+            except Exception:
+                # Fail closed to the SENTINEL, never an empty map (decision 26)
+                # — an empty map is an authoritative result that would license
+                # the worker's destructive sweep.
+                _routed = event_spool.ROUTING_UNAVAILABLE
+                _kick_worker()
+                raise
 
-        if prompt and desired.consent_needed:
-            _fire_consent_prompts(
-                desired.consent_needed, role_configs=role_configs,
-                channel_manager=channel_manager, acks=acks,
-                resolver=resolver, entries=entries)
+            if not desired.registry_valid:
+                # Same fail-closed treatment as a raised exception (Critical-1)
+                # — an invalid registry snapshot is a FAILURE TO KNOW, not a
+                # computed empty, so it must never license the destructive
+                # sweep an authoritative {} would. Unlike the exception branch
+                # this is a normal (non-crash) outcome, so it does not raise —
+                # callers read ``desired.issues`` as usual.
+                _routed = event_spool.ROUTING_UNAVAILABLE
+                _kick_worker()
+                return desired.issues
 
-        _kick_worker()
+            _routed = desired.routed
 
-    return desired.issues
+            if desired.prunable:
+                # Opportunistic prune (adjudication-f): only on a pass trusted
+                # enough to know the COMPLETE keep-set (decision mirrors
+                # callback_reconcile's own valid_identities/prunable
+                # suppression) — an ack whose identity no installed
+                # subscriber's declaration can still compute is stale.
+                try:
+                    removed = await asyncio.to_thread(
+                        acks.prune_stale, desired.valid_identities)
+                    if removed:
+                        logger.info("pruned %d stale event ack(s)", len(removed))
+                except Exception:  # noqa: BLE001 — an opportunistic prune must
+                    # never break the reconcile; the next pass retries.
+                    logger.warning("event ack prune failed", exc_info=True)
+
+            if prompt and desired.consent_needed:
+                _fire_consent_prompts(
+                    desired.consent_needed, role_configs=role_configs,
+                    channel_manager=channel_manager, acks=acks,
+                    resolver=resolver, entries=entries)
+
+            _kick_worker()
+
+        return desired.issues
+
+    try:
+        return await _locked_pass()
+    finally:
+        # OUTSIDE the reconcile lock, and on BOTH paths. The lock order is the
+        # reason this cannot sit inside: `_regen_health_safe` takes the
+        # plugin-tools guard, and a task holding `_RECONCILE_LOCK` while
+        # waiting for that guard would invert the order a plugin mutation
+        # takes them in.
+        if regen_health:
+            await _regen_health_safe()
 
 
 async def reprompt_pending(
@@ -658,7 +704,7 @@ async def reprompt_pending(
         live = getattr(agent_mod, "active_runtime", None)
         if live is None:
             return
-        await reconcile_plugin_events(live, prompt=False)
+        await reconcile_plugin_events(live, prompt=False, regen_health=True)
 
     async with _RECONCILE_LOCK:
         try:
