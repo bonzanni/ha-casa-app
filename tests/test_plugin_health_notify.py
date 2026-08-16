@@ -245,11 +245,14 @@ async def test_dm_uses_the_incomplete_update_prefix_for_stale_bindings(tmp_path)
     state, from the two copies of the sentence."""
     p = _report(tmp_path, PluginIssue("p", "resident:assistant", "reload",
                                       "reload_required", None))
+    # the same rows, rendered for the other surface BEFORE the DM claims them
+    # (#559: once the DM has named a row, the notice no longer repeats it).
+    in_band = plugin_health.render_notice("assistant", p)
     cm = _cm()
     await casa_core.notify_plugin_health(cm, path=str(p))
     assert cm._channel.sent[0][0].startswith("⚠️ An update did not finish:")
-    assert cm._channel.sent[0][0] == plugin_health.render_notice(
-        "assistant", p)
+    assert cm._channel.sent[0][0] == in_band
+    assert plugin_health.render_notice("assistant", p) is None
 
 
 async def test_dm_names_five_where_the_in_band_notice_names_two(tmp_path):
@@ -258,11 +261,89 @@ async def test_dm_names_five_where_the_in_band_notice_names_two(tmp_path):
     p = _report(tmp_path, *[
         PluginIssue(f"p{i}", "resident:assistant", "resolve",
                     "artifact_missing", None) for i in range(6)])
+    # Both limits, on the same six unclaimed rows.
+    notice = plugin_health.render_notice("assistant", p)
+    assert [f"p{i}" in notice for i in range(6)] == [True] * 2 + [False] * 4
+    assert notice.endswith(", and 4 more.")
     cm = _cm()
     await casa_core.notify_plugin_health(cm, path=str(p))
     dm = cm._channel.sent[0][0]
     assert [f"p{i}" in dm for i in range(6)] == [True] * 5 + [False]
     assert dm.endswith(", and 1 more.")
+
+
+# ---------------------------------------------------------------------------
+# #559 — one warning, one surface: the DM names, the in-band notice carries the
+# remainder. See plugin_health.render_notice for the contract.
+# ---------------------------------------------------------------------------
+
+
+async def test_only_the_rows_it_named_are_marked(tmp_path):
+    """A DM names five rows and counts the rest, but used to mark ALL of them —
+    so a row the operator never saw the name of was recorded as announced. That
+    lost its name on the DM surface permanently, and (once the notice filters on
+    the same field) on the in-band one too. Marking follows the sentence."""
+    p = _report(tmp_path, *[
+        PluginIssue(f"p{i}", "resident:assistant", "resolve",
+                    "artifact_missing", None) for i in range(6)])
+    cm = _cm()
+    await casa_core.notify_plugin_health(cm, path=str(p))
+    dm = cm._channel.sent[0][0]
+    assert [f"p{i}" in dm for i in range(6)] == [True] * 5 + [False]
+    # the unnamed sixth is still NEW — it will be named by the next DM...
+    report = plugin_health.load_report(p)
+    assert len(report["notified_fingerprints"]) == 5
+    assert plugin_health.new_fingerprints(report) == [
+        plugin_health.fingerprint(report["issues"][5])]
+    # ...and it is what the in-band notice now says, alone.
     notice = plugin_health.render_notice("assistant", p)
-    assert [f"p{i}" in notice for i in range(6)] == [True] * 2 + [False] * 4
-    assert notice.endswith(", and 4 more.")
+    assert "p5" in notice
+    assert not any(f"p{i}" in notice for i in range(5))
+
+
+async def test_a_confirmed_dm_leaves_no_in_band_duplicate(tmp_path):
+    """The cross-path case #559 was filed for: a plugin mutation regenerates
+    health, awaits the DM mid-turn, and the reply that follows used to carry the
+    identical warning a second time. `Agent._maybe_prepend_health_notice` asks
+    `pending_notice` for exactly this text, so this is the decision it reads."""
+    p = _report(tmp_path, PluginIssue("lesina-invoice", "resident:assistant",
+                                      "resolve", "corrupt_artifact", None))
+    assert plugin_health.pending_notice("assistant", p) is not None
+    plugin_health._notice_memo.clear()          # a fresh turn, nothing armed
+
+    cm = _cm()
+    await casa_core.notify_plugin_health(cm, path=str(p))
+    assert len(cm._channel.sent) == 1
+    assert plugin_health.pending_notice("assistant", p) is None
+
+
+async def test_a_failed_dm_leaves_the_in_band_notice_armed(tmp_path):
+    """The suppression is delivery-shaped, not intent-shaped: `mark_notified`
+    runs only after a confirmed send, so an undelivered row is unfiltered and
+    the notice still carries it. This is the guarantee that makes filtering on
+    `notified_fingerprints` safe."""
+    p = _report(tmp_path, PluginIssue("lesina-invoice", "resident:assistant",
+                                      "resolve", "corrupt_artifact", None))
+    plugin_health._notice_memo.clear()
+    await casa_core.notify_plugin_health(_cm(raise_on_send=True), path=str(p))
+    assert plugin_health.pending_notice("assistant", p) is not None
+
+
+async def test_a_regeneration_during_the_send_defers_the_mark(tmp_path):
+    """Sol/Terra design r1: the report can move under an in-flight DM. Marking
+    is fenced on the generation the delivered message described, so the mark is
+    skipped and the row is re-announced rather than silently suppressed."""
+    row = PluginIssue("p", "resident:assistant", "resolve", "artifact_missing",
+                      None)
+    p = _report(tmp_path, row)
+
+    class _RegeneratingChannel(_FakeChannel):
+        async def send(self, message, context):
+            # a plugin mutation regenerates health while this send is in flight
+            plugin_health.write_report(issues=[row], warnings=[], path=p)
+            return await super().send(message, context)
+
+    cm = _FakeChannelManager(_RegeneratingChannel())
+    await casa_core.notify_plugin_health(cm, path=str(p))
+    assert len(cm._channel.sent) == 1
+    assert plugin_health.load_report(p)["notified_fingerprints"] == []

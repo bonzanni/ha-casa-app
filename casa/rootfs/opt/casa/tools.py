@@ -12020,7 +12020,13 @@ async def consent_reprompt(args: dict) -> dict:
             else:
                 r["status"] = settled  # delivery_failed | inactive
         rows.append(r)
-    await asyncio.to_thread(_regenerate_plugin_health, [])
+    # #582 batch (Sol design r1): this regeneration runs OUTSIDE the lock the
+    # body above held (the settled-post awaits are deliberately not under it),
+    # so it takes the guard — the report lock orders the write, not the
+    # computation preceding it, and an unguarded pass can write a pre-mutation
+    # result last and delete the row a concurrent mutation just added.
+    async with _plugin_tools_guard():
+        await asyncio.to_thread(_regenerate_plugin_health, [])
     # Sol/Terra diff-gate r1: a kind that FAILED (compute raised, a prompt
     # registration raised, or the whole reprompt_pending call raised) must
     # never read as "nothing pending" — its pending state could not be

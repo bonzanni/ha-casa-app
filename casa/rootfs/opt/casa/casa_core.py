@@ -3161,7 +3161,23 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
     # in-band one (it announced an all-reload_required set as a generic fault).
     # The limit stays 5 here — a DM is a message of its own, and naming five is
     # information the operator has no other way to get in that moment.
-    content = plugin_health.render_line(entries, limit=5)
+    _DM_LIMIT = 5
+    content = plugin_health.render_line(entries, limit=_DM_LIMIT)
+    # #559: what this message NAMES is what it may claim to have delivered.
+    # `render_line` names the first `_DM_LIMIT` rows and turns the rest into
+    # "and N more", but every new fingerprint used to be marked — so a row the
+    # operator never saw the name of was recorded as announced, which removed
+    # it from this surface permanently and (now that the in-band notice filters
+    # on the same field) from that one too. Marking the named prefix instead
+    # leaves the remainder UNRECORDED, which is all this can promise: nothing
+    # schedules a follow-up, so those rows are named whenever the next
+    # regeneration-and-notify happens, and the in-band notice shows only the
+    # subset it selects (blocking issues for its own role or targetless, up to
+    # its own limit). `plugin_status` reports the whole standing set unfiltered
+    # for exactly that reason. Issues precede warnings here, so a blocking row
+    # is never the one deferred behind a warning.
+    named_fps = [e.get("fingerprint") for e in entries[:_DM_LIMIT]
+                 if e.get("fingerprint")]
     channel = (channel_manager.get("telegram")
                if channel_manager is not None else None)
     # Sol r1-2: channel.send() log-and-drops while the PTB app is not
@@ -3181,7 +3197,13 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
     # re-DM the same issue on every boot forever.
     if outcome is DeliveryOutcome.NOT_DELIVERED:
         return  # not marked → retried next boot/mutation
-    plugin_health.mark_notified(fps, path)
+    # #559: fenced on the generation of the report this message DESCRIBED. A
+    # regeneration during the send means the rows may no longer be the ones
+    # just named, so nothing is marked and the DM re-fires on the next pass —
+    # a bounded duplicate rather than a fingerprint resurrected onto a row that
+    # resolved, which is how a later recurrence went unannounced.
+    plugin_health.mark_notified(named_fps, path,
+                                generation=report.get("generation"))
 
 
 # ------------------------------------------------------------------
@@ -3369,6 +3391,75 @@ async def _notify_recovered_delegations(
         )
 
 
+# §8: the password-typed app options, whose values may be an `op://` reference
+# the boot path resolves once, before any consumer reads them.
+# OP_SERVICE_ACCOUNT_TOKEN is deliberately absent — it is the credential the
+# resolution itself needs, and an `op://` reference to it could never resolve.
+_PASSWORD_ENV_VARS = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+    "WEBHOOK_SECRET",
+    # #277: context7_api_key is password-typed too — exported by svc-casa/run;
+    # without this entry an op:// value reached the context7 MCP server as the
+    # literal reference.
+    "CONTEXT7_API_KEY",
+)
+
+
+def _resolve_password_options(environ=None) -> "list[str]":
+    """Resolve each password-typed option's ``op://`` reference IN PLACE.
+    Returns the variables whose resolution failed (order preserved).
+
+    What happens to a variable that could not be resolved differs by who reads
+    it, and the rule is the ranked one (#580):
+
+    * A variable a **plugin** may reference is UNSET. Those are exactly the
+      names in ``plugin_store.CASA_OWNED_ENV_OPTIONS`` — the map of env names a
+      plugin may name in its ``.mcp.json`` and Casa supplies — so their consumer
+      is an MCP server, and the CLI hands it whatever the variable holds. A bare
+      ``${VAR}`` reference then withholds the plugin (INV-PLUG-008), and a
+      ``${VAR:-default}`` reference takes its default; keeping the literal
+      launches the server on a placeholder credential, which is the failure the
+      withhold gate exists to prevent.
+    * A variable **Casa itself** consumes keeps the raw reference. Each of those
+      fails loudly on a meaningless credential, while ABSENCE would be silent
+      and worse: ``TELEGRAM_BOT_TOKEN`` is read as ``if telegram_token:``, so
+      unsetting it builds no Telegram channel at all — removing the operator's
+      only notification surface, including the plugin-health DM. The webhook
+      secret has its own, narrower treatment at the point of use (#333):
+      ``webhook_auth`` refuses an ``op://`` value as an HMAC key and the
+      discovery publisher withdraws what it published.
+    """
+    from plugin_store import CASA_OWNED_ENV_OPTIONS
+    from secrets_resolver import resolve as _resolve_secret
+
+    env = os.environ if environ is None else environ
+    failed: list[str] = []
+    for var in _PASSWORD_ENV_VARS:
+        raw = env.get(var, "")
+        if not raw:
+            continue
+        try:
+            resolved = _resolve_secret(raw)
+        except RuntimeError as exc:
+            failed.append(var)
+            if var in CASA_OWNED_ENV_OPTIONS:
+                env.pop(var, None)
+                logger.warning(
+                    "secrets_resolver: %s op:// resolution failed: %s — "
+                    "leaving it unset; a plugin requiring it is withheld and a "
+                    "defaulted reference takes its default", var, exc)
+            else:
+                logger.warning(
+                    "secrets_resolver: %s op:// resolution failed: %s — "
+                    "using raw value; credential will likely be rejected",
+                    var, exc)
+            continue
+        if resolved != raw:
+            env[var] = resolved
+    return failed
+
+
 async def main() -> None:
     """Async entry point for the Casa add-on."""
 
@@ -3409,30 +3500,11 @@ async def main() -> None:
     # 1a. §8: universal op:// resolution for password-typed addon options.
     # OP_SERVICE_ACCOUNT_TOKEN is already in env (exported by svc-casa/run from
     # the onepassword_service_account_token addon option). Resolve all
-    # password-typed options in-place now, before any consumer reads them.
+    # password-typed options in-place now, before any consumer reads them. What
+    # an unresolvable reference leaves behind is per-variable — see
+    # _resolve_password_options.
     from secrets_resolver import resolve as _resolve_secret
-    _PASSWORD_ENV_VARS = (
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "TELEGRAM_BOT_TOKEN",
-        "WEBHOOK_SECRET",
-        # #277: context7_api_key is password-typed too — exported by
-        # svc-casa/run; without this entry an op:// value reached the
-        # context7 MCP server as the literal reference.
-        "CONTEXT7_API_KEY",
-    )
-    for _var in _PASSWORD_ENV_VARS:
-        _raw = os.environ.get(_var, "")
-        if _raw:
-            try:
-                _resolved = _resolve_secret(_raw)
-                if _resolved != _raw:
-                    os.environ[_var] = _resolved
-            except RuntimeError as _exc:
-                logger.warning(
-                    "secrets_resolver: %s op:// resolution failed: %s — "
-                    "using raw value; credential will likely be rejected",
-                    _var, _exc,
-                )
+    _resolve_password_options()
 
     # 1b. §5.5 / §8.3: source plugin-env.conf into process env.
     # Resolved after OP_SERVICE_ACCOUNT_TOKEN is available so that op://
@@ -4852,11 +4924,21 @@ async def main() -> None:
     # system requirements, active bindings) so a plugin with missing auth/secret
     # is not green until a mutation. Never block boot on it.
     try:
-        from tools import _regenerate_plugin_health
-        await asyncio.to_thread(_regenerate_plugin_health, [])
-    except Exception:  # noqa: BLE001
-        logger.warning("boot plugin-health runtime regen failed", exc_info=True)
-    await notify_plugin_health(channel_manager)
+        import tools as _tools_mod
+        # #582 batch (Sol design r1): unlike the boot RECONCILE regenerations
+        # (steps 13c/13d, which run before the HTTP server, the channels and
+        # the agent loops start), this one runs after all three are live, so a
+        # plugin mutation can be in flight beside it. The report lock orders
+        # the write, not the computation before it, so this takes the same
+        # guard every mutation holds — across the notify too, matching the
+        # plugin_env reload scope.
+        async with _tools_mod._plugin_tools_guard():
+            await asyncio.to_thread(_tools_mod._regenerate_plugin_health, [])
+            await notify_plugin_health(channel_manager)
+    except Exception:  # noqa: BLE001 — the notify is now inside this arm too
+        # (it was previously outside it): boot must not die on an operator
+        # notification, and the function's own contract is already non-fatal.
+        logger.warning("boot plugin-health regen/notify failed", exc_info=True)
 
     # 14. Kick off timers.
     # AsyncIOScheduler's AsyncIOExecutor schedules coroutine functions on

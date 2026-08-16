@@ -106,7 +106,20 @@ the requirement extractor does not match that form — so it neither withholds n
 placeholder, with no manifest field and no reserved name. It is also strictly more
 expressive, since a default may be a real value rather than only empty. What a default
 cannot express is readiness, which is precisely why `setupProvides` survives as the one
-declaration. Both are read
+declaration.
+
+That last claim holds only because of a rule about what Casa may leave in the environment,
+and the rule was written after the claim failed. **Measured on the pinned CLI, only an
+UNSET variable takes its default**: a variable that is set but empty expands to empty, and a
+variable holding an unresolvable `op://` reference expands to the reference. So the moment
+any writer put a failed resolution's raw reference into the environment, a `${VAR:-default}`
+reference stopped being satisfied by its default and started handing the literal to the
+plugin's MCP server — invisibly, because the withhold gate deliberately does not police that
+form. Casa therefore never installs an unresolvable reference for a variable a plugin may
+reference: the plugin-environment reload leaves such a variable unset, as boot always did,
+and the one app option that is plugin-facing by design does the same. The options Casa
+itself consumes keep the raw reference on purpose — each fails loudly on a meaningless
+credential, while their absence would be silent, and no plugin server receives them. Both are read
 strictly on both artifact-verification paths (install-time validation and resolution-time
 verdict), because a declaration that relaxes a gate must never be guessed at; a malformed
 one excludes the artifact from resolution, and the runtime readers fail closed to "no
@@ -155,6 +168,14 @@ specialist session builds — excluded from the SDK plugin list, its server gran
 recorded binding, and surfaced as an `env_unresolved` resolution issue — and any pending
 setup obligation holds. Wiring the value and running the plugin-env reload makes the plugin
 loadable; the agents that should carry it still need their own reload to rebuild sessions.
+
+**A secret reference cannot be resolved during a plugin-environment reload.** The variable
+is left unset rather than holding its own reference, and the reload reports how many it
+could not apply. A plugin requiring it is withheld exactly as above; a plugin referencing it
+with a default gets the default. The previously resolved value is not retained: a reload is
+the rotation path — it drops the resolver's cache first, precisely so a revoked credential
+stops being served — so keeping the last good value would restore the silent no-op that
+fixed.
 
 **A `casa.setupProvides` variable is unresolved.** The plugin loads anyway, with the
 variable passed to the CLI as an explicit empty string rather than a literal placeholder,

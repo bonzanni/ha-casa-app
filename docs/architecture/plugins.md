@@ -104,28 +104,55 @@ does — the application being absent, so no call was made at all, or the API ev
 call and refusing it. Erring the other way would repeat the line on every turn that hits a
 flaky connection.
 
-The operator DM is gated the same way, and marks its fingerprints notified only once
-delivery is confirmed. The out-of-band notices — that DM and the reminders one — serialize
-through a single lock, so neither can be sent twice by two paths that each read the state
-before either marked it.
+The operator DM is gated the same way, and records its fingerprints only on a send the
+channel did not report as undelivered — the same proven-negative rule, so a channel that
+cannot report either way records rather than repeating forever. The out-of-band notices —
+that DM and the reminders one — serialize through a single lock, so neither can be sent
+twice by two paths that each read the state before either marked it.
 
-What that lock does **not** cover is the in-band notice, which is claimed on the turn's own
-path and keyed by rendered text rather than by fingerprint. The two stores are therefore
-independent, and a mutation that raises its first blocking issue mid-turn can show the
-operator the same warning twice: once as the DM the tool awaits, once on the reply that
-follows it. That predates this contract and is tracked separately.
+That lock orders the out-of-band notices against each other. Between the DM and the in-band
+notice there is no lock, only a shared field: **the DM records the rows it named, and the
+notice skips rows already recorded.** That is a rule, not a guarantee of exactly-once, and
+the difference is the whole of what follows. Each surface names a bounded prefix and counts
+the rest — five for the DM, two for the notice. Nothing schedules a follow-up: further
+naming happens when something next regenerates health and notifies, which is a boot, a
+plugin mutation or a reload. And a row the DM named goes unrecorded whenever the report
+moved during its send, so the notice may repeat it. The read-only status tool is what
+answers completely and at once, reporting the whole standing set unfiltered.
 
-Coordinating them is harder than it reads, and the reason is worth recording where the next
-attempt will find it. The two surfaces select different rows: the DM announces only
-fingerprints not yet notified, while the notice states everything standing for that role —
-and setup-episode rows are targetless, never decay while pending, and therefore stand for
-every role during exactly the multi-step setup flow where the duplicate appears. So the two
-messages rarely carry identical text even when they carry the same warning, which defeats
-suppression keyed on the rendered line. Suppression keyed on fingerprints instead defeats
-itself differently: fingerprints deliberately exclude the detail field, while the visible
-sentence includes it, so a fingerprint match can suppress wording the operator never read.
-And any store of "already delivered" that the report's own resolution pruning does not reach
-can outlive the issue it describes, which is how a recurrence goes unannounced.
+Coordinating the two *stores* was tried first and does not work, which is why the rule is a
+filter over one field rather than a second store. The surfaces select different rows: the DM
+announces fingerprints not yet notified, across every target, while the notice states what
+stands for one role — and setup-episode rows are targetless, never decaying while pending,
+so they stand for every role during exactly the multi-step setup flow where the duplicate
+appears. Two messages carrying the same warning therefore rarely carry the same text, which
+defeats suppression keyed on the rendered line; and any separate record of "already
+delivered" has a lifetime that must be cleared, which is how a recurrence goes unannounced.
+Filtering per row needs neither: the field it reads is pruned to fingerprints still present
+on every regeneration, so the report's own resolution pruning *is* the lifetime.
+
+That filter is only as honest as the mark behind it, so the mark is narrowed on both axes.
+It covers the rows the message actually **named** — a row behind the "and N more" count was
+not something the operator was told, so it stays unrecorded and stays available to be named
+later. And it applies only while the report the message described is still current, because
+a row that resolves while its DM is in flight would otherwise have its fingerprint written
+back into a report that no longer holds it, where the next regeneration's pruning preserves
+it the moment the row recurs — a recurrence then reaching nobody. When the report has moved,
+nothing is recorded, which can cost a repeat of a message already read. That direction is
+chosen deliberately: a duplicate is recoverable and a silence is not.
+
+What the notice can show is narrower than what stays unrecorded, and the difference is where
+this is misread. It selects blocking **issues** addressed to its own role or to no target.
+A warning, or an issue addressed to an executor, is therefore never in-band under any
+condition; it waits to be named by a DM. So does a resident-addressed row sitting behind the
+notice's own count. None of those is lost — they stay unrecorded, so a later notification can
+name them, five at a time, and the status tool lists them on request — but nothing here
+delivers them on a schedule.
+
+Two consequences are deliberate. A `target=None` row is operator-global — one DM naming it
+records it for every role. And a changed `detail` on an unchanged fingerprint no longer
+re-shows in-band; the DM never re-announced it either, so this closes an undesigned channel
+rather than removing a guarantee.
 
 **Approval is per call, not per install, and it does not survive a restart.** A protected
 tool call by a resident or specialist consumes a single-use grant bound to a specific
@@ -227,6 +254,19 @@ with none configured it denies immediately rather than posting one); in-engageme
 not authorization. Sender identity itself is Telegram's authentication of its user ids,
 not an additional Casa-side proof.
 
+**INV-PLUG-013**: A plugin-health fingerprint is recorded as announced only for a row an operator message actually named, on a send the channel did not report as undelivered, and only while the report that message described is still current; a fingerprint that is not recorded is suppressed on neither operator surface.
+
+Every failure it forbids is silent, which is why it is pinned rather than left to the
+renderers. A mark that outruns what was named removes a row from the surface that would have
+named it, permanently — it is filtered out of the notice and is no longer new to the next
+message. A mark that lands on a report the message no longer describes is worse: the
+fingerprint is written back onto a row that has resolved, where the next regeneration's
+pruning keeps it as soon as the row recurs, so the recurrence reaches nobody. The negative
+condition is deliberately "not reported as undelivered" rather than "confirmed": a channel
+that cannot report either way must not be read as having failed, or its notices would repeat
+forever. What holding this costs is a repeated message when a regeneration lands mid-send,
+and a large incident being named five rows at a time.
+
 ## Failure behavior
 
 **The registry document is malformed.** It loads as invalid, no plugins resolve, and the
@@ -311,6 +351,9 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - `casa/rootfs/opt/casa/plugin_store.py::artifact_verdict`
 - `casa/rootfs/opt/casa/plugin_store.py::manifest_protected_tools`
 - `casa/rootfs/opt/casa/plugin_grants.py::protected_map`
+- `casa/rootfs/opt/casa/plugin_health.py::render_notice`
+- `casa/rootfs/opt/casa/plugin_health.py::mark_notified`
+- `casa/rootfs/opt/casa/casa_core.py::notify_plugin_health`
 - `casa/rootfs/opt/casa/authz_grants.py::GrantKey`
 - `casa/rootfs/opt/casa/authz_grants.py::GrantStore`
 - `casa/rootfs/opt/casa/plugin_boot.py::main`
@@ -322,6 +365,8 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - `tests/test_authz_grants.py`
 - `tests/test_authz_hook.py`
 - `tests/test_plugin_boot.py`
+- `tests/test_plugin_health.py`
+- `tests/test_plugin_health_notify.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

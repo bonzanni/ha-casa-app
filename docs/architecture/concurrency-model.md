@@ -47,7 +47,15 @@ share one tool-level lock (INV-TOOL-003); the full-reload entry points take it t
 task-reentrant guard, because a full reload that includes the environment refresh reaches
 the plugin-env handler's health block, which serializes on the same lock — one logical
 operation, one acquisition, while distinct tasks still exclude each other (a task spawned
-inside the guarded region does not inherit the hold). The specialist lifecycle serializes
+inside the guarded region does not inherit the hold). Every health regeneration that can
+run beside a live mutation takes that lock too, through the guard where the caller does not
+already hold it: the report's own lock serializes the write and not the computation before
+it, so an unguarded pass that began before a mutation committed could publish its older
+result last and delete a row that mutation had just added — with nothing scheduling a
+repair. Only the boot reconciliations are exempt, and by ordering rather than by argument:
+they run before the HTTP server, the channels and the agent loops start. Where a
+regeneration is followed by an operator notification, the guard spans both, so the
+notification's own record cannot be raced by the next regeneration. The specialist lifecycle serializes
 under the materialize lock, and a bundle rollback's tuple-and-symlink restoration takes
 that same lock so a concurrent reconcile cannot re-materialize what the rollback just
 removed. Agents keep a small first-publication lock for their plugin-resolution

@@ -371,10 +371,19 @@ async def _regen_health_safe() -> None:
     (v0.98.2 P2 follow-up) instead of lingering until the next plugin
     mutation/boot. ``current_issues()`` recomputes fresh from the persisted
     acks + resolver, so the routed trigger drops out of the report. Never
-    raises — a health-refresh failure must not break the reconcile."""
+    raises — a health-refresh failure must not break the reconcile.
+
+    Runs under ``tools._plugin_tools_guard()`` (#582 batch, Sol/Terra design
+    r1): the report lock serializes the WRITE, not the computation preceding
+    it, so a pass that started before a concurrent plugin mutation committed
+    would otherwise write its older result last and delete the row that
+    mutation just added — reproduced against the real writer, with nothing
+    scheduling another regeneration to repair it. Taken only after
+    ``_RECONCILE_LOCK`` is released, so the two are never nested here."""
     try:
         import tools
-        await asyncio.to_thread(tools._regenerate_plugin_health, [])
+        async with tools._plugin_tools_guard():
+            await asyncio.to_thread(tools._regenerate_plugin_health, [])
     except Exception:  # noqa: BLE001
         logger.warning("post-consent plugin-health regen failed", exc_info=True)
 

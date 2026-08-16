@@ -881,3 +881,186 @@ def test_current_issues_includes_spool_passthrough(monkeypatch):
     issues = er.current_issues()
     assert any(i["reason_code"] == "event_spool_issue" and i["name"] == "gmail"
               for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# #582 — approve-time health regeneration (the trigger/callback mirror)
+# ---------------------------------------------------------------------------
+
+
+async def test_regen_health_flag_regenerates_report(monkeypatch, tmp_path,
+                                                    fake_event_episodes):
+    """#582: the reconcile the consent APPROVE fires must rewrite plugin-health,
+    or the just-acked subscription's `event_pending_ack` row stands until an
+    unrelated regeneration — which is what told the operator, eleven minutes
+    and two worker passes after they approved, that the plugin "is waiting for
+    your approval"."""
+    import tools as tools_mod
+    calls: list = []
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                        lambda extra: calls.append(extra))
+    emitter = _rp("gmail", emits=["mail_in"])
+    subscriber = _rp("finance", subscribes=[("gmail", "mail_in")])
+    acks = EventAckStore(path=tmp_path / "acks.json")
+    _ack(acks, "finance", "art-1", "gmail", "mail_in")
+    runtime = SimpleNamespace(
+        role_configs=_role_configs(assistant=["telegram"]),
+        channel_manager=None)
+    await er.reconcile_plugin_events(
+        runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+        entries=_entries(emitter, subscriber), prompt=False, regen_health=True)
+    assert calls == [[]]
+
+
+async def test_default_reconcile_does_not_regen_health(monkeypatch, tmp_path,
+                                                       fake_event_episodes):
+    """The mutation/boot/reload paths regenerate health themselves — the default
+    reconcile must NOT double-regen."""
+    import tools as tools_mod
+    calls: list = []
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                        lambda extra: calls.append(extra))
+    emitter = _rp("gmail", emits=["mail_in"])
+    subscriber = _rp("finance", subscribes=[("gmail", "mail_in")])
+    acks = EventAckStore(path=tmp_path / "acks.json")
+    _ack(acks, "finance", "art-1", "gmail", "mail_in")
+    runtime = SimpleNamespace(
+        role_configs=_role_configs(assistant=["telegram"]),
+        channel_manager=None)
+    await er.reconcile_plugin_events(
+        runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+        entries=_entries(emitter, subscriber), prompt=False)
+    assert calls == []
+
+
+async def test_regen_health_failure_never_breaks_the_reconcile(
+        monkeypatch, tmp_path, fake_event_episodes):
+    import tools as tools_mod
+
+    def _boom(extra):
+        raise RuntimeError("health regen blew up")
+
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", _boom)
+    emitter = _rp("gmail", emits=["mail_in"])
+    subscriber = _rp("finance", subscribes=[("gmail", "mail_in")])
+    acks = EventAckStore(path=tmp_path / "acks.json")
+    _ack(acks, "finance", "art-1", "gmail", "mail_in")
+    runtime = SimpleNamespace(
+        role_configs=_role_configs(assistant=["telegram"]),
+        channel_manager=None)
+    issues = await er.reconcile_plugin_events(
+        runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+        entries=_entries(emitter, subscriber), prompt=False, regen_health=True)
+    assert issues == []
+    # the routing still published — a health-refresh failure is not a reconcile
+    # failure
+    assert "finance" in (er.get_routed().get(("gmail", "mail_in")) or {})
+
+
+async def test_regen_health_runs_when_the_reconcile_itself_fails(
+        monkeypatch, tmp_path, fake_event_episodes):
+    """Sol design r1: the ack is durable BEFORE the reconcile runs, so a compute
+    failure after an approve leaves the report saying "waiting for your
+    approval" while the consent DM says "Approved, but starting delivery
+    failed" — two operator surfaces disagreeing about a settled decision. The
+    regeneration owes its answer on BOTH paths; the exception still propagates."""
+    import tools as tools_mod
+    calls: list = []
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                        lambda extra: calls.append(extra))
+
+    def _boom(target):
+        raise RuntimeError("resolver exploded")
+
+    runtime = SimpleNamespace(
+        role_configs=_role_configs(assistant=["telegram"]),
+        channel_manager=None)
+    with pytest.raises(RuntimeError):
+        await er.reconcile_plugin_events(
+            runtime, resolver=_boom, prompt=False, regen_health=True)
+    assert calls == [[]]
+    # and the report it regenerated describes the fail-closed state
+    assert er.get_routed() is event_spool.ROUTING_UNAVAILABLE
+
+
+async def test_regen_health_holds_the_plugin_tools_guard(
+        monkeypatch, tmp_path, fake_event_episodes):
+    """Sol/Terra design r1 (R1-C): `_REPORT_LOCK` serializes the WRITE, not the
+    computation before it, so an approve-time regeneration that starts before a
+    plugin mutation commits can write its older result last and delete the row
+    the mutation just added. Sol reproduced that with the real writer. The
+    regeneration therefore runs under the same guard every mutation holds."""
+    import tools as tools_mod
+    held: list = []
+    monkeypatch.setattr(
+        tools_mod, "_regenerate_plugin_health",
+        lambda extra: held.append(tools_mod._PLUGIN_TOOLS_LOCK.locked()))
+    emitter = _rp("gmail", emits=["mail_in"])
+    subscriber = _rp("finance", subscribes=[("gmail", "mail_in")])
+    acks = EventAckStore(path=tmp_path / "acks.json")
+    _ack(acks, "finance", "art-1", "gmail", "mail_in")
+    runtime = SimpleNamespace(
+        role_configs=_role_configs(assistant=["telegram"]),
+        channel_manager=None)
+    await er.reconcile_plugin_events(
+        runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+        entries=_entries(emitter, subscriber), prompt=False, regen_health=True)
+    assert held == [True]
+
+
+async def test_consent_approve_regenerates_health(monkeypatch, tmp_path,
+                                                  fake_event_episodes):
+    """Integration, and the exact prod symptom: an operator Approve on the
+    event-consent keyboard clears the stale `event_pending_ack` at once."""
+    import authz_grants
+    import agent as agent_mod
+    import event_consent
+    import tools as tools_mod
+    import verdict_broker
+
+    broker = verdict_broker.VerdictBroker()
+    monkeypatch.setattr(verdict_broker, "BROKER", broker)
+    coord = authz_grants.ChallengeCoordinator()
+    monkeypatch.setattr(authz_grants, "CHALLENGES", coord)
+    regen: list = []
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                        lambda extra: regen.append(extra))
+
+    emitter = _rp("gmail", emits=["mail_in"])
+    subscriber = _rp("finance", subscribes=[("gmail", "mail_in")])
+    acks = EventAckStore(path=tmp_path / "acks.json")
+    telegram = _FakeTelegram()
+    runtime = SimpleNamespace(
+        role_configs=_role_configs(assistant=["telegram"]),
+        channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+
+    orig_identity = event_consent.operator_identity
+    event_consent.operator_identity = lambda channel: (100, 200)
+    try:
+        await er.reconcile_plugin_events(
+            runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+            entries=_entries(emitter, subscriber), prompt=True)
+        for _ in range(8):
+            await asyncio.sleep(0)
+    finally:
+        event_consent.operator_identity = orig_identity
+    assert len(telegram.posts) == 1
+    assert regen == []          # nothing regenerated yet — still pending
+
+    key = next(iter(coord._entries))
+    ch = coord._entries[key]
+    claim = broker.claim(namespace="resident_ask", scope=ch.scope,
+                         request_id=ch.rid, option_index=0, actor_id=200)
+    assert not isinstance(claim, str), f"claim rejected: {claim}"
+    assert broker.commit(claim) is True
+    ch.req.meta["on_commit_sync"](0)
+    # the finish hook runs as a broker-driven task whose reconcile uses
+    # asyncio.to_thread — poll with real sleeps until it settles.
+    for _ in range(100):
+        if regen:
+            break
+        await asyncio.sleep(0.02)
+
+    assert acks.get(_identity("finance", "art-1", "gmail", "mail_in")) is not None
+    assert regen == [[]]        # health regenerated exactly once on approve

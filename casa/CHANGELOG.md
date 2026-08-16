@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.214.0] - 2026-08-16
+
+### Fixed
+
+- **Approving a plugin's event subscription no longer leaves it looking like it
+  is still waiting for you** (#582). After you tapped Approve, the subscription
+  started working immediately — but the plugin health report kept saying the
+  plugin was waiting for your approval, and went on saying it until some
+  unrelated plugin change happened by. Asking your assistant what was wrong with
+  that plugin got you the stale answer, along with an offer to re-send the
+  approval request; taking the offer found nothing to re-send, so the two
+  answers contradicted each other. Approving now refreshes the report at once,
+  and does so even when starting delivery fails, so what you are told matches
+  what actually happened.
+
+- **The same plugin warning no longer reaches you twice in one turn** (#559). A
+  plugin change that raised its first blocking problem showed you the warning as
+  a direct message, then again on top of the reply that followed it. The two
+  messages now divide the work: the direct message names the problems, and the
+  reply carries only what that message did not name — because it was behind the
+  "and N more" tail, or because it never got through. Nothing is quietly
+  dropped: a warning is announced by name exactly once, a failed message still
+  produces the in-reply notice, and your assistant can list everything currently
+  standing whenever you ask.
+
+- **A plugin no longer starts up holding an unusable 1Password reference in
+  place of a secret** (#580). If 1Password could not be reached while Casa
+  reloaded plugin secrets — an expired token, a revoked service account, no
+  network — Casa put the *reference* (`op://…`) into the plugin's environment
+  instead of the secret. A plugin that treats one of its settings as optional
+  then started with that reference as the value, quietly behaving as if it had
+  been configured. Casa now leaves the setting empty in that case, exactly as it
+  already did at start-up, so a plugin that needs the secret is held back with a
+  clear reason and one that has a fallback uses its fallback. The reload also
+  reports how many secrets it could not apply.
+
 ## [0.213.0] - 2026-08-16
 
 ### Fixed

@@ -1293,14 +1293,38 @@ async def reload_plugin_env(runtime: Any, *, role: str | None = None) -> list[st
     new_keys: set[str] = set(entries.keys())
     actions: list[str] = []
 
+    unresolved = 0
     for var, raw in entries.items():
         try:
             resolved = await asyncio.to_thread(resolve_secret, raw)
         except RuntimeError as exc:
-            logger.warning("plugin-env: %s op:// resolution failed: %s", var, exc)
-            resolved = raw  # fall through with literal — same as boot path
+            # #580: a reference casa could not resolve is not a value, and
+            # installing the literal is worse than absence in BOTH directions.
+            # A bare `${VAR}` reference is withheld either way (an op:// value
+            # already counts as unresolved), but a `${VAR:-default}` reference
+            # is invisible to the withhold gate BY DESIGN — its default is
+            # supposed to cover it. Measured on the pinned CLI: only an UNSET
+            # variable takes that default, so a set-but-meaningless value made
+            # the plugin's MCP server launch holding `op://vault/item/field`
+            # where a credential belongs — the placeholder-credential failure
+            # INV-PLUG-008 exists to prevent, arriving through the one form
+            # that gate deliberately does not police.
+            #
+            # This is also what the boot path has always done (casa_core step
+            # 1b assigns INSIDE its try, so a failure leaves the variable
+            # unset); the line this replaces claimed that parity in a comment
+            # while doing the opposite.
+            logger.warning(
+                "plugin-env: %s op:// resolution failed: %s — leaving it "
+                "unset (a plugin requiring it is withheld; a defaulted "
+                "reference takes its default)", var, exc)
+            os.environ.pop(var, None)
+            unresolved += 1
+            continue
         os.environ[var] = resolved
-    actions.append(f"set_{len(entries)}_vars")
+    actions.append(f"set_{len(entries) - unresolved}_vars")
+    if unresolved:
+        actions.append(f"unresolved_{unresolved}_vars")
 
     # Drop keys present last time but absent now.
     dropped = _PLUGIN_ENV_LAST_KEYS - new_keys
@@ -1708,10 +1732,16 @@ async def reload_executors(
     # stale-green until an unrelated regeneration trigger. Never fail the
     # reload on the refresh.
     try:
-        from tools import (_notify_plugin_health_if_possible,
-                           _regenerate_plugin_health)
-        await asyncio.to_thread(_regenerate_plugin_health, [])
-        await _notify_plugin_health_if_possible()
+        import tools as tools_mod
+        # #582 batch (Sol design r1): serialized with §3.9 registry mutations
+        # exactly as the plugin_env scope already is — the report lock orders
+        # the WRITE, not the computation before it, so an unguarded pass can
+        # write a pre-mutation result last and delete the row that mutation
+        # just added. The GUARD, not the raw lock: this handler is reachable
+        # from a `full` cascade whose entry point already holds it.
+        async with tools_mod._plugin_tools_guard():
+            await asyncio.to_thread(tools_mod._regenerate_plugin_health, [])
+            await tools_mod._notify_plugin_health_if_possible()
         actions.append("plugin_health_regenerated")
     except Exception as exc:  # noqa: BLE001
         logger.debug("executors reload: plugin-health regen skipped: %s", exc)

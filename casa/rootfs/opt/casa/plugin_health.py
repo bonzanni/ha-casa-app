@@ -215,6 +215,11 @@ def write_report(*, issues: list, warnings: list,
         prev_notified = set(prev.get("notified_fingerprints") or [])
         report = {
             "schema_version": 1,
+            # #559: this function is the ONLY writer of rows, so its own
+            # counter is what "the report the DM described" means. mark_notified
+            # marks nothing across a bump — see its docstring for the silence
+            # that buys.
+            "generation": _next_generation(prev),
             "issues": issue_dicts,
             "warnings": warning_dicts,
             "notified_fingerprints": sorted(prev_notified & current_fps),
@@ -223,6 +228,15 @@ def write_report(*, issues: list, warnings: list,
         }
         _atomic_write(path, report)
     return report
+
+
+def _next_generation(prev: dict) -> int:
+    """The successor of *prev*'s generation. A report written before this field
+    existed, or one whose value was corrupted outside Casa, restarts at 1 —
+    which is a value no in-flight notification can be holding, so the first
+    mark after such a report is skipped and its DM simply re-fires."""
+    raw = prev.get("generation")
+    return raw + 1 if isinstance(raw, int) and not isinstance(raw, bool) else 1
 
 
 def new_fingerprints(report: dict) -> list[str]:
@@ -241,10 +255,45 @@ def new_fingerprints(report: dict) -> list[str]:
     return out
 
 
-def mark_notified(fps: list[str], path: Path = HEALTH_PATH) -> None:
+def mark_notified(fps: list[str], path: Path = HEALTH_PATH, *,
+                  generation: "int | None") -> None:
+    """Record *fps* as announced to the operator.
+
+    ``generation`` is the generation of the report the delivered message
+    DESCRIBED — read from that very report, so ``None`` is the right value to
+    pass for one written before the field existed. When it no longer matches,
+    nothing is marked and the caller's message is simply re-sent on the next
+    notification pass (#559).
+
+    It is REQUIRED, and keyword-only, because there is no honest way to mark
+    without it: naming rows means having read a report, and a caller allowed to
+    omit the fence would silently opt out of the guarantee below. An optional
+    parameter defaulting to ``None`` was the first shape and was wrong for a
+    sharper reason (Sol/Terra diff r1) — it made "the caller passed nothing"
+    indistinguishable from "the report carried no generation", so across the
+    upgrade that introduced the field the fence disabled itself in exactly the
+    window it was written for.
+
+    Without that fence this function appended whatever it was handed, which is
+    a lie whenever the report moved underneath the send: a row that RESOLVED
+    while its DM was in flight had its fingerprint written back into a report
+    that no longer contained it, and `write_report`'s prune
+    (``prev_notified & current_fps``) then preserved that marker the moment the
+    row recurred — so a genuine recurrence read as already announced and was
+    suppressed on the DM surface, and (since the in-band notice now filters on
+    the same field) on both. A bounded duplicate is the correct failure
+    direction here; a silent one is not.
+
+    Marking changes no rows, so it does NOT bump the generation."""
     with _REPORT_LOCK:
         report = load_report(path)
         if report is None:
+            return
+        if report.get("generation") != generation:
+            logger.info(
+                "plugin_health: notification mark skipped — report moved from "
+                "generation %r to %r during delivery; it will be re-announced",
+                generation, report.get("generation"))
             return
         notified = list(report.get("notified_fingerprints") or [])
         for fp in fps:
@@ -373,14 +422,57 @@ def render_line(entries: list, limit: int = _NOTICE_LIMIT) -> str | None:
 
 
 def render_notice(role: str, path: Path = HEALTH_PATH) -> str | None:
-    """The notice text for this role's blocking issues, or None when there are
-    none. Pure: no memo read or write (pending_notice applies suppression)."""
+    """The notice text for this role's blocking issues not already recorded as
+    named by an operator DM, or None when there are none. Pure: no memo read or write
+    (pending_notice applies suppression).
+
+    #559 — the two operator-facing surfaces used to fire together: a plugin
+    mutation that raised its first blocking issue showed the operator the same
+    warning twice in one turn, once as the DM the tool awaits and once on the
+    reply that follows it. They dedup on unconnected state (the DM on
+    ``notified_fingerprints``, the notice on the rendered-line memo), and
+    coordinating those two STORES was designed, attacked and cut: the surfaces
+    select different row sets, so byte-matching the rendered lines almost never
+    fires, and every clearing rule for a second store had a lifetime that did
+    not match its condition.
+
+    Filtering per ROW removes that whole class. There is no new state: the
+    field read here is the one ``write_report`` already prunes to fingerprints
+    still present, so the report's own resolution pruning IS the "already
+    delivered" lifetime — nothing to clear, nothing to race, nothing to go
+    stale. A DM that recorded ``beta`` while this role stands on
+    ``alpha, beta`` leaves ``alpha`` to render here: the duplicate is gone and
+    ``alpha`` is still said.
+
+    What makes that safe is the narrowness of the mark, which is the DM side's
+    obligation (INV-PLUG-013): a fingerprint is recorded only for a row a
+    message actually NAMED, and only while the report it described is still
+    current (see :func:`mark_notified` and ``casa_core.notify_plugin_health``).
+    A send the channel REPORTED as undelivered, one with no deliverable channel
+    at all, and a row left behind the DM's own "and N more" count each record
+    nothing, so nothing here suppresses them. A send whose outcome is unknown
+    does record — "cannot report" must not read as "failed" (#556), or a
+    non-reporting channel would re-announce forever.
+
+    The converse does not hold, and assuming it is the way to misread this
+    function: an unrecorded row does not necessarily appear here. This selects
+    blocking ``issues`` addressed to THIS role or to no target, and names at
+    most :data:`_NOTICE_LIMIT` of them. A warning, an issue addressed to an
+    ``executor:*``, and anything past that limit are therefore not named here
+    under any condition — they stay unrecorded, so a later notification can
+    name them, and ``plugin_status`` reports the whole standing set unfiltered
+    at any time.
+
+    ``target=None`` rows are operator-global: one DM naming such a row records
+    it for every role, since the record is the fingerprint and not the role."""
     report = load_report(path)
     if not report:
         return None
+    notified = set(report.get("notified_fingerprints") or [])
     ok_targets = {f"resident:{role}", f"specialist:{role}", None}
     return render_line([d for d in report.get("issues", [])
-                        if d.get("target") in ok_targets])
+                        if d.get("target") in ok_targets
+                        and d.get("fingerprint") not in notified])
 
 
 def forget_notice(role: str, text: str) -> None:

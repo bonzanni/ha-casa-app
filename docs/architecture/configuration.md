@@ -314,13 +314,13 @@ overwritten local edit is recoverable.
 **Repository initialisation fails.** Degraded, not fatal. Versioning is unavailable;
 everything else proceeds.
 
-**A secret reference fails to resolve.** Absorbed, and the behaviour differs by path in a way
-worth knowing: on the startup path the raw reference is retained — except the webhook
-secret, which is blanked rather than used as an HMAC key (a vault path is a predictable
-string, and the discovery publisher also removes any previously published record so the
-companion integration cannot keep signing with it) — while the plugin environment leaves
-the variable unset at boot but installs the literal reference on reload. Same failure,
-several outcomes.
+**A secret reference fails to resolve.** Absorbed, and what is left behind depends on who
+reads the variable. One a *plugin* may reference is left unset — the plugin environment,
+and the one plugin-facing option — because the CLI hands whatever it holds to that plugin's
+MCP server, and only an unset variable takes a `${VAR:-default}`. The options Casa consumes
+keep the raw reference, which fails loudly where absence would be silent; the webhook
+secret is blanked rather than used as an HMAC key (a vault path is a predictable string),
+and the discovery publisher withdraws any record it published.
 
 **A reload handler raises.** The dispatcher returns an error envelope rather than propagating
 — a failed reload is a reported outcome, not an exception at the caller.
