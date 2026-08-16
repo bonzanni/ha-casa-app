@@ -1946,6 +1946,175 @@ def make_trigger_file_write_guard() -> HookCallback:
     return _hook
 
 
+# ---------------------------------------------------------------------------
+# response_shape_write_guard (#610) — the file is READ BY NOTHING for a resident
+# ---------------------------------------------------------------------------
+#
+# `agents/<role>/response_shape.yaml` renders only into `_compose_prompt`, whose
+# output is `cfg.system_prompt` — and `agent.py` uses that ONLY when there is no
+# compiled bundle (INV-PERS-001). All three resident role artifacts declare
+# `persona.policy: required`, so a resident is bundle-bound from its first boot
+# and the file never reaches the model. #549 made the ROLE ARTIFACT's
+# `response:` block the live source; it did not retire this file, and the
+# configurator's recipe still pointed at it.
+#
+# So an edit here is written, committed to the config repo, and reported live
+# with an explicit "no reload needed" justification — while the prompt digest is
+# byte-identical before and after. That is the defect: not a lost update (which
+# is triggers.yaml's problem), but a change that cannot take effect being
+# reported as done. The way to actually change how a resident expresses itself
+# is its persona pack, which the denial names.
+#
+# ONE directory depth, deliberately. `agents/specialists/**` is managed state
+# that `managed_component_guard` already denies in its own words, and
+# `TIER_FILES["executor"]` FORBIDS this file outright, so neither is claimed
+# here — two guards on one path, and neither on the reason, is the shape the
+# trigger guard documents avoiding.
+
+_RESPONSE_SHAPE_FILE_NAME = "response_shape.yaml"
+
+_RESPONSE_SHAPE_WRITE_DENY = (
+    "response_shape_write_guard: {tool} blocked — {path!r} is not read for a "
+    "persona-bound resident, so editing it would be committed and reported "
+    "live while changing nothing the model sees. A resident's base prompt is "
+    "its COMPILED BUNDLE (the persona plus the role artifact's own response "
+    "block), not the composed prompt this file feeds. To change how a resident "
+    "writes or speaks, change its PERSONA: install the pack that says it "
+    "(doctrine/recipes/persona/install.md) and apply it "
+    "(doctrine/recipes/persona/apply.md), then restart that resident. Reading "
+    "this file is fine — it is only the edit that would be a lie."
+)
+
+_RESPONSE_SHAPE_RESOLVE_DENY = (
+    "response_shape_write_guard: {tool} blocked — could not resolve {path!r} "
+    "(realpath error); failing closed. A resident's response shape comes from "
+    "its persona pack; see doctrine/recipes/persona/."
+)
+
+_RESPONSE_SHAPE_UNRESOLVABLE_DENY = (
+    "response_shape_write_guard: {tool} blocked — {path!r} is a relative path "
+    "and this call reported no working directory, so where it lands cannot be "
+    "established; failing closed. Give an absolute path."
+)
+
+_RESPONSE_SHAPE_INTERNAL_DENY = (
+    "response_shape_write_guard: internal error — failing closed; the call was "
+    "not executed."
+)
+
+
+def _is_resident_response_shape_file(norm: str) -> bool:
+    """True iff ``norm`` (normalized, absolute) names
+    ``/config/agents/<role>/response_shape.yaml`` for a SINGLE ``<role>``
+    segment — the resident tier only. Mirrors
+    :func:`_is_resident_trigger_file`, including its exclusion of the
+    ``specialists`` subtree, for the reasons in the block comment above.
+    """
+    p = PurePosixPath(norm)
+    if p.name != _RESPONSE_SHAPE_FILE_NAME:
+        return False
+    parent = p.parent
+    return (str(parent.parent) == _RESIDENT_ROOT
+            and parent.name not in ("", "specialists", "executors"))
+
+
+def _command_mentions_a_response_shape_file(command: str) -> bool:
+    """True iff *command*'s text names ``response_shape.yaml``, with shell
+    quoting stripped from the WHOLE command first — so ``response_shape"."yaml``
+    and friends reduce to one case rather than many spellings."""
+    return _RESPONSE_SHAPE_FILE_NAME in command.translate(_SHELL_QUOTE_CHARS)
+
+
+def make_response_shape_write_guard() -> HookCallback:
+    """Deny an agent's write of a resident's ``response_shape.yaml``.
+
+    The file-tool half is precise: the literal path is resolved against the
+    session's own working directory (residents run from their agent home, not
+    ``/config``), normalized and symlink-resolved, and denied only when it
+    names a resident's own copy.
+
+    The Bash half is the same coarse, decidable pair the trigger guard uses —
+    does the command text name the file, and is every segment provably
+    read-only — and carries the same caveat: it is a BACKSTOP, not a boundary.
+    It catches the accidental form (a `sed -i` from a model following the old
+    recipe), which is the entire threat model here: this guard exists to stop
+    an honest agent reporting an inert edit as done, not to contain a hostile
+    one. A path assembled from parts, or a script file, does not name the file
+    at all and is not caught.
+    """
+    async def _hook(
+        input_data: dict[str, Any],
+        tool_use_id: str | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            tool_name = input_data.get("tool_name", "")
+            reported_cwd = input_data.get("cwd")
+            cwd = str(reported_cwd or "/config")
+            if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                ti = input_data.get("tool_input", {})
+                raw = ti.get("file_path") or ti.get("notebook_path") or ""
+                if not reported_cwd and not raw.startswith("/"):
+                    return _deny(_RESPONSE_SHAPE_UNRESOLVABLE_DENY.format(
+                        tool=tool_name, path=raw))
+                norm = _normalize_path(
+                    raw if raw.startswith("/") else cwd.rstrip("/") + "/" + raw)
+                if _is_resident_response_shape_file(norm):
+                    return _deny(_RESPONSE_SHAPE_WRITE_DENY.format(
+                        tool=tool_name, path=raw))
+                # A symlink whose lexical form is innocent but whose target is
+                # the file: resolve and re-ask. An unresolvable path that could
+                # be it fails closed.
+                try:
+                    real = os.path.realpath(norm)
+                except OSError:
+                    return _deny(_RESPONSE_SHAPE_RESOLVE_DENY.format(
+                        tool=tool_name, path=raw))
+                if _is_resident_response_shape_file(_normalize_path(real)):
+                    return _deny(_RESPONSE_SHAPE_WRITE_DENY.format(
+                        tool=tool_name, path=raw))
+            elif tool_name == "Bash":
+                command = input_data.get("tool_input", {}).get("command", "")
+                if (_command_mentions_a_response_shape_file(command)
+                        and not _provably_read_only(command)):
+                    return _deny(_RESPONSE_SHAPE_WRITE_DENY.format(
+                        tool="Bash", path=_RESPONSE_SHAPE_FILE_NAME))
+            return {}
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — fail closed, never let it escape
+            _logger.exception(
+                "response_shape_write_guard internal error — denying")
+            return _deny(_RESPONSE_SHAPE_INTERNAL_DENY)
+
+    return _hook
+
+
+def _response_shape_write_guard_factory(**kwargs: Any) -> HookCallback:
+    if kwargs:
+        raise ValueError(
+            f"response_shape_write_guard: unknown parameter(s) {list(kwargs)}; "
+            f"this policy takes none"
+        )
+    return make_response_shape_write_guard()
+
+
+def response_shape_write_guard_matcher():
+    """A ``HookMatcher`` wrapping :func:`make_response_shape_write_guard`,
+    injected CODE-SIDE into every executor session AND every resident's, for
+    the same reason :func:`trigger_file_write_guard_matcher` is: ``hooks_file:``
+    is a config-editable pointer, so a yaml-only policy can be shed by an edit
+    the configurator is otherwise entitled to make. Residents are included
+    because the shipped assistant carries broad shell access over its own
+    agent home, which is where this file lives."""
+    from claude_agent_sdk import HookMatcher
+    policy = HOOK_POLICIES["response_shape_write_guard"]
+    return HookMatcher(
+        matcher=policy["matcher"],
+        hooks=[policy["factory"]()],
+    )
+
+
 def _trigger_file_write_guard_factory(**kwargs: Any) -> HookCallback:
     if kwargs:
         raise UnknownPolicyError(
@@ -2733,6 +2902,11 @@ HOOK_POLICIES: dict[str, dict[str, Any]] = {
         # that does not ROUTE MultiEdit/NotebookEdit lets those bypass entirely.
         "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
         "factory": _trigger_file_write_guard_factory,
+    },
+    "response_shape_write_guard": {
+        # #610. Same routing rule as its neighbour above, for the same reason.
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "factory": _response_shape_write_guard_factory,
     },
     "self_containment_guard": {
         "matcher": "Bash",

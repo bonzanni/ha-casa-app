@@ -8,7 +8,7 @@ addon. For changes that genuinely need a process restart, use
 
 | `scope` | Tool | Downtime | Required `role` | When to use |
 |---|---|---|---|---|
-| `agent` | `casa_reload(scope='agent', role=...)` | <1s | yes | character/runtime/delegates/disclosure/voice/hooks/response_shape edits for ONE role; plugin install/uninstall on ONE role |
+| `agent` | `casa_reload(scope='agent', role=...)` | <1s | yes | character/runtime/delegates/disclosure/voice/hooks edits for ONE role; plugin install/uninstall on ONE role |
 | `triggers` | `casa_reload_triggers(role=...)` | <1s | yes | triggers.yaml edits for an EXISTING agent (legacy alias for `casa_reload(scope='triggers', role=...)`) |
 | `policies` | `casa_reload(scope='policies')` | <1s | no | `policies/disclosure.yaml` edits |
 | `plugin_env` | `casa_reload(scope='plugin_env')` | <1s | no | `set_plugin_env_reference` calls / `plugin-env.conf` edits |
@@ -25,7 +25,7 @@ changes, addon options.json mutations, or kernel concerns.
 | Change | Reload |
 |---|---|
 | Edit prompts/system.md or prompts/<trigger>.md | none (lazy-read per turn) |
-| Edit response_shape.yaml | none |
+| Edit response_shape.yaml | **you cannot** — the hook denies it. Nothing reads it for a bundle-bound agent; see `recipes/response-shape/edit.md` |
 | Edit executor's doctrine/*.md | none |
 | Edit existing agent's triggers.yaml (no other change) | `triggers` |
 | Edit character.yaml | `agent` for that role |

@@ -5,7 +5,7 @@
 Every completion path is the same three tool calls, in this order:
 
 1. **Commit.** Call `config_git_commit(message="<imperative sentence>")`. Skip only if you made zero file edits.
-2. **Reload (if needed).** Call `casa_reload()` (hard) or `casa_reload_triggers(role)` (soft). Skip ONLY for none-reload changes (prompts, response_shape, doctrine). Consult `reload.md` to pick the right scope.
+2. **Reload (if needed).** Call `casa_reload()` (hard) or `casa_reload_triggers(role)` (soft). Skip ONLY for none-reload changes (prompts, doctrine). Consult `reload.md` to pick the right scope.
 3. **Emit completion.** Call `emit_completion(...)` with a structured summary.
 
 **Never invert step 1 and step 2/3. Never call `emit_completion` BEFORE the reload step when a reload is needed.**

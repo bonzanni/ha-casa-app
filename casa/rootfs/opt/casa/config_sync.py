@@ -1412,8 +1412,13 @@ def _make_text_validator(config_dir) -> Callable[[str, str], str | None]:
         except Exception:  # noqa: BLE001 — unparseable is simply invalid here
             return "document did not parse"
         try:
-            al._validate(doc, schema_name, str(config_dir / rel),
-                         version=version)
+            # #608: READ-path tolerance. This validator decides whether an
+            # entry survives the merge, and the salvage path DROPS an entry it
+            # rejects (unless the image ships it) — so validating a stored
+            # webhook prompt strictly here would silently delete the
+            # operator's trigger on upgrade, not merely refuse it.
+            al.validate_persisted(doc, schema_name, str(config_dir / rel),
+                                  version=version)
         except al.LoadError as exc:
             return str(exc)
         return None
@@ -1440,13 +1445,18 @@ def _make_validator(config_dir) -> Callable[[str], str | None]:
                 schema_name = al._SCHEMA_BY_FILENAME.get(name)
                 if schema_name is None:
                     return None
-                al._validate(al._read_yaml(abs_path), schema_name, abs_path)
+                # #608: read-path tolerance, same helper as the loader and the
+                # text validator next door — a live file judged more strictly
+                # than boot judges it is a file config_sync would replace or
+                # salvage for no reason.
+                al.validate_persisted(al._read_yaml(abs_path), schema_name, abs_path)
             elif parts and parts[0] == "policies":
                 mapping = al._SCHEMA_BY_POLICY_FILE.get(name)
                 if mapping is None:
                     return None
                 schema_name, version = mapping
-                al._validate(al._read_yaml(abs_path), schema_name, abs_path, version=version)
+                al.validate_persisted(al._read_yaml(abs_path), schema_name, abs_path,
+                                      version=version)
             else:
                 return None
         except al.LoadError as exc:

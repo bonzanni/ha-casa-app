@@ -40,6 +40,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | personas, bindings, prompt composition, or the binding digest | [`architecture/personality.md`](architecture/personality.md) |
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
 | plugin installation, artifact identity, protected tools, or authorization grants | [`architecture/plugins.md`](architecture/plugins.md) |
+| plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | recall behaviour, read clearance, the absence contract, or the executor-archive scoping | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, the retry spool, or the memory wipe | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
@@ -53,7 +54,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools | [`architecture/plugin-events.md`](architecture/plugin-events.md) |
 | the setup tool's dispatch, its consent gating, or the route gate a setup obligation passes through | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
 | the turn lifecycle, the warm client pool, retry behaviour, or turn teardown | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
-| trigger types, webhook trigger routing, plugin trigger consent, one-shot firing and cleanup, or scheduling | [`architecture/triggers.md`](architecture/triggers.md) |
+| trigger types, resident webhook routing, one-shot firing and cleanup, or scheduling | [`architecture/triggers.md`](architecture/triggers.md) |
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |
 <!-- END ROUTING -->
 

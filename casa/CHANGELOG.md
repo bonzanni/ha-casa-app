@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.215.0] - 2026-08-16
+
+### Fixed
+
+- **Applying a persona to a resident can no longer stop Casa starting** (#607).
+  Asking for a persona swap wrote the new binding straight into effect without
+  first checking it could be built. A persona that was otherwise perfectly valid
+  but slightly too long for the voice channel was accepted, reported back as
+  "staged, takes effect at the next restart" — and then that restart failed, with
+  every resident down and no way to fix it from inside Casa. The persona is now
+  compiled before anything is written: one that cannot be built is refused on the
+  spot, with your existing setup untouched and nothing to undo. One that can be
+  built is genuinely staged, so the restart really is what puts it live.
+
+- **Asking for a shorter reply no longer looks like it worked when it did not**
+  (#610). A request such as "keep your confirmations to one sentence" was written
+  into `response_shape.yaml`, committed, and reported as live for the next reply.
+  For a resident it reached nothing at all — that file has not been part of a
+  resident's instructions since personas were introduced, and the next reply was
+  only shorter by luck. The edit is now refused rather than quietly accepted, and
+  you are pointed at what actually decides how a resident writes: its persona.
+
+- **A webhook trigger no longer accepts an instruction it will ignore** (#608). If
+  you described what should happen when a webhook fires, that description was
+  saved onto the trigger and committed — and then discarded on every firing, since
+  a webhook turn is built from the incoming request, not from anything stored on
+  the trigger. Casa now says so when the trigger is created, while you are still
+  in the conversation about it, instead of accepting the instruction and silently
+  dropping it. Existing triggers keep working unchanged.
+
+### Changed
+
+- The configurator's guidance on response shape, webhook prompts and persona
+  application now matches what Casa actually does; several of those notes had
+  been describing changes as taking effect immediately when they never did.
+
 ## [0.214.0] - 2026-08-16
 
 ### Fixed

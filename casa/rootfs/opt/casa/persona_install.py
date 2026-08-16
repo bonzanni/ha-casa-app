@@ -39,7 +39,10 @@ def validate_persona_path_segments(persona_id: object, version: object) -> None:
             "invalid_persona_ref", f"invalid persona version {version!r}")
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from persona_pack import PersonaPack
+    from personality_binding import BindingRecord
     from role_slot import RoleSlot
 
 __all__ = [
@@ -572,6 +575,7 @@ def _commit_persona_install_locked(
 
 def apply_persona_override(
     *, target_role_id: str, persona: "PersonaPack", role: "RoleSlot", instance_dir_root: Path,
+    candidate_validator: "Callable[[PersonaPack, BindingRecord], None]",
 ) -> Any:
     """Generalizes Task 8's resident_persona_swap for ANY persona-bearing
     agent — reuses check_persona_requirements + materialize_override_binding
@@ -621,12 +625,36 @@ def apply_persona_override(
         # thread) can never interleave desired.yaml writes on the same resident.
         binding = materialize_override_binding(
             role=role, persona=persona, override_source=override_source)
+        # #607, half 1: PROVE the candidate compiles before anything reaches
+        # disk. `require_persona_present` below checks presence, not
+        # compilability, and the admission ceiling lives only in
+        # compile_prompt_bundle — so a schema-valid, namespace-compatible
+        # persona that blows a ceiling used to be written here and kill every
+        # subsequent boot. Deliberately OUTSIDE the lock: it is pure
+        # computation over a role the caller materialized and a version-pinned
+        # pack, and the in-lock `require_persona_present` re-proves the bytes
+        # are still resolvable. A raise leaves the InstanceDir untouched —
+        # not even a desired.error.yaml, which would claim an attempt was
+        # recorded and would be promoted by nothing.
+        candidate_validator(persona, binding)
         with specialist_materialize.MATERIALIZE_LOCK:
             require_persona_present(binding)   # #543
-            instance_dir.stage_desired(make_instance_tuple(
+            staged = make_instance_tuple(
                 root=override_source, binding=binding, config_snapshot={},
-            ))
-            return instance_dir.commit_desired_to_active()
+            )
+            # #607, half 2: STAGE ONLY. This used to commit_desired_to_active()
+            # in the same breath, which made `restart_required: true` and
+            # recipes/persona/apply.md's "the swap is staged and takes effect
+            # on the resident's next restart" false — the binding was already
+            # active, and the next restart was what failed. Promotion belongs
+            # to boot reconciliation, which runs candidate_validator itself and
+            # retains the last-known-good on a failure. Matches the sibling
+            # resident_persona_reset, which has always staged only.
+            # persona_pin_roots scans desired.yaml as well as active.yaml, so a
+            # staged-but-unpromoted override is still pinned against
+            # persona_remove/prune (INV-PERS-006).
+            instance_dir.stage_desired(staged)
+            return staged
 
     # Specialist path — root MUST stay the component root; config/dependency
     # state carries forward from whatever is currently active.

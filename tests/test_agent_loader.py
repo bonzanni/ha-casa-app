@@ -2075,7 +2075,8 @@ class TestSpecialistBindingActivation:
         role = materialize_role(source=load_role_artifact(staged / "role"), options={})
         apply_persona_override(
             target_role_id="specialist:mtg", persona=persona, role=role,
-            instance_dir_root=specialists_dir / "mtg")
+            instance_dir_root=specialists_dir / "mtg",
+            candidate_validator=lambda persona, binding: None)
 
         # Sol r4-1: the PRODUCTION pre-load path must survive too — every
         # reload/boot resolves the roles overlay first, and its operational-

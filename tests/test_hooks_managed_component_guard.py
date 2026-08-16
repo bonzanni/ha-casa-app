@@ -861,10 +861,11 @@ class TestGuardIsCodeMandatoryInCasa:
             yaml_mod.safe_load(shipped.read_text(encoding="utf-8"))
             ["pre_tool_use"])
         opts = self._build(str(shipped))
-        # + 2 = agent_home_settings_guard and trigger_file_write_guard (#403),
-        # both code-mandatory and neither declared in the shipped yaml; NO
-        # second managed guard, which is what this test is about.
-        assert len(opts.hooks["PreToolUse"]) == n_declared + 2
+        # + 3 = agent_home_settings_guard, trigger_file_write_guard (#403) and
+        # response_shape_write_guard (#610) — all code-mandatory and none
+        # declared in the shipped yaml; NO second managed guard, which is what
+        # this test is about.
+        assert len(opts.hooks["PreToolUse"]) == n_declared + 3
         assert await _stack_denies_managed(opts)
 
 

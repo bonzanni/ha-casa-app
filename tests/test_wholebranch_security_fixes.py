@@ -1075,7 +1075,8 @@ def test_apply_persona_override_specialist_stages_under_the_lock(
     seen = _record_stage_lockstate(monkeypatch)
     committed = apply_persona_override(
         target_role_id="specialist:mtg", persona=persona, role=role,
-        instance_dir_root=specialists_dir / "mtg")
+        instance_dir_root=specialists_dir / "mtg",
+        candidate_validator=lambda persona, binding: None)
 
     assert committed.binding.mode == "override"
     # RED pre-fix: the specialist branch staged+committed with NO lock held.
@@ -1111,7 +1112,8 @@ def test_apply_persona_override_specialist_refuses_when_uninstall_races_before_t
     with pytest.raises(SpecialistInstallError) as exc:
         apply_persona_override(
             target_role_id="specialist:mtg", persona=persona, role=role,
-            instance_dir_root=specialists_dir / "mtg")
+            instance_dir_root=specialists_dir / "mtg",
+            candidate_validator=lambda persona, binding: None)
     assert exc.value.kind == "concurrent_mutation"
     assert fired["done"] is True
     # RED pre-fix: the un-locked branch staged+committed after the uninstall,

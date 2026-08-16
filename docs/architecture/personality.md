@@ -202,6 +202,39 @@ names is removable even if an operator still wants it; a reference held only by 
 bundle journal blocks removal even though nothing is running it; and a journal boot would
 quarantine holds nothing, because quarantine never restores.
 
+**INV-PERS-007**: Applying a persona to a resident stages the binding rather than activating it, and a candidate that fails the compile proof leaves the binding store untouched.
+
+The two halves answer different questions. *Staged* is what makes the tool's own
+`restart_required` true: the resident keeps serving its current binding, and boot
+reconciliation performs the promotion — through the same candidate validation it applies to
+anything else it promotes. *Untouched on failure* is stronger than "not activated": no
+staged tuple and no error record are written either, because a staged tuple is something a
+later reconciliation would promote.
+
+The proof itself is one function, shared by the loader and the apply path. Two copies of
+"does this candidate compile" drift, and the copy that drifts is the one that admits a
+binding the loader then rejects.
+
+What it does not cover: a staged binding is not a promise the next boot will run it. If it
+stops compiling before then — its bytes changed under the pinned version, say —
+reconciliation discards it and retains the last-known-good, exactly as INV-PERS-003
+describes. It also says nothing about specialists, which activate on reload rather than
+restart.
+
+**INV-PERS-008**: A persona-bound agent's per-agent `response_shape.yaml` is not read, and an agent's file-tool write to a resident's copy is refused.
+
+This is INV-PERS-001 seen from the config repo. The file renders only into the composed
+prompt, so for anything carrying a compiled bundle it reaches nothing — and every resident
+carries one from its first boot, because all three role artifacts require a persona. The
+refusal exists because the failure was silent in the worst way: the edit was written,
+committed, and reported live, while the served prompt was byte-identical. What the model
+receives comes from the persona pack and the role artifact's own response block.
+
+What it does not cover: reads. An agent may still open the file, and should, to explain why
+changing it is not the answer. The shell half of the refusal is a backstop rather than a
+boundary — it recognises the accidental spelling, not every possible one — and the
+specialist subtree is denied by the managed-state guard instead, in its own words.
+
 ## Failure behavior
 
 **A persona fails validation on a resident.** It depends on what exists already. On a fresh
@@ -214,6 +247,13 @@ compile/admission pass all run on the candidate — a persona that would fail an
 ceiling is discarded as a candidate, never committed active to fail every later boot. The
 pre-commit config gate replays this reconciliation in a validation-only mode that writes no
 binding state, so validating a commit can never activate a staged persona swap.
+
+**An operator applies a persona a resident cannot compile.** Refused at the point of asking,
+with the compile failure reported and nothing written — no staged tuple, no error record, no
+change to what is active. The distinction that matters is between *refusing* and *recording a
+refusal*: a staged tuple would be promoted by the next reconciliation, so an attempt that
+leaves one behind has not been refused. Nothing needs undoing afterwards, which is worth
+saying out loud to an operator who has just been told their swap failed.
 
 **A persona fails validation on a specialist.** Absorbed by that tier's isolated loading; the
 specialist is unavailable and the system continues.
@@ -267,12 +307,17 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `casa/rootfs/opt/casa/persona_install.py::remove_installed_persona`
 - `casa/rootfs/opt/casa/persona_install.py::prune_installed_personas`
 - `casa/rootfs/opt/casa/persona_install.py::list_installed_personas`
+- `casa/rootfs/opt/casa/persona_install.py::apply_persona_override`
+- `casa/rootfs/opt/casa/agent_loader.py::make_candidate_compile_validator`
+- `casa/rootfs/opt/casa/hooks.py::make_response_shape_write_guard`
 
 **Tests**
 - `tests/test_personality_binding.py`
 - `tests/test_persona_install.py`
 - `tests/test_persona_removal.py`
 - `tests/test_personality_admin_handlers.py`
+- `tests/test_persona_apply_resident_staging.py`
+- `tests/test_response_shape_write_guard.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)

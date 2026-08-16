@@ -230,7 +230,8 @@ async def test_persona_apply_resident_branch_honors_casa_bindings_dir(
 
     seen = {}
 
-    def _capture_override(*, target_role_id, persona, role, instance_dir_root):
+    def _capture_override(*, target_role_id, persona, role, instance_dir_root,
+                          candidate_validator):
         seen["instance_dir_root"] = instance_dir_root
 
         class _Committed:

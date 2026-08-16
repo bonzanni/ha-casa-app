@@ -8,9 +8,13 @@
   kind: meta
   summary: Manifest shard — architecture documents F-M.
 
-- doc: manifest.d/architecture-n-z.yaml
+- doc: manifest.d/architecture-n-r.yaml
   kind: meta
-  summary: Manifest shard — architecture documents N-Z.
+  summary: Manifest shard — architecture documents N-R.
+
+- doc: manifest.d/architecture-s-z.yaml
+  kind: meta
+  summary: Manifest shard — architecture documents S-Z.
 
 - doc: manifest.yaml
   kind: meta

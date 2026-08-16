@@ -555,7 +555,8 @@ def test_applying_a_persona_removed_mid_flight_stages_nothing(
     with pytest.raises(SpecialistInstallError) as raised:
         apply_persona_override(
             target_role_id="resident:assistant", persona=persona,
-            role=_resident_role(), instance_dir_root=instance_root)
+            role=_resident_role(), instance_dir_root=instance_root,
+            candidate_validator=lambda persona, binding: None)
 
     assert raised.value.kind == "persona_unavailable"
     assert not (instance_root / "desired.yaml").exists()
