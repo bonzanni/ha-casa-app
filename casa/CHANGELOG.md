@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.218.0] - 2026-08-16
+
+### Fixed
+
+- **A persona's own words are no longer repeated to the model** (#611). Every
+  section nested inside another one was being sent twice on the text surface —
+  three times at one more level of nesting — so all three shipped personas
+  said their "Negative space" paragraph twice in every text turn. The duplicate
+  also counted against the persona's size limit, so an author near the ceiling
+  could be refused for prose they wrote once, with nothing in the message
+  pointing at the real cause. Each section's authored body now reaches the text
+  projection exactly once.
+
+- **"Core" now means the one section the persona loader validated.** A section
+  merely *named* Core could reach the voice surface as though it were the
+  persona's core, carrying prose that never passed the loader's own length
+  check. Voice now carries the validated core and nothing else, which is what
+  the documentation already said. A Core-named section written OUTSIDE that
+  section is ordinary prose: it reaches text, and it does not reach voice. One
+  written INSIDE it is part of the core and still reaches voice — and now
+  exactly once, where it used to be sent twice.
+
+### Changed
+
+- The text projection now places the core first and the remaining top-level
+  sections after it, in document order. Every authored body is still there —
+  what changes besides the order is that the repeated copies described above
+  are gone — and the reordering itself affects only personas with more than one
+  top-level section. The three shipped personas keep byte-identical voice
+  output; their text output is smaller by exactly the duplication removed.
+
 ## [0.217.0] - 2026-08-16
 
 ### Fixed

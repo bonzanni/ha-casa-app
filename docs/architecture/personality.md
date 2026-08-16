@@ -235,6 +235,25 @@ changing it is not the answer. The shell half of the refusal is a backstop rathe
 boundary — it recognises the accidental spelling, not every possible one — and the
 specialist subtree is denied by the managed-state guard instead, in its own words.
 
+**INV-PERS-009**: Every section body a persona's Markdown declares reaches the text projection exactly once.
+
+A section's body physically runs through its subsections, so a renderer that also walks the
+flat heading list emits every nested section once per ancestor — twice at depth two, three
+times at depth three. The projection is partitioned by *containment* instead: the sections
+no other section contains, split into the validated Core and everything else. Both halves
+read the same partition, so nothing can land in both and nothing can be dropped.
+
+What it does not cover: voice, which carries only the Core, and the restricted-origin
+prompt, which carries no persona at all. Nor prose authored above the first heading, which
+is in no section and reaches no projection. Nor a top-level section's own heading LINE: a
+section body begins after its heading, so `# Core` and any sibling `# Heading` reach no
+projection — the headings that do appear are the nested ones, carried inside the body that
+contains them. "Core" here means the loader's own identity for
+it — the single level-1 `# Core` whose body passed the 300–500 character gate. A Core-named
+section written outside that one is ordinary prose: it reaches text, and it does not reach
+voice. A Core-named section written *inside* it is part of the core, so it reaches voice as
+the core does — once, rather than a second time in its own right.
+
 ## Failure behavior
 
 **A persona fails validation on a resident.** It depends on what exists already. On a fresh
@@ -302,6 +321,7 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `casa/rootfs/opt/casa/agent_loader.py::_compose_prompt`
 - `casa/rootfs/opt/casa/role_slot.py`
 - `casa/rootfs/opt/casa/prompt_compiler.py::compile_projection_set`
+- `casa/rootfs/opt/casa/markdown_sections.py::root_sections`
 - `casa/rootfs/opt/casa/persona_install.py::persona_references`
 - `casa/rootfs/opt/casa/persona_install.py::require_persona_present`
 - `casa/rootfs/opt/casa/persona_install.py::remove_installed_persona`
@@ -318,6 +338,8 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `tests/test_personality_admin_handlers.py`
 - `tests/test_persona_apply_resident_staging.py`
 - `tests/test_response_shape_write_guard.py`
+- `tests/test_prompt_compiler.py`
+- `tests/test_persona_pack.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)

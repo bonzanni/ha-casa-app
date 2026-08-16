@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from canonical_bytes import canonical_text, checksum_bytes
-from markdown_sections import sections, select_markdown_sections
+from markdown_sections import root_sections, select_markdown_sections
 from personality_binding import BindingRecord, compute_binding_digest
 from role_slot import RoleSlot
 from trait_renderer import RENDERER_VERSION, estimate_tokens_v1, render_v1
@@ -94,22 +94,57 @@ def _projection(parts: list[tuple[str, str]]) -> CompiledProjection:
     )
 
 
+def _is_persona_core(level: int, name: str) -> bool:
+    """The persona LOADER's own identity predicate, verbatim (#611).
+
+    ``persona_pack.py:210-211`` admits a pack on ``level == 1 and name ==
+    "Core"`` and then length-validates ``core_bodies[0]`` ALONE against the
+    300-500 character gate (:214-216). Asking a weaker question here — "is this
+    section NAMED Core", which is what ``select_markdown_sections`` asks
+    because it is level-blind — promotes prose that never passed that gate into
+    the VOICE surface, whose persona ceiling is 400 tokens. Measured over the
+    1389 loader-admitted section shapes: this predicate puts exactly one
+    section in the core for every shape; a level-blind name match puts two in
+    for 172 shapes and three for 9.
+    """
+    return level == 1 and name == "Core"
+
+
 def _persona_body(persona, surface: str) -> str:
     if surface == "restricted_webhook":
         return ""
     identity = persona.identity
     pronouns = identity["pronouns"]
-    core = select_markdown_sections(persona.markdown, ("Core",))
+    # #611 — partition the persona ONCE, by CONTAINMENT, into the core and
+    # everything else. A section's body already runs through its subsections,
+    # so walking every heading re-emits each nested one (depth-many times, not
+    # twice). Both halves read the SAME root list and the SAME predicate, so no
+    # section can land in both and none can be silently dropped.
+    #
+    # NOT a name deny-list (`exclude=`): it cannot fence a heading namespace an
+    # author may add to freely — persona_pack.py:207-219 constrains only "one
+    # level-1 Core, 300-500 chars" and "some level-2 Negative space" — and it
+    # cuts from `heading_start` while these bodies are heading-exclusive, so it
+    # also DELETES the author's heading line. NOT a `level == 1` filter on the
+    # extras: a level-2 section authored ABOVE the first level-1 heading is
+    # admitted by the loader and is not inside Core's body, so that filter
+    # silently deletes authored prose.
+    roots = root_sections(persona.markdown)
+    core = "\n".join(
+        body_part.rstrip("\n") for level, name, body_part in roots
+        if _is_persona_core(level, name)
+    )
     body = [
         f"Display name: {identity['display_name']}",
         (f"Pronouns: {pronouns['subject']}/{pronouns['object']}/"
          f"{pronouns['possessive_adjective']}/{pronouns['possessive_pronoun']}/{pronouns['reflexive']}"),
         render_v1(persona.traits, persona.relationship_posture),
-        core.rstrip("\n"),
+        core,
     ]
     if surface == "text":
         body.extend(
-            body_part.rstrip("\n") for _, name, body_part in sections(persona.markdown) if name != "Core"
+            body_part.rstrip("\n") for level, name, body_part in roots
+            if not _is_persona_core(level, name)
         )
         body.extend(f"Quirk ({q['frequency']}): when {q['context']}, {q['tendency']}." for q in persona.quirks)
         body.extend(

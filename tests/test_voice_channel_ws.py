@@ -130,13 +130,43 @@ class _HandoffingBus:
 
 
 class _FailingHandoffWs(_RecordingWs):
-    """A transport failure must use the ordinary error path, not succeed."""
+    """A socket that refuses the handoff write and STAYS refusing (#619).
+
+    THE CONTRACT, which is all this double promises: once it has refused one
+    ``send_json`` it refuses every later one, and ``frames`` records only
+    writes that actually completed while ``attempts`` records every call.
+
+    That models the case the tests here are about — a socket whose
+    closing-state guard has begun refusing data frames — and it is
+    deliberately NOT a general account of aiohttp's write behaviour. Three
+    successive review rounds each found a different over-broad sentence in this
+    docstring when it tried to be one (whether a raise proves zero bytes
+    reached the wire; whether every later write is refused, given CLOSE frames
+    are still permitted; whether a peer-initiated close refuses writes at all).
+    The general theory kept being wrong in a new way, so it is gone: if you
+    need aiohttp's semantics, measure them against the installed version rather
+    than trusting a comment here.
+
+    What this replaced was ineffective in two ways, and both mattered. It
+    refused only the frame whose type was ``handoff`` and then HEALED, so the
+    last-resort error frame appeared to be delivered on a socket that had just
+    refused the frame before it. And it appended to ``frames`` BEFORE raising,
+    so the committed assertion could observe a frame that never left the
+    process.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts: list[str] = []
+        self._refusing = False
 
     async def send_json(self, frame: dict) -> None:
-        self.frames.append(frame)
-        if frame["type"] == "handoff":
-            raise ConnectionResetError("closing transport")
+        self.attempts.append(frame["type"])
+        if self._refusing or frame["type"] == "handoff":
+            self._refusing = True
+            raise ConnectionResetError("Cannot write to closing transport")
         await asyncio.sleep(0)
+        self.frames.append(frame)
         self.write_completed.set()
 
 
@@ -573,7 +603,51 @@ class TestWSTurn:
         reservation.mark_speech_sent()
         assert reservation.reserve() is False
 
-    async def test_failed_handoff_write_does_not_fake_a_terminal_success(self):
+    async def test_a_double_that_refused_one_frame_refuses_the_next(self):
+        """The double's own contract, checked before anything relies on it
+        (#619). The version this replaced healed after refusing the handoff, so
+        the committed assertion below could be written against a socket that
+        delivered the last-resort frame — which is not what happens when a
+        closing-state guard has begun refusing."""
+        ws = _FailingHandoffWs()
+        with pytest.raises(ConnectionResetError):
+            await ws.send_json({"type": "handoff"})
+        with pytest.raises(ConnectionResetError):
+            await ws.send_json({"type": "error"})
+        assert ws.attempts == ["handoff", "error"]
+        assert ws.frames == [], ws.frames
+
+    async def test_a_refused_handoff_write_delivers_nothing_and_keeps_the_job_durable(self):
+        """#619, and the record of a decision argued twice.
+
+        The channel ATTEMPTS the last-resort error frame after a handoff write
+        fails, and on this failure class it cannot arrive: the socket refused
+        the handoff via the closing-state guard, which refuses before any byte
+        and never unlatches. So the listener hears nothing
+        and the durable job is re-offered on reconnect — never a promise
+        followed by its own contradiction, which was the worry that opened the
+        issue. That worry needs the frame to have been delivered, and a refusal
+        proves it was not.
+
+        THE LOSING OPTION, and why it stays lost. Routing this path through
+        ``_error_sink`` to suppress the frame emits NOTHING AT ALL, on every
+        entrant to that branch — the sink returns early on
+        ``handoff.done() or reservation.committed`` and BOTH are already true
+        here: the branch only runs inside ``if handoff in done:``, and
+        ``commit()`` sets ``_committed`` with no await between.
+
+        It would also silence the branch's ORDINARY entrant, which has a
+        healthy socket: on the normal-request path the unused handoff future is
+        cancelled before the request is awaited, so a turn that faults in the
+        bus arrives at the same ``except`` with ``handoff.done()`` already true
+        — and there the frame is the listener's only telling. (A *committed*
+        handoff never arrives there on a healthy socket; that branch returns.)
+        The ``attempts`` assertion below is what turns the change red.
+
+        Do not re-argue this without a measurement contradicting one of those
+        two facts: that the sink's predicate is already satisfied here, and
+        that this ``except`` is shared with an entrant whose socket still works.
+        """
         bus = _HandoffingBus()
         channel = VoiceChannel(
             bus=bus, default_agent="concierge", webhook_secret="",
@@ -583,17 +657,20 @@ class TestWSTurn:
         )
         ws = _FailingHandoffWs()
 
-        await channel._run_ws_utterance(
-            ws,
-            {
-                "agent_role": "concierge", "text": "please ask finance",
-                "scope_id": "scope-1", "device_id": "kitchen",
-            },
-            "utterance-1",
-            asyncio.get_running_loop().time() + 20,
-        )
+        with pytest.raises(ConnectionResetError):
+            await channel._run_ws_utterance(
+                ws,
+                {
+                    "agent_role": "concierge", "text": "please ask finance",
+                    "scope_id": "scope-1", "device_id": "kitchen",
+                },
+                "utterance-1",
+                asyncio.get_running_loop().time() + 20,
+            )
 
-        assert [frame["type"] for frame in ws.frames] == ["handoff", "error"]
+        # ATTEMPTED both; DELIVERED neither. The old assertion conflated these.
+        assert ws.attempts == ["handoff", "error"]
+        assert ws.frames == [], ws.frames
         assert bus.request_cancelled.is_set()
         assert bus.specialist_task is not None
         assert not bus.specialist_task.done()

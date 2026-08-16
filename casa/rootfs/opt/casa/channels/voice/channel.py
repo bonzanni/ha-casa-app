@@ -960,12 +960,15 @@ class VoiceChannel(Channel):
 
         Composition ONLY — it never decides who writes the frame or whether
         one is written. That separation is the point: the two transports'
-        last-resort error paths must keep writing unconditionally (a handoff
-        whose own write failed still owes the caller an error frame — see
-        ``test_failed_handoff_write_does_not_fake_a_terminal_success``),
-        while the ordinary sink keeps its write lock and handoff suppression.
-        Routing those paths through the sink to reuse this text was tried and
-        silently swallowed both cases.
+        last-resort error paths keep writing unconditionally, while the
+        ordinary sink keeps its write lock and handoff suppression. Routing
+        those paths through the sink to reuse this text was tried and silently
+        swallowed both cases — the sink returns early on
+        ``handoff.done() or reservation.committed``, and its socket branch is
+        SHARED (#619): a request that faults on the normal path arrives there
+        with the unused handoff future already cancelled just before the
+        request is awaited, hence already ``done()``, on a socket that still
+        works — and that frame is the listener's only telling.
 
         Takes the CANONICAL line rather than a rendered one so both guards can
         ask whether something is actually *spoken*, which a rendered string
@@ -1570,12 +1573,33 @@ class VoiceChannel(Channel):
         except Exception as exc:
             # #594 — the socket twin of the SSE branch above. Routing this
             # through `emit_error_line`'s sink instead (as both reviewers
-            # prescribed) was tried and reverted: the sink suppresses an
-            # ordinary foreground error once a handoff is committed, which is
-            # right for the agent's error branch and wrong here — a handoff
-            # whose own write FAILED still owes the caller an error frame
-            # (`test_failed_handoff_write_does_not_fake_a_terminal_success`).
-            # So this keeps writing unconditionally and borrows only the text.
+            # prescribed) was tried and reverted, and #619 re-argued it. The
+            # reason it stays reverted is NOT that a failed handoff write "owes
+            # the caller an error frame". When the handoff write was refused by
+            # the transport's CLOSING-state guard, this write is refused too:
+            # that guard runs before any byte for the frame and never unlatches.
+            # (Not every write failure is that one — a paused-drain raise can
+            # follow a partial write and does not latch closing — but the
+            # refused-handoff case this path is named for is.)
+            #
+            # It is that this `except` is SHARED, and its ORDINARY entrant has
+            # a healthy socket: on the normal-request path the unused `handoff`
+            # future is CANCELLED just before `await request_task`, so a request
+            # that then faults — a bus timeout, say — arrives here with
+            # `handoff` already DONE. The sink's
+            # `handoff.done() or reservation.committed` guard would therefore
+            # silence exactly the case that most needs telling. (A *committed*
+            # handoff does not reach here on a healthy socket at all: that
+            # branch returns after its own write. It reaches here only when
+            # that write failed.) Measured: suppressing here reds five socket
+            # tests — every one that expects a last-resort error frame at all,
+            # the tool-loop error among them. (None is an INV-VOICE-007
+            # binding; that invariant is about the retraction TEXT, which this
+            # branch composes rather than decides.) So it keeps writing and borrows
+            # only the text; on the refused-handoff path the write is attempted
+            # and delivers nothing, which is what
+            # `test_a_refused_handoff_write_delivers_nothing_and_keeps_the_job_durable`
+            # pins.
             line = self._error_line(cfg, exc)
             await ws.send_json({
                 "type": "error", "utterance_id": uid,

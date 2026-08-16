@@ -74,6 +74,37 @@ def sections(source: str) -> list[tuple[int, str, str]]:
     ]
 
 
+def root_sections(source: str) -> list[tuple[int, str, str]]:
+    """(level, name, body) for each section NO OTHER section contains (#611).
+
+    ``sections`` is FLAT across heading levels while a parent's body physically
+    runs through its children — ``_section_spans`` ends a span at the next
+    heading of the same-or-shallower level — so iterating it re-emits every
+    nested subsection once per ancestor: twice at depth two, three times at
+    depth three.
+
+    Containment is decided by the level sequence ALONE, so a span is a root
+    exactly when its level is <= every level before it: a running
+    prefix-minimum. Checked against offset-based containment computed from the
+    real ``_section_spans`` over every level sequence of length 1..6 on levels
+    1..4 — 5460 sequences, 0 mismatches — and the roots so chosen TILE the
+    document from the first heading to its end, which is what guarantees that
+    nothing authored under a heading is dropped.
+
+    CONTRACT: this depends on ``sections`` returning rows in DOCUMENT ORDER
+    (``_HEADING.finditer`` yields matches left to right and neither function
+    sorts or reverses). A change that reordered those rows would break this
+    function silently; the parametrised unit case pins the order as a list.
+    """
+    roots: list[tuple[int, str, str]] = []
+    shallowest: int | None = None
+    for level, name, body in sections(source):
+        if shallowest is None or level <= shallowest:
+            shallowest = level
+            roots.append((level, name, body))
+    return roots
+
+
 def select_markdown_sections(
     source: str, names: tuple[str, ...], *, exclude: tuple[str, ...] = (),
 ) -> str:
