@@ -224,6 +224,7 @@ from persona_install import (
     inspect_persona_repo,
     persona_install_consent_identity,
 )
+from personality_binding import InstanceDir
 from role_artifact import load_role_artifact
 from role_slot import materialize_role
 
@@ -262,16 +263,32 @@ pack = commit_persona_install(inspection=res, acks=acks)
 
 role_dir = Path(agent_loader.DEFAULT_ROLES_DIR) / "resident" / "butler"
 role = materialize_role(source=load_role_artifact(role_dir), options={})
-committed = apply_persona_override(
+# #607: the compile proof is a REQUIRED argument, and this driver must supply
+# the same one production does (tools.persona_apply builds it from this exact
+# factory) — a test-only stub here would prove the swap works through a path
+# no operator can take.
+instance_dir = InstanceDir(Path("/config/bindings/resident-butler"))
+staged = apply_persona_override(
     target_role_id="resident:butler", persona=pack, role=role,
-    instance_dir_root=Path("/config/bindings/resident-butler"))
-print("OVERRIDE_DIGEST", committed.binding.binding_digest)
+    instance_dir_root=Path("/config/bindings/resident-butler"),
+    candidate_validator=agent_loader.make_candidate_compile_validator(role))
+print("OVERRIDE_DIGEST", staged.binding.binding_digest)
 
+# #607: a resident apply STAGES; promotion belongs to boot reconciliation. The
+# live pair proves it — desired holds the override while active is still the
+# pre-swap binding — which is what makes the tool's restart_required honest.
+assert instance_dir.desired() is not None, "override was not staged"
+_active = instance_dir.active()
+assert _active is not None and _active.binding.binding_digest == bd_before, (
+    "apply must not promote: active should still be the pre-swap binding")
+print("STAGED_NOT_PROMOTED")
+
+# This reconciles, which is what promotes the staged override to active.
 bd_after = _butler_binding_digest()
 print("BD_AFTER", bd_after)
 
 assert bd_after != bd_before, "binding_digest did NOT change after persona swap"
-assert bd_after == committed.binding.binding_digest, "on-disk override digest mismatch"
+assert bd_after == staged.binding.binding_digest, "on-disk override digest mismatch"
 print("DRIVER_E_OK")
 PY
 )"
@@ -279,6 +296,12 @@ log "E-2 driver output: $(printf '%s' "$SWAP_OUT" | tr '\n' '|')"
 printf '%s' "$SWAP_OUT" | grep -q "DRIVER_E_OK" \
     || fail "E-2: persona-swap driver failed (binding_digest unchanged?): $SWAP_OUT"
 pass "E-2 butler binding_digest changed after override apply"
+
+# #607: assert the stage-only step explicitly, not just as a side effect of the
+# digest changing — a regression to commit-on-apply would still move the digest.
+printf '%s' "$SWAP_OUT" | grep -q "STAGED_NOT_PROMOTED" \
+    || fail "E-2: apply promoted the binding instead of staging it: $SWAP_OUT"
+pass "E-2 apply staged the override without promoting it"
 
 MSYS_NO_PATHCONV=1 docker exec "$NAME" test -f /config/bindings/resident-butler/active.yaml \
     || fail "E-2: resident-butler override binding was not persisted"
