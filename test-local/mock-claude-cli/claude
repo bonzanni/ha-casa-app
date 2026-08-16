@@ -22,11 +22,16 @@ still tolerates the flag for old harnesses.
 
 #586: two additions, both load-bearing for the restart-survival probe.
 
-`/mock casa_call <tool>` makes a REAL authenticated MCP call the way a real
-engagement does — reading the credential pair out of the workspace's own
+`/mock casa_call <tool> [token]` makes a REAL authenticated MCP call the way a
+real engagement does — reading the credential pair out of the workspace's own
 `.mcp.json` and POSTing to the bridge — and records the raw response in the
 workspace so the probe can assert on it. That is the one thing the probe
 could not do before: every call it made was unbound.
+
+The optional trailing `token` is recorded on the response as `_probe_token`
+(#614). Without it a probe can only wait for the response-file SET to change,
+which a REDELIVERED turn satisfies just as well as the turn the probe injected
+— so a step asserting on "the newest file" can read someone else's answer.
 
 Each turn now also opens with a `{"type": "system", "subtype": "init"}`
 stream-json frame, which is what the real CLI emits and what Casa's topic
@@ -165,12 +170,22 @@ def _casa_call(tool: str) -> dict:
         return {"mock_error": f"{type(exc).__name__}: {exc}"}
 
 
-def _record_casa_call(payload: dict) -> str:
+def _record_casa_call(payload: dict, token: str = "") -> str:
     """Write the response to the next free numbered file in the workspace.
 
     Numbered rather than overwritten: a turn is one CLI process, so the probe
     reads the file its step produced instead of racing a later one.
+
+    #614: numbering alone does NOT let a probe find its own answer. A step that
+    waits for the file set to change is satisfied by a turn Casa redelivered
+    (`_InboundSpool.on_spawn` re-queues any envelope not yet `consumed`), and
+    then asserts on a stranger's response. `token` — the optional trailing word
+    of `/mock casa_call <tool> [token]` — is stamped on the payload so the step
+    can wait for ITS OWN turn. Absent for tokenless callers, so their
+    assertions are unchanged.
     """
+    if token:
+        payload["_probe_token"] = token
     n = len([p for p in os.listdir(".") if p.startswith(_CASA_CALL_PREFIX)])
     path = f"{_CASA_CALL_PREFIX}{n:03d}.json"
     with open(path, "w", encoding="utf-8") as fh:
@@ -283,9 +298,12 @@ def main() -> int:
         }), flush=True)
         # #586: authenticated MCP call from inside the engagement.
         if text.startswith("/mock casa_call"):
-            tool = (text[len("/mock casa_call"):].strip()
-                    or "list_engagement_workspaces")
-            path = _record_casa_call(_casa_call(tool))
+            # `<tool> [token]` — partition, so a tokenless caller still gets
+            # exactly its tool name and a nonce never leaks into it (#614).
+            tool, _, token = text[len("/mock casa_call"):].strip().partition(" ")
+            tool = tool.strip() or "list_engagement_workspaces"
+            token = token.strip()
+            path = _record_casa_call(_casa_call(tool), token)
             print(f"(mock) casa_call {tool} -> {path}", flush=True)
             continue
         # #603: spawn the three descendant shapes and report their pids.
