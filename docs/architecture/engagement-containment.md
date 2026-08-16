@@ -296,6 +296,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 - `tests/test_quiesce_fence.py`
 - `tests/test_quiesce_funnel_order.py`
 - `tests/test_s6_quiesce_seams.py`
+- `test-local/e2e/test_engagement_quiesce.sh`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

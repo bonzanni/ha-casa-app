@@ -191,6 +191,7 @@
     - tests/test_quiesce_fence.py
     - tests/test_quiesce_funnel_order.py
     - tests/test_s6_quiesce_seams.py
+    - test-local/e2e/test_engagement_quiesce.sh
   related: [architecture/engagements.md, architecture/hook-resolution.md, architecture/persistent-state.md]
   defines_invariants: [INV-CONT-001, INV-CONT-002, INV-CONT-003, INV-CONT-004, INV-CONT-005, INV-CONT-006]
   invariant_tests:

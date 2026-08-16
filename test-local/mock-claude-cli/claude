@@ -37,6 +37,8 @@ it — an endless turn loop rather than a probe.
 
 from __future__ import annotations
 
+import threading
+
 import argparse
 import json
 import os
@@ -176,6 +178,62 @@ def _record_casa_call(payload: dict) -> str:
     return path
 
 
+
+# --- #599 / #603: descendant shapes for the terminal-quiesce probe ----------
+# The containment ladder targets the engagement's UID rather than its process
+# group, precisely because a `setsid` child leaves the group. Proving that
+# needs the three shapes to actually exist under a real setpriv'd CLI, so the
+# mock spawns them on demand. Each writes `<name> <epoch_ms>` continuously, so
+# the probe can ask the only question that matters: did anything under this uid
+# write AFTER the engagement went terminal?
+
+def _writer_loop(name: str, outdir: str) -> None:
+    path = os.path.join(outdir, name + ".log")
+    with open(path, "a", buffering=1, encoding="utf-8") as fh:
+        while True:
+            fh.write("%s %d\n" % (name, int(time.time() * 1000)))
+            fh.flush()                 # line-buffered + flush: a SIGKILL
+            time.sleep(0.004)          # cannot lose an already-flushed line
+
+
+def _spawn_writer(name: str, outdir: str, shape: str) -> int:
+    """Fork a writer in one of three process shapes.
+
+    foreground — plain fork: same session AND same process group as the CLI.
+    pgroup     — its own process group, same session.
+    setsid     — its own session: the shape that ESCAPES a process-group kill,
+                 and the reason this ladder keys on the uid instead.
+    """
+    pid = os.fork()
+    if pid != 0:
+        return pid
+    try:
+        if shape == "setsid":
+            os.setsid()
+        elif shape == "pgroup":
+            os.setpgid(0, 0)
+        _writer_loop(name, outdir)
+    except BaseException:
+        pass
+    finally:
+        os._exit(0)
+
+
+def _spawn_writers(outdir: str) -> dict:
+    os.makedirs(outdir, exist_ok=True)
+    pids = {}
+    for name, shape in (("foreground", "foreground"),
+                        ("pgroup", "pgroup"),
+                        ("setsid", "setsid")):
+        pids[name] = _spawn_writer(name, outdir, shape)
+    # The leader writes too, from a thread, so the probe can tell whether the
+    # CLI ITSELF kept mutating after the terminal transition.
+    threading.Thread(target=_writer_loop, args=("leader", outdir),
+                     daemon=True).start()
+    pids["leader"] = os.getpid()
+    return pids
+
+
 def main() -> int:
     if "--version" in sys.argv[1:]:
         print(f"{_pinned_cli_version()} (Claude Code)", flush=True)
@@ -230,6 +288,29 @@ def main() -> int:
             path = _record_casa_call(_casa_call(tool))
             print(f"(mock) casa_call {tool} -> {path}", flush=True)
             continue
+        # #603: spawn the three descendant shapes and report their pids.
+        if text.startswith("/mock spawn_writers"):
+            outdir = (text[len("/mock spawn_writers"):].strip()
+                      or "/tmp/casa-quiesce-writers")
+            pids = _spawn_writers(outdir)
+            print("(mock) writers " + json.dumps(pids), flush=True)
+            continue
+        # #603: emit the completion tool call but STAY ALIVE. A single model
+        # turn can legally emit parallel tool calls, so a completing CLI is not
+        # necessarily idle — that premise is the whole reason the quiesce cannot
+        # be scoped to cancellation, and this is how the probe reproduces it.
+        if text.startswith("/mock emit_completion_stay"):
+            payload = text[len("/mock emit_completion_stay"):].strip() or "{}"
+            try:
+                payload_obj = json.loads(payload)
+            except json.JSONDecodeError:
+                payload_obj = {"text": payload}
+            print(json.dumps({
+                "type": "tool_use",
+                "name": "mcp__casa-framework__emit_completion",
+                "input": payload_obj,
+            }), flush=True)
+            continue                      # deliberately NOT `return 0`
         # Trigger: emit_completion
         if text.startswith("/mock emit_completion"):
             payload = text[len("/mock emit_completion"):].strip() or "{}"
