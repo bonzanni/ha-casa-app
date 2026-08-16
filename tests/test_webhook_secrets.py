@@ -227,3 +227,184 @@ def test_casa_core_filters_the_loaded_webhook_secret():
     import casa_core
     source = inspect.getsource(casa_core.main)
     assert "usable_webhook_secret(" in source
+
+
+# ---------------------------------------------------------------------------
+# #622 - a short write must never publish a truncated secret.
+#
+# `os.write` is not guaranteed to consume the whole buffer. `_publish` used a
+# single unchecked call, so a short write staged a partial value, fsynced it,
+# and hard-linked it into place as the live slot. Nothing raised, and because
+# `os.link` never clobbers and no Casa path unlinks a resident slot, the
+# truncation was PERMANENT: every later mint re-entered `_publish`, failed to
+# clobber, and returned None again - the state did not heal when the disk did.
+#
+# Two distinct conditions, and they want opposite outcomes:
+#   BENIGN  - the write is short but the next one completes. The loop must
+#             finish the buffer and publish the WHOLE value.
+#   EXHAUSTED - the write is short because the filesystem is full, so the next
+#             one raises. Nothing may be published, and the name must be left
+#             free so a later attempt can succeed.
+#
+# The driver targets only descriptors opened under this test's own tmp dir. It
+# must never use RLIMIT_FSIZE, which is process-wide while the gate runs under
+# `-n auto`.
+# ---------------------------------------------------------------------------
+
+
+def _short_write_under(monkeypatch, root: Path, limit: int, *, then_fail: bool):
+    """First write to any fd under *root* stops at *limit*; later writes to
+    that fd either complete normally or raise ENOSPC."""
+    import errno as _errno
+
+    import webhook_auth
+
+    real_open, real_write = os.open, os.write
+    targeted: set[int] = set()
+    shortened: list[int] = []
+
+    def fake_open(path, flags, mode=0o777, **kw):
+        fd = real_open(path, flags, mode, **kw)
+        try:
+            if str(path).startswith(str(root)):
+                targeted.add(fd)
+        except Exception:
+            pass
+        return fd
+
+    def fake_write(fd, data):
+        if fd not in targeted:
+            return real_write(fd, data)
+        if not shortened:
+            shortened.append(fd)
+            return real_write(fd, bytes(data)[:limit])
+        if then_fail:
+            raise OSError(_errno.ENOSPC, "No space left on device")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(webhook_auth.os, "open", fake_open)
+    monkeypatch.setattr(webhook_auth.os, "write", fake_write)
+    return shortened
+
+
+def test_a_short_write_that_can_finish_publishes_the_whole_value(tmp_path: Path, monkeypatch):
+    """BENIGN. Red case: the unchecked `os.write` published the first 20 bytes
+    as the live slot, so `read_secret` returned None forever."""
+    shortened = _short_write_under(monkeypatch, tmp_path, 20, then_fail=False)
+
+    value = ensure_secret("vm", owner="casa", secrets_dir=tmp_path)
+
+    assert shortened, "premise: the driver actually shortened a write"
+    assert value is not None and len(value) == 43
+    assert (tmp_path / "vm").stat().st_size == 43
+    assert read_secret("vm", owner="casa", secrets_dir=tmp_path) == value
+
+
+def test_an_exhausted_disk_publishes_nothing_and_leaves_the_name_free(tmp_path: Path, monkeypatch):
+    """EXHAUSTED. Red case: no raise, a 20-byte live slot, and three retries on
+    a healthy disk all returned None with the slot unchanged - permanent."""
+    _short_write_under(monkeypatch, tmp_path, 20, then_fail=True)
+
+    with pytest.raises(OSError):
+        ensure_secret("vm", owner="casa", secrets_dir=tmp_path)
+
+    assert not (tmp_path / "vm").exists(), "a partial value reached the live slot"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [], "staging file left behind"
+
+    monkeypatch.undo()
+    value = ensure_secret("vm", owner="casa", secrets_dir=tmp_path)
+    assert value is not None and len(value) == 43
+
+
+def test_a_short_write_never_publishes_a_truncated_identity_binding(tmp_path: Path, monkeypatch):
+    """`_write_ident` has the same shape, and a truncated `.ident` is worse
+    than a missing one: it reads as a MISMATCHED identity rather than an absent
+    binding, and `ensure_secret_for_identity` retires and re-mints on mismatch.
+    Red case: it published a 4-byte binding and returned True."""
+    import webhook_auth
+
+    ensure_secret("plg-acme--hook", owner="casa", secrets_dir=tmp_path)
+    _short_write_under(monkeypatch, tmp_path, 4, then_fail=True)
+
+    assert webhook_auth._write_ident("plg-acme--hook", "identity-abcdef", tmp_path) is False
+    assert not (tmp_path / "plg-acme--hook.ident").exists()
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".ident-")]
+
+
+# ---------------------------------------------------------------------------
+# #609 — a scan has THREE answers, not two. `_read_final` collapses absent,
+# unreadable, non-regular, symlinked and present-but-invalid to None, which is
+# right for the request path (all of them must fail closed) and wrong for
+# anything deciding what to DO: only `absent` may be minted into, and only
+# `absent` may be reported as "not placed yet".
+# ---------------------------------------------------------------------------
+
+
+def test_probe_discriminates_every_condition_read_secret_collapses(tmp_path: Path):
+    """Red case: assert each state against `read_secret` instead and every row
+    reads the same — that indistinguishability is the defect."""
+    import webhook_auth
+
+    good = ensure_secret("vm", owner="casa", secrets_dir=tmp_path)
+    (tmp_path / "short").write_bytes(b"tooshort")
+    os.symlink(tmp_path / "vm", tmp_path / "link")
+    os.mkdir(tmp_path / "adir")
+    blocked = tmp_path / "blocked"
+    blocked.write_bytes(b"x" * 43)
+    os.chmod(blocked, 0)
+    not_a_dir = tmp_path / "afile"
+    not_a_dir.write_bytes(b"x")
+
+    def state(name, owner="casa", where=tmp_path):
+        return webhook_auth.probe_secret(name, owner=owner, secrets_dir=where)[0]
+
+    assert {
+        "missing": state("nope"),
+        "valid": state("vm"),
+        "wrong_shape": state("short"),
+        "unreadable": state("blocked"),
+        "symlink": state("link"),
+        "directory": state("adir"),
+        "file_as_secrets_dir": state("vm", where=not_a_dir),
+    } == {
+        "missing": "absent",
+        "valid": "readable",
+        "wrong_shape": "invalid",
+        "unreadable": "unreadable",
+        "symlink": "unreadable",
+        "directory": "unreadable",
+        "file_as_secrets_dir": "unreadable",
+    }
+    # Every one of those is None to the request path — which is correct there.
+    assert read_secret("vm", owner="casa", secrets_dir=tmp_path) == good
+    assert all(read_secret(n, owner="casa", secrets_dir=tmp_path) is None
+               for n in ("nope", "short", "blocked", "link", "adir"))
+
+
+def test_probe_agrees_with_read_secret_on_whether_bytes_are_usable(tmp_path: Path):
+    """The probe must never call a slot readable that the request path would
+    refuse, or vice versa — they share `_valid_value` and must stay agreed."""
+    import webhook_auth
+
+    ensure_secret("casa-slot", owner="casa", secrets_dir=tmp_path)
+    (tmp_path / "prov-slot").write_bytes(b"opaque-provider-value")
+    (tmp_path / "bad").write_bytes(b"\x00\x01")
+    for name, owner in (("casa-slot", "casa"), ("casa-slot", "provider"),
+                        ("prov-slot", "casa"), ("prov-slot", "provider"),
+                        ("bad", "casa"), ("bad", "provider"), ("gone", "casa")):
+        probed = webhook_auth.probe_secret(name, owner=owner, secrets_dir=tmp_path)[0]
+        usable = read_secret(name, owner=owner, secrets_dir=tmp_path) is not None
+        assert (probed == "readable") is usable, (name, owner, probed, usable)
+
+
+def test_a_file_where_the_secrets_dir_should_be_is_not_absent(tmp_path: Path):
+    """ENOTDIR must never read as `absent`. If it did, the writer would call
+    `ensure_secret`, whose `mkdir` raises EEXIST — on every pass, forever, with
+    no Casa surface able to clear it."""
+    import webhook_auth
+
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"not a directory")
+    assert webhook_auth.probe_secret("vm", owner="casa", secrets_dir=blocker)[0] == "unreadable"
+    with pytest.raises(OSError):
+        ensure_secret("vm", owner="casa", secrets_dir=blocker)

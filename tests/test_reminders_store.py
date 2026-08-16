@@ -921,6 +921,106 @@ class TestUpsertEntry:
             "heartbeat", "paypal", "reminder-abc"]
         assert doc["triggers"][0]["minutes"] == 15
 
+    def test_a_replacement_that_omits_secret_owner_does_not_flip_it_to_casa(self, tmp_path):
+        """#609 (Sol, design r1 S1). `secret_owner: provider` says Casa must
+        NEVER mint here — the operator places that credential by hand and Casa
+        has no way to regenerate or import it. A whole-entry replacement that
+        merely omitted the field silently flipped ownership to the `casa`
+        default, and with minting moved to registration the very next reload
+        then occupied the slot with a Casa token. Worse, that token validates
+        under the PROVIDER rule too, so the report read the route healthy while
+        every request signed with the operator's real credential 401'd.
+
+        Omission means "leave it alone", not "make it mine". Changing owner
+        stays possible — by saying so.
+        """
+        provider = {"name": "el-postcall", "type": "webhook",
+                    "clearance": "family",
+                    "auth": {"mode": "timestamped_hmac",
+                             "header": "ElevenLabs-Signature",
+                             "tolerance_secs": 300, "secret_owner": "provider"}}
+        path = _write(tmp_path, [provider], version=2)
+
+        # The shape config_trigger_upsert emits for a clearance-only edit:
+        # every field present EXCEPT secret_owner.
+        replacement = {"name": "el-postcall", "type": "webhook",
+                       "clearance": "public",
+                       "auth": {"mode": "timestamped_hmac",
+                                "header": "ElevenLabs-Signature",
+                                "tolerance_secs": 300}}
+        assert reminders.upsert_entry(path, replacement) == "replaced"
+
+        stored = _read(path)["triggers"][0]
+        assert stored["auth"]["secret_owner"] == "provider"
+        assert stored["clearance"] == "public", "the intended edit still applied"
+
+    def test_a_replacement_that_omits_auth_entirely_keeps_the_prior_block(self, tmp_path):
+        """#609 (Terra, diff review). The sibling of the case above, and the
+        wider one: `config_trigger_upsert` projects only the fields it was
+        given, so a caller editing just `clearance` omits `auth` ALTOGETHER.
+        Carrying forward only the nested `secret_owner` missed that — the whole
+        block vanished, the loader defaulted the trigger to `hmac_body`/`casa`,
+        and the route silently began verifying against the global secret while
+        the integrator's existing signatures 401'd. The report then called it
+        `global_secret`, which reads healthy.
+
+        Omission means leave it alone here too. Changing the auth mode stays
+        available by sending an `auth` block that says so.
+        """
+        provider = {"name": "el-postcall", "type": "webhook",
+                    "clearance": "family",
+                    "auth": {"mode": "timestamped_hmac", "header": "S",
+                             "tolerance_secs": 300, "secret_owner": "provider"}}
+        path = _write(tmp_path, [provider], version=2)
+
+        assert reminders.upsert_entry(path, {
+            "name": "el-postcall", "type": "webhook", "clearance": "public",
+        }) == "replaced"
+
+        stored = _read(path)["triggers"][0]
+        assert stored["auth"] == provider["auth"]
+        assert stored["clearance"] == "public", "the intended edit still applied"
+
+    def test_a_replacement_may_still_change_the_auth_mode_explicitly(self, tmp_path):
+        """The carry-forward must not become a one-way door."""
+        provider = {"name": "el-postcall", "type": "webhook",
+                    "clearance": "family",
+                    "auth": {"mode": "timestamped_hmac", "header": "S",
+                             "tolerance_secs": 300, "secret_owner": "provider"}}
+        path = _write(tmp_path, [provider], version=2)
+        assert reminders.upsert_entry(path, dict(provider, auth={
+            "mode": "hmac_body", "header": "X-Webhook-Signature",
+            "tolerance_secs": 300, "secret_owner": "casa"})) == "replaced"
+        assert _read(path)["triggers"][0]["auth"]["mode"] == "hmac_body"
+
+    def test_a_webhook_turned_into_a_schedule_does_not_keep_an_auth_block(self, tmp_path):
+        """Carrying the block forward must not attach auth to a trigger type
+        that has none — the replacement's own `type` decides."""
+        provider = {"name": "el-postcall", "type": "webhook",
+                    "clearance": "family",
+                    "auth": {"mode": "timestamped_hmac", "header": "S",
+                             "tolerance_secs": 300, "secret_owner": "provider"}}
+        path = _write(tmp_path, [provider], version=2)
+        assert reminders.upsert_entry(path, {
+            "name": "el-postcall", "type": "cron", "schedule": "0 9 * * *",
+            "channel": "main", "prompt": "Morning.",
+        }) == "replaced"
+        assert "auth" not in _read(path)["triggers"][0]
+
+    def test_a_replacement_may_still_change_the_owner_explicitly(self, tmp_path):
+        """The carry-forward must not become a one-way door: an operator who
+        SAYS `casa` gets `casa`."""
+        provider = {"name": "el-postcall", "type": "webhook",
+                    "clearance": "family",
+                    "auth": {"mode": "timestamped_hmac", "header": "S",
+                             "tolerance_secs": 300, "secret_owner": "provider"}}
+        path = _write(tmp_path, [provider], version=2)
+        replacement = dict(provider, auth={"mode": "timestamped_hmac",
+                                           "header": "S", "tolerance_secs": 300,
+                                           "secret_owner": "casa"})
+        assert reminders.upsert_entry(path, replacement) == "replaced"
+        assert _read(path)["triggers"][0]["auth"]["secret_owner"] == "casa"
+
     def test_refuses_to_write_the_agent_marker(self, tmp_path):
         path = _write(tmp_path, [], version=2)
         with pytest.raises(ValueError, match="managed_by"):

@@ -463,6 +463,20 @@ class TriggerRegistry:
         entry = self._plugin_overlay.get(name)
         return entry["role"] if entry is not None else None
 
+    def webhook_names_for(self, role: str) -> list[str]:
+        """The webhook names this role currently ROUTES, from the same map
+        ``get_webhook_target`` consults first (#609).
+
+        Deliberately not ``_webhook_names_by_role``: that is teardown
+        bookkeeping which appends without de-duplicating, so a re-registration
+        leaves the name twice. ``_webhook_targets`` is the routing authority
+        and ``_unwind_role`` clears it, so a name here is a name a request
+        would actually reach. Plugin-overlay names are excluded by
+        construction — they live in ``_plugin_overlay`` and their namespace
+        (``plg-…``) is disjoint from any resident name the schema admits.
+        """
+        return sorted(n for n, r in self._webhook_targets.items() if r == role)
+
     def get_clearance(self, name: str) -> str:
         """Return the declared memory read-clearance for webhook trigger
         ``name`` (default ``"public"``). Stamped onto the dispatched turn's

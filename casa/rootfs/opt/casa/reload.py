@@ -131,6 +131,111 @@ def _global_rw() -> _RWLock:
     return _GLOBAL_RW
 
 
+# #609 ------------------------------------------------------------------
+# The webhook-secret seam. Both halves are deliberately incapable of changing
+# routing or aborting a pass: a filesystem fault must not silently re-shape
+# which routes exist, and neither 404 nor 401 authenticates, so unrouting a
+# trigger whose mint failed buys nothing and costs a reload that had already
+# applied other work.
+
+_SECRET_REPORT_SCOPES = frozenset(
+    {"triggers", "agent", "agents", "full", "policies", "config_sync"})
+
+
+async def _mint_trigger_secrets(actions: list[str], role: str, specs: list) -> None:
+    """Create the missing casa-owned per-trigger secrets for *specs*.
+
+    Called AFTER registration at every install site. Never raises: a mint
+    failure is an `actions` entry naming the trigger, which rides out on the
+    ordinary envelope, plus the report row that says what the file's condition
+    actually is.
+    """
+    try:
+        import resident_trigger_secrets
+        import trigger_reconcile
+        failures = await asyncio.to_thread(
+            resident_trigger_secrets.mint_for_specs,
+            specs, secrets_dir=trigger_reconcile.SECRETS_DIR,
+        )
+    except Exception as exc:  # noqa: BLE001 — never abort a reload for this
+        logger.warning("trigger secret mint failed for role=%s: %s", role, exc)
+        actions.append(f"trigger_secret_mint_error_{role}")
+        return
+    for name, reason in failures:
+        logger.warning(
+            "trigger %r on role=%s has no usable secret and could not be "
+            "minted (%s); requests to it will be refused", name, role, reason)
+        actions.append(f"trigger_secret_mint_failed_{name}")
+
+
+def _trigger_secret_snapshot(runtime: Any, role: str | None) -> Any:
+    """The in-memory half of the report: rows decided with NO filesystem IO.
+
+    Taken UNDER the reload lock, synchronously and with no ``await`` in it, so
+    the declaration and the registry are read at one instant and cannot
+    describe two different states of the world.
+
+    Returns ``None`` when there is nothing to report, a list of rows, or a
+    dict carrying an error — never raises.
+    """
+    if role is None:
+        return None
+    try:
+        import resident_trigger_secrets
+        import trigger_reconcile
+        cfg = (getattr(runtime, "role_configs", None) or {}).get(role)
+        if cfg is None:
+            # A specialist is not in `role_configs`. `casa_reload_triggers`
+            # already falls back here for its `registered` list, and the two
+            # must describe the SAME role from the SAME places — otherwise
+            # every one of a specialist's live webhooks reads
+            # `routed_undeclared` in the very envelope that names it as
+            # registered.
+            registries = getattr(runtime, "specialist_registry", None)
+            if registries is not None:
+                cfg = (registries.all_configs() or {}).get(role)
+        specs = list(getattr(cfg, "triggers", None) or [])
+        rows = resident_trigger_secrets.snapshot_rows(
+            specs=specs, registry=getattr(runtime, "trigger_registry", None),
+            role=role,
+            global_secret_usable=bool(
+                getattr(runtime, "webhook_global_secret_usable", False)),
+        )
+        return rows
+    except Exception as exc:  # noqa: BLE001 — never `except: pass`; say so
+        return {"trigger_secrets_error": f"{type(exc).__name__}: {exc}"}
+
+
+async def _trigger_secret_probe(snapshot: Any) -> dict:
+    """The filesystem half, run AFTER both reload locks are released.
+
+    Two reasons it may not run under the lock, and they are different. It must
+    not run on the EVENT LOOP, because the condition this release exists for is
+    a ``/data`` that is full, read-only or hung, and a hung one would stall the
+    loop from inside the very report written to explain it. It must not run
+    under the LOCKS either: moving a hang off the loop and into the reload
+    lock only relocates it — a hung probe would hold the per-scope lock and the
+    global RW lock, blocking a pending full-reload writer and, behind it, every
+    later reader. Diagnostics must never be able to wedge reload admission.
+    """
+    if snapshot is None:
+        return {}
+    if isinstance(snapshot, dict):  # an error captured while snapshotting
+        return snapshot
+    try:
+        import resident_trigger_secrets
+        import trigger_reconcile
+        rows = await asyncio.to_thread(
+            resident_trigger_secrets.resolve_rows,
+            snapshot, secrets_dir=trigger_reconcile.SECRETS_DIR)
+        return {
+            "trigger_secrets": rows,
+            "trigger_secrets_summary": resident_trigger_secrets.summarize(rows),
+        }
+    except Exception as exc:  # noqa: BLE001 — never `except: pass`; say so
+        return {"trigger_secrets_error": f"{type(exc).__name__}: {exc}"}
+
+
 def _lock_key(scope: str, role: str | None) -> str:
     if scope in ("agent", "triggers"):
         return f"{scope}:{role or ''}"
@@ -170,6 +275,9 @@ async def dispatch(
 ) -> dict:
     """Single entry point. Returns a result-shape dict; never raises."""
     started_ms = time.monotonic() * 1000
+
+    envelope: dict = {}
+    secret_snapshot: Any = None
 
     handler = _HANDLERS.get(scope)
     if handler is None:
@@ -255,7 +363,7 @@ async def dispatch(
                     "casa_reload scope=%s role=%s ms=%d ok=True actions=%s",
                     scope, role, ms, actions,
                 )
-                return {
+                envelope = {
                     "status": "ok", "scope": scope, "role": role,
                     "ms": ms, "actions": actions,
                 }
@@ -265,7 +373,7 @@ async def dispatch(
                     "casa_reload scope=%s role=%s ms=%d ok=False kind=%s msg=%s",
                     scope, role, ms, exc.kind, exc.message,
                 )
-                return {
+                envelope = {
                     "status": "error", "kind": exc.kind,
                     "message": exc.message, "scope": scope, "role": role,
                     "ms": ms, "actions": [],
@@ -277,16 +385,24 @@ async def dispatch(
                     scope, role, ms, exc,
                     exc_info=True,
                 )
-                return {
+                envelope = {
                     "status": "error", "kind": "unexpected",
                     "message": str(exc), "scope": scope, "role": role,
                     "ms": ms, "actions": [],
                 }
+            # #609: the IN-MEMORY half of the secret report, taken under the
+            # lock on every arm so it describes the same instant the reload
+            # left behind. The filesystem half runs below, after BOTH locks
+            # are released — see `_trigger_secret_probe`.
+            if scope in _SECRET_REPORT_SCOPES:
+                secret_snapshot = _trigger_secret_snapshot(runtime, role)
     finally:
         if scope == "full":
             await rw.release_write()
         else:
             await rw.release_read()
+    envelope.update(await _trigger_secret_probe(secret_snapshot))
+    return envelope
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +634,13 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
     except Exception as exc:  # noqa: BLE001
         raise ReloadError("reregister_failed", str(exc)) from exc
 
+    # #609: mint AFTER registration, so the cross-role webhook-name collision
+    # test inside `register_agent` has already refused a name this role may not
+    # have. Minting first would write a casa token into another role's slot for
+    # a registration that is then rejected.
+    secret_actions: list[str] = []
+    await _mint_trigger_secrets(secret_actions, role, list(cfg.triggers))
+
     # Q-1 fix (v0.35.2): refresh the runtime cache so back-compat consumers
     # (tools.casa_reload_triggers emits `registered=[...]` by reading
     # runtime.role_configs[role].triggers) see the post-reload state, not the
@@ -548,7 +671,7 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
     except Exception:  # noqa: BLE001 — best-effort
         pass
 
-    return ["reregister_triggers"]
+    return ["reregister_triggers", *secret_actions]
 
 
 register_handler("triggers", reload_triggers)
@@ -1105,6 +1228,8 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
             f"live: {exc}",
         ) from exc
 
+    await _mint_trigger_secrets(actions, role, list(new_cfg.triggers))
+
     # Drain pending-reload guard if any.
     try:
         from tools import _ENGAGEMENTS_PENDING_RELOAD, engagement_var
@@ -1470,6 +1595,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
                     r, list(new_cfg.triggers), list(new_cfg.channels),
                 )
                 actions.append(f"registered_triggers_{r}")
+                await _mint_trigger_secrets(actions, r, list(new_cfg.triggers))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "reload_agents: trigger register failed for added "

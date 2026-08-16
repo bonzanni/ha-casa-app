@@ -94,6 +94,7 @@
   when_changing: trigger types, resident webhook routing, one-shot firing and cleanup, or scheduling
   covers:
     - casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry
+    - casa/rootfs/opt/casa/resident_trigger_secrets.py
     - casa/rootfs/opt/casa/casa_core.py::_make_webhook_handler
     - casa/rootfs/opt/casa/tools.py::config_trigger_upsert
     - casa/rootfs/opt/casa/tools.py::config_trigger_delete
@@ -105,6 +106,8 @@
     - tests/test_agent_loader_trigger_auth.py
     - tests/test_casa_reload_triggers_resident.py
     - tests/test_config_trigger_tools.py
+    - tests/test_resident_trigger_secrets.py
+    - tests/test_webhook_secrets.py
     - tests/test_scheduled_media_delivery.py
     - tests/test_scheduled_delivery_durable.py
   related: [architecture/plugin-triggers.md, architecture/http-surface.md, architecture/overview.md, architecture/reminders.md]

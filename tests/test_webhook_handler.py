@@ -274,18 +274,28 @@ class TestPerTriggerAuthModes:
             assert r.status == 401
             bus.send.assert_not_called()
 
-    async def test_secret_mint_failure_returns_401_not_500(
+    async def test_secret_read_failure_returns_401_not_500(
         self, tmp_path, monkeypatch,
     ):
-        """Sol shipB-r1 P1-6: an ensure_secret filesystem failure (unwritable
-        / full secrets dir) must degrade to an empty secret — 401 — never a
-        500 through the auth path."""
+        """Sol shipB-r1 P1-6: a filesystem failure while reading the secret
+        (unwritable / full / unreadable secrets dir) must degrade to an empty
+        secret — 401 — never a 500 through the auth path.
+
+        #609: this test used to patch ``ensure_secret``. When the request path
+        stopped minting, that patch no longer fired and the test kept passing
+        while proving NOTHING — it stayed green with the try/except deleted.
+        The call-count assertion is what makes it a test again: a patch that
+        does not fire is the failure mode, not the target's name.
+        """
         import webhook_auth
 
+        calls = []
+
         def _boom(name, **kw):
+            calls.append(name)
             raise OSError("read-only filesystem")
 
-        monkeypatch.setattr(webhook_auth, "ensure_secret", _boom)
+        monkeypatch.setattr(webhook_auth, "read_secret", _boom)
         app, bus = await _build_app(
             targets={"vm": "assistant"},
             policies={"vm": {"mode": "static_header", "header": "X-API-Key",
@@ -297,6 +307,26 @@ class TestPerTriggerAuthModes:
                                   headers={"X-API-Key": "whatever"})
             assert r.status == 401
             bus.send.assert_not_called()
+        assert calls == ["vm"], "the patch never fired — the test proves nothing"
+
+    async def test_the_request_path_never_creates_a_secret(self, tmp_path):
+        """#609: minting moved to registration, so verification is READ-ONLY.
+        Both mechanisms live at once would let a route be served from whatever
+        file happened to survive; an unprovisioned route must be a 401, not a
+        mint."""
+        app, bus = await _build_app(
+            targets={"vm": "assistant"},
+            policies={"vm": {"mode": "static_header", "header": "X-API-Key",
+                             "tolerance_secs": 300, "secret_owner": "casa"}},
+            secrets_dir=str(tmp_path),
+        )
+        async with TestClient(TestServer(app)) as client:
+            r = await client.post("/webhook/vm", data=b"{}",
+                                  headers={"X-API-Key": "whatever"})
+            assert r.status == 401
+            bus.send.assert_not_called()
+        assert sorted(p.name for p in tmp_path.iterdir()) == [], (
+            "the request path created a file")
 
     async def test_oversize_body_rejected_413(self, tmp_path):
         app, bus = await _build_app(
