@@ -6,12 +6,11 @@
 
 - Casa now records which per-trigger webhook secrets it minted itself. The
   record is bound to the secret's value rather than to its name, so it is
-  evidence about the bytes that are on disk when it is read, not a history of
-  the slot. The reload report shows, for each slot it can read, whether Casa can
-  prove it minted the value there; other slots report their file condition
-  instead. Secrets you supply yourself (`secret_owner: provider`) are untouched:
-  nothing is written for them, and no existing secret is ever modified, moved or
-  re-minted.
+  evidence about the bytes Casa read, not a history of the slot. The reload
+  report shows, for each slot it can read, whether Casa can prove it minted the
+  value there; other slots report their file condition instead. Secrets you
+  supply yourself (`secret_owner: provider`) are untouched: nothing is written
+  for them, and no existing secret is ever modified, moved or re-minted.
 
   This is groundwork, and it deliberately does **not** change the behaviour
   reported in #620: deleting a webhook trigger still leaves its secret on disk,
