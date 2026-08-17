@@ -122,9 +122,9 @@ returns `401` rather than serving open.
 - `timestamped_hmac` — a `t=<unix>,v0=<hex>` signature (default header
   `ElevenLabs-Signature`) within a tolerance window.
 
-The per-trigger secret is generated when the trigger is registered — at startup
-and on any reload that installs triggers — so it exists before the first call
-rather than being created by it. Casa only ever creates a file that is absent,
+A Casa-owned per-trigger secret is generated when its trigger is registered — at
+startup and on any reload that installs triggers — so it exists before the first
+call rather than being created by it. Casa only ever creates a file that is absent,
 so a trigger recreated under a name that was used before keeps the old secret
 rather than being given a fresh one. If you would
 rather supply the value yourself, declare
