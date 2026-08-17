@@ -6,13 +6,14 @@
 
 - Casa now records which per-trigger webhook secrets it minted itself. When
   Casa mints a secret it also tries to write a small companion receipt beside
-  it, and the reload report states, per slot, whether Casa can prove it minted
-  the value that is currently there. Writing that receipt is best-effort: if it
-  fails, the secret itself is still created and usable, and the slot is simply
-  reported as `unproven` instead of `casa_minted` — as it also is if you replace
-  a secret by hand. Secrets you supply yourself (`secret_owner: provider`) are
-  left entirely alone — nothing is written for them, and no existing secret is
-  ever modified, moved or re-minted.
+  it, and the reload report says, per slot, what it found — including whether
+  Casa can still prove it minted the value that is there. Writing the receipt is
+  best-effort: if it fails, the secret is still created and usable, and Casa
+  simply cannot prove that slot afterwards. Editing a secret by hand has the
+  same effect, since the receipt is bound to the value and not just to the name.
+  Secrets you supply yourself (`secret_owner: provider`) are left entirely
+  alone — nothing is written for them, and no existing secret is ever modified,
+  moved or re-minted.
 
   This is groundwork, and it deliberately does **not** change the behaviour
   reported in #620: deleting a webhook trigger still leaves its secret on disk,
