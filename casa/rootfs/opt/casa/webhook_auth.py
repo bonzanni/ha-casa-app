@@ -505,6 +505,12 @@ def resident_secret_provenance(name: str, *, secrets_dir: Path) -> str:
     value since replaced, unreadable, a lost create race — is ``unproven``.
     Absence of evidence is never consent.
 
+    ``unproven`` means Casa CANNOT PROVE it minted these bytes. It does not
+    mean it did not: a mint whose receipt write failed reads identically, and
+    that path is deliberate. Read as disproof it would say the opposite of
+    what it knows, and a consumer acting on "these are not Casa's" is exactly
+    the confident destruction this exists to prevent.
+
     Owner-AGNOSTIC by design: "did Casa generate these bytes" does not depend
     on how the declaration currently labels them. An owner-validated read
     would reintroduce exactly the owner-flip blindness that lets a casa token
