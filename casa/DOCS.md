@@ -124,8 +124,9 @@ returns `401` rather than serving open.
 
 The per-trigger secret is generated when the trigger is registered — at startup
 and on any reload that installs triggers — so it exists before the first call
-rather than being created by it. That file lives inside Casa's own container,
-not on a host share the file-editor or Samba apps can browse. If you would
+rather than being created by it. Casa only ever creates a file that is absent,
+so a trigger recreated under a name that was used before keeps the old secret
+rather than being given a fresh one. If you would
 rather supply the value yourself, declare
 `secret_owner: provider` on a `timestamped_hmac` trigger and place the file by
 hand: Casa never writes a slot it does not own. Set that at creation time —
