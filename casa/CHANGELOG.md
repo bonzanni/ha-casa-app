@@ -4,10 +4,13 @@
 
 ### Added
 
-- Casa now records which per-trigger webhook secrets it minted itself. Each
-  Casa-minted secret gains a small companion receipt beside it, and the reload
-  report states, per slot, whether Casa can prove it minted the value that is
-  currently there. Secrets you supply yourself (`secret_owner: provider`) are
+- Casa now records which per-trigger webhook secrets it minted itself. When
+  Casa mints a secret it also tries to write a small companion receipt beside
+  it, and the reload report states, per slot, whether Casa can prove it minted
+  the value that is currently there. Writing that receipt is best-effort: if it
+  fails, the secret itself is still created and usable, and the slot is simply
+  reported as `unproven` instead of `casa_minted` — as it also is if you replace
+  a secret by hand. Secrets you supply yourself (`secret_owner: provider`) are
   left entirely alone — nothing is written for them, and no existing secret is
   ever modified, moved or re-minted.
 
