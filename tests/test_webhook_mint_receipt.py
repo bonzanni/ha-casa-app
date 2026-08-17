@@ -218,6 +218,72 @@ def test_a_malformed_receipt_reads_unproven_and_is_not_deleted(
     assert (tmp_path / "vm.mint").read_bytes() == payload
 
 
+def _rewrite_receipt(tmp_path: Path, minted: bytes, **fields) -> None:
+    """Replace the receipt, keeping the digest CORRECT unless told otherwise.
+
+    Keeping it correct is the point: a case that corrupts the digest AND the
+    field under test would pass on the digest mismatch alone and prove
+    nothing about the field.
+    """
+    rec = {"v": 1, "minted_by": "casa",
+           "value_sha256": hashlib.sha256(minted).hexdigest()}
+    rec.update(fields)
+    (tmp_path / "vm.mint").write_bytes(json.dumps(rec).encode("utf-8"))
+
+
+def test_a_boolean_version_is_not_version_one(tmp_path: Path):
+    """`True == 1` in Python, so `rec["v"] != 1` accepts `"v": true`.
+
+    The digest here is correct, so nothing but the version check can make
+    this unproven.
+    """
+    minted = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path)
+    _rewrite_receipt(tmp_path, minted, v=True)
+
+    assert webhook_auth.resident_secret_provenance(
+        "vm", secrets_dir=tmp_path) == "unproven"
+
+
+def test_an_unexpected_receipt_key_is_unproven(tmp_path: Path):
+    """The schema is exact. A receipt carrying more than it should was
+    written by something that is not this version of this code."""
+    minted = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path)
+    _rewrite_receipt(tmp_path, minted, minted_for="somebody-else")
+
+    assert webhook_auth.resident_secret_provenance(
+        "vm", secrets_dir=tmp_path) == "unproven"
+
+
+def test_a_non_ascii_digest_reads_unproven_and_does_not_raise(tmp_path: Path):
+    """`hmac.compare_digest` raises TypeError on a non-ASCII str.
+
+    `resident_secret_provenance` is documented total, and it is read from
+    `resolve_rows` on the reload report path, so an exception here would
+    escape into a reload envelope rather than reading as unproven.
+    """
+    minted = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path)
+    _rewrite_receipt(tmp_path, minted, value_sha256="é" * 64)
+
+    assert webhook_auth.resident_secret_provenance(
+        "vm", secrets_dir=tmp_path) == "unproven"
+
+
+def test_a_digest_of_the_wrong_shape_is_unproven(tmp_path: Path):
+    """Uppercase hex, short, long, or not hex at all. `hexdigest()` emits
+    lowercase, so anything else did not come from this writer."""
+    minted = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path)
+    good = hashlib.sha256(minted).hexdigest()
+
+    for bad in (good.upper(), good[:63], good + "a", "z" * 64, "", 12345):
+        _rewrite_receipt(tmp_path, minted, value_sha256=bad)
+        assert webhook_auth.resident_secret_provenance(
+            "vm", secrets_dir=tmp_path) == "unproven", bad
+
+    _rewrite_receipt(tmp_path, minted)          # and the good one still works
+    assert webhook_auth.resident_secret_provenance(
+        "vm", secrets_dir=tmp_path) == "casa_minted"
+
+
 def test_a_symlinked_receipt_is_unproven(tmp_path: Path):
     minted = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path)
     real = tmp_path / "elsewhere"

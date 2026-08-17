@@ -53,6 +53,12 @@ _TMP_SWEEP_SECS = 60
 # machine has no caller outside tests.)
 MINT_RECEIPT_SUFFIX = ".mint"
 _RECEIPT_VERSION = 1
+_RECEIPT_KEYS = frozenset({"v", "minted_by", "value_sha256"})
+# The digest is shape-checked BEFORE it is compared. `hmac.compare_digest`
+# raises TypeError on a str holding non-ASCII, and this function is documented
+# total — a hand-written receipt would otherwise propagate that out through
+# the reload report instead of reading as `unproven`.
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Strict single-instance parse: exactly ``t=<digits>,v0=<lowercase-hex>`` with
 # no leading/trailing/interior whitespace and no extra fields. Both fields are
@@ -472,9 +478,16 @@ def _read_receipt(name: str, secrets_dir: Path) -> dict | None:
         rec = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    if not isinstance(rec, dict):
+    if not isinstance(rec, dict) or set(rec) != _RECEIPT_KEYS:
         return None
-    if rec.get("v") != _RECEIPT_VERSION or rec.get("minted_by") != "casa":
+    # `type(...) is int` and not `isinstance`: `True == 1`, so a receipt
+    # carrying `"v": true` would otherwise pass the version check.
+    if type(rec["v"]) is not int or rec["v"] != _RECEIPT_VERSION:
+        return None
+    if rec["minted_by"] != "casa":
+        return None
+    digest = rec["value_sha256"]
+    if not isinstance(digest, str) or not _HEX64_RE.match(digest):
         return None
     return rec
 
@@ -518,11 +531,12 @@ def resident_secret_provenance(name: str, *, secrets_dir: Path) -> str:
     rec = _read_receipt(name, secrets_dir)
     if rec is None:
         return "unproven"
-    expected = rec.get("value_sha256")
-    if not isinstance(expected, str):
-        return "unproven"
+    # `_read_receipt` has already shape-checked the digest to 64 lowercase hex,
+    # which is what makes this comparison safe to reach: `compare_digest`
+    # raises on a non-ASCII str, and this function never raises.
     actual = hashlib.sha256(raw).hexdigest()
-    return "casa_minted" if hmac.compare_digest(expected, actual) else "unproven"
+    return ("casa_minted" if hmac.compare_digest(rec["value_sha256"], actual)
+            else "unproven")
 
 
 def mint_resident_secret(name: str, *, secrets_dir: Path) -> bytes | None:

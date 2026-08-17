@@ -302,8 +302,9 @@ actually verified with — and from a real read of the file, never from the decl
 those are different questions, and a route can run at a clearance or an auth mode the file
 no longer says. A row states what a request would do, so `readable` means bytes are present
 that satisfy the owner's rule, not that the integration works — which is why a `readable`
-row also carries `provenance`, read against its owner: under `casa`, `unproven` says the
-route authenticates with bytes Casa did not mint; under `provider`, `casa_minted` says it
+row also carries `provenance`, read against its owner: under `casa`, `unproven` says Casa
+cannot prove it minted the bytes that authenticate — not that it did not, since a receipt
+that failed to write reads the same; under `provider`, `casa_minted` does prove the route
 authenticates with a Casa token rather than the credential the operator meant to supply.
 `awaiting_import` says
 plainly that no Casa surface can place a provider secret; `invalid` and `unreadable` say
