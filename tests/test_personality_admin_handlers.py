@@ -326,6 +326,46 @@ async def test_inspect_returns_traits_no_markdown_prose(tmp_path) -> None:
         assert "prose that must never leak" not in json.dumps(body)
 
 
+async def test_inspect_reports_the_packs_own_sections(tmp_path) -> None:
+    """#623 — the list was a literal ["Core", "Negative space"], not derived.
+
+    Specified by Terra during the blind-design round; accepted by Sol. The
+    pack below has five headings including a NESTED one and a REPEATED name at
+    a different depth, so it distinguishes the three candidate behaviours:
+      - the literal            -> ["Core", "Negative space"]
+      - root_sections()        -> ["Core", "House rules"]   (drops the nested
+                                   sections, which is the defect #623 reports)
+      - sections()             -> all five, in document order   <- intended
+    """
+    store = ExplanationStore(tmp_path / "explanations")
+    runtime = _FakeRuntime(explanation_store=store)
+    runtime.persona_packs["gary@1"] = _persona_pack(
+        markdown=(
+            "# Core\n" + ("core body " * 40) + "\n"
+            "## Negative space\nnever do this\n"
+            "### Detail\nfiner point\n"
+            "# House rules\nhouse body\n"
+            "## Core\nnested core, same name at another depth\n"
+        ),
+    )
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/personality/inspect", json={"persona": "gary@1"},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        # Assert the exact list AND the count: a literal would satisfy neither,
+        # and root_sections() would satisfy neither.
+        assert body["sections"] == [
+            "Core", "Negative space", "Detail", "House rules", "Core",
+        ]
+        assert len(body["sections"]) == 5
+        # The response still carries names only — never bodies.
+        assert "never do this" not in json.dumps(body)
+        assert "core body" not in json.dumps(body)
+
+
 async def test_inspect_not_found_404(tmp_path) -> None:
     runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
     app = _make_app(runtime)

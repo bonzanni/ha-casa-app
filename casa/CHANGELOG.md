@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.219.0] - 2026-08-17
+
+### Fixed
+
+- Inspecting a persona now lists the sections that persona actually declares.
+  Previously every persona was reported as having exactly `Core` and
+  `Negative space` — the minimum the loader requires — so a pack with extra
+  or nested headings was described as not having them.
+
 ## [0.218.0] - 2026-08-16
 
 ### Fixed

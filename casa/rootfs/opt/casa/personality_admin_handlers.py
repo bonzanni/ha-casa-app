@@ -55,6 +55,8 @@ def register_personality_admin_routes(
     runtime,
 ) -> None:
     async def _inspect(request: "web.Request") -> "web.Response":
+        from markdown_sections import sections
+
         body = await request.json()
         ref = body.get("persona")
         if not isinstance(ref, str) or not ref:
@@ -67,7 +69,15 @@ def register_personality_admin_routes(
             "version": pack.version,
             "checksum": pack.checksum,
             "traits": dict(pack.traits),
-            "sections": ["Core", "Negative space"],
+            # #623: derive from the pack's OWN markdown. The old literal was
+            # the loader's MINIMUM (persona_pack.py requires one level-1 Core
+            # and some level-2 Negative space), not a description of a pack --
+            # the heading namespace is open, so an authored pack may carry any
+            # number of further sections and this is the only surface that
+            # answers "what is in this persona". Flat sections(), NOT
+            # root_sections(): the latter omits nested headings, which would
+            # recreate the very defect this fixes.
+            "sections": [name for _level, name, _body in sections(pack.markdown)],
         })
 
     async def _render(request: "web.Request") -> "web.Response":
