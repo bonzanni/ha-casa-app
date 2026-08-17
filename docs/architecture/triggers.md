@@ -285,12 +285,27 @@ absent. It never deletes, replaces or overwrites one, and it never raises: a fil
 fault leaves the trigger registered and refusing requests rather than silently changing
 which routes exist.
 
+A mint also records a **receipt** beside the slot — a digest of the value, never the value —
+and only for a slot the mint itself created, never onto one it merely found. A Casa token
+also satisfies the provider rule, so a receipt written over a value Casa did not mint would
+certify the operator's own credential as Casa's. See [`http-surface.md`](http-surface.md)
+for the mechanism.
+
+**INV-TRIG-014**: A mint receipt certifies that Casa generated the bytes in a slot only when Casa itself created that slot and the receipt's digest matches those exact bytes; every other state is unproven and is never authority to alter the slot.
+
+Nothing retires a resident secret, so a recreated name still inherits. This records the
+fact a later, owner-aware retirement would have to stand on.
+
 Every reload envelope that touches registration therefore carries `trigger_secrets`, one
 row per trigger, plus counts. The rows are derived from the **registry** — what a request is
 actually verified with — and from a real read of the file, never from the declaration alone:
 those are different questions, and a route can run at a clearance or an auth mode the file
 no longer says. A row states what a request would do, so `readable` means bytes are present
-that satisfy the owner's rule, not that the integration works. `awaiting_import` says
+that satisfy the owner's rule, not that the integration works — which is why a `readable`
+row also carries `provenance`, read against its owner: under `casa`, `unproven` says the
+route authenticates with bytes Casa did not mint; under `provider`, `casa_minted` says it
+authenticates with a Casa token rather than the credential the operator meant to supply.
+`awaiting_import` says
 plainly that no Casa surface can place a provider secret; `invalid` and `unreadable` say
 plainly that the file cannot be repaired or removed through any Casa surface. The report
 rides the error envelope too — it exists to explain a failed pass, so withholding it on
@@ -341,6 +356,7 @@ there is none today.
 - `tests/test_config_trigger_tools.py`
 - `tests/test_resident_trigger_secrets.py`
 - `tests/test_webhook_secrets.py`
+- `tests/test_webhook_mint_receipt.py`
 - `tests/test_scheduled_media_delivery.py`
 - `tests/test_scheduled_delivery_durable.py`
 

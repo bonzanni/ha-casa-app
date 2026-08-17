@@ -66,7 +66,10 @@ def test_the_mint_creates_exactly_the_casa_owned_secret_backed_slots(tmp_path: P
         _webhook("el", mode="timestamped_hmac", owner="provider"),
     ]
     assert rts.mint_for_specs(specs, secrets_dir=tmp_path) == []
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["vm"]
+    # #620: a mint now creates TWO artifacts — the secret and its value-bound
+    # receipt. Exact equality still catches any slot the filters should have
+    # excluded, and now also catches a receipt written for one of them.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["vm", "vm.mint"]
     assert (tmp_path / "vm").stat().st_size == 43
 
 
@@ -419,3 +422,58 @@ def test_the_snapshot_half_touches_no_filesystem(tmp_path: Path):
 
     assert calls == [], "the snapshot half read the filesystem"
     assert [r["name"] for r in snapshot] == ["vm"], "it still produced the row"
+
+
+# ---------------------------------------------------------------------------
+# #620 — mint provenance (INV-TRIG-014)
+#
+# RED CASE. Specified externally by Sol, accepted externally by Terra; frozen.
+# Do not edit it — if it is wrong, it gets re-specified and re-accepted.
+#
+# What it pins is the SUBSTANCE of the invariant, not the existence of a field:
+# a receipt certifies the exact BYTES it was written for, never merely its own
+# presence. `_valid_value("provider", <a 43-byte casa token>)` is True at this
+# SHA, so nothing separates an operator credential from a Casa token by shape —
+# a presence-only receipt would licence a future retirement to destroy a
+# credential Casa can neither regenerate nor import (#621).
+# ---------------------------------------------------------------------------
+
+
+def test_resident_provenance_is_value_bound_not_receipt_presence(
+        tmp_path: Path, monkeypatch):
+    minted = b"C" * 43
+    replacement = b"P" * 43
+    monkeypatch.setattr(
+        webhook_auth.secrets, "token_urlsafe",
+        lambda n: minted.decode("ascii"),
+    )
+
+    spec = _webhook("vm")
+    registry = _registry()
+    registry.register_agent(role="assistant", triggers=[spec], channels=[])
+
+    assert rts.mint_for_specs([spec], secrets_dir=tmp_path) == []
+
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert len(names) == 2
+    assert names == ["vm", "vm.mint"]
+    assert (tmp_path / "vm").read_bytes() == minted
+
+    receipt = (tmp_path / "vm.mint").read_bytes()
+    assert (tmp_path / "vm").write_bytes(replacement) == 43
+    assert (tmp_path / "vm").read_bytes() == replacement
+    assert (tmp_path / "vm.mint").read_bytes() == receipt
+
+    rows = rts.resolve_rows(
+        rts.snapshot_rows(
+            specs=[spec],
+            registry=registry,
+            role="assistant",
+            global_secret_usable=True,
+        ),
+        secrets_dir=tmp_path,
+    )
+
+    assert len(rows) == 1
+    assert sum(row.get("provenance") == "unproven" for row in rows) == 1
+    assert sum(row.get("provenance") == "casa_minted" for row in rows) == 0

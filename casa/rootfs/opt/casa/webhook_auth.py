@@ -40,6 +40,20 @@ _PROVIDER_MAX = 4096
 # Orphan staging-file sweep window.
 _TMP_SWEEP_SECS = 60
 
+# #620 — the resident mint receipt. Proof that Casa GENERATED the bytes that
+# are in a slot right now, which is the fact a retirement would have to stand
+# on: `_valid_value` cannot tell a casa token from an operator credential
+# (a 43-byte token satisfies the provider rule too), so nothing else in this
+# module can answer "may this be destroyed".
+#
+# FIVE characters, not `.mint.json`: `triggers.v1.json` caps a trigger name at
+# 248 bytes against a 255-byte NAME_MAX, reserving exactly 7 for a suffix. A
+# 10-byte suffix overflows at 258 and raises ENAMETOOLONG for a schema-legal
+# name. (`.rot.json` already overflows at 257 — pre-existing, and its state
+# machine has no caller outside tests.)
+MINT_RECEIPT_SUFFIX = ".mint"
+_RECEIPT_VERSION = 1
+
 # Strict single-instance parse: exactly ``t=<digits>,v0=<lowercase-hex>`` with
 # no leading/trailing/interior whitespace and no extra fields. Both fields are
 # LENGTH-BOUNDED so an attacker cannot force a huge ``int()`` (a 5000-digit
@@ -151,11 +165,17 @@ def _sweep_orphans(secrets_dir: Path) -> None:
             pass
 
 
-def _read_final(name: str, owner: str, secrets_dir: Path) -> bytes | None:
-    """Read and owner-validate the live secret; ``None`` on any anomaly.
+def _read_raw(name: str, secrets_dir: Path) -> bytes | None:
+    """The slot's bytes with NO owner validation; ``None`` on any anomaly.
 
     ``O_NOFOLLOW`` rejects a symlinked final name; ``fstat`` rejects a
-    non-regular file.
+    non-regular file. An ``OSError`` from the read itself propagates, exactly
+    as it did before this was split out.
+
+    Split from :func:`_read_final` for #620: provenance asks "did Casa
+    generate THESE bytes", a question with no owner in it. A casa-minted token
+    is also a valid provider value, so an owner-validated read would describe
+    a different file than the one that authenticates.
     """
     path = secrets_dir / name
     try:
@@ -166,13 +186,20 @@ def _read_final(name: str, owner: str, secrets_dir: Path) -> bytes | None:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             return None
-        raw = os.read(fd, _PROVIDER_MAX + 1)
+        return os.read(fd, _PROVIDER_MAX + 1)
     finally:
         os.close(fd)
+
+
+def _read_final(name: str, owner: str, secrets_dir: Path) -> bytes | None:
+    """Read and owner-validate the live secret; ``None`` on any anomaly."""
+    raw = _read_raw(name, secrets_dir)
+    if raw is None:
+        return None
     return raw if _valid_value(owner, raw) else None
 
 
-def _publish(name: str, value: bytes, secrets_dir: Path) -> None:
+def _publish(name: str, value: bytes, secrets_dir: Path) -> bool:
     """Atomically publish ``value`` at ``name`` via staging + linkat.
 
     The final name never holds a partial file: a private staging file is
@@ -181,6 +208,13 @@ def _publish(name: str, value: bytes, secrets_dir: Path) -> None:
     published — never clobbered). A write that cannot complete raises with
     the staging file removed and the final name untouched, so the name stays
     mintable once the filesystem recovers.
+
+    Returns whether THIS call created the live name. ``False`` means a
+    concurrent winner published first and its file was kept. #620: a caller
+    that records provenance may only do so when it won — the winner can be an
+    operator hand-placing a credential between our staging and our link, and
+    certifying those bytes as Casa's would hand a future retirement a licence
+    to destroy something Casa can neither regenerate nor import.
     """
     secrets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     staging = secrets_dir / f".tmp-{os.getpid()}-{secrets.token_hex(8)}"
@@ -208,11 +242,12 @@ def _publish(name: str, value: bytes, secrets_dir: Path) -> None:
     finally:
         os.close(fd)
     dir_fd = os.open(secrets_dir, os.O_DIRECTORY | os.O_NOFOLLOW)
+    won = True
     try:
         try:
             os.link(staging, secrets_dir / name)
         except FileExistsError:
-            pass  # a concurrent winner published first — keep theirs
+            won = False  # a concurrent winner published first — keep theirs
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
@@ -220,6 +255,7 @@ def _publish(name: str, value: bytes, secrets_dir: Path) -> None:
             staging.unlink()
         except OSError:
             pass
+    return won
 
 
 def read_secret(name: str, *, owner: str, secrets_dir: Path) -> bytes | None:
@@ -296,7 +332,7 @@ def retire_secret(name: str, *, secrets_dir: Path) -> None:
         return
     secrets_dir = Path(secrets_dir)
     for fname in (name, _next_name(name), f"{name}.rot.json",
-                  f"{name}.ident"):
+                  f"{name}.ident", f"{name}{MINT_RECEIPT_SUFFIX}"):
         try:
             (secrets_dir / fname).unlink()
         except OSError:
@@ -323,7 +359,7 @@ def retire_secrets_with_prefix(prefix: str, *, secrets_dir: Path) -> list[str]:
     bases: set[str] = set()
     for n in names:
         base = n
-        for suffix in (".rot.json", ".next", ".ident"):
+        for suffix in (".rot.json", ".next", ".ident", MINT_RECEIPT_SUFFIX):
             if base.endswith(suffix):
                 base = base[: -len(suffix)]
                 break
@@ -350,6 +386,175 @@ def ensure_secret(name: str, *, owner: str, secrets_dir: Path) -> bytes | None:
     _publish(name, secrets.token_urlsafe(_CASA_TOKEN_NBYTES).encode("ascii"),
              secrets_dir)
     return _read_final(name, owner, secrets_dir)
+
+
+# ---------------------------------------------------------------------------
+# Resident mint provenance (#620, INV-TRIG-014).
+#
+# #620 is that a deleted resident webhook leaves its secret behind and a
+# same-name trigger inherits it. Retiring the secret is the fix, and it is
+# BLOCKED: `_valid_value("provider", <a 43-byte casa token>)` is True, so no
+# shape check separates a Casa token from an operator credential — and Casa can
+# neither regenerate nor import the latter (#621), which makes destroying one
+# unreconstructible loss.
+#
+# A receipt is the missing durable fact. It certifies the exact BYTES it was
+# written for, never merely its own presence, so every way a value can change
+# without Casa minting it — a hand replacement, `rotation_promote`'s replace, a
+# restore from backup — self-invalidates it and the answer falls back to
+# `unproven`. Nothing here retires anything: this records the fact a later,
+# owner-aware retirement would have to stand on. #620 stays open.
+# ---------------------------------------------------------------------------
+
+
+def _receipt_path(name: str, secrets_dir: Path) -> Path:
+    return secrets_dir / f"{name}{MINT_RECEIPT_SUFFIX}"
+
+
+def _write_mint_receipt(name: str, value: bytes, secrets_dir: Path) -> bool:
+    """Record that Casa generated exactly ``value`` at ``name``. Never raises.
+
+    Best-effort ON PURPOSE. The secret is already published and usable by the
+    time this runs; raising would turn a missing PROOF into a trigger that
+    401s forever, and `mint_for_specs` records a failure only for a raised
+    exception. A filesystem fault must not reshape the surface. A slot with no
+    receipt simply reads `unproven`, which is the fail-closed answer and can
+    never authorise destruction.
+
+    Stages under `.tmp-` so `_sweep_orphans` reclaims a crash remnant, writes
+    in full (#622 — a short write would stage a truncated digest, which reads
+    as a MISMATCH and is therefore safe, but pointless), fsyncs, then replaces
+    atomically. The payload holds a digest, never the value.
+    """
+    payload = json.dumps({
+        "v": _RECEIPT_VERSION,
+        "minted_by": "casa",
+        "value_sha256": hashlib.sha256(value).hexdigest(),
+    }).encode("ascii")
+    try:
+        tmp = secrets_dir / f".tmp-mint-{os.getpid()}-{secrets.token_hex(8)}"
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                     0o600)
+        try:
+            buf = memoryview(payload)
+            while buf:
+                buf = buf[os.write(fd, buf):]
+            os.fsync(fd)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        finally:
+            os.close(fd)
+        os.replace(tmp, _receipt_path(name, secrets_dir))
+        _fsync_dir(secrets_dir)
+        return True
+    except OSError:
+        return False
+
+
+def _read_receipt(name: str, secrets_dir: Path) -> dict | None:
+    """The parsed receipt, or ``None`` for every anomaly.
+
+    Unlike :func:`_read_state`, a malformed receipt is reported and **NEVER
+    deleted**. Speculative deletion in this directory is the whole hazard;
+    an unreadable receipt already fails closed as `unproven`.
+    """
+    try:
+        raw = _read_raw(f"{name}{MINT_RECEIPT_SUFFIX}", secrets_dir)
+    except OSError:
+        return None
+    if raw is None:
+        return None
+    try:
+        rec = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(rec, dict):
+        return None
+    if rec.get("v") != _RECEIPT_VERSION or rec.get("minted_by") != "casa":
+        return None
+    return rec
+
+
+def resident_secret_provenance(name: str, *, secrets_dir: Path) -> str:
+    """``casa_minted`` | ``unproven`` | ``absent`` for the slot at ``name``.
+
+    ``casa_minted`` means Casa GENERATED the bytes that are in the slot right
+    now. It is the ONLY state a future retirement may act on, and it requires
+    all of: a regular, non-symlinked live file; a regular, non-symlinked,
+    parseable receipt of the exact schema and version; and a digest matching
+    those exact live bytes.
+
+    Every other condition — no receipt, malformed, wrong version, stale from a
+    value since replaced, unreadable, a lost create race — is ``unproven``.
+    Absence of evidence is never consent.
+
+    Owner-AGNOSTIC by design: "did Casa generate these bytes" does not depend
+    on how the declaration currently labels them. An owner-validated read
+    would reintroduce exactly the owner-flip blindness that lets a casa token
+    pass as a provider value.
+
+    Total: never raises.
+    """
+    secrets_dir = Path(secrets_dir)
+    try:
+        raw = _read_raw(name, secrets_dir)
+    except OSError:
+        return "unproven"
+    if raw is None:
+        # ENOENT is the ONLY absent condition. Unreadable, non-regular and
+        # symlinked must not collapse into absent, or a transient /data fault
+        # reads as "nothing here" to whatever later decides what to do.
+        try:
+            os.lstat(secrets_dir / name)
+        except FileNotFoundError:
+            return "absent"
+        except OSError:
+            return "unproven"
+        return "unproven"
+    rec = _read_receipt(name, secrets_dir)
+    if rec is None:
+        return "unproven"
+    expected = rec.get("value_sha256")
+    if not isinstance(expected, str):
+        return "unproven"
+    actual = hashlib.sha256(raw).hexdigest()
+    return "casa_minted" if hmac.compare_digest(expected, actual) else "unproven"
+
+
+def mint_resident_secret(name: str, *, secrets_dir: Path) -> bytes | None:
+    """Mint a casa-owned RESIDENT slot and record value-bound provenance.
+
+    The resident counterpart to :func:`ensure_secret`, which is deliberately
+    left unchanged: that one also serves the plugin path through
+    :func:`ensure_secret_for_identity`, whose provenance is the `.ident`
+    consent binding and whose semantics are retire-and-rekey. A resident has
+    neither, and a second differently-shaped provenance on that path would be
+    redundant surface.
+
+    A receipt is written ONLY when this call actually created the live name.
+    `_publish` keeps a concurrent winner's file rather than clobbering it, and
+    that winner can be an operator hand-placing a credential — certifying its
+    bytes would be the precise mistake this mechanism exists to prevent.
+
+    An EXISTING value is returned untouched and NEVER receipted. Backfilling
+    would certify a 43-byte operator credential as Casa's, because nothing
+    distinguishes the two by shape; the caller's own `probe_secret == absent`
+    guard already means this normally sees no file at all.
+    """
+    secrets_dir = Path(secrets_dir)
+    if secrets_dir.exists():
+        _sweep_orphans(secrets_dir)
+    existing = _read_final(name, "casa", secrets_dir)
+    if existing is not None:
+        return existing
+    value = secrets.token_urlsafe(_CASA_TOKEN_NBYTES).encode("ascii")
+    if _publish(name, value, secrets_dir):
+        _write_mint_receipt(name, value, secrets_dir)
+    return _read_final(name, "casa", secrets_dir)
 
 
 def _ident_path(name: str, secrets_dir: Path) -> Path:

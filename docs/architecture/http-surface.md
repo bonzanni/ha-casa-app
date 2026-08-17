@@ -112,6 +112,24 @@ verifies one. Nothing retires a resident secret, so a trigger recreated under an
 inherits the old credential; the names are globally unique, and a name is the whole
 identity.
 
+That inheritance is still open, and the reason it is hard is worth stating: the owner rules
+accept a Casa-minted token as a valid *provider* value too, so nothing about a file's shape
+says who wrote it — and Casa can neither regenerate nor import an operator's credential. A
+retirement that guessed wrong would destroy something unrecoverable. So a resident mint now
+writes a **receipt** next to the slot, holding a digest of the minted value and never the
+value itself. It is written only when that mint actually created the file: the publish step
+keeps whoever reached the name first rather than clobbering them, and the winner can be an
+operator placing a credential by hand, whose bytes must never be certified as Casa's.
+A receipt is likewise never written over a value a later pass merely found.
+
+Because it binds the value rather than the name, it stops certifying the moment the bytes
+change — by a hand replacement, by a rotation promotion, by anything — with no path needing
+to notice; and a receipt that is missing, malformed, stale or unreadable reads as *unproven*
+rather than as consent. Failing to write one is not an error: the secret already works, and
+only the proof is missing. None of this retires anything. It records the durable fact a
+later, owner-aware retirement would have to stand on, and the reload report surfaces it per
+slot.
+
 Two things this paragraph used to claim, and the code does not do. There is **no
 dual-accept window**: the verifier takes a single secret, and the rotation state machine
 has no caller outside its own tests. And a resident credential **can** survive a

@@ -26,6 +26,14 @@ hold it together, and each exists because its absence was a defect:
   request is verified with comes from `trigger_registry`; what the file says
   is a different question, and the two do diverge. A report derived from the
   declaration states something the request path does not do.
+* **A mint records that Casa generated those exact bytes** (#620). The receipt
+  sidecar is the one thing written here besides the secret, and it is still not
+  a deletion or an overwrite: `webhook_auth.mint_resident_secret` writes it only
+  for a slot the call itself created, never onto a value it merely found —
+  a 43-byte operator credential is indistinguishable from a Casa token, so
+  backfilling would certify precisely the value that must never be destroyed.
+  #620's own defect is UNCLOSED: no deletion event reaches this module, so a
+  recreated name still inherits. This records the fact a later retirement needs.
 
 The writer never raises and never changes routing: a filesystem fault must not
 decide which route serves. A trigger whose mint failed stays registered and
@@ -81,6 +89,10 @@ def mint_for_specs(specs: Iterable[Any], *, secrets_dir: Path) -> list[tuple[str
 
     Provider-owned slots are never touched: Casa does not mint them, and the
     operator's value may already be there.
+
+    Mints through `webhook_auth.mint_resident_secret` rather than
+    `ensure_secret`: the resident primitive additionally records a value-bound
+    mint receipt (#620), and only for a slot this call actually created.
     """
     failures: list[tuple[str, str]] = []
     for spec in specs:
@@ -97,8 +109,8 @@ def mint_for_specs(specs: Iterable[Any], *, secrets_dir: Path) -> list[tuple[str
             # there that is not ours to replace — reported, never overwritten.
             continue
         try:
-            value = webhook_auth.ensure_secret(
-                name, owner="casa", secrets_dir=secrets_dir)
+            value = webhook_auth.mint_resident_secret(
+                name, secrets_dir=secrets_dir)
         except Exception as exc:  # noqa: BLE001 — reported, never propagated
             failures.append((name, f"{type(exc).__name__}: {exc}"))
             logger.warning(
@@ -232,6 +244,19 @@ def resolve_rows(rows: list[dict[str, Any]], *, secrets_dir: Path) -> list[dict[
     declaration flipped from provider to casa carries the live credential over
     and a declaration-derived probe would describe a different file than the
     one that authenticates.
+
+    A `readable` row also carries `provenance` (#620): whether Casa can prove
+    it minted the bytes that actually authenticate. `readable` alone cannot
+    say that — the owner rules accept a casa token as a provider value — so
+    the row could not distinguish the operator's own credential from one a
+    deleted trigger left behind. The FACT is emitted and the reading is
+    owner-relative, which is why it is not folded into `detail`: under
+    `casa`, `unproven` is the notable answer; under `provider`,
+    `casa_minted` is (the route authenticates with a Casa token, not the
+    operator's credential). `misrouted` rows carry it inside their nested
+    `probe`, where the rest of that row's file condition already lives —
+    cross-role adoption surfaces as `misrouted`, so dropping it there would
+    drop it from the row that most needs it.
     """
     finished: list[dict[str, Any]] = []
     for row in rows:
@@ -243,11 +268,17 @@ def resolve_rows(rows: list[dict[str, Any]], *, secrets_dir: Path) -> list[dict[
             row["name"], owner=owner, secrets_dir=secrets_dir)
         if row.get("state") == "misrouted":
             row["probe"] = {"state": state, "detail": detail}
+            if state == "readable":
+                row["probe"]["provenance"] = (
+                    webhook_auth.resident_secret_provenance(
+                        row["name"], secrets_dir=secrets_dir))
             finished.append(row)
             continue
         row["owner"] = owner
         if state == "readable":
             row["state"], row["detail"] = "readable", detail
+            row["provenance"] = webhook_auth.resident_secret_provenance(
+                row["name"], secrets_dir=secrets_dir)
         elif state == "absent" and owner == "provider":
             row["state"] = "awaiting_import"
             row["detail"] = ("no Casa surface can place a provider secret today "
