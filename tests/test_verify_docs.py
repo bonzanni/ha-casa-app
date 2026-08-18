@@ -703,3 +703,27 @@ def test_each_corpus_split_document_is_below_warn_bytes(relative_path):
         f"{relative_path} must exist and measure strictly below "
         f"WARN_BYTES={verify_docs.WARN_BYTES}; measured {size!r}"
     )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_impact_refuses_a_zero_byte_stdin():
+    """A bare `--impact` (stdin /dev/null) used to print nothing and exit 0,
+    recording an empty impact set as a clean one. Zero bytes is now a refusal
+    that names the piped form."""
+    r = subprocess.run(
+        [sys.executable, "-m", "scripts.verify_docs", ".", "--impact"],
+        cwd=REPO_ROOT, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "zero bytes" in r.stdout and "git diff --name-only" in r.stdout
+
+
+def test_impact_accepts_an_empty_diff_piped_as_a_newline():
+    """docs_impact.sh pipes at least one newline even when nothing changed —
+    an empty DIFF must stay a clean empty impact set, not a refusal."""
+    r = subprocess.run(
+        [sys.executable, "-m", "scripts.verify_docs", ".", "--impact"],
+        cwd=REPO_ROOT, input="\n", capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.strip() == ""
