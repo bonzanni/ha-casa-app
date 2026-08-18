@@ -1120,3 +1120,198 @@ class TestEmitCompletionCancellation:
             i for i, e in enumerate(events) if e == "retain"
         ) < events.index("post")
         assert events.index("post") < events.index("final-log")
+
+
+class TestFinalizeTailObservability:
+    """#632 seam findings (Sol S1, Terra F3): the detached tail must be
+    visibly anchored while it runs, its failures must be observed, and its
+    payloads must carry the values frozen at the terminal flip."""
+
+    async def _launch(self, tmp_path, monkeypatch, *, driver, notify=None,
+                      quiesce=None):
+        import agent as agent_mod
+        import tools as tools_mod
+        from engagement_registry import EngagementRegistry
+        from tools import emit_completion, init_tools, engagement_var
+
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
+                                 bus=None)
+        rec = await reg.create(
+            kind="executor", role_or_type="configurator", driver="in_casa",
+            task="pay rent", origin={
+                "role": "assistant", "channel": "telegram",
+                "_origin_clearance": "private",
+            },
+            topic_id=None,
+        )
+        bus = MagicMock()
+        bus.notify = AsyncMock(side_effect=notify)
+        init_tools(
+            channel_manager=MagicMock(), bus=bus,
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=reg,
+        )
+        if quiesce is not None:
+            monkeypatch.setattr(reg, "await_quiesce", quiesce)
+        monkeypatch.setattr(agent_mod, "active_engagement_driver", driver,
+                            raising=False)
+        monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
+                            raising=False)
+        token = engagement_var.set(rec)
+        try:
+            host = asyncio.get_running_loop().create_task(
+                emit_completion.handler({"text": "done", "status": "ok"}))
+        finally:
+            engagement_var.reset(token)
+        return tools_mod, reg, rec, bus, host
+
+    async def test_tail_is_anchored_while_suspended_then_drains(
+            self, tmp_path, monkeypatch):
+        import tools as tools_mod
+        gate = asyncio.Event()
+        released = asyncio.Event()
+
+        class _Driver:
+            async def cancel(self, engagement):
+                gate.set()
+                await released.wait()
+
+        tools_mod_, reg, rec, bus, host = await self._launch(
+            tmp_path, monkeypatch, driver=_Driver())
+        await gate.wait()
+        assert len(tools_mod_._finalize_tail_tasks) == 1
+        released.set()
+        payload = json.loads((await host)["content"][0]["text"])
+        assert payload["status"] == "acknowledged"
+        await asyncio.sleep(0)
+        assert len(tools_mod_._finalize_tail_tasks) == 0
+        assert bus.notify.await_count == 1
+
+    async def test_orphaned_tail_failure_logs_exactly_one_error(
+            self, tmp_path, monkeypatch, caplog):
+        import logging as _logging
+        import tools as tools_mod
+        host_box: dict = {}
+
+        class _Driver:
+            async def cancel(self, engagement):
+                host_box["task"].cancel()
+                await asyncio.sleep(0)
+
+        # An unexpected tail exception AFTER the host is gone: force the
+        # DelegationComplete constructor (outside the per-step try/except)
+        # to blow up, so only the done callback can observe the failure.
+        monkeypatch.setattr(
+            tools_mod, "DelegationComplete",
+            MagicMock(side_effect=RuntimeError("boom")))
+        tools_mod_, reg, rec, bus, host = await self._launch(
+            tmp_path, monkeypatch, driver=_Driver())
+        host_box["task"] = host
+        with caplog.at_level(_logging.ERROR, logger="tools"):
+            with pytest.raises(asyncio.CancelledError):
+                await host
+            for _ in range(10):
+                if tools_mod_._finalize_tail_tasks:
+                    await asyncio.sleep(0)
+        errors = [r for r in caplog.records
+                  if r.levelno == _logging.ERROR
+                  and "finalize tail raised" in r.getMessage()
+                  and rec.id[:8] in r.getMessage()]
+        assert len(errors) == 1
+        assert len(tools_mod_._finalize_tail_tasks) == 0
+
+    async def test_payloads_carry_the_values_frozen_at_the_flip(
+            self, tmp_path, monkeypatch):
+        """Terra seam F3: a post-terminal ``lower_origin_clearance`` (real
+        mutator — no terminal refusal) lands during the funnel's quiesce
+        await; the DelegationComplete must still carry the flip-time origin
+        and the retained summary the flip-time task."""
+        import tools as tools_mod
+        seen: dict = {}
+
+        async def _notify(msg):
+            seen["origin"] = dict(msg.content.origin)
+
+        reg_box: dict = {}
+        rec_box: dict = {}
+
+        async def _quiesce(engagement_id, timeout):
+            # The clamp arrives while the funnel is suspended post-flip.
+            await reg_box["reg"].lower_origin_clearance(
+                rec_box["rec"].id, "public")
+            return True
+
+        class _Driver:
+            async def cancel(self, engagement):
+                return None
+
+        retained: list = []
+
+        async def _retain(sem, **kwargs):
+            retained.append(kwargs)
+        monkeypatch.setattr(tools_mod, "retain_delegated", _retain)
+
+        import agent as agent_mod
+        tools_mod_, reg, rec, bus, host = await self._launch(
+            tmp_path, monkeypatch, driver=_Driver(), notify=_notify,
+            quiesce=_quiesce)
+        # _launch built reg/rec before quiesce could reference them:
+        reg_box["reg"] = reg
+        rec_box["rec"] = rec
+        monkeypatch.setattr(agent_mod, "active_semantic_memory", object(),
+                            raising=False)
+        payload = json.loads((await host)["content"][0]["text"])
+        assert payload["status"] == "acknowledged"
+        # The real mutator DID fire post-flip:
+        assert rec.origin["_origin_clearance"] == "public"
+        assert rec.task != "pay rent"
+        # ...and the completion payloads carry the flip-time values:
+        assert seen["origin"]["_origin_clearance"] == "private"
+        for kwargs in retained:
+            for turn in kwargs.get("turns", []):
+                if "engagement_summary" in turn.text:
+                    assert json.loads(turn.text)["task"] == "pay rent"
+
+    async def test_claude_code_emit_stays_synchronous(
+            self, tmp_path, monkeypatch):
+        """Selector control: a non-in_casa completion runs the tail in the
+        caller's own task — no detached tail is created."""
+        import agent as agent_mod
+        import tools as tools_mod
+        from engagement_registry import EngagementRegistry
+        from tools import emit_completion, init_tools, engagement_var
+
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
+                                 bus=None)
+        rec = await reg.create(
+            kind="executor", role_or_type="custom-exec",
+            driver="claude_code", task="t",
+            origin={"role": "assistant", "channel": "telegram"},
+            topic_id=None,
+        )
+        seen: dict = {}
+
+        async def _notify(msg):
+            seen["task"] = asyncio.current_task()
+            seen["anchored"] = len(tools_mod._finalize_tail_tasks)
+        bus = MagicMock()
+        bus.notify = AsyncMock(side_effect=_notify)
+        init_tools(
+            channel_manager=MagicMock(), bus=bus,
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=reg,
+        )
+        monkeypatch.setattr(agent_mod, "active_claude_code_driver",
+                            MagicMock(spec=[]), raising=False)
+        monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
+                            raising=False)
+        token = engagement_var.set(rec)
+        try:
+            host = asyncio.get_running_loop().create_task(
+                emit_completion.handler({"text": "done", "status": "ok"}))
+        finally:
+            engagement_var.reset(token)
+        payload = json.loads((await host)["content"][0]["text"])
+        assert payload["status"] == "acknowledged"
+        assert seen["task"] is host
+        assert seen["anchored"] == 0
