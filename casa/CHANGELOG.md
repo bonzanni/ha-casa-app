@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.223.0] - 2026-08-19
+
+### Fixed
+
+- An engagement running inside Casa (`in_casa`) that finished by calling
+  `emit_completion` could silently lose its completion: on the container's
+  Python 3.11, the teardown of the engagement's own client cancelled the
+  final delivery, dropping the engager's notification, the memory retains,
+  a deferred Supervisor restart and the finalized engagement log. That
+  final stretch now runs in a task Casa itself owns, so it survives the
+  client teardown and the completion is delivered reliably. One narrow
+  limitation remains and is now documented: the executor's own tool
+  acknowledgement may still be lost in that teardown.
+
 ## [0.222.0] - 2026-08-19
 
 ### Fixed
