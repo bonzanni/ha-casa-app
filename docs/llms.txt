@@ -6,7 +6,8 @@ Code is the source of truth; these files are a map.
 ## Architecture
 
 - [architecture/agent-taxonomy.md](architecture/agent-taxonomy.md): How an agent is declared, validated and looked up — tiers, required artifacts, and the registry.
-- [architecture/callbacks.md](architecture/callbacks.md): The public authorization-callback facility — the unauthenticated GET route, the mtime-clocked publish-once spool, declaration-bound consent, the per-flow attempt ledger, and redelivery until receipt.
+- [architecture/callback-delivery.md](architecture/callback-delivery.md): The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.
+- [architecture/callbacks.md](architecture/callbacks.md): The public authorization-callback ingress — the unauthenticated GET route, declaration-bound consent, reconciliation, and the validated redirect base URL.
 - [architecture/concurrency-model.md](architecture/concurrency-model.md): What runs concurrently — bus dequeue vs execution, session-key serialization, the lock inventory, and threaded vs loop work.
 - [architecture/configuration.md](architecture/configuration.md): Where configuration comes from, what is version-controlled, what reload can pick up without a restart, and how secrets resolve.
 - [architecture/delegation.md](architecture/delegation.md): How one agent addresses and launches another — the delegation ACL and aliases, the depth cap, and the agent-spawn cap.

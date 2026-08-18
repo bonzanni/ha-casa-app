@@ -14,19 +14,19 @@
 - item: casa/rootfs/opt/casa/callback_acks.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_attempts.py
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_consent.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/consent_denials.py
   doc: architecture/tools-interface.md
 - item: casa/rootfs/opt/casa/callback_episodes.py
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_http.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_reconcile.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_spool.py
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_urls.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/canonical_bytes.py
@@ -586,7 +586,7 @@
 - item: env:CASA_BINDINGS_DIR
   doc: architecture/overview.md
 - item: env:CASA_CALLBACK_SPOOL_ROOT
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: env:CASA_CONFIG_DIR
   doc: architecture/overview.md
 - item: env:CASA_DATA_DIR
