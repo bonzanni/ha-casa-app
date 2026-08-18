@@ -985,7 +985,18 @@ def main() -> int:
     root = Path(positional[0] if positional else ".").resolve()
 
     if "--impact" in args:
-        changed = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+        raw = sys.stdin.read()
+        if raw == "":
+            # ZERO bytes is a bare invocation (stdin /dev/null), which used to
+            # report an empty impact set as a clean one — measured: a headless
+            # session recorded "no impacted docs" from exactly this call. An
+            # EMPTY DIFF is different and stays fine: docs_impact.sh pipes at
+            # least one newline even when nothing changed.
+            print("✗ --impact read zero bytes on stdin; pipe the changed paths:")
+            print("      git diff --name-only <base>...HEAD | "
+                  "python -m scripts.verify_docs . --impact")
+            return 1
+        changed = [line.strip() for line in raw.splitlines() if line.strip()]
         base_manifest = None
         if "--base-manifest" in args:
             # Fail CLOSED. Silently dropping a requested base manifest reinstates the exact
