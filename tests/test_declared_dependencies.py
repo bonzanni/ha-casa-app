@@ -41,15 +41,48 @@ def _declared_distributions() -> set[str]:
     return declared
 
 
-def _imported_top_levels() -> set[str]:
-    """Top-level module names imported anywhere under the app root.
+_PY_DIR_CACHE: dict[Path, bool] = {}
 
-    Relative imports carry no external name and are skipped; absolute ones
-    contribute their first dotted component.
+
+def _bears_python(p: Path) -> bool:
+    """True when a directory contains any Python at all, however nested.
+
+    A bare directory name is NOT a module: classifying every immediate
+    directory as local let an empty data directory named like a dependency
+    silently exempt the real, undeclared import (Sol, v0.222.0 review) —
+    the exact silent pass this test exists to prevent.
     """
-    names = set()
+    if p not in _PY_DIR_CACHE:
+        _PY_DIR_CACHE[p] = next(p.rglob("*.py"), None) is not None
+    return _PY_DIR_CACHE[p]
+
+
+def _local_names(directory: Path) -> set[str]:
+    """The module names importable as LOCAL from within `directory`."""
+    return {p.stem for p in directory.glob("*.py")} | {
+        p.name for p in directory.iterdir()
+        if p.is_dir() and not p.name.startswith((".", "__"))
+        and _bears_python(p)
+    }
+
+
+def _third_party_imports() -> set[str]:
+    """Top-level module names imported anywhere under the app root that no
+    local module provides.
+
+    Locality is judged PER FILE: a script executed from a nested directory
+    legitimately imports its siblings, so each file's own directory counts as
+    local for that file alone (Sol, v0.222.0 review — a valid sibling import
+    must not read as an undeclared dependency). Relative imports carry no
+    external name and are skipped.
+    """
+    root_local = _local_names(APP_ROOT)
+    stdlib = set(sys.stdlib_module_names)
+    third_party = set()
     for path in sorted(APP_ROOT.rglob("*.py")):
+        local = root_local | _local_names(path.parent)
         tree = ast.parse(path.read_text(), filename=str(path))
+        names = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -57,15 +90,12 @@ def _imported_top_levels() -> set[str]:
             elif isinstance(node, ast.ImportFrom):
                 if node.level == 0 and node.module:
                     names.add(node.module.split(".")[0])
-    return names
+        third_party |= names - stdlib - local
+    return third_party
 
 
 def test_every_third_party_import_resolves_to_a_declared_dependency():
-    local = {p.stem for p in APP_ROOT.glob("*.py")} | {
-        p.name for p in APP_ROOT.iterdir()
-        if p.is_dir() and not p.name.startswith((".", "__"))
-    }
-    third_party = _imported_top_levels() - set(sys.stdlib_module_names) - local
+    third_party = _third_party_imports()
     assert third_party, "the scan found no third-party imports at all — broken scan"
 
     declared = _declared_distributions()
