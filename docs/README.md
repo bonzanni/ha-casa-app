@@ -33,6 +33,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | anything published — docs, comments, commit messages, PR text, branch names | [`doctrine/publishing.md`](doctrine/publishing.md) |
 | anything structural, or when you need to find which document owns an area | [`architecture/overview.md`](architecture/overview.md) |
 | anything that must serialize, a new lock, bus dispatch, or blocking I/O placement | [`architecture/concurrency-model.md`](architecture/concurrency-model.md) |
+| config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
 | engagement lifecycle, terminal transitions, turn admission, the driver protocol, or engagement output ordering | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | job persistence, restart recovery, or how a deferred answer reaches a device | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |

@@ -114,6 +114,23 @@
     INV-CONC-004: [tests/test_scheduled_ask_user.py::TestSessionWriteGate::test_two_scheduled_turns_never_run_concurrently, tests/test_session_key_authority.py::TestUnconditionalGate::test_an_ordinary_dm_turn_holds_the_gate_and_admission, tests/test_session_key_authority.py::TestReloadTwoPools::test_a_second_pool_cannot_resume_a_live_session]
     INV-CONC-005: [tests/test_session_key_authority.py::TestWipeDrainsEveryPath::test_a_bypass_turn_cannot_rearm_the_pointer, tests/test_session_key_authority.py::TestWipeDrainsEveryPath::test_a_first_ever_turn_cannot_survive_the_wipe, tests/test_session_key_authority.py::TestResetVersusWipe::test_a_wipe_and_a_reset_do_not_deadlock, tests/test_session_key_authority.py::TestResetVersusWipe::test_the_wipe_takes_no_session_gate]
 
+- doc: architecture/config-reconciliation.md
+  summary: How the config tree is reconciled against image defaults — ownership rules, the per-entry merge, `${VAR}` placeholder semantics, and the declaration carried across a rewrite.
+  when_changing: config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution
+  covers:
+    - casa/rootfs/opt/casa/config_sync.py::reconcile
+  tests:
+    - tests/test_config_sync_backstop.py
+  related: [architecture/configuration.md, architecture/reminders.md]
+  defines_invariants: [INV-CFG-005, INV-CFG-006, INV-CFG-007, INV-CFG-008, INV-CFG-009, INV-CFG-010]
+  invariant_tests:
+    INV-CFG-005: [tests/test_config_sync_main.py::test_run_is_non_fatal_on_error]
+    INV-CFG-006: [tests/test_config_sync_entry_merge.py::test_issue_398_a_locally_added_entry_survives_a_changed_shipped_default, tests/test_config_sync_entry_merge.py::test_locally_added_entry_is_kept]
+    INV-CFG-007: [tests/test_config_sync_entry_merge.py::test_refuses_the_merge_when_nothing_validates]
+    INV-CFG-008: [tests/test_config_sync_entry_merge.py::test_output_carries_the_live_documents_top_level]
+    INV-CFG-009: [tests/test_agent_loader_env_substitution.py::test_a_placeholder_value_survives_whatever_punctuation_it_contains, tests/test_agent_loader_env_substitution.py::test_a_hostile_value_can_no_longer_stop_the_file_loading, tests/test_agent_loader_env_substitution.py::test_a_QUOTED_placeholder_is_text_whatever_the_value_looks_like, tests/test_agent_loader_env_substitution.py::test_a_PLAIN_lone_placeholder_keeps_its_value_s_type, tests/test_agent_loader_env_substitution.py::test_a_PLAIN_lone_placeholder_means_what_its_text_means_as_YAML]
+    INV-CFG-010: [tests/test_agent_loader_env_substitution.py::test_a_rewrite_keeps_every_declared_text_form_declared, tests/test_agent_loader_env_substitution.py::test_a_rewrite_leaves_a_PLAIN_lone_placeholder_PLAIN, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_the_operator_s_entry_still_means_what_it_meant, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_the_guard_still_matches_the_file_afterwards, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_a_declaration_the_document_DISCARDS_is_reported_not_carried]
+
 - doc: architecture/configuration.md
   summary: Where configuration comes from, what is version-controlled, what reload can pick up without a restart, and how secrets resolve.
   when_changing: adding or removing an option, the reload scopes, the config repo, or secret resolution
@@ -122,28 +139,20 @@
     - casa/rootfs/opt/casa/reload.py::reload_full
     - casa/rootfs/opt/casa/reload.py::_resident_identity_changed
     - casa/rootfs/opt/casa/config_git.py::init_repo
-    - casa/rootfs/opt/casa/config_sync.py::reconcile
     - casa/rootfs/opt/casa/secrets_resolver.py::resolve
     - casa/config.yaml::schema
     - casa/rootfs/etc/s6-overlay/scripts/setup-configs.sh
   tests:
     - tests/test_casa_reload_tool.py
     - tests/test_config_git.py
-    - tests/test_config_sync_backstop.py
     - tests/test_admin_reload_route.py
-  related: [architecture/overview.md, architecture/plugins.md, architecture/agent-taxonomy.md]
-  defines_invariants: [INV-CFG-001, INV-CFG-002, INV-CFG-003, INV-CFG-004, INV-CFG-005, INV-CFG-006, INV-CFG-007, INV-CFG-008, INV-CFG-009, INV-CFG-010]
+  related: [architecture/overview.md, architecture/plugins.md, architecture/agent-taxonomy.md, architecture/config-reconciliation.md]
+  defines_invariants: [INV-CFG-001, INV-CFG-002, INV-CFG-003, INV-CFG-004]
   invariant_tests:
     INV-CFG-001: [tests/test_pin_g4_invariants.py::test_pin_inv_cfg_001_exactly_eight_scopes_none_reading_options]
     INV-CFG-002: [tests/test_reload.py::test_full_excludes_other_scopes]
     INV-CFG-003: [tests/test_phase_a_compiler_integration.py::test_reload_refuses_hot_swap_across_identity_change, tests/test_reload.py::test_reload_triggers_two_step_laundering_is_blocked]
     INV-CFG-004: [tests/test_config_git.py::test_store_and_staging_stay_untracked]
-    INV-CFG-005: [tests/test_config_sync_main.py::test_run_is_non_fatal_on_error]
-    INV-CFG-006: [tests/test_config_sync_entry_merge.py::test_issue_398_a_locally_added_entry_survives_a_changed_shipped_default, tests/test_config_sync_entry_merge.py::test_locally_added_entry_is_kept]
-    INV-CFG-007: [tests/test_config_sync_entry_merge.py::test_refuses_the_merge_when_nothing_validates]
-    INV-CFG-008: [tests/test_config_sync_entry_merge.py::test_output_carries_the_live_documents_top_level]
-    INV-CFG-009: [tests/test_agent_loader_env_substitution.py::test_a_placeholder_value_survives_whatever_punctuation_it_contains, tests/test_agent_loader_env_substitution.py::test_a_hostile_value_can_no_longer_stop_the_file_loading, tests/test_agent_loader_env_substitution.py::test_a_QUOTED_placeholder_is_text_whatever_the_value_looks_like, tests/test_agent_loader_env_substitution.py::test_a_PLAIN_lone_placeholder_keeps_its_value_s_type, tests/test_agent_loader_env_substitution.py::test_a_PLAIN_lone_placeholder_means_what_its_text_means_as_YAML]
-    INV-CFG-010: [tests/test_agent_loader_env_substitution.py::test_a_rewrite_keeps_every_declared_text_form_declared, tests/test_agent_loader_env_substitution.py::test_a_rewrite_leaves_a_PLAIN_lone_placeholder_PLAIN, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_the_operator_s_entry_still_means_what_it_meant, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_the_guard_still_matches_the_file_afterwards, tests/test_reminders_store.py::TestTheDoorSurvivesItsOwnCleanup::test_a_declaration_the_document_DISCARDS_is_reported_not_carried]
 
 - doc: architecture/delegation.md
   summary: How one agent addresses and launches another — the delegation ACL and aliases, the depth cap, and the agent-spawn cap.
