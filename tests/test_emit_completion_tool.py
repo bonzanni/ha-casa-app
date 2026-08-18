@@ -997,3 +997,126 @@ class TestCompletionGateSeesTurnsInThePipe:
                          for c in (list(tch.send_to_topic.call_args_list)
                                    + list(tch.send_response_to_topic.call_args_list)))
         assert "queued, and still owed" in posted
+
+
+class TestEmitCompletionCancellation:
+    """#632 red case: the finalize tail must survive its own driver teardown.
+
+    An in_casa emit_completion runs inside an SDK control-request handler task
+    that ``Query._close_impl`` cancels when the funnel's own driver teardown
+    closes the client (query.py:998-999 on the pinned SDK). The cancellation
+    is simulated DIRECTLY — the fake driver's ``cancel()`` cancels the
+    captured host task and then suspends once, exactly as the funnel is
+    suspended awaiting teardown in production — so the case fails identically
+    on CPython 3.11 and 3.12 (``asyncio.wait_for`` topology is not involved).
+
+    Invariant (INV-ENG-001 prose, docs/architecture/engagements.md; H-1
+    contract at the deferred-restart drain; issue #632): once the terminal
+    transition is won, the DelegationComplete bus notification, both retains,
+    the deferred Supervisor restart POST (strictly after retains are
+    gathered), the finalized log and the deferred-marker drain must all still
+    happen even though the host task ends cancelled. Specified externally
+    (redcase-specify r2) and accepted externally; do not modify.
+    """
+
+    async def test_in_casa_teardown_cannot_cancel_finalize_tail(
+            self, tmp_path, monkeypatch):
+        import agent as agent_mod
+        import tools as tools_mod
+        from engagement_registry import EngagementRegistry
+        from tools import emit_completion, init_tools, engagement_var
+
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
+                                 bus=None)
+        rec = await reg.create(
+            kind="executor", role_or_type="configurator", driver="in_casa",
+            task="t", origin={"role": "assistant", "channel": "telegram"},
+            topic_id=None,
+        )
+        events: list[str] = []
+
+        async def _notify(msg):
+            events.append("notify")
+        bus = MagicMock()
+        bus.notify = AsyncMock(side_effect=_notify)
+        init_tools(
+            channel_manager=MagicMock(), bus=bus,
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=reg,
+        )
+
+        host_box: dict = {}
+
+        class _Driver:
+            cancel_calls = 0
+
+            async def cancel(self, engagement):
+                type(self).cancel_calls += 1
+                events.append("cancel")
+                host_box["task"].cancel()
+                # Production delivers the CancelledError while the funnel is
+                # suspended awaiting the teardown; suspend so it can land.
+                await asyncio.sleep(0)
+
+        driver = _Driver()
+        monkeypatch.setattr(agent_mod, "active_engagement_driver", driver,
+                            raising=False)
+        monkeypatch.setattr(agent_mod, "active_semantic_memory", object(),
+                            raising=False)
+
+        async def _retain(sem, **kwargs):
+            events.append("retain")
+        monkeypatch.setattr(tools_mod, "retain_delegated", _retain)
+
+        tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD.add(rec.id)
+
+        async def _post():
+            events.append("post")
+            return {"status": "ok"}
+        monkeypatch.setattr(tools_mod, "_post_supervisor_restart", _post)
+
+        tail_complete = asyncio.Event()
+        real_info = tools_mod.logger.info
+
+        def _info(msg, *args, **kwargs):
+            if msg == "Engagement %s finalized outcome=%s":
+                events.append("final-log")
+                tail_complete.set()
+            return real_info(msg, *args, **kwargs)
+        monkeypatch.setattr(tools_mod.logger, "info", _info)
+
+        token = engagement_var.set(rec)
+        try:
+            host_task = asyncio.get_running_loop().create_task(
+                emit_completion.handler({
+                    "text": "done", "artifacts": [], "next_steps": [],
+                    "status": "ok",
+                }))
+        finally:
+            engagement_var.reset(token)
+        host_box["task"] = host_task
+
+        # The host faithfully ends cancelled — handler survival is NOT part
+        # of the invariant (the tool_result is documented-lost on this path).
+        with pytest.raises(asyncio.CancelledError):
+            await host_task
+        assert host_task.cancelled() is True
+
+        # The side effects are observed through an independent completion
+        # signal, never through the cancelled host task.
+        await asyncio.wait_for(tail_complete.wait(), timeout=1)
+
+        assert _Driver.cancel_calls == 1
+        assert bus.notify.await_count == 1
+        assert events.count("notify") == 1
+        assert events.count("retain") == 2
+        assert events.count("post") == 1
+        assert events.count("final-log") == 1
+        assert rec.id not in tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD
+        assert events.index("cancel") < events.index("notify")
+        assert events.index("notify") < min(
+            i for i, e in enumerate(events) if e == "retain")
+        assert max(
+            i for i, e in enumerate(events) if e == "retain"
+        ) < events.index("post")
+        assert events.index("post") < events.index("final-log")
