@@ -339,6 +339,10 @@ class TestUnrepresentedExecutorDeniesAtTheResolver:
         def _registry(case: str, writable: str):
             agents = tmp_path / case / "agents"
             shutil.copytree(src, agents)
+            # copytree preserves source modes, so a read-only checkout would
+            # leave this private copy unwritable and break the edits below.
+            for entry in [agents, *agents.rglob("*")]:
+                entry.chmod(entry.stat().st_mode | 0o200)
             for child in (agents / "executors").iterdir():
                 if child.name != "configurator":
                     shutil.rmtree(child)
