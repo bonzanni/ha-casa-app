@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 # Loaded by explicit path, not `from scripts import verify_docs`: tests/conftest.py inserts
 # the application code root at sys.path[0], and that root contains its OWN `scripts/`
 # directory, which shadows the repo-root package. `python -m scripts.verify_docs` from the
@@ -667,3 +669,37 @@ def test_a_doc_duplicated_between_root_and_shard_is_caught(tmp_path):
     (shard_dir / "architecture.yaml").write_text(ENTRY)
     subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
     assert any("listed twice" in p for p in verify_docs.verify(root))
+
+
+CORPUS_SPLIT_DOCUMENTS = (
+    "docs/architecture/callbacks.md",
+    "docs/architecture/callback-delivery.md",
+    "docs/architecture/configuration.md",
+    "docs/architecture/config-reconciliation.md",
+    "docs/architecture/memory.md",
+    "docs/architecture/memory-scoping.md",
+)
+
+EXPECTED_CORPUS_SPLIT_DOCUMENTS = {
+    "docs/architecture/callbacks.md",
+    "docs/architecture/callback-delivery.md",
+    "docs/architecture/configuration.md",
+    "docs/architecture/config-reconciliation.md",
+    "docs/architecture/memory.md",
+    "docs/architecture/memory-scoping.md",
+}
+
+
+def test_corpus_split_document_list_is_exact():
+    assert len(CORPUS_SPLIT_DOCUMENTS) == len(set(CORPUS_SPLIT_DOCUMENTS)) == 6
+    assert set(CORPUS_SPLIT_DOCUMENTS) == EXPECTED_CORPUS_SPLIT_DOCUMENTS
+
+
+@pytest.mark.parametrize("relative_path", CORPUS_SPLIT_DOCUMENTS)
+def test_each_corpus_split_document_is_below_warn_bytes(relative_path):
+    path = Path(__file__).resolve().parents[1] / relative_path
+    size = path.stat().st_size if path.is_file() else None
+    assert size is not None and size < verify_docs.WARN_BYTES, (
+        f"{relative_path} must exist and measure strictly below "
+        f"WARN_BYTES={verify_docs.WARN_BYTES}; measured {size!r}"
+    )
