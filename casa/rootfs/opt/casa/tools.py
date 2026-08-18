@@ -7481,6 +7481,28 @@ class FinalizeResult(enum.Enum):
 _QUIESCE_FUNNEL_TIMEOUT_S = 5.0
 _DRIVER_CANCEL_TIMEOUT_S = 20.0
 
+# #632: detached finalize tails, anchored so the event loop cannot collect
+# them mid-flight. A tail is created only on the in_casa self-emit path (see
+# _finalize_engagement's detach_teardown_tail); the done callback is the only
+# observer a tail severed from its (cancelled) awaiter has, so it must
+# retrieve the outcome — an unobserved tail failure would be a second
+# silent-finalization mode, which is the very defect this exists to fix.
+_finalize_tail_tasks: set[asyncio.Task] = set()
+
+
+def _finalize_tail_done(engagement_id: str, task: asyncio.Task) -> None:
+    _finalize_tail_tasks.discard(task)
+    if task.cancelled():
+        logger.error(
+            "finalize engagement %s: detached finalize tail was CANCELLED — "
+            "completion side effects may be incomplete", engagement_id[:8])
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "finalize engagement %s: detached finalize tail raised: %r",
+            engagement_id[:8], exc)
+
 
 async def _finalize_engagement(
     engagement: EngagementRecord,
@@ -7493,6 +7515,7 @@ async def _finalize_engagement(
     stale_before: float | None = None,
     output_truncated: bool = False,     # Task 6 (spec §4.6)
     inbound_gate: bool = False,         # G4 D1/D2 (v0.96.0): emit/completed only
+    detach_teardown_tail: bool = False,  # #632: in_casa self-emit only
 ) -> "FinalizeResult":
     """End an engagement: update registry, close topic, NOTIFY Ellen,
     retain a tier-classified engagement summary on the shared ``casa`` bank.
@@ -7636,6 +7659,34 @@ async def _finalize_engagement(
     # delegate_to_agent's interactive branch (which also null it out).
     if engagement.permit is not None:
         engagement.permit.release()
+
+    # #632 (Terra, seam review): freeze the tail's payload inputs NOW —
+    # before the first await after the flip. ``lower_origin_clearance`` has
+    # no terminal-state refusal and rewrites the live record's ``origin`` and
+    # ``task``; this funnel suspends (quiesce wait, broker drain, topic
+    # round-trips) between the flip and the notification/retain reads, so
+    # without this snapshot a post-terminal clamp lands in the
+    # DelegationComplete and retained-summary payloads. The completion
+    # records carry the values that won the flip. ``_snapshot_origin()``
+    # freezes only ambient provenance, so it is resolved here too (Task 10
+    # semantics unchanged: current-origin identity when present, else the
+    # honest unattributed "system" — never a fabricated persona).
+    from personality_types import SpeakerProvenance
+    _prov = _snapshot_origin().get("speaker_provenance")
+    if not isinstance(_prov, SpeakerProvenance):
+        _prov = SpeakerProvenance(speaker_kind="system")
+    frozen: dict[str, Any] = {
+        "id": engagement.id,
+        "kind": engagement.kind,
+        "driver": engagement.driver,
+        "role_or_type": engagement.role_or_type,
+        "started_at": engagement.started_at,
+        "allocated_uid": engagement.allocated_uid,
+        "procedural_epoch": getattr(engagement, "procedural_epoch", "") or "",
+        "origin": dict(engagement.origin),
+        "task": engagement.task,
+        "summary_prov": _prov,
+    }
 
     # #599: the instant THIS call won the terminal flip, WAIT for the uid
     # quiesce the registry scheduled with that very transition — before the
@@ -7866,6 +7917,64 @@ async def _finalize_engagement(
                 except Exception:  # noqa: BLE001
                     pass
 
+    # #632: everything from driver teardown to the finalized log runs in
+    # _finalize_engagement_tail. On the in_casa self-emit path this funnel's
+    # host task is one of the SDK client's own child tasks, and the teardown
+    # below closes that very client: Query._close_impl cancels _child_tasks
+    # (pinned SDK query.py:998-999), and on the container's CPython 3.11
+    # (where asyncio.wait_for task-wraps) the CancelledError re-raises past
+    # the except clauses around driver.cancel and severs the bus
+    # notification, retains, deferred Supervisor restart and finalized log —
+    # permanently, since the record is already terminal. emit_completion
+    # opts in to detaching the tail into a Casa-owned task
+    # (asyncio.create_task — never Query.spawn_task, so _close_impl cannot
+    # find or cancel it), anchored in _finalize_tail_tasks and awaited
+    # through asyncio.shield: the SDK handler still unwinds cancelled (and
+    # the SDK then correctly skips the control-response write — the tool
+    # result is documented-lost on this path) while the tail completes every
+    # side effect. Every other caller awaits the same helper inline:
+    # identical task, ordering and cancellation semantics as before.
+    if detach_teardown_tail:
+        tail = asyncio.create_task(_finalize_engagement_tail(
+            engagement, outcome=outcome, text=text, artifacts=artifacts,
+            next_steps=next_steps, driver=driver, now=now,
+            output_truncated=output_truncated, frozen=frozen,
+        ))
+        _finalize_tail_tasks.add(tail)
+        tail.add_done_callback(
+            lambda t, _eid=engagement.id: _finalize_tail_done(_eid, t))
+        return await asyncio.shield(tail)
+    return await _finalize_engagement_tail(
+        engagement, outcome=outcome, text=text, artifacts=artifacts,
+        next_steps=next_steps, driver=driver, now=now,
+        output_truncated=output_truncated, frozen=frozen,
+    )
+
+
+async def _finalize_engagement_tail(
+    engagement: EngagementRecord,
+    *,
+    outcome: str,
+    text: str,
+    artifacts: list[str],
+    next_steps: list[dict],
+    driver: Any | None,
+    now: float,
+    output_truncated: bool,
+    frozen: dict[str, Any],
+) -> "FinalizeResult":
+    """#632: the finalize funnel's post-topic tail — driver teardown, bus
+    notification, retains, terminal meta rewrite, reload-marker drain,
+    deferred Supervisor restart (strictly after retains gather, H-1) and the
+    finalized log, in the funnel's historical order.
+
+    Payload reads come from ``frozen`` (snapshotted at the terminal flip,
+    before the funnel's first post-flip await) — never from the live record,
+    which ``lower_origin_clearance`` may rewrite post-terminal. The live
+    ``engagement`` is passed for ``driver.cancel`` (drivers key off the
+    record) and for log lines reading immutable identity only.
+    """
+    eng_id: str = frozen["id"]
     # 3. Tear down driver client
     if driver is not None:
         try:
@@ -7891,29 +8000,29 @@ async def _finalize_engagement(
 
     # 4. NOTIFY Ellen (via existing DelegationComplete-shaped pathway)
     if _bus is not None:
-        target_role = engagement.origin.get("role") or "assistant"
+        target_role = frozen["origin"].get("role") or "assistant"
         complete = DelegationComplete(
-            delegation_id=engagement.id,
-            agent=engagement.role_or_type,
+            delegation_id=eng_id,
+            agent=frozen["role_or_type"],
             status="ok" if outcome == "completed" else "error",
             text=text,
             kind="" if outcome == "completed" else outcome,
             message=text,
-            origin=dict(engagement.origin),
-            elapsed_s=now - engagement.started_at,
+            origin=dict(frozen["origin"]),
+            elapsed_s=now - frozen["started_at"],
             output_truncated=output_truncated,  # Task 6 (spec §4.6)
         )
         try:
             await _bus.notify(BusMessage(
                 type=MessageType.NOTIFICATION,
-                source=engagement.role_or_type,
+                source=frozen["role_or_type"],
                 target=target_role,
                 content=complete,
-                channel=engagement.origin.get("channel", ""),
+                channel=frozen["origin"].get("channel", ""),
                 context={
-                    "cid": engagement.origin.get("cid", "-"),
-                    "chat_id": engagement.origin.get("chat_id", ""),
-                    "engagement_id": engagement.id,
+                    "cid": frozen["origin"].get("cid", "-"),
+                    "chat_id": frozen["origin"].get("chat_id", ""),
+                    "engagement_id": eng_id,
                     "next_steps": next_steps,
                 },
             ))
@@ -7935,25 +8044,24 @@ async def _finalize_engagement(
     # promptly; the deferred-reload path below drains them first (H-1).
     retain_tasks: list[asyncio.Task] = []
     import agent as agent_mod
-    from personality_types import RetainedTurn, SpeakerProvenance
-    # Task 10: the structured summary is a platform record authored on behalf of
-    # the finalized engagement. Attribute it to the identity on the current
-    # origin snapshot when one is present; otherwise the honest, unattributed
-    # "system" identity — NEVER a fabricated persona.
-    _summary_prov = _snapshot_origin().get("speaker_provenance")
-    if not isinstance(_summary_prov, SpeakerProvenance):
-        _summary_prov = SpeakerProvenance(speaker_kind="system")
+    from personality_types import RetainedTurn
+    # Task 10: the structured summary is a platform record authored on behalf
+    # of the finalized engagement — provenance resolved at the terminal flip
+    # (#632: with the rest of the frozen payload inputs), current-origin
+    # identity when one was present, else the honest, unattributed "system"
+    # identity — NEVER a fabricated persona.
+    _summary_prov = frozen["summary_prov"]
     sem = getattr(agent_mod, "active_semantic_memory", None)
     if sem is not None:
         summary = json.dumps({
             "kind": "engagement_summary",
-            "engagement_id": engagement.id,
-            "specialist_or_type": engagement.role_or_type,
-            "task": engagement.task,
+            "engagement_id": eng_id,
+            "specialist_or_type": frozen["role_or_type"],
+            "task": frozen["task"],
             "status": outcome,
-            "started_at": engagement.started_at,
+            "started_at": frozen["started_at"],
             "completed_at": now,
-            "duration_s": now - engagement.started_at,
+            "duration_s": now - frozen["started_at"],
             "text": text,
             "artifacts": artifacts,
             "next_steps": next_steps,
@@ -7962,7 +8070,7 @@ async def _finalize_engagement(
         # assembly — the detached task may not run until after a wipe.
         from memory_wipe import FENCE as _FENCE
         bg = asyncio.create_task(retain_delegated(
-            sem, origin_channel=str(engagement.origin.get("channel", "")),
+            sem, origin_channel=str(frozen["origin"].get("channel", "")),
             turns=[RetainedTurn(summary, _summary_prov)],
             fence_generation=_FENCE.generation(),
         ))
@@ -7971,14 +8079,14 @@ async def _finalize_engagement(
         retain_tasks.append(bg)
 
     # Plan 4a.1 §8.4: update .casa-meta.json with terminal status + retention_until.
-    if engagement.driver == "claude_code":
+    if frozen["driver"] == "claude_code":
         try:
             from drivers.workspace import load_casa_meta, write_casa_meta
             from engagement_uids import owner_uid_or_none
-            ws = os.path.join(_ENGAGEMENTS_ROOT, engagement.id)
+            ws = os.path.join(_ENGAGEMENTS_ROOT, eng_id)
             if os.path.isdir(ws):
                 meta = load_casa_meta(
-                    ws, owner_uid=owner_uid_or_none(engagement.allocated_uid),
+                    ws, owner_uid=owner_uid_or_none(frozen["allocated_uid"]),
                 ) or {}
                 finished_iso = time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now),
@@ -7992,8 +8100,8 @@ async def _finalize_engagement(
                                 else "ERROR")
                 write_casa_meta(
                     workspace_path=ws,
-                    engagement_id=engagement.id,
-                    executor_type=engagement.role_or_type,
+                    engagement_id=eng_id,
+                    executor_type=frozen["role_or_type"],
                     status=final_status,
                     created_at=meta.get("created_at") or finished_iso,
                     finished_at=finished_iso,
@@ -8015,7 +8123,7 @@ async def _finalize_engagement(
                     # terminal rewrite and permanently orphan the
                     # casa-eng-<uid> passwd/group lines (the sweeper reads
                     # ONLY this field).
-                    allocated_uid=engagement.allocated_uid,
+                    allocated_uid=frozen["allocated_uid"],
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -8028,17 +8136,17 @@ async def _finalize_engagement(
     # summary above, so its content-addressed document_id (Task 10) is distinct
     # and the two never clobber each other.
     # `sem` is the active_semantic_memory resolved in step 5 above.
-    if engagement.kind == "executor" and sem is not None:
+    if frozen["kind"] == "executor" and sem is not None:
         type_summary = json.dumps({
             "kind": "executor_engagement_summary",
-            "engagement_id": engagement.id,
-            "executor_type": engagement.role_or_type,
-            "started_at": engagement.started_at,
+            "engagement_id": eng_id,
+            "executor_type": frozen["role_or_type"],
+            "started_at": frozen["started_at"],
             "finished_at": now,
-            "duration_s": now - engagement.started_at,
+            "duration_s": now - frozen["started_at"],
             "terminal_state": outcome,
-            "engager": engagement.origin.get("role") or "assistant",
-            "task": engagement.task,
+            "engager": frozen["origin"].get("role") or "assistant",
+            "task": frozen["task"],
             "last_text": text,
             "artifacts": artifacts,
         })
@@ -8050,13 +8158,13 @@ async def _finalize_engagement(
         # assembly — the detached task below may not run until after a wipe.
         from executor_epoch import epoch_application_tag
         from memory_wipe import FENCE
-        _epoch = getattr(engagement, "procedural_epoch", "") or ""
+        _epoch = frozen["procedural_epoch"]
         _tags = (
-            [epoch_application_tag(engagement.role_or_type, _epoch)]
+            [epoch_application_tag(frozen["role_or_type"], _epoch)]
             if _epoch else []
         )
         bg = asyncio.create_task(retain_delegated(
-            sem, origin_channel=str(engagement.origin.get("channel", "")),
+            sem, origin_channel=str(frozen["origin"].get("channel", "")),
             turns=[RetainedTurn(type_summary, _summary_prov)],
             application_tags=_tags,
             fence_generation=FENCE.generation(),
@@ -8073,15 +8181,15 @@ async def _finalize_engagement(
     # operator's, not the platform's. Drain the marker on every path
     # to prevent stale state from haunting an idempotent re-call or
     # a follow-up engagement reusing the (very short) id slice.
-    deferred_pending = engagement.id in _ENGAGEMENTS_DEFERRED_HARD_RELOAD
-    _ENGAGEMENTS_DEFERRED_HARD_RELOAD.discard(engagement.id)
+    deferred_pending = eng_id in _ENGAGEMENTS_DEFERRED_HARD_RELOAD
+    _ENGAGEMENTS_DEFERRED_HARD_RELOAD.discard(eng_id)
     # Terra review (#231/#222): this runs on EVERY terminal path (emit,
     # cancel, reap) once the terminal flip is won — the central drain for the
     # reload-guard module sets, so a cancelled/reaped engagement can't leak
     # its id into either set. (emit_completion's own guard, running earlier,
     # keeps ownership of the force-reload decision for the completed path.)
-    _ENGAGEMENTS_PENDING_RELOAD.discard(engagement.id)
-    _ENGAGEMENTS_PREACTIVATED.discard(engagement.id)
+    _ENGAGEMENTS_PENDING_RELOAD.discard(eng_id)
+    _ENGAGEMENTS_PREACTIVATED.discard(eng_id)
     if outcome == "completed" and deferred_pending:
         # H-1: the Supervisor container-kill must be sequenced AFTER the retain
         # writes have landed. Since L33 moved the retains to background tasks,
@@ -8114,8 +8222,8 @@ async def _finalize_engagement(
     # plus the text that the emit_completion caller (or the cancel
     # path) passed in.
     if outcome == "error":
-        error_kind = engagement.origin.get("error_kind") or "unknown"
-        error_message = engagement.origin.get("error_message") or ""
+        error_kind = frozen["origin"].get("error_kind") or "unknown"
+        error_message = frozen["origin"].get("error_message") or ""
         reason_from_text = (text or "").strip()
         # Prefer registry-stored kind/message (set by mark_error before
         # finalize), then fall back to the text the model emitted.
@@ -8532,6 +8640,14 @@ async def emit_completion(args: dict) -> dict:
         driver=driver,
         output_truncated=output_truncated,  # Task 6 (spec §4.6)
         inbound_gate=(outcome == "completed"),   # G4 D1/D2
+        # #632: an in_casa emit_completion runs inside a child task of the
+        # very client the funnel's teardown closes — the one topology in
+        # which the teardown cancels the funnel's own host. Detach the tail
+        # so the completion side effects survive that self-cancel. Every
+        # other caller (cancel/reap/forced delete, claude_code emit via the
+        # UDS handler) keeps the default fully-synchronous path.
+        detach_teardown_tail=(
+            engagement.driver == "in_casa" and driver is not None),
     )
     # G4 D2 (v0.96.0): the registry-internal gate vetoed the flip (a message
     # landed between the handler gate above and the terminal critical
