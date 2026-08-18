@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.220.0] - 2026-08-18
+
+### Added
+
+- Casa now records which per-trigger webhook secrets it minted itself. The
+  record is bound to the secret's value rather than to its name, so it is
+  evidence about the bytes Casa read, not a history of the slot. The reload
+  report shows, for each slot it can read, whether Casa can prove it minted the
+  value there; other slots report their file condition instead. Secrets you
+  supply yourself (`secret_owner: provider`) are untouched: nothing is written
+  for them, and no existing secret is ever modified, moved or re-minted.
+
+  This is groundwork, and it deliberately does **not** change the behaviour
+  reported in #620: deleting a webhook trigger still leaves its secret on disk,
+  and a trigger recreated under the same name still inherits it. Retiring a
+  secret safely first requires being able to tell a Casa-minted token from a
+  credential you provided — which Casa cannot regenerate and has no way to
+  import — and the receipt is what makes that distinction possible.
+
 ## [0.219.0] - 2026-08-17
 
 ### Fixed
