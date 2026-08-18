@@ -6,8 +6,10 @@ Code is the source of truth; these files are a map.
 ## Architecture
 
 - [architecture/agent-taxonomy.md](architecture/agent-taxonomy.md): How an agent is declared, validated and looked up — tiers, required artifacts, and the registry.
-- [architecture/callbacks.md](architecture/callbacks.md): The public authorization-callback facility — the unauthenticated GET route, the mtime-clocked publish-once spool, declaration-bound consent, the per-flow attempt ledger, and redelivery until receipt.
+- [architecture/callback-delivery.md](architecture/callback-delivery.md): The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.
+- [architecture/callbacks.md](architecture/callbacks.md): The public authorization-callback ingress — the unauthenticated GET route, declaration-bound consent, reconciliation, and the validated redirect base URL.
 - [architecture/concurrency-model.md](architecture/concurrency-model.md): What runs concurrently — bus dequeue vs execution, session-key serialization, the lock inventory, and threaded vs loop work.
+- [architecture/config-reconciliation.md](architecture/config-reconciliation.md): How the config tree is reconciled against image defaults — ownership rules, the per-entry merge, `${VAR}` placeholder semantics, and the declaration carried across a rewrite.
 - [architecture/configuration.md](architecture/configuration.md): Where configuration comes from, what is version-controlled, what reload can pick up without a restart, and how secrets resolve.
 - [architecture/delegation.md](architecture/delegation.md): How one agent addresses and launches another — the delegation ACL and aliases, the depth cap, and the agent-spawn cap.
 - [architecture/engagement-containment.md](architecture/engagement-containment.md): The OS boundary around a claude_code engagement — its never-reused uid, workspace ownership, root's no-follow access, the privilege drop, and the confirmed-down sweep before replay.
@@ -19,7 +21,8 @@ Code is the source of truth; these files are a map.
 - [architecture/jobs-and-delivery.md](architecture/jobs-and-delivery.md): Durable background jobs — execution vs delivery state, restart reconciliation, and the leased claim/ack protocol.
 - [architecture/mcp-and-tools.md](architecture/mcp-and-tools.md): How tools reach an agent, and where authorization for a tool call actually happens.
 - [architecture/memory-lifecycle.md](architecture/memory-lifecycle.md): Retention lifecycle — how a conversation becomes long-term memory, how each item is labelled on the way in, how a reset retires it, and how the operator-consented wipe removes everything.
-- [architecture/memory.md](architecture/memory.md): Recall — who may read a stored fact back, how it is rendered, and what a caller may claim from what comes back.
+- [architecture/memory-scoping.md](architecture/memory-scoping.md): Which stored facts a given reader gets back — read clearance per channel and sender, the engagement clearance clamp, and the executor-archive epoch scoping.
+- [architecture/memory.md](architecture/memory.md): Recall — how a stored fact is rendered on the way back out, and what a caller may claim from what comes back.
 - [architecture/observability.md](architecture/observability.md): How work is traced across components, what reaches a log, and what the health surfaces actually assert.
 - [architecture/overview.md](architecture/overview.md): What Casa is made of — supervised services, the three agent tiers, and where configuration enters.
 - [architecture/persistent-state.md](architecture/persistent-state.md): What the application writes to disk, how it treats a missing or corrupt file, and what that means for recovery.

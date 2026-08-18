@@ -29,7 +29,7 @@ because reconciliation resolved an edited image-owned file against a changed shi
 default as "image wins" and would have deleted every pending reminder on such an update.
 That file is gone: `triggers.yaml` is now reconciled *per entry*, so an entry the image has
 never shipped is preserved rather than dying with the file
-([`architecture/configuration.md`](configuration.md)).
+([`architecture/config-reconciliation.md`](config-reconciliation.md)).
 
 **Ownership is data, and is never inferred from an entry's content.** The schema permits an
 operator to write a `reminder-`-prefixed dated one-shot of their own, so neither the
@@ -269,6 +269,6 @@ end-to-end receipt through the turn pipeline; there is none today (see INV-TRIG-
 
 **Related**
 - [`architecture/triggers.md`](../architecture/triggers.md)
-- [`architecture/configuration.md`](../architecture/configuration.md)
+- [`architecture/config-reconciliation.md`](../architecture/config-reconciliation.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 <!-- END SOURCEMAP -->

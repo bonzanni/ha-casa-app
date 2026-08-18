@@ -14,19 +14,19 @@
 - item: casa/rootfs/opt/casa/callback_acks.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_attempts.py
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_consent.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/consent_denials.py
   doc: architecture/tools-interface.md
 - item: casa/rootfs/opt/casa/callback_episodes.py
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_http.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_reconcile.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_spool.py
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_urls.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/canonical_bytes.py
@@ -66,7 +66,7 @@
 - item: casa/rootfs/opt/casa/config_git.py
   doc: architecture/configuration.md
 - item: casa/rootfs/opt/casa/config_sync.py
-  doc: architecture/configuration.md
+  doc: architecture/config-reconciliation.md
 - item: casa/rootfs/opt/casa/delegated_memory.py
   doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/drivers/brief.py
@@ -104,13 +104,13 @@
 - item: casa/rootfs/opt/casa/event_spool.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/executor_epoch.py
-  doc: architecture/memory.md
+  doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/executor_registry.py
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/explanation_store.py
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/freshness_reaper.py
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/ha_mcp_facade.py
   doc: architecture/home-assistant-control.md
 - item: casa/rootfs/opt/casa/hindsight_ids.py
@@ -210,7 +210,7 @@
 - item: casa/rootfs/opt/casa/semantic_memory.py
   doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/sensitivity.py
-  doc: architecture/memory.md
+  doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/scheduled_asks.py
   doc: architecture/jobs-and-delivery.md
 - item: casa/rootfs/opt/casa/session_gate.py
@@ -586,7 +586,7 @@
 - item: env:CASA_BINDINGS_DIR
   doc: architecture/overview.md
 - item: env:CASA_CALLBACK_SPOOL_ROOT
-  doc: architecture/callbacks.md
+  doc: architecture/callback-delivery.md
 - item: env:CASA_CONFIG_DIR
   doc: architecture/overview.md
 - item: env:CASA_DATA_DIR
@@ -620,9 +620,9 @@
 - item: env:ENGAGEMENT_REAP_DAYS
   doc: reference/operator-options.md
 - item: env:FRESHNESS_TELEGRAM_HOURS
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: env:FRESHNESS_VOICE_MINUTES
-  doc: architecture/memory.md
+  doc: architecture/memory-lifecycle.md
 - item: env:LOG_FORMAT
   doc: architecture/overview.md
 - item: env:LOG_LEVEL

@@ -243,7 +243,7 @@
     - tests/test_reminder_tools.py
     - tests/test_reminder_sweep.py
     - tests/test_trigger_registry_date.py
-  related: [architecture/triggers.md, architecture/configuration.md, architecture/tools-interface.md]
+  related: [architecture/triggers.md, architecture/config-reconciliation.md, architecture/tools-interface.md]
   defines_invariants: [INV-TRIG-008, INV-TRIG-010]
   invariant_tests:
     INV-TRIG-008: [tests/test_reminder_sweep.py::test_overdue_reminder_is_delivered_and_removed, tests/test_reminder_sweep.py::test_removal_failure_leaves_it_for_the_next_sweep, tests/test_reminder_sweep.py::test_the_sweep_reads_the_operators_trigger_file]
