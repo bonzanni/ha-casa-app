@@ -23,7 +23,12 @@ python-telegram-bot==22.7
 # Bumped 3.13.5 -> 3.14.1 (v0.59.1): clears 11 security advisories (deserialization,
 # HTTP request-smuggling/pipelining, websocket memory-limit bypass, etc.), all
 # fixed by <=3.14.1. Dependabot #97 (branch deleted before recreate).
-aiohttp==3.14.1
+# Bumped 3.14.1 -> 3.14.3 (v0.221.0): clears Dependabot #14 (GHSA-cq5v-8q36-5273,
+# HIGH — out-of-bounds heap read in the C HTTP response parser's error path on a
+# malformed chunked response, fixed 3.14.3), #13 (GHSA-mfx4-hv73-q22v, request
+# smuggling via WebSocket upgrade) and #12 (GHSA-mq44-7p77-q5h7, WS client
+# accepted compressed frames without negotiated permessage-deflate), both 3.14.2.
+aiohttp==3.14.3
 apscheduler==3.11.2
 pyyaml==6.0.3
 jsonschema==4.23.0

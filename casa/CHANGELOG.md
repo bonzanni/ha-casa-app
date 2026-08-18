@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.221.0] - 2026-08-19
+
+### Security
+
+- Updated the bundled `aiohttp` HTTP library from 3.14.1 to 3.14.3. This
+  clears three published advisories, the most serious of which
+  (GHSA-cq5v-8q36-5273, rated high) is an out-of-bounds heap read that a
+  server could trigger by sending Casa a malformed chunked response. The
+  other two harden WebSocket handling (request smuggling via the upgrade
+  path, and acceptance of compressed frames that were never negotiated).
+  No configuration changes and no behaviour changes — update and restart.
+
 ## [0.220.0] - 2026-08-18
 
 ### Added
