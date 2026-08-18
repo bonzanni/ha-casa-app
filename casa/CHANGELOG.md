@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.222.0] - 2026-08-19
+
+### Fixed
+
+- Two libraries Casa uses directly (`anyio` and `pydantic`) are now declared
+  in the app's own dependency manifest. Until now they were installed only
+  because other declared dependencies happened to pull them in, so a future
+  update of those dependencies could have removed them and broken fresh
+  installs at boot. A new repository test fails whenever any directly
+  imported library is left undeclared, so this class of drift cannot return.
+  No behaviour changes — the installed versions are the same ones the image
+  already contained.
+
 ## [0.221.0] - 2026-08-19
 
 ### Security

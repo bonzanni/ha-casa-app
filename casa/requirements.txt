@@ -33,6 +33,15 @@ apscheduler==3.11.2
 pyyaml==6.0.3
 jsonschema==4.23.0
 opentelemetry-api>=1.43.0
+# Declared in v0.222.0: both were imported DIRECTLY (anyio by
+# casa_engagement_channel.py, pydantic by ha_mcp_facade.py) while only
+# transitive pins from mcp/claude-agent-sdk guaranteed them — a loan, not a
+# declaration; tests/test_declared_dependencies.py now fails on any such
+# undeclared import. Compatible ranges rather than exact pins, because both
+# are shared with mcp and the SDK and an exact pin here would fight their
+# resolvers on every bump.
+anyio>=4,<5
+pydantic>=2,<3
 # E-12 (v0.37.0): Channels MCP capability — used by casa_engagement_channel.
 # Build-time probe (docs/superpowers/specs/2026-05-12-e12-claude_code-channels-A6-findings.md
 # §A.6.1) confirmed FastMCP `instructions=` kwarg + `Server.create_initialization_options(
