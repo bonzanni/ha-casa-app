@@ -275,8 +275,8 @@ turn). It is *not* the workspace's standing instructions, which the driver rende
 separately from the executor's own template. The two are therefore distinct surfaces, and a
 launcher that interpolates something into one has not put it in the other — which is why a
 memory-enabled launch fetches the prior-engagement archive on exactly one of those paths
-per driver rather than both (see [`architecture/memory.md`](memory.md) for which, and why
-the duplicate mattered).
+per driver rather than both (see [`architecture/memory-scoping.md`](memory-scoping.md)
+for which, and why the duplicate mattered).
 
 Nothing after the launch fetches it again. A replay that re-renders the workspace reuses the
 block the launch cached, and a clearance rebuild *clears* that block rather than refetching

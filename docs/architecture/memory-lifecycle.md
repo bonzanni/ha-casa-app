@@ -14,8 +14,9 @@ protocol that retains it exactly once, how each item is labelled on the way in
 (its sensitivity tier, its speaker provenance, and the content addressing that
 deduplicates it), the explicit reset, the durable retry spool, and the
 operator-consented wipe that removes everything. What happens to a stored fact
-on the way back out — read clearance, rendering, and what a caller may claim
-from a result — is [`architecture/memory.md`](memory.md); the warm-client pool
+on the way back out — rendering and what a caller may claim from a result — is
+[`architecture/memory.md`](memory.md), and who may read it back is
+[`architecture/memory-scoping.md`](memory-scoping.md); the warm-client pool
 whose resume decision this lifecycle steers is
 [`architecture/turn-loop.md`](turn-loop.md).
 
@@ -314,6 +315,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 
 **Tests**
 - `tests/test_session_saver.py`
+- `tests/test_channel_policy.py`
 - `tests/test_freshness_reaper.py`
 - `tests/test_retirement_claims.py`
 - `tests/test_reset_channel_retirement.py`

@@ -124,41 +124,49 @@
     INV-MCP-008: [tests/test_hooks.py::test_required_floor_and_canonical_matchers, tests/test_hooks_policies.py::TestResolveHooks::test_stray_matcher_and_timeout_stripped_before_factory_call, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_claude_code_empty_pre_tool_use_fails_closed_naming_missing_policy, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_claude_code_no_hooks_file_fails_closed, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_claude_code_full_floor_loads_with_snapshot, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_in_casa_configurator_snapshot_is_declared_not_empty, tests/test_load_all_executors.py::TestContainmentFloorSnapshot::test_in_casa_no_hooks_file_snapshots_empty_dict, tests/test_hook_bridge.py::TestCanonicalMatcherForced::test_block_dangerous_bash_matcher_forced_to_canonical, tests/test_hook_bridge.py::TestCanonicalMatcherForced::test_self_containment_guard_matcher_forced_to_canonical, tests/test_hook_bridge.py::TestCanonicalMatcherForced::test_missing_path_scope_appended_with_canonical_matcher, tests/test_hooks_resolve_executor_params.py::test_post_load_hooks_yaml_mutation_does_not_reach_the_http_map, tests/test_workspace.py::TestProvisionWithHooks::test_settings_json_ignores_post_load_hooks_yaml_mutation, tests/test_boot_replay.py::test_task_only_record_settings_floor_regenerated_on_heal, tests/test_boot_replay.py::test_fast_path_settings_diff_drives_confirmed_cycle, tests/test_boot_replay.py::test_settings_snapshot_missing_floor_refuses_resume]
 
 - doc: architecture/memory.md
-  summary: Recall — who may read a stored fact back, how it is rendered, and what a caller may claim from what comes back.
-  when_changing: recall behaviour, read clearance, the absence contract, or the executor-archive scoping
+  summary: Recall — how a stored fact is rendered on the way back out, and what a caller may claim from what comes back.
+  when_changing: recall behaviour or the absence contract
   covers:
     - casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory
     - casa/rootfs/opt/casa/semantic_memory.py::RecallUnavailable
     - casa/rootfs/opt/casa/semantic_memory.py::RecallProtocolError
     - casa/rootfs/opt/casa/semantic_memory.py::NoOpSemanticMemory
     - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items
-    - casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel
-    - casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin
     - casa/rootfs/opt/casa/recall_renderer.py::render_recall
     - casa/rootfs/opt/casa/recall_health.py::observed_recall
+  tests:
+    - tests/test_recall_absence_invariant.py
+    - tests/test_recall_health.py::test_breaker_opens_after_threshold_failures
+    - tests/test_agent_auto_recall_unavailable.py
+    - tests/test_recall_empty_verdict.py
+    - tests/test_recall_readable_slice_framing.py
+  related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-scoping.md]
+  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-010]
+  invariant_tests:
+    INV-MEM-001: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_001_failures_raise_never_return_empty, tests/test_hindsight_memory.py::test_recall_unrenderable_results_are_unavailable_not_zero_hits]
+    INV-MEM-002: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_002_exactly_one_readable_tier]
+    INV-MEM-010: [tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_zero_hits_below_top_clearance_scopes_the_claim, tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_hits_that_did_not_fit_are_reported_as_existing, tests/test_recall_empty_verdict.py::TestQueryEngagerUnknownIsNotAbsence::test_unknown_carries_do_not_assert_guidance, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_nonempty_result_carries_the_note_and_the_fact, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_the_note_is_identical_at_every_clearance, tests/test_recall_readable_slice_framing.py::TestAutoRecallBlock::test_injected_memory_context_carries_the_note, tests/test_recall_readable_slice_framing.py::TestSpecialistBlock::test_specialist_memory_context_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_lessons_block_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_empty_archive_stays_silent, tests/test_recall_readable_slice_framing.py::test_every_slice_consumer_is_declared]
+
+- doc: architecture/memory-scoping.md
+  summary: Which stored facts a given reader gets back — read clearance per channel and sender, the engagement clearance clamp, and the executor-archive epoch scoping.
+  when_changing: read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping
+  covers:
+    - casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel
+    - casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin
     - casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch
     - casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag
     - casa/rootfs/opt/casa/executor_epoch.py::make_archive_epoch_filter
   tests:
-    - tests/test_recall_absence_invariant.py
-    - tests/test_recall_health.py::test_breaker_opens_after_threshold_failures
     - tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below
     - tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction
-    - tests/test_channel_policy.py
-    - tests/test_agent_auto_recall_unavailable.py
-    - tests/test_recall_empty_verdict.py
-    - tests/test_recall_readable_slice_framing.py
     - tests/test_executor_epoch.py
-  related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md]
-  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-003, INV-MEM-008, INV-MEM-010, INV-MEM-011, INV-MEM-015]
+  related: [architecture/memory.md, architecture/memory-lifecycle.md, architecture/engagements.md]
+  defines_invariants: [INV-MEM-003, INV-MEM-008, INV-MEM-011, INV-MEM-015]
   invariant_tests:
-    INV-MEM-001: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_001_failures_raise_never_return_empty, tests/test_hindsight_memory.py::test_recall_unrenderable_results_are_unavailable_not_zero_hits]
-    INV-MEM-002: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_002_exactly_one_readable_tier]
     INV-MEM-003: [tests/test_sensitivity.py::test_unknown_channel_fails_closed_to_public]
-    INV-MEM-015: [tests/test_executor_epoch.py::TestArchiveEpochFilter::test_keeps_matching_drops_mismatched_and_untagged, tests/test_executor_epoch.py::TestDigestInputs::test_doctrine_edit_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_prompt_indirection_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_workspace_template_source_is_input_for_claude_code, tests/test_engagement_summary_retain.py::test_executor_summary_stamped_with_launch_epoch_tag, tests/test_engagement_summary_retain.py::test_executor_summary_without_epoch_retains_untagged]
     INV-MEM-008: [tests/test_recall_memory_tool_tiers.py::test_engagement_started_by_a_non_operator_recalls_public_only, tests/test_telegram_sender_identity.py::test_a_lowered_engagement_recalls_at_the_lower_tier]
-    INV-MEM-010: [tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_zero_hits_below_top_clearance_scopes_the_claim, tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_hits_that_did_not_fit_are_reported_as_existing, tests/test_recall_empty_verdict.py::TestQueryEngagerUnknownIsNotAbsence::test_unknown_carries_do_not_assert_guidance, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_nonempty_result_carries_the_note_and_the_fact, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_the_note_is_identical_at_every_clearance, tests/test_recall_readable_slice_framing.py::TestAutoRecallBlock::test_injected_memory_context_carries_the_note, tests/test_recall_readable_slice_framing.py::TestSpecialistBlock::test_specialist_memory_context_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_lessons_block_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_empty_archive_stays_silent, tests/test_recall_readable_slice_framing.py::test_every_slice_consumer_is_declared]
     INV-MEM-011: [tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_lowering_clearance_sets_the_flag_durably, tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_clamp_withholds_the_launch_materials, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_downgrade_invalidates_clears_sid_rebuilds_then_delivers, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_failed_rebuild_refuses_delivery_and_keeps_the_flag, tests/test_engagement_rebuild_fences.py::TestInProcessToolFence::test_pending_record_refuses_the_tool, tests/test_engagement_rebuild_fences.py::TestChokePointFence::test_internal_tools_call_refuses_pending_engagement, tests/test_engagement_rebuild_fences.py::TestInFlightReFilter::test_clamp_during_recall_filters_this_result, tests/test_engagement_rebuild_fences.py::TestInCasaLaunchGate::test_clamp_during_client_open_aborts_the_stale_prompt]
+    INV-MEM-015: [tests/test_executor_epoch.py::TestArchiveEpochFilter::test_keeps_matching_drops_mismatched_and_untagged, tests/test_executor_epoch.py::TestDigestInputs::test_doctrine_edit_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_prompt_indirection_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_workspace_template_source_is_input_for_claude_code, tests/test_engagement_summary_retain.py::test_executor_summary_stamped_with_launch_epoch_tag, tests/test_engagement_summary_retain.py::test_executor_summary_without_epoch_retains_untagged]
 
 - doc: architecture/memory-lifecycle.md
   summary: Retention lifecycle — how a conversation becomes long-term memory, how each item is labelled on the way in, how a reset retires it, and how the operator-consented wipe removes everything.
@@ -188,6 +196,7 @@
     - casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once
   tests:
     - tests/test_session_saver.py
+    - tests/test_channel_policy.py
     - tests/test_freshness_reaper.py
     - tests/test_retirement_claims.py
     - tests/test_reset_channel_retirement.py

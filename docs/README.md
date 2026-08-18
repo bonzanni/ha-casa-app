@@ -42,7 +42,8 @@ which is keyed on what you are about to do rather than on subsystem names.
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
 | plugin installation, artifact identity, protected tools, or authorization grants | [`architecture/plugins.md`](architecture/plugins.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
-| recall behaviour, read clearance, the absence contract, or the executor-archive scoping | [`architecture/memory.md`](architecture/memory.md) |
+| read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
+| recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, the retry spool, or the memory wipe | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, materialization, or bundle-transaction recovery | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
