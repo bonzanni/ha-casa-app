@@ -27,7 +27,12 @@ unaffected, because it does not use that route.
 
 **Two kinds of inbound message go to different places.** A direct message becomes an ordinary
 turn on the bus. A message in an engagement topic is delivered to that engagement's driver
-instead — it is input to running work, not a new conversation.
+instead — it is input to running work, not a new conversation. For an in-casa engagement,
+the topic handler and the system-continuation seam (`deliver_system_turn`) both admit the
+turn synchronously, before any await a completion could race, as an admission ticket the
+completion gate reads; recognized commands are consumed by the handler itself and are never
+ticketed, and a ticket its delivery task failed to consume is discharged only after one
+bounded failure notice (the engagements document owns the ticket lifecycle).
 
 **Update dispatch is concurrent; ordering is re-imposed per scope, not globally.** Handlers
 run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement

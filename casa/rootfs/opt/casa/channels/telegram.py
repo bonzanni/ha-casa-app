@@ -608,6 +608,18 @@ class TelegramChannel(Channel):
         # G4 D2 (v0.96.0): inbound-ingress reservation seam (see casa_core).
         self._driver_reserve_inbound = None
         self._driver_release_inbound = None
+        # #649: in_casa admission-ticket seams (see casa_core). ``admit`` is
+        # SYNCHRONOUS and taken before the handler's first risky await;
+        # ``discharge`` is idempotent by exact token; ``held`` is the failure
+        # owner's peek before its one bounded notice attempt. None-safe.
+        self._driver_admit_inbound = None
+        self._driver_discharge_inbound = None
+        self._driver_inbound_held = None
+        # #649: producer-closing stop gate + the failure finalizers stop()
+        # must drain (visibility law — a live record's ticket is never
+        # discharged before one bounded visible-outcome attempt).
+        self._stopping = False
+        self._inbound_cleanup_tasks: set[asyncio.Task] = set()
         self._driver_rollback_answer_reservation = None
         # v0.79.0 (§3, F2): route a platform-origin topic notice (command
         # replies, resume errors) through the engagement's OUTPUT SEQUENCER so
@@ -750,6 +762,10 @@ class TelegramChannel(Channel):
 
     async def stop(self) -> None:
         """Stop the channel and clean up resources."""
+        # #649: close the producers FIRST — both hand-off sites refuse to
+        # create a delivery task once this is set, so the drain below cannot
+        # be outrun by a handler that was already past its admission.
+        self._stopping = True
         for task in self._typing_loops.values():
             task.cancel()
         self._typing_loops.clear()
@@ -758,7 +774,25 @@ class TelegramChannel(Channel):
         # M9: cancel any in-flight engagement-turn delivery tasks.
         for task in list(self._turn_tasks):
             task.cancel()
+
+        # #649: bounded, loop-until-stable drain of the cancelled turn tasks
+        # AND the ticket-cleanup finalizers their done_callbacks create —
+        # a single snapshot cannot see a finalizer born after it (Sol seam
+        # r8/r9). Bounded: shutdown never wedges on a notice; whatever the
+        # bound abandons is the accepted non-durable-ledger process-death
+        # limit.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        while True:
+            pending = [t for t in (
+                list(self._turn_tasks) + list(self._inbound_cleanup_tasks))
+                if not t.done()]
+            if not pending or loop.time() >= deadline:
+                break
+            await asyncio.wait(
+                pending, timeout=max(0.1, deadline - loop.time()))
         self._turn_tasks.clear()
+        self._inbound_cleanup_tasks.clear()
 
         if self._probe_task and not self._probe_task.done():
             self._probe_task.cancel()
@@ -1559,43 +1593,6 @@ class TelegramChannel(Channel):
                                 )
                         return
 
-                # #336 (Terra, review r4): an engagement reads at the
-                # clearance of the turn that CREATED it — but any member of
-                # the engagement supergroup can steer it by messaging its
-                # topic, and answering a steering turn at the creator's
-                # clearance would hand a non-operator the operator's private
-                # memory through the engagement. Clamp the engagement's
-                # read-clearance DOWN to this sender's before their turn is
-                # delivered, so it never reads above the least-privileged
-                # person who has steered it. Monotonic: it only ever lowers,
-                # so it is safe under concurrent steerers and idempotent for
-                # the ordinary operator-only case (where it no-ops).
-                moved = await self._engagement_registry.lower_origin_clearance(
-                    rec.id, self._origin_clearance_for_user_id(user_id))
-                if moved:
-                    # #369: the clamp gates future reads, but the live session
-                    # still HOLDS what it fetched at the old tier — transcript
-                    # and launch-injected archive — and this steerer could
-                    # simply ask it to restate them. Tear the session down NOW
-                    # (under this same lock, before the turn is delivered) and
-                    # durably drop the resume pointer; _resume_and_ready's
-                    # rebuild branch establishes the fresh floor-context this
-                    # turn will be delivered into. Teardown failure is logged
-                    # and does not skip the pointer drop — the persisted
-                    # context_rebuild_pending flag (set by the clamp itself)
-                    # is what refuses the old session either way.
-                    if self._driver_invalidate_session is not None:
-                        try:
-                            await self._driver_invalidate_session(rec)
-                        except Exception:  # noqa: BLE001 — flag fails closed
-                            logger.warning(
-                                "engagement %s session invalidation failed "
-                                "after clearance downgrade (rebuild flag "
-                                "still blocks resume)", rec.id[:8],
-                                exc_info=True,
-                            )
-                    await self._engagement_registry.clear_session_id(rec.id)
-
                 # R5 (v0.89.0): record this operator message as the react
                 # target — SYNCHRONOUSLY, from the TRUSTED msg.message_id and
                 # the authoritative topic/chat identity, BEFORE the first await
@@ -1607,13 +1604,28 @@ class TelegramChannel(Channel):
                     getattr(msg, "message_id", None),
                 )
 
+                # #649: ONE mention-aware recognized-command classification,
+                # computed here and reused by the dispatch below — a
+                # recognized command is consumed by this handler itself
+                # (never delivered to the model) and gets no admission
+                # ticket; every other text does, HERE, before the clearance
+                # clamp / session-invalidation awaits a completion can race.
+                recognized = self._classify_engagement_command(text)
+                inbound_token = None
+                if recognized is None and self._driver_admit_inbound is not None:
+                    try:
+                        inbound_token = self._driver_admit_inbound(rec, text)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("admit_inbound failed", exc_info=True)
+
                 # G4 D2 (v0.96.0, Sol code-r2-1): SYNCHRONOUS ingress
-                # reservation at TRUE handler entry — before ANY suspension
-                # (including the high-water advance directly below). A
-                # completion racing any await in this handler must already
-                # observe the accepted message as unread. Released in the
-                # finally for every path that does not hand off delivery,
-                # and by _deliver_turn_bg once the spool enqueue resolves.
+                # reservation at TRUE handler entry — before ANY suspension.
+                # #649 moved it up past the clearance/invalidation awaits so
+                # that contract is finally literal (unchanged semantics
+                # otherwise: taken for every text, commands included, and
+                # released in the finally for every path that does not hand
+                # off delivery, or by _deliver_turn_bg once the spool
+                # enqueue resolves).
                 inbound_reserved = False
                 if self._driver_reserve_inbound is not None:
                     try:
@@ -1624,6 +1636,43 @@ class TelegramChannel(Channel):
                 answer_token = None
                 handed_off = False
                 try:
+                    # #336 (Terra, review r4): an engagement reads at the
+                    # clearance of the turn that CREATED it — but any member of
+                    # the engagement supergroup can steer it by messaging its
+                    # topic, and answering a steering turn at the creator's
+                    # clearance would hand a non-operator the operator's private
+                    # memory through the engagement. Clamp the engagement's
+                    # read-clearance DOWN to this sender's before their turn is
+                    # delivered, so it never reads above the least-privileged
+                    # person who has steered it. Monotonic: it only ever lowers,
+                    # so it is safe under concurrent steerers and idempotent for
+                    # the ordinary operator-only case (where it no-ops).
+                    moved = await self._engagement_registry.lower_origin_clearance(
+                        rec.id, self._origin_clearance_for_user_id(user_id))
+                    if moved:
+                        # #369: the clamp gates future reads, but the live session
+                        # still HOLDS what it fetched at the old tier — transcript
+                        # and launch-injected archive — and this steerer could
+                        # simply ask it to restate them. Tear the session down NOW
+                        # (under this same lock, before the turn is delivered) and
+                        # durably drop the resume pointer; _resume_and_ready's
+                        # rebuild branch establishes the fresh floor-context this
+                        # turn will be delivered into. Teardown failure is logged
+                        # and does not skip the pointer drop — the persisted
+                        # context_rebuild_pending flag (set by the clamp itself)
+                        # is what refuses the old session either way.
+                        if self._driver_invalidate_session is not None:
+                            try:
+                                await self._driver_invalidate_session(rec)
+                            except Exception:  # noqa: BLE001 — flag fails closed
+                                logger.warning(
+                                    "engagement %s session invalidation failed "
+                                    "after clearance downgrade (rebuild flag "
+                                    "still blocks resume)", rec.id[:8],
+                                    exc_info=True,
+                                )
+                        await self._engagement_registry.clear_session_id(rec.id)
+
                     # v0.79.0 (§3, F2/F5): an inbound operator message is a causal
                     # event, visible on Telegram the instant it arrives. SEAL open
                     # narration + advance the topic high-water at TRUE handler entry
@@ -1657,19 +1706,14 @@ class TelegramChannel(Channel):
                             answer_token = self._driver_reserve_answer(rec)
                         except Exception:  # noqa: BLE001 — reservation is advisory
                             answer_token = None
-                    if text.startswith("/"):
+                    if recognized is not None:
                         # M10 (v0.52.0): group command menus send "/cancel@botname"
-                        # (Telegram appends @botusername to menu-selected commands
-                        # in groups). Strip the mention so the command matches. A
-                        # command explicitly addressed to a DIFFERENT bot is
-                        # blanked (falls through to the user-turn path, matching
-                        # PTB's CommandHandler semantics). When our username isn't
-                        # cached yet, strip unconditionally — safe inside Casa's
-                        # own supergroup.
-                        token = text.split()[0].lower()
-                        command, _, mention = token.partition("@")
-                        if mention and self._bot_username and mention != self._bot_username:
-                            command = ""  # addressed to another bot — not ours
+                        # — the mention-strip lives in the ONE classification
+                        # computed above (#649); a command addressed to a
+                        # DIFFERENT bot classified as None and falls through
+                        # to the user-turn path, matching PTB's
+                        # CommandHandler semantics.
+                        command = recognized
                         # Bug 8 (v0.14.6): /cancel and /complete are originator-only.
                         # Pre-fix any user in the supergroup could terminate any
                         # engagement; user_id wasn't even checked. /silent stays
@@ -1714,6 +1758,31 @@ class TelegramChannel(Channel):
                                     rec, reason="user")
                             else:
                                 finalized = await self._finalize_complete_user(rec)
+                            # #649: a falsy finalize whose record is STILL
+                            # LIVE means the strict terminal persist rolled
+                            # back (or the stale-guard lost) — the operator's
+                            # command would otherwise be silently ignored
+                            # and a later agent completion could proceed.
+                            # (Already-terminal records re-read as terminal
+                            # and stay silent, as before.) Posted BEFORE the
+                            # rollback so a re-anchored question still lands
+                            # below it (Sol r12-1 wire ordering).
+                            if not finalized:
+                                latest = (
+                                    self._engagement_registry.get(rec.id)
+                                    if self._engagement_registry is not None
+                                    else None)
+                                if latest is not None and latest.status in (
+                                        "active", "idle"):
+                                    try:
+                                        await self._post_engagement_notice(
+                                            rec,
+                                            f"{command} could not be "
+                                            "finalized — please retry.")
+                                    except Exception:  # noqa: BLE001
+                                        logger.debug(
+                                            "command retry notice failed",
+                                            exc_info=True)
                             await self._rollback_answer(
                                 rec, answer_token,
                                 suppress_reanchor=bool(finalized))
@@ -1750,21 +1819,57 @@ class TelegramChannel(Channel):
                     # SDK turn — a subsequent /cancel can then acquire the lock
                     # and interrupt the in-flight turn.
                     if self._driver_send_user_turn is not None:
+                        if self._stopping:
+                            # #649 producer-closing stop gate: no delivery
+                            # task after stop() began — one bounded telling,
+                            # then the finally's discharge no-ops.
+                            await self._settle_lost_inbound(rec, inbound_token)
+                            return
+                        # #649: belt-and-suspenders late admission — any
+                        # text reaching delivery without a ticket (seam not
+                        # wired, or a future path) is admitted before the
+                        # task exists.
+                        if (inbound_token is None
+                                and self._driver_admit_inbound is not None):
+                            try:
+                                inbound_token = self._driver_admit_inbound(
+                                    rec, text)
+                            except Exception:  # noqa: BLE001
+                                logger.debug(
+                                    "late admit_inbound failed", exc_info=True)
                         # §A3: the message becomes a delivered user turn — TRANSFER
                         # reservation ownership to the background task, which
                         # promotes (accepted) or CAS-rolls-back (rejected) per the
                         # enqueue disposition. ``handed_off`` stops the finally
                         # below from clobbering the in-flight reservation.
-                        handed_off = True
+                        # #649 (Terra seam r3): set ONLY after the task exists
+                        # and both callbacks are attached — a create_task
+                        # raise otherwise skipped every rollback with no
+                        # owner in existence.
                         task = asyncio.create_task(
                             self._deliver_turn_bg(
                                 rec, text,
                                 tg_message_id=getattr(msg, "message_id", None),
                                 answer_token=answer_token,
-                                inbound_reserved=inbound_reserved))
+                                inbound_reserved=inbound_reserved,
+                                inbound_token=inbound_token))
                         self._turn_tasks.add(task)
                         task.add_done_callback(self._turn_tasks.discard)
+                        # Task-end backstop for cancelled-before-first-step.
+                        task.add_done_callback(
+                            lambda t, r=rec, tok=inbound_token:
+                                self._schedule_inbound_cleanup(r, tok))
+                        handed_off = True
                     return
+                except BaseException:
+                    # #649 visibility law: an exception/cancellation before
+                    # hand-off leaves the ticket with no task owner — one
+                    # bounded notice attempt while it is still ledgered,
+                    # then discharge (the finally's discharge is the
+                    # idempotent second half).
+                    if inbound_token is not None and not handed_off:
+                        await self._settle_lost_inbound(rec, inbound_token)
+                    raise
                 finally:
                     # §A3 (Sol r8-1): every path that did NOT hand the reservation
                     # to the delivery task — command classification, resume
@@ -1783,6 +1888,18 @@ class TelegramChannel(Channel):
                             except Exception:  # noqa: BLE001
                                 logger.debug(
                                     "release_inbound failed", exc_info=True)
+                        # #649: expected-non-delivery paths (a losing
+                        # _resume_and_ready, the stop gate) discharge the
+                        # ticket directly; exception paths already made
+                        # their telling above. Idempotent by exact token.
+                        if (inbound_token is not None
+                                and self._driver_discharge_inbound is not None):
+                            try:
+                                self._driver_discharge_inbound(
+                                    rec, inbound_token)
+                            except Exception:  # noqa: BLE001
+                                logger.debug(
+                                    "inbound discharge failed", exc_info=True)
 
         # 3) Other chats. When telegram_chat_id is configured it is an
         #    allowlist (DOCS.md: "Telegram chat ID to restrict messages
@@ -1821,10 +1938,71 @@ class TelegramChannel(Channel):
             logger.debug("rollback_answer_reservation failed for %s",
                          rec.id[:8], exc_info=True)
 
+    def _classify_engagement_command(self, text: str) -> str | None:
+        """#649: THE one mention-aware recognized-command classification,
+        computed once per update and reused by admission accounting AND the
+        command dispatch below — never re-derived (a second, slightly
+        different predicate is how a borrowed predicate answers a different
+        question). Returns '/cancel' | '/complete' | '/silent' | None; a
+        command explicitly addressed to a DIFFERENT bot is None (it falls
+        through to delivery, exactly as the historical dispatch treated it)."""
+        if not text.startswith("/"):
+            return None
+        token = text.split()[0].lower()
+        command, _, mention = token.partition("@")
+        if mention and self._bot_username and mention != self._bot_username:
+            return None  # addressed to another bot — not ours
+        return command if command in ("/cancel", "/complete", "/silent") else None
+
+    async def _settle_lost_inbound(self, rec, token) -> None:
+        """#649 visibility law: before a still-ledgered admission ticket is
+        discharged on a failure path, make ONE bounded, guarded notice
+        attempt — never gated on any record-status read (no status, settled
+        or not, proves the terminal snapshot ran; a funnel terminal already
+        closed the topic, so the attempt fails harmlessly there and the
+        intentional silences survive de facto). One attempt, then discharge
+        regardless: retry-until-posted would be an UNCLEARABLE completion
+        veto (the INV-ENG-003 livelock class)."""
+        if token is None or self._driver_discharge_inbound is None:
+            return
+        try:
+            held = (self._driver_inbound_held(rec, token)
+                    if self._driver_inbound_held is not None else False)
+            if held:
+                try:
+                    await asyncio.wait_for(self._post_engagement_notice(
+                        rec, "Your message could not be delivered — "
+                             "please resend it."), 5)
+                except BaseException:  # noqa: BLE001 — bounded best-effort
+                    logger.debug("lost-inbound notice failed for %s",
+                                 rec.id[:8], exc_info=True)
+        finally:
+            try:
+                self._driver_discharge_inbound(rec, token)
+            except Exception:  # noqa: BLE001
+                logger.debug("inbound discharge failed", exc_info=True)
+
+    def _schedule_inbound_cleanup(self, rec, token) -> None:
+        """#649: task-end backstop, attached as a done_callback at both
+        spawn sites. On every normal path the ticket is already discharged
+        (held=False → pure no-op); its real work is the
+        cancelled-before-first-step task, whose coroutine never ran any
+        try/finally. Scheduled UNCONDITIONALLY (stop() included) and
+        tracked, so the shutdown drain awaits it."""
+        if token is None:
+            return
+        try:
+            t = asyncio.create_task(self._settle_lost_inbound(rec, token))
+        except RuntimeError:  # loop closing — process death; non-durable
+            return
+        self._inbound_cleanup_tasks.add(t)
+        t.add_done_callback(self._inbound_cleanup_tasks.discard)
+
     async def _deliver_turn_bg(
         self, rec, text: str, *, tg_message_id: int | None = None,
         answer_token: str | None = None,
         inbound_reserved: bool = False,
+        inbound_token: object | None = None,
     ) -> None:
         """M9 (v0.52.0): run one engagement user-turn to completion.
 
@@ -1862,12 +2040,26 @@ class TelegramChannel(Channel):
         if preamble:
             text = f"{preamble}\n\n{text}"
         try:
-            disposition = await self._driver_send_user_turn(
-                rec, text, tg_message_id=tg_message_id)
+            if inbound_token is not None:
+                disposition = await self._driver_send_user_turn(
+                    rec, text, tg_message_id=tg_message_id,
+                    inbound_token=inbound_token)
+            else:
+                disposition = await self._driver_send_user_turn(
+                    rec, text, tg_message_id=tg_message_id)
             _release_inbound()
+            # #649: on the success path the driver already discharged the
+            # ticket at its evidence frame — this is the idempotent safety.
+            if (inbound_token is not None
+                    and self._driver_discharge_inbound is not None):
+                self._driver_discharge_inbound(rec, inbound_token)
         except asyncio.CancelledError:
             _release_inbound()
             # Cancelled before a durable enqueue could promote — roll back.
+            # #649 visibility law: one bounded notice attempt while the
+            # ticket is still held, then discharge (guarded — a shutdown
+            # cancellation's notice may fail; that is the bounded attempt).
+            await self._settle_lost_inbound(rec, inbound_token)
             await self._rollback_answer(rec, answer_token)
             raise
         except Exception as exc:  # noqa: BLE001
@@ -1886,6 +2078,12 @@ class TelegramChannel(Channel):
                     "turn delivery ended by finalize for %s: %s",
                     rec.id[:8], exc,
                 )
+                # #649: never infer disclosure from a status read — a
+                # transiently-terminal strict persist can roll back live.
+                # The settle attempt targets a closed topic on a GENUINE
+                # terminal (whose flip snapshot disclosed the held ticket)
+                # and fails harmlessly; on a fake one it posts.
+                await self._settle_lost_inbound(rec, inbound_token)
                 return
             logger.warning("turn delivery failed for %s: %s", rec.id[:8], exc)
             try:
@@ -1904,6 +2102,14 @@ class TelegramChannel(Channel):
                 # runs AFTER the notice attempt, so a rollback consumer's re-posted
                 # question lands BELOW the notice.
                 await self._rollback_answer(rec, answer_token)
+                # #649: the "Turn failed" notice above WAS this delivery's
+                # one visible-outcome attempt — discharge follows it.
+                if (inbound_token is not None
+                        and self._driver_discharge_inbound is not None):
+                    try:
+                        self._driver_discharge_inbound(rec, inbound_token)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("inbound discharge failed", exc_info=True)
             return
         # §A3: a durable-enqueue REJECTION (capacity drop / spool-write error)
         # rolls the reservation back; an accepted enqueue already promoted it.
@@ -2094,18 +2300,55 @@ class TelegramChannel(Channel):
         turns stream the whole recipe to completion), so the lock is released as
         soon as the resume + dispatch is done — this never blocks the caller (a
         tap-callback finish hook) for the turn's duration."""
-        lock = self._engagement_handler_locks.setdefault(
-            rec.topic_id, asyncio.Lock())
-        async with lock:
-            if not await self._resume_and_ready(rec):
-                logger.info(
-                    "post-consent auto-resume skipped for engagement %s — not "
-                    "deliverable (terminal/unresumable); operator can re-nudge",
-                    rec.id[:8])
-                return
-            task = asyncio.create_task(self._deliver_turn_bg(rec, text))
-            self._turn_tasks.add(task)
-            task.add_done_callback(self._turn_tasks.discard)
+        # #649: admit the continuation SYNCHRONOUSLY at entry, before the
+        # topic-lock wait and every _resume_and_ready await — a completion
+        # racing any of those suspensions must already see it as unread.
+        inbound_token = (self._driver_admit_inbound(rec, text)
+                         if self._driver_admit_inbound is not None else None)
+        handed_off = False
+        try:
+            lock = self._engagement_handler_locks.setdefault(
+                rec.topic_id, asyncio.Lock())
+            async with lock:
+                if not await self._resume_and_ready(rec):
+                    logger.info(
+                        "post-consent auto-resume skipped for engagement %s — "
+                        "not deliverable (terminal/unresumable); operator can "
+                        "re-nudge", rec.id[:8])
+                    return
+                if self._stopping:
+                    # #649 producer-closing stop gate: no new delivery task
+                    # after stop() began; the failure owner's settle below
+                    # makes the drop visible (bounded, best-effort).
+                    await self._settle_lost_inbound(rec, inbound_token)
+                    inbound_token = None
+                    return
+                task = asyncio.create_task(self._deliver_turn_bg(
+                    rec, text, inbound_token=inbound_token))
+                self._turn_tasks.add(task)
+                task.add_done_callback(self._turn_tasks.discard)
+                # Task-end backstop for a cancelled-before-first-step task.
+                task.add_done_callback(
+                    lambda t, r=rec, tok=inbound_token:
+                        self._schedule_inbound_cleanup(r, tok))
+                handed_off = True
+        except BaseException:
+            # Raise/cancellation before hand-off (e.g. inside
+            # _resume_and_ready's strict writes): the ticket has no task
+            # owner — apply the visibility law here, then re-raise.
+            if inbound_token is not None and not handed_off:
+                await self._settle_lost_inbound(rec, inbound_token)
+                inbound_token = None
+            raise
+        finally:
+            if (not handed_off and inbound_token is not None
+                    and self._driver_discharge_inbound is not None):
+                # Expected-False path (_resume_and_ready surfaced/cleaned
+                # up) — discharge directly, no second telling.
+                try:
+                    self._driver_discharge_inbound(rec, inbound_token)
+                except Exception:  # noqa: BLE001
+                    logger.debug("inbound discharge failed", exc_info=True)
 
     async def _maybe_redirect_main_feed(self, user_id: int | None) -> None:
         if user_id is None:

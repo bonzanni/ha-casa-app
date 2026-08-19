@@ -4376,7 +4376,8 @@ async def main() -> None:
         telegram_channel._session_registry = session_registry
         telegram_channel._semantic_memory = semantic_memory
 
-        async def _driver_send_user_turn(rec, text, *, tg_message_id=None):
+        async def _driver_send_user_turn(rec, text, *, tg_message_id=None,
+                                         inbound_token=None):
             # §A3 (Sol r10-2): PROPAGATE the enqueue disposition so
             # _deliver_turn_bg can promote (accepted) vs roll back (rejected)
             # the answered reservation.
@@ -4384,10 +4385,32 @@ async def main() -> None:
                 return await claude_code_driver.send_user_turn(
                     rec, text, tg_message_id=tg_message_id)
             # in_casa driver has no durable spool / reply-threading (§7
-            # follow-up) — drop the id; no reservation disposition.
-            await engagement_driver.send_user_turn(rec, text)
+            # follow-up) — drop the id; no reservation disposition. #649:
+            # thread the seam-admitted ticket so the driver adopts it.
+            await engagement_driver.send_user_turn(
+                rec, text, inbound_token=inbound_token)
             return None
         telegram_channel._driver_send_user_turn = _driver_send_user_turn
+
+        # #649: in_casa admission-ticket seam trio. SYNCHRONOUS, taken by the
+        # Telegram entry points before their first await; claude_code keeps
+        # its own spool + ingress-reservation accounting (admit returns None).
+        def _driver_admit_inbound(rec, text):
+            if rec.driver == "claude_code":
+                return None
+            return engagement_driver.admit_inbound(rec.id, text)
+        telegram_channel._driver_admit_inbound = _driver_admit_inbound
+
+        def _driver_discharge_inbound(rec, token):
+            if rec.driver != "claude_code" and token is not None:
+                engagement_driver.discharge_inbound(rec.id, token)
+        telegram_channel._driver_discharge_inbound = _driver_discharge_inbound
+
+        def _driver_inbound_held(rec, token):
+            if rec.driver != "claude_code" and token is not None:
+                return engagement_driver.inbound_token_held(rec.id, token)
+            return False
+        telegram_channel._driver_inbound_held = _driver_inbound_held
 
         # #369: clearance-downgrade context revocation. ``invalidate`` tears
         # the pre-clamp session down (the durable context_rebuild_pending flag,

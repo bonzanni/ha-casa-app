@@ -1052,3 +1052,237 @@ class TestInboundIngressReservation:
         except _asyncio.CancelledError:
             pass
         assert drv.inbound_reservations(rec.id) == 0   # released on cancel
+
+
+# ===========================================================================
+# 10. RED CASE (#649) — in_casa completion inbound gate
+#     Specified by Terra (drive run 2026-08-18-b, rounds-649/redcase-spec),
+#     accepted by Sol. FROZEN once accepted — do not modify; re-specify +
+#     re-accept instead. Invariant: INV-ENG-003 (engagements.md:145) extended
+#     to the in_casa driver — a SUCCESSFUL emit_completion is refused
+#     (kind=unread_inbound, retryable) while an inbound turn has been admitted
+#     for delivery but not yet handed to the engagement's ClaudeSDKClient,
+#     including a turn queued behind the driver's per-turn lock
+#     (in_casa_driver.py:411) while an earlier turn streams. At 3dce522d the
+#     gate hasattr-no-ops (tools.py:8563; InCasaDriver implements no inbound
+#     accessors) and the queued turn dies on the closed client, dropped at
+#     INFO (telegram.py:1877-1889; dossier 649 Part B, measured).
+# ===========================================================================
+
+
+class _InCasaRedCaseClient:
+    """Fake ClaudeSDKClient. First turn streams (holds the per-turn lock)
+    until ``release_first``; ``close()`` marks closed and releases the first
+    stream; a later ``query()`` on a closed client raises — the measured
+    pre-fix loss mode (dossier 649 claim 5, interleaving (c))."""
+
+    def __init__(self):
+        self.query_prompts: list[str] = []
+        self.close_calls = 0
+        self.closed = False
+        self.first_streaming = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def query(self, prompt: str) -> None:
+        if self.closed:
+            raise RuntimeError("client closed")
+        self.query_prompts.append(prompt)
+
+    def receive_response(self):
+        from claude_agent_sdk import AssistantMessage, TextBlock
+        client = self
+
+        def _assistant(text):
+            try:
+                return AssistantMessage(content=[TextBlock(text=text)],
+                                        model="m")
+            except TypeError:
+                m = AssistantMessage.__new__(AssistantMessage)
+                m.content = [TextBlock(text=text)]
+                return m
+
+        first = len(client.query_prompts) == 1
+
+        async def _gen():
+            if first:
+                client.first_streaming.set()
+                await client.release_first.wait()
+                yield _assistant("first turn text")
+            else:
+                yield _assistant("second turn text")
+        return _gen()
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.closed = True
+        self.release_first.set()
+
+
+class _ProbeLock(asyncio.Lock):
+    """Per-engagement driver lock that flags when a SECOND turn queues."""
+
+    def __init__(self):
+        super().__init__()
+        self.second_waiting = asyncio.Event()
+
+    async def __aenter__(self):
+        if self.locked():
+            self.second_waiting.set()
+        await self.acquire()
+        return None
+
+
+class _FakeStreamHandle:
+    def __init__(self):
+        self.emits: list[str] = []
+        self.finals: list[str] = []
+
+    async def emit(self, text):
+        self.emits.append(text)
+
+    async def finalize(self, text):
+        self.finals.append(text)
+
+
+class TestInCasaCompletionInboundGate:
+    async def _ctx(self, tmp_path, fake_telegram_bot):
+        import agent as agent_mod
+        from channels.telegram import TelegramChannel
+        from drivers.in_casa_driver import InCasaDriver
+        from engagement_registry import EngagementRegistry
+        from tools import init_tools
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None)
+        rec = await reg.create(
+            "executor", "configurator", "in_casa", "t",
+            {"role": "assistant", "channel": "telegram", "user_id": 77},
+            topic_id=555)
+
+        client = _InCasaRedCaseClient()
+        drv = InCasaDriver(topic_stream_factory=lambda tid: _FakeStreamHandle())
+        lock = _ProbeLock()
+        drv._clients[rec.id] = client
+        drv._ctx_stack[rec.id] = client
+        drv._locks[rec.id] = lock
+
+        tch = MagicMock()
+        tch.send_to_topic = AsyncMock()
+        tch.send_response_to_topic = AsyncMock()
+        tch.close_topic = AsyncMock()
+        cm = MagicMock()
+        cm.get.return_value = tch
+        bus = MagicMock()
+        bus.notify = AsyncMock()
+        init_tools(
+            channel_manager=cm, bus=bus,
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=reg,
+        )
+        agent_mod.active_engagement_driver = drv
+
+        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
+                             engagement_supergroup_id=-1001)
+        ch._engagement_registry = reg
+        ch._engagement_driver = drv
+        ch._observer = MagicMock()
+        ch._driver_advance_high_water = AsyncMock()
+
+        async def _send_user_turn(r, text, *, tg_message_id=None):
+            # Mirrors casa_core's in_casa branch (casa_core.py:4386-4389).
+            await drv.send_user_turn(r, text)
+            return None
+        ch._driver_send_user_turn = _send_user_turn
+        return ch, reg, rec, drv, client, lock, tch
+
+    async def _emit_ok(self, rec):
+        from tools import emit_completion, engagement_var
+        token = engagement_var.set(rec)
+        try:
+            res = await emit_completion.handler({
+                "text": "done", "artifacts": [], "next_steps": [],
+                "status": "ok"})
+        finally:
+            engagement_var.reset(token)
+        return json.loads(res["content"][0]["text"])
+
+    async def test_queued_in_casa_turn_vetoes_completion_before_client_handoff(
+            self, tmp_path, fake_telegram_bot):
+        import agent as agent_mod
+        ch, reg, rec, drv, client, lock, tch = await self._ctx(
+            tmp_path, fake_telegram_bot)
+        try:
+            first = asyncio.create_task(drv.send_user_turn(rec, "first"))
+            await asyncio.wait_for(client.first_streaming.wait(), 5)
+
+            u = _mk_update(chat_id=-1001, text="operator message",
+                           thread_id=555, user_id=77)
+            await ch.handle_update(u)
+            await asyncio.wait_for(lock.second_waiting.wait(), 5)
+            # Admitted but NOT handed to the client.
+            assert client.query_prompts == ["first"]
+
+            payload = await self._emit_ok(rec)
+            assert payload["status"] == "error"
+            assert payload["kind"] == "unread_inbound"
+            assert payload.get("retryable") is True
+            # Sol (redcase acceptance r1): pin the HANDLER PRE-CHECK layer
+            # specifically — its refusal copy ("waiting unread",
+            # tools.py:8615-8622) differs from the terminal hook's
+            # ("arrived while completing", tools.py:8669-8675). A hook-only
+            # implementation must fail here.
+            assert "waiting unread" in payload["message"]
+            assert reg.get(rec.id).status == "active"
+            assert client.close_calls == 0
+
+            client.release_first.set()
+            await asyncio.wait_for(first, 5)
+            await _drain_turns(ch)
+            # The queued operator turn DELIVERED after the refusal pumped it.
+            assert client.query_prompts == ["first", "operator message"]
+            assert client.close_calls == 0
+
+            # The veto is CLEARABLE: with nothing queued, completion succeeds.
+            payload2 = await self._emit_ok(rec)
+            assert payload2["status"] == "acknowledged"
+            assert reg.get(rec.id).status == "completed"
+        finally:
+            agent_mod.active_engagement_driver = None
+
+    async def test_in_casa_turn_admitted_during_finalize_is_vetoed_by_terminal_hook(
+            self, tmp_path, fake_telegram_bot):
+        import agent as agent_mod
+        ch, reg, rec, drv, client, lock, tch = await self._ctx(
+            tmp_path, fake_telegram_bot)
+        try:
+            first = asyncio.create_task(drv.send_user_turn(rec, "first"))
+            await asyncio.wait_for(client.first_streaming.wait(), 5)
+
+            # Event-controlled seam INSIDE _finalize_engagement (step 0),
+            # which runs AFTER emit_completion's handler pre-check and BEFORE
+            # try_transition_terminal invokes its terminal hook: the operator
+            # update is admitted exactly in that window.
+            async def _drain(engagement):
+                u = _mk_update(chat_id=-1001, text="operator message",
+                               thread_id=555, user_id=77)
+                await ch.handle_update(u)
+                await asyncio.wait_for(lock.second_waiting.wait(), 5)
+            drv.drain_inbound_spool = _drain
+
+            payload = await self._emit_ok(rec)
+            assert payload["status"] == "error"
+            assert payload["kind"] == "unread_inbound"
+            # Sol (redcase acceptance r1): pin the TERMINAL-HOOK layer — this
+            # refusal must be the hook's PRECONDITION_FAILED copy ("arrived
+            # while completing", tools.py:8669-8675), proving the veto fired
+            # inside the transition, not at the handler pre-check (which read
+            # zero before the admission).
+            assert "arrived while completing" in payload["message"]
+            assert reg.get(rec.id).status == "active"
+            assert client.close_calls == 0
+            assert client.query_prompts == ["first"]
+        finally:
+            agent_mod.active_engagement_driver = None
+            client.release_first.set()
+            await asyncio.wait_for(first, 5)
+            await _drain_turns(ch)

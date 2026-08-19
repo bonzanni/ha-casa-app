@@ -840,7 +840,10 @@ class TestCompletionGateSeesTurnsInThePipe:
         posted = "".join(str(c.args) + str(c.kwargs)
                          for c in (list(tch.send_to_topic.call_args_list)
                                    + list(tch.send_response_to_topic.call_args_list)))
-        assert "2 operator message(s)" in posted
+        # #649 (deliberate premise rewrite): the disclosure noun became
+        # provenance-neutral "inbound" — deliver_system_turn continuations
+        # are Casa-authored, not operator messages.
+        assert "2 inbound message(s)" in posted
         assert "still queued" in posted and "in the pipe" in posted
 
     async def test_a_driver_without_the_new_accessors_still_completes(

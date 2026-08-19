@@ -73,7 +73,7 @@ timeout is what ultimately ends a turn that ignores it. Long work belongs in som
 outlives the turn, not in stretching the turn.
 
 **Read your messages before declaring success.** Where the driver exposes inbound state —
-the claude-code engagement path — a successful completion is refused while inbound messages
+today both engagement drivers — a successful completion is refused while inbound messages
 are unread, and that refusal is correct: it means someone said something you have not
 accounted for. Do not lean on the gate from the other side, though; it fails open on
 accessor errors and does not exist on every path, so reading your messages is your job
