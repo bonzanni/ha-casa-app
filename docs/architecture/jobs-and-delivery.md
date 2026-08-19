@@ -177,6 +177,22 @@ What it does not cover: selection from the durable record file. Live decisions r
 broker, which is synchronous; the record file is written after an await and would miss an
 ask that had just won its lane.
 
+**Ordinary conversation is not a claim on that lane.** The rule that a plain DM message
+resolves a pending question — the text *is* the answer — is true of a question this
+conversation asked and false of a machine-timed one, whose answer routes to the session that
+asked it and can never be carried by a turn of the operator's own session. Since the
+scheduled question moved into the operator's plain-ask scope, a message retired it there
+along with everything else, under an ending the promise made for scheduled questions does
+not contain. Plain text now retires only the human-raised asks in that DM, selected by the
+same `scheduled` marker the boot restore rebuilds — so a restored question is protected by
+exactly the rule a live one gets, with no second mechanism to keep in step. The direction
+above is unchanged: a human question still supersedes a machine one, never the reverse. What
+changed is when — the displacement happens once the replacement is DELIVERED and still live,
+not when it is merely registered, so a keyboard whose post fails, or which is cancelled while
+that post is in flight, no longer takes a waiting question with it. The authorization
+challenge is the stated exception and keeps clearing the lane at admission, before its own
+keyboard is posted.
+
 ## Failure behavior
 
 **Execution fails — an exception, an aborted run, or an invalid structured result.** A safe
@@ -240,6 +256,7 @@ long an attempt may hold.
 - `tests/test_voice_delivery.py`
 - `tests/test_voice_job_result.py`
 - `tests/test_scheduled_ask_user.py`
+- `tests/test_scheduled_ask_attention_lane.py`
 
 **Related**
 - [`architecture/voice.md`](../architecture/voice.md)

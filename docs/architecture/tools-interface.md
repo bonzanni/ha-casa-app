@@ -201,6 +201,16 @@ The pre-terminal refusals above all precede the teardown and always return their
 uncertainty, and an uncertain Telegram send is deliberately not retried — a duplicate
 message is worse than a missing one that the operator can see is missing.
 
+**A question cannot be delivered.** `ask_user`'s operator-DM arm registers its request
+before it posts the keyboard, so a delivery failure is discovered when the request already
+exists: the broker unregisters it and the tool answers with a typed delivery failure rather
+than a request id nobody can answer. Two consequences a caller can rely on. The arm retires a
+live *human* question in that DM at registration, in the same indivisible step as its own —
+a replacement can never race a tap. It displaces a waiting *machine-timed* question only
+after its own keyboard is confirmed on screen and still live, so a question that never
+arrived, or that was retired while its post was in flight, costs the operator nothing; the
+lane rule itself is in [`jobs-and-delivery.md`](jobs-and-delivery.md).
+
 **A specialist context exhausts its media-send budget.** `send_media` in specialist
 context — a specialist engagement, or a delegated turn keyed by its server-stamped
 delegation id — carries a code-owned lifetime budget per context, debited synchronously

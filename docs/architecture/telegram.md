@@ -207,6 +207,18 @@ in transport leaves the keyboard standing, and the failure is logged rather than
 (INV-TG-003's caveat applies here too). A tap on such a keyboard is still refused by the
 broker as stale, so what survives is a misleading display, never a wrong outcome.
 
+**A plain DM message retires the questions this conversation asked, and only those.** The
+order in the DM path is fixed and each step is there for a measured reason: `/new` is
+intercepted first and takes its own reset, which retires both halves of the operator's
+attention lane; the rate limiter returns next, so a dropped message never expires a question
+it will never answer; then the typed-answer retirement runs, synchronously, before the text
+is dispatched as a normal turn, so the stale keyboard is edited to expired while the same
+text still reaches the agent. That retirement is bound twice over — to this chat's plain-ask
+scope, and to the absence of the marker a machine-timed question carries. The scope binding
+is not decoration: the broker's predicate cancel is namespace-wide, so a selection that
+forgot it would retire another operator's live question. Authorization challenges live in a
+separate scope and are untouched here, as they always were.
+
 ## Failure behavior
 
 **No secret, or a wrong one, in webhook mode.** The route refuses before parsing. Nothing

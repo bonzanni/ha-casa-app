@@ -1416,13 +1416,20 @@ class TelegramChannel(Channel):
         # expired while this text still proceeds to the agent as a normal
         # turn. Only the plain-ask `dm:` scope is affected; `authz:`
         # challenges are untouched here (Task 5+).
+        #
+        # #648: HUMAN-raised asks only. Since v0.206.0 (#573) a SCHEDULED
+        # question lives in this same `dm:` scope, and for it the rationale
+        # above is false — its answer routes to the scheduled session that
+        # asked it, which this turn's text can never reach, so ordinary
+        # conversation was expiring a waiting question for nothing. The
+        # selection is marker-bound AND scope-bound (cancel_where is
+        # namespace-wide), and it stays here, AFTER the rate-limit return
+        # (#347) and before dispatch.
         _chat_int = strict_positive_id(chat_id)
         if _chat_int is not None:
-            from verdict_broker import BROKER
-            BROKER.cancel_scope(
-                namespace="resident_ask", scope=f"dm:{_chat_int}",
-                reason="typed_answer",
-            )
+            import scheduled_asks
+            scheduled_asks.cancel_non_scheduled_for_chat(
+                _chat_int, "typed_answer")
 
         user = update.effective_user
         user_name = user.first_name if user else "unknown"
