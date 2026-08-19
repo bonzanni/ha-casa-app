@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.226.0] - 2026-08-19
+
+### Fixed
+
+- A scheduled question now waits through ordinary conversation. Any
+  message you typed into the DM used to retire the question one of an
+  agent's own schedules had left waiting — an ending v0.206.0 never
+  promised, and a pointless one, because your typed text belongs to your
+  own session and can never reach the scheduled run that asked. Only a
+  tap, `/new`, an approval request, a new question that has actually
+  reached your screen, or the question's own expiry retires it now.
+- A new question raised while a scheduled one is waiting no longer
+  destroys the scheduled one before it has arrived. The hand-over now
+  happens once the new question is on your screen and still waiting for
+  an answer, so a question that fails to post leaves the earlier one live
+  and tappable instead of clearing the screen of both.
+
 ## [0.225.0] - 2026-08-19
 
 ### Fixed
