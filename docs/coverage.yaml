@@ -715,6 +715,8 @@
   doc: architecture/turn-loop.md
 - item: env:SDK_POOL_MAX_PER_AGENT
   doc: architecture/turn-loop.md
+- item: env:SDK_RESUME_FAULT_LIMIT
+  doc: architecture/turn-loop.md
 - item: env:SDK_RETRY_CAP_MS
   doc: architecture/turn-loop.md
 - item: env:SDK_RETRY_INITIAL_MS

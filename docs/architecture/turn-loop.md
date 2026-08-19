@@ -141,10 +141,45 @@ branch that streams text: an interactive specialist's output is capped, and once
 freezes the accumulator that branch stops running, so a fault arriving after the freeze would
 otherwise end the turn as a truncated success.
 
+**INV-TURN-008**: A turn carrying server-stamped trusted user ingress that consumes SDK retries and still ends in silence ends as a classified error instead of silence; and a conversation whose resumed trusted-ingress turns repeatedly evidence SDK faults is not resumed past a bounded streak — it starts fresh with the old session retained.
+
+Two shapes of a doomed ask motivate this. Retries can exhaust and raise, which was always
+visible; or the final attempt can return nothing but whitespace or the literal silence
+sentinel, which the suppression gate would otherwise treat as chosen silence — consumed
+retries and all. The second shape is reclassified before delivery into the mapped message
+of the last retried kind, and rides the ordinary classified-error path end to end: plain
+rendering, the voice error line, a non-empty response for request turns. The scope
+predicate is the server-created trusted-ingress stamp — the fact that the turn has an
+author — not humanity: a signed `/invoke` automation is in scope, while heartbeats, event
+wakes, scheduled work and setup dispatches stay doctrinally silent through any upstream
+congestion window.
+
+The streak half guards against a poisoned resume: each trusted turn that resumed its
+conversation commits a health note — while still holding the per-key session write gate,
+which is what orders notes against the decisions that read them — striking on a terminal
+SDK-error raise or on silence whose consumed retries included an SDK error, resetting on
+a real answer or a clean no-retry finish. A terminal rate-limit or timeout is
+congestion-shaped and records no verdict either way. The note follows the session-id
+chain (a resumed turn may publish a successor id), so the recorded fault id is always the
+id the next ask would resume. At the streak bound the resume decision comes out fresh
+*with retain*, exactly like an expired entry — continuity is saved, never cleared, and
+the refusal-only registration clearing of INV-TURN-007 is untouched.
+
+What it does not cover: the notice does not extend to delegation-completion synthesis
+turns (no trusted ingress; a delegation fault surfaces through the delegation machinery's
+own consumers), and text a channel streamed before classification stays streamed — a
+final edit supersedes a streamed literal sentinel on the classified path, but a failed
+edit leaves what the stream already showed.
+
 ## Failure behavior
 
 **The model call fails transiently.** Retried with exponential backoff up to a small attempt
 limit. A retry hint from the server overrides the computed delay.
+
+**Retries are consumed and the turn still ends silent.** On a trusted-ingress turn this is
+surfaced as the mapped error, never as silence, and — when the turn was resuming — counted
+against the conversation's fault streak; at the bound the next ask starts fresh with the
+old session retained (INV-TURN-008).
 
 **The session id is stale.** The stored session is cleared — but only while the registry
 entry still carries the id that failed *and* no registration has landed since this
@@ -188,8 +223,9 @@ an idle/age sweeper — and all three are environment-tunable: `SDK_POOL_MAX_PER
 `SDK_POOL_MAX_AGE_SECONDS` (43200). Retry is tunable the same way —
 `SDK_RETRY_MAX_ATTEMPTS` (3), `SDK_RETRY_INITIAL_MS` (500), `SDK_RETRY_CAP_MS` (8000) —
 and a server-supplied retry hint is honoured only up to ten times the backoff cap, never
-unboundedly. A new bound belongs alongside these rather than in the turn body, so that
-eviction stays in one place.
+unboundedly — as is the resume-fault streak bound, `SDK_RESUME_FAULT_LIMIT` (2). A new
+bound belongs alongside these rather than in the turn body, so that eviction stays in one
+place.
 
 Turn types that must never reuse a client are excluded by the eligibility gate. Scheduled
 work and one-shot webhook scopes are excluded there today; that gate is the place to add

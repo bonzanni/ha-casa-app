@@ -66,7 +66,7 @@ from sdk_client_pool import (
     PoolUnavailable,
     SdkClientPool,
 )
-from retry import retry_sdk_call
+from retry import _env_int, retry_sdk_call
 from tokens import (
     BudgetTracker,
     estimate_tokens,
@@ -396,6 +396,43 @@ def speaker_provenance_for_role(cfg: AgentConfig) -> SpeakerProvenance:
     return SpeakerProvenance(speaker_kind="system")
 
 
+#: #650: how many consecutive resumed trusted-ingress turns may evidence an
+#: SDK fault before the resume decision stops resuming that session (fresh
+#: WITH retain — continuity is saved, never cleared). Env-tunable alongside
+#: the retry knobs (SDK_RETRY_*); see docs/architecture/turn-loop.md.
+RESUME_FAULT_LIMIT: int = _env_int("SDK_RESUME_FAULT_LIMIT", 2)
+
+
+def _strips_to_silence(text: str | None) -> bool:
+    """True when a turn's entire output is silence: empty/whitespace, or
+    nothing but one-or-more literal ``<silent/>`` sentinels and whitespace.
+
+    The single definition shared by ``handle_message``'s sentinel gate and
+    the #650 retry-tainted-silence paths, so the two can never drift. The G-3
+    recant contract lives in the second condition: residual PROSE after a
+    sentinel is NOT silence.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    return not stripped or not stripped.replace("<silent/>", "").strip()
+
+
+def _resume_fault_streak(entry: dict | None, sid: str | None) -> int:
+    """The advisory #650 fault streak *entry* holds AGAINST *sid*, else 0.
+
+    Tolerant parse: absent or malformed fields count as no streak, and a
+    streak keyed to a different sid is inert (stale fields left behind by an
+    older conversation must never bleed onto a new one).
+    """
+    if not entry or not sid or entry.get("resume_fault_sid") != sid:
+        return 0
+    try:
+        return int(entry.get("resume_fault_streak", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _resume_decision(
     channel: str, entry: dict | None, now: datetime, *,
     role_id: str, binding_digest: str,
@@ -432,6 +469,14 @@ def _resume_decision(
     if last is None:
         return ResumeDecision("new", None, True, old, "invalid_entry")
     if (now - last) <= freshness_window(channel):
+        # #650: a fresh, identity-matching session that has repeatedly
+        # evidenced SDK faults on resumed trusted-ingress turns is not
+        # resumed again — fresh WITH retain, exactly like an expired entry,
+        # so the old conversation's snapshot is saved rather than cleared.
+        # The streak is advisory registry state written by
+        # SessionRegistry.note_resume_health under the session write gate.
+        if _resume_fault_streak(entry, old.sdk_session_id) >= RESUME_FAULT_LIMIT:
+            return ResumeDecision("new", None, True, old, "fault_streak")
         return ResumeDecision("resume", old.sdk_session_id, False, old, "fresh")
     return ResumeDecision("new", None, True, old, "expired")
 
@@ -791,8 +836,11 @@ class Agent:
             on_token = channel.create_on_token(msg.context)
 
         error_kind: ErrorKind | None = None
+        turn_report: dict[str, Any] = {}
         try:
-            text = await self._process(msg, on_token=on_token)
+            text = await self._process(
+                msg, on_token=on_token, turn_report=turn_report,
+            )
         except Exception as exc:
             error_kind = _classify_error(exc)
             logger.error(
@@ -801,6 +849,37 @@ class Agent:
                 error_kind.value,
                 exc,
                 exc_info=(error_kind == ErrorKind.UNKNOWN),
+            )
+            text = _USER_MESSAGES[error_kind]
+
+        # #650 fix (a): a trusted-ingress turn that consumed SDK retries and
+        # ended in nothing but silence is a FAILED ask, not chosen silence —
+        # classify it as the error it is, BEFORE the voice error-line branch
+        # and the sentinel gate below, so it rides the existing classified-
+        # error delivery path end to end (mapped message; plain rendering;
+        # voice error frame; non-empty M4 RESPONSE for /invoke). Scoped by
+        # ``trusted_user_origin`` — the server-stamped "this turn has an
+        # author at ingress" fact — so doctrinally-silent background turns
+        # (heartbeats, event wakes, scheduled work, setup dispatch) keep
+        # their silence through any upstream congestion window.
+        if (
+            error_kind is None
+            and _strips_to_silence(text)
+            and turn_report.get("retries")
+            and msg.trusted_user_origin is not None
+        ):
+            last_kind = turn_report["retries"][-1]
+            error_kind = (
+                last_kind if isinstance(last_kind, ErrorKind)
+                else ErrorKind.SDK_ERROR
+            )
+            logger.warning(
+                "retry-tainted silence on trusted turn: role=%s channel=%s "
+                "retries=%s -> surfacing %s",
+                self.config.role, msg.channel,
+                [k.value for k in turn_report["retries"]
+                 if isinstance(k, ErrorKind)],
+                error_kind.value,
             )
             text = _USER_MESSAGES[error_kind]
 
@@ -842,16 +921,16 @@ class Agent:
         # The cost of false suppression is zero in practice (no model
         # legitimately emits the literal sentinel string to a user); the
         # cost of operator-visible literal `<silent/>` is real-but-small.
-        if text:
-            stripped = text.strip()
-            # A turn is silence when it strips to nothing, or to nothing but
-            # one-or-more `<silent/>` sentinels and surrounding whitespace
-            # (so a buffered model that emits the sentinel on its own line, or
-            # repeats it, is still suppressed). Residual PROSE after a sentinel
-            # is still sent — the G-3 recant contract: a model that emits
-            # `<silent/>` and then a real message must not have it swallowed.
-            if not stripped or not stripped.replace("<silent/>", "").strip():
-                text = ""
+        # A turn is silence when it strips to nothing, or to nothing but
+        # one-or-more `<silent/>` sentinels and surrounding whitespace
+        # (so a buffered model that emits the sentinel on its own line, or
+        # repeats it, is still suppressed). Residual PROSE after a sentinel
+        # is still sent — the G-3 recant contract: a model that emits
+        # `<silent/>` and then a real message must not have it swallowed.
+        # The predicate lives in _strips_to_silence, shared with the #650
+        # retry-tainted-silence paths.
+        if text and _strips_to_silence(text):
+            text = ""
 
         # §3.10 notice: while plugin-health holds a blocking issue affecting
         # this agent's role, prepend a one-line notice to a user-visible reply.
@@ -1024,7 +1103,16 @@ class Agent:
         self,
         msg: BusMessage,
         on_token: OnTokenCallback | None = None,
+        turn_report: dict[str, Any] | None = None,
     ) -> str | None:
+        # #650: ``turn_report`` is the retry-consumption carrier OUT of this
+        # method — an optional out-param so the ``str | None`` return contract
+        # (pinned by many direct callers) stays byte-identical. Written
+        # unconditionally when supplied: ``retries`` (one classified ErrorKind
+        # per consumed retry, both retry loops), ``resumed_sid`` and
+        # ``channel_key`` (stamped by the health note below).
+        report: dict[str, Any] = turn_report if turn_report is not None else {}
+        report.setdefault("retries", [])
         channel_key = build_scoped_session_key(
             msg.channel,
             self.config.role,
@@ -1205,6 +1293,17 @@ class Agent:
             # cannot see).
             last_resume: dict[str, str | int | None] = {"sid": None, "gen": None}
 
+            def _record_retry(
+                attempt: int, exc: Exception, delay_ms: int,
+            ) -> None:
+                # #650: record each consumed retry's classified kind into the
+                # turn report. Recording must never break the retry itself.
+                try:
+                    report["retries"].append(_classify_error(exc))
+                except Exception:  # noqa: BLE001
+                    pass
+                self._log_retry(attempt, exc, delay_ms)
+
             async def _attempt_pooled_turn():
                 session_published = False
                 turn_guard = (
@@ -1368,7 +1467,7 @@ class Agent:
             async def _attempt_with_stale_recovery(attempt_fn):
                 try:
                     return await retry_sdk_call(
-                        attempt_fn, on_retry=self._log_retry,
+                        attempt_fn, on_retry=_record_retry,
                     )
                 except ApiErrorTurn as exc:
                     # #568: dropping the pool entry unbinds the CLIENT, not the
@@ -1429,7 +1528,7 @@ class Agent:
                         expected_generation=last_resume["gen"],
                     )
                     return await retry_sdk_call(
-                        attempt_fn, on_retry=self._log_retry,
+                        attempt_fn, on_retry=_record_retry,
                     )
 
             attempt = _attempt_pooled_turn if use_pool else _attempt_bypass_turn
@@ -1457,17 +1556,30 @@ class Agent:
             async with _turn_admission().admitted(), \
                     session_write_gate(channel_key):
                 try:
-                    response_text, sdk_session_id, usage, used_resume, \
-                        session_published = \
-                        await _attempt_with_stale_recovery(attempt)
-                except PoolUnavailable:
-                    # Reachable from the primary attempt OR from the recovery
-                    # retry after a clear (the clear is idempotent and guarded,
-                    # so falling through to the bypass — which re-derives its
-                    # resume decision from the registry — is correct either way).
-                    response_text, sdk_session_id, usage, used_resume, \
-                        session_published = \
-                        await _attempt_with_stale_recovery(_attempt_bypass_turn)
+                    try:
+                        response_text, sdk_session_id, usage, used_resume, \
+                            session_published = \
+                            await _attempt_with_stale_recovery(attempt)
+                    except PoolUnavailable:
+                        # Reachable from the primary attempt OR from the recovery
+                        # retry after a clear (the clear is idempotent and guarded,
+                        # so falling through to the bypass — which re-derives its
+                        # resume decision from the registry — is correct either way).
+                        response_text, sdk_session_id, usage, used_resume, \
+                            session_published = \
+                            await _attempt_with_stale_recovery(_attempt_bypass_turn)
+                except asyncio.CancelledError:
+                    raise  # a cancelled turn is not health evidence
+                except Exception as exc:
+                    # #650: a terminal fault on a resumed trusted turn is
+                    # noted UNDER the still-held session write gate — the gate
+                    # is what turn-orders health notes against the decisions
+                    # that read them (seam r1) — then re-raised unchanged.
+                    await self._note_resume_health(
+                        msg, channel_key, last_resume["sid"], report,
+                        terminal_kind=_classify_error(exc), final_text=None,
+                    )
+                    raise
 
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
@@ -1482,6 +1594,16 @@ class Agent:
                         speaker_provenance=speaker_provenance_for_role(self.config),
                         user_provenance=user_provenance,
                     )
+
+                # #650: return-path health note — after the registration step
+                # (the published successor sid must precede the strike that
+                # records it as the chain head), still under the gate. Never
+                # raises.
+                await self._note_resume_health(
+                    msg, channel_key, last_resume["sid"], report,
+                    terminal_kind=None, final_text=response_text,
+                    current_sid=sdk_session_id,
+                )
 
             # Per-turn telemetry (spec 5.2 §5.2). Microsecond cost — string
             # format + one logger.info — and runs after streaming has
@@ -2464,3 +2586,67 @@ class Agent:
             "SDK retry: role=%s attempt=%d kind=%s delay_ms=%d exc=%r",
             self.config.role, attempt + 1, kind.value, delay_ms, exc,
         )
+
+    async def _note_resume_health(
+        self,
+        msg: BusMessage,
+        channel_key: str,
+        resumed_sid: str | int | None,
+        report: dict[str, Any],
+        *,
+        terminal_kind: ErrorKind | None,
+        final_text: str | None,
+        current_sid: str | None = None,
+    ) -> None:
+        """#650: commit one turn's verdict on its conversation's resume health.
+
+        Called ONLY from ``_process`` while the caller still holds
+        ``session_write_gate(channel_key)`` — the gate is the ordering
+        primitive that lets a queued same-key ask's resume decision observe
+        every prior ask's note. Scoped to trusted-ingress turns; strikes
+        additionally require that the turn RESUMED.
+
+        Strike (poison evidence): a terminal raise classified SDK_ERROR, or a
+        silent return whose consumed retries include SDK_ERROR — the two
+        doomed-ask shapes. A terminal RATE_LIMIT/TIMEOUT, and silence whose
+        retries carried no SDK_ERROR, are congestion-shaped: no verdict
+        either way. Reset (health evidence): a real answer, or clean silence
+        with no retries consumed — a FRESH healthy turn resets too, which is
+        what retires leftover fields after the fault-streak escape. Never
+        raises — a bookkeeping failure must not fail a turn that already has
+        an answer.
+        """
+        report["resumed_sid"] = resumed_sid
+        report["channel_key"] = channel_key
+        if msg.trusted_user_origin is None:
+            return
+        retries = report.get("retries") or []
+        if terminal_kind is not None:
+            if resumed_sid is None or terminal_kind is not ErrorKind.SDK_ERROR:
+                return
+            healthy = False
+        elif _strips_to_silence(final_text):
+            if ErrorKind.SDK_ERROR in retries:
+                if resumed_sid is None:
+                    return  # doomed but fresh: not resume evidence
+                healthy = False
+            elif not retries:
+                healthy = True
+            else:
+                return  # silent after non-SDK retries only: no verdict
+        else:
+            healthy = True
+        try:
+            await self._session_registry.note_resume_health(
+                channel_key,
+                resumed_sid=(
+                    str(resumed_sid) if resumed_sid is not None else None
+                ),
+                current_sid=current_sid,
+                healthy=healthy,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "resume-health note failed for %s (turn unaffected)",
+                channel_key,
+            )

@@ -245,6 +245,12 @@ class SessionRegistry:
             })
             # A fresh registration supersedes any in-flight save claim.
             entry.pop("consolidated_at", None)
+            # #650: the advisory resume-fault fields are deliberately NOT
+            # touched here. A resumed turn can publish a SUCCESSOR sid (the
+            # CLI may assign a new session id on --resume), so "sid changed"
+            # does not mean "new conversation" — note_resume_health owns the
+            # whole field lifecycle, under the same session write gate as
+            # this registration.
             if scope_class is None:
                 entry.pop("scope_class", None)
             else:
@@ -338,6 +344,81 @@ class SessionRegistry:
             if entry is not None:
                 entry["last_active"] = datetime.now(timezone.utc).isoformat()
                 await self._save_locked()
+
+    async def note_resume_health(
+        self, channel_key: str, *,
+        resumed_sid: str | None, current_sid: str | None, healthy: bool,
+    ) -> None:
+        """Record one turn's verdict on this CONVERSATION's resume health (#650).
+
+        Advisory streak state consumed by ``agent._resume_decision``: a
+        conversation whose resumed trusted-ingress turns repeatedly evidence
+        SDK faults stops being resumed once ``resume_fault_streak`` reaches
+        the limit — fresh WITH retain, so continuity is saved, never cleared.
+
+        The streak follows the SID CHAIN, not one sid: a resumed turn may
+        publish a successor sid (the CLI can assign a new session id on
+        ``--resume``), so ``resume_fault_sid`` always records the sid the
+        NEXT ask would resume — the entry's current ``sdk_session_id`` at
+        note time — and a strike CONTINUES the streak when the stored fault
+        sid equals the sid THIS turn resumed (the chain's predecessor),
+        else starts a new streak at 1.
+
+        The note declines unless the entry's current sid is one this turn
+        actually touched (``resumed_sid`` — the raise shape publishes
+        nothing — or ``current_sid``, the sid it just registered): callers
+        hold the per-key session write gate across attempt, registration and
+        note, so this guard only protects against non-gated writers (the
+        session sweeper's removal, a raced reload) putting a foreign
+        conversation under the note. ``healthy=True`` drops both fields —
+        including leftovers from a pre-escape chain after the escape turn's
+        fresh success. Deliberately not generation-guarded: this turn's own
+        registration moves the generation, which would make every
+        sentinel-return strike structurally unlandable.
+
+        If persistence fails the in-memory fields are restored to their
+        pre-call values before re-raising, so memory and disk cannot describe
+        different streak histories across a restart (seam r2, Sol).
+        """
+        async with self._lock:
+            entry = self._data.get(channel_key)
+            if entry is None:
+                return
+            entry_sid = entry.get("sdk_session_id")
+            allowed = {s for s in (resumed_sid, current_sid) if s}
+            if entry_sid not in allowed:
+                return
+            had_sid = "resume_fault_sid" in entry
+            had_streak = "resume_fault_streak" in entry
+            prev_sid = entry.get("resume_fault_sid")
+            prev_streak = entry.get("resume_fault_streak")
+            if healthy:
+                if not had_sid and not had_streak:
+                    return  # nothing to reset; skip the disk write
+                entry.pop("resume_fault_sid", None)
+                entry.pop("resume_fault_streak", None)
+            else:
+                if resumed_sid and entry.get("resume_fault_sid") == resumed_sid:
+                    try:
+                        streak = int(entry.get("resume_fault_streak", 0))
+                    except (TypeError, ValueError):
+                        streak = 0
+                else:
+                    streak = 0
+                entry["resume_fault_sid"] = entry_sid
+                entry["resume_fault_streak"] = streak + 1
+            try:
+                await self._save_locked()
+            except BaseException:
+                if had_sid:
+                    entry["resume_fault_sid"] = prev_sid
+                else:
+                    entry.pop("resume_fault_sid", None)
+                if had_streak:
+                    entry["resume_fault_streak"] = prev_streak
+                else:
+                    entry.pop("resume_fault_streak", None)
+                raise
 
     def _generation_moved(
         self, channel_key: str, expected_generation: object,

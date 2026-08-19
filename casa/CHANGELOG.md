@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.225.0] - 2026-08-19
+
+### Fixed
+
+- An ask that hit repeated Claude API errors now reports the failure
+  instead of ending in silence.
+- A conversation whose resumes keep failing now recovers on its own after
+  two visible failures, instead of staying stuck until `/new`.
+
 ## [0.224.0] - 2026-08-19
 
 ### Fixed

@@ -119,6 +119,12 @@ and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time pur
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.
 
+A session entry may also carry two advisory resume-fault fields — the fault-streak state
+of the turn loop's INV-TURN-008 (`architecture/turn-loop.md`), persisted with the entry
+and restored on write failure so disk and memory never disagree about the streak. Absent
+or malformed fields read as no streak, and fields naming a sid the entry no longer holds
+are inert.
+
 **A state file is corrupt.** Depends entirely on which file. Some are preserved under a
 different name before being replaced; at least one is overwritten with no copy retained; at
 least one raises rather than recovering. Check the loader.
