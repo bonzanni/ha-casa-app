@@ -14,10 +14,10 @@ being redirected out of it, where the run-state root alone touches lives, the pr
 refuses a launch whose privilege drop could not succeed, and the confirmed-down sweep boot
 replay runs before it migrates or resumes a service.
 
-The engagement *record* — creation, the terminal transition and its side effects, the
-completion gate, turn admission, what a restart rewrites — is
-[`architecture/engagements.md`](engagements.md); the finalize path's driver teardown, the
-one stop path that is not a boot path, is described there. Two neighbouring boundaries live
+The engagement *record* — its creation, turn admission, what a restart rewrites — is
+[`architecture/engagements.md`](engagements.md); the terminal transition, its side effects,
+the completion gate and the finalize path's driver teardown, the one stop path that is not
+a boot path, are [`architecture/engagement-finalization.md`](engagement-finalization.md). Two neighbouring boundaries live
 elsewhere: the hook floor bounding what the CLI may *do* once running is in
 [`architecture/hook-resolution.md`](hook-resolution.md), and the file modes that keep
 credentials out of a dropped uid's reach are INV-STATE-005 in
@@ -300,6 +300,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 <!-- END SOURCEMAP -->

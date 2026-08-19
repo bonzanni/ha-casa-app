@@ -42,7 +42,7 @@
 - item: casa/rootfs/opt/casa/channels/channel_handlers.py
   doc: architecture/http-surface.md
 - item: casa/rootfs/opt/casa/channels/output_sequencer.py
-  doc: architecture/engagements.md
+  doc: architecture/engagement-finalization.md
 - item: casa/rootfs/opt/casa/channels/state_emoji.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram.py

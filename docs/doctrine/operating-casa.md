@@ -77,7 +77,7 @@ today both engagement drivers — a successful completion is refused while inbou
 are unread, and that refusal is correct: it means someone said something you have not
 accounted for. Do not lean on the gate from the other side, though; it fails open on
 accessor errors and does not exist on every path, so reading your messages is your job
-either way. See `architecture/engagements.md`.
+either way. See `architecture/engagement-finalization.md`.
 
 **Finishing is not delivering.** An engagement can be terminally complete while its
 completion message never reached anyone. If it matters that a person *knows*, confirm rather
@@ -147,5 +147,6 @@ the right action depends on something only the person knows, ask.
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/voice.md`](../architecture/voice.md)
 <!-- END SOURCEMAP -->

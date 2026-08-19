@@ -1058,7 +1058,7 @@ class TestInboundIngressReservation:
 # 10. RED CASE (#649) — in_casa completion inbound gate
 #     Specified by Terra (drive run 2026-08-18-b, rounds-649/redcase-spec),
 #     accepted by Sol. FROZEN once accepted — do not modify; re-specify +
-#     re-accept instead. Invariant: INV-ENG-003 (engagements.md:145) extended
+#     re-accept instead. Invariant: INV-ENG-003 (engagement-finalization.md) extended
 #     to the in_casa driver — a SUCCESSFUL emit_completion is refused
 #     (kind=unread_inbound, retryable) while an inbound turn has been admitted
 #     for delivery but not yet handed to the engagement's ClaudeSDKClient,

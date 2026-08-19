@@ -1013,7 +1013,7 @@ class TestEmitCompletionCancellation:
     suspended awaiting teardown in production — so the case fails identically
     on CPython 3.11 and 3.12 (``asyncio.wait_for`` topology is not involved).
 
-    Invariant (INV-ENG-001 prose, docs/architecture/engagements.md; H-1
+    Invariant (INV-ENG-010, docs/architecture/engagement-finalization.md; H-1
     contract at the deferred-restart drain; issue #632): once the terminal
     transition is won, the DelegationComplete bus notification, both retains,
     the deferred Supervisor restart POST (strictly after retains are

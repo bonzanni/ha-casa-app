@@ -194,7 +194,8 @@ acknowledged as already terminal; a failed strict persist reports retryable.
 **An `in_casa` completion's own acknowledgement can be lost.** A winning in_casa
 `emit_completion` tears down the client hosting the tool call itself, and the control
 transport can close before the tool result is written; the durable finalization side
-effects still complete, detached (INV-ENG-010 in [`engagements.md`](engagements.md)).
+effects still complete, detached (INV-ENG-010 in
+[`engagement-finalization.md`](engagement-finalization.md)).
 The pre-terminal refusals above all precede the teardown and always return their results.
 
 **A delivery is uncertain.** The send classifiers separate definitive refusal from

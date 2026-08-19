@@ -34,7 +34,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | anything structural, or when you need to find which document owns an area | [`architecture/overview.md`](architecture/overview.md) |
 | anything that must serialize, a new lock, bus dispatch, or blocking I/O placement | [`architecture/concurrency-model.md`](architecture/concurrency-model.md) |
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
-| engagement lifecycle, terminal transitions, turn admission, the driver protocol, or engagement output ordering | [`architecture/engagements.md`](architecture/engagements.md) |
+| engagement lifecycle, engagement launch, turn admission, the driver protocol, or restart replay | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | job persistence, restart recovery, or how a deferred answer reaches a device | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
 | logging, correlation ids, redaction, or a health surface | [`architecture/observability.md`](architecture/observability.md) |
@@ -47,6 +47,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, the retry spool, or the memory wipe | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, materialization, or bundle-transaction recovery | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
+| terminal transitions, engagement creation strictness, the completion gate, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
 | the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker | [`architecture/callback-delivery.md`](architecture/callback-delivery.md) |
