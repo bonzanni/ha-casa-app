@@ -187,11 +187,24 @@ class TestTelegramRateLimit:
 
 
 class _RecordingBroker:
+    """Records every finisher the DM path can reach.
+
+    #648 moved the typed-answer cancel from the scope-wide `cancel_scope` to
+    the marker-bound `cancel_where`, so this double has to observe BOTH or the
+    ordering it pins would silently stop being measured. `/new` still takes
+    `cancel_scope`. `cancel_where` returns the cancelled request ids, and its
+    caller takes `len()` of that.
+    """
+
     def __init__(self) -> None:
         self.cancelled: list[dict] = []
 
     def cancel_scope(self, **kwargs: Any) -> None:
         self.cancelled.append(kwargs)
+
+    def cancel_where(self, **kwargs: Any) -> list[str]:
+        self.cancelled.append(kwargs)
+        return []
 
 
 class TestRateLimitBeforeAskCancel:

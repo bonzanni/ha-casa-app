@@ -465,6 +465,58 @@ def cancel_for_chat(chat_id: int, reason: str) -> int:
     ))
 
 
+def cancel_non_scheduled_for_chat(chat_id: int, reason: str) -> int:
+    """Cancel every pending NON-scheduled (human-raised) ask in one DM.
+
+    The exact inverse selection of :func:`cancel_for_chat`, under the same
+    discipline: ONE no-await block against the broker's live map, never the
+    durable store. ``cancel_where`` is NAMESPACE-WIDE, so the predicate binds
+    ``r.scope`` as well as the marker — without the scope clause this would
+    retire an interactive ask in a DIFFERENT chat.
+
+    #648: an ordinary DM message is what calls this. The v0.76.0 rule it
+    implements ("the text IS the answer") is true of a question the operator
+    was asked in this conversation and false of a machine-timed one, whose
+    answer routes to the scheduled session that asked it and can never be
+    carried by a turn of this one.
+
+    No boot-revocation marker is left, deliberately: markers exist to settle
+    DURABLE SCHEDULED records that an empty live map cannot speak for, and
+    this call is defined to leave scheduled asks alone.
+    """
+    from verdict_broker import BROKER
+
+    scope = f"dm:{chat_id}"
+    return len(BROKER.cancel_where(
+        namespace=NAMESPACE, reason=reason,
+        predicate=lambda r: r.scope == scope and not _is_scheduled(r),
+    ))
+
+
+def displace_scheduled_for_chat(chat_id: int, reason: str) -> int:
+    """Retire a live SCHEDULED ask in one DM because a human question has just
+    TAKEN the lane — and, unlike :func:`cancel_for_chat`, leave no boot marker.
+
+    Same selection, one difference, and the difference is the point (#648).
+    A marker exists so a revocation landing in the boot window — live map
+    empty, records still on disk — settles the record it meant to revoke.
+    This caller has nothing to settle: if the live map is empty, the previous
+    process's keyboard is still on screen, unedited, and nothing was told
+    anything, so marking the record revoked would assert an event that did not
+    happen. ``reconcile_at_boot`` decides it truthfully on its own — the
+    delivered human ask holds the lane, so ``require_idle`` refuses and the
+    record settles ``operator_busy``; or the lane is free again by then and the
+    question is restored, still answerable.
+    """
+    from verdict_broker import BROKER
+
+    scope = f"dm:{chat_id}"
+    return len(BROKER.cancel_where(
+        namespace=NAMESPACE, reason=reason,
+        predicate=lambda r: _is_scheduled(r) and r.scope == scope,
+    ))
+
+
 def broker_meta(rec: dict) -> dict:
     """The broker ``meta`` for a scheduled ask — the single source for both
     the live path and the boot restore, so a restored request is bound

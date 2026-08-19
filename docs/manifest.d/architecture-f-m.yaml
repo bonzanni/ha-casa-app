@@ -68,6 +68,7 @@
     - tests/test_voice_delivery.py
     - tests/test_voice_job_result.py
     - tests/test_scheduled_ask_user.py
+    - tests/test_scheduled_ask_attention_lane.py
   related: [architecture/voice.md, architecture/persistent-state.md, architecture/turn-loop.md, architecture/triggers.md]
   defines_invariants: [INV-JOB-001, INV-JOB-002, INV-JOB-003, INV-JOB-004, INV-JOB-005, INV-JOB-006, INV-JOB-007, INV-JOB-008]
   invariant_tests:
@@ -77,8 +78,8 @@
     INV-JOB-004: [tests/test_job_registry.py::test_playing_lease_lapse_requeues_for_at_least_once_delivery]
     INV-JOB-005: [tests/test_voice_delivery.py::test_only_device_queue_head_is_offered, tests/test_voice_delivery.py::test_device_fifo_is_stable_across_route_ids]
     INV-JOB-006: [tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_revocation_during_the_boot_window_is_not_undone, tests/test_scheduled_ask_user.py::TestBootReconcile::test_an_untouched_role_is_still_restored, tests/test_scheduled_ask_user.py::TestDurableRecord::test_posting_record_is_written_before_the_keyboard, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_settling_is_persisted_before_the_edit, tests/test_scheduled_ask_user.py::TestBootReconcile::test_settling_record_is_never_replayed, tests/test_scheduled_ask_user.py::TestBootReconcile::test_live_record_is_restored_and_still_answerable]
-    INV-JOB-007: [tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_every_cancellation_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_timeout_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_settles_nothing_and_keeps_the_record, tests/test_scheduled_ask_user.py::TestAttribution::test_the_continuation_is_machine_authored]
-    INV-JOB-008: [tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_a_plain_dm_ask_is_live, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_an_authz_challenge_is_live, tests/test_scheduled_ask_user.py::TestLane::test_an_authz_challenge_cancels_a_live_scheduled_ask]
+    INV-JOB-007: [tests/test_scheduled_ask_attention_lane.py::test_new_retires_scheduled_once_with_new_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_every_cancellation_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_timeout_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_settles_nothing_and_keeps_the_record, tests/test_scheduled_ask_user.py::TestAttribution::test_the_continuation_is_machine_authored]
+    INV-JOB-008: [tests/test_scheduled_ask_attention_lane.py::test_plain_text_cancels_only_same_dm_interactive, tests/test_scheduled_ask_attention_lane.py::test_restored_scheduled_ask_survives_plain_text, tests/test_scheduled_ask_attention_lane.py::test_delivered_human_ask_displaces_scheduled_after_post_once, tests/test_scheduled_ask_attention_lane.py::test_undelivered_human_ask_leaves_scheduled_live, tests/test_scheduled_ask_attention_lane.py::test_plain_text_during_human_post_cancels_replacement_not_scheduled, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_a_plain_dm_ask_is_live, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_an_authz_challenge_is_live, tests/test_scheduled_ask_user.py::TestLane::test_an_authz_challenge_cancels_a_live_scheduled_ask]
 
 - doc: architecture/mcp-and-tools.md
   summary: How tools reach an agent, and where authorization for a tool call actually happens.

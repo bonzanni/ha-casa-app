@@ -991,13 +991,24 @@ async def ask_user(args: dict) -> dict:
             target_role=target_role, timeout_s=timeout_s,
         )
 
+    # #648: `supersede=True` retired EVERY live request in this scope at
+    # REGISTRATION — including a scheduled question, and before this one was
+    # known to have reached the screen. The two effects are split. Against
+    # another HUMAN ask the behaviour is unchanged: retire it here, in the same
+    # no-await block as the register, so the replacement step stays indivisible
+    # against the tap handler and a typed-reply cancel. Against a SCHEDULED
+    # question, displacement waits for delivery (below).
+    #
     # Static meta BEFORE post (register() shallow-copies whatever dict we
     # pass, so the complete dict is supplied up front rather than mutated
     # after the fact). No `on_commit_sync` — plain asks record nothing at
     # commit time (that's the authz challenge's job, Task 5+).
+    import scheduled_asks
+
+    scheduled_asks.cancel_non_scheduled_for_chat(chat_id, "superseded")
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
-        timeout_s=timeout_s, detached=True, supersede=True,
+        timeout_s=timeout_s, detached=True, supersede=False,
         meta={
             "options": list(options),
             "chat_id": chat_id,
@@ -1051,6 +1062,13 @@ async def ask_user(args: dict) -> dict:
             "status": "error", "kind": "delivery_failed",
             "message": "could not deliver the question to the operator",
         })
+    # #648: a human question takes the lane from a machine-timed one only once
+    # it is BOTH delivered and still live. `message_id` alone does not prove
+    # that — `_run_setup` records it even for a request cancelled or answered
+    # while its post was in flight — so liveness is asked of the broker's live
+    # map, synchronously, immediately before the displacement.
+    if rid in BROKER.pending(namespace="resident_ask", scope=scope):
+        scheduled_asks.displace_scheduled_for_chat(chat_id, "superseded")
     return _result({"status": "awaiting_user", "request_id": rid})
 
 
