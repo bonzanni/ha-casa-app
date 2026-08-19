@@ -84,7 +84,7 @@
   tests:
     - tests/test_recall_absence_invariant.py
     - tests/test_authz_grants.py
-  related: [architecture/memory.md, architecture/engagements.md, architecture/voice.md]
+  related: [architecture/memory.md, architecture/engagements.md, architecture/engagement-finalization.md, architecture/voice.md]
 
 - doc: doctrine/working-on-casa.md
   summary: How to change this repository without breaking it, and how to establish that a claim about it is true.
