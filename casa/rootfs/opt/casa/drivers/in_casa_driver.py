@@ -75,6 +75,14 @@ class DriverNotAliveError(RuntimeError):
     """Raised when a turn is fed to a driver that has no open client."""
 
 
+class EmptyTurnError(RuntimeError):
+    """#649: an ADMITTED inbound turn whose response stream ended with no
+    model-evidence frame and no API fault. The client accepted the prompt but
+    nothing shows the model took the turn up — raised so the delivery owner
+    surfaces a visible failure instead of a silent success. The launch
+    prompt (no admission token) keeps the historical warn-only behavior."""
+
+
 class InCasaDriver(DriverProtocol):
     """Holds one ClaudeSDKClient per active engagement.
 
@@ -114,6 +122,20 @@ class InCasaDriver(DriverProtocol):
         # "session_id") was always None and persistence silently never
         # fired. Same source the warm pool uses.
         self._session_ids: dict[str, str] = {}
+        # #649 admission-ticket ledger (INV-ENG-003 for this driver). Two
+        # in-memory, loop-confined populations of opaque token -> exact text,
+        # insertion-ordered per engagement:
+        #   unread   — admitted for delivery, not yet handed to the client.
+        #              Vetoes a successful completion (inbound_unread_depth)
+        #              and is disclosed on terminalization.
+        #   accepted — client.query() took the text, no model-evidence frame
+        #              seen yet. Disclosure-only (inbound_in_flight_texts);
+        #              it must never veto: the only party able to emit a
+        #              completion in that window is the very turn carrying
+        #              the ticket. Non-durable BY DESIGN — this driver has no
+        #              spool; a ticket alive at process death dies with it.
+        self._inbound_unread: dict[str, dict[object, str]] = {}
+        self._inbound_accepted: dict[str, dict[object, str]] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -228,15 +250,99 @@ class InCasaDriver(DriverProtocol):
     async def send_user_turn(
         self, engagement: EngagementRecord, text: str,
         *, tg_message_id: int | None = None,
+        inbound_token: object | None = None,
     ) -> None:
         # tg_message_id is part of the uniform driver interface (v0.79
         # reply-threading); in_casa turns have no topic-stream threading,
         # so it is accepted and ignored.
-        if not self.is_alive(engagement):
-            raise DriverNotAliveError(
-                f"engagement {engagement.id[:8]} has no live client"
-            )
-        await self._deliver_turn(engagement, text)
+        #
+        # #649: ``inbound_token`` is a seam-created admission ticket (the
+        # Telegram entry points admit synchronously before their first await
+        # and thread the token here). A direct caller gets a self-admitted
+        # ticket at entry. Failure ownership: a SEAM ticket is deliberately
+        # LEFT ledgered on an exception exit — the owning delivery task posts
+        # its visible outcome first and discharges afterwards, so a terminal
+        # transition racing that telling still snapshots the text. A
+        # self-admitted ticket has no outer owner and is discharged here.
+        self_owned = inbound_token is None
+        token = (inbound_token if inbound_token is not None
+                 else self.admit_inbound(engagement.id, text))
+        try:
+            if not self.is_alive(engagement):
+                raise DriverNotAliveError(
+                    f"engagement {engagement.id[:8]} has no live client"
+                )
+            await self._deliver_turn(engagement, text, inbound_token=token)
+        except BaseException:
+            if self_owned:
+                self.discharge_inbound(engagement.id, token)
+            raise
+        else:
+            # Clean turn end — normally a no-op (the evidence frame already
+            # discharged it); the safety net for an evidence-less clean end
+            # is EmptyTurnError, which exits through the branch above.
+            self.discharge_inbound(engagement.id, token)
+
+    # -- #649 inbound admission ledger ------------------------------------
+
+    def admit_inbound(self, engagement_id: str, text: str) -> object:
+        """SYNCHRONOUS: register one admitted inbound turn; returns the
+        opaque ticket its owner later discharges. Exact-token semantics —
+        duplicate texts stay independent."""
+        token = object()
+        self._inbound_unread.setdefault(engagement_id, {})[token] = str(text)
+        return token
+
+    def discharge_inbound(self, engagement_id: str, token: object) -> None:
+        """SYNCHRONOUS + IDEMPOTENT: remove one ticket from whichever
+        population holds it; a second discharge is a no-op."""
+        for pop in (self._inbound_unread, self._inbound_accepted):
+            bucket = pop.get(engagement_id)
+            if bucket is not None and bucket.pop(token, None) is not None:
+                if not bucket:
+                    pop.pop(engagement_id, None)
+                return
+
+    def inbound_token_held(self, engagement_id: str, token: object) -> bool:
+        """SYNCHRONOUS peek: is this exact ticket still ledgered? The
+        failure owner asks before its one bounded notice attempt."""
+        return any(
+            token in pop.get(engagement_id, ())
+            for pop in (self._inbound_unread, self._inbound_accepted))
+
+    def _accept_inbound(self, engagement_id: str, token: object) -> None:
+        """Move unread -> accepted, synchronously, immediately BEFORE the
+        client hand-off: once the per-turn lock is held the executing turn
+        is the only possible completion emitter, so an unread veto spanning
+        the transport write could only self-veto (the SDK dispatches the
+        emit_completion callback from its reader while ``query()`` awaits)."""
+        bucket = self._inbound_unread.get(engagement_id)
+        if bucket is None:
+            return
+        text = bucket.pop(token, None)
+        if not bucket:
+            self._inbound_unread.pop(engagement_id, None)
+        if text is not None:
+            self._inbound_accepted.setdefault(engagement_id, {})[token] = text
+
+    def inbound_unread_depth(self, engagement_id: str) -> int:
+        """G4 gate read (tools.py emit_completion): admitted turns not yet
+        handed to this engagement's client. > 0 vetoes a successful
+        completion."""
+        return len(self._inbound_unread.get(engagement_id, ()))
+
+    def inbound_unread_texts(self, engagement_id: str) -> list[str]:
+        """Terminal-hook read: the unread population's exact texts, for the
+        veto re-check inside the transition and the dying-message
+        disclosure."""
+        return list(self._inbound_unread.get(engagement_id, {}).values())
+
+    def inbound_in_flight_texts(self, engagement_id: str) -> list[str]:
+        """Disclosure-only population: client accepted the text, no
+        model-evidence frame processed yet. ``inbound_in_flight_blocking``
+        is deliberately NOT implemented — a blocking count here could only
+        veto the carrying turn's own completion."""
+        return list(self._inbound_accepted.get(engagement_id, {}).values())
 
     async def cancel(self, engagement: EngagementRecord) -> None:
         client = self._clients.pop(engagement.id, None)
@@ -378,6 +484,7 @@ class InCasaDriver(DriverProtocol):
 
     async def _deliver_turn(
         self, engagement: EngagementRecord, prompt: str,
+        *, inbound_token: object | None = None,
     ) -> None:
         # Lazy import: tools imports engagement_registry; doing this at
         # module top-level would create a circular import.
@@ -404,11 +511,17 @@ class InCasaDriver(DriverProtocol):
         # raised after the stream drains — see the raise below for why.
         api_error: ErrorKind | None = None
         result_msg: Any = None
+        # #649: has any model-evidence frame been processed this turn?
+        evidence_seen = False
         # Per-call tool name lookup so log_tool_result can render name=.
         tool_names_by_id: dict[str, str] = {}
         token = engagement_var.set(engagement)
         try:
             async with lock:
+                # #649: unread -> accepted, synchronously, before the
+                # hand-off — see _accept_inbound for why not after query().
+                if inbound_token is not None:
+                    self._accept_inbound(engagement.id, inbound_token)
                 await client.query(prompt)
                 async for sdk_msg in client.receive_response():
                     sid = _session_id_from_message(sdk_msg)
@@ -517,6 +630,26 @@ class InCasaDriver(DriverProtocol):
                             continue
                     elif isinstance(sdk_msg, ResultMessage):
                         result_msg = sdk_msg
+                    # #649: an accepted ticket is discharged on the first
+                    # MODEL-EVIDENCE frame — an Assistant frame with no
+                    # main-loop fault (fault frames `continue`d above), a
+                    # User (tool-result) frame, or a fault-free Result. The
+                    # check consults the CUMULATIVE fault latch, not the
+                    # frame alone: a clean-looking Result after a fault
+                    # Assistant must not convert a doomed turn into a
+                    # consumed one (the same frame chain ends in
+                    # ApiErrorTurn, and the ticket must survive into the
+                    # failure owner's telling / the terminal snapshot).
+                    if (inbound_token is not None and api_error is None
+                            and isinstance(sdk_msg, (
+                                AssistantMessage, UserMessage))):
+                        evidence_seen = True
+                        self.discharge_inbound(engagement.id, inbound_token)
+                    elif (inbound_token is not None and api_error is None
+                            and isinstance(sdk_msg, ResultMessage)
+                            and result_api_error_kind(sdk_msg) is None):
+                        evidence_seen = True
+                        self.discharge_inbound(engagement.id, inbound_token)
                     # Phase 3b streaming — Task 6 output bound for specialists.
                     if isinstance(sdk_msg, AssistantMessage) and not stream_truncated:
                         msg_text = "".join(
@@ -586,4 +719,14 @@ class InCasaDriver(DriverProtocol):
                 "Engagement %s subprocess_terminated "
                 "reason=no_assistant_message",
                 engagement.id[:8],
+            )
+        # #649: an ADMITTED turn that produced no evidence at all (clean
+        # exhaustion, zero model frames, no API fault) must not end as a
+        # silent success — its ticket would be discharged with the message
+        # unaccounted. Raise so the delivery owner posts a visible failure.
+        # Launch prompts (no token) keep the warn-only G-4 behavior above.
+        if inbound_token is not None and not evidence_seen:
+            raise EmptyTurnError(
+                f"engagement {engagement.id[:8]}: admitted turn ended with "
+                "no model-evidence frame"
             )

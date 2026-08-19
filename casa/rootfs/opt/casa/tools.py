@@ -7614,7 +7614,12 @@ async def _finalize_engagement(
         # in-flight young enough to still be arriving (see the driver's
         # in_flight_blocking_depth — an unbounded veto here could make a
         # successful completion impossible, which this hook must never do).
-        unread_snapshot[:] = list(texts) + list(in_flight)
+        # #649: in-flight first — an accepted turn is usually older than the
+        # turns still queued behind it. Best-effort, mostly-chronological;
+        # cross-population order is NOT a guarantee (a system turn admitted
+        # pre-lock can be older than an accepted manual one) and the rendered
+        # copy claims counts and texts, never chronology.
+        unread_snapshot[:] = list(in_flight) + list(texts)
         if inbound_gate and (texts or blocking or resv):
             return (f"unread_inbound depth={len(texts)} "
                     f"in_flight={blocking} reservations={resv}")
@@ -7836,13 +7841,23 @@ async def _finalize_engagement(
                         _budget -= len(_ex)
                         _parts.append(f"• {_ex}")
                     _more = len(unread_snapshot) - len(_parts)
+                    # #649: "inbound", not "operator" — deliver_system_turn
+                    # continuations are Casa-authored; and the spool-file
+                    # recoverability claim is made only for drivers that
+                    # actually HAVE a durable spool (the in_casa ticket
+                    # ledger is non-durable by design — the count is always
+                    # stated, the overflow text is not recoverable).
+                    _spooled = driver is not None and hasattr(
+                        driver, "drain_inbound_spool")
                     summary_text += (
-                        f"\n\n⚠️ {len(unread_snapshot)} operator message(s) "
+                        f"\n\n⚠️ {len(unread_snapshot)} inbound message(s) "
                         "had no turn start recorded before this engagement "
                         "ended — they may never have been read:\n"
                         + "\n".join(_parts)
-                        + (f"\n…and {_more} more (kept in the engagement's "
-                           "inbound spool file)." if _more > 0 else "")
+                        + ((f"\n…and {_more} more (kept in the engagement's "
+                            "inbound spool file)." if _spooled
+                            else f"\n…and {_more} more.")
+                           if _more > 0 else "")
                     )
                 # v0.79.0 (§2 F1(c)): for a claude_code engagement, DRAIN the
                 # sequencer (settle pending narration + parked/armed intents)

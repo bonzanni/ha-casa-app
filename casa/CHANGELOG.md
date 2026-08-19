@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.224.0] - 2026-08-19
+
+### Fixed
+
+- An approval tapped while its in-Casa engagement is finishing now
+  installs. If a consent turn (or any operator turn) is still queued when
+  the engagement tries to complete, the completion is refused and retried
+  instead of acknowledged: the model's turn ends, the queued turn is
+  delivered, and the engagement completes after the install has actually
+  happened. Previously the queued approval was destroyed silently while
+  the DM keyboard already said "installing".
+- A turn that dies together with its engagement is now disclosed in the
+  engagement's topic instead of being dropped as an internal log line, and
+  a delivery failure on a live engagement always produces a visible
+  notice.
+- A `/cancel` or `/complete` whose result could not be persisted now
+  reports the failure and asks to retry, instead of being silently
+  ignored.
+
 ## [0.223.0] - 2026-08-19
 
 ### Fixed

@@ -160,9 +160,16 @@ permanently a guess.
 What it does not cover: failed and cancelled outcomes intentionally skip the gate, and so
 does the operator's own complete command — only the completion *tool* arms the gate, so an
 operator marking an engagement complete finalizes past unread input deliberately. The gate
-also exists only where the driver implements the inbound accessors — today that is the
-claude-code driver alone, so an interactive in-casa specialist completion has no unread-input
-gate. Accessor failures fail open with a warning rather than wedging termination. The
+exists where the driver implements the inbound accessors — today that is both drivers. The
+claude-code driver counts its durable spool, its in-flight envelopes and its ingress
+reservations. The in-casa driver counts admission tickets: a turn is unread from its
+synchronous admission at the Telegram entry seam until the embedded client takes the prompt,
+then disclosure-only until the first model-evidence frame; the ticket ledger is in-memory
+and dies with the process, and it has no in-flight veto, no reservations and no
+forced-boundary valve — the refusal ending the turn releases the per-turn lock, which is
+what delivers the queued turn, and a ticket whose delivery fails is discharged only after
+one bounded failure notice, never retried into a permanent veto. Accessor failures fail
+open with a warning rather than wedging termination. The claude-code-only
 escalation that forces a turn boundary after repeated refusals stays scoped to the queued
 population: a queued message cannot move until a respawn re-arms delivery, which is what the
 escalation forces, while an in-flight one is already past that boundary and killing its epoch
