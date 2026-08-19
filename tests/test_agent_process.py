@@ -2908,3 +2908,228 @@ class TestSetupOutcomeReport:
             await agent._process(_setup_msg("op-8"))
         assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
         assert calls[0][1]["available_tools"] == {_SETUP_NS}
+
+
+# ---------------------------------------------------------------------------
+# Red cases — #650 (specified by reviewer, accepted before any production
+# change; see drive run 2026-08-18-b, cluster 650). Once accepted these are
+# FROZEN — re-specify + re-accept rather than edit.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingFinalDeliveryChannel:
+    """Channel double recording FINAL deliveries only.
+
+    Deliberately no ``create_on_token``: the assertion targets the final
+    channel delivery, not the token stream. Both ``send_response`` (the
+    error_kind-None branch) and ``send`` (the classified-error branch)
+    record into the same list so the count is branch-agnostic.
+    """
+
+    name = "telegram"
+
+    def __init__(self) -> None:
+        self.deliveries: list[str] = []
+
+    async def send_response(self, text: str, context: dict) -> None:
+        self.deliveries.append(text)
+
+    async def send(self, text: str, context: dict) -> None:
+        self.deliveries.append(text)
+
+
+class TestIssue650RedCases:
+    """#650: a trusted ask that consumes retries must not end invisibly, and a
+    session whose resumed trusted asks repeatedly exhaust SDK retries must not
+    be resumed indefinitely.
+
+    Provenance predating this run: issue #650 (defects (a)/(b), filed against
+    v0.220.0; the six primary files are byte-identical at 8f8f593e), and the
+    re-survey dossier facts anchored at 8f8f593e — the sentinel gate
+    (agent.py:845-854) suppresses a retry-tainted final silence to zero
+    deliveries, and only REFUSAL clears a resumed session (agent.py:1386).
+    """
+
+    @pytest.mark.parametrize("silent_final", ["", "<silent/>"])
+    @pytest.mark.parametrize("trusted", [True, False])
+    async def test_trusted_retry_then_silent_final_emits_exactly_one_delivery(
+        self, tmp_path, silent_final, trusted,
+    ):
+        """One retryable fault, then a silent final attempt: a trusted ask
+        gets exactly one non-empty delivery; an author-less turn stays
+        doctrinally silent (zero deliveries)."""
+        from ingress_identity import ingress_identity
+
+        CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
+        FakeClient.reset()
+        FakeClient.failure_schedule = [
+            CLIConnectionError("upstream reset"), None,
+        ]
+        FakeClient.response_text = silent_final
+
+        agent = _make_agent(tmp_path, role="assistant")
+        channel = _RecordingFinalDeliveryChannel()
+        agent._channel_manager.register(channel)
+
+        msg = _msg("telegram", "retry-silent", "status?")
+        if trusted:
+            msg.trusted_user_origin = ingress_identity(
+                "telegram", sender_id="9001", sender_is_operator=True,
+            )
+
+        with patch("sdk_client_pool._default_make_client", FakeClient), \
+                patch_retry_sleep() as sleep:
+            await agent.handle_message(msg)
+
+        assert FakeClient.attempts == 2
+        assert sleep.await_count == 1
+        if trusted:
+            assert len(channel.deliveries) == 1
+            assert channel.deliveries[0].strip()
+        else:
+            assert len(channel.deliveries) == 0
+
+    async def test_two_trusted_sdk_retry_exhaustions_start_fresh_and_retain_old_snapshot(
+        self, tmp_path,
+    ):
+        """Two consecutive trusted asks that exhaust SDK retries against the
+        same resumed sid: the third ask must NOT resume it — fresh decision,
+        old snapshot retained."""
+        from error_kinds import ErrorKind, _USER_MESSAGES
+        from ingress_identity import ingress_identity
+
+        CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
+        resumes: list[str | None] = []
+
+        class _ResumeRecordingClient(FakeClient):
+            def __init__(self, options):
+                resumes.append(getattr(options, "resume", None))
+                super().__init__(options)
+
+        FakeClient.reset()
+        FakeClient.failure_schedule = [
+            CLIConnectionError(f"upstream reset {i}") for i in range(6)
+        ] + [None]
+        FakeClient.response_text = "recovered"
+
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        await reg.register(
+            build_scoped_session_key("telegram", "butler", "fault-scope"),
+            resident_role_id("butler"), "old-sid",
+            binding_digest=RESIDENT_DIGEST,
+            speaker_provenance=resident_prov("butler"),
+            user_provenance=STUB_USER_PROV,
+        )
+        agent = _make_agent_with_registry(reg, role="butler")
+
+        retain_calls: list[Any] = []
+        agent._spawn_cold_retain = (  # type: ignore[method-assign]
+            lambda old, **kw: retain_calls.append(old)
+        )
+
+        def _trusted_msg() -> BusMessage:
+            m = _msg("telegram", "fault-scope", "status?")
+            m.trusted_user_origin = ingress_identity(
+                "telegram", sender_id="9001", sender_is_operator=True,
+            )
+            return m
+
+        with patch(
+            "sdk_client_pool._default_make_client", _ResumeRecordingClient,
+        ), patch_retry_sleep() as sleep:
+            first = await agent.handle_message(_trusted_msg())
+            second = await agent.handle_message(_trusted_msg())
+
+            assert first is not None
+            assert second is not None
+            assert first.content == _USER_MESSAGES[ErrorKind.SDK_ERROR]
+            assert second.content == _USER_MESSAGES[ErrorKind.SDK_ERROR]
+            assert FakeClient.attempts == 6
+            assert sleep.await_count == 4
+            assert resumes == ["old-sid"] * 6
+            assert retain_calls == []
+
+            third = await agent.handle_message(_trusted_msg())
+
+        assert third is not None
+        assert third.content == "recovered"
+        assert FakeClient.attempts == 7
+        assert resumes == ["old-sid"] * 6 + [None]
+        assert len(retain_calls) == 1
+        assert retain_calls[0].sdk_session_id == "old-sid"
+
+    async def test_untrusted_sdk_retry_exhaustions_keep_resuming(
+        self, tmp_path,
+    ):
+        """Scoping pin: the identical six-failure/third-success sequence
+        WITHOUT trusted ingress keeps resuming and retains nothing — an
+        author-less turn must not burn a conversation's resume streak."""
+        CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
+        resumes: list[str | None] = []
+
+        class _ResumeRecordingClient(FakeClient):
+            def __init__(self, options):
+                resumes.append(getattr(options, "resume", None))
+                super().__init__(options)
+
+        FakeClient.reset()
+        FakeClient.failure_schedule = [
+            CLIConnectionError(f"upstream reset {i}") for i in range(6)
+        ] + [None]
+        FakeClient.response_text = "recovered"
+
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        await reg.register(
+            build_scoped_session_key("telegram", "butler", "fault-scope"),
+            resident_role_id("butler"), "old-sid",
+            binding_digest=RESIDENT_DIGEST,
+            speaker_provenance=resident_prov("butler"),
+            user_provenance=STUB_USER_PROV,
+        )
+        agent = _make_agent_with_registry(reg, role="butler")
+
+        retain_calls: list[Any] = []
+        agent._spawn_cold_retain = (  # type: ignore[method-assign]
+            lambda old, **kw: retain_calls.append(old)
+        )
+
+        with patch(
+            "sdk_client_pool._default_make_client", _ResumeRecordingClient,
+        ), patch_retry_sleep():
+            for _ in range(3):
+                await agent.handle_message(_msg("telegram", "fault-scope", "status?"))
+
+        assert FakeClient.attempts == 7
+        assert resumes == ["old-sid"] * 7
+        assert retain_calls == []
+
+    @pytest.mark.parametrize("silent_final", ["", "<silent/>"])
+    async def test_trusted_silence_without_retries_stays_silent(
+        self, tmp_path, silent_final,
+    ):
+        """Acceptance control (Sol, redcase round 2): a trusted ask whose turn
+        consumed NO retries and ended silent is doctrinal silence — zero
+        deliveries. Kills the mutant that notices every trusted silent turn
+        without checking retry consumption."""
+        from ingress_identity import ingress_identity
+
+        FakeClient.reset()
+        FakeClient.failure_schedule = [None]
+        FakeClient.response_text = silent_final
+
+        agent = _make_agent(tmp_path, role="assistant")
+        channel = _RecordingFinalDeliveryChannel()
+        agent._channel_manager.register(channel)
+
+        msg = _msg("telegram", "retry-silent", "status?")
+        msg.trusted_user_origin = ingress_identity(
+            "telegram", sender_id="9001", sender_is_operator=True,
+        )
+
+        with patch("sdk_client_pool._default_make_client", FakeClient), \
+                patch_retry_sleep() as sleep:
+            await agent.handle_message(msg)
+
+        assert FakeClient.attempts == 1
+        assert sleep.await_count == 0
+        assert len(channel.deliveries) == 0
