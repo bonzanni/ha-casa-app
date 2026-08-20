@@ -368,16 +368,28 @@ def test_launch_rollback_does_not_latch_a_cancellation():
             continue
         if "note_cancel_cause" not in ast.unparse(node.body):
             continue
-        tests = [node.test] if not isinstance(node.test, ast.BoolOp) else node.test.values
-        for test in tests:
-            if (isinstance(test, ast.Call)
-                    and isinstance(test.func, ast.Name)
-                    and test.func.id == "isinstance"
-                    and isinstance(test.args[0], ast.Name)
-                    and test.args[0].id == handler.name
-                    and isinstance(test.args[1], ast.Name)
-                    and test.args[1].id == "Exception"):
-                guarded.append(node)
+        # The OPERATOR is load-bearing and must be asserted, not just the
+        # operands: a reviewer reproduced that turning `created and isinstance(
+        # exc, Exception)` into `created or isinstance(...)` left an earlier
+        # version of this test green while a shutdown cancellation was latched
+        # and its row lost. So require an `and` over exactly two operands.
+        if not isinstance(node.test, ast.BoolOp):
+            continue
+        if not isinstance(node.test.op, ast.And):
+            continue
+        if len(node.test.values) != 2:
+            continue
+        created, kind_test = node.test.values
+        if not (isinstance(created, ast.Name) and created.id == "created"):
+            continue
+        if (isinstance(kind_test, ast.Call)
+                and isinstance(kind_test.func, ast.Name)
+                and kind_test.func.id == "isinstance"
+                and isinstance(kind_test.args[0], ast.Name)
+                and kind_test.args[0].id == handler.name
+                and isinstance(kind_test.args[1], ast.Name)
+                and kind_test.args[1].id == "Exception"):
+            guarded.append(node)
 
     assert len(guarded) == 1
     # ...and no latch escapes that `if`.
@@ -490,3 +502,116 @@ def test_the_prelaunch_bail_itself_records_its_cause():
     cancelled = next(
         i for i, text in enumerate(statements) if "cancel_delegation" in text)
     assert noted < cancelled
+
+
+async def test_a_shutdown_cancellation_in_the_rollback_arm_leaves_the_row(tmp_path):
+    """Case T — the rollback arm, driven for REAL rather than pinned by source.
+
+    A reviewer showed the source pin above was not enough on its own, and also
+    that this path IS drivable: `_create_voice_lifecycle_task` runs after the row
+    is durable and before `bind_task`, so raising a `CancelledError` there
+    reproduces exactly what a graceful stop does to a launch in flight.
+
+    The assertion that matters: the arm must NOT record a cause, so the row is
+    left ACCEPTED for the boot reconciliation. Latching here would settle the row
+    in a dying process and leave recovery nothing to find — the original defect,
+    reintroduced through the one arm whose `except BaseException` cannot tell an
+    ordinary launch failure from process death without looking.
+    """
+    import tools
+    from specialist_registry import SpecialistRegistry
+
+    registry = JobRegistry(tmp_path / "jobs.json", clock=lambda: 200.0)
+    await registry.load()
+    specialists = SpecialistRegistry(
+        str(tmp_path / "specialists"), job_registry=registry)
+
+    origin = {
+        "role": "concierge",
+        "chat_id": "scope-1",
+        "voice_route_id": "route-1",
+        "origin_device_id": "device-kitchen",
+    }
+
+    def _boom(**_kwargs):
+        raise asyncio.CancelledError()
+
+    previous_registry = tools._specialist_registry
+    previous_factory = tools._create_voice_lifecycle_task
+    tools._specialist_registry = specialists
+    tools._create_voice_lifecycle_task = _boom
+    try:
+        registry.begin_shutdown()
+        try:
+            await tools._start_voice_async_job(
+                cfg=None,
+                specialist_role="researcher",
+                task_text="How long does the boiler run?",
+                context_text="",
+                origin=origin,
+                resolution=None,
+                permit=None,
+                handoff=tools._PermitHandoff(),
+            )
+        except asyncio.CancelledError:
+            pass
+        else:  # pragma: no cover - the injected cancellation must propagate
+            raise AssertionError("the rollback arm did not re-raise")
+    finally:
+        tools._specialist_registry = previous_registry
+        tools._create_voice_lifecycle_task = previous_factory
+
+    live = [job for job in registry.all()]
+    assert len(live) == 1
+    assert live[0].execution_state is ExecutionState.ACCEPTED
+    assert live[0].failure is None
+    # No cause was recorded, so the row is the boot reconciliation's.
+    assert registry._cancel_causes == {}
+
+    reloaded = await reload(tmp_path)
+    recovered = await reloaded.recover_after_restart()
+    assert len(recovered) == 1
+    assert recovered[0].execution_state is ExecutionState.ORPHANED
+    assert recovered[0].failure == JobFailure("restart_orphan", "Lost on restart")
+
+
+def test_main_calls_the_declaration_rather_than_merely_mentioning_it():
+    """Case U — the declaration must be a real, executed call.
+
+    A reviewer reproduced that the accepted file's placement case matches
+    `ast.unparse` by substring, so `False and job_registry.begin_shutdown()`
+    satisfies it while the declaration never runs — and all mapped tests stayed
+    green while a stop again settled a live row.
+
+    That accepted case is FROZEN and is deliberately not edited here; this is a
+    supplementary binding that closes the hole structurally. It requires the
+    statement following `await stop_event.wait()` to be exactly a bare
+    zero-argument call to `job_registry.begin_shutdown()` — an expression
+    statement whose value is that Call and nothing else, so no boolean operand,
+    no conditional and no comparison can stand in for it.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    import casa_core
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(casa_core.main)))
+    body = tree.body[0].body  # type: ignore[attr-defined]
+
+    waits = [
+        i for i, node in enumerate(body)
+        if "stop_event.wait()" in ast.unparse(node)
+    ]
+    assert len(waits) == 1
+
+    statement = body[waits[0] + 1]
+    assert isinstance(statement, ast.Expr)
+    call = statement.value
+    assert isinstance(call, ast.Call)
+    assert call.args == []
+    assert call.keywords == []
+    assert isinstance(call.func, ast.Attribute)
+    assert call.func.attr == "begin_shutdown"
+    assert isinstance(call.func.value, ast.Name)
+    assert call.func.value.id == "job_registry"
