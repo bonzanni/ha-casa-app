@@ -489,16 +489,8 @@ class TestCancellationHasAnOwner:
         pending = list(tools_mod._LAUNCH_DEATH_TASKS)
         if pending:
             await asyncio.gather(*pending)
-            # `gather` returns WITHOUT yielding when every child is already
-            # done — CPython's bpo-46672 fast path calls `_done_callback`
-            # inline for those (`asyncio.tasks.gather`'s `done_futs` loop) —
-            # so a reporter's own `_launch_death_done` may still be sitting in
-            # `loop._ready`. This yield flushes callbacks that are ALREADY
-            # QUEUED, which is deterministic and bounded at one turn; it is not
-            # the wall-time proxy this test just stopped using, because nothing
-            # is being waited FOR. Measured: without it, the unshielded-await
-            # mutation fails here on a finished-but-still-anchored task instead
-            # of on the close count it is supposed to catch.
+            # Flush the reporter's ALREADY-QUEUED `_launch_death_done`; see
+            # the sibling above for why `gather` can return without yielding.
             await asyncio.sleep(0)
         assert not tools_mod._LAUNCH_DEATH_TASKS
 
