@@ -234,8 +234,8 @@ likewise retried in the background. Runtime ownership (the permit) is released e
 
 **The process is stopping.** A cancellation caused by the stop is not written at all
 (INV-JOB-009): the row stays live, and the retry that would otherwise chase a terminal it
-can never reach stops for the same reason. Whatever the stop interrupts is reported by the
-next boot's reconciliation, not by the dying process.
+can never reach stops for the same reason. Read INV-JOB-009 for what that does and does not
+promise — a stop makes a live row recoverable, and nothing more than that.
 
 **A send fails.** Only the local offer is removed; the durable row stays ready and is
 re-offered. A failed revocation stays locally pending for a later sweep.
