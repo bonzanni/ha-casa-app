@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.227.0] - 2026-08-20
+
+### Fixed
+
+- An engagement whose first turn dies without reporting now says so in its
+  topic and ends as failed, instead of sitting silently active for a day.
+  A first turn that was cut off part-way through its work — the agent had
+  started, and something replaced it mid-task — used to look exactly like a
+  healthy start: the agent that delegated the job said "started, I'll
+  report back", the engagement stayed active with nothing ever posted, and
+  it was only suspended as idle after a day and cleaned up a week later.
+  Casa now checks that a first turn actually reached its end, posts one
+  failure notice into the topic while it is still open (including anything
+  you sent while the turn was dying), and ends the engagement as failed.
+- A delegation cancelled while it was starting up now posts that same
+  notice. It used to mark the topic failed and close it without ever
+  having said a word, and it waited on the agent's shutdown — which can
+  take a while for a specialist — before doing anything you could see.
+
+### Changed
+
+- **You will see more engagement failures reported than before.** These
+  deaths were already happening; they were simply invisible. Nothing got
+  worse — every new report is a real interruption that previously went
+  unnoticed, and collecting them is how the underlying cause gets fixed.
+- The configurator's own guidance no longer tells it that reloading Casa
+  in the middle of a task is safe. It claimed a restart would be held back
+  until after the agent had reported, which was never true of the reload
+  tool it was reading about; it now advises reporting promptly instead of
+  treating survival as guaranteed.
+
 ## [0.226.0] - 2026-08-19
 
 ### Fixed
