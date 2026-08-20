@@ -615,3 +615,165 @@ def test_main_calls_the_declaration_rather_than_merely_mentioning_it():
     assert call.func.attr == "begin_shutdown"
     assert isinstance(call.func.value, ast.Name)
     assert call.func.value.id == "job_registry"
+
+
+async def test_an_ordinary_launch_failure_still_terminalizes_during_a_stop(tmp_path):
+    """Case V — the ordinary-`Exception` counterpart to case T, DRIVEN.
+
+    Both reviewers showed the source pin on this arm claims coverage it does not
+    have: nesting the latch under `if False`, or latching a wrong job id, left
+    every mapped case green while an ordinary launch failure during a stop was
+    deferred and boot recovered it as a false restart orphan. So the arm's
+    ordinary path is driven here rather than asserted about.
+
+    A `RuntimeError` from `_create_voice_lifecycle_task` — raised after the row
+    is durable and before `bind_task` — is a launch failure the arm knows the
+    cause of. It must terminalize now, and boot must recover nothing.
+    """
+    import tools
+    from specialist_registry import SpecialistRegistry
+
+    registry = JobRegistry(tmp_path / "jobs.json", clock=lambda: 200.0)
+    await registry.load()
+    specialists = SpecialistRegistry(
+        str(tmp_path / "specialists"), job_registry=registry)
+
+    origin = {
+        "role": "concierge",
+        "chat_id": "scope-1",
+        "voice_route_id": "route-1",
+        "origin_device_id": "device-kitchen",
+    }
+
+    def _boom(**_kwargs):
+        raise RuntimeError("the lifecycle task could not be created")
+
+    previous_registry = tools._specialist_registry
+    previous_factory = tools._create_voice_lifecycle_task
+    tools._specialist_registry = specialists
+    tools._create_voice_lifecycle_task = _boom
+    try:
+        registry.begin_shutdown()
+        try:
+            await tools._start_voice_async_job(
+                cfg=None,
+                specialist_role="researcher",
+                task_text="How long does the boiler run?",
+                context_text="",
+                origin=origin,
+                resolution=None,
+                permit=None,
+                handoff=tools._PermitHandoff(),
+            )
+        except RuntimeError:
+            pass
+        else:  # pragma: no cover - the injected failure must propagate
+            raise AssertionError("the rollback arm did not re-raise")
+    finally:
+        tools._specialist_registry = previous_registry
+        tools._create_voice_lifecycle_task = previous_factory
+
+    rows = list(registry.all())
+    assert len(rows) == 1
+    # The cause was recorded for THIS row, which is what a wrong-id latch breaks.
+    assert list(registry._cancel_causes) == [rows[0].id]
+    assert rows[0].execution_state is ExecutionState.CANCELLED
+
+    reloaded = await reload(tmp_path)
+    assert await reloaded.recover_after_restart() == []
+
+
+async def test_the_prelaunch_bail_terminalizes_its_own_row_during_a_stop(
+    monkeypatch, tmp_path,
+):
+    """Case W — the pre-launch bail, DRIVEN through the real tool.
+
+    A reviewer showed the source pin on this branch cannot see WHICH row is
+    latched: replacing `delegation_id` with a literal wrong id left all 22 mapped
+    cases green, while the real row stayed RUNNING and boot recovered it as a
+    false `ORPHANED`/`READY` restart orphan for a specialist that never started.
+    A pin that cannot see the receiver is not evidence about the receiver, so the
+    branch is driven here.
+
+    `_voice_wait_from_deadline` is called at exactly two sites: once before
+    `register_delegation` and once after, precisely because registration consumes
+    wall-clock time. Returning a budget first and `None` second is therefore the
+    exact condition of the POST-registration bail, and nothing else reaches it.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import agent as agent_mod
+    import tools as tm
+    from config import AgentConfig, DelegateEntry
+    from specialist_registry import SpecialistRegistry
+
+    try:
+        from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
+    except ImportError:  # pragma: no cover - path shape differs by invocation
+        from role_artifact_stub import STUB_ROLE_ARTIFACT
+
+    registry = JobRegistry(tmp_path / "jobs.json", clock=lambda: 200.0)
+    await registry.load()
+    specialists = SpecialistRegistry(
+        str(tmp_path / "specialists"), job_registry=registry)
+
+    def cfg(role: str, delegates: tuple[str, ...] = ()) -> AgentConfig:
+        built = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT, role=role)
+        built.delegates = [
+            DelegateEntry(agent=d, purpose="p", when="w") for d in delegates
+        ]
+        return built
+
+    tm.init_tools(
+        channel_manager=MagicMock(), bus=MagicMock(),
+        specialist_registry=specialists, mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=MagicMock(),
+        agent_role_map={
+            "assistant": cfg("assistant", delegates=("researcher",)),
+            "researcher": cfg("researcher"),
+        },
+    )
+
+    budgets = iter([5.0, None])
+    monkeypatch.setattr(
+        tm, "_voice_wait_from_deadline", lambda *_a, **_k: next(budgets))
+
+    async def _must_not_launch(*_a, **_k):
+        raise AssertionError("the specialist must not be started")
+
+    monkeypatch.setattr(tm, "_run_delegated_agent_bounded", _must_not_launch)
+
+    # A plain voice turn from a NON-concierge caller: the concierge role is the
+    # one that must use WS handoff delivery, and a sync concierge voice call with
+    # no reservation is refused before it ever reaches the deadline recompute.
+    # `is_voice` is what matters here, and the budget is supplied by the patch
+    # above rather than by a real clock.
+    origin = {
+        "role": "assistant", "execution_role": "assistant",
+        "channel": "voice", "chat_id": "c1", "cid": "t", "user_text": "hi",
+    }
+
+    registry.begin_shutdown()
+    token = agent_mod.origin_var.set(origin)
+    try:
+        result = await tm.delegate_to_agent.handler({
+            "agent": "researcher",
+            "task": "How long does the boiler run?",
+            "mode": "sync",
+        })
+    finally:
+        agent_mod.origin_var.reset(token)
+
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["kind"] == "deadline_exceeded"
+
+    rows = list(registry.all())
+    assert len(rows) == 1
+    # The cause is recorded against the row that exists — the assertion a source
+    # pin cannot make.
+    assert list(registry._cancel_causes) == [rows[0].id]
+    assert rows[0].execution_state is ExecutionState.CANCELLED
+
+    reloaded = await reload(tmp_path)
+    assert await reloaded.recover_after_restart() == []
