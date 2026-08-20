@@ -31,7 +31,7 @@ You have no shell: Bash is not in your toolset. Edit files with Write/Edit, sear
 
 config_git_commit creates a proper commit. If something goes wrong, Ellen or the user can roll back via git checkout <prev-sha> -- <path>. The repo is local-only - no propagation concern.
 
-You CALL the reload tool before emit_completion (see completion.md), but the actual Supervisor restart is deferred until after emit_completion lands - even if the reload goes badly, Ellen has your summary.
+You CALL the reload tool before emit_completion (see completion.md). No reload scope restarts the addon, so a reload that goes badly still leaves you able to report - but the turn hosting your reload is not guaranteed to survive it, so report promptly rather than assuming you have unlimited time afterwards.
 
 ## One rule you shouldn't forget
 

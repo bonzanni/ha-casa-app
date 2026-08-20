@@ -158,6 +158,27 @@ What it does not cover: ordering depends on a bounded drain. If the drain times 
 completion is posted anyway with a warning, and if no live sequencer exists the finalize path
 falls back to a direct send that bypasses sequencing entirely.
 
+**One terminal path deliberately stays outside this funnel.** A launch turn that ends
+without leaving any artifact (INV-ENG-011, [`architecture/engagements.md`](engagements.md))
+is reported by its launcher, not finalized here, and the exclusion is what makes it safe.
+This funnel retains a tier-classified engagement summary onto the shared memory bank on
+*every* outcome; a launch death recorded as a completion with empty text would put a
+fabricated success into a store with no other copy. It also hard-codes a single completion
+error kind, which would erase the specific kind the report exists to name, and it notifies
+the engager over the bus, which the launcher's own error envelope already does. So that path
+uses the strict terminal primitive directly, writes only `error`, and touches neither the bus
+notification nor any retention. Nothing outside a completion or the operator's complete
+command ever writes `completed`.
+
+Two properties of the primitive make that direct use correct rather than a shortcut, and
+both are the reason it is the primitive and not the best-effort marker. Strictness means the
+in-memory flip and its persistence stand or fall together, so a caller that acts on the
+returned win is acting on a record that reached disk — the best-effort marker returns a win
+over a swallowed write failure, and an irreversible topic close taken on that answer would
+sit over a record disk still calls live. And the single-winner contract means the caller
+learns, in the same operation, whether the engagement had already reported itself: a lost
+transition is the instruction to do nothing, because the winner owns every side effect.
+
 ## Failure behavior
 
 **Completion is called with a bad status or arguments.** Rejected before any transition; the

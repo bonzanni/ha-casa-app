@@ -59,8 +59,10 @@ A skipped reload leaves the artifact **committed but inert**. See
 `completion.md`.
 
 `casa_reload(...)` returns immediately with `{status: "ok", ms: <int>,
-actions: [...]}`. There is no Supervisor restart, so no race against
-your subprocess being killed mid-emission.
+actions: [...]}`. There is no Supervisor restart. That removes one race,
+not every race: an agent-touching scope replaces every resident and
+schedules its client pool to close, and your turn is hosted inside the
+call that asked for it. Report promptly after the reload.
 
 ## When in doubt
 

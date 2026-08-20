@@ -12,18 +12,24 @@ Every completion path is the same three tool calls, in this order:
 
 `emit_completion` is the terminal action. After it lands, the engagement closes and Ellen reads the summary. If you fire `emit_completion` without first running the prescribed reload, the artifact is **COMMITTED BUT INERT** — the YAML on disk is correct, but the running Casa keeps the prior runtime state. The trigger does not fire; the new agent does not load; the new tool does not surface. From Ellen's point of view (and the operator's), you "succeeded" — but the change has no effect. This is the highest-leverage doctrine violation in this executor.
 
-## Reload-before-completion is safe
+## Reload before completion — and do not linger
 
-`casa_reload_triggers(role)` is in-process and returns immediately — no race.
+`casa_reload_triggers(role)` is in-process and returns immediately.
 
-`casa_reload()` returns immediately with `supervisor_status: 200, deferred: true`.
-The platform defers the actual Supervisor restart POST until *after*
-`emit_completion` lands and the engagement finalizes — your subprocess
-will never observe the addon kill mid-flight. By the time the
-container is killed, your `emit_completion` call has already written
-the summary onto the bus, the user has received the "Done" relay, and
-Ellen has a complete record. Casa comes back up moments later with
-the new runtime.
+`casa_reload()` is also in-process. It returns `{status: "ok", ms: <int>,
+actions: [...]}` — it never POSTs to Supervisor and never returns a
+`deferred` field. That vocabulary belongs to `casa_restart_supervised`,
+which is a different tool and is not part of this order.
+
+There is therefore no Supervisor restart to be killed by. But do NOT read
+that as "your turn is guaranteed to survive the reload": an agent-touching
+scope (`agent`, `agents`, `executors`, `policies`, `config_sync`, `full`)
+replaces every resident and schedules its client pool to close, and your
+engagement's turn is hosted inside the very turn that called the reload.
+Call `emit_completion` promptly after the reload rather than interposing
+work you do not need. If your turn does die before you report, the platform
+now says so in this topic instead of leaving the engagement silent — but
+the outcome of your work is lost either way, so do not rely on it.
 
 ## emit_completion payload
 
@@ -75,13 +81,11 @@ even though your sub-action narrative was correct.
 
 ## Hard-reload note
 
-`casa_reload()` returns `supervisor_status: 200, deferred: true`
-immediately. The platform defers the actual Supervisor restart POST
-until after `emit_completion` runs and the engagement finalizes, so
-your subprocess is never killed mid-completion. There is no longer a
-race; you may interpose Read tool_uses between `casa_reload`
-and `emit_completion` if needed. Soft reload (`casa_reload_triggers`)
-likewise has no race.
+There is no such thing here: no reload scope restarts the addon. See
+"Reload before completion — and do not linger" above for what
+`casa_reload()` actually returns and why you should still not linger
+between it and `emit_completion`. A Read between the two is fine; a long
+stretch of further work is not.
 
 ## Cancellation
 
