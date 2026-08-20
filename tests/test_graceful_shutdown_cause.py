@@ -777,3 +777,176 @@ async def test_the_prelaunch_bail_terminalizes_its_own_row_during_a_stop(
 
     reloaded = await reload(tmp_path)
     assert await reloaded.recover_after_restart() == []
+
+
+def _quiet_lifecycle_task(**_kwargs):
+    """A stand-in for the lifecycle task that binds cleanly and does nothing.
+
+    `bind_task` needs a real, live task to take ownership of; the lifecycle's own
+    behaviour is not what these two cases are about, and letting it run would
+    drag a whole specialist turn into a test about a rollback.
+    """
+    async def _idle():
+        await asyncio.sleep(3600)
+
+    return asyncio.create_task(_idle())
+
+
+class _Reservation:
+    """The handoff reservation contract: reserve / commit / release."""
+
+    def __init__(self) -> None:
+        self.released = 0
+        self.committed = 0
+
+    def reserve(self) -> bool:
+        return True
+
+    def commit(self, _job) -> None:
+        self.committed += 1
+
+    def release(self) -> None:
+        self.released += 1
+
+
+async def test_a_post_bind_handoff_failure_still_terminalizes(tmp_path):
+    """Case X — the rollback arm AFTER `handoff.transferred` is set.
+
+    A reviewer showed the previous rollback evidence reached only the fresh,
+    pre-bind failure: nesting the latch under `if not handoff.transferred` was
+    accepted by every mapped case, while a post-bind `mark_handoff_pending`
+    failure left the row RUNNING and boot recovered it as a false restart orphan.
+    So this drives the branch on the far side of the bind.
+    """
+    import tools
+    from specialist_registry import SpecialistRegistry
+
+    registry = JobRegistry(tmp_path / "jobs.json", clock=lambda: 200.0)
+    await registry.load()
+    specialists = SpecialistRegistry(
+        str(tmp_path / "specialists"), job_registry=registry)
+
+    async def _no_handoff(*_a, **_k):
+        raise RuntimeError("the handoff frame could not be persisted")
+
+    registry.mark_handoff_pending = _no_handoff  # type: ignore[method-assign]
+
+    origin = {
+        "role": "concierge",
+        "chat_id": "scope-1",
+        "voice_route_id": "route-1",
+        "origin_device_id": "device-kitchen",
+    }
+    reservation = _Reservation()
+
+    previous_registry = tools._specialist_registry
+    previous_factory = tools._create_voice_lifecycle_task
+    tools._specialist_registry = specialists
+    tools._create_voice_lifecycle_task = _quiet_lifecycle_task
+    try:
+        registry.begin_shutdown()
+        try:
+            await tools._start_voice_async_job(
+                cfg=None,
+                specialist_role="researcher",
+                task_text="How long does the boiler run?",
+                context_text="",
+                origin=origin,
+                resolution=None,
+                permit=None,
+                handoff=tools._PermitHandoff(),
+                handoff_reservation=reservation,
+            )
+        except RuntimeError:
+            pass
+        else:  # pragma: no cover - the injected failure must propagate
+            raise AssertionError("the rollback arm did not re-raise")
+    finally:
+        tools._specialist_registry = previous_registry
+        tools._create_voice_lifecycle_task = previous_factory
+
+    rows = list(registry.all())
+    assert len(rows) == 1
+    assert list(registry._cancel_causes) == [rows[0].id]
+    assert rows[0].execution_state is ExecutionState.CANCELLED
+
+    reloaded = await reload(tmp_path)
+    assert await reloaded.recover_after_restart() == []
+
+
+async def test_an_ordinary_continuation_rollback_still_compensates(tmp_path):
+    """Case Y — the rollback arm's CONTINUATION branch.
+
+    The same reviewer showed that restricting the latch to `parent_job_id is
+    None` left every mapped case green, while an ordinary continuation launch
+    failure kept its child ACCEPTED, failed to restore the parent's
+    `awaiting_input`, and had boot orphan a child that never ran. That branch
+    settles through `compensate_unbound_continuation` — the third enforcement
+    site — so it exercises the latch and the third guard together, which no other
+    case does.
+    """
+    import tools
+    from specialist_registry import SpecialistRegistry
+
+    registry = JobRegistry(tmp_path / "jobs.json", clock=lambda: 200.0)
+    await registry.load()
+    parent = make_voice_job(
+        id="job-parent", creator_peer="voice", creator_user_id=None,
+        terminal_at=150.0, expires_at=400.0,
+        execution_state=ExecutionState.SUCCEEDED,
+        delivery_state=DeliveryState.DELIVERED,
+        result='{"status":"needs_clarification"}',
+        awaiting_input=True, continuable_until=400.0,
+    )
+    await registry.create(parent)
+    specialists = SpecialistRegistry(
+        str(tmp_path / "specialists"), job_registry=registry)
+
+    origin = {
+        "role": "concierge",
+        "channel": "voice",
+        "chat_id": "scope-1",
+        "voice_route_id": "route-1",
+        "origin_device_id": "device-kitchen",
+    }
+
+    def _boom(**_kwargs):
+        raise RuntimeError("the lifecycle task could not be created")
+
+    previous_registry = tools._specialist_registry
+    previous_factory = tools._create_voice_lifecycle_task
+    tools._specialist_registry = specialists
+    tools._create_voice_lifecycle_task = _boom
+    try:
+        registry.begin_shutdown()
+        try:
+            await tools._start_voice_async_job(
+                cfg=None,
+                specialist_role="researcher",
+                task_text="And overnight?",
+                context_text="",
+                origin=origin,
+                resolution=None,
+                permit=None,
+                handoff=tools._PermitHandoff(),
+                parent_job_id="job-parent",
+            )
+        except RuntimeError:
+            pass
+        else:  # pragma: no cover - the injected failure must propagate
+            raise AssertionError("the rollback arm did not re-raise")
+    finally:
+        tools._specialist_registry = previous_registry
+        tools._create_voice_lifecycle_task = previous_factory
+
+    # The child was compensated away and the parent's clarification restored —
+    # the ordinary rollback outcome, preserved through a declared stop because
+    # the cause was recorded.
+    rows = list(registry.all())
+    assert [row.id for row in rows] == ["job-parent"]
+    assert registry.get("job-parent").awaiting_input is True
+    assert len(registry._cancel_causes) == 1
+    assert "job-parent" not in registry._cancel_causes
+
+    reloaded = await reload(tmp_path, now=500.0)
+    assert await reloaded.recover_after_restart() == []
