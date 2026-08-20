@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.228.0] - 2026-08-20
+
+### Fixed
+
+- A delegation still running when Casa is stopped is now reported after the
+  restart, instead of being silently recorded as cancelled. Stopping or
+  restarting Casa used to write the running job down as cancelled on its way
+  out, which left it indistinguishable from a cancellation you had asked for:
+  the next boot had nothing to pick up, and the work simply vanished without
+  anyone being told. Casa now leaves such a job as it stands at shutdown, so
+  the restart finds it and takes it into its recovery. Cancellations you
+  actually asked for are unchanged and still stay silent, and so is
+  everything that finishes normally before the stop completes.
+
 ## [0.227.0] - 2026-08-20
 
 ### Fixed

@@ -24,6 +24,13 @@ from speaker_provenance import provenance_from_mapping, provenance_mapping
 
 logger = logging.getLogger(__name__)
 
+# #671: the reason a graceful stop gives for the cancellations it causes. The
+# same string the rest of Casa already uses for this — `verdict_broker`'s
+# `cancel_all(reason="casa_shutdown")` and the scheduled-ask finish hook, whose
+# published exemption (INV-JOB-007) says a shutdown cancel settles nothing and
+# leaves the record for the next boot. Extended here, not duplicated.
+CASA_SHUTDOWN_REASON = "casa_shutdown"
+
 
 class ExecutionState(StrEnum):
     ACCEPTED = "ACCEPTED"
@@ -231,6 +238,13 @@ class JobRegistry:
         self._runtime_release_waiters: dict[
             str, set[asyncio.Future[None]]
         ] = {}
+        # #671: the reason a cancellation write carries once the process has
+        # declared a graceful stop. Process-local and never encoded — see
+        # `begin_shutdown`.
+        self._shutdown_reason: str | None = None
+        # #671: per-job "this settling is NOT the stop" latches — see
+        # `note_cancel_cause`. Process-local, never encoded.
+        self._cancel_causes: dict[str, str] = {}
 
     @property
     def path(self) -> str:
@@ -382,6 +396,19 @@ class JobRegistry:
                 )
             if (child.execution_state is not ExecutionState.ACCEPTED
                     or child_job_id in self._tasks):
+                return False
+            if self._cancel_deferred_to_boot(child_job_id, "cancelled"):
+                # #671, third settling site: this one settles by DELETION rather
+                # than by a terminal write, which is why an enumeration of
+                # "cancellation terminals" misses it — and deleting the child is
+                # strictly worse than writing one, because there is then no row
+                # for the boot reconciliation to find at all. A crash never runs
+                # this compensation, so the child survives as ACCEPTED and is
+                # orphaned; deferring reproduces exactly that.
+                logger.info(
+                    "job %s continuation compensation deferred to boot "
+                    "recovery (%s)", child_job_id[:8], self._shutdown_reason,
+                )
                 return False
 
             now = self._now()
@@ -594,6 +621,17 @@ class JobRegistry:
                 continue
             if (current is None
                     or current.execution_state in self._TERMINAL_EXECUTION):
+                return
+            if self._shutdown_reason is not None:
+                # #671 liveness: a deferred cancellation returns a still-LIVE
+                # row, so this loop would retry an operation that can never
+                # reach a terminal for the rest of the process's life. The boot
+                # reconciliation owns the row now. This is a progress-based
+                # stop, not an elapsed allowance on the work.
+                logger.info(
+                    "job %s terminal reconciliation stopped for boot recovery",
+                    job_id[:8],
+                )
                 return
 
     def _reconciliation_done(self, job_id: str, task: asyncio.Task) -> None:
@@ -855,6 +893,86 @@ class JobRegistry:
             )
             return CancelResult(status)
 
+    def begin_shutdown(self, reason: str = CASA_SHUTDOWN_REASON) -> None:
+        """Declare that this process is stopping gracefully (#671).
+
+        Synchronous, no I/O, waits for nothing, idempotent — so it can be the
+        FIRST statement of ``casa_core.main``'s cleanup block, ahead of every
+        arm that can terminalize a live row: the bounded ``Agent.aclose()``
+        loop, the agent-loop cancels, ``close()`` below, and — the edge that
+        actually fires for a delegation — ``asyncio.run``'s final
+        ``_cancel_all_tasks``, which runs AFTER ``main()`` has returned.
+
+        That last point is why the reason lives here rather than in a local, a
+        parameter, or a cancellation message. This registry instance is reached
+        from module state (``tools._specialist_registry.job_registry``) and from
+        the arms' own closures, so it is still readable once ``main()``'s frame
+        is gone; a ``CancelledError`` message is not, because
+        ``_cancel_all_tasks`` cancels with no message at all and a bare
+        re-cancel erases one set upstream.
+        """
+        self._shutdown_reason = reason
+
+    def note_cancel_cause(self, job_id: str, cause: str) -> None:
+        """Record that this job's settling is NOT caused by the process stopping.
+
+        A one-shot, process-local, per-job latch, set by the arm that *knows* its
+        cause immediately before it settles the row. Nothing durable, no I/O.
+
+        The direction is deliberate and is the whole safety property. A latch
+        meaning "this IS the shutdown" would be fail-OPEN: any arm that forgot to
+        enrol would write the false terminal, which is the defect. A latch meaning
+        "this is NOT the shutdown" is fail-CLOSED — an arm that latches nothing
+        gets deferral, so it inherits the contract and errs toward telling the
+        operator. It also needs no task enrolment and no snapshot instant, so
+        there is no window in which a row exists but is not yet covered.
+
+        Only an arm whose cause is known STATICALLY at its call site may latch: a
+        pre-launch budget bail, a deadline expiry, an ordinary launch-rollback
+        exception. An arm reached by a ``CancelledError`` must NOT latch, because
+        it cannot tell a barge-in from process death — and those are exactly the
+        arms this cluster exists for.
+        """
+        self._cancel_causes.setdefault(job_id, cause)
+
+    def _cancel_deferred_to_boot(self, job_id: str, kind: str) -> bool:
+        """Whether a cancellation terminal belongs to the next boot, not to us.
+
+        The whole policy, in one predicate, and a conjunction on purpose:
+
+        * ``kind == "cancelled"`` is **the reason of the write**. It is what
+          lets a real verdict through — a non-cancellation ``JobFailure``
+          (a turn-limit abort, a persistence failure) still lands as FAILED
+          even mid-stop, and a success never reaches this predicate at all.
+          A guard of the shape "the process is stopping, skip the write" would
+          eat both.
+        * The declaration decides whose row this is. Once a graceful stop is
+          declared, the boot reconciliation WILL run and WILL own the row
+          (`recover_after_restart`), which is the condition itself rather than
+          a proxy that resembles it.
+
+        Pass the ACTUAL kind, never the literal. ``_fail_current_locked`` is the
+        site whose reason varies, so it is where this parameter earns its keep,
+        and handing it a constant there would move the real discrimination into
+        the caller while leaving this predicate claiming to make it. ``cancel``
+        writes exactly one kind, so its literal is that write's own reason and
+        the check is trivially true there — which is why a mutation that drops
+        the kind test can only be caught through the failure path.
+
+        Deferring is also the truthful record: the job really was running when
+        the process died, and it leaves the row in exactly the shape a crash
+        leaves it, instead of asserting a creator cancellation that never
+        happened. A row the creator HAD cancelled keeps its durable
+        ``cancel_pending``, so the boot path still settles it silently as
+        "Cancelled by creator" — the right message rather than this method's
+        generic one.
+        """
+        return (
+            self._shutdown_reason is not None
+            and kind == "cancelled"
+            and job_id not in self._cancel_causes
+        )
+
     async def cancel(self, job_id: str) -> VoiceJob | None:
         """Compatibility terminal transition used by legacy delegation code."""
         async with self._lock:
@@ -862,6 +980,12 @@ class JobRegistry:
             if current is None:
                 return None
             if current.execution_state in self._TERMINAL_EXECUTION:
+                return current
+            if self._cancel_deferred_to_boot(job_id, "cancelled"):
+                logger.info(
+                    "job %s cancellation deferred to boot recovery (%s)",
+                    job_id[:8], self._shutdown_reason,
+                )
                 return current
             now = self._now()
             updated = replace(
@@ -1487,12 +1611,24 @@ class JobRegistry:
         current: VoiceJob,
         failure: JobFailure | BaseException,
     ) -> VoiceJob:
-        now = self._now()
         envelope = self._failure_envelope(failure)
         cancelled = (
             isinstance(failure, asyncio.CancelledError)
             or envelope.kind == "cancelled"
         )
+        if self._cancel_deferred_to_boot(current.id, envelope.kind):
+            # #671: the second of the two functions every cancellation arm
+            # reaches. The voice lifecycle's teardown writes its cancellation
+            # as `fail_compat(JobFailure("cancelled", ...))` — a different
+            # function and a different message string from `cancel` above — so
+            # guarding only `cancel` would leave voice jobs silently cancelled
+            # while looking defended.
+            logger.info(
+                "job %s cancellation deferred to boot recovery (%s)",
+                current.id[:8], self._shutdown_reason,
+            )
+            return current
+        now = self._now()
         if cancelled or current.cancel_pending:
             state = ExecutionState.CANCELLED
             delivery = (

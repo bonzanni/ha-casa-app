@@ -5256,6 +5256,15 @@ async def main() -> None:
     # 16. Wait for stop
     logger.info("Casa core running -- waiting for shutdown signal")
     await stop_event.wait()
+    # #671: declare the graceful stop BEFORE anything can tear a delegation
+    # down. From here on the registry defers a live row's cancellation terminal
+    # to the next boot instead of overwriting it with a creator-cancel shape the
+    # boot reconciliation then skips — which is how a clean stop came to be
+    # measurably worse than a crash. First statement of the block on purpose:
+    # the bounded Agent.aclose() loop, the agent-loop cancels, job_registry.
+    # close()'s voice arm and asyncio.run()'s final _cancel_all_tasks all come
+    # after it, and that last one runs after this coroutine has returned.
+    job_registry.begin_shutdown()
 
     # 17. Cleanup
     logger.info("Shutting down...")
