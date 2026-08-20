@@ -136,17 +136,25 @@ called `svc-casa-mcp`, NOT inside casa-main. It listens on
 casa-main over a Unix socket at `/run/casa/internal.sock`.
 
 This means:
-- An engagement subprocess's MCP TCP connection survives a casa-main
-  restart (addon update, in-container respawn). Mid-restart tool calls
-  return JSON-RPC `-32000 casa_temporarily_unavailable` (a recoverable
-  error the model handles), not a connection drop.
+- An engagement subprocess's MCP TCP connection stays open across a
+  casa-main-only respawn — NOT across an addon update, which replaces the
+  container holding both s6 services and so takes the MCP service with it.
+  Across the respawn, mid-restart tool calls return JSON-RPC `-32000
+  casa_temporarily_unavailable` (a recoverable error the model handles)
+  rather than a connection drop.
+- Read "survives" precisely: the value is that the WINDOW is clean, not that
+  one CLI process spans it. The new casa-main's boot replay drives every
+  discovered engagement service to a confirmed down and restarts only the
+  ongoing engagements it resumes, so the process making post-restart calls
+  is a respawned CLI, not the one that made the pre-restart calls.
 - Engagement workspaces have `.mcp.json` pointing at port 8100; boot
   replay rewrites the file (and cycles the engagement service) whenever
   the baked credential or URL differs from the record.
 
 You (Configurator) do NOT need to touch any of this — workspace
-provisioning + hook proxying are framework concerns. If a user asks why
-their engagement survived a Casa restart cleanly, this is the reason.
+provisioning + hook proxying are framework concerns. If a user asks why the
+restart window was clean, this is the reason; do not tell them their
+engagement process survived it.
 
 ## Plugin infrastructure — unified plugin architecture (v0.71.0)
 

@@ -198,6 +198,19 @@ effects still complete, detached (INV-ENG-010 in
 [`engagement-finalization.md`](engagement-finalization.md)).
 The pre-terminal refusals above all precede the teardown and always return their results.
 
+**A launch's first turn ends without leaving an artifact.** The engagement-launch tools
+answer `pending` when the driver's `start` returns, and that answer used to be given even
+when the first turn had been cut off mid-flight — the record then sat active with nothing
+posted. The `in_casa` launch branches now ask the driver what the turn left behind and, when
+it left nothing, hand the death to one owner that records a distinct `launch_turn_incomplete`
+error kind, tells the operator in the topic before closing it, and reports the failure in the
+envelope. Only that outcome changes: a launch whose turn ran to its end still answers
+`pending`, and so does one that lost the terminal race to its own completion, because the
+engagement really did report itself. The kind is deliberately its own rather than the generic
+driver-start failure — a reader who cannot tell "the driver never got going" from "the turn
+ran and then died" cannot act on either. See INV-ENG-011 in
+[`engagements.md`](engagements.md).
+
 **A delivery is uncertain.** The send classifiers separate definitive refusal from
 uncertainty, and an uncertain Telegram send is deliberately not retried — a duplicate
 message is worse than a missing one that the operator can see is missing.

@@ -64,6 +64,38 @@ subject.** The allocation, the ownership it implies, and the boundary built on i
 
 **INV-ENG-009**: A `claude_code` turn is admitted before its first byte reaches the engagement — a record found idle is `active` by then, and a terminal record is not written to at all.
 
+**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record or operator-visible topic output — or the launch reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never retains to the shared memory bank.
+
+A driver's `start()` returning has always meant *the first turn ran to its end*, never *the
+engagement reported anything*, and that gap is where a launch turn could die unnoticed. The
+turn's own terminal artifact is its result frame: the SDK's response iterator returns at that
+frame and otherwise iterates indefinitely, so a drained stream with no result frame is a turn
+that was cut off in flight — transport EOF, agent-process exit, or the reader being cancelled
+— however many frames it produced first. The count of frames is *not* the predicate: a turn
+cut off mid-tool-loop is indistinguishable from a finished one by frame evidence, so a check
+built on evidence catches only the trivially empty turn and misses the reachable case.
+
+The engagement's terminal artifact is its record. An interactive engagement that ends its
+launch turn having posted text is legitimately awaiting the operator and is left alive; one
+that posted nothing, or whose turn was cut off, has left no surface anyone can act on.
+
+Three properties make the report safe rather than merely present. The driver only
+**observes** — it records what the turn left behind and neither raises nor reads the
+record's status, because a lock-free status read can catch the uncommitted window of a
+strict terminal transition that a persist failure then rolls back. The launcher asks the
+registry exactly **one transactional question** — flip this record terminal, strictly,
+unless it already is — and its three outcomes decide everything: a durable win reports, a
+lost race performs no side effect at all because the winner owns them, and a rolled-back
+persist leaves the record live and its topic *open* while retiring the client, since an open
+topic over a live record is recoverable and a closed one is not. And the side effects run in
+one **anchored owner** the launcher awaits shielded, because a terminal transition whose
+write committed keeps its durable state and re-raises on cancellation: an inline owner could
+commit the flip and then never post, while a compensating second owner would correctly lose
+the transition and do nothing.
+
+The same owner reports a launch *cancelled* before its driver was confirmed live, which
+previously flipped the topic to failed and closed it without posting anything at all.
+
 The admission sits between opening the engagement's stdin FIFO for writing — which succeeds
 only once its CLI is reading — and writing the first byte, which is the first thing that CLI
 can observe. That is the only instant at which the delivery is certain and the engagement
@@ -172,6 +204,9 @@ per-engagement sequencer in
 - `tests/test_engagement_registry.py`
 - `tests/test_observer.py`
 - `tests/test_boot_replay.py`
+- `tests/test_in_casa_launch_terminal_artifact.py`
+- `tests/test_in_casa_launch_retention_guard.py`
+- `tests/test_launch_death_reporter.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
