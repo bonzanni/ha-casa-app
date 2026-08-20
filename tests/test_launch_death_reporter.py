@@ -533,3 +533,69 @@ class TestTheBoundaries:
         assert "wait, also remove the old config" in notice, notice
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
+
+
+class TextBearingCutoffClient(ScriptedCutoffClient):
+    """The production shape in full: the executor narrates, calls tools, gets
+    results — and THEN the stream dies. Text WAS posted, so `no_visible_output`
+    cannot catch it; only the missing ResultMessage can.
+
+    Found by mutation-checking: the frozen red case's stream carries no text,
+    so BOTH arms satisfy it and removing the missing-ResultMessage arm alone
+    left it green. This test isolates that arm.
+    """
+
+    async def receive_response(self):
+        from claude_agent_sdk import (
+            AssistantMessage, TextBlock, ToolResultBlock, ToolUseBlock,
+            UserMessage,
+        )
+        type(self).frames_yielded += 1
+        yield AssistantMessage(
+            content=[TextBlock(text="Removing the weather plugin now.")],
+            model="claude-sonnet-4-6")
+        use = ToolUseBlock(id="t1", name="plugin_remove", input={"name": "w"})
+        type(self).frames_yielded += 1
+        yield AssistantMessage(content=[use], model="claude-sonnet-4-6")
+        res = ToolResultBlock(tool_use_id="t1", content="removed", is_error=False)
+        type(self).frames_yielded += 1
+        yield UserMessage(content=[res])
+        # EOF mid-tool-loop. Text was posted; no ResultMessage ever arrives.
+
+
+class TestTheMissingResultArmOnItsOwn:
+    async def test_a_cutoff_that_already_posted_text_is_still_reported(
+        self, tmp_path, monkeypatch,
+    ):
+        """MUTATION: drop the `missing_result_message` arm → this fails, and
+        it is the ONLY test that does.
+
+        This is the reported production shape: the executor said what it was
+        doing, ran its tool, and then its turn died. The posted text is not a
+        report — the work stopped mid-flight and nobody owns the outcome — so
+        the record must not stay `active` behind a dead transport.
+        """
+        probe = _Probe()
+        engage_executor, registry, channel, driver = _build(
+            tmp_path, monkeypatch, probe, TextBearingCutoffClient,
+        )
+        envelope = await _launch(engage_executor)
+        payload = await _payload(envelope)
+
+        # Text really did reach the topic, so `no_visible_output` cannot fire.
+        assert TextBearingCutoffClient.frames_yielded == 3
+        assert TextBearingCutoffClient.result_messages_yielded == 0
+        assert probe.finalize_count == 1
+        assert probe.emit_count >= 1
+
+        assert payload["status"] == "error", payload
+        assert payload["kind"] == "launch_turn_incomplete"
+        assert "without ResultMessage" in payload["message"]
+        created_id = next(iter(registry._records))
+        rec = registry.get(created_id)
+        assert rec.status == "error"
+        assert rec.origin["error_kind"] == "launch_turn_incomplete"
+        assert channel._post_engagement_notice.await_count == 1
+        assert channel.close_topic.await_count == 1
+        assert probe.events.index("notice") < probe.events.index("topic_close")
+        assert driver.is_alive(rec) is False
