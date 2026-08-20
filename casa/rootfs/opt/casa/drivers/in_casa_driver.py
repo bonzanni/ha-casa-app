@@ -75,6 +75,29 @@ class DriverNotAliveError(RuntimeError):
     """Raised when a turn is fed to a driver that has no open client."""
 
 
+LAUNCH_MISSING_RESULT = "missing_result_message"
+"""#678: the launch turn's response stream ended with no ``ResultMessage``.
+
+The pinned SDK makes this unambiguous. ``ClaudeSDKClient.receive_response``
+returns AT the ``ResultMessage`` and otherwise iterates forever
+(``client.py`` — "If no ResultMessage is received, the iterator continues
+indefinitely"), and the underlying ``Query.receive_messages`` ends only on the
+``{"type": "end"}`` sentinel its read task sends from its ``finally`` — i.e.
+transport EOF, CLI subprocess exit, or the read task being cancelled — or on
+``EndOfStream`` after ``Query._close_impl`` closes the send side. A turn that
+ran to its end always yields one, so its absence means the turn was CUT OFF
+in flight, however many frames were seen first."""
+
+LAUNCH_NO_VISIBLE_OUTPUT = "no_visible_output"
+"""#678: the launch turn ran to its end but nothing about it is visible.
+
+A ``ResultMessage`` arrived, the engagement is not terminal (no
+``emit_completion``), and no assistant text was handed to the topic stream.
+An interactive engagement that ENDS its launch turn to await the operator has
+posted text and is legitimately unreported; one that posted nothing has left
+the operator with a topic containing no evidence that anything happened."""
+
+
 class EmptyTurnError(RuntimeError):
     """#649: an ADMITTED inbound turn whose response stream ended with no
     model-evidence frame and no API fault. The client accepted the prompt but
@@ -136,6 +159,18 @@ class InCasaDriver(DriverProtocol):
         #              spool; a ticket alive at process death dies with it.
         self._inbound_unread: dict[str, dict[object, str]] = {}
         self._inbound_accepted: dict[str, dict[object, str]] = {}
+        # #678: per-engagement observation of the LAUNCH turn's terminal
+        # artifacts, written once by _deliver_turn (launch path only, so a
+        # follow-up turn can never overwrite it) and POPPED by the launch
+        # owner. The driver only OBSERVES: it does not read the engagement's
+        # status and does not raise. A lock-free status read here could
+        # observe the uncommitted window of a strict terminal transition that
+        # a persist failure then rolls back (engagement_registry.py's strict
+        # path commits in memory before awaiting the tombstone write), so
+        # adjudication belongs to the registry's own single transactional
+        # question, asked by the owner. Values: "" | LAUNCH_MISSING_RESULT |
+        # LAUNCH_NO_VISIBLE_OUTPUT.
+        self._launch_incomplete: dict[str, str] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -337,6 +372,20 @@ class InCasaDriver(DriverProtocol):
         disclosure."""
         return list(self._inbound_unread.get(engagement_id, {}).values())
 
+    def launch_turn_incomplete(self, engagement_id: str) -> str:
+        """SYNCHRONOUS: POP the #678 launch-turn observation.
+
+        Returns ``LAUNCH_MISSING_RESULT``, ``LAUNCH_NO_VISIBLE_OUTPUT`` or
+        ``""``. Read exactly once, by the launch owner, immediately after
+        :meth:`start` returns; popping means a re-read cannot report the same
+        death twice. Not part of ``DriverProtocol`` — the launch owners reach
+        it through ``getattr`` inside their in_casa branches only, so a
+        claude_code or legacy driver reads as "nothing to report" instead of
+        raising ``AttributeError`` into a generic handler that would mark a
+        HEALTHY engagement errored.
+        """
+        return self._launch_incomplete.pop(engagement_id, "")
+
     def inbound_in_flight_texts(self, engagement_id: str) -> list[str]:
         """Disclosure-only population: client accepted the text, no
         model-evidence frame processed yet. ``inbound_in_flight_blocking``
@@ -349,6 +398,7 @@ class InCasaDriver(DriverProtocol):
         ctx = self._ctx_stack.pop(engagement.id, None)
         self._locks.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
+        self._launch_incomplete.pop(engagement.id, None)  # #678 map hygiene
         if client is None and ctx is None:
             return
         try:
@@ -430,6 +480,7 @@ class InCasaDriver(DriverProtocol):
         self._ctx_stack.pop(engagement.id, None)
         self._locks.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
+        self._launch_incomplete.pop(engagement.id, None)  # #678 map hygiene
 
     async def open_fresh(self, engagement: EngagementRecord) -> None:
         """#369: open a NEW session for an engagement whose context was
@@ -730,3 +781,32 @@ class InCasaDriver(DriverProtocol):
                 f"engagement {engagement.id[:8]}: admitted turn ended with "
                 "no model-evidence frame"
             )
+
+        # #678: OBSERVE whether this LAUNCH turn left a terminal artifact.
+        # Launch turns only (``inbound_token is None``) — a follow-up turn's
+        # failure owner is the Telegram delivery task's "Turn failed" notice
+        # (#649), which needs no help from here, and writing the slot on that
+        # path could overwrite a launch observation not yet read.
+        #
+        # Recorded AFTER ``stream.finalize(final)`` above, deliberately: the
+        # ``no_visible_output`` arm is a statement about text that reached the
+        # topic, so deciding it before the finalize would judge a turn on
+        # output it had not yet posted. Recorded, never raised — a raise here
+        # would take ``start()``'s M14 rollback and log "first turn failed" on
+        # a successful tool-only launch whose completion the owner is about to
+        # discover. ``evidence_seen`` is deliberately NOT consulted: it
+        # latches on the FIRST frame, so a turn cut off mid-tool-loop is
+        # indistinguishable from a finished one on it.
+        if inbound_token is None:
+            reason = ""
+            if result_msg is None:
+                reason = LAUNCH_MISSING_RESULT
+            elif not final:
+                reason = LAUNCH_NO_VISIBLE_OUTPUT
+            if reason:
+                self._launch_incomplete[engagement.id] = reason
+                logger.warning(
+                    "Engagement %s launch turn left no terminal artifact "
+                    "(reason=%s frames=%d) — the launch owner reports it",
+                    engagement.id[:8], reason, idx,
+                )

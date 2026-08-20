@@ -4836,115 +4836,153 @@ async def delegate_to_agent(args: dict) -> dict:
             # token whose durable record stays live; terminal transitions own
             # it now (release-both in _release_permit). The finally sees None.
             spawn_owned = None
-            # #369 (Sol diff-gate r3): capture the context generation at
-            # prompt-source time, exactly as engage_executor does — this
-            # interactive prompt is built from the pre-clamp task/context
-            # locals, so a clamp→rebuild cycle completing during the option/
-            # client startup awaits must abort this launch at the driver gate.
-            _ctx_gen0 = rec.context_generation
-            # Persist initial state emoji so update_topic_state knows
-            # whether it needs to edit the title (no-op when state didn't
-            # change). #529: conditional — a delayed launch path must not
-            # overwrite a terminal paint's settled emoji or an in-flight
-            # paint's uncertain sentinel.
+            # #678 (Terra, seam rounds 3+4): ONE CancelledError handler
+            # covering the WHOLE interval from the committed create() through
+            # the ownership transfer, mirroring engage_executor — which has
+            # exactly this structure. Before it, this branch had no
+            # cancellation compensation at all past create(): a cancellation
+            # at set_initial_state_emoji, at _build_specialist_options or
+            # inside driver.start() escaped every handler, the outer finally
+            # released the permit, and a durably-ACTIVE record was left with
+            # an open topic and no client. Per-await handlers were the wrong
+            # answer — the first round of this finding named driver.start()
+            # alone and the second named two more awaits, so the interval is
+            # covered once rather than a third handler added.
             try:
-                await _engagement_registry.set_initial_state_emoji(
-                    rec.id, STATE_EMOJI["active"],
+                # #369 (Sol diff-gate r3): capture the context generation at
+                # prompt-source time, exactly as engage_executor does — this
+                # interactive prompt is built from the pre-clamp task/context
+                # locals, so a clamp→rebuild cycle completing during the option/
+                # client startup awaits must abort this launch at the driver gate.
+                _ctx_gen0 = rec.context_generation
+                # Persist initial state emoji so update_topic_state knows
+                # whether it needs to edit the title (no-op when state didn't
+                # change). #529: conditional — a delayed launch path must not
+                # overwrite a terminal paint's settled emoji or an in-flight
+                # paint's uncertain sentinel.
+                try:
+                    await _engagement_registry.set_initial_state_emoji(
+                        rec.id, STATE_EMOJI["active"],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("set_initial_state_emoji(active) failed: %s", exc)
+
+                # Build options + start driver (off-loop: registry resolve is file IO).
+                options = await asyncio.to_thread(
+                    _build_specialist_options,
+                    cfg,
+                    resolution=_spec_res,
+                    extra_casa_tools=SPECIALIST_CASA_GRANTS,
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
-            # Build options + start driver (off-loop: registry resolve is file IO).
-            options = await asyncio.to_thread(
-                _build_specialist_options,
-                cfg,
-                resolution=_spec_res,
-                extra_casa_tools=SPECIALIST_CASA_GRANTS,
-            )
-
-            prompt = (
-                f"You are engaged with the user in a Telegram forum topic.\n"
-                f"Task: {task_text}\n\n"
-                f"Context from Ellen:\n{context_text or '(none)'}\n\n"
-                f"When the task is complete, call emit_completion(text=..., "
-                f"artifacts=..., next_steps=..., status='ok')."
-            )
-
-            driver = getattr(agent_mod, "active_engagement_driver", None)
-            if driver is None:
-                await _engagement_registry.mark_error(
-                    rec.id, kind="no_driver",
-                    message="engagement driver not initialized",
+                prompt = (
+                    f"You are engaged with the user in a Telegram forum topic.\n"
+                    f"Task: {task_text}\n\n"
+                    f"Context from Ellen:\n{context_text or '(none)'}\n\n"
+                    f"When the task is complete, call emit_completion(text=..., "
+                    f"artifacts=..., next_steps=..., status='ok')."
                 )
-                await _abort_engagement_topic(channel, rec.id, topic_id)
-                # permit released by mark_error (registry terminal transition)
-                # + the outer finally (owned still set) — both idempotent.
-                return _result({"status": "error", "kind": "no_driver",
-                                "message": "engagement driver not initialized"})
-            from drivers.driver_protocol import StaleLaunchError
-            try:
-                await driver.start(
-                    rec, prompt=prompt, options=options,
-                    expected_generation=_ctx_gen0)
-            except StaleLaunchError as exc:
-                # #369: a clearance clamp landed during launch — abort rather
-                # than deliver the pre-clamp task/context. Terra r5: with
-                # record_live a rebuild COMPLETED meanwhile — the engagement
-                # is alive on its floor session, so transfer the permit
-                # exactly as the success path does and report it pending.
-                if exc.record_live:
-                    owned = None  # permit transferred to the live record
-                    _record_launch_safe(agent_name)
+
+                driver = getattr(agent_mod, "active_engagement_driver", None)
+                if driver is None:
+                    await _engagement_registry.mark_error(
+                        rec.id, kind="no_driver",
+                        message="engagement driver not initialized",
+                    )
+                    await _abort_engagement_topic(channel, rec.id, topic_id)
+                    # permit released by mark_error (registry terminal transition)
+                    # + the outer finally (owned still set) — both idempotent.
+                    return _result({"status": "error", "kind": "no_driver",
+                                    "message": "engagement driver not initialized"})
+                from drivers.driver_protocol import StaleLaunchError
+                try:
+                    await driver.start(
+                        rec, prompt=prompt, options=options,
+                        expected_generation=_ctx_gen0)
+                except StaleLaunchError as exc:
+                    # #369: a clearance clamp landed during launch — abort rather
+                    # than deliver the pre-clamp task/context. Terra r5: with
+                    # record_live a rebuild COMPLETED meanwhile — the engagement
+                    # is alive on its floor session, so transfer the permit
+                    # exactly as the success path does and report it pending.
+                    if exc.record_live:
+                        owned = None  # permit transferred to the live record
+                        _record_launch_safe(agent_name)
+                        return _result({
+                            "status": "pending", "engagement_id": rec.id,
+                            "agent": agent_name, "mode": "interactive",
+                            "topic_id": topic_id,
+                        })
+                    await _engagement_registry.mark_error(
+                        rec.id, kind="clearance_changed_during_launch",
+                        message=str(exc))
+                    await _abort_engagement_topic(channel, rec.id, topic_id)
+                    # permit released by mark_error + the outer finally (idempotent).
                     return _result({
-                        "status": "pending", "engagement_id": rec.id,
-                        "agent": agent_name, "mode": "interactive",
-                        "topic_id": topic_id,
-                    })
-                await _engagement_registry.mark_error(
-                    rec.id, kind="clearance_changed_during_launch",
-                    message=str(exc))
-                await _abort_engagement_topic(channel, rec.id, topic_id)
-                # permit released by mark_error + the outer finally (idempotent).
-                return _result({
-                    "status": "error", "kind": "clearance_changed_during_launch",
-                    "message": str(exc)})
-            except ApiErrorTurn as exc:
-                # #595: the launch turn ended in an API-level fault — a safety
-                # refusal, a rate limit, an overload. The driver carries the
-                # resolved kind, so the terminal record names it instead of
-                # flattening every one of them into `driver_start_failed`,
-                # where a refusal and a crash read identically. The teardown is
-                # the generic branch's: `InCasaDriver.start`'s M14 rollback has
-                # already closed the client, `mark_error` releases the permit.
-                _kind = exc.kind.value
-                await _engagement_registry.mark_error(
-                    rec.id, kind=_kind, message=str(exc))
-                await _abort_engagement_topic(channel, rec.id, topic_id)
-                return _result({"status": "error", "kind": _kind,
-                                "message": _USER_MESSAGES.get(
-                                    exc.kind, str(exc))})
-            except Exception as exc:  # noqa: BLE001
-                await _engagement_registry.mark_error(rec.id, kind="driver_start_failed",
-                                                      message=str(exc))
-                await _abort_engagement_topic(channel, rec.id, topic_id)
-                # permit released by mark_error + the outer finally (idempotent).
-                return _result({"status": "error", "kind": "driver_start_failed",
-                                "message": str(exc)})
+                        "status": "error", "kind": "clearance_changed_during_launch",
+                        "message": str(exc)})
+                except ApiErrorTurn as exc:
+                    # #595: the launch turn ended in an API-level fault — a safety
+                    # refusal, a rate limit, an overload. The driver carries the
+                    # resolved kind, so the terminal record names it instead of
+                    # flattening every one of them into `driver_start_failed`,
+                    # where a refusal and a crash read identically. The teardown is
+                    # the generic branch's: `InCasaDriver.start`'s M14 rollback has
+                    # already closed the client, `mark_error` releases the permit.
+                    _kind = exc.kind.value
+                    await _engagement_registry.mark_error(
+                        rec.id, kind=_kind, message=str(exc))
+                    await _abort_engagement_topic(channel, rec.id, topic_id)
+                    return _result({"status": "error", "kind": _kind,
+                                    "message": _USER_MESSAGES.get(
+                                        exc.kind, str(exc))})
+                except Exception as exc:  # noqa: BLE001
+                    await _engagement_registry.mark_error(rec.id, kind="driver_start_failed",
+                                                          message=str(exc))
+                    await _abort_engagement_topic(channel, rec.id, topic_id)
+                    # permit released by mark_error + the outer finally (idempotent).
+                    return _result({"status": "error", "kind": "driver_start_failed",
+                                    "message": str(exc)})
 
-            # Task 6 (spec §4.6): driver is live — transfer permit ownership to
-            # the engagement record (released by an EngagementRegistry terminal
-            # transition or _finalize_engagement) by clearing `owned` FIRST, so
-            # the following non-raising launch count can never reach the outer
-            # finally to release the now-live engagement's permit.
-            owned = None  # __TRANSFER_INTERACTIVE__
-            _record_launch_safe(agent_name)
-            return _result({
-                "status": "pending",
-                "engagement_id": rec.id,
-                "agent": agent_name,
-                "mode": "interactive",
-                "topic_id": topic_id,
-            })
+                # #678: as in engage_executor — start() returning means the
+                # first turn ran to its end, never that anything was reported.
+                # An interactive specialist that ENDS its launch turn having
+                # posted text is legitimately awaiting the operator and is left
+                # alone; one whose turn was cut off, or which posted nothing at
+                # all, has left an operator-visible surface that says nothing.
+                _incomplete = _launch_incomplete_reason(driver, rec.id)
+                if _incomplete:
+                    _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
+                        _incomplete, _incomplete)
+                    _outcome = await asyncio.shield(_spawn_launch_death_report(
+                        channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
+                        detail=_detail, driver=driver))
+                    if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
+                        # The permit is released by the terminal transition and
+                        # again by the outer finally (both idempotent), so
+                        # `owned` stays set here on purpose.
+                        return _result({
+                            "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
+                            "message": _detail,
+                        })
+
+                # Task 6 (spec §4.6): driver is live — transfer permit ownership to
+                # the engagement record (released by an EngagementRegistry terminal
+                # transition or _finalize_engagement) by clearing `owned` FIRST, so
+                # the following non-raising launch count can never reach the outer
+                # finally to release the now-live engagement's permit.
+                owned = None  # __TRANSFER_INTERACTIVE__
+                _record_launch_safe(agent_name)
+                return _result({
+                    "status": "pending",
+                    "engagement_id": rec.id,
+                    "agent": agent_name,
+                    "mode": "interactive",
+                    "topic_id": topic_id,
+                })
+            except asyncio.CancelledError:
+                _abort_launch_on_cancel(channel, rec, topic_id)
+                raise
 
         is_voice = str(origin.get("channel", "")) == "voice"
         if is_voice and mode == "async":
@@ -7331,6 +7369,30 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                     "message": str(exc),
                 })
 
+            # #678: start() returning means the first turn ran to its END —
+            # never that the engagement reported anything. That gap is the
+            # defect: a turn cut off mid-tool-loop returns here normally,
+            # this handler answers "pending", the engaging agent narrates
+            # "started, I'll report back", and the record sits `active` with
+            # nothing ever posted. Ask the driver what the turn left behind
+            # (in_casa only — see _launch_incomplete_reason) and, if it left
+            # nothing, hand the death to its one anchored owner.
+            _incomplete = _launch_incomplete_reason(driver, rec.id)
+            if _incomplete:
+                _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
+                    _incomplete, _incomplete)
+                _outcome = await asyncio.shield(_spawn_launch_death_report(
+                    channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
+                    detail=_detail, driver=driver))
+                if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
+                    return _result({
+                        "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
+                        "message": _detail,
+                    })
+                # Lost the terminal race: the engagement really did report
+                # itself between the turn's end and this read, so the engager
+                # is told what a successful launch is told.
+
     except asyncio.CancelledError:
         _abort_launch_on_cancel(channel, rec, topic_id)
         raise
@@ -7368,6 +7430,12 @@ def _engagement_supergroup_chat_id(channel: Any | None) -> int | None:
 # raises, so these settle quietly.
 _ABORT_BG_TASKS: set = set()
 
+# #678: bounds on the launch-death reporter's waits on Telegram — the topic
+# notice, the failed-state paint and the close. Each is a wait on a
+# counterparty, never on the work (D21): one wedged Telegram call must not
+# starve the operator-visible effects behind it.
+_TOPIC_OP_TIMEOUT_S = 20.0
+
 
 def _abort_topic_on_cancel(channel: Any, engagement_id: str,
                            topic_id: int | None) -> None:
@@ -7390,39 +7458,334 @@ def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
     Terra/Sol r2: the driver may in fact have gone LIVE before the
     cancellation landed (claude_code starts its s6 service, then awaits the
     initial-prompt enqueue — cancellation there escapes start()'s rollback),
-    so the compensation FIRST runs the driver's idempotent terminal teardown
-    (``cancel()`` — stop_service is tolerant of "already down"/never-started),
-    then marks the record errored and aborts the topic. Fire-and-forget and
-    strong-ref'd, since a cancelled task cannot await."""
-    async def _run() -> None:
-        try:
-            import agent as agent_mod
-            driver = (getattr(agent_mod, "active_claude_code_driver", None)
-                      if rec.driver == "claude_code"
-                      else getattr(agent_mod, "active_engagement_driver", None))
-            if driver is not None and hasattr(driver, "cancel"):
-                await driver.cancel(rec)
-        except Exception:  # noqa: BLE001 — best-effort; the rest still runs
-            logger.warning(
-                "launch-cancel compensation: driver teardown failed for %s",
-                rec.id[:8], exc_info=True,
-            )
-        try:
-            if _engagement_registry is not None:
-                await _engagement_registry.mark_error(
-                    rec.id, kind="launch_cancelled",
-                    message="tool call cancelled during launch",
-                )
-        except Exception:  # noqa: BLE001 — best-effort; topic abort still runs
-            logger.warning(
-                "launch-cancel compensation: mark_error failed for %s",
-                rec.id[:8], exc_info=True,
-            )
-        await _abort_engagement_topic(channel, rec.id, topic_id)
+    so the compensation runs the driver's idempotent terminal teardown
+    (``cancel()`` — stop_service is tolerant of "already down"/never-started)
+    as well as marking the record errored and aborting the topic.
+    Fire-and-forget and strong-ref'd, since a cancelled task cannot await.
 
-    task = asyncio.ensure_future(_run())
+    #678: the body is now the SHARED launch-death reporter, for three reasons
+    measured rather than assumed. (1) It posted NOTHING: a cancelled launch
+    flipped the topic to ❌ and closed it without a single message, so the
+    operator saw a failed title over an empty topic and could not tell whether
+    the task had mutated anything. (2) It awaited ``driver.cancel``
+    UNBOUNDED, ahead of everything else — and for claude_code that waits on
+    the compile lock, an ``s6-rc -d change``, a logger stop and a recompile,
+    so a wedged teardown meant the record was never even marked. (3) It used
+    ``mark_error``, which persists best-effort and so returns True over a
+    swallowed tombstone-write failure, authorizing an irreversible topic close
+    over a record disk still calls ``active``. The reporter marks first
+    (strictly), then tells, then tears down under a bound — the finalize
+    funnel's own order, and safer here too: INV-MCP-001 binds engagement tool
+    authority to ``active``, so flipping first revokes the dying engagement's
+    tools sooner."""
+    import agent as agent_mod
+    driver = (getattr(agent_mod, "active_claude_code_driver", None)
+              if rec.driver == "claude_code"
+              else getattr(agent_mod, "active_engagement_driver", None))
+    task = _spawn_launch_death_report(
+        channel, rec, topic_id, kind="launch_cancelled",
+        detail="the tool call was cancelled during launch", driver=driver)
     _ABORT_BG_TASKS.add(task)
     task.add_done_callback(_ABORT_BG_TASKS.discard)
+
+
+class LaunchDeathResult(enum.Enum):
+    """#678: the outcome of reporting a launch that left no terminal artifact.
+
+    Three-way ON PURPOSE (Sol, seam round 4): an untyped ``None`` conflates a
+    LOST terminal race — where the engagement really did report itself and the
+    engager must still be told ``pending`` — with a ROLLED-BACK persist, where
+    the record is still live and the engager must be told the launch failed.
+    Mapping one return value to either envelope lies in the other direction.
+    """
+
+    REPORTED = "reported"                 # durable error + operator told
+    ALREADY_TERMINAL = "already_terminal"  # lost the race; zero side effects
+    PERSIST_FAILED = "persist_failed"      # rolled back; record still LIVE
+
+
+_LAUNCH_DEATH_TASKS: set = set()
+"""#678: anchored launch-death reporters, held so the loop cannot collect one
+mid-flight. Casa-owned ``asyncio.create_task`` — never ``Query.spawn_task`` —
+so an SDK client teardown cannot find or cancel them, exactly as #632's
+detached finalize tail is anchored in ``_finalize_tail_tasks``."""
+
+
+def _launch_death_done(engagement_id: str, task: Any) -> None:
+    """#678: the done-callback is the ONLY observer a reporter has once its
+    launcher has unwound cancelled, so it must retrieve the outcome — an
+    unobserved reporter failure would be a second silent-death mode, which is
+    the very defect this exists to fix (same reasoning as
+    ``_finalize_tail_done``)."""
+    _LAUNCH_DEATH_TASKS.discard(task)
+    if task.cancelled():
+        logger.error(
+            "launch-death report for %s was CANCELLED — the operator may "
+            "not have been told", engagement_id[:8])
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "launch-death report for %s raised: %r", engagement_id[:8], exc)
+
+
+async def _report_launch_death(
+    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    *, kind: str, detail: str, driver: Any | None,
+) -> "LaunchDeathResult":
+    """#678: the ONE owner of a launch that ended without a terminal artifact.
+
+    Asks the registry exactly ONE transactional question — flip this record to
+    ``error``, strictly, unless it is already terminal — and lets its three
+    outcomes decide everything. Earlier designs asked two separate questions,
+    "is it terminal?" then "did I win?", and both reads were unsound: a
+    lock-free status read can observe the uncommitted window of a strict
+    transition that a persist failure then rolls back, and ``mark_error``
+    persists BEST-EFFORT, so it returns True over a swallowed tombstone-write
+    failure and would authorize an irreversible topic close over a record that
+    disk still calls ``active``. ``casa_core.py``'s boot-replay refusal already
+    reasoned to the same conclusion in a committed comment and uses this same
+    primitive with ``strict=True``.
+
+    Deliberately NOT ``_finalize_engagement``: that funnel would double-notify
+    the engager over the bus, overwrite ``error_kind`` with
+    ``emit_completion_error``, and — the outcome that matters — retain a
+    tier-classified summary onto the shared ``casa`` bank, which has no other
+    copy. Nothing here constructs ``completed`` and nothing here reaches
+    semantic memory.
+
+    Never raises. Returns a :class:`LaunchDeathResult`.
+    """
+    if _engagement_registry is None:
+        return LaunchDeathResult.PERSIST_FAILED
+
+    # The snapshot hook, evaluated INSIDE the registry's terminal critical
+    # section: an operator message admitted while the launch turn was ending
+    # (telegram admits synchronously before its first await) would otherwise
+    # vanish with the topic, and the expected-non-delivery path discharges its
+    # ticket without a telling. Returns None UNCONDITIONALLY — a veto here
+    # could wedge the death report forever, and something going wrong must
+    # always be able to end.
+    lost_texts: list[str] = []
+    lost_reservations = 0
+
+    def _snapshot_hook():
+        nonlocal lost_reservations
+        if driver is None:
+            return None
+        try:
+            _q = (driver.inbound_unread_texts(rec.id)
+                  if hasattr(driver, "inbound_unread_texts") else [])
+            queued = [t for t in _q if isinstance(t, str)] if type(_q) is list else []
+        except Exception:  # noqa: BLE001 — fail open
+            logger.warning(
+                "launch-death report %s: unread accessor failed",
+                rec.id[:8], exc_info=True)
+            queued = []
+        try:
+            _f = (driver.inbound_in_flight_texts(rec.id)
+                  if hasattr(driver, "inbound_in_flight_texts") else [])
+            in_flight = [t for t in _f if isinstance(t, str)] if type(_f) is list else []
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "launch-death report %s: in-flight accessor failed",
+                rec.id[:8], exc_info=True)
+            in_flight = []
+        try:
+            _r = (driver.inbound_reservations(rec.id)
+                  if hasattr(driver, "inbound_reservations") else 0)
+            lost_reservations = _r if type(_r) is int else 0
+        except Exception:  # noqa: BLE001 — fail open
+            lost_reservations = 0
+        lost_texts[:] = list(in_flight) + list(queued)
+        return None
+
+    try:
+        won = await _engagement_registry.try_transition_terminal(
+            rec.id, "error", strict=True, error_kind=kind,
+            error_message=detail, terminal_hook=_snapshot_hook,
+        )
+    except Exception as exc:  # noqa: BLE001 — strict persist failed + rolled back
+        # The record is STILL LIVE and disk agrees. Post nothing, paint
+        # nothing, close nothing: an open topic over a live record is
+        # recoverable, a closed topic over a live record is not. But RETIRE
+        # the driver client — with no exception out of the driver, start()'s
+        # rollback never ran, so the client is registered over a transport
+        # that may already be dead and ``is_alive`` would hand the next
+        # operator message to an ended client instead of resuming.
+        logger.error(
+            "launch-death report %s: strict terminal transition did not "
+            "persist (rolled back, record left live): %s", rec.id[:8], exc)
+        await _cancel_driver_bounded(driver, rec)
+        return LaunchDeathResult.PERSIST_FAILED
+    if not won:
+        logger.info(
+            "launch-death report %s: record already terminal — the "
+            "engagement reported itself; nothing to tell", rec.id[:8])
+        return LaunchDeathResult.ALREADY_TERMINAL
+
+    # This call won the flip and it is on disk. #599's ordering applies here
+    # exactly as in the funnel: the strict transition only SCHEDULES the uid
+    # quiesce, so telling the operator "it died" before the ladder settles
+    # would put the operator-visible effect ahead of the actual stop, while a
+    # claude_code CLI can still run native Bash/Write/Edit. Bounded and
+    # registry-shielded — it reports its own outcome and never wedges.
+    _awaiter = getattr(_engagement_registry, "await_quiesce", None)
+    if callable(_awaiter):
+        try:
+            await _awaiter(rec.id, _QUIESCE_FUNNEL_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — never abort the report
+            logger.warning(
+                "launch-death report %s: awaiting the uid quiesce failed: %s",
+                rec.id[:8], exc)
+
+    # ONE bounded notice, while the topic is STILL OPEN.
+    if topic_id is not None and channel is not None:
+        text = (
+            "\u26a0\ufe0f This engagement stopped before reporting a result "
+            f"({detail}). Its task may be incomplete \u2014 inspect any "
+            "partial changes before retrying."
+        )
+        if lost_texts or lost_reservations:
+            _budget, _parts = 2800, []
+            for _t in lost_texts:
+                _ex = _t if len(_t) <= 400 else _t[:400] + "\u2026"
+                if _budget - len(_ex) < 0:
+                    break
+                _budget -= len(_ex)
+                _parts.append(f"\u2022 {_ex}")
+            _more = len(lost_texts) - len(_parts)
+            _total = len(lost_texts) + lost_reservations
+            text += (
+                f"\n\n\u26a0\ufe0f {_total} inbound message(s) had no turn "
+                "start recorded before this engagement ended \u2014 they may "
+                "never have been read"
+                + ((":\n" + "\n".join(_parts)) if _parts else ".")
+                + (f"\n\u2026and {_more} more." if _more > 0 else "")
+            )
+        try:
+            await asyncio.wait_for(
+                _post_engagement_notice(channel, rec, text),
+                _TOPIC_OP_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "launch-death report %s: the topic notice exceeded %.0fs — "
+                "continuing to the teardown and close", rec.id[:8],
+                _TOPIC_OP_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 — best-effort operator notice
+            logger.warning(
+                "launch-death report %s: the topic notice failed: %s",
+                rec.id[:8], exc)
+
+    await _cancel_driver_bounded(driver, rec)
+    await _abort_engagement_topic(channel, rec.id, topic_id)
+    logger.warning(
+        "Engagement %s launch reported dead: kind=%s detail=%s",
+        rec.id[:8], kind, detail)
+    return LaunchDeathResult.REPORTED
+
+
+async def _post_engagement_notice(channel: Any, rec: Any, text: str) -> None:
+    """#678: post a platform notice into an engagement topic through the seam
+    #649's failure owner uses (``TelegramChannel._post_engagement_notice`` —
+    the output sequencer for claude_code, a direct rich send for in_casa),
+    falling back to the pair ``_finalize_engagement`` already falls back
+    through for a channel that lacks it (tests, a legacy channel)."""
+    poster = getattr(channel, "_post_engagement_notice", None)
+    if poster is not None:
+        await poster(rec, text)
+        return
+    if hasattr(channel, "send_response_to_topic"):
+        await channel.send_response_to_topic(rec.topic_id, text)
+    elif hasattr(channel, "send_to_topic"):
+        await channel.send_to_topic(rec.topic_id, text)
+
+
+async def _cancel_driver_bounded(driver: Any, rec: Any) -> None:
+    """#678: tear the driver client down under the funnel's own bound.
+
+    ``_abort_launch_on_cancel`` awaited ``driver.cancel`` UNBOUNDED ahead of
+    every operator-visible effect, and for claude_code that waits on the
+    compile lock, an ``s6-rc -d change``, a logger stop and a recompile — none
+    of them bounded — so a wedged teardown meant the operator was never told
+    at all. Same treatment ``_finalize_engagement_tail`` gives it."""
+    if driver is None or not hasattr(driver, "cancel"):
+        return
+    try:
+        await asyncio.wait_for(driver.cancel(rec), _DRIVER_CANCEL_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        logger.error(
+            "launch-death report %s: driver.cancel exceeded %.0fs — "
+            "continuing so the operator is still told", rec.id[:8],
+            _DRIVER_CANCEL_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "launch-death report %s: driver.cancel failed: %s",
+            rec.id[:8], exc)
+
+
+def _spawn_launch_death_report(
+    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    *, kind: str, detail: str, driver: Any | None,
+) -> Any:
+    """#678: start the reporter as an ANCHORED Casa-owned task.
+
+    The launcher awaits it through ``asyncio.shield`` so a cancellation
+    unwinds the launcher while the reporter runs to completion; the
+    cancellation compensator spawns it and does not await at all (a cancelled
+    task cannot await). Both need this shape for the same reason: the registry
+    deliberately KEEPS a durable terminal state and re-raises when a
+    cancellation lands after its write committed, so an inline owner could
+    commit the flip and then never post, paint or close — and a second,
+    compensating reporter would LOSE the transition and correctly do nothing,
+    leaving the durable error with no side-effect owner at all.
+    """
+    task = asyncio.ensure_future(_report_launch_death(
+        channel, rec, topic_id, kind=kind, detail=detail, driver=driver))
+    _LAUNCH_DEATH_TASKS.add(task)
+    task.add_done_callback(
+        lambda t, _eid=rec.id: _launch_death_done(_eid, t))
+    return task
+
+
+LAUNCH_INCOMPLETE_KIND = "launch_turn_incomplete"
+"""#678: the error kind a launch that left no terminal artifact records.
+
+Named rather than flattened into ``driver_start_failed``: that kind means the
+driver never got going, and a reader who cannot tell it from "the turn ran and
+then died mid-flight" cannot act on either."""
+
+_LAUNCH_INCOMPLETE_DETAIL = {
+    "missing_result_message":
+        "the initial turn ended without ResultMessage",
+    "no_visible_output":
+        "the initial turn ended without ResultMessage output or a completion",
+}
+
+
+def _launch_incomplete_reason(driver: Any, engagement_id: str) -> str:
+    """#678: POP the in_casa driver's launch-turn observation, or "".
+
+    ``getattr``-guarded because ``launch_turn_incomplete`` is NOT part of
+    ``DriverProtocol``: a bare attribute access would raise ``AttributeError``
+    on a healthy claude_code launch, and the launcher's generic
+    ``except Exception`` would then mark that engagement errored and abort its
+    topic. Call sites are the two in_casa launch branches only.
+    """
+    reader = getattr(driver, "launch_turn_incomplete", None)
+    if reader is None:
+        return ""
+    try:
+        reason = reader(engagement_id)
+    except Exception:  # noqa: BLE001 — an observation must never break a launch
+        logger.warning(
+            "launch_turn_incomplete read failed for %s", engagement_id[:8],
+            exc_info=True)
+        return ""
+    return reason if isinstance(reason, str) else ""
 
 
 async def _abort_engagement_topic(
@@ -7456,17 +7819,38 @@ async def _abort_engagement_topic(
         )
     if channel is None:
         return
+    # #678 (Sol, seam round 5): bound each Telegram await SEPARATELY. Neither
+    # ``update_topic_state`` nor ``close_topic`` carries a caller-side bound, so
+    # a never-returning paint starved the close — measured `ledger=1, paint=1,
+    # close=0` — leaving a topic open over a durable terminal record. D21: bound
+    # the wait on a counterparty, never the work. A paint timeout still proceeds
+    # to the close; a close timeout still lets the caller retire.
     if hasattr(channel, "update_topic_state"):
         try:
-            await channel.update_topic_state(
-                engagement_id=engagement_id, new_state="failed",
+            await asyncio.wait_for(
+                channel.update_topic_state(
+                    engagement_id=engagement_id, new_state="failed",
+                ),
+                _TOPIC_OP_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "abort topic %s: update_topic_state exceeded %.0fs — "
+                "continuing to the close", topic_id, _TOPIC_OP_TIMEOUT_S,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "abort topic %s: update_topic_state failed: %s", topic_id, exc,
             )
     try:
-        await channel.close_topic(thread_id=topic_id)
+        await asyncio.wait_for(
+            channel.close_topic(thread_id=topic_id), _TOPIC_OP_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "abort topic %s: close_topic exceeded %.0fs", topic_id,
+            _TOPIC_OP_TIMEOUT_S,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("abort topic %s: close_topic failed: %s", topic_id, exc)
 
