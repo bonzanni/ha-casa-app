@@ -913,6 +913,14 @@ class JobRegistry:
           (`recover_after_restart`), which is the condition itself rather than
           a proxy that resembles it.
 
+        Pass the ACTUAL kind, never the literal. ``_fail_current_locked`` is the
+        site whose reason varies, so it is where this parameter earns its keep,
+        and handing it a constant there would move the real discrimination into
+        the caller while leaving this predicate claiming to make it. ``cancel``
+        writes exactly one kind, so its literal is that write's own reason and
+        the check is trivially true there — which is why a mutation that drops
+        the kind test can only be caught through the failure path.
+
         Deferring is also the truthful record: the job really was running when
         the process died, and it leaves the row in exactly the shape a crash
         leaves it, instead of asserting a creator cancellation that never
@@ -1566,7 +1574,7 @@ class JobRegistry:
             isinstance(failure, asyncio.CancelledError)
             or envelope.kind == "cancelled"
         )
-        if cancelled and self._cancel_deferred_to_boot("cancelled"):
+        if self._cancel_deferred_to_boot(envelope.kind):
             # #671: the second of the two functions every cancellation arm
             # reaches. The voice lifecycle's teardown writes its cancellation
             # as `fail_compat(JobFailure("cancelled", ...))` — a different
