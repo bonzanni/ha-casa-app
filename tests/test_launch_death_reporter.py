@@ -31,6 +31,22 @@ except ImportError:  # pragma: no cover — direct-path collection
 
 pytestmark = [pytest.mark.asyncio]
 
+_COUNTERPARTY_LATENCY_S = 0.1
+"""#695: the modelled round-trip of the Telegram counterparty the launch-death
+reporter posts through.
+
+NOT a wait and not an allowance: no test waits for this to elapse. It is part of
+the ARRANGEMENT — a real ``_post_engagement_notice`` is tens of milliseconds, and
+pinning it at zero is what let ``TestCancellationHasAnOwner`` observe complete
+effects from an incomplete reporter on an idle box. With the counterparty this
+slow, the reporter provably has NOT finished when each readiness wait below
+begins, so "the wait observes the reporter's completion" is falsifiable on any
+machine instead of only on a loaded CI runner: swap either drain back for the
+old ``for _ in range(N): await asyncio.sleep(0)`` proxy and the test fails
+deterministically, idle. 500 bare yields cost ~0.6 ms (9.7 ms under 24-way
+load); this is two orders of magnitude more, and no event-loop yield can advance
+a real timer."""
+
 
 class TextlessCompleteClient(ScriptedCutoffClient):
     """A launch turn that RAN TO ITS END — one ResultMessage — but streamed no
@@ -385,6 +401,7 @@ class TestCancellationHasAnOwner:
         async def _slow_notice(rec, text):
             entered.set()
             await asyncio.sleep(0)
+            await asyncio.sleep(_COUNTERPARTY_LATENCY_S)
             await real_notice(rec, text)
 
         channel._post_engagement_notice = AsyncMock(side_effect=_slow_notice)
@@ -395,10 +412,31 @@ class TestCancellationHasAnOwner:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # The launcher is gone; the reporter finished the job anyway.
-        for _ in range(200):
-            if not tools_mod._LAUNCH_DEATH_TASKS:
-                break
+        # The launcher is gone; the reporter finished the job anyway. AWAIT
+        # THE REPORTER, do not proxy it (#695): a bare `asyncio.sleep(0)`
+        # re-arms `loop._ready` through `call_soon`, so the loop never blocks
+        # and a yield count measures no wall time at all — while the reporter
+        # ahead of it must still cross three `asyncio.to_thread` hops carrying
+        # six `os.fsync` calls. `_abort_launch_on_cancel` is synchronous, so
+        # every reporter is anchored in `_LAUNCH_DEATH_TASKS` before the
+        # cancelled launcher re-raises; snapshot the set (its own done-callback
+        # mutates it) and await the tasks themselves. Same idiom as the
+        # `_ABORT_BG_TASKS` drains in `test_engage_executor_tool.py`. Plain
+        # `gather`: `_report_launch_death` promises never to raise, so a raise
+        # must red this test rather than become a successful drain.
+        pending = list(tools_mod._LAUNCH_DEATH_TASKS)
+        if pending:
+            await asyncio.gather(*pending)
+            # `gather` returns WITHOUT yielding when every child is already
+            # done — CPython's bpo-46672 fast path calls `_done_callback`
+            # inline for those (`asyncio.tasks.gather`'s `done_futs` loop) —
+            # so a reporter's own `_launch_death_done` may still be sitting in
+            # `loop._ready`. This yield flushes callbacks that are ALREADY
+            # QUEUED, which is deterministic and bounded at one turn; it is not
+            # the wall-time proxy this test just stopped using, because nothing
+            # is being waited FOR. Measured: without it, the unshielded-await
+            # mutation fails here on a finished-but-still-anchored task instead
+            # of on the close count it is supposed to catch.
             await asyncio.sleep(0)
         assert not tools_mod._LAUNCH_DEATH_TASKS
         created_id = next(iter(registry._records))
@@ -423,6 +461,13 @@ class TestCancellationHasAnOwner:
         )
         entered = asyncio.Event()
         wedged = asyncio.Event()
+        real_notice = channel._post_engagement_notice
+
+        async def _slow_notice(rec, text):
+            await asyncio.sleep(_COUNTERPARTY_LATENCY_S)
+            await real_notice(rec, text)
+
+        channel._post_engagement_notice = AsyncMock(side_effect=_slow_notice)
 
         async def _hang(engagement, prompt, options, expected_generation=None):
             entered.set()
@@ -436,10 +481,18 @@ class TestCancellationHasAnOwner:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        for _ in range(500):
-            if not tools_mod._LAUNCH_DEATH_TASKS and channel.close_topic.await_count:
-                break
+        # Await the reporter itself, not a yield count (#695) — see the
+        # sibling above for why 500 bare yields measure nothing. The trailing
+        # emptiness assertion is new: the old loop's break condition only
+        # IMPLIED that the reporter retired, and an implication inside a
+        # best-effort loop is not an assertion.
+        pending = list(tools_mod._LAUNCH_DEATH_TASKS)
+        if pending:
+            await asyncio.gather(*pending)
+            # Flush the reporter's ALREADY-QUEUED `_launch_death_done`; see
+            # the sibling above for why `gather` can return without yielding.
             await asyncio.sleep(0)
+        assert not tools_mod._LAUNCH_DEATH_TASKS
 
         created_id = next(iter(registry._records))
         rec = registry.get(created_id)
