@@ -29,6 +29,7 @@ sweeps touch `delivery_state` only and never `execution_state`. The two
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 from job_registry import (
@@ -381,3 +382,111 @@ def test_launch_rollback_does_not_latch_a_cancellation():
     assert len(guarded) == 1
     # ...and no latch escapes that `if`.
     assert ast.unparse(handler).count("note_cancel_cause") == 1
+
+
+async def test_the_deadline_arm_itself_records_its_cause(tmp_path):
+    """Case R — the ARM's enrolment, not just the registry's honouring of it.
+
+    Cases K and J latch by calling `note_cancel_cause` directly, so they pin what
+    the registry does with a recorded cause and say nothing about whether the arm
+    records one. Measured: with only those cases, deleting the latch call from
+    `_voice_deadline_exceeded` left every test green — which would have let a
+    later edit silently reinstate the reproduced regression. So this drives the
+    real function.
+    """
+    import tools
+    from specialist_registry import SpecialistRegistry
+
+    registry = await loaded(tmp_path, make_voice_job())
+    specialists = SpecialistRegistry(
+        str(tmp_path / "specialists"), job_registry=registry)
+    previous = tools._specialist_registry
+    tools._specialist_registry = specialists
+    try:
+        async def never():
+            await asyncio.sleep(3600)
+
+        task = asyncio.create_task(never())
+        await asyncio.sleep(0)
+
+        registry.begin_shutdown()
+        result = await tools._voice_deadline_exceeded(
+            task, "job-1", "researcher")
+    finally:
+        tools._specialist_registry = previous
+
+    # The caller is told synchronously, which is why a boot notice would be a
+    # second and false telling.
+    assert result is not None
+
+    row = registry.get("job-1")
+    assert row.execution_state is ExecutionState.CANCELLED
+    assert row.failure == JobFailure("cancelled", "Delegation cancelled")
+
+    reloaded = await reload(tmp_path)
+    assert await reloaded.recover_after_restart() == []
+
+
+def test_the_prelaunch_bail_itself_records_its_cause():
+    """Case S — the pre-launch bail's enrolment.
+
+    A source pin, for the same reason as case Q: the bail sits inside
+    `delegate_to_agent`, whose driving needs the whole tool surface, and a
+    large-fixture test asserting on a pre-launch branch is weaker evidence than
+    an exact assertion about the statement that must precede the cancel. What it
+    guarantees is the mutation that matters: the arm records a cause, and it does
+    so BEFORE it cancels — recording afterwards would leave the guard already
+    consulted and the row already deferred.
+    """
+    import ast
+    from pathlib import Path
+
+    import tools
+
+    # `delegate_to_agent` is registered as an SdkMcpTool and its runtime
+    # `.handler` is a decorated wrapper, so the function is located by name in
+    # the module source rather than through the tool object.
+    module = ast.parse(Path(tools.__file__).read_text(encoding="utf-8"))
+    functions = [
+        node for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "delegate_to_agent"
+    ]
+    assert len(functions) == 1
+
+    # Find the branch that bails because the voice budget went during
+    # registration: it both records a cause and cancels the delegation.
+    # Match STRUCTURALLY on the branch's own statements. Matching on text is
+    # wrong here: `ast.unparse` of a nested `if` renders its whole body, so the
+    # enclosing `if is_voice:` matches any substring its child contains, and a
+    # count asserted against that describes the wrong node.
+    def calls(node):
+        """Attribute names called directly by this branch's own statements."""
+        names = []
+        for stmt in node.body:
+            if not isinstance(stmt, (ast.Expr, ast.Await)):
+                continue
+            inner = stmt.value if isinstance(stmt, ast.Expr) else stmt
+            while isinstance(inner, ast.Await):
+                inner = inner.value
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
+                names.append(inner.func.attr)
+        return names
+
+    def direct(node):
+        return [ast.unparse(stmt) for stmt in node.body]
+
+    branches = [
+        node for node in ast.walk(functions[0])
+        if isinstance(node, ast.If)
+        and "note_cancel_cause" in calls(node)
+        and "cancel_delegation" in calls(node)
+    ]
+    assert len(branches) == 1
+
+    statements = direct(branches[0])
+    noted = next(
+        i for i, text in enumerate(statements) if "note_cancel_cause" in text)
+    cancelled = next(
+        i for i, text in enumerate(statements) if "cancel_delegation" in text)
+    assert noted < cancelled
