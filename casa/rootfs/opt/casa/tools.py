@@ -3759,6 +3759,13 @@ async def _voice_deadline_exceeded(
     # would otherwise never be retrieved (asyncio logs "exception was never
     # retrieved"). The callback fires regardless of which set it ends in.
     task.add_done_callback(_retrieve_late_task_exception)
+    # #671: the voice turn budget expired — a cause this function knows
+    # statically. Latched BEFORE the cancel so the deferral guard cannot claim a
+    # deadline expiry that happens to land inside a graceful stop; the caller
+    # gets the typed deadline result either way and must not also be told the
+    # work was lost to a restart.
+    _specialist_registry.job_registry.note_cancel_cause(
+        delegation_id, "voice_deadline")
     task.cancel()
     await asyncio.wait({task}, timeout=_VOICE_TEARDOWN_BOUND_S)
     # #321: a snapshot-write failure must not escape — the caller is owed the
@@ -4492,7 +4499,18 @@ async def _start_voice_async_job(
             handoff_reservation.commit(pending_job)
             reservation_committed = True
         start_gate.set()
-    except BaseException:
+    except BaseException as launch_exc:
+        # #671: an ORDINARY launch failure is a cause this arm knows statically,
+        # so latch it and let the rollback settle the row as it always has. A
+        # `CancelledError` is deliberately NOT latched: during a graceful stop
+        # that IS the process dying, and latching it would settle the row here
+        # and leave the boot reconciliation nothing to find — the very defect
+        # this cluster fixes. `CancelledError` derives from `BaseException`, so
+        # `isinstance(..., Exception)` is exactly the ordinary-failure test (it
+        # also excludes KeyboardInterrupt and SystemExit, which are process
+        # death by another name).
+        if created and isinstance(launch_exc, Exception):
+            registry.note_cancel_cause(job_id, "launch_rollback")
         if handoff_reservation is not None and not reservation_committed:
             handoff_reservation.release()
         if handoff.transferred:
@@ -5063,6 +5081,13 @@ async def delegate_to_agent(args: dict) -> dict:
             # the outer finally releases the permit (owned still set).
             voice_wait_s = _voice_wait_from_deadline(raw_deadline, loop)
             if voice_wait_s is None:
+                # #671: this cancel is caused by the voice budget, NOT by a
+                # process stop — no task was ever created and the caller is told
+                # synchronously below. Latch the cause so a stop landing in this
+                # window cannot defer the row and have the next boot announce
+                # "Lost on restart" for work that never started.
+                _specialist_registry.job_registry.note_cancel_cause(
+                    delegation_id, "voice_budget_prelaunch")
                 await _specialist_registry.cancel_delegation(delegation_id)
                 logger.info(
                     "Delegation %s → %s voice budget exhausted during "

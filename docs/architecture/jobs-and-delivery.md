@@ -100,23 +100,32 @@ an exact stored true — a row written before the field existed restores nothing
 resumed turn stays text-only exactly as it did before that feature. Read that as the general
 rule for this file: a capability that must survive a restart has to be *in the row*.
 
-**INV-JOB-009**: A graceful stop writes no cancellation terminal for a live job — the row is left as it stands, so the boot reconciliation treats it exactly as it treats a job lost to a crash, while a success or a non-cancellation verdict written during the same stop still lands.
+**INV-JOB-009**: A live job that a graceful stop itself settles is not settled at all — the row is left as it stands, so the boot reconciliation treats it exactly as it treats a job lost to a crash. A settling the stop did not cause, and every success or non-cancellation verdict, still commits mid-stop.
 
-Enforced at the two registry functions every cancellation arm reaches, not at the arms.
-Once the process declares its stop, a cancellation-shaped terminal returns the row
-unchanged and commits nothing; the next boot then finds a live row and applies INV-JOB-002
-to it. This exists because the shape a shutdown used to write was not merely lossy but
-false — the same "cancelled" envelope a *creator* cancellation writes, which recovery
-deliberately settles in silence, so a stop announced nothing while a crash correctly
-announced one lost job. A stop was measurably worse than a crash.
+Enforced at the three registry functions that can take a live row out of recovery's
+reach, never at the call sites: the two compatibility cancellation transitions, and the
+continuation compensation that settles by *deleting* the child row. That list is closed by
+construction rather than by inspection — of the registry's durable publish points, those
+three are the only ones that move a live row out of the set boot recovery converts. The
+delivery-expiry sweeps touch delivery state alone and never execution state.
 
-The discriminator is the reason of the write, never "is the process stopping". Only a
-cancellation-shaped failure defers; an explicit verdict of any other kind, and every
-success, still commits mid-stop. And a job the creator really had cancelled keeps its
-durable cancel-pending flag, so recovery still settles it as a creator cancellation with no
-notice — now with the accurate message rather than the generic one. It is the same rule
-INV-JOB-007 already publishes for a scheduled question, under the same reason:
-`casa_shutdown` settles nothing, edits nothing, and leaves the record for the next boot.
+This exists because the shape a shutdown used to write was not merely lossy but false —
+the same "cancelled" envelope a *creator* cancellation writes, which recovery deliberately
+settles in silence, so a stop announced nothing while a crash correctly announced one lost
+job. A stop was measurably worse than a crash. It is the same rule INV-JOB-007 already
+publishes for a scheduled question, under the same reason: `casa_shutdown` settles
+nothing, edits nothing, and leaves the record for the next boot.
+
+**The discriminator is the cause of the settling, and cause is carried, not inferred.** A
+terminal's *category* cannot carry it: a creator cancel, a turn-budget expiry, a pre-launch
+bail, a launch rollback and process death all write the same cancelled shape, so keying on
+that shape plus a "the process is stopping" flag defers settlings the stop never caused —
+and a pre-launch bail deferred that way has the next boot announce a loss for work never
+started, whose caller was already told. So a site whose cause is known where it stands
+records it, and only an *unrecorded* settling defers. Unrecorded is therefore the safe
+default: a site that records nothing errs toward telling the operator, and a bare
+cancellation — which cannot tell a barge-in from process death — is exactly the unrecorded
+case this invariant exists for.
 
 What it does not cover: **delivery**, and terminal work. The restart-orphan notice is
 acknowledged when it is *enqueued*, not when the operator has it, so this invariant is
@@ -124,7 +133,10 @@ about the durable row and its entry into recovery — a notice already handed to
 still die with the process, exactly as it can after a crash. And a job that reaches a
 terminal state *during* the stop is outside recovery's reach altogether: recovery converts
 only live rows, so a delegation that succeeds mid-stop is announced by the live path or not
-at all.
+at all. Nor does it cover a job the creator had *already* cancelled: its durable
+cancel-pending flag means a completion arriving mid-stop still writes a cancelled terminal
+through the completion path, and recovery still settles such a row silently as a creator
+cancellation — which is the correct outcome, and the reason silence there is not a gap.
 
 **INV-JOB-003**: Every delivery transition is a compare-and-set against both the expected durable state and the recorded attempt id; a stale or mismatched frame is denied without mutation.
 
@@ -285,6 +297,7 @@ long an attempt may hold.
 **Tests**
 - `tests/test_job_registry.py`
 - `tests/test_graceful_shutdown_jobs.py`
+- `tests/test_graceful_shutdown_cause.py`
 - `tests/test_voice_delivery.py`
 - `tests/test_voice_job_result.py`
 - `tests/test_scheduled_ask_user.py`

@@ -242,6 +242,9 @@ class JobRegistry:
         # declared a graceful stop. Process-local and never encoded — see
         # `begin_shutdown`.
         self._shutdown_reason: str | None = None
+        # #671: per-job "this settling is NOT the stop" latches — see
+        # `note_cancel_cause`. Process-local, never encoded.
+        self._cancel_causes: dict[str, str] = {}
 
     @property
     def path(self) -> str:
@@ -393,6 +396,19 @@ class JobRegistry:
                 )
             if (child.execution_state is not ExecutionState.ACCEPTED
                     or child_job_id in self._tasks):
+                return False
+            if self._cancel_deferred_to_boot(child_job_id, "cancelled"):
+                # #671, third settling site: this one settles by DELETION rather
+                # than by a terminal write, which is why an enumeration of
+                # "cancellation terminals" misses it — and deleting the child is
+                # strictly worse than writing one, because there is then no row
+                # for the boot reconciliation to find at all. A crash never runs
+                # this compensation, so the child survives as ACCEPTED and is
+                # orphaned; deferring reproduces exactly that.
+                logger.info(
+                    "job %s continuation compensation deferred to boot "
+                    "recovery (%s)", child_job_id[:8], self._shutdown_reason,
+                )
                 return False
 
             now = self._now()
@@ -897,7 +913,29 @@ class JobRegistry:
         """
         self._shutdown_reason = reason
 
-    def _cancel_deferred_to_boot(self, kind: str) -> bool:
+    def note_cancel_cause(self, job_id: str, cause: str) -> None:
+        """Record that this job's settling is NOT caused by the process stopping.
+
+        A one-shot, process-local, per-job latch, set by the arm that *knows* its
+        cause immediately before it settles the row. Nothing durable, no I/O.
+
+        The direction is deliberate and is the whole safety property. A latch
+        meaning "this IS the shutdown" would be fail-OPEN: any arm that forgot to
+        enrol would write the false terminal, which is the defect. A latch meaning
+        "this is NOT the shutdown" is fail-CLOSED — an arm that latches nothing
+        gets deferral, so it inherits the contract and errs toward telling the
+        operator. It also needs no task enrolment and no snapshot instant, so
+        there is no window in which a row exists but is not yet covered.
+
+        Only an arm whose cause is known STATICALLY at its call site may latch: a
+        pre-launch budget bail, a deadline expiry, an ordinary launch-rollback
+        exception. An arm reached by a ``CancelledError`` must NOT latch, because
+        it cannot tell a barge-in from process death — and those are exactly the
+        arms this cluster exists for.
+        """
+        self._cancel_causes.setdefault(job_id, cause)
+
+    def _cancel_deferred_to_boot(self, job_id: str, kind: str) -> bool:
         """Whether a cancellation terminal belongs to the next boot, not to us.
 
         The whole policy, in one predicate, and a conjunction on purpose:
@@ -929,7 +967,11 @@ class JobRegistry:
         "Cancelled by creator" — the right message rather than this method's
         generic one.
         """
-        return self._shutdown_reason is not None and kind == "cancelled"
+        return (
+            self._shutdown_reason is not None
+            and kind == "cancelled"
+            and job_id not in self._cancel_causes
+        )
 
     async def cancel(self, job_id: str) -> VoiceJob | None:
         """Compatibility terminal transition used by legacy delegation code."""
@@ -939,7 +981,7 @@ class JobRegistry:
                 return None
             if current.execution_state in self._TERMINAL_EXECUTION:
                 return current
-            if self._cancel_deferred_to_boot("cancelled"):
+            if self._cancel_deferred_to_boot(job_id, "cancelled"):
                 logger.info(
                     "job %s cancellation deferred to boot recovery (%s)",
                     job_id[:8], self._shutdown_reason,
@@ -1574,7 +1616,7 @@ class JobRegistry:
             isinstance(failure, asyncio.CancelledError)
             or envelope.kind == "cancelled"
         )
-        if self._cancel_deferred_to_boot(envelope.kind):
+        if self._cancel_deferred_to_boot(current.id, envelope.kind):
             # #671: the second of the two functions every cancellation arm
             # reaches. The voice lifecycle's teardown writes its cancellation
             # as `fail_compat(JobFailure("cancelled", ...))` — a different
