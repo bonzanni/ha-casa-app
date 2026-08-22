@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.229.0] - 2026-08-22
+
+### Fixed
+
+- When the files of a persona a resident is pinned to change, go missing or
+  stop being readable, Casa now says which persona it was, the checksum the
+  binding pinned and the checksum it actually found. Until now that failure
+  either said nothing at all in the log, or reported whatever the persona
+  files happened to trip over first — "Core body must contain 300-500
+  characters" — naming neither the persona nor the pin, and in one case
+  telling you to run persona tools that only work while Casa is running,
+  which by then it is not. The refusal now records exactly what it knows: the
+  resident, the persona reference, the pinned and found checksums, whether an
+  active and a staged selection were present, and the underlying reason. The
+  recovery procedure moved into `docs/architecture/personality.md`, where it
+  can state the conditions each step actually works under. Startup still
+  fails when a resident's persona cannot load — that has not changed; what
+  changed is that the log now tells you why.
+- A persona pack sitting in another persona's directory is no longer reported
+  as that other persona. It is refused, naming the persona the pack really
+  declares, so its checksum can no longer be presented as "the checksum
+  found" for a persona it is not.
+
 ## [0.228.0] - 2026-08-20
 
 ### Fixed
