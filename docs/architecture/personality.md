@@ -259,7 +259,8 @@ the core does — once, rather than a second time in its own right.
 **A persona fails validation on a resident.** It depends on what exists already. On a fresh
 install — no active binding tuple — loading fails, and because resident loading is
 boot-fatal, so does boot. With an existing active binding, a failing *candidate* is
-discarded with a diagnostic and boot proceeds on the retained last-known-good binding;
+discarded with a diagnostic and reconciliation returns the retained binding — whose own
+servability the load then decides, because retaining a binding is not surviving it;
 reconciliation raises only when there is nothing good to retain. Candidate validation is
 complete before promotion: requirements, the pinned-checksum match, and the full
 compile/admission pass all run on the candidate — a persona that would fail an admission
@@ -278,7 +279,30 @@ saying out loud to an operator who has just been told their swap failed.
 specialist is unavailable and the system continues.
 
 **A binding cannot be activated.** Folded into the loading error for that agent, so it is
-reported as a load failure rather than a separate class.
+reported as a load failure rather than a separate class. An *active* override whose pinned
+persona bytes have gone missing, gone unreadable or changed is not re-materialized — the
+altered bytes are never served — but the load of those same bytes then fails, and that
+failure is boot-fatal per INV-PERS-003. The refusal is logged as fields: the resident, the
+persona ref, the checksum the binding pins, the checksum found when a pack resolved at all,
+whether an active and a staged tuple were present, and the reason caught. It states nothing
+else — not what is live, not what was written, not whether startup is prevented — because
+the same reconciliation serves a boot that is fatal, a reload that leaves the live resident
+serving, and a validation replay that writes and logs nothing.
+
+**It names no tool.** Every persona tool resolves a resident's role through
+`casa/rootfs/opt/casa/tools.py::_resolve_resident_role`, which answers `runtime_unavailable` without a live
+runtime, and `casactl` needs a socket a stopped app does not have — so recovery advice
+naming any of them cannot be followed in the state it would be read in. The recovery is
+here instead, where its conditions fit. Two options, and which one applies depends on
+whether a tuple still names the persona. **Restore the admitted bytes** under
+`<config>/personas/<id>/<version>/` until they reproduce the pinned checksum — the personas
+tree is not tracked by the config repo, so the source is a backup, not a config-repo revert.
+That recovers the pin only while some tuple still names it: a refused *sole staged*
+selection has already been discarded, so the next start comes up on the slot's image default
+and the swap has to be applied again. **Or discard the pin** by deleting the resident's tuple
+files with the app stopped — and it must be every selection that would load, not only the one
+the log named, because an active and a staged tuple can name different personas and deleting
+one leaves the other to fail.
 
 **A removal is refused.** Nothing is mutated — the bytes stay, and so does the install approval,
 which is only revoked on a removal that goes through. The refusal names its referrers; freeing
@@ -333,6 +357,7 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 
 **Tests**
 - `tests/test_personality_binding.py`
+- `tests/test_resident_refusal_diagnosis.py`
 - `tests/test_persona_install.py`
 - `tests/test_persona_removal.py`
 - `tests/test_personality_admin_handlers.py`

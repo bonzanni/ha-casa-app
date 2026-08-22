@@ -1534,8 +1534,15 @@ def _activate_resident_binding(
             pack = _pack(root, ref)
             if pack is not None:
                 return pack
+        # #670: this used to end "run resident_persona_reset to recover". That
+        # tool begins at `tools._resolve_resident_role`, which answers
+        # `runtime_unavailable` when `agent.active_runtime` is absent, and on a
+        # resident this failure is boot-fatal — so the advice needed the process
+        # it was reporting the death of. This site is the ONE place that knows
+        # which roots were searched, so it names them instead of naming a tool.
         raise ValueError(
-            f"override persona {ref!r} is unavailable — run resident_persona_reset to recover"
+            f"override persona {ref!r} is unavailable: no pack with a manifest "
+            f"under {override_root} or {personas_root}"
         )
 
     instance_dir = InstanceDir(
