@@ -2922,9 +2922,10 @@ async def _run_delegated_agent(
     # `specialist_limits.truncate_output` at the sync-result / async-
     # DelegationComplete assembly sites) rather than here, so the
     # `output_truncated` flag survives this task's str boundary and reaches
-    # the wire. The raw text is returned; memory retain below stores it as
-    # exchanged (the bound is a caller-facing surface concern, not a memory
-    # one — and token_budget>0 specialists are rare).
+    # the wire. The raw text is returned; the memory retain below offers it as
+    # exchanged, and only when the run completed (#699) (the bound is a
+    # caller-facing surface concern, not a memory one — and token_budget>0
+    # specialists are rare).
 
     # #699: the terminal verdict is constructed HERE, before the retain, rather
     # than seventeen lines below it. The gate used to read only the token budget
@@ -2949,15 +2950,17 @@ async def _run_delegated_agent(
         result_message_seen=result_msg is not None,
     )
 
-    # Specialist write: one explicit tier-classified retain of the exchange to
-    # the shared bank, gated by the PARENT channel's write-trust (voice → no
-    # write) — design §3, plan 3. Ephemeral specialists have no session
-    # registry, so the freshness reaper never sees them; the retain is explicit.
+    # Specialist write: one explicit tier-classified retain of the exchange
+    # OFFERED to the shared bank, gated by the PARENT channel's write-trust
+    # (voice → no write) — design §3, plan 3. Ephemeral specialists have no
+    # session registry, so the freshness reaper never sees them; the retain is
+    # explicit. It is best-effort and detached: reaching this block is not
+    # evidence that anything was stored.
     if cfg.memory.token_budget > 0 and text:
         sem = getattr(agent_mod, "active_semantic_memory", None)
         if sem is not None:
-            # INV-MEM-016: the CALLER's task turn is retained either way — it is
-            # a true utterance the caller genuinely made, and this is the ONLY
+            # INV-MEM-016: the CALLER's task turn is SUBMITTED either way — it
+            # is a true utterance the caller genuinely made, and this is the ONLY
             # writer of it (the resident's own session save never sees the
             # paraphrase it sent to the specialist). The two items are
             # independent content-addressed documents rather than a paired
@@ -2967,11 +2970,19 @@ async def _run_delegated_agent(
             # additive tag BROADENS) and the mental-model overlay is a bank-wide
             # `profile()` with no filter hook at all. Writer-side exclusion is
             # the only shape that protects every reader by construction.
+            #
+            # SUBMITTED, not written: what is assembled here is an ARGUMENT to a
+            # best-effort writer that can still decline it — a voice or webhook
+            # origin returns before writing anything, a wipe landing first
+            # discards the whole retain (#411), and a backend failure is
+            # swallowed by design. Whether the caller's turn reaches the bank is
+            # therefore not this site's to assert, and the log below deliberately
+            # claims only what this site DECIDES.
             turns = [RetainedTurn(task_text, caller_provenance)]
             if output.run_aborted:
                 logger.warning(
                     "delegated agent %s run aborted (kind=%s) — its partial "
-                    "answer is NOT retained; the caller's task turn still is",
+                    "answer is excluded from the memory retain",
                     _known_role(getattr(cfg, "role", None)),
                     _run_abort_kind(output.run_subtype),
                 )

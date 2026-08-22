@@ -709,3 +709,51 @@ async def test_empty_answer_writes_nothing_whether_or_not_the_run_aborted(
     await _drain_bg()
 
     assert fake_sem.retain_calls == []
+
+
+async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
+    monkeypatch, caplog,
+):
+    """An aborted run on a NON-write-trusted origin writes nothing at all — and
+    the withhold log must not claim otherwise.
+
+    The log line fires at the assembly site, before the detached best-effort
+    writer runs, so it can only honestly report what that site DECIDES: that the
+    partial answer is excluded. It previously added "the caller's task turn still
+    is" retained, which is false here — `retain_delegated` returns on a voice
+    origin before writing anything — and equally false under a wipe landing first
+    or a backend failure, both of which this site cannot see.
+    """
+    import logging
+
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="voice", cid="cid42")
+    _FakeSDKClient.reset(response="partial answer", result_subtype="error_max_turns")
+
+    with caplog.at_level(logging.WARNING, logger="tools"):
+        with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+            out = await tools._run_delegated_agent(
+                cfg, task_text="Q1 cashflow?", context_text="")
+
+    assert out.run_aborted is True
+
+    await _drain_bg()
+
+    # Nothing reached the bank at all — not the answer, not the caller's turn.
+    assert fake_sem.retain_calls == []
+
+    withheld = [r.getMessage() for r in caplog.records
+                if "run aborted" in r.getMessage()]
+    assert len(withheld) == 1
+    # The whole sentence, not a word of it: assert what the line SAYS.
+    assert withheld[0] == (
+        "delegated agent <other> run aborted (kind=specialist_turn_limit) — "
+        "its partial answer is excluded from the memory retain"
+    )
