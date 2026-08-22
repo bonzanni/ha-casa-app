@@ -155,3 +155,71 @@ def test_a_newline_in_an_operator_written_tuple_cannot_forge_a_record_field(
     assert event == "persona_binding_reconcile_failed"
     # And it parses as exactly one object, whose ref carries the newline as DATA.
     assert json.loads(payload)["persona_ref"] == f"{forged_id}@{_VERSION}"
+
+
+def test_a_pack_parked_at_the_wrong_ref_is_not_reported_as_the_pinned_one(
+        tmp_path, monkeypatch, caplog) -> None:
+    """A foreign pack in the pinned ref's directory must not have its checksum
+    reported as the checksum found for that ref (review r1, Terra, S2).
+
+    `agent_loader._pack` resolved a pack by DIRECTORY PATH alone. So replacing
+    `casa/newton/0.9.9/` with a valid pack that declares `casa/other@0.9.9`
+    loaded successfully, and the record then said `casa/newton@0.9.9` on disk has
+    that pack's checksum — a false diagnosis handed to an operator, of exactly
+    the ref they would go and inspect.
+
+    `tools._resolve_local_persona` has refused this since #323 — "a pack parked
+    at the wrong directory never resolves" — so the loader was diverging from the
+    established in-tree rule, not lacking one. The refusal was fail-closed
+    either way; what was wrong was what it told the operator.
+    """
+    from agent_loader import LoadError, load_agent_from_dir
+    from policies import load_policies
+    from test_persona_install import _write_persona_repo
+
+    config_dir = tmp_path / "config"
+    personas_root = config_dir / "personas"
+    bindings_root = tmp_path / "bindings-root"
+    personas_root.mkdir(parents=True)
+    monkeypatch.setenv("CASA_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("CASA_BINDINGS_DIR", str(bindings_root))
+
+    policies = load_policies(_POLICIES)
+    role = load_agent_from_dir(f"{_AGENTS}/concierge", policies=policies).role_slot
+    pinned = _publish(personas_root, tmp_path, negative_space="Never condescends.",
+                      tag="approved")
+    _approve(personas_root, bindings_root, role)
+
+    # A DIFFERENT persona, valid in every respect, parked at the pinned ref's
+    # directory — the shape a mis-restored backup or a hand-copied tree produces.
+    from persona_pack import load_persona_pack
+    foreign_repo = tmp_path / "repo-foreign"
+    _write_persona_repo(foreign_repo, persona_id="casa/other", version=_VERSION)
+    foreign_checksum = load_persona_pack(
+        foreign_repo / "pack", foreign_repo / "manifest.json").checksum
+    assert foreign_checksum != pinned
+    version_dir = personas_root / _ID / _VERSION
+    shutil.rmtree(version_dir)
+    version_dir.mkdir(parents=True)
+    shutil.copytree(foreign_repo / "pack", version_dir / "pack")
+    shutil.copy2(foreign_repo / "manifest.json", version_dir / "manifest.json")
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(LoadError):
+            load_agent_from_dir(f"{_AGENTS}/concierge", policies=policies,
+                                bindings_dir=str(bindings_root))
+
+    loud = [r for r in caplog.records
+            if r.levelno >= logging.WARNING
+            and r.getMessage().startswith("persona_binding_reconcile_failed")]
+    assert len(loud) == 1
+    payload = json.loads(loud[0].getMessage().partition(" ")[2])
+    assert payload["persona_ref"] == _REF
+    assert payload["pinned_checksum"] == pinned
+    # The foreign pack's checksum is NOT what was found for this ref: nothing
+    # was found for this ref at all.
+    assert payload["found_checksum"] is None
+    assert payload["reason"] == (
+        f"override persona {_REF!r} is unavailable: the pack under "
+        f"{personas_root} declares casa/other@{_VERSION}, not {_REF!r}")
