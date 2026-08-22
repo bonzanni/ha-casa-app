@@ -32,8 +32,15 @@ turn has produced text, but not an answer — and the bank has no way to say
 "partial", because an additive tag broadens a recall rather than narrowing it and
 the bank-wide profile overlay is not filterable at all. The exclusion is therefore
 made by the writer, at the point where the terminal verdict is known: the
-incomplete answer is never built into an item. What the run stores instead is the
-caller's own request turn alone, because the caller did genuinely make it.
+incomplete answer is never built into an item.
+
+The rest of that exchange is unaffected, and the rule is best read together with
+its one condition. A delegated run writes at all only when it produced some answer
+text — that gate is older than this rule, and it applies to a run that finished
+just as much as to one that did not, so an empty answer stores nothing on either
+path, request turn included. Where such a run does write, what it writes is the
+caller's own request turn alone, because the caller did genuinely make it and
+nothing else records it.
 
 **When a session goes cold is tunable, and retention deduplicates.** The
 freshness windows that decide when a session stops being resumable and

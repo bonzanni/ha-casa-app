@@ -242,10 +242,10 @@ terminal aborts — a turn limit, a spend ceiling, a result-contract failure, an
 error, an unrecognised future verdict, or a stream that ends with no terminal message at
 all: the delegating turn still receives whatever text accumulated, but that text is not
 written to the shared memory bank. What is written, when anything is, is the caller's own
-request turn alone, which nothing else records — a run that produced no text at
-all writes nothing, exactly as a completed run with no text writes nothing. This is the write boundary only; it says nothing about
-documents the bank already holds (INV-MEM-016, and see
-[`memory-lifecycle.md`](memory-lifecycle.md)).
+request turn alone, which nothing else records — and nothing is written at all by a run
+that produced no text, which is equally true of a run that completed. This is the write
+boundary only; it says nothing about documents the bank already holds (INV-MEM-016, and
+see [`memory-lifecycle.md`](memory-lifecycle.md)).
 
 **Memory cannot answer.** The recall tools report unavailability as its own status and
 refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's
