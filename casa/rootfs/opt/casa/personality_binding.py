@@ -788,10 +788,20 @@ def reconcile_resident_binding(
     4. Otherwise (re-)stage the candidate as desired, validate persona↔role
        compatibility, and on success commit ``active := desired`` via
        ``InstanceDir.commit_desired_to_active()``. On failure (persona blob
-       missing/incompatible, disk error), discard the desired candidate with a
-       diagnostic and return the RETAINED PRIOR active tuple — boot proceeds on
-       the last-known-good binding, never crash-looping.
-    5. Only when there is NO active tuple at all (fresh install) AND step 4 fails
+       missing/incompatible, disk error), log the refusal's own facts, discard
+       the desired candidate, and return the RETAINED PRIOR active tuple.
+    5. **Retaining is not surviving** (#670). Step 4 bounds THIS function only:
+       it returns the active tuple as read. Whether that tuple can be SERVED is
+       settled by the caller's mandatory re-load of the same persona bytes, and
+       a resident load failure is boot-fatal (INV-PERS-003). This docstring used
+       to say step 4 meant "boot proceeds on the last-known-good binding, never
+       crash-looping", which is false for exactly the case #670 reports — an
+       ACTIVE override whose pinned bytes changed is retained here and then
+       fails to load — and that sentence was read as a documented promise of a
+       degraded mode that has never existed. A rejected staged candidate is not
+       an exception either: ``resident_persona_swap`` may stage a ref that is
+       already active, so the same changed bytes can back both tuples.
+    6. Only when there is NO active tuple at all (fresh install) AND step 4 fails
        does this hard-fail loudly — raise ValueError so the caller turns it into
        an actionable LoadError.
 
@@ -821,10 +831,22 @@ def reconcile_resident_binding(
         source_binding = staged.binding if staged is not None else (
             active.binding if active is not None and active.binding.mode == "override" else None
         )
+        # #670: these three are bound BEFORE the loader call and read by the
+        # handler below, because `str(exc)` is not the diagnosis. The exception
+        # that arrives is usually raised by `persona_pack`, which knows nothing
+        # about the binding: on the issue's commonest variant — a prose edit
+        # under a stale manifest — the reason is "Core body must contain 300-500
+        # characters", carrying neither the ref nor the pin. `found_checksum`
+        # stays None unless a pack actually resolved; it is never invented.
+        persona_ref = None
+        pinned_checksum = None
+        found_checksum = None
         try:
             if source_binding is not None and source_binding.mode == "override":
                 persona_ref = f"{source_binding.persona_id}@{source_binding.persona_version}"
+                pinned_checksum = source_binding.persona_checksum
                 persona = override_persona_loader(persona_ref)
+                found_checksum = persona.checksum
                 # #339: a published persona version is immutable and its
                 # activation is checksum-bound consent. The binding pins the
                 # approved bytes; if the (mutable) path now holds DIFFERENT
@@ -832,12 +854,26 @@ def reconcile_resident_binding(
                 # silently committing whatever is present would bypass the
                 # consent contract.
                 if persona.checksum != source_binding.persona_checksum:
+                    # #670: the tail of this sentence used to be "re-run
+                    # resident_persona_swap to re-approve, or
+                    # resident_persona_reset to recover". Both begin at
+                    # `tools._resolve_resident_role`, which reads
+                    # `agent.active_runtime` and answers `runtime_unavailable`
+                    # when it is absent — and on a resident this refusal is
+                    # boot-fatal (INV-PERS-003), so by the time an operator
+                    # reads it there is no runtime to resolve against. What is
+                    # left is the fact set `persona_install.require_persona_present`
+                    # already uses in-tree for this same condition: the ref, the
+                    # checksum found, and the checksum pinned. The recovery
+                    # itself is stated in docs/architecture/personality.md,
+                    # where it can carry the conditions under which each step
+                    # works; five rounds of evidence in this cluster say an
+                    # emitted string cannot.
                     raise ValueError(
                         f"persona {persona_ref} on disk has checksum "
                         f"{persona.checksum} but the binding pins "
                         f"{source_binding.persona_checksum} — bytes changed "
-                        f"under a pinned version; re-run resident_persona_swap "
-                        f"to re-approve, or resident_persona_reset to recover"
+                        f"under a pinned version"
                     )
                 candidate_binding = materialize_override_binding(
                     role=role, persona=persona, override_source=source_binding.override_source,
@@ -876,6 +912,53 @@ def reconcile_resident_binding(
             instance_dir.stage_desired(candidate_tuple)
             return instance_dir.commit_desired_to_active()
         except (ValueError, OSError) as exc:
+            # #670: this handler used to be the end of the diagnosis. It passed
+            # the reason to discard_desired() and nowhere else, and
+            # discard_desired() early-returns when nothing is staged
+            # (:515-518) — so on a boot with no staged swap, which is exactly
+            # the "changed bytes back the ACTIVE binding" case the issue
+            # reports, the refusal computed above reached no file and no
+            # caller. Measured at the parent of this change, on all three
+            # damage variants: ZERO WARNING-or-higher records across an entire
+            # failing resident load.
+            #
+            # Fields, not a sentence. Every prose form of a record here has
+            # been false in some reachable state — retaining a tuple is not
+            # surviving it, since a swap may stage a ref that is ALREADY
+            # active, so the same changed bytes can back both tuples and the
+            # load fails anyway. So this asserts nothing about what is live,
+            # what was written, or whether startup is prevented: it carries
+            # what was READ and the reason that was caught.
+            #
+            # ONE level for every arm, deliberately. The level is not a
+            # survivability judgement — this function provably cannot make one
+            # — it is the observation that an approved selection did not take
+            # effect, which is always true here.
+            #
+            # json.dumps, and over the WHOLE object rather than the reason
+            # alone: these values include untrusted text (a persona ref is read
+            # from an operator-writable tuple file, and binding.v1.json's
+            # `^...$` pattern admits a trailing newline because Python's `re`
+            # matches `$` before a final newline), so an unescaped value could
+            # split the record into two physical lines whose second parsed as
+            # fields of its own.
+            #
+            # Gated on `commit` because the validation replay
+            # (agent_loader.validate_config_repo, binding_commit=False) is a
+            # REPORT path whose output is its return value, and
+            # `config_git_commit`'s pre-commit gate replays it on every
+            # operator config commit. A report that manufactures ERROR records
+            # into the live process log is noise, not diagnosis.
+            if commit:
+                logger.error("persona_binding_reconcile_failed %s", json.dumps({
+                    "resident": role.role_id,
+                    "persona_ref": persona_ref,
+                    "pinned_checksum": pinned_checksum,
+                    "found_checksum": found_checksum,
+                    "active_tuple": "present" if active is not None else "absent",
+                    "staged_tuple": "present" if staged is not None else "absent",
+                    "reason": str(exc),
+                }, sort_keys=True))
             # discard_desired() is a no-op when nothing was ever staged (e.g. the
             # persona loader itself raised before stage_desired ran).
             if commit:

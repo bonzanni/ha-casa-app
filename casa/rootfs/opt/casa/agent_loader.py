@@ -1523,19 +1523,61 @@ def _activate_resident_binding(
             return load_persona_pack(pack_dir, manifest_path)
         return None
 
+    def _declares(pack: "PersonaPack", ref: str) -> bool:
+        """#670 review r1: `_pack` resolves by DIRECTORY PATH alone, so a
+        foreign pack parked at a ref's directory answered for a ref it does not
+        declare. Before this change the resulting refusal was discarded, so the
+        divergence was invisible; now that the refusal is REPORTED, that pack's
+        checksum was being handed to the operator as "the checksum found" for
+        the pinned ref — a false diagnosis naming the exact ref they would go
+        and inspect. `tools._resolve_local_persona` has refused this since #323,
+        on the same reasoning ("a pack parked at the wrong directory never
+        resolves"), so this is the loader adopting an established in-tree rule,
+        not a new one. The check sits in the two CALLERS rather than in `_pack`
+        so that each keeps its own message and, more importantly, so that no
+        `try`/`except` is needed here: `PersonaPackError` is a `ValueError`
+        subclass, so wrapping `_pack` would have rewritten every genuine
+        pack-content reason as well — measured, it rewrote the pack-invalid
+        reason the red case pins.
+        """
+        persona_id, _, version = ref.partition("@")
+        return pack.persona_id == persona_id and pack.version == version
+
     def _load_default(ref: str):
         pack = _pack(personas_root, ref)
         if pack is None:
             raise ValueError(f"image-default persona {ref!r} is not present under {personas_root}")
+        if not _declares(pack, ref):
+            raise ValueError(
+                f"image-default persona {ref!r} is not present under "
+                f"{personas_root}: the pack there declares "
+                f"{pack.persona_id}@{pack.version}")
         return pack
 
     def _load_override(ref: str):
         for root in (override_root, personas_root):
             pack = _pack(root, ref)
-            if pack is not None:
-                return pack
+            if pack is None:
+                continue
+            # Raising rather than falling through to the next root is
+            # deliberate, and matches `tools._resolve_local_persona`: a
+            # mis-parked pack under the operator's own root is a state to
+            # report, not one to paper over with an image default.
+            if not _declares(pack, ref):
+                raise ValueError(
+                    f"override persona {ref!r} is unavailable: the pack under "
+                    f"{root} declares {pack.persona_id}@{pack.version}, "
+                    f"not {ref!r}")
+            return pack
+        # #670: this used to end "run resident_persona_reset to recover". That
+        # tool begins at `tools._resolve_resident_role`, which answers
+        # `runtime_unavailable` when `agent.active_runtime` is absent, and on a
+        # resident this failure is boot-fatal — so the advice needed the process
+        # it was reporting the death of. This site is the ONE place that knows
+        # which roots were searched, so it names them instead of naming a tool.
         raise ValueError(
-            f"override persona {ref!r} is unavailable — run resident_persona_reset to recover"
+            f"override persona {ref!r} is unavailable: no pack with a manifest "
+            f"under {override_root} or {personas_root}"
         )
 
     instance_dir = InstanceDir(
