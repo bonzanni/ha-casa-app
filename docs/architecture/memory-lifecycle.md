@@ -32,8 +32,8 @@ turn has produced text, but not an answer — and the bank has no way to say
 "partial", because an additive tag broadens a recall rather than narrowing it and
 the bank-wide profile overlay is not filterable at all. The exclusion is therefore
 made by the writer, at the point where the terminal verdict is known: the
-incomplete answer is never built into an item. The caller's own request turn is
-still stored, because the caller did genuinely make it.
+incomplete answer is never built into an item. What the run stores instead is the
+caller's own request turn alone, because the caller did genuinely make it.
 
 **When a session goes cold is tunable, and retention deduplicates.** The
 freshness windows that decide when a session stops being resumable and
@@ -137,7 +137,7 @@ retain path.
 What it does not cover: the seam's retain method itself enforces nothing. A
 future caller that skips the builder and the policy check would bypass both.
 
-**INV-MEM-016**: A delegated specialist run that ends without the CLI completing the turn never retains its partial answer to the shared bank, while the caller's own task turn is still retained.
+**INV-MEM-016**: A delegated specialist run that ends without the CLI completing the turn never retains its partial answer to the shared bank; where such a run retains anything at all, what it retains is the caller's own task turn.
 
 The runner computes the CLI's terminal verdict before it assembles the retain,
 and assembles the answer turn only when that verdict says the turn completed.
@@ -150,6 +150,11 @@ The caller's turn is kept deliberately: it is a true utterance, and this is its
 only writer — a resident's own session save never sees the paraphrase it sent to
 the specialist. The two are independent content-addressed documents rather than
 one paired record, so withholding the answer leaves nothing dangling.
+
+The retain as a whole is still gated on the run having produced some answer text,
+which is why the invariant says *where such a run retains anything at all*: a run
+that produced no text writes nothing, and that is true of a completed run just as
+much as an aborted one. That gate predates this rule and is not part of it.
 
 What it does not cover: documents already stored. This narrows what is written
 from here on; it does not inspect or repair anything the bank already holds, and

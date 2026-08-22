@@ -663,3 +663,49 @@ async def test_pin_inv_mem_016_seen_result_without_subtype_retains_both_turns(
         "bank": "casa",
         "items": [_CALLER_ITEM, _PARTIAL_ANSWER_ITEM],
     }]
+
+
+@pytest.mark.parametrize("result_subtype,emit_result", [
+    pytest.param("success", True, id="completed"),
+    pytest.param("error_max_turns", True, id="aborted"),
+    pytest.param(None, False, id="aborted-no-result-message"),
+])
+async def test_empty_answer_writes_nothing_whether_or_not_the_run_aborted(
+    monkeypatch, result_subtype, emit_result,
+):
+    """The outer `and text` gate is SYMMETRIC and predates INV-MEM-016.
+
+    A run that produced no answer text writes nothing at all — no caller turn
+    either — and that is equally true of a completed run and an aborted one. It
+    is pinned here because a reviewer read the aborted case alone as a
+    caller-turn loss introduced by INV-MEM-016; measured at both 10604c19 and at
+    the fix, all three rows retain nothing, so the behaviour is neither new nor
+    abort-specific. Whether the caller's turn SHOULD survive an empty answer is a
+    separate question about that gate, filed as its own issue — narrowing it here
+    would fix the aborted arm only and leave the identical completed arm.
+    """
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response="", result_subtype=result_subtype, emit_result=emit_result)
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        out = await tools._run_delegated_agent(
+            cfg, task_text="Q1 cashflow?", context_text="")
+
+    assert out == tools.DelegatedOutput(
+        text="", structured_output=None,
+        run_subtype=result_subtype, result_message_seen=emit_result,
+    )
+    assert out.run_aborted is (result_subtype != "success")
+
+    await _drain_bg()
+
+    assert fake_sem.retain_calls == []
