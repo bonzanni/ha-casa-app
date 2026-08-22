@@ -65,15 +65,34 @@ class _FakeSem:
 
 
 class _FakeSDKClient:
-    """Minimal ClaudeSDKClient stand-in that captures the prompt and yields a reply."""
+    """Minimal ClaudeSDKClient stand-in that captures the prompt and yields a reply.
+
+    #699: this double used to yield an ``AssistantMessage`` and NOTHING else, so
+    every test in this file ran a stream that ends without a ``ResultMessage`` —
+    i.e. an ABORTED run (``DelegatedOutput.result_message_seen is False``) — while
+    ``test_write_retain_telegram`` claimed to pin the SUCCESSFUL write path. The
+    premise was never established. The default row now emits a real terminal
+    ``ResultMessage(subtype="success")``; the abort rows say so explicitly, and
+    the no-terminal-result row sets ``emit_result=False`` rather than
+    synthesising a substitute verdict.
+    """
 
     captured_prompt: str = ""
     response_text: str = "specialist reply"
+    result_subtype: str | None = "success"
+    result_is_error: bool = False
+    emit_result: bool = True
 
     @classmethod
-    def reset(cls, response: str = "specialist reply") -> None:
+    def reset(cls, response: str = "specialist reply", *,
+              result_subtype: str | None = "success",
+              result_is_error: bool = False,
+              emit_result: bool = True) -> None:
         cls.captured_prompt = ""
         cls.response_text = response
+        cls.result_subtype = result_subtype
+        cls.result_is_error = result_is_error
+        cls.emit_result = emit_result
 
     def __init__(self, options):
         self.options = options
@@ -88,7 +107,7 @@ class _FakeSDKClient:
         type(self).captured_prompt = text
 
     async def receive_response(self):
-        from claude_agent_sdk import AssistantMessage, TextBlock
+        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
         try:
             block = TextBlock(text=type(self).response_text)
         except TypeError:
@@ -99,6 +118,67 @@ class _FakeSDKClient:
             asst = AssistantMessage.__new__(AssistantMessage)
             asst.content = [block]  # type: ignore[attr-defined]
         yield asst
+        if not type(self).emit_result:
+            return
+        # SDK shape drift: mirror the kwargs / __new__ fallback already used by
+        # `_FakeSpecialistClient` in tests/test_delegate_to_agent.py.
+        try:
+            result = ResultMessage(session_id="exec-sid")
+        except TypeError:
+            result = ResultMessage.__new__(ResultMessage)
+            result.session_id = "exec-sid"  # type: ignore[attr-defined]
+        object.__setattr__(result, "structured_output", None)
+        object.__setattr__(result, "subtype", type(self).result_subtype)
+        object.__setattr__(result, "is_error", type(self).result_is_error)
+        object.__setattr__(result, "num_turns", 2)
+        yield result
+
+
+# ---------------------------------------------------------------------------
+# #699 literals — the exact retain items this file's synthetic origin produces.
+# Verified by evaluating memory_provenance.build_retain_items directly at the
+# base commit: this fixture carries no caller speaker_provenance and the cfg has
+# no bound identity, so both parties fall back to the unattributed "system"
+# identity and both ids live in the m-a- agent id space.
+# ---------------------------------------------------------------------------
+
+_SYSTEM_METADATA = (
+    '{"binding_digest":null,"display_name":null,"persona_id":null,'
+    '"persona_version":null,"role_id":null,"speaker_kind":"system",'
+    '"user_id":null,"user_peer":null}'
+)
+_SYSTEM_SOURCE_TAG = (
+    "casa-source-v1.eyJiaW5kaW5nX2RpZ2VzdCI6bnVsbCwiZGlzcGxheV9uYW1lIjpudWxsLCJwZX"
+    "Jzb25hX2lkIjpudWxsLCJwZXJzb25hX3ZlcnNpb24iOm51bGwsInJvbGVfaWQiOm51bGwsInNwZWFr"
+    "ZXJfa2luZCI6InN5c3RlbSIsInVzZXJfaWQiOm51bGwsInVzZXJfcGVlciI6bnVsbH0"
+)
+
+# task_text "Q1 cashflow?" → the classifier stub below returns "private"
+_CALLER_ITEM = {
+    "content": "Q1 cashflow?",
+    "tags": ["private", _SYSTEM_SOURCE_TAG],
+    "metadata": {"casa_source_v1": _SYSTEM_METADATA},
+    "document_id": "m-a-ea4eb34f5715b26d6b5867ea",
+}
+# the specialist's accumulated text on an ABORTED run — never retainable
+_PARTIAL_ANSWER_ITEM = {
+    "content": "partial answer",
+    "tags": ["friends", _SYSTEM_SOURCE_TAG],
+    "metadata": {"casa_source_v1": _SYSTEM_METADATA},
+    "document_id": "m-a-2824e69d9906c4a76808e9fd",
+}
+# a COMPLETED specialist answer — retainable
+_COMPLETE_ANSWER_ITEM = {
+    "content": "Q1 is on track",
+    "tags": ["friends", _SYSTEM_SOURCE_TAG],
+    "metadata": {"casa_source_v1": _SYSTEM_METADATA},
+    "document_id": "m-a-6302e7710cd408202a37846a",
+}
+
+
+async def _tier_stub(text):
+    """Deterministic classifier: the caller's question is private, answers are not."""
+    return "private" if "cashflow" in text.lower() else "friends"
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +272,12 @@ async def test_token_budget_zero_no_sem_calls(monkeypatch):
         output = await tools._run_delegated_agent(cfg, task_text="hi", context_text="")
 
     await _drain_bg()
-    assert output.text == "ok"
+    # #699: a genuinely SUCCESSFUL run — the zero-budget gate, not an abort, is
+    # what suppresses both calls here.
+    assert output == tools.DelegatedOutput(
+        text="ok", structured_output=None,
+        run_subtype="success", result_message_seen=True,
+    )
     assert fake_sem.recall_calls == []
     assert fake_sem.retain_calls == []
 
@@ -207,10 +292,7 @@ async def test_write_retain_telegram(monkeypatch):
     import agent as agent_mod
     import delegated_memory
 
-    async def fake_classify(text):
-        return "private" if "cashflow" in text.lower() else "friends"
-
-    monkeypatch.setattr(delegated_memory, "classify_tier", fake_classify)
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
 
     cfg = _specialist_cfg(role="finance", token_budget=4000)
     fake_sem = _FakeSem(recall_ret="")
@@ -219,25 +301,29 @@ async def test_write_retain_telegram(monkeypatch):
     _FakeSDKClient.reset(response="Q1 is on track")
 
     with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(cfg, task_text="Q1 cashflow?", context_text="")
+        out = await tools._run_delegated_agent(
+            cfg, task_text="Q1 cashflow?", context_text="")
+
+    # #699: this test's premise — that the run SUCCEEDED — is now established
+    # rather than assumed. Before the double emitted a terminal ResultMessage
+    # this was an aborted run asserting the successful path's behaviour.
+    assert out == tools.DelegatedOutput(
+        text="Q1 is on track", structured_output=None,
+        run_subtype="success", result_message_seen=True,
+    )
+    assert out.run_aborted is False
 
     await _drain_bg()
 
-    assert len(fake_sem.retain_calls) == 1
-    rc = fake_sem.retain_calls[0]
-    assert rc["bank"] == "casa"
-    items = rc["items"]
-    assert len(items) == 2  # user turn + assistant turn
     # Task 10: content-addressed ids (the retired doc_prefix:idx scheme is gone).
-    # This fixture's origin carries no caller speaker_provenance and the cfg has
-    # no bound identity, so both parties fall back to the honest unattributed
-    # "system" identity → both ids live in the m-a- agent id space, distinct by
-    # their differing text.
-    assert all(i["document_id"].startswith("m-a-") for i in items)
-    assert items[0]["document_id"] != items[1]["document_id"]
-    # classify stub: "cashflow" in user text → private; assistant text no → friends
-    assert [i["tags"][0] for i in items] == ["private", "friends"]
-    assert all(sum(1 for t in i["tags"] if t.startswith("casa-source-")) == 1 for i in items)
+    # Asserted as full literal items — the previous prefix/tag-count proxies are
+    # subsumed by equality, and a proxy is what lets a wrong item pass.
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == 2
+    assert fake_sem.retain_calls == [{
+        "bank": "casa",
+        "items": [_CALLER_ITEM, _COMPLETE_ANSWER_ITEM],
+    }]
 
 
 # ---------------------------------------------------------------------------
@@ -256,10 +342,17 @@ async def test_voice_writes_nothing(monkeypatch):
     _FakeSDKClient.reset(response="voice answer")
 
     with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(cfg, task_text="hello?", context_text="")
+        out = await tools._run_delegated_agent(
+            cfg, task_text="hello?", context_text="")
 
     await _drain_bg()
 
+    # #699: the run SUCCEEDED — write-trust, not the terminal verdict, is what
+    # keeps voice out of the bank.
+    assert out == tools.DelegatedOutput(
+        text="voice answer", structured_output=None,
+        run_subtype="success", result_message_seen=True,
+    )
     assert fake_sem.retain_calls == []
     # Recall did fire, with voice clearance tags
     assert len(fake_sem.recall_calls) == 1
@@ -281,9 +374,17 @@ async def test_empty_reply_no_retain(monkeypatch):
     _FakeSDKClient.reset(response="")  # empty SDK reply
 
     with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(cfg, task_text="hi", context_text="")
+        out = await tools._run_delegated_agent(
+            cfg, task_text="hi", context_text="")
 
     await _drain_bg()
+    # #699: the EMPTY STRING, on an otherwise successful run — the outer
+    # `and text` gate. Whitespace-only text is a different case and is
+    # deliberately unchanged (it retains the caller turn alone, as it does today).
+    assert out == tools.DelegatedOutput(
+        text="", structured_output=None,
+        run_subtype="success", result_message_seen=True,
+    )
     assert fake_sem.retain_calls == []
 
 
@@ -454,3 +555,111 @@ async def test_operator_delegation_still_reads_every_tier(monkeypatch):
     c = fake_sem.recall_calls[0]
     assert c["clearance"] == "private"
     assert c["tags"] == ["family", "friends", "private", "public"]
+
+
+# ---------------------------------------------------------------------------
+# #699 / INV-MEM-016: an aborted delegated run's partial answer is never banked
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("result_subtype,emit_result,result_is_error", [
+    pytest.param("error_max_turns", True, True, id="error-max-turns"),
+    pytest.param("error_max_budget_usd", True, True, id="error-max-budget-usd"),
+    pytest.param("error_max_structured_output_retries", True, True,
+                 id="error-max-structured-output-retries"),
+    pytest.param("error_during_execution", True, True, id="error-during-execution"),
+    pytest.param("error_something_new", True, True, id="unknown-error-subtype"),
+    # The abort verdict is the SUBTYPE, never the `is_error` flag beside it.
+    # Without this row an implementation reading `is_error` instead of
+    # `run_aborted` passes every other row, because they all carry is_error=True
+    # (red-case acceptance round 1).
+    pytest.param("error_something_new", True, False,
+                 id="unknown-error-subtype-is-error-false"),
+    pytest.param(None, False, False, id="no-result-message"),
+])
+async def test_pin_inv_mem_016_aborted_run_retains_only_caller_task(
+    monkeypatch, result_subtype, emit_result, result_is_error,
+):
+    """INV-MEM-016: when the CLI ends the run without completing the turn, the
+    accumulated partial answer is NEVER retained to the shared casa bank — while
+    the caller's own task turn, which nothing else writes, still is.
+
+    Red at 10604c19 on `len(items) == 1`, observed 2: the second item is exactly
+    `_PARTIAL_ANSWER_ITEM`, banked as an ordinary provenance-attributed document
+    indistinguishable from a completed exchange.
+    """
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response="partial answer",
+        result_subtype=result_subtype,
+        result_is_error=result_is_error,
+        emit_result=emit_result,
+    )
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        out = await tools._run_delegated_agent(
+            cfg, task_text="Q1 cashflow?", context_text="")
+
+    # The whole verdict, not just the derived flag.
+    assert out == tools.DelegatedOutput(
+        text="partial answer",
+        structured_output=None,
+        run_subtype=result_subtype,
+        result_message_seen=emit_result,
+    )
+    assert out.run_aborted is True
+
+    await _drain_bg()
+
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == 1
+    assert fake_sem.retain_calls == [{"bank": "casa", "items": [_CALLER_ITEM]}]
+
+
+async def test_pin_inv_mem_016_seen_result_without_subtype_retains_both_turns(
+    monkeypatch,
+):
+    """The deliberate asymmetry of `DelegatedOutput.run_aborted`: a ResultMessage
+    that WAS seen but carries no subtype is a completed run (legacy/test
+    construction), so both turns are still retained.
+
+    This is the control that a `subtype == "success"` re-expression of the
+    predicate would break.
+    """
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(response="partial answer", result_subtype=None)
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        out = await tools._run_delegated_agent(
+            cfg, task_text="Q1 cashflow?", context_text="")
+
+    assert out == tools.DelegatedOutput(
+        text="partial answer", structured_output=None,
+        run_subtype=None, result_message_seen=True,
+    )
+    assert out.run_aborted is False
+
+    await _drain_bg()
+
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == 2
+    assert fake_sem.retain_calls == [{
+        "bank": "casa",
+        "items": [_CALLER_ITEM, _PARTIAL_ANSWER_ITEM],
+    }]
