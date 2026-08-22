@@ -2144,6 +2144,21 @@ _RUN_ABORT_KINDS = {
 }
 _RUN_ABORT_FALLBACK_KIND = "specialist_run_failed"
 
+# The terminal reasons that mean the query loop finished the turn. An ALLOW-list
+# because `ResultMessage.terminal_reason` is an OPEN namespace: the SDK types it
+# `str | None` and its parser passes the CLI's value through verbatim
+# (`message_parser.py`, `data.get("terminal_reason")`), documenting only a few
+# examples. A deny-list of known cancellation reasons therefore reads every
+# reason it has not heard of — a new one, or simply one nobody listed — as a
+# completed turn, which is the wrong direction for a memory write. `None` is
+# included because an older CLI reports no reason at all, as does a result that
+# bypassed the query loop; excluding it would stop retaining every completed
+# answer. Fail-closed here costs one true document, and does so audibly — the
+# exclusion is logged and the caller's turn is still SUBMITTED to the retain
+# (whether it lands is the best-effort writer's to say, not this site's).
+# Failing open costs a false one that nothing can find again.
+_COMPLETED_TERMINAL_REASONS = frozenset({"completed"})
+
 
 def _run_abort_kind(subtype: str | None) -> str:
     """The failure kind for a CLI-aborted run, never raising."""
@@ -2922,32 +2937,22 @@ async def _run_delegated_agent(
     # `specialist_limits.truncate_output` at the sync-result / async-
     # DelegationComplete assembly sites) rather than here, so the
     # `output_truncated` flag survives this task's str boundary and reaches
-    # the wire. The raw text is returned; memory retain below stores it as
-    # exchanged (the bound is a caller-facing surface concern, not a memory
-    # one — and token_budget>0 specialists are rare).
+    # the wire. The raw text is returned; the memory retain below offers it as
+    # exchanged, and only when the run completed (#699) (the bound is a
+    # caller-facing surface concern, not a memory one — and token_budget>0
+    # specialists are rare).
 
-    # Specialist write: one explicit tier-classified retain of the exchange to
-    # the shared bank, gated by the PARENT channel's write-trust (voice → no
-    # write) — design §3, plan 3. Ephemeral specialists have no session
-    # registry, so the freshness reaper never sees them; the retain is explicit.
-    if cfg.memory.token_budget > 0 and text:
-        sem = getattr(agent_mod, "active_semantic_memory", None)
-        if sem is not None:
-            # #411: fence generation captured synchronously with the exchange
-            # content — the detached task may not run until after a wipe.
-            from memory_wipe import FENCE
-            bg = asyncio.create_task(retain_delegated(
-                sem, origin_channel=str(parent.get("channel", "")),
-                turns=[
-                    RetainedTurn(task_text, caller_provenance),
-                    RetainedTurn(text, executing_provenance),
-                ],
-                fence_generation=FENCE.generation(),
-            ))
-            _specialist_bg_tasks.add(bg)
-            bg.add_done_callback(_specialist_bg_tasks.discard)
-
-    return DelegatedOutput(
+    # #699: the terminal verdict is constructed HERE, before the retain, rather
+    # than seventeen lines below it. The gate used to read only the token budget
+    # and the text while `result_msg` sat unread in scope, so a run the CLI
+    # aborted had its accumulated partial answer written to the shared bank as an
+    # ordinary provenance-attributed exchange, indistinguishable at every reader
+    # from a completed one. Reading this object's own `run_aborted` rather than
+    # re-expressing the predicate keeps the gate and the returned verdict
+    # single-sourced — and preserves the property's deliberate asymmetry, which a
+    # local `subtype == "success"` would silently break: a ResultMessage that WAS
+    # seen but carries no subtype is a completed legacy run, not an abort.
+    output = DelegatedOutput(
         text=text,
         structured_output=(
             getattr(result_msg, "structured_output", None)
@@ -2959,6 +2964,86 @@ async def _run_delegated_agent(
         ),
         result_message_seen=result_msg is not None,
     )
+
+    # Specialist write: one explicit tier-classified retain of the exchange
+    # OFFERED to the shared bank, gated by the PARENT channel's write-trust
+    # (voice → no write) — design §3, plan 3. Ephemeral specialists have no
+    # session registry, so the freshness reaper never sees them; the retain is
+    # explicit. It is best-effort and detached: reaching this block is not
+    # evidence that anything was stored.
+    if cfg.memory.token_budget > 0 and text:
+        sem = getattr(agent_mod, "active_semantic_memory", None)
+        if sem is not None:
+            # INV-MEM-016: the CALLER's task turn is SUBMITTED either way — it
+            # is a true utterance the caller genuinely made, and this is the ONLY
+            # writer of it (the resident's own session save never sees the
+            # paraphrase it sent to the specialist). The two items are
+            # independent content-addressed documents rather than a paired
+            # record, so withholding one is well defined. Suppressing the whole
+            # retain would lose the caller turn; marking the answer instead would
+            # not suppress anything, because recall runs `tags_match="any"` (an
+            # additive tag BROADENS) and the mental-model overlay is a bank-wide
+            # `profile()` with no filter hook at all. Writer-side exclusion is
+            # the only shape that protects every reader by construction.
+            #
+            # SUBMITTED, not written: what is assembled here is an ARGUMENT to a
+            # best-effort writer that can still decline it — a voice or webhook
+            # origin returns before writing anything, a wipe landing first
+            # discards the whole retain (#411), and a backend failure is
+            # swallowed by design. Whether the caller's turn reaches the bank is
+            # therefore not this site's to assert, and the log below deliberately
+            # claims only what this site DECIDES.
+            #
+            # The terminal subtype is NOT the only way the CLI says "this turn
+            # did not finish", so the completeness test here is deliberately
+            # WIDER than `run_aborted` (which stays exactly as it is — four
+            # non-memory consumers read it, and this is a memory decision):
+            #   * `is_error` with `subtype="success"` is the SDK's documented
+            #     shape for a failing API call — its own `api_error_status`
+            #     field is defined as being set "when is_error is True and
+            #     subtype is 'success'". `result_api_error_kind` does not catch
+            #     it (it reads `stop_reason == "refusal"` only), so nothing
+            #     upstream raises. The resident turn path already treats an
+            #     is_error result as a failure (sdk_client_pool.py); this one
+            #     only LOGGED it.
+            #   * a `terminal_reason` that is not a completed one — the CLI
+            #     reporting the loop stopped for some other cause, cancellation
+            #     ("aborted_streaming", "aborted_tools") among them. Tested
+            #     against the ALLOW-list, never against a list of known bad
+            #     reasons: the field is an open namespace and a deny-list would
+            #     read every unlisted reason as a finished turn.
+            # Either way the accumulated text is a prefix, not an answer, and
+            # `subtype` alone would call it complete.
+            _terminal_reason = _str_or_none(
+                getattr(result_msg, "terminal_reason", None))
+            _incomplete = (
+                output.run_aborted
+                or bool(getattr(result_msg, "is_error", False))
+                or (_terminal_reason is not None
+                    and _terminal_reason not in _COMPLETED_TERMINAL_REASONS)
+            )
+            turns = [RetainedTurn(task_text, caller_provenance)]
+            if _incomplete:
+                logger.warning(
+                    "delegated agent %s run did not complete (kind=%s) — its "
+                    "partial answer is excluded from the memory retain",
+                    _known_role(getattr(cfg, "role", None)),
+                    _run_abort_kind(output.run_subtype),
+                )
+            else:
+                turns.append(RetainedTurn(text, executing_provenance))
+            # #411: fence generation captured synchronously with the exchange
+            # content — the detached task may not run until after a wipe.
+            from memory_wipe import FENCE
+            bg = asyncio.create_task(retain_delegated(
+                sem, origin_channel=str(parent.get("channel", "")),
+                turns=turns,
+                fence_generation=FENCE.generation(),
+            ))
+            _specialist_bg_tasks.add(bg)
+            bg.add_done_callback(_specialist_bg_tasks.discard)
+
+    return output
 
 
 def _record_launch_safe(agent_name: str) -> None:

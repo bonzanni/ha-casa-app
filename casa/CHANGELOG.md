@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.230.0] - 2026-08-22
+
+### Fixed
+
+- A specialist delegation that is aborted before the agent finishes its turn
+  no longer files the half-written answer into Casa's shared memory as if it
+  were the finished reply. Until now that fragment was banked as an ordinary
+  completed exchange, so a later recall could present a partial answer as a
+  whole one. It is now left out whenever the run ends without the turn
+  completing — when the run hits a turn, budget or retry limit, fails
+  part-way, or reports no result at all. The request that started the
+  delegation is still recorded either way, so the delegation is not lost from
+  memory. This changes what is written from now on; documents already in the
+  bank are untouched. A run that does complete, but whose reply the model cut
+  short at its own output limit, is a separate case and is not covered here.
+
 ## [0.229.0] - 2026-08-22
 
 ### Fixed
