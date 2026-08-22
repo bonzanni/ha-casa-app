@@ -151,8 +151,13 @@ and assembles the answer turn only when the turn is known to have completed.
 That test is deliberately wider than the run's own reported verdict, because the
 terminal subtype is not the only place the CLI says otherwise: a result carrying
 an error flag while still naming itself a success is a failed API call, and a
-result naming a cancellation reason is a turn stopped mid-stream. Both leave a
-prefix rather than an answer. The reported verdict itself is left alone — it has
+result naming any reason for stopping other than a completed one — cancellation
+among them — is a turn that ended some other way. Both leave a prefix rather than
+an answer. That second test names the reasons that mean *finished*, never the
+ones that mean *stopped*: the reason vocabulary belongs to the CLI and can grow,
+so a list of known-bad values would read every reason nobody had listed as a
+completed turn. A reason this release has never heard of therefore withholds the
+answer rather than banking it. The reported verdict itself is left alone — it has
 consumers outside memory, and widening it there would change what they see.
 "Did not complete" covers every non-success terminal subtype — including one this
 release has never seen — and a stream that ends with no terminal message at all,

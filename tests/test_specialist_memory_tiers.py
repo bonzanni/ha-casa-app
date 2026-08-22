@@ -760,8 +760,16 @@ async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
                 if "did not complete" in r.getMessage()]
     assert len(withheld) == 1
     # The whole sentence, not a word of it: assert what the line SAYS.
+    #
+    # The role token is rendered by `_known_role`, which reports "<other>" for a
+    # role absent from the module-level agent map — and whether "finance" is in
+    # that map depends on what else has run in this worker, so hardcoding either
+    # rendering makes this test pass or fail on its neighbours. It did: this
+    # assertion failed intermittently under the parallel suite while passing
+    # every targeted run. The rendering is asked for here rather than assumed,
+    # which removes the coupling without weakening the assertion to a substring.
     assert withheld[0] == (
-        "delegated agent <other> run did not complete "
+        f"delegated agent {tools._known_role('finance')} run did not complete "
         "(kind=specialist_turn_limit) — its partial answer is excluded from "
         "the memory retain"
     )
@@ -775,6 +783,16 @@ async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
     # The CLI reporting the turn was cancelled mid-stream.
     pytest.param(False, "aborted_streaming", 1, id="cancelled-streaming"),
     pytest.param(False, "aborted_tools", 1, id="cancelled-tools"),
+    # `terminal_reason` is an OPEN namespace — the SDK types it `str | None` and
+    # passes the CLI's value through verbatim. These rows exist because a
+    # deny-list of the two cancellation reasons above read every OTHER reason as
+    # a finished turn; the test is now against an allow-list of completed ones,
+    # so a reason nobody listed fails CLOSED.
+    pytest.param(False, "max_turns", 1, id="unlisted-reason-max-turns"),
+    pytest.param(False, "model_error", 1, id="unlisted-reason-model-error"),
+    pytest.param(False, "prompt_too_long", 1, id="unlisted-reason-prompt-too-long"),
+    pytest.param(False, "a_reason_this_release_has_never_seen", 1,
+                 id="unlisted-reason-from-the-future"),
     # Controls: a genuinely completed run, with and without a terminal reason
     # (older CLIs report none), still retains both turns.
     pytest.param(False, "completed", 2, id="control-completed"),

@@ -2144,6 +2144,20 @@ _RUN_ABORT_KINDS = {
 }
 _RUN_ABORT_FALLBACK_KIND = "specialist_run_failed"
 
+# The terminal reasons that mean the query loop finished the turn. An ALLOW-list
+# because `ResultMessage.terminal_reason` is an OPEN namespace: the SDK types it
+# `str | None` and its parser passes the CLI's value through verbatim
+# (`message_parser.py`, `data.get("terminal_reason")`), documenting only a few
+# examples. A deny-list of known cancellation reasons therefore reads every
+# reason it has not heard of — a new one, or simply one nobody listed — as a
+# completed turn, which is the wrong direction for a memory write. `None` is
+# included because an older CLI reports no reason at all, as does a result that
+# bypassed the query loop; excluding it would stop retaining every completed
+# answer. Fail-closed here costs a true document that is still logged and whose
+# caller turn is still kept; failing open costs a false one that nothing can
+# find again.
+_COMPLETED_TERMINAL_REASONS = frozenset({"completed"})
+
 
 def _run_abort_kind(subtype: str | None) -> str:
     """The failure kind for a CLI-aborted run, never raising."""
@@ -2991,8 +3005,12 @@ async def _run_delegated_agent(
             #     upstream raises. The resident turn path already treats an
             #     is_error result as a failure (sdk_client_pool.py); this one
             #     only LOGGED it.
-            #   * `terminal_reason` in {"aborted_streaming", "aborted_tools"} is
-            #     the CLI reporting the turn was CANCELLED mid-stream.
+            #   * a `terminal_reason` that is not a completed one — the CLI
+            #     reporting the loop stopped for some other cause, cancellation
+            #     ("aborted_streaming", "aborted_tools") among them. Tested
+            #     against the ALLOW-list, never against a list of known bad
+            #     reasons: the field is an open namespace and a deny-list would
+            #     read every unlisted reason as a finished turn.
             # Either way the accumulated text is a prefix, not an answer, and
             # `subtype` alone would call it complete.
             _terminal_reason = _str_or_none(
@@ -3000,7 +3018,8 @@ async def _run_delegated_agent(
             _incomplete = (
                 output.run_aborted
                 or bool(getattr(result_msg, "is_error", False))
-                or _terminal_reason in ("aborted_streaming", "aborted_tools")
+                or (_terminal_reason is not None
+                    and _terminal_reason not in _COMPLETED_TERMINAL_REASONS)
             )
             turns = [RetainedTurn(task_text, caller_provenance)]
             if _incomplete:
