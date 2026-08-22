@@ -2926,28 +2926,17 @@ async def _run_delegated_agent(
     # exchanged (the bound is a caller-facing surface concern, not a memory
     # one — and token_budget>0 specialists are rare).
 
-    # Specialist write: one explicit tier-classified retain of the exchange to
-    # the shared bank, gated by the PARENT channel's write-trust (voice → no
-    # write) — design §3, plan 3. Ephemeral specialists have no session
-    # registry, so the freshness reaper never sees them; the retain is explicit.
-    if cfg.memory.token_budget > 0 and text:
-        sem = getattr(agent_mod, "active_semantic_memory", None)
-        if sem is not None:
-            # #411: fence generation captured synchronously with the exchange
-            # content — the detached task may not run until after a wipe.
-            from memory_wipe import FENCE
-            bg = asyncio.create_task(retain_delegated(
-                sem, origin_channel=str(parent.get("channel", "")),
-                turns=[
-                    RetainedTurn(task_text, caller_provenance),
-                    RetainedTurn(text, executing_provenance),
-                ],
-                fence_generation=FENCE.generation(),
-            ))
-            _specialist_bg_tasks.add(bg)
-            bg.add_done_callback(_specialist_bg_tasks.discard)
-
-    return DelegatedOutput(
+    # #699: the terminal verdict is constructed HERE, before the retain, rather
+    # than seventeen lines below it. The gate used to read only the token budget
+    # and the text while `result_msg` sat unread in scope, so a run the CLI
+    # aborted had its accumulated partial answer written to the shared bank as an
+    # ordinary provenance-attributed exchange, indistinguishable at every reader
+    # from a completed one. Reading this object's own `run_aborted` rather than
+    # re-expressing the predicate keeps the gate and the returned verdict
+    # single-sourced — and preserves the property's deliberate asymmetry, which a
+    # local `subtype == "success"` would silently break: a ResultMessage that WAS
+    # seen but carries no subtype is a completed legacy run, not an abort.
+    output = DelegatedOutput(
         text=text,
         structured_output=(
             getattr(result_msg, "structured_output", None)
@@ -2959,6 +2948,47 @@ async def _run_delegated_agent(
         ),
         result_message_seen=result_msg is not None,
     )
+
+    # Specialist write: one explicit tier-classified retain of the exchange to
+    # the shared bank, gated by the PARENT channel's write-trust (voice → no
+    # write) — design §3, plan 3. Ephemeral specialists have no session
+    # registry, so the freshness reaper never sees them; the retain is explicit.
+    if cfg.memory.token_budget > 0 and text:
+        sem = getattr(agent_mod, "active_semantic_memory", None)
+        if sem is not None:
+            # INV-MEM-016: the CALLER's task turn is retained either way — it is
+            # a true utterance the caller genuinely made, and this is the ONLY
+            # writer of it (the resident's own session save never sees the
+            # paraphrase it sent to the specialist). The two items are
+            # independent content-addressed documents rather than a paired
+            # record, so withholding one is well defined. Suppressing the whole
+            # retain would lose the caller turn; marking the answer instead would
+            # not suppress anything, because recall runs `tags_match="any"` (an
+            # additive tag BROADENS) and the mental-model overlay is a bank-wide
+            # `profile()` with no filter hook at all. Writer-side exclusion is
+            # the only shape that protects every reader by construction.
+            turns = [RetainedTurn(task_text, caller_provenance)]
+            if output.run_aborted:
+                logger.warning(
+                    "delegated agent %s run aborted (kind=%s) — its partial "
+                    "answer is NOT retained; the caller's task turn still is",
+                    _known_role(getattr(cfg, "role", None)),
+                    _run_abort_kind(output.run_subtype),
+                )
+            else:
+                turns.append(RetainedTurn(text, executing_provenance))
+            # #411: fence generation captured synchronously with the exchange
+            # content — the detached task may not run until after a wipe.
+            from memory_wipe import FENCE
+            bg = asyncio.create_task(retain_delegated(
+                sem, origin_channel=str(parent.get("channel", "")),
+                turns=turns,
+                fence_generation=FENCE.generation(),
+            ))
+            _specialist_bg_tasks.add(bg)
+            bg.add_done_callback(_specialist_bg_tasks.discard)
+
+    return output
 
 
 def _record_launch_safe(agent_name: str) -> None:

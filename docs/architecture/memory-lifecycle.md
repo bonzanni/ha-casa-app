@@ -25,6 +25,16 @@ whose resume decision this lifecycle steers is
 **Writing is narrower than reading.** Only write-trusted channels retain to
 the shared bank. A channel that can recall is not thereby able to store.
 
+**A turn that did not finish is not a fact.** Write-trust decides *whether* a
+channel may store; it does not decide whether what is being stored actually
+happened. A delegated specialist run that the CLI ends without completing the
+turn has produced text, but not an answer — and the bank has no way to say
+"partial", because an additive tag broadens a recall rather than narrowing it and
+the bank-wide profile overlay is not filterable at all. The exclusion is therefore
+made by the writer, at the point where the terminal verdict is known: the
+incomplete answer is never built into an item. The caller's own request turn is
+still stored, because the caller did genuinely make it.
+
 **When a session goes cold is tunable, and retention deduplicates.** The
 freshness windows that decide when a session stops being resumable and
 becomes save-eligible are environment-tunable (`FRESHNESS_VOICE_MINUTES`,
@@ -126,6 +136,24 @@ retain path.
 
 What it does not cover: the seam's retain method itself enforces nothing. A
 future caller that skips the builder and the policy check would bypass both.
+
+**INV-MEM-016**: A delegated specialist run that ends without the CLI completing the turn never retains its partial answer to the shared bank, while the caller's own task turn is still retained.
+
+The runner computes the CLI's terminal verdict before it assembles the retain,
+and assembles the answer turn only when that verdict says the turn completed.
+"Did not complete" covers every non-success terminal subtype — including one this
+release has never seen — and a stream that ends with no terminal message at all,
+which certifies nothing. A terminal message that *was* seen but carries no subtype
+is a completed run, not an abort.
+
+The caller's turn is kept deliberately: it is a true utterance, and this is its
+only writer — a resident's own session save never sees the paraphrase it sent to
+the specialist. The two are independent content-addressed documents rather than
+one paired record, so withholding the answer leaves nothing dangling.
+
+What it does not cover: documents already stored. This narrows what is written
+from here on; it does not inspect or repair anything the bank already holds, and
+the only removal authority remains the operator-consented wipe.
 
 **INV-MEM-006**: A session save or removal keyed by channel acts only on the session id its caller snapshotted — a registration carrying a different id in that window is released, not retained or deleted; an explicit reset deliberately removes its snapshotted session even when re-registered.
 
@@ -273,7 +301,10 @@ not happen.
 (bypassing it skips tier tagging, provenance validation and the write-trust
 check at once) — and must capture a fence generation at its decision point
 and enter the fence's shared section around its retain-and-spool critical
-section, or a wipe cannot see it.
+section, or a wipe cannot see it. It also owns the completeness question: if
+the content it is about to store can be the product of a turn that did not
+finish, it must consult that verdict itself. Nothing downstream will — the
+builder does not know, and no reader can filter on it afterwards.
 
 **A new channel** that should have its cold sessions retained needs that
 retention entry *in addition to* its clearance and write-trust entries —
@@ -291,6 +322,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 
 **Source**
 - `casa/rootfs/opt/casa/memory_provenance.py::build_retain_items`
+- `casa/rootfs/opt/casa/tools.py::_run_delegated_agent`
 - `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
 - `casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope`
 - `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
@@ -325,6 +357,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `tests/test_admin_memory_wipe_route.py`
 - `tests/test_memory_provenance.py`
 - `tests/test_time_envelope.py`
+- `tests/test_specialist_memory_tiers.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)
