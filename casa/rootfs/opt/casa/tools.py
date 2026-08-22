@@ -2153,9 +2153,10 @@ _RUN_ABORT_FALLBACK_KIND = "specialist_run_failed"
 # completed turn, which is the wrong direction for a memory write. `None` is
 # included because an older CLI reports no reason at all, as does a result that
 # bypassed the query loop; excluding it would stop retaining every completed
-# answer. Fail-closed here costs a true document that is still logged and whose
-# caller turn is still kept; failing open costs a false one that nothing can
-# find again.
+# answer. Fail-closed here costs one true document, and does so audibly — the
+# exclusion is logged and the caller's turn is still SUBMITTED to the retain
+# (whether it lands is the best-effort writer's to say, not this site's).
+# Failing open costs a false one that nothing can find again.
 _COMPLETED_TERMINAL_REASONS = frozenset({"completed"})
 
 
