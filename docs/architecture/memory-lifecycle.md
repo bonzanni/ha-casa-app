@@ -147,7 +147,13 @@ future caller that skips the builder and the policy check would bypass both.
 **INV-MEM-016**: A delegated specialist run that ends without the CLI completing the turn never retains its partial answer to the shared bank; where such a run retains anything at all, what it retains is the caller's own task turn.
 
 The runner computes the CLI's terminal verdict before it assembles the retain,
-and assembles the answer turn only when that verdict says the turn completed.
+and assembles the answer turn only when the turn is known to have completed.
+That test is deliberately wider than the run's own reported verdict, because the
+terminal subtype is not the only place the CLI says otherwise: a result carrying
+an error flag while still naming itself a success is a failed API call, and a
+result naming a cancellation reason is a turn stopped mid-stream. Both leave a
+prefix rather than an answer. The reported verdict itself is left alone — it has
+consumers outside memory, and widening it there would change what they see.
 "Did not complete" covers every non-success terminal subtype — including one this
 release has never seen — and a stream that ends with no terminal message at all,
 which certifies nothing. A terminal message that *was* seen but carries no subtype

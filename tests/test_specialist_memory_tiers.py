@@ -82,17 +82,22 @@ class _FakeSDKClient:
     result_subtype: str | None = "success"
     result_is_error: bool = False
     emit_result: bool = True
+    # None is what an older CLI reports and is the default everywhere else in
+    # this file, so adding it leaves every existing row behaviourally unchanged.
+    result_terminal_reason: str | None = None
 
     @classmethod
     def reset(cls, response: str = "specialist reply", *,
               result_subtype: str | None = "success",
               result_is_error: bool = False,
-              emit_result: bool = True) -> None:
+              emit_result: bool = True,
+              result_terminal_reason: str | None = None) -> None:
         cls.captured_prompt = ""
         cls.response_text = response
         cls.result_subtype = result_subtype
         cls.result_is_error = result_is_error
         cls.emit_result = emit_result
+        cls.result_terminal_reason = result_terminal_reason
 
     def __init__(self, options):
         self.options = options
@@ -131,6 +136,8 @@ class _FakeSDKClient:
         object.__setattr__(result, "subtype", type(self).result_subtype)
         object.__setattr__(result, "is_error", type(self).result_is_error)
         object.__setattr__(result, "num_turns", 2)
+        object.__setattr__(
+            result, "terminal_reason", type(self).result_terminal_reason)
         yield result
 
 
@@ -750,10 +757,69 @@ async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
     assert fake_sem.retain_calls == []
 
     withheld = [r.getMessage() for r in caplog.records
-                if "run aborted" in r.getMessage()]
+                if "did not complete" in r.getMessage()]
     assert len(withheld) == 1
     # The whole sentence, not a word of it: assert what the line SAYS.
     assert withheld[0] == (
-        "delegated agent <other> run aborted (kind=specialist_turn_limit) — "
-        "its partial answer is excluded from the memory retain"
+        "delegated agent <other> run did not complete "
+        "(kind=specialist_turn_limit) — its partial answer is excluded from "
+        "the memory retain"
     )
+
+
+@pytest.mark.parametrize("is_error,terminal_reason,expected_items", [
+    # The SDK's own documented shape for a failing API call: `api_error_status`
+    # is defined as set "when is_error is True and subtype is 'success'".
+    pytest.param(True, None, 1, id="api-error-under-a-success-subtype"),
+    pytest.param(True, "completed", 1, id="api-error-with-a-completed-reason"),
+    # The CLI reporting the turn was cancelled mid-stream.
+    pytest.param(False, "aborted_streaming", 1, id="cancelled-streaming"),
+    pytest.param(False, "aborted_tools", 1, id="cancelled-tools"),
+    # Controls: a genuinely completed run, with and without a terminal reason
+    # (older CLIs report none), still retains both turns.
+    pytest.param(False, "completed", 2, id="control-completed"),
+    pytest.param(False, None, 2, id="control-no-terminal-reason"),
+])
+async def test_a_success_subtype_is_not_enough_to_call_the_turn_complete(
+    monkeypatch, is_error, terminal_reason, expected_items,
+):
+    """INV-MEM-016 covers every way the CLI says the turn did not finish.
+
+    `subtype` alone is not the verdict. A terminal result carrying
+    `is_error=True` under `subtype="success"` is an API failure, and
+    `terminal_reason` in {"aborted_streaming", "aborted_tools"} is a cancelled
+    turn — in both the accumulated text is a prefix, not an answer, while
+    `DelegatedOutput.run_aborted` reports False and nothing upstream raises
+    (`result_api_error_kind` reads `stop_reason == "refusal"` only).
+
+    `run_aborted` itself is deliberately NOT widened: four non-memory consumers
+    read it, and this is a memory decision.
+    """
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response="partial answer", result_subtype="success",
+        result_is_error=is_error, result_terminal_reason=terminal_reason)
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        out = await tools._run_delegated_agent(
+            cfg, task_text="Q1 cashflow?", context_text="")
+
+    # The returned verdict is UNCHANGED by this rule — it still reads "success".
+    assert out.run_subtype == "success"
+    assert out.run_aborted is False
+
+    await _drain_bg()
+
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == expected_items
+    expected = [_CALLER_ITEM] if expected_items == 1 else [
+        _CALLER_ITEM, _PARTIAL_ANSWER_ITEM]
+    assert fake_sem.retain_calls == [{"bank": "casa", "items": expected}]

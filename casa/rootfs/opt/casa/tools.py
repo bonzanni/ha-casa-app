@@ -2978,11 +2978,35 @@ async def _run_delegated_agent(
             # swallowed by design. Whether the caller's turn reaches the bank is
             # therefore not this site's to assert, and the log below deliberately
             # claims only what this site DECIDES.
+            #
+            # The terminal subtype is NOT the only way the CLI says "this turn
+            # did not finish", so the completeness test here is deliberately
+            # WIDER than `run_aborted` (which stays exactly as it is — four
+            # non-memory consumers read it, and this is a memory decision):
+            #   * `is_error` with `subtype="success"` is the SDK's documented
+            #     shape for a failing API call — its own `api_error_status`
+            #     field is defined as being set "when is_error is True and
+            #     subtype is 'success'". `result_api_error_kind` does not catch
+            #     it (it reads `stop_reason == "refusal"` only), so nothing
+            #     upstream raises. The resident turn path already treats an
+            #     is_error result as a failure (sdk_client_pool.py); this one
+            #     only LOGGED it.
+            #   * `terminal_reason` in {"aborted_streaming", "aborted_tools"} is
+            #     the CLI reporting the turn was CANCELLED mid-stream.
+            # Either way the accumulated text is a prefix, not an answer, and
+            # `subtype` alone would call it complete.
+            _terminal_reason = _str_or_none(
+                getattr(result_msg, "terminal_reason", None))
+            _incomplete = (
+                output.run_aborted
+                or bool(getattr(result_msg, "is_error", False))
+                or _terminal_reason in ("aborted_streaming", "aborted_tools")
+            )
             turns = [RetainedTurn(task_text, caller_provenance)]
-            if output.run_aborted:
+            if _incomplete:
                 logger.warning(
-                    "delegated agent %s run aborted (kind=%s) — its partial "
-                    "answer is excluded from the memory retain",
+                    "delegated agent %s run did not complete (kind=%s) — its "
+                    "partial answer is excluded from the memory retain",
                     _known_role(getattr(cfg, "role", None)),
                     _run_abort_kind(output.run_subtype),
                 )

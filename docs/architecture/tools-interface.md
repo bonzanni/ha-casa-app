@@ -241,7 +241,10 @@ half-finished exchange is not stored as a complete one. The same holds for the C
 terminal aborts — a turn limit, a spend ceiling, a result-contract failure, an execution
 error, an unrecognised future verdict, or a stream that ends with no terminal message at
 all: the delegating turn still receives whatever text accumulated, but that text is not
-written to the shared memory bank. What is written, when anything is, is the caller's own
+written to the shared memory bank. The terminal subtype is not the only signal, and the
+memory boundary reads the others too: a terminal result that reports an API error while
+still calling itself a success, and one that reports the turn was cancelled mid-stream,
+are both incomplete for this purpose even though the run's own verdict says otherwise. What is written, when anything is, is the caller's own
 request turn alone, which nothing else records — and nothing is written at all by a run
 that produced no text, which is equally true of a run that completed. This is the write
 boundary only; it says nothing about documents the bank already holds (INV-MEM-016, and
