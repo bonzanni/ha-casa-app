@@ -358,6 +358,7 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 **Tests**
 - `tests/test_personality_binding.py`
 - `tests/test_resident_refusal_diagnosis.py`
+- `tests/test_resident_refusal_record_boundaries.py`
 - `tests/test_persona_install.py`
 - `tests/test_persona_removal.py`
 - `tests/test_personality_admin_handlers.py`
