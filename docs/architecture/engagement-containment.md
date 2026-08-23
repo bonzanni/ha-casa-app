@@ -15,9 +15,11 @@ refuses a launch whose privilege drop could not succeed, and the confirmed-down 
 replay runs before it migrates or resumes a service.
 
 The engagement *record* — its creation, turn admission, what a restart rewrites — is
-[`architecture/engagements.md`](engagements.md); the terminal transition, its side effects,
-the completion gate and the finalize path's driver teardown, the one stop path that is not
-a boot path, are [`architecture/engagement-finalization.md`](engagement-finalization.md). Two neighbouring boundaries live
+[`architecture/engagements.md`](engagements.md); the terminal transition, its side effects
+and the finalize path's driver teardown, the one stop path that is not
+a boot path, are [`architecture/engagement-finalization.md`](engagement-finalization.md), and
+the completion gate is
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). Two neighbouring boundaries live
 elsewhere: the hook floor bounding what the CLI may *do* once running is in
 [`architecture/hook-resolution.md`](hook-resolution.md), and the file modes that keep
 credentials out of a dropped uid's reach are INV-STATE-005 in
@@ -301,6 +303,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
+- [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 <!-- END SOURCEMAP -->

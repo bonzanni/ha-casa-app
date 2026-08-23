@@ -11,9 +11,11 @@ last_reviewed: 2026-08-19
 Durable engagements: their records, how one is launched, how a turn is admitted to it, the
 driver protocol, and what survives a restart. How an engagement *ends* — the single-winner
 terminal transition, the strictness that keeps creation and the terminal flip from leaving
-the persisted and in-memory records disagreeing, the completion gate, the finalization side
-effects and topic output ordering — is
-[`architecture/engagement-finalization.md`](engagement-finalization.md). How agents
+the persisted and in-memory records disagreeing, the finalization side effects and topic
+output ordering — is
+[`architecture/engagement-finalization.md`](engagement-finalization.md); the completion gate
+that refuses a success over input nobody read is
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). How agents
 address and launch one another — the delegation ACL, the depth cap, the agent-spawn cap —
 lives in [`architecture/delegation.md`](delegation.md). The OS boundary a `claude_code`
 engagement runs inside — its uid, workspace ownership, root's access into that workspace,
@@ -214,4 +216,5 @@ per-engagement sequencer in
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
+- [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 <!-- END SOURCEMAP -->

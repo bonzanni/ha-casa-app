@@ -677,6 +677,7 @@ CORPUS_SPLIT_DOCUMENTS = (
     "docs/architecture/configuration.md",
     "docs/architecture/config-reconciliation.md",
     "docs/architecture/engagements.md",
+    "docs/architecture/engagement-completion-gate.md",
     "docs/architecture/engagement-finalization.md",
     "docs/architecture/memory.md",
     "docs/architecture/memory-scoping.md",
@@ -688,6 +689,7 @@ EXPECTED_CORPUS_SPLIT_DOCUMENTS = {
     "docs/architecture/configuration.md",
     "docs/architecture/config-reconciliation.md",
     "docs/architecture/engagements.md",
+    "docs/architecture/engagement-completion-gate.md",
     "docs/architecture/engagement-finalization.md",
     "docs/architecture/memory.md",
     "docs/architecture/memory-scoping.md",
@@ -695,7 +697,7 @@ EXPECTED_CORPUS_SPLIT_DOCUMENTS = {
 
 
 def test_corpus_split_document_list_is_exact():
-    assert len(CORPUS_SPLIT_DOCUMENTS) == len(set(CORPUS_SPLIT_DOCUMENTS)) == 8
+    assert len(CORPUS_SPLIT_DOCUMENTS) == len(set(CORPUS_SPLIT_DOCUMENTS)) == 9
     assert set(CORPUS_SPLIT_DOCUMENTS) == EXPECTED_CORPUS_SPLIT_DOCUMENTS
 
 

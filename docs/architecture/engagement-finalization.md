@@ -10,11 +10,12 @@ last_reviewed: 2026-08-19
 
 How a durable engagement ends: the single-winner terminal transition, the strictness that
 keeps the persisted and in-memory records agreeing — at creation as well as at the
-terminal flip, including the compensation a cancelled creator owes — the completion gate
-that refuses a success over input nobody read, the finalization side effects behind the
-flip, and the ordering of what an engagement posts to its topic. The record itself, how
-one is launched, how a turn is admitted to it, the driver protocol and what a restart
-rewrites are in [`architecture/engagements.md`](engagements.md). The OS boundary a
+terminal flip, including the compensation a cancelled creator owes — the finalization side
+effects behind the flip, and the ordering of what an engagement posts to its topic. What a
+*successful* completion is refused over, and what each driver counts to answer that, are in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). The record
+itself, how one is launched, how a turn is admitted to it, the driver protocol and what a
+restart rewrites are in [`architecture/engagements.md`](engagements.md). The OS boundary a
 `claude_code` engagement runs inside, and what its teardown does and does not establish
 about the OS process, are in
 [`architecture/engagement-containment.md`](engagement-containment.md).
@@ -32,22 +33,11 @@ in-memory record is restored and the call raises, so there is no state where the
 believes an engagement finished and the durable record disagrees. The caller is told to
 retry.
 
-**Completion is gated on unread input.** A *successful* completion is refused while inbound
-messages are unread or reserved — an agent cannot declare victory over a question it has not
-read. Failure and cancellation deliberately bypass that gate, because something going wrong
-must always be able to end.
-
-**"Unread" and "in flight" are different questions, and the gate needs both.** A message that
-has left the queue but not yet reached a turn — written into the engagement's stdin FIFO,
-with no turn-start evidence back — is invisible to the unread accounting, deliberately: that
-accounting also answers the ask gate's question, *is the operator still waiting to be
-answered?*, and a delivered message may well have been read. The terminal question is a
-different one, *is there operator input in flight that will only be taken up after I commit?*,
-and the same exclusion is wrong for it. So the driver answers both separately rather than
-changing what "unread" means. The completion gate refuses on either, and the annotation
-described below discloses both. There is no third state to track for a message being written
-right now: it is still queued throughout its own write, so the unread accounting already
-holds it.
+**Completion is gated on unread input, and that gate is its own contract.** A *successful*
+completion is refused while inbound messages are unread, in flight or reserved; failure and
+cancellation deliberately bypass it. What each driver counts, why "unread" and "in flight" are
+different questions, and how a message that dies with the engagement is disclosed are in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003).
 
 ## Contracts & invariants
 
@@ -108,46 +98,10 @@ belongs to creation and the finalize path specifically. And the cancellation com
 itself best-effort on the disk side — if the compensating write fails, the on-disk ghost row
 remains until the boot reconcile and reap TTL retire it.
 
-**INV-ENG-003**: A successful completion is refused while unread inbound messages, inbound messages in flight to the engagement's CLI, or inbound reservations exist, when the driver exposes its inbound state.
-
-Enforced both as a pre-check and again as a hook inside the transition itself, so the
-condition is re-evaluated at the moment the state changes rather than only before it. The
-hook is where the invariant actually lives: delivery can happen during the finalize path's
-own awaits, long after the pre-check found the spool clean.
-
-The in-flight half of the refusal is bounded in time, and that asymmetry is deliberate. A
-delivered message normally reaches a turn within a second; one that has not after far longer
-is evidence that no turn is coming, and a veto on a state nothing will clear would make a
-successful completion impossible for the rest of the engagement's life — the opposite of this
-hook's fail-open contract. Past the bound the completion proceeds and the message is still
-disclosed. Each expiry is logged, so the bound is answerable to production rather than
-permanently a guess.
-
-What it does not cover: failed and cancelled outcomes intentionally skip the gate, and so
-does the operator's own complete command — only the completion *tool* arms the gate, so an
-operator marking an engagement complete finalizes past unread input deliberately. The gate
-exists where the driver implements the inbound accessors — today that is both drivers. The
-claude-code driver counts its durable spool, its in-flight envelopes and its ingress
-reservations. The in-casa driver counts admission tickets: a turn is unread from its
-synchronous admission at the Telegram entry seam until the embedded client takes the prompt,
-then disclosure-only until the first model-evidence frame; the ticket ledger is in-memory
-and dies with the process, and it has no in-flight veto, no reservations and no
-forced-boundary valve — the refusal ending the turn releases the per-turn lock, which is
-what delivers the queued turn, and a ticket whose delivery fails is discharged only after
-one bounded failure notice, never retried into a permanent veto. Accessor failures fail
-open with a warning rather than wedging termination. The claude-code-only
-escalation that forces a turn boundary after repeated refusals stays scoped to the queued
-population: a queued message cannot move until a respawn re-arms delivery, which is what the
-escalation forces, while an in-flight one is already past that boundary and killing its epoch
-could destroy a message a turn had just consumed.
-
-**A message that dies with the engagement is disclosed, not swallowed.** Every terminal
-outcome posts the messages no turn ever took up into the topic — both populations, at any
-age, excerpted and counted. The claim it makes is what the system can evidence: that no turn
-start was *recorded* for them before the engagement ended. It does not claim they were never
-read, because that is not provable for a message already handed to the CLI — the CLI can read
-the line and emit its init frame before the relay processes it, and a cancellation landing in
-that interval would otherwise assert something false about a message the agent did see.
+**The completion gate is INV-ENG-003, and it lives in its own document.** A successful
+completion is refused over unread, in-flight or reserved inbound input when the driver
+exposes its inbound state — see
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
 
 **INV-ENG-005**: Once the output sequencer is terminalized, ordinary narration and unresolved sends cannot post below the completion.
 
@@ -184,9 +138,9 @@ transition is the instruction to do nothing, because the winner owns every side 
 **Completion is called with a bad status or arguments.** Rejected before any transition; the
 engagement stays live and the caller sees a tool error.
 
-**Completion is refused for unread input.** The transition is vetoed, the record stays live,
-and the caller gets a retryable outcome naming the condition. This is a precondition failure,
-not an error state.
+**Completion is refused for unread input.** The transition is vetoed and the record stays
+live; the outcome and its disclosure are INV-ENG-003's subject
+([`architecture/engagement-completion-gate.md`](engagement-completion-gate.md)).
 
 **The terminal write fails.** The record is rolled back to live and no side effects run.
 Both the completion tool and the cancellation tool surface this as the same distinct
@@ -226,7 +180,6 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 **Source**
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.create`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal`
-- `casa/rootfs/opt/casa/engagement_registry.py::TerminalPreconditionFailed`
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement`
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement_tail`
 - `casa/rootfs/opt/casa/tools.py::FinalizeResult`
@@ -240,10 +193,10 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - `tests/test_engagement_registry.py`
 - `tests/test_output_sequencer.py`
 - `tests/test_anchor_narration_buffer.py`
-- `tests/test_answer_reservation.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 - [`architecture/overview.md`](../architecture/overview.md)
