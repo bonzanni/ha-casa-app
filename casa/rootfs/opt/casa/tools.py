@@ -6608,20 +6608,20 @@ async def casa_reload(args: dict) -> dict:
         })
 
     from reload import dispatch
-    # Task 10 manual-reload fencing (spec §3.1, ENTRY-POINT-ONLY): a FULL reload
-    # reloads the plugin snapshot, so it must serialize against an in-flight
-    # bundle transaction. Acquire _PLUGIN_TOOLS_LOCK BEFORE dispatch("full")
-    # (never inside reload.py — that would AB/BA-deadlock against reload's own
-    # global writer/reader lock, which the bundle op's dispatch("agent") already
-    # takes on the reader side while holding _PLUGIN_TOOLS_LOCK). Global lock
-    # order everywhere: _PLUGIN_TOOLS_LOCK -> reload writer/reader lock.
+    # Task 10 manual-reload fencing (spec §3.1, ENTRY-POINT-ONLY): a reload that
+    # reaches plugin state must serialize against an in-flight bundle
+    # transaction. Acquire _PLUGIN_TOOLS_LOCK BEFORE dispatch (never inside
+    # reload.py beneath its writer/reader lock — that is the AB/BA deadlock,
+    # against the reader side a bundle op's dispatch("agent") already takes
+    # while holding _PLUGIN_TOOLS_LOCK). Global lock order everywhere:
+    # _PLUGIN_TOOLS_LOCK -> reload writer/reader lock.
     # #489: the GUARD, not the raw lock — reload_full's include_env arm reaches
     # the plugin_env handler, whose health block re-enters via the same guard.
-    if scope == "full":
-        async with _plugin_tools_guard():
-            result = await dispatch(
-                scope, runtime=runtime, role=role, include_env=include_env)
-    else:
+    # #706: WHICH scopes, not just "full" — the executors and plugin_env
+    # handlers take the guard too, and dispatching them unfenced inverted the
+    # order. _plugin_tools_reload_guard owns that classification for both entry
+    # points.
+    async with _plugin_tools_reload_guard(scope):
         result = await dispatch(
             scope, runtime=runtime, role=role, include_env=include_env)
 
@@ -10252,6 +10252,40 @@ async def _plugin_tools_guard():
             yield
         finally:
             _PLUGIN_TOOLS_LOCK_OWNER = None
+
+
+# #706: the reload SCOPES whose handler acquires the guard, directly or through
+# the `full` cascade. `reload.dispatch` takes the reload RW lock for EVERY scope
+# and holds it across the handler, so a scope in this set that is dispatched
+# WITHOUT the plugin lock already held runs `RW reader -> plugin lock` — the
+# reverse of the global order stated above, and a two-party deadlock against any
+# full-scope entry (which holds the plugin lock and wants the RW WRITER). Both
+# handlers were reachable that way: `executors` and `plugin_env` are dispatched
+# unguarded by the casa_reload tool and by POST /admin/reload, and neither
+# acquisition has a timeout.
+#
+# The set is the classification, in ONE place: the entry points below carry no
+# scope logic of their own, so the two of them cannot drift apart.
+_PLUGIN_TOOLS_RELOAD_SCOPES = frozenset({"full", "executors", "plugin_env"})
+
+
+@asynccontextmanager
+async def _plugin_tools_reload_guard(scope: str):
+    """Hold `_PLUGIN_TOOLS_LOCK` across a reload dispatch of a scope that will
+    reach it, and nothing at all for a scope that will not.
+
+    ENTRY-POINT-ONLY still holds, and for its recorded reason: the guard is
+    taken BEFORE `reload.dispatch` acquires the reload writer/reader lock, never
+    underneath it. `agent`, `agents`, `policies`, `triggers` and `config_sync`
+    stay unfenced, so a bundle transaction holding the raw lock can still
+    complete its own `dispatch("agent")` (pinned by
+    test_bundle_reload_fence.py::test_bundle_agent_dispatch_completes_while_holding_plugin_lock).
+    """
+    if scope in _PLUGIN_TOOLS_RELOAD_SCOPES:
+        async with _plugin_tools_guard():
+            yield
+    else:
+        yield
 
 # ---------------------------------------------------------------------------
 # Unified plugin architecture (§3.9/§3.13): registry-mutating tools.

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.231.0] - 2026-08-24
+
+### Fixed
+
+- An executors or plugin-environment reload no longer deadlocks against a
+  plugin install, upgrade or removal. Starting one of those reloads while a
+  plugin was being installed, upgraded or removed could leave the two waiting
+  on each other with no timeout on either side: every later reload and every
+  later plugin change then hung as well, and only restarting Casa cleared it.
+  Reloads and plugin mutations now stay available. The one visible difference
+  is that an executors or plugin-environment reload started while a plugin
+  change is in flight now waits for that change to finish before it begins,
+  instead of stopping part-way through it.
+
 ## [0.230.0] - 2026-08-22
 
 ### Fixed

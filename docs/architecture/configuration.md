@@ -42,6 +42,19 @@ partway leaves earlier steps applied. The lock prevents interleaving, not partia
 application. It also omits the on-disk reconciliation entirely, and omits plugin environment
 unless explicitly asked.
 
+**Three scopes reach plugin state, and they are locked from outside the dispatcher.** The
+executors scope and the plugin-environment scope each regenerate the plugin health report,
+and the full scope reaches both through its cascade; all three therefore take the
+plugin-mutation lock (INV-TOOL-003). The dispatcher holds its own read/write lock across the
+handler, so a handler that asked for the plugin lock from in there would be holding one lock
+and requesting the other in the order opposite to every plugin mutation — which is a
+deadlock with no timeout on either side, not a slow path. The two entry points therefore
+acquire the plugin lock for exactly those three scopes *before* dispatching, off one shared
+classification rather than one apiece, and the handlers' own acquisitions survive only as
+same-task re-entries that serialize a direct, undispatched call. Every other scope stays
+unfenced and concurrent, which is what lets a plugin mutation holding that lock finish its
+own agent reload.
+
 **The config tree is a git repository, but only a whitelist is tracked.** Agents, policies,
 bindings, schema, and specific registry files are versioned; plugin stores, staging areas,
 the environment file and general working state are not. The whitelist is the authority, and
@@ -110,6 +123,19 @@ mirrored by the boot script.
 
 What it does not cover: the version-controlled set and the set the reconciler owns are
 *different*. A path can be tracked without being reconciled, and vice versa.
+
+**INV-CFG-011**: A reload scope whose handler takes the plugin-mutation lock acquires that lock at the entry point, before the reload read/write lock — never underneath it.
+
+Enforced by the shared fence both reload entry points wrap their dispatch in, over the
+scope set the handlers' own acquisitions define.
+
+What it does not cover: it is an ordering rule, not an exclusion rule. Two fenced reloads
+still serialize against each other only as far as the locks themselves say, and a fenced
+scope now waits for an in-flight plugin mutation before it starts rather than partway
+through — deliberately, since it had to wait for that lock either way. Nor does it close
+the ordering by construction: nothing prevents a future caller from dispatching a fenced
+scope from somewhere neither entry point covers, which is why the set and the callers are
+pinned statically as well as behaviourally.
 
 ## Failure behavior
 

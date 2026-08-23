@@ -745,20 +745,19 @@ def build_admin_reload_handler(*, runtime):
             )
 
         # Task 10 manual-reload fencing (spec §3.1, ENTRY-POINT-ONLY): the
-        # /admin/reload route is a second full-reload entry point alongside the
-        # casa_reload tool. A FULL reload reloads the plugin snapshot, so it
-        # must acquire _PLUGIN_TOOLS_LOCK BEFORE dispatch — never inside
-        # reload.py (AB/BA deadlock vs reload's own writer/reader lock). Global
-        # order everywhere: _PLUGIN_TOOLS_LOCK -> reload writer/reader lock.
+        # /admin/reload route is the second reload entry point alongside the
+        # casa_reload tool. A reload that reaches plugin state must acquire
+        # _PLUGIN_TOOLS_LOCK BEFORE dispatch — never inside reload.py beneath
+        # its writer/reader lock (AB/BA deadlock). Global order everywhere:
+        # _PLUGIN_TOOLS_LOCK -> reload writer/reader lock.
         # #489: the GUARD, not the raw lock — reload_full's include_env arm
         # reaches the plugin_env handler, whose health block re-enters via
         # the same guard.
-        if scope == "full":
-            import tools as tools_mod
-            async with tools_mod._plugin_tools_guard():
-                result = await reload_mod.dispatch(
-                    scope, runtime=active, role=role, include_env=include_env)
-        else:
+        # #706: the fenced set is `full`, `executors` and `plugin_env`, and it
+        # is decided ONCE, in tools._plugin_tools_reload_guard — this route and
+        # the tool used to classify separately, and both classified only `full`.
+        import tools as tools_mod
+        async with tools_mod._plugin_tools_reload_guard(scope):
             result = await reload_mod.dispatch(
                 scope, runtime=active, role=role, include_env=include_env)
         status_code = 200 if result.get("status") == "ok" else 500
