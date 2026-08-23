@@ -113,7 +113,13 @@ guard-resolve-publish-then-save ordering in the synchronous cores. The pinned fi
 kind, activation-committed, runtime-ready, verify — make the failure phase machine-readable.
 
 What it does not cover: published store artifacts and installed system requirements are not
-unwound by a later refusal; only the registry is untouched.
+unwound by a later refusal; only the registry is untouched. It also says nothing about
+ordering, and ordering is what makes the lock safe to hold across a reload: a mutation
+takes this lock and then dispatches an agent-scope reload, which takes the reload
+read/write lock, so every other holder must acquire in that same direction. The reload
+entry points do — they take this lock before dispatching any scope that will reach it
+(INV-CFG-011) — and the reload handlers that regenerate plugin health from underneath the
+reload lock re-enter it as the same task rather than acquiring it there.
 
 **INV-TOOL-004**: A reload or verification failure after the registry commit yields committed-but-not-ready; nothing rolls the registry back.
 

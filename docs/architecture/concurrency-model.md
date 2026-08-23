@@ -43,13 +43,19 @@ client itself. The engagement registry mutates and persists under one registry l
 (reads take nothing). Reload holds a per-scope lock plus a global read-write lock in which
 a full reload is the writer excluding every other scope (INV-CFG-002); admission is FIFO,
 so a stream of shared-scope reloads cannot starve a pending full reload, nor the reverse. Plugin mutations
-share one tool-level lock (INV-TOOL-003); the full-reload entry points take it through a
-task-reentrant guard, because a full reload that includes the environment refresh reaches
-the plugin-env handler's health block, which serializes on the same lock — one logical
-operation, one acquisition, while distinct tasks still exclude each other (a task spawned
-inside the guarded region does not inherit the hold). Every health regeneration that can
-run beside a live mutation takes that lock too, through the guard where the caller does not
-already hold it: the report's own lock serializes the write and not the computation before
+share one tool-level lock (INV-TOOL-003), and it is ordered BEFORE the reload read-write
+lock everywhere: the two reload entry points take it through a task-reentrant guard, for
+every scope whose handler will reach it, before dispatching (INV-CFG-011). The guard is
+what makes one logical operation one acquisition — a full reload that includes the
+environment refresh reaches the plugin-env handler's health block, which serializes on the
+same lock — while distinct tasks still exclude each other (a task spawned inside the
+guarded region does not inherit the hold). The ordering is the whole point: the dispatcher
+holds its read-write lock across the handler, so a scope that took the plugin lock from
+inside the handler would hold the reader while requesting the lock every plugin mutation
+already holds while requesting the writer, and neither request has a timeout. Every health regeneration that can
+run beside a live mutation takes that lock too, through the guard — a re-entry that costs
+nothing where a fenced entry point already holds it, and the only serialization there is
+where a handler is called directly instead of dispatched: the report's own lock serializes the write and not the computation before
 it, so an unguarded pass that began before a mutation committed could publish its older
 result last and delete a row that mutation had just added — with nothing scheduling a
 repair. Only the boot reconciliations are exempt, and by ordering rather than by argument:

@@ -1,12 +1,19 @@
 """Task 10 checkpoint 2f: ENTRY-POINT-ONLY manual-reload fencing (spec §3.1).
 
-Every caller that dispatches a FULL reload (the casa_reload tool + the
-/admin/reload route) must acquire _PLUGIN_TOOLS_LOCK BEFORE dispatch("full"),
-establishing the global lock order `_PLUGIN_TOOLS_LOCK -> reload writer/reader
-lock` for every path. The fence is NEVER placed inside reload.py — that would
-recreate the AB/BA deadlock against reload's own global writer/reader lock,
-which a bundle transaction's dispatch("agent") already takes on the reader side
-while holding _PLUGIN_TOOLS_LOCK.
+Every caller that dispatches a reload whose handler reaches the plugin-tools
+lock — scopes `full`, `executors` and `plugin_env` (#706), the set
+`tools._PLUGIN_TOOLS_RELOAD_SCOPES` — must acquire _PLUGIN_TOOLS_LOCK BEFORE
+dispatch, establishing the global lock order `_PLUGIN_TOOLS_LOCK -> reload
+writer/reader lock` for every path (INV-CFG-011). The two entry points are the
+casa_reload tool and the /admin/reload route, and they share one classification
+helper so they cannot drift apart.
+
+The fence is NEVER placed inside reload.py BENEATH its writer/reader lock —
+that is the AB/BA deadlock against the reader side a bundle transaction's
+dispatch("agent") already takes while holding _PLUGIN_TOOLS_LOCK. Until #706
+the fence covered `full` only, so a dispatched `executors` or `plugin_env`
+reload took the RW reader and then asked for the plugin lock underneath it,
+which deadlocked against any full-scope entry with no timeout on either side.
 """
 from __future__ import annotations
 
@@ -64,8 +71,15 @@ async def test_full_reload_is_fenced_behind_plugin_tools_lock(monkeypatch) -> No
 
 
 async def test_non_full_reload_is_not_fenced(monkeypatch) -> None:
-    """A non-full scope must NOT be fenced (it never reloads the plugin
-    snapshot) — it dispatches even while the plugin lock is held."""
+    """An UNFENCED scope must not be fenced — it dispatches even while the
+    plugin lock is held.
+
+    #706: "non-full" was the right rationale only while `full` was the whole
+    fenced set. `agent` is unfenced because its handler never touches the
+    plugin lock, which is also why a bundle op holding that lock can complete
+    its own dispatch("agent"); `executors` and `plugin_env` ARE fenced now, and
+    their rows are asserted separately below.
+    """
     import reload as reload_mod
     import tools as tools_mod
     from internal_handlers import build_admin_reload_handler
@@ -80,7 +94,11 @@ async def test_non_full_reload_is_not_fenced(monkeypatch) -> None:
     handler = build_admin_reload_handler(runtime=object())
 
     async with tools_mod._PLUGIN_TOOLS_LOCK:
-        await handler(_JsonReq({"scope": "agent", "role": "mtg"}))
+        # Bounded: an over-fencing regression (an unfenced scope added to
+        # _PLUGIN_TOOLS_RELOAD_SCOPES) makes this await block forever, and a
+        # hung CI job is a worse signal than a failed assertion.
+        await asyncio.wait_for(
+            handler(_JsonReq({"scope": "agent", "role": "mtg"})), timeout=5.0)
         assert log == ["agent"]                 # ran without waiting on the lock
 
 
@@ -499,3 +517,114 @@ async def test_casa_reload_plugin_env_takes_plugin_guard_before_rw_reader(
     await _assert_no_inversion(
         monkeypatch, runtime=runtime, start_y=_via_casa_reload("plugin_env"),
         full_calls=full_calls, regen=regen, notify=notify)
+
+
+# ---------------------------------------------------------------------------
+# #706 supporting pins: the fenced set at BOTH entry points, and the retained
+# in-handler guard that an outer entry fence would otherwise mask.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scope", ["full", "executors", "plugin_env"])
+@pytest.mark.parametrize("entry", ["tool", "route"])
+async def test_every_fenced_scope_waits_at_every_entry_point(
+    monkeypatch, configurator_origin, entry, scope,
+) -> None:
+    """Each of the six (entry point x fenced scope) cells waits for the plugin
+    lock BEFORE dispatching, and dispatches exactly once after release.
+
+    Six rows rather than one per scope: the classification lives in one helper
+    precisely so the two entry points cannot disagree, and this is what would
+    catch it if one of them stopped calling it."""
+    import agent as agent_mod
+    import reload as reload_mod
+    import tools as tools_mod
+    from internal_handlers import build_admin_reload_handler
+    from tools import casa_reload
+
+    log: list = []
+
+    async def _fake_dispatch(scope_, *, runtime, role=None, include_env=False):
+        log.append(scope_)
+        return {"status": "ok", "scope": scope_}
+
+    monkeypatch.setattr(reload_mod, "dispatch", _fake_dispatch)
+    monkeypatch.setattr(agent_mod, "active_runtime", object(), raising=False)
+
+    if entry == "tool":
+        async def _call():
+            await casa_reload.handler({"scope": scope})
+    else:
+        handler = build_admin_reload_handler(runtime=object())
+
+        async def _call():
+            await handler(_JsonReq({"scope": scope}))
+
+    await tools_mod._PLUGIN_TOOLS_LOCK.acquire()
+    try:
+        task = asyncio.create_task(_call())
+        await asyncio.sleep(0.02)
+        assert log == []                    # fenced out while the lock is held
+    finally:
+        tools_mod._PLUGIN_TOOLS_LOCK.release()
+    await asyncio.wait_for(task, timeout=5.0)
+    assert log == [scope]                   # exactly one dispatch, after release
+
+
+async def test_casa_reload_agent_scope_is_not_fenced(
+    monkeypatch, configurator_origin,
+) -> None:
+    """The tool entry's counterpart to test_non_full_reload_is_not_fenced: an
+    unfenced scope must still dispatch while the plugin lock is held, or a
+    bundle op's own agent reload would deadlock behind itself."""
+    import agent as agent_mod
+    import reload as reload_mod
+    import tools as tools_mod
+    from tools import casa_reload
+
+    log: list = []
+
+    async def _fake_dispatch(scope_, *, runtime, role=None, include_env=False):
+        log.append(scope_)
+        return {"status": "ok", "scope": scope_}
+
+    monkeypatch.setattr(reload_mod, "dispatch", _fake_dispatch)
+    monkeypatch.setattr(agent_mod, "active_runtime", object(), raising=False)
+
+    async with tools_mod._PLUGIN_TOOLS_LOCK:
+        await asyncio.wait_for(                     # bounded, as above
+            casa_reload.handler({"scope": "agent", "role": "mtg"}), timeout=5.0)
+        assert log == ["agent"]
+
+
+async def test_direct_reload_executors_still_serializes_its_health_regen(
+    monkeypatch, _fresh_reload_locks,
+) -> None:
+    """The entry fence must not become the ONLY thing serializing the health
+    regeneration: reload_executors' own guard (reload.py:1868) is retained, and
+    a DIRECT call to the handler still waits for a plugin-tools lock another
+    task holds.
+
+    Without this, removing that guard leaves every other test green — the outer
+    entry fence masks it (measured: real handler under a held lock →
+    regen/notify calls 0; guard-removed → 2, with one action either way).
+    reload_plugin_env's half is pinned by
+    test_reload.py::test_health_regen_serialized_under_plugin_tools_lock.
+    """
+    import reload as reload_mod
+    import tools as tools_mod
+
+    regen, notify = _count_health_io(monkeypatch)
+    runtime = _arm_executors(monkeypatch)
+    done: list = []
+
+    async def _direct():
+        await reload_mod.reload_executors(runtime, role=None)
+        done.append(True)
+
+    async with tools_mod._plugin_tools_guard():
+        task = asyncio.create_task(_direct())
+        await asyncio.sleep(0.02)
+        assert (len(done), len(regen), len(notify)) == (0, 0, 0)
+    await asyncio.wait_for(task, timeout=5.0)
+    assert (len(done), len(regen), len(notify)) == (1, 1, 1)

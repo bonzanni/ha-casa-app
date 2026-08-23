@@ -1483,6 +1483,13 @@ async def reload_plugin_env(runtime: Any, *, role: str | None = None) -> list[st
         # arm the r4-2 comment's "no mutation dispatches scope=plugin_env"
         # argument missed), and the raw re-acquire self-deadlocked the
         # reload and everything behind the reload writer lock.
+        # #706: on every DISPATCHED path this acquisition is now a same-task
+        # re-entrant no-op — the entry point owns the guard before dispatch
+        # takes the RW lock (tools._plugin_tools_reload_guard). It is kept for
+        # the DIRECT callers, where it is the only thing serializing this
+        # regen+notify against a §3.9 registry mutation; taking it here while
+        # the RW lock is held is what INV-CFG-011 forbids, and no dispatched
+        # path does that any more.
         async with tools_mod._plugin_tools_guard():
             await asyncio.to_thread(tools_mod._regenerate_plugin_health, [])
             await tools_mod._notify_plugin_health_if_possible()
@@ -1865,6 +1872,10 @@ async def reload_executors(
         # write a pre-mutation result last and delete the row that mutation
         # just added. The GUARD, not the raw lock: this handler is reachable
         # from a `full` cascade whose entry point already holds it.
+        # #706: and now from EVERY dispatched path, because the executors scope
+        # is fenced at the entry too (tools._plugin_tools_reload_guard) — this
+        # acquisition is a same-task re-entrant no-op there. Kept for the direct
+        # callers, which it still serializes; INV-CFG-011.
         async with tools_mod._plugin_tools_guard():
             await asyncio.to_thread(tools_mod._regenerate_plugin_health, [])
             await tools_mod._notify_plugin_health_if_possible()
