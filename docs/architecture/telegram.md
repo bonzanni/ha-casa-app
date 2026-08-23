@@ -32,7 +32,9 @@ the topic handler and the system-continuation seam (`deliver_system_turn`) both 
 turn synchronously, before any await a completion could race, as an admission ticket the
 completion gate reads; recognized commands are consumed by the handler itself and are never
 ticketed, and a ticket its delivery task failed to consume is discharged only after one
-bounded failure notice (the engagements document owns the ticket lifecycle).
+bounded failure notice (the engagements document owns the ticket lifecycle, and
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns what the
+gate does with a ticket it finds).
 
 **Update dispatch is concurrent; ordering is re-imposed per scope, not globally.** Handlers
 run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement
@@ -288,5 +290,6 @@ units but sends unformatted text only.
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/http-surface.md`](../architecture/http-surface.md)
 <!-- END SOURCEMAP -->

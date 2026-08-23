@@ -53,7 +53,7 @@
     - tests/test_telegram_new_reset.py
     - tests/test_telegram_supervisor.py
     - tests/test_telegram_split.py
-  related: [architecture/overview.md, architecture/engagements.md, architecture/http-surface.md]
+  related: [architecture/overview.md, architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/http-surface.md]
   defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-005, INV-TG-006, INV-TG-007]
   invariant_tests:
     INV-TG-001: [tests/test_telegram_update_handler.py::test_no_secret_configured_rejects, tests/test_telegram_update_handler.py::test_wrong_token_403_and_not_processed, tests/test_telegram_update_handler.py::test_correct_token_200]
