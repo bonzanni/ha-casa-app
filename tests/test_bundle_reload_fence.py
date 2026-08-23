@@ -344,23 +344,15 @@ async def _race_against_a_guard_holder(monkeypatch, *, runtime, start_y):
     }
 
 
-async def test_casa_reload_executors_takes_plugin_guard_before_rw_reader(
-    monkeypatch, _fresh_reload_locks, configurator_origin,
-) -> None:
-    """#706 red case 1 of 2 — the `executors` inversion site (reload.py:1868),
-    through the casa_reload tool entry point, with the REAL reload_executors.
 
-    Pre-fix signature: the guard attempt is made with ONE reader held, X's
-    writer sits queued behind it, and neither task completes.
-    """
+
+def _arm_executors(monkeypatch):
+    """Seams for the REAL reload_executors: registry load is a no-op, no shared
+    hook-policy map, no residents to fan out to. The guard site at
+    reload.py:1868 stays real."""
     import agent as agent_mod
-    import plugin_setup_episodes
     import reload as reload_mod
-    from tools import casa_reload
 
-    regen, notify = _count_health_io(monkeypatch)
-    full_calls = _counted_full_handler(monkeypatch)
-    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
     monkeypatch.setitem(
         reload_mod._HANDLERS, "executors", reload_mod.reload_executors)
 
@@ -380,39 +372,17 @@ async def test_casa_reload_executors_takes_plugin_guard_before_rw_reader(
 
     runtime = _Runtime()
     monkeypatch.setattr(agent_mod, "active_runtime", runtime, raising=False)
-
-    async def _start_y(returns):
-        returns.append(await casa_reload.handler({"scope": "executors"}))
-
-    got = await _race_against_a_guard_holder(
-        monkeypatch, runtime=runtime, start_y=_start_y)
-
-    assert (got["readers_at_guard_attempt"], got["done"], got["pending"],
-            got["readers_at_end"], got["queued_at_end"],
-            len(full_calls), got["returns"], len(regen), len(notify),
-            ) == (0, 2, 0, 0, 0, 1, 1, 1, 1), got
-    assert [e for e in got["errors"] if e is not None] == []
+    return runtime
 
 
-async def test_admin_reload_plugin_env_takes_plugin_guard_before_rw_reader(
-    monkeypatch, _fresh_reload_locks,
-) -> None:
-    """#706 red case 2 of 2 — the `plugin_env` inversion site (reload.py:1486),
-    the half the issue never named, through the /admin/reload entry point, with
-    the REAL reload_plugin_env.
-
-    Same pre-fix signature as red case 1, reached by a different entry point
-    and a different handler.
-    """
+def _arm_plugin_env(monkeypatch):
+    """Seams for the REAL reload_plugin_env: empty env conf, no resolver cache
+    drop, no remembered keys. The guard site at reload.py:1486 stays real."""
+    import agent as agent_mod
     import plugin_env_conf
-    import plugin_setup_episodes
     import reload as reload_mod
     import secrets_resolver
-    from internal_handlers import build_admin_reload_handler
 
-    regen, notify = _count_health_io(monkeypatch)
-    full_calls = _counted_full_handler(monkeypatch)
-    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
     monkeypatch.setitem(
         reload_mod._HANDLERS, "plugin_env", reload_mod.reload_plugin_env)
     monkeypatch.setattr(plugin_env_conf, "read_entries", lambda: {})
@@ -420,16 +390,112 @@ async def test_admin_reload_plugin_env_takes_plugin_guard_before_rw_reader(
     monkeypatch.setattr(reload_mod, "_PLUGIN_ENV_LAST_KEYS", set())
 
     runtime = object()
-    handler = build_admin_reload_handler(runtime=runtime)
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime, raising=False)
+    return runtime
 
-    async def _start_y(returns):
-        returns.append(await handler(_JsonReq({"scope": "plugin_env"})))
 
+def _via_casa_reload(scope):
+    async def _start(returns):
+        from tools import casa_reload
+        returns.append(await casa_reload.handler({"scope": scope}))
+    return _start
+
+
+def _via_admin_route(scope, runtime):
+    async def _start(returns):
+        from internal_handlers import build_admin_reload_handler
+        handler = build_admin_reload_handler(runtime=runtime)
+        returns.append(await handler(_JsonReq({"scope": scope})))
+    return _start
+
+
+async def _assert_no_inversion(monkeypatch, *, runtime, start_y,
+                               full_calls, regen, notify):
     got = await _race_against_a_guard_holder(
-        monkeypatch, runtime=runtime, start_y=_start_y)
-
+        monkeypatch, runtime=runtime, start_y=start_y)
     assert (got["readers_at_guard_attempt"], got["done"], got["pending"],
             got["readers_at_end"], got["queued_at_end"],
             len(full_calls), got["returns"], len(regen), len(notify),
             ) == (0, 2, 0, 0, 0, 1, 1, 1, 1), got
     assert [e for e in got["errors"] if e is not None] == []
+
+
+# Both inversion sites x both production entry points. The scope x entry matrix
+# is covered because a fix is free to fence one scope in one entry point and the
+# other scope in the other: each of the two diagonal pairs alone leaves a live
+# deadlock behind two green tests (acceptor's clause (a), round 1).
+
+
+async def test_casa_reload_executors_takes_plugin_guard_before_rw_reader(
+    monkeypatch, _fresh_reload_locks, configurator_origin,
+) -> None:
+    """#706 — the `executors` inversion site (reload.py:1868) through the
+    casa_reload tool entry point, with the REAL reload_executors.
+
+    Pre-fix signature: the guard attempt is made with ONE reader held, X's
+    writer sits queued behind it, and neither task completes.
+    """
+    import plugin_setup_episodes
+
+    regen, notify = _count_health_io(monkeypatch)
+    full_calls = _counted_full_handler(monkeypatch)
+    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
+    runtime = _arm_executors(monkeypatch)
+
+    await _assert_no_inversion(
+        monkeypatch, runtime=runtime, start_y=_via_casa_reload("executors"),
+        full_calls=full_calls, regen=regen, notify=notify)
+
+
+async def test_admin_reload_executors_takes_plugin_guard_before_rw_reader(
+    monkeypatch, _fresh_reload_locks,
+) -> None:
+    """#706 — the same `executors` site through POST /admin/reload."""
+    import plugin_setup_episodes
+
+    regen, notify = _count_health_io(monkeypatch)
+    full_calls = _counted_full_handler(monkeypatch)
+    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
+    runtime = _arm_executors(monkeypatch)
+
+    await _assert_no_inversion(
+        monkeypatch, runtime=runtime,
+        start_y=_via_admin_route("executors", runtime),
+        full_calls=full_calls, regen=regen, notify=notify)
+
+
+async def test_admin_reload_plugin_env_takes_plugin_guard_before_rw_reader(
+    monkeypatch, _fresh_reload_locks,
+) -> None:
+    """#706 — the `plugin_env` inversion site (reload.py:1486), the half the
+    issue never names, through POST /admin/reload with the REAL
+    reload_plugin_env."""
+    import plugin_setup_episodes
+
+    regen, notify = _count_health_io(monkeypatch)
+    full_calls = _counted_full_handler(monkeypatch)
+    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
+    runtime = _arm_plugin_env(monkeypatch)
+
+    await _assert_no_inversion(
+        monkeypatch, runtime=runtime,
+        start_y=_via_admin_route("plugin_env", runtime),
+        full_calls=full_calls, regen=regen, notify=notify)
+
+
+async def test_casa_reload_plugin_env_takes_plugin_guard_before_rw_reader(
+    monkeypatch, _fresh_reload_locks, configurator_origin,
+) -> None:
+    """#706 — the same `plugin_env` site through the casa_reload tool entry
+    point, which is the documented required follow-up to
+    set_plugin_env_reference."""
+    import plugin_setup_episodes
+
+    regen, notify = _count_health_io(monkeypatch)
+    full_calls = _counted_full_handler(monkeypatch)
+    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
+    runtime = _arm_plugin_env(monkeypatch)
+
+    await _assert_no_inversion(
+        monkeypatch, runtime=runtime, start_y=_via_casa_reload("plugin_env"),
+        full_calls=full_calls, regen=regen, notify=notify)
