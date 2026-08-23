@@ -87,17 +87,26 @@ import json
 import subprocess
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True,
-                   capture_output=True,
-                   env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-                        "HOME": str(repo), "PATH": "/usr/bin:/bin"})
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                          capture_output=True,
+                          env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                               "GIT_COMMITTER_NAME": "t",
+                               "GIT_COMMITTER_EMAIL": "t@t",
+                               "HOME": str(repo), "PATH": "/usr/bin:/bin"})
 
 
 @pytest.fixture
 def git_plugin_repo(plugin_repo: Path) -> Path:
     _git(plugin_repo, "init", "-q")
+    # #714: git's auto-maintenance child (`git maintenance run --auto --detach`)
+    # is DETACHED, so it outlives the commit that spawns it and holds
+    # .git/objects/maintenance.lock for a moment afterwards -- long enough for a
+    # bare shutil.copytree of this repo to list the lock and then fail to copy
+    # it.  Set repo-locally and BEFORE the first commit, so every copytree copy
+    # inherits it through .git/config and commits made inside a copy are covered
+    # too.  See test_fixture_commit_spawns_no_background_writer.
+    _git(plugin_repo, "config", "--local", "maintenance.auto", "false")
     _git(plugin_repo, "add", "-A")
     _git(plugin_repo, "commit", "-qm", "init")
     return plugin_repo
