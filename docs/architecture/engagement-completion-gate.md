@@ -104,10 +104,14 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal`
 - `casa/rootfs/opt/casa/engagement_registry.py::TerminalPreconditionFailed`
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement`
+- `casa/rootfs/opt/casa/tools.py::emit_completion`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_unread_depth`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_unread_texts`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_texts`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_blocking`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.record_completion_refusal`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.force_completion_turn_boundary`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_texts`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_in_flight_texts`
