@@ -202,3 +202,234 @@ async def test_plugin_tools_guard_excludes_other_tasks() -> None:
         tools_mod._PLUGIN_TOOLS_LOCK.release()
     await asyncio.wait_for(task2, timeout=5.0)
     assert order == ["first", "other", "other"]
+
+
+# ---------------------------------------------------------------------------
+# #706 red cases (INV-CFG-011). `dispatch` takes the reload RW lock for EVERY
+# scope and holds it across the handler (reload.py:293-305), and the executors
+# and plugin_env handlers acquire the plugin-tools guard UNDERNEATH that held
+# reader (reload.py:1868, reload.py:1486) — the reverse of the documented
+# `_PLUGIN_TOOLS_LOCK -> reload RW lock` order the entry points state and, at
+# the base commit, fence for scope="full" ONLY. Two tasks, no timeout on
+# either side:
+#
+#   Y: entry point, scope="executors"/"plugin_env" -> RW reader -> wants guard
+#   X: holds the guard                             -> dispatch("full") -> wants RW writer
+#
+# ONE red case per inversion site, so removing either scope from the fenced
+# set identifies the uncovered half; a combined mutation would not.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _fresh_reload_locks(monkeypatch):
+    """Reload's global RW lock and per-scope locks bind to the loop that first
+    touches them; give each test its own, and clear any guard owner left by an
+    earlier test in this process."""
+    import reload as reload_mod
+    import tools as tools_mod
+    monkeypatch.setattr(reload_mod, "_GLOBAL_RW", None)
+    monkeypatch.setattr(reload_mod, "_LOCKS", {})
+    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK_OWNER", None)
+    yield
+
+
+@pytest.fixture
+def configurator_origin():
+    """casa_reload refuses an unprivileged caller before it reaches dispatch."""
+    import agent as agent_mod
+    tok = agent_mod.origin_var.set({"role": "configurator"})
+    try:
+        yield
+    finally:
+        agent_mod.origin_var.reset(tok)
+
+
+def _probe_guard(monkeypatch):
+    """Wrap `tools._plugin_tools_guard` so the FIRST attempt made by the probed
+    task records how many reload READERS are live at that moment and signals,
+    then delegates to the real guard.
+
+    That count IS the invariant: acquiring the plugin lock at the entry point
+    means zero readers are held when the attempt is made; acquiring it inside
+    the handler means the attempting task is itself holding one.
+    """
+    from contextlib import asynccontextmanager
+
+    import reload as reload_mod
+    import tools as tools_mod
+
+    real = tools_mod._plugin_tools_guard
+    probe: dict = {"task": None, "readers": None, "attempted": asyncio.Event()}
+
+    @asynccontextmanager
+    async def _wrapped():
+        if (asyncio.current_task() is probe["task"]
+                and probe["readers"] is None):
+            probe["readers"] = reload_mod._global_rw()._readers
+            probe["attempted"].set()
+        async with real():
+            yield
+
+    monkeypatch.setattr(tools_mod, "_plugin_tools_guard", _wrapped)
+    return probe
+
+
+def _count_health_io(monkeypatch):
+    """Counted, in-memory stand-ins for the health regen + notify the two
+    handlers perform under the guard (the real ones write /data)."""
+    import tools as tools_mod
+    regen: list = []
+    notify: list = []
+
+    def _regen(issues):
+        regen.append(issues)
+
+    async def _notify():
+        notify.append(True)
+
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", _regen)
+    monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible", _notify)
+    return regen, notify
+
+
+def _counted_full_handler(monkeypatch):
+    """X's counterparty is a REAL fenced full-scope dispatch; only the full
+    handler's body is replaced, so the RW writer acquisition stays real."""
+    import reload as reload_mod
+    calls: list = []
+
+    async def _full(runtime, *, role=None, include_env=False):
+        calls.append(True)
+        return []
+
+    monkeypatch.setitem(reload_mod._HANDLERS, "full", _full)
+    return calls
+
+
+async def _race_against_a_guard_holder(monkeypatch, *, runtime, start_y):
+    """Run the X/Y interleaving and return the measured signature."""
+    import reload as reload_mod
+    import tools as tools_mod
+
+    probe = _probe_guard(monkeypatch)
+    holding = asyncio.Event()
+    returns: list = []
+
+    async def _x():
+        # The documented entry-point shape: guard FIRST, then the reload lock.
+        async with tools_mod._plugin_tools_guard():
+            holding.set()
+            await asyncio.wait_for(probe["attempted"].wait(), timeout=3.0)
+            await reload_mod.dispatch("full", runtime=runtime)
+
+    x_task = asyncio.create_task(_x())
+    await asyncio.wait_for(holding.wait(), timeout=3.0)
+
+    y_task = asyncio.create_task(start_y(returns))
+    probe["task"] = y_task           # set before y_task's first step runs
+
+    done, pending = await asyncio.wait({x_task, y_task}, timeout=3.0)
+    rw = reload_mod._global_rw()
+    readers_at_end, queued_at_end = rw._readers, len(rw._queue)
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    return {
+        "readers_at_guard_attempt": probe["readers"],
+        "done": len(done), "pending": len(pending),
+        "readers_at_end": readers_at_end, "queued_at_end": queued_at_end,
+        "returns": len(returns),
+        "errors": [t.exception() for t in done if not t.cancelled()],
+    }
+
+
+async def test_casa_reload_executors_takes_plugin_guard_before_rw_reader(
+    monkeypatch, _fresh_reload_locks, configurator_origin,
+) -> None:
+    """#706 red case 1 of 2 — the `executors` inversion site (reload.py:1868),
+    through the casa_reload tool entry point, with the REAL reload_executors.
+
+    Pre-fix signature: the guard attempt is made with ONE reader held, X's
+    writer sits queued behind it, and neither task completes.
+    """
+    import agent as agent_mod
+    import plugin_setup_episodes
+    import reload as reload_mod
+    from tools import casa_reload
+
+    regen, notify = _count_health_io(monkeypatch)
+    full_calls = _counted_full_handler(monkeypatch)
+    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
+    monkeypatch.setitem(
+        reload_mod._HANDLERS, "executors", reload_mod.reload_executors)
+
+    class _Registry:
+        failed_types: set = set()
+
+        def load(self):
+            return None
+
+        def definition_any(self, name):
+            return None
+
+    class _Runtime:
+        executor_registry = _Registry()
+        executor_cc_policies = None
+        role_configs: dict = {}
+
+    runtime = _Runtime()
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime, raising=False)
+
+    async def _start_y(returns):
+        returns.append(await casa_reload.handler({"scope": "executors"}))
+
+    got = await _race_against_a_guard_holder(
+        monkeypatch, runtime=runtime, start_y=_start_y)
+
+    assert (got["readers_at_guard_attempt"], got["done"], got["pending"],
+            got["readers_at_end"], got["queued_at_end"],
+            len(full_calls), got["returns"], len(regen), len(notify),
+            ) == (0, 2, 0, 0, 0, 1, 1, 1, 1), got
+    assert [e for e in got["errors"] if e is not None] == []
+
+
+async def test_admin_reload_plugin_env_takes_plugin_guard_before_rw_reader(
+    monkeypatch, _fresh_reload_locks,
+) -> None:
+    """#706 red case 2 of 2 — the `plugin_env` inversion site (reload.py:1486),
+    the half the issue never named, through the /admin/reload entry point, with
+    the REAL reload_plugin_env.
+
+    Same pre-fix signature as red case 1, reached by a different entry point
+    and a different handler.
+    """
+    import plugin_env_conf
+    import plugin_setup_episodes
+    import reload as reload_mod
+    import secrets_resolver
+    from internal_handlers import build_admin_reload_handler
+
+    regen, notify = _count_health_io(monkeypatch)
+    full_calls = _counted_full_handler(monkeypatch)
+    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
+    monkeypatch.setitem(
+        reload_mod._HANDLERS, "plugin_env", reload_mod.reload_plugin_env)
+    monkeypatch.setattr(plugin_env_conf, "read_entries", lambda: {})
+    monkeypatch.setattr(secrets_resolver, "invalidate_cache", lambda: None)
+    monkeypatch.setattr(reload_mod, "_PLUGIN_ENV_LAST_KEYS", set())
+
+    runtime = object()
+    handler = build_admin_reload_handler(runtime=runtime)
+
+    async def _start_y(returns):
+        returns.append(await handler(_JsonReq({"scope": "plugin_env"})))
+
+    got = await _race_against_a_guard_holder(
+        monkeypatch, runtime=runtime, start_y=_start_y)
+
+    assert (got["readers_at_guard_attempt"], got["done"], got["pending"],
+            got["readers_at_end"], got["queued_at_end"],
+            len(full_calls), got["returns"], len(regen), len(notify),
+            ) == (0, 2, 0, 0, 0, 1, 1, 1, 1), got
+    assert [e for e in got["errors"] if e is not None] == []
