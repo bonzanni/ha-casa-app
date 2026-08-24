@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.232.0] - 2026-08-24
+
+### Fixed
+
+- A follow-up message to a running engagement is no longer answered with
+  silence when the turn dies part-way through its work. Casa already reported a
+  turn that died before producing anything at all, but a turn cut off in the
+  middle of using tools looked from the outside exactly like one that finished:
+  the message was consumed and nothing came back - no reply and no explanation.
+  The topic now gets one notice saying the turn did not finish, that whatever it
+  already posted may be partial, and that work it started may already have taken
+  effect. Casa stays quiet only where the engagement's own ending has already
+  been posted into that topic; a record that merely reads as finished is not
+  taken as proof that anything was said.
+- An engagement's topic is no longer marked completed, cancelled or failed when
+  the message explaining that outcome never reached it. Until now a completion
+  summary that failed to send was logged and the outcome tick was painted
+  anyway, so a topic could show a green completed tick over nothing. The mark is
+  now applied only once the send is acknowledged; when it is not, Casa posts a
+  short note in its place - the engagement is recorded with that outcome, its
+  summary could not be confirmed as posted here, and the topic is deliberately
+  left unmarked so the failure stays visible. The topic is closed either way.
+  None of this re-opens a finished engagement: the work did finish, and only the
+  telling failed.
+
 ## [0.231.0] - 2026-08-24
 
 ### Fixed
