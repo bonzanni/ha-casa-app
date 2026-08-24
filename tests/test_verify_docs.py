@@ -938,6 +938,29 @@ def test_an_unparseable_base_manifest_refuses_with_nothing_over_ceiling(tmp_path
     assert any("cannot tell" in p and "manifest row" in p for p in problems)
 
 
+def test_a_duplicate_key_base_row_is_a_refusal_not_untouched(tmp_path):
+    """The base manifest must parse under the SAME duplicate-refusing loader as
+    the tree's: plain safe_load keeps the last duplicate key, so an invalid
+    base row form could parse equal to a clean head row and read as untouched
+    — a green run over base state the verifier itself rejects."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    manifest = root / "docs" / "manifest.yaml"
+    good = manifest.read_text()
+    manifest.write_text(
+        good.replace(
+            "  when_changing: the turn lifecycle or turn timeouts\n",
+            "  when_changing: nonsense\n"
+            "  when_changing: the turn lifecycle or turn timeouts\n",
+        )
+    )
+    base = _commit(root)
+    manifest.write_text(good)
+    _commit(root)
+    problems, notices = verify_docs.check_ceilings(root, base=base)
+    assert any("cannot tell" in p and "manifest row" in p for p in problems)
+    assert not any("untouched" in n for n in notices)
+
+
 def test_a_representation_only_row_change_is_not_a_touch(tmp_path):
     """Row identity is what consumers PARSE: re-quoting a scalar changes no
     consumed semantic (the ceiling-binding kind included), so it must not turn

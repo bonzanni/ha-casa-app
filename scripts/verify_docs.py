@@ -605,13 +605,15 @@ def _rows_from(texts: list[str]) -> dict[str, dict] | None:
     Parsed — not raw text — on purpose too: row identity is what consumers parse, so a
     representation-only edit (quoting, folding, whitespace) does not "touch" a row,
     while every semantic change (a ceiling-binding kind flip included) is a parsed
-    difference; the duplicate-key channel is closed separately by the manifest schema
-    check.
+    difference. ONE parsing regime for both sides: the same duplicate-refusing loader
+    the tree's `_load_entries` uses — under plain safe_load a duplicate-key base row
+    (a form the verifier rejects) could parse equal to a clean head row and read as
+    untouched, a green run over invalid base state.
     """
     rows: dict[str, dict] = {}
     for text in texts:
         try:
-            part = yaml.safe_load(text)
+            part = yaml.load(text, _DuplicateKeyLoader)
         except yaml.YAMLError:
             return None
         if part is None:
