@@ -111,8 +111,13 @@ is the same false assertion as a completion emoji, so `completed`, `cancelled` a
 are all gated the same way.
 
 The disclosure says the summary could not be *confirmed*, never that it was not posted: a
-transport timeout can lose the acknowledgement of a message the wire accepted. It counts as
-a telling in its own right — if it lands, the topic has been told why the engagement ended,
+transport timeout can lose the acknowledgement of a message the wire accepted. It asserts
+only what the funnel can see at that point — the outcome the transition committed, that the
+post was not confirmed, and that the mark is being withheld — and nothing about the close
+below it, the retention ledger, the engager notification or what the record holds, all of
+which are best-effort or downstream. Three successive reviews found the same shape in this
+prose, each time a sentence claiming state its own site could not see, so the class of claim
+was removed rather than reworded a fourth time. It counts as a telling in its own right — if it lands, the topic has been told why the engagement ended,
 which is what a follow-up turn's owner reads (INV-ENG-012) — and its confirmation is the
 returned id, on the same rule as the summary's.
 

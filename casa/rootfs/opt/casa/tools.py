@@ -7995,12 +7995,8 @@ _DRIVER_CANCEL_TIMEOUT_S = 20.0
 
 _DISCLOSURE_UNCONFIRMED = (
     "\u26a0\ufe0f This engagement is recorded as {outcome}, but its completion "
-    "summary could not be confirmed as posted here. The topic is left "
-    "UNMARKED on purpose so the failure stays visible; it is closed like "
-    "every finished topic, and it is deleted with everything in it at its "
-    "retention deadline, so do not keep anything here. That the engagement "
-    "ENDED is recorded durably; whether its summary reached the engager is a "
-    "separate best-effort step this cannot speak for."
+    "summary could not be confirmed as posted here. The topic is left UNMARKED "
+    "on purpose, so the failure stays visible."
 )
 """#678: what the finalize funnel says in a topic whose completion summary it
 could not confirm.
@@ -8010,27 +8006,30 @@ could not confirm.
 claiming the summary is absent would sometimes be false about a message the
 operator can see.
 
-R2: it no longer says the topic is left OPEN, because it no longer is. An
-earlier revision withheld the close as the failure signal; a seam reviewer
-showed that state is not authoritative (the mark and the close are independent
-best-effort operations, so a CONFIRMED post whose mark and close both fail
-looks identical) while it does add a loss path — the retention-ledger append
-runs before this block, unconditionally, and the sweep deletes the topic and
-every message in it, so a note typed into a topic that still accepts messages
-goes with it. The withheld MARK carries the signal; what this sentence warns
-about is the retention deletion, which is true of every terminal topic and is
-the thing the operator can still act on.
+"left UNMARKED" is a statement about what this funnel is about to do, which is
+the one topic-lifecycle fact it can make: the mark is skipped on exactly this
+branch. It says nothing about the close, which is attempted below and can fail.
 
-The last sentence used to promise more than it could: "the outcome was
-delivered to the engager and is in the engagement record". Both halves can be
-false at once — the ``DelegationComplete`` notify and the retains live
-downstream in ``_finalize_engagement_tail``, they are best-effort and their
-failures are caught, and the record stores the terminal STATE rather than the
-completion text. So it now claims only what this block can actually see: the
-ending is durable, and the rest is a separate step. An acceptor returned the
-sibling channel-side notice for exactly this overclaim; the same sentence was
-here, replayed unchanged from the parked branch, and it is corrected in the
-same commit."""
+THE RULE THESE STRINGS OBEY, after the same finding shape three times. A notice
+posted from here may assert ONLY what its own site observed:
+
+  (a) the engagement's SETTLED terminal status, which is durable because the
+      strict transition commits memory and disk together or neither; and
+  (b) that the telling was NOT confirmed.
+
+Everything else was cut rather than reworded a fourth time. Three successive
+reviews found the same shape — prose asserting state the site cannot see: first
+"this turn did not finish … may be partial" (false when the stream carried
+text), then "the outcome was delivered to the engager and is in the engagement
+record" (the notify is best-effort and its failure is caught, and the record
+holds the terminal state rather than the summary text), then "this topic is
+closed … deleted with everything in it at its retention deadline" (the close
+can raise and the retention-ledger append is best-effort too). Sharpening the
+wording once more would have been the fourth patch on one mechanism. The
+mechanism is gone instead: there is no longer any sentence here about topic
+lifecycle, retention, the engager, or the record's contents. Pinned by
+whole-sentence equality AND by a list of claims that must never come back.
+"""
 
 # #632: detached finalize tails, anchored so the event loop cannot collect
 # them mid-flight. A tail is created only on the in_casa self-emit path (see

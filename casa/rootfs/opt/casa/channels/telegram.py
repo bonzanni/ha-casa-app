@@ -518,12 +518,8 @@ registry. On timeout the notice is posted ANYWAY: this issue is about silence,
 so the fail-open direction is toward telling the operator."""
 
 _TURN_ENDED_UNCONFIRMED_NOTICE = (
-    "This engagement has ended, but Casa could not confirm that its account of "
-    "the outcome reached this topic. If a summary appears above, that is the "
-    "outcome. That the engagement ended is recorded durably; whether its "
-    "summary reached anyone else is a separate best-effort step and is not "
-    "confirmed here either. This topic is closed and is deleted with "
-    "everything in it at its retention deadline, so do not keep anything here."
+    "This engagement has ended, and Casa could not confirm that its account of "
+    "the outcome reached this topic. If a summary appears above, that is it."
 )
 """#678: what a cut-off follow-up turn's owner says when the engagement is
 already TERMINAL and its terminal path could not confirm a telling.
@@ -533,21 +529,29 @@ in the first diff round, because that one would be FALSE here. A Telegram
 ``TimedOut`` can lose the acknowledgement of a completion summary the wire
 accepted: the operator then SEES the summary while the funnel recorded the
 telling as unconfirmed, and "this turn did not finish … anything it already
-posted above may be partial" contradicts what is on their screen. The turn also
-did not fail — it ended BECAUSE it completed the engagement, and its stream
-ended with no result frame for that reason.
+posted above may be partial" contradicts what is on their screen. The turn
+also did not fail — it ended BECAUSE it completed the engagement.
 
-So this says only what is true in both sub-cases: the engagement ended, and
-the account of it may or may not have arrived. It claims nothing about whether
-the summary is present, because that is exactly what cannot be known from here.
+THE RULE THESE STRINGS OBEY, after the same finding shape three times. A notice
+posted from here may assert ONLY what its own site observed:
 
-It also does NOT claim the outcome was delivered to the engager or is in the
-engagement record — a re-acceptance return, and the acceptor was right twice
-over. The engager notification is best-effort and its failure is caught
-(``tools.py``'s finalize tail), and the record stores the terminal STATE rather
-than the completion text, so both halves of that reassurance can be false at
-once. What is durable is that the engagement ended; whether its summary reached
-anywhere else is a separate step this cannot speak for."""
+  (a) the engagement's SETTLED terminal status, which is durable because the
+      strict transition commits memory and disk together or neither; and
+  (b) that the telling was NOT confirmed.
+
+Everything else was cut rather than reworded a fourth time. Three successive
+reviews found the same shape — prose asserting state the site cannot see: first
+"this turn did not finish … may be partial" (false when the stream carried
+text), then "the outcome was delivered to the engager and is in the engagement
+record" (the notify is best-effort and its failure is caught, and the record
+holds the terminal state rather than the summary text), then "this topic is
+closed … deleted with everything in it at its retention deadline" (the close
+can raise and the retention-ledger append is best-effort too). Sharpening the
+wording once more would have been the fourth patch on one mechanism. The
+mechanism is gone instead: there is no longer any sentence here about topic
+lifecycle, retention, the engager, or the record's contents. Pinned by
+whole-sentence equality AND by a list of claims that must never come back.
+"""
 
 
 _TURN_CUT_OFF_NOTICE = (

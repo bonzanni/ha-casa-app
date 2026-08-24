@@ -960,12 +960,8 @@ The regression case for that exact shape is
 
 
 _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE = (
-    "This engagement has ended, but Casa could not confirm that its account of "
-    "the outcome reached this topic. If a summary appears above, that is the "
-    "outcome. That the engagement ended is recorded durably; whether its "
-    "summary reached anyone else is a separate best-effort step and is not "
-    "confirmed here either. This topic is closed and is deleted with "
-    "everything in it at its retention deadline, so do not keep anything here."
+    "This engagement has ended, and Casa could not confirm that its account of "
+    "the outcome reached this topic. If a summary appears above, that is it."
 )
 """RE-SPECIFIED in the first diff round, by the reviewer who did not accept
 this red case, and re-accepted rather than edited on my own authority.
@@ -1432,11 +1428,20 @@ class TestTerminalStatusIsNotProofOfATelling:
         # independently of the equality above: a rewording that kept the
         # sentence's shape and reintroduced either would pass equality against
         # its own new text but not these.
-        assert "did not finish" not in _notice
-        assert "may be partial" not in _notice
-        # And the reassurance the re-acceptance return removed: this arm cannot
-        # see whether the engager was told, so it must not say it was.
-        assert "delivered to" not in _notice
+        # THE RULE, after the same finding shape three times: this notice may
+        # assert only the settled terminal status and that the telling was not
+        # confirmed. Every claim below is one a review found the notice could
+        # not see, and each is asserted independently of the equality above —
+        # a rewording that keeps the sentence's shape passes equality against
+        # its own new text and only these catch the content.
+        for _forbidden in ("did not finish",      # false when it streamed text
+                           "may be partial",      # same
+                           "delivered to",        # the notify is best-effort
+                           "engagement record",   # holds state, not the text
+                           "closed",              # the close can raise
+                           "deleted",             # retention append is best-effort
+                           "retention"):
+            assert _forbidden not in _notice, _forbidden
         # And the funnel had already made its OWN one bounded attempt and
         # failed it, so this notice is not a second telling of the same thing.
         assert len(sends) == 2

@@ -628,12 +628,8 @@ def test_terminal_hook_abort_raises_and_leaves_live():
 
 _EXPECTED_DISCLOSURE = (
     "\u26a0\ufe0f This engagement is recorded as {outcome}, but its completion "
-    "summary could not be confirmed as posted here. The topic is left "
-    "UNMARKED on purpose so the failure stays visible; it is closed like "
-    "every finished topic, and it is deleted with everything in it at its "
-    "retention deadline, so do not keep anything here. That the engagement "
-    "ENDED is recorded durably; whether its summary reached the engager is a "
-    "separate best-effort step this cannot speak for."
+    "summary could not be confirmed as posted here. The topic is left UNMARKED "
+    "on purpose, so the failure stays visible."
 )
 """The disclosure's exact sentence, duplicated here rather than imported so a
 reworded production string fails a test. "could not be CONFIRMED as posted",
@@ -805,8 +801,17 @@ class TestFinalizeCompletionConfirmation:
         assert telegram.send_response_to_topic.await_count == 1
         # ONE bounded plain disclosure, and it is the whole sentence.
         assert telegram.send_to_topic.await_count == 1
-        assert (telegram.send_to_topic.await_args.args[1]
-                == _EXPECTED_DISCLOSURE.format(outcome="completed"))
+        _disclosure = telegram.send_to_topic.await_args.args[1]
+        assert _disclosure == _EXPECTED_DISCLOSURE.format(outcome="completed")
+        # THE RULE (see the sibling list in test_launch_death_reporter.py):
+        # this disclosure may assert only the outcome the flip committed, that
+        # the post was not confirmed, and that the MARK is being withheld —
+        # which is the one topic-lifecycle fact this branch decides. The close
+        # is attempted below it and can fail; the retention-ledger append is
+        # best-effort; the engager notification is best-effort and downstream.
+        for _forbidden in ("delivered to", "engagement record", "closed",
+                           "deleted", "retention"):
+            assert _forbidden not in _disclosure, _forbidden
         # The topic is left UNPAINTED — the defect was painting ✅ over a
         # topic that heard nothing. It is still CLOSED, like every
         # terminal topic (R2).
