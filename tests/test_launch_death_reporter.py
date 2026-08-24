@@ -1430,17 +1430,14 @@ class TestTerminalStatusIsNotProofOfATelling:
         # its own new text but not these.
         # THE RULE, after the same finding shape three times: this notice may
         # assert only the settled terminal status and that the telling was not
-        # confirmed. Every claim below is one a review found the notice could
-        # not see, and each is asserted independently of the equality above —
-        # a rewording that keeps the sentence's shape passes equality against
-        # its own new text and only these catch the content.
-        for _forbidden in ("did not finish",      # false when it streamed text
-                           "may be partial",      # same
-                           "delivered to",        # the notify is best-effort
-                           "engagement record",   # holds state, not the text
-                           "closed",              # the close can raise
-                           "deleted",             # retention append is best-effort
-                           "retention"):
+        # confirmed. Each claim is one a review found the notice could not see,
+        # and each is asserted independently of the equality above — a
+        # rewording that keeps the sentence's shape passes equality against its
+        # own new text and only these catch the content. ONE list, shared with
+        # the funnel's own disclosure test: two copies had already diverged
+        # when an acceptor checked them.
+        from test_finalize_engagement import FORBIDDEN_NOTICE_CLAIMS
+        for _forbidden in FORBIDDEN_NOTICE_CLAIMS:
             assert _forbidden not in _notice, _forbidden
         # And the funnel had already made its OWN one bounded attempt and
         # failed it, so this notice is not a second telling of the same thing.

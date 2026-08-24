@@ -626,6 +626,32 @@ def test_terminal_hook_abort_raises_and_leaves_live():
 # ---------------------------------------------------------------------------
 
 
+FORBIDDEN_NOTICE_CLAIMS = (
+    "did not finish",      # false when the stream carried text, and wrong
+                           # about the cause when the turn ENDED the engagement
+    "may be partial",      # same
+    "delivered to",        # the engager notification is best-effort, caught
+    "engagement record",   # holds the terminal STATE, not the summary text
+    "closed",              # the close is attempted after this and can raise
+    "deleted",             # the retention-ledger append is best-effort too
+    "retention",           # same
+)
+"""THE RULE, after the same finding shape three times: an unconfirmed-completion
+notice may assert ONLY what its own site observed — the settled terminal status,
+that the telling was not confirmed, and (for the funnel) that the MARK is being
+withheld, which is the decision that branch is itself taking.
+
+Every entry is a claim a review actually caught in one of these two notices, so
+this records the shape rather than guessing at it.
+
+ONE definition, imported by ``tests/test_launch_death_reporter.py`` for the
+channel-side notice. Two copies were written first and an acceptor found the
+copies had already diverged — the funnel's list was missing the first two
+entries, so a rewording could have reintroduced "did not finish" there with
+every assertion still green. A rule asserted at two sites from two lists is a
+rule at neither."""
+
+
 _EXPECTED_DISCLOSURE = (
     "\u26a0\ufe0f This engagement is recorded as {outcome}, but its completion "
     "summary could not be confirmed as posted here. The topic is left UNMARKED "
@@ -809,8 +835,7 @@ class TestFinalizeCompletionConfirmation:
         # which is the one topic-lifecycle fact this branch decides. The close
         # is attempted below it and can fail; the retention-ledger append is
         # best-effort; the engager notification is best-effort and downstream.
-        for _forbidden in ("delivered to", "engagement record", "closed",
-                           "deleted", "retention"):
+        for _forbidden in FORBIDDEN_NOTICE_CLAIMS:
             assert _forbidden not in _disclosure, _forbidden
         # The topic is left UNPAINTED — the defect was painting ✅ over a
         # topic that heard nothing. It is still CLOSED, like every
