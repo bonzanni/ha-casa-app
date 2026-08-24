@@ -258,8 +258,12 @@ asks, on its success path, whether the turn it just ran left that artifact, and 
 bounded notice when it did not. It stays quiet only when the engagement's settled record is
 terminal AND that terminal path confirmed a telling into this topic — a terminal status on
 its own is not proof anything was said, and where it is not known that the topic was told,
-the notice is posted. That notice is a single attempt and is not ordered against a
-concurrent finalization's topic operations; the contract is INV-ENG-012 in
+the notice is posted. What it says depends on that answer, and the two are not
+interchangeable: over a live record the turn really was cut off, while over a terminal one
+it ended because it completed the engagement — whose summary may in fact already be on the
+operator's screen, since a lost acknowledgement is indistinguishable from a failed send
+from here. That notice is a single attempt and is not ordered against a concurrent
+finalization's topic operations; the contract is INV-ENG-012 in
 [`architecture/engagements.md`](engagements.md).
 
 ## Extension points

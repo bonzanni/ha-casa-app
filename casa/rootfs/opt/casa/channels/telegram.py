@@ -517,6 +517,32 @@ Telegram delivery task — which must not be able to wedge behind a wedged
 registry. On timeout the notice is posted ANYWAY: this issue is about silence,
 so the fail-open direction is toward telling the operator."""
 
+_TURN_ENDED_UNCONFIRMED_NOTICE = (
+    "This engagement has ended, but Casa could not confirm that its account of "
+    "the outcome reached this topic. If a summary appears above, that is the "
+    "outcome; if none does, the outcome is still in the engagement record and "
+    "was delivered to whoever asked for the work. This topic is closed and is "
+    "deleted with everything in it at its retention deadline, so do not keep "
+    "anything here."
+)
+"""#678: what a cut-off follow-up turn's owner says when the engagement is
+already TERMINAL and its terminal path could not confirm a telling.
+
+A distinct sentence from :data:`_TURN_CUT_OFF_NOTICE`, on a reviewer's finding
+in the first diff round, because that one would be FALSE here. A Telegram
+``TimedOut`` can lose the acknowledgement of a completion summary the wire
+accepted: the operator then SEES the summary while the funnel recorded the
+telling as unconfirmed, and "this turn did not finish … anything it already
+posted above may be partial" contradicts what is on their screen. The turn also
+did not fail — it ended BECAUSE it completed the engagement, and its stream
+ended with no result frame for that reason.
+
+So this says only what is true in both sub-cases: the engagement ended, the
+account of it may or may not have arrived, and the outcome exists elsewhere
+either way. It claims nothing about whether the summary is present, because
+that is exactly what cannot be known from here."""
+
+
 _TURN_CUT_OFF_NOTICE = (
     "This turn did not finish: its stream stopped without ResultMessage, the "
     "frame that marks a turn that ran to its end, so its outcome was never "
@@ -2129,7 +2155,8 @@ class TelegramChannel(Channel):
                 "engagement (%s) whose terminal path DID tell this topic — it "
                 "owns the telling", rec.id[:8], status)
             return
-        if status in ("completed", "cancelled", "error"):
+        terminal_untold = status in ("completed", "cancelled", "error")
+        if terminal_untold:
             logger.warning(
                 "turn %s ended without its result frame on a terminal "
                 "engagement (%s) whose terminal path told this topic nothing "
@@ -2138,9 +2165,17 @@ class TelegramChannel(Channel):
             "engagement %s: a follow-up turn ended without its result frame "
             "over a live record (reason=%s) — telling the operator",
             rec.id[:8], reason)
+        # WHICH telling depends on the state, and the two are not
+        # interchangeable: over a LIVE record the turn really was cut off, and
+        # over a TERMINAL one it ended because it completed the engagement,
+        # whose account may in fact be on the operator's screen already (a lost
+        # acknowledgement is indistinguishable from a failed send from here).
         try:
             await asyncio.wait_for(
-                self._post_engagement_notice(rec, _TURN_CUT_OFF_NOTICE),
+                self._post_engagement_notice(
+                    rec,
+                    _TURN_ENDED_UNCONFIRMED_NOTICE if terminal_untold
+                    else _TURN_CUT_OFF_NOTICE),
                 _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
         except BaseException:  # noqa: BLE001 — one bounded best-effort attempt
             logger.warning("incomplete-turn notice failed for %s",

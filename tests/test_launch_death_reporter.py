@@ -959,6 +959,30 @@ The regression case for that exact shape is
 ``test_a_cutoff_that_already_posted_text_does_not_claim_silence``."""
 
 
+_EXPECTED_TERMINAL_UNCONFIRMED_NOTICE = (
+    "This engagement has ended, but Casa could not confirm that its account of "
+    "the outcome reached this topic. If a summary appears above, that is the "
+    "outcome; if none does, the outcome is still in the engagement record and "
+    "was delivered to whoever asked for the work. This topic is closed and is "
+    "deleted with everything in it at its retention deadline, so do not keep "
+    "anything here."
+)
+"""RE-SPECIFIED in the first diff round, by the reviewer who did not accept
+this red case, and re-accepted rather than edited on my own authority.
+
+The terminal-and-untold arm used to post ``_EXPECTED_CUT_OFF_NOTICE``. Sol
+reproduced why that is false: a Telegram ``TimedOut`` can lose the
+acknowledgement of a completion summary the wire ACCEPTED, so the operator can
+be looking at the summary while the funnel recorded the telling as unconfirmed
+— and "this turn did not finish … anything it already posted above may be
+partial" contradicts their screen. The turn did not fail there either; it ended
+because it completed the engagement.
+
+Written out rather than imported, for the same reason as the sentence below it.
+Asserted by whole-sentence equality AND by the two clauses that must NOT come
+back, which protect different things."""
+
+
 def _seam(drv):
     """What ``casa_core`` wires: SYNCHRONOUS, ``getattr``-guarded, "" for a
     driver that has no such accessor. Tolerant on purpose, so the PRE-FIX
@@ -1066,6 +1090,10 @@ class TestTheFollowUpTurnHasAFailureOwner:
         assert ch._post_engagement_notice.await_count == 1
         _notice = ch._post_engagement_notice.await_args.args[1]
         assert _notice == _EXPECTED_CUT_OFF_NOTICE
+        # And it is NOT the terminal-unconfirmed sentence: over a LIVE record
+        # the turn really was cut off, and the two tellings are not
+        # interchangeable (first diff round).
+        assert _notice != _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE
         # Sol's own assertion, kept independently of the equality above: the
         # notice must state the terminal-artifact fact, not merely that
         # something went wrong.
@@ -1381,12 +1409,23 @@ class TestTerminalStatusIsNotProofOfATelling:
         # case's own reason.
         assert sends[0] == f"Engagement {terminal}. Summary:\ndone"
         assert reg.get(rec.id).status == terminal
-        # ONE notice, the whole sentence. The operator is not left holding a
-        # terminal record over an empty topic. THIS is the red case's reason:
-        # pre-fix the count is 0.
+        # ONE notice. The operator is not left holding a terminal record over
+        # a topic that heard nothing. THIS is the red case's reason: pre-fix
+        # the count is 0.
         assert ch._post_engagement_notice.await_count == 1
-        assert (ch._post_engagement_notice.await_args.args[1]
-                == _EXPECTED_CUT_OFF_NOTICE)
+        _notice = ch._post_engagement_notice.await_args.args[1]
+        # And it is the TERMINAL sentence, not the cut-off one — the
+        # re-specification the first diff round produced. The engagement ended
+        # because this turn completed it, and a lost acknowledgement is
+        # indistinguishable from a failed send from here, so the operator may
+        # be looking at the summary right now.
+        assert _notice == _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE
+        # The two clauses that must never come back on this arm, asserted
+        # independently of the equality above: a rewording that kept the
+        # sentence's shape and reintroduced either would pass equality against
+        # its own new text but not these.
+        assert "did not finish" not in _notice
+        assert "may be partial" not in _notice
         # And the funnel had already made its OWN one bounded attempt and
         # failed it, so this notice is not a second telling of the same thing.
         assert len(sends) == 2
