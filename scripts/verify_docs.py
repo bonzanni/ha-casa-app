@@ -598,10 +598,15 @@ def _base_doc_size(repo_root: Path, base: str, doc: str) -> tuple[str, int]:
 
 
 def _rows_from(texts: list[str]) -> dict[str, dict] | None:
-    """doc -> raw manifest row, or None if any part is unreadable as a manifest.
+    """doc -> manifest row as PARSED, or None if any part is unreadable as a manifest.
 
-    RAW rows on purpose: `_load_entries` normalises entries in place, and comparing a
-    normalised row against a raw one would report every over-at-base document touched.
+    Un-normalised on purpose: `_load_entries` mutates entries in place, and comparing a
+    mutated row against a fresh one would report every over-at-base document touched.
+    Parsed — not raw text — on purpose too: row identity is what consumers parse, so a
+    representation-only edit (quoting, folding, whitespace) does not "touch" a row,
+    while every semantic change (a ceiling-binding kind flip included) is a parsed
+    difference; the duplicate-key channel is closed separately by the manifest schema
+    check.
     """
     rows: dict[str, dict] = {}
     for text in texts:
@@ -688,6 +693,19 @@ def check_ceilings(repo_root: Path, base: str | None = None) -> tuple[list[str],
             notices,
         )
 
+    base_rows: dict[str, dict] | None = None
+    if base is not None:
+        base_rows = _base_rows(repo_root, base)
+        if base_rows is None:
+            # Eager, like the commit check above: an unreadable base manifest must
+            # refuse on the first pull request that meets it, not only when an
+            # over-ceiling document happens to need its row compared.
+            return (
+                [f"the manifest at base {base} is unreadable — cannot tell whether "
+                 f"this change touches any document's manifest row; refusing to guess"],
+                notices,
+            )
+
     entries, _ = _load_entries(docs_dir)
     cache: dict[str, object] = {}
 
@@ -698,7 +716,7 @@ def check_ceilings(repo_root: Path, base: str | None = None) -> tuple[list[str],
 
     def _rows() -> tuple[dict[str, dict] | None, dict[str, dict] | None]:
         if "rows" not in cache:
-            cache["rows"] = (_base_rows(repo_root, base), _tree_rows(docs_dir))
+            cache["rows"] = (base_rows, _tree_rows(docs_dir))
         return cache["rows"]
 
     for entry in entries:
@@ -1201,12 +1219,19 @@ def main() -> int:
     root = Path(positional[0] if positional else ".").resolve()
 
     base = None
-    if "--base" in args:
-        index = args.index("--base")
-        if index + 1 >= len(args):
-            print("✗ --base needs a value: --base <commit>")
-            return 1
-        base = args[index + 1]
+    for index, arg in enumerate(args):
+        if arg == "--base":
+            if index + 1 >= len(args):
+                print("✗ --base needs a value: --base <commit>")
+                return 1
+            base = args[index + 1]
+        elif arg.startswith("--base="):
+            # The GNU spelling must not be silently dropped: an ignored --base
+            # disarms the only enforcing size check with a green exit.
+            base = arg.split("=", 1)[1]
+    if base == "":
+        print("✗ --base needs a value: --base <commit>")
+        return 1
 
     if "--impact" in args:
         raw = sys.stdin.read()

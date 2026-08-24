@@ -923,6 +923,68 @@ def test_an_unparseable_base_manifest_is_a_refusal(tmp_path):
     assert any("cannot tell" in p and "manifest row" in p for p in problems)
 
 
+def test_an_unparseable_base_manifest_refuses_with_nothing_over_ceiling(tmp_path):
+    """Eager, like the base-commit check: the refusal must fire on the first
+    pull request that meets an unreadable base manifest, not only when an
+    over-ceiling document happens to need its row compared."""
+    root = _corpus(tmp_path)
+    manifest = root / "docs" / "manifest.yaml"
+    good = manifest.read_text()
+    manifest.write_text("- doc: [unclosed\n")
+    base = _commit(root)
+    manifest.write_text(good)
+    _commit(root)
+    problems = verify_docs.verify(root, base=base)
+    assert any("cannot tell" in p and "manifest row" in p for p in problems)
+
+
+def test_a_representation_only_row_change_is_not_a_touch(tmp_path):
+    """Row identity is what consumers PARSE: re-quoting a scalar changes no
+    consumed semantic (the ceiling-binding kind included), so it must not turn
+    an inherited over-ceiling document into this change's business. A semantic
+    row change stays a touch — test_a_manifest_row_change_touches_an_over_ceiling_document
+    pins that side."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    manifest = root / "docs" / "manifest.yaml"
+    assert "  when_changing: the turn lifecycle or turn timeouts\n" in manifest.read_text()
+    manifest.write_text(
+        manifest.read_text().replace(
+            "  when_changing: the turn lifecycle or turn timeouts\n",
+            '  when_changing: "the turn lifecycle or turn timeouts"\n',
+        )
+    )
+    _commit(root)
+    problems, notices = verify_docs.check_ceilings(root, base=base)
+    assert problems == []
+    assert any("turn-loop.md" in n and "untouched" in n for n in notices)
+
+
+def test_cli_base_equals_form_reaches_the_size_check(tmp_path, monkeypatch, capsys):
+    """`--base=<sha>` must behave exactly like `--base <sha>` — a silently
+    dropped flag would disarm the only enforcing size check with a green exit."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    verify_docs.write_nav(root)
+    base = _commit(root)
+    (root / "docs" / "architecture" / "turn-loop.md").write_text(BIG + "words\n")
+    verify_docs.write_nav(root)
+    _commit(root)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root), f"--base={base}"])
+    assert verify_docs.main() == 1
+    assert "split it first" in capsys.readouterr().out
+
+
+def test_cli_base_with_no_value_refuses(tmp_path, monkeypatch, capsys):
+    root = _corpus(tmp_path)
+    verify_docs.write_nav(root)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root), "--base"])
+    assert verify_docs.main() == 1
+    assert "--base needs a value" in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root), "--base="])
+    assert verify_docs.main() == 1
+    assert "--base needs a value" in capsys.readouterr().out
+
+
 def test_cli_base_flag_reaches_the_size_check(tmp_path, monkeypatch, capsys):
     root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
     verify_docs.write_nav(root)
