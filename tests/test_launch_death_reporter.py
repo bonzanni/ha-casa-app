@@ -983,8 +983,16 @@ notify that raises after an unconfirmed post makes that sentence a second false
 reassurance in the same place the first one was removed from.
 
 Written out rather than imported, for the same reason as the sentence below it.
-Asserted by whole-sentence equality AND by the clauses that must NOT come back,
-which protect different things."""
+
+ASSERTED BY WHOLE-SENTENCE EQUALITY, and by nothing else. A list of forbidden
+phrases was tried here and CUT: it was widened twice and bypassed three times by
+respelling the same false claims, so it read as assurance it could not give. The
+equality assertion is the control that holds — it stops a reword of the
+production string alone — and no test stops a reword of this string and its
+expectation together, because whether a new sentence is TRUE is a judgment that
+belongs to review. The rule the sentence obeys is stated at the production site,
+in ``channels/telegram.py``, and in
+``docs/architecture/engagement-finalization.md``."""
 
 
 def _seam(drv):
@@ -1423,18 +1431,15 @@ class TestTerminalStatusIsNotProofOfATelling:
         # because this turn completed it, and a lost acknowledgement is
         # indistinguishable from a failed send from here, so the operator may
         # be looking at the summary right now.
-        assert _notice == _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE
-        # The two clauses that must never come back on this arm, asserted
-        # independently of the equality above: a rewording that kept the
-        # sentence's shape and reintroduced either would pass equality against
-        # its own new text but not these.
-        # The rule this sentence obeys — assert only the settled terminal
-        # status and that the telling was not confirmed — is stated at the
-        # production site, not asserted here as a phrase blacklist. One stood
-        # here and was cut: it was widened twice and bypassed three times with
-        # the same false claims in new spellings, and the equality above is the
-        # guard that actually holds. See the note in
+        # Whole-sentence equality, and nothing else. That is the whole of what
+        # this arm asserts about the wording: a phrase blacklist stood here,
+        # was widened twice, was bypassed three times by respelling the same
+        # false claims, and was cut. The equality stops a reword of the
+        # production string alone; a reword of both together is a judgment for
+        # review, and the rule is stated at the production site and in
+        # docs/architecture/engagement-finalization.md. See the note in
         # tests/test_finalize_engagement.py.
+        assert _notice == _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE
         # And the funnel had already made its OWN one bounded attempt and
         # failed it, so this notice is not a second telling of the same thing.
         assert len(sends) == 2
