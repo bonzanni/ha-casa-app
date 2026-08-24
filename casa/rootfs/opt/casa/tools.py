@@ -8027,8 +8027,16 @@ closed … deleted with everything in it at its retention deadline" (the close
 can raise and the retention-ledger append is best-effort too). Sharpening the
 wording once more would have been the fourth patch on one mechanism. The
 mechanism is gone instead: there is no longer any sentence here about topic
-lifecycle, retention, the engager, or the record's contents. Pinned by
-whole-sentence equality AND by a list of claims that must never come back.
+lifecycle, retention, the engager, or the record's contents.
+
+WHICH CONTROL HOLDS THIS, stated exactly, because a blacklist of forbidden
+phrases stood here and was CUT: the suite pins this sentence by WHOLE-SENTENCE
+EQUALITY, so it cannot change silently — a production-only reword fails a test.
+Nothing in the suite stops an author who edits this string and its expectation
+TOGETHER, and nothing can: whether a new sentence is TRUE is a judgment, and the
+blacklist that tried to encode it was bypassed three times by respelling the same
+false claims. So if you are editing this string, the rule above is the control,
+and it is on you. See `architecture/engagement-finalization.md`.
 """
 
 # #632: detached finalize tails, anchored so the event loop cannot collect
