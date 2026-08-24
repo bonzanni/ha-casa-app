@@ -1559,6 +1559,81 @@ class TestTheSettledStatusReadIsBoundedAndProduction:
         assert (ch._post_engagement_notice.await_args.args[1]
                 == _EXPECTED_CUT_OFF_NOTICE)
 
+    async def test_the_settled_read_really_waits_on_the_registry_lock(
+        self, tmp_path, monkeypatch,
+    ):
+        """MUTATION: drop the ``async with self._lock`` from
+        ``EngagementRegistry.settled_terminal_state`` → this fails, twice over
+        (the read completes while the transition is still in flight, and it
+        returns the transient terminal value instead of what settled).
+
+        The mutation sweep found this gap and it is worth naming: the sibling
+        test above monkeypatches ``settled_terminal_state`` wholesale, so it
+        pins what the CHANNEL does with the answer and cannot see how the
+        registry produced it. Removing the lock left it green. This one calls
+        the real accessor against a real transition.
+
+        The arrangement is the window the lock exists for. A strict terminal
+        transition commits the record's terminal fields in memory, then awaits
+        the tombstone write, then FULL-FIELD restores them if that write fails
+        — all while holding the lock. A reader that does not take the lock
+        lands inside that window and sees ``completed`` for a transition that
+        rolls back live.
+
+        The wedged counterparty is an Event that is never set until the test
+        sets it; no ``asyncio.sleep`` is patched and nothing is awaited for a
+        duration.
+        """
+        from engagement_registry import EngagementRegistry
+
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None)
+        rec = await reg.create(
+            "executor", "configurator", "in_casa", "t",
+            {"role": "assistant", "channel": "telegram"}, topic_id=901)
+
+        inside = asyncio.Event()
+        release = asyncio.Event()
+        real_write = reg._write_tombstone_locked
+
+        async def _blocking_write(*a, strict: bool = False, **kw):
+            if not strict:                       # the create's own write
+                return await real_write(*a, strict=strict, **kw)
+            inside.set()
+            await release.wait()
+            # What the real writer records for a write that did NOT settle
+            # (engagement_registry.py:739). The strict path's rollback is
+            # guarded on this flag, so a double that skipped it would leave the
+            # record terminal and the arrangement would not be the one under
+            # test.
+            reg._last_tombstone_ok = False
+            raise RuntimeError("tombstone write failed")
+
+        monkeypatch.setattr(reg, "_write_tombstone_locked", _blocking_write)
+
+        flip = asyncio.ensure_future(
+            reg.try_transition_terminal(rec.id, "completed", strict=True))
+        await inside.wait()
+        # In memory the record ALREADY reads terminal — the transient value a
+        # lock-free reader would return.
+        assert reg.get(rec.id).status == "completed"
+
+        read = asyncio.ensure_future(reg.settled_terminal_state(rec.id))
+        for _ in range(20):                      # queued work only, no duration
+            await asyncio.sleep(0)
+        # THE PIN: the read has not answered, because it is waiting for the
+        # transition to settle.
+        assert read.done() is False
+
+        release.set()
+        with pytest.raises(RuntimeError):
+            await flip
+        status, told = await read
+
+        # And what it answers is what SETTLED: the transition rolled back.
+        assert (status, told) == ("active", False)
+        assert reg.get(rec.id).status == "active"
+
     async def test_the_settled_read_is_what_suppresses_not_a_lockfree_read(
         self, tmp_path, fake_telegram_bot, monkeypatch,
     ):
