@@ -87,17 +87,26 @@ import json
 import subprocess
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True,
-                   capture_output=True,
-                   env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-                        "HOME": str(repo), "PATH": "/usr/bin:/bin"})
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                          capture_output=True,
+                          env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                               "GIT_COMMITTER_NAME": "t",
+                               "GIT_COMMITTER_EMAIL": "t@t",
+                               "HOME": str(repo), "PATH": "/usr/bin:/bin"})
 
 
 @pytest.fixture
 def git_plugin_repo(plugin_repo: Path) -> Path:
     _git(plugin_repo, "init", "-q")
+    # #714: git's auto-maintenance child (`git maintenance run --auto --detach`)
+    # is DETACHED, so it outlives the commit that spawns it and holds
+    # .git/objects/maintenance.lock for a moment afterwards -- long enough for a
+    # bare shutil.copytree of this repo to list the lock and then fail to copy
+    # it.  Set repo-locally and BEFORE the first commit, so every copytree copy
+    # inherits it through .git/config and commits made inside a copy are covered
+    # too.  See test_fixture_commit_spawns_no_background_writer.
+    _git(plugin_repo, "config", "--local", "maintenance.auto", "false")
     _git(plugin_repo, "add", "-A")
     _git(plugin_repo, "commit", "-qm", "init")
     return plugin_repo
@@ -696,3 +705,133 @@ class TestGuardArmingAndOracle:
         clean.mkdir()
         assert await self._denied(
             clean, f'git -C "{spaced}" push origin main')
+
+
+# ---------------------------------------------------------------------------
+# #714: the fixture's own `git commit` must leave no background writer running
+# against a repository this file then byte-copies.  The eight bare
+# `shutil.copytree` sites above walk a live `.git` with `os.scandir` and copy
+# afterwards, so an entry that git's detached auto-maintenance child creates and
+# unlinks in that window is collected into a `shutil.Error` -- the tier2 flake on
+# protected main at 1e17f7d1.  A green suite is NOT evidence here (0/300 and
+# 0/250 local loops never reproduced the race), so the pin counts the WRITER,
+# not the copy.
+# ---------------------------------------------------------------------------
+
+def _git_supports_auto_maintenance(tmp_path: Path) -> bool:
+    """True if this git has the `maintenance` command at all.
+
+    Deliberately matcher-free: it reads no trace2 output, so a broken argv
+    matcher cannot route the pin into a skip (it must fail the control arm
+    instead).
+    """
+    probe = tmp_path / "maintenance-capability-probe"
+    probe.mkdir()
+    _git(probe, "init", "-q")
+    done = subprocess.run(
+        ["git", "-C", str(probe), "maintenance", "run", "--auto", "--quiet"],
+        capture_output=True,
+        env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+             "HOME": str(probe), "PATH": "/usr/bin:/bin"})
+    return done.returncode == 0
+
+
+def _maintenance_children(repo: Path, trace: Path, probe: str) -> list[list[str]]:
+    """Commit `probe` in `repo` with trace2 bound FRESH to `trace`; return the
+    argv of every maintenance/gc child that commit spawned.
+
+    trace2 is honoured only from the environment and from *global* config -- not
+    from `-c` and not from repo-local config (measured: `git -c
+    trace2.eventTarget=... commit` writes no file at all).  `_git` replaces the
+    environment and sets `HOME` to the repo, so `<repo>/.gitconfig` IS this
+    repo's global config and is the working carrier.  A byte-copied `.gitconfig`
+    keeps the SOURCE's absolute target, which is why every caller rebinds.
+
+    The observation contract lives HERE rather than in each arm: a zero count
+    must mean "observed the commit, and it spawned no writer", never "did not
+    observe".  So the target is rebound immediately before the commit (nothing
+    earlier can be in the file) and exactly one `commit` command event must be
+    present before any match is returned.
+    """
+    _write(repo / ".gitconfig", f"[trace2]\n\teventTarget = {trace}\n")
+    _write(repo / probe, "probe\n")
+    _git(repo, "add", "--", probe)
+    _git(repo, "commit", "-qm", f"probe {probe}")
+
+    assert trace.exists(), (
+        f"trace2 wrote nothing to {trace}: the probe commit was not observed, "
+        f"so a zero maintenance-child count would be meaningless")
+    events = []
+    for line in trace.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue          # tolerate a torn trailing line from the detached child
+    commits = [e for e in events
+               if e.get("event") == "cmd_name" and "commit" in str(e.get("name", ""))]
+    assert len(commits) == 1, (
+        f"expected exactly 1 traced `commit` in {trace}, got {len(commits)}: "
+        f"the arm did not observe its own probe commit "
+        f"({len(events)} events total)")
+    return [e["argv"] for e in events
+            if e.get("event") == "child_start"
+            and len(e.get("argv") or []) > 1
+            and e["argv"][1] in ("maintenance", "gc")]
+
+
+def _local_maintenance_auto(repo: Path) -> list[str]:
+    """Every repo-local value of maintenance.auto, as text (stdout is bytes)."""
+    done = subprocess.run(
+        ["git", "-C", str(repo), "config", "--local", "--get-all",
+         "maintenance.auto"],
+        capture_output=True,
+        env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+             "HOME": str(repo), "PATH": "/usr/bin:/bin"})
+    return done.stdout.decode().split()
+
+
+async def test_fixture_commit_spawns_no_background_writer(
+        tmp_path: Path, git_plugin_repo: Path) -> None:
+    """#714: no maintenance/gc child from a fixture commit, in the repo OR a copy.
+
+    Three arms.  The CONTROL proves the predicate can fire on this git build
+    (a zero there fails, it does not skip).  The TREATMENT and COPY arms are the
+    property the eight copytree sites depend on.
+    """
+    import shutil
+
+    if not _git_supports_auto_maintenance(tmp_path):
+        pytest.skip("this git has no `maintenance` command; the race cannot occur")
+
+    # --- control: a repo built the pre-fix way, auto-maintenance explicitly on.
+    control = tmp_path / "control-repo"
+    control.mkdir()
+    _git(control, "init", "-q")
+    _git(control, "config", "--local", "maintenance.auto", "true")
+    spawned = _maintenance_children(control, tmp_path / "control.trace", "c.txt")
+    assert len(spawned) >= 1, (
+        "control arm observed 0 maintenance children with maintenance.auto=true: "
+        "the oracle cannot see the writer, so the assertions below would be "
+        f"vacuous (git: {subprocess.run(['git', '--version'], capture_output=True).stdout!r})")
+
+    # --- treatment: the real fixture.  Count FIRST, so the pre-fix tree fails on
+    # the outcome (a writer was spawned) rather than on the arrangement.
+    treated = _maintenance_children(
+        git_plugin_repo, tmp_path / "treatment.trace", "t.txt")
+    assert treated == [], f"fixture commit spawned background writers: {treated}"
+    assert _local_maintenance_auto(git_plugin_repo) == ["false"], (
+        "git_plugin_repo must disable auto-maintenance repo-locally, so that "
+        "every shutil.copytree of it inherits the setting through .git/config")
+
+    # --- copy: what line 692 actually does, and what line 693 commits into.
+    copy = tmp_path / "copied repo"
+    shutil.copytree(git_plugin_repo, copy)
+    copied = _maintenance_children(copy, tmp_path / "copy.trace", "p.txt")
+    assert copied == [], f"commit inside the copy spawned background writers: {copied}"
+    assert _local_maintenance_auto(copy) == ["false"], (
+        "the byte-copy did not inherit maintenance.auto=false from .git/config")
