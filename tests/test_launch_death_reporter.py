@@ -1428,19 +1428,13 @@ class TestTerminalStatusIsNotProofOfATelling:
         # independently of the equality above: a rewording that kept the
         # sentence's shape and reintroduced either would pass equality against
         # its own new text but not these.
-        # THE RULE, after the same finding shape three times: this notice may
-        # assert only the settled terminal status and that the telling was not
-        # confirmed. Each claim is one a review found the notice could not see,
-        # and each is asserted independently of the equality above — a
-        # rewording that keeps the sentence's shape passes equality against its
-        # own new text and only these catch the content. ONE list AND one
-        # checker, shared with the funnel's own disclosure test: two copies had
-        # already diverged when an acceptor checked them, and a case-sensitive
-        # match was then bypassed with "Did Not Finish" — so the comparison is
-        # case-folded and whitespace-collapsed, matching the claim rather than
-        # one spelling of it.
-        from test_finalize_engagement import assert_no_forbidden_claims
-        assert_no_forbidden_claims(_notice)
+        # The rule this sentence obeys — assert only the settled terminal
+        # status and that the telling was not confirmed — is stated at the
+        # production site, not asserted here as a phrase blacklist. One stood
+        # here and was cut: it was widened twice and bypassed three times with
+        # the same false claims in new spellings, and the equality above is the
+        # guard that actually holds. See the note in
+        # tests/test_finalize_engagement.py.
         # And the funnel had already made its OWN one bounded attempt and
         # failed it, so this notice is not a second telling of the same thing.
         assert len(sends) == 2

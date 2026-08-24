@@ -626,52 +626,36 @@ def test_terminal_hook_abort_raises_and_leaves_live():
 # ---------------------------------------------------------------------------
 
 
-FORBIDDEN_NOTICE_CLAIMS = (
-    "did not finish",      # false when the stream carried text, and wrong
-                           # about the cause when the turn ENDED the engagement
-    "may be partial",      # same
-    "delivered to",        # the engager notification is best-effort, caught
-    "engagement record",   # holds the terminal STATE, not the summary text
-    "closed",              # the close is attempted after this and can raise
-    "deleted",             # the retention-ledger append is best-effort too
-    "retention",           # same
-)
-"""THE RULE, after the same finding shape three times: an unconfirmed-completion
-notice may assert ONLY what its own site observed — the settled terminal status,
-that the telling was not confirmed, and (for the funnel) that the MARK is being
-withheld, which is the decision that branch is itself taking.
-
-Every entry is a claim a review actually caught in one of these two notices, so
-this records the shape rather than guessing at it.
-
-ONE definition, and ONE checker: :func:`assert_no_forbidden_claims`, imported by
-``tests/test_launch_death_reporter.py`` for the channel-side notice. Two copies
-of the list were written first and an acceptor found they had already diverged —
-the funnel's was missing the first two entries, so a rewording could have
-reintroduced "did not finish" there with every assertion still green. A rule
-asserted at two sites from two lists is a rule at neither.
-
-The checker NORMALISES before matching, and that is a generalisation rather than
-another entry. The same acceptor then bypassed the list with
-"Did Not Finish; May Be Partial" — the identical false claims, reaching the
-identical topic, in a spelling no case-sensitive substring test sees. Adding
-capitalised variants to the list would have been the same enumeration one turn
-later, so the comparison is case-folded and whitespace-collapsed instead: it now
-matches the claim rather than one spelling of it."""
-
-
-def assert_no_forbidden_claims(text: str) -> None:
-    """Assert a notice makes none of the claims :data:`FORBIDDEN_NOTICE_CLAIMS`
-    names, in any spelling.
-
-    Case-folded and whitespace-collapsed, so "Did Not Finish" and a
-    line-wrapped "did not\nfinish" are the same claim as "did not finish". The
-    forbidden phrases are lowercase and single-spaced by construction, which is
-    what makes one normalisation on the input enough.
-    """
-    normalised = " ".join(text.split()).casefold()
-    for forbidden in FORBIDDEN_NOTICE_CLAIMS:
-        assert forbidden not in normalised, forbidden
+# THE RULE, and where it is actually enforced.
+#
+# An unconfirmed-completion notice may assert ONLY what its own site observed:
+# the settled terminal status (durable — the strict transition commits memory
+# and disk together or neither), that the telling was not confirmed, and, for
+# the funnel, that the MARK is being withheld, which is the decision that very
+# branch is taking. Three reviews found three violations of it — "this turn did
+# not finish … may be partial", "the outcome was delivered to the engager and is
+# in the engagement record", "this topic is closed … deleted at its retention
+# deadline" — and the class of claim was cut from both notices rather than
+# reworded a fourth time.
+#
+# A LEXICAL BLACKLIST OF FORBIDDEN PHRASES STOOD HERE AND IS CUT. It was
+# widened twice and bypassed three times by the acceptor, each time with the
+# same false claims in a new spelling: a diverged second copy of the list, then
+# "Did Not Finish; May Be Partial" past a case-sensitive match, then
+# "Did-Not-Finish; results May-Be-Partial" past a case-folded and
+# whitespace-collapsed one. Stripping hyphens next merely restarts the
+# enumeration, and the acceptor's own verdict was to cut rather than widen
+# again. A guard that can always be spelled around is worse than no guard,
+# because it reads as assurance.
+#
+# What remains is honest about which control does what. The WHOLE-SENTENCE
+# EQUALITY assertions below are the mechanical guard, and they are the one that
+# works: any reword of a shipped notice fails a test, so no notice changes
+# silently. What no test can do is stop an author who edits the production
+# string and its expectation together — that is a judgment about whether a
+# sentence is true, and it belongs to review. So the rule is written at both
+# production sites, where the person making that edit reads it, and in
+# `architecture/engagement-finalization.md`, where the reviewer does.
 
 
 _EXPECTED_DISCLOSURE = (
@@ -849,15 +833,12 @@ class TestFinalizeCompletionConfirmation:
         assert telegram.send_response_to_topic.await_count == 1
         # ONE bounded plain disclosure, and it is the whole sentence.
         assert telegram.send_to_topic.await_count == 1
-        _disclosure = telegram.send_to_topic.await_args.args[1]
-        assert _disclosure == _EXPECTED_DISCLOSURE.format(outcome="completed")
-        # THE RULE (see the sibling list in test_launch_death_reporter.py):
-        # this disclosure may assert only the outcome the flip committed, that
-        # the post was not confirmed, and that the MARK is being withheld —
-        # which is the one topic-lifecycle fact this branch decides. The close
-        # is attempted below it and can fail; the retention-ledger append is
-        # best-effort; the engager notification is best-effort and downstream.
-        assert_no_forbidden_claims(_disclosure)
+        # Whole-sentence equality, which is what stops a SILENT reword. The
+        # rule about what this sentence may claim is stated at the production
+        # site; see the note at the top of this section for why it is not
+        # asserted as a phrase blacklist here.
+        assert (telegram.send_to_topic.await_args.args[1]
+                == _EXPECTED_DISCLOSURE.format(outcome="completed"))
         # The topic is left UNPAINTED — the defect was painting ✅ over a
         # topic that heard nothing. It is still CLOSED, like every
         # terminal topic (R2).

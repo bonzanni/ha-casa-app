@@ -117,7 +117,12 @@ post was not confirmed, and that the mark is being withheld — and nothing abou
 below it, the retention ledger, the engager notification or what the record holds, all of
 which are best-effort or downstream. Three successive reviews found the same shape in this
 prose, each time a sentence claiming state its own site could not see, so the class of claim
-was removed rather than reworded a fourth time. It counts as a telling in its own right — if it lands, the topic has been told why the engagement ended,
+was removed rather than reworded a fourth time. **Whether a notice obeys that rule is a
+review question, not a test one.** The suite pins each notice by whole-sentence equality, so
+none of them can change silently; what no test can settle is whether a NEW sentence, shipped
+with its expectation updated alongside it, is true. A blacklist of forbidden phrases was
+tried and cut — it was bypassed three times by respelling the same false claims — so the
+rule lives here and at the production sites, where the person making that edit reads it. It counts as a telling in its own right — if it lands, the topic has been told why the engagement ended,
 which is what a follow-up turn's owner reads (INV-ENG-012) — and its confirmation is the
 returned id, on the same rule as the summary's.
 
