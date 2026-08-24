@@ -63,7 +63,9 @@ which is keyed on what you are about to do rather than on subsystem names.
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |
 <!-- END ROUTING -->
 
-Every document is ≤ 25 KB by design, so one fits in context beside the code it describes.
+Documents stay small — a 25 KB ceiling, judged on pull requests against the merge-base —
+so one fits in context beside the code it describes; the change that crosses the ceiling
+lands, and the next change touching that document must split it first.
 `llms.txt`, `doctrine/invariants.md`, the table above and each document's Source & test map
 are generated from `manifest.yaml` — regenerate with
 `python -m scripts.verify_docs . --write-nav` and never hand-edit them.

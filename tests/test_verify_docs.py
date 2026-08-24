@@ -169,23 +169,9 @@ def test_a_disallowed_extension_is_rejected(tmp_path):
     assert any("diagram.png" in p and "not admitted" in p for p in verify_docs.verify(root))
 
 
-def test_a_document_over_the_ceiling_is_rejected(tmp_path):
-    """Pins INV-DOC-006's enforced core. Red case demonstrated: disabling the size-budget check fails this test."""
-    body = "# Turn loop\n" + CODE_WINS + "x" * 26_000 + SOURCEMAP
-    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": body})
-    assert any("exceeds the 25 KB ceiling" in p for p in verify_docs.verify(root))
-
-
 def test_a_generated_index_gets_the_larger_budget(tmp_path):
     root = _corpus(tmp_path, docs={**DOC, "llms.txt": "x" * 30_000})
     assert verify_docs.verify(root) == []
-
-
-def test_a_near_ceiling_document_warns_without_failing(tmp_path):
-    body = "# Turn loop\n" + CODE_WINS + "x" * 21_000 + SOURCEMAP
-    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": body})
-    assert verify_docs.verify(root) == []
-    assert any("approaching the ceiling" in w for w in verify_docs.warnings(root))
 
 
 def test_a_missing_sourcemap_marker_is_caught(tmp_path):
@@ -642,9 +628,14 @@ def test_a_dead_anchor_in_a_shard_is_caught(tmp_path):
     assert any("A.zzz" in p for p in verify_docs.verify(root))
 
 
-def test_a_shard_over_the_index_ceiling_is_rejected(tmp_path):
+def test_a_shard_over_the_index_ceiling_in_tree_mode_is_a_notice(tmp_path):
+    """Index kinds follow the same trigger rule as documents: without a base
+    there is nothing to measure a crossing against, so tree mode reports."""
     root = _sharded_corpus(tmp_path, ENTRY + ("# pad\n" * 7000))
-    assert any("40 KB" in p and "architecture.yaml" in p for p in verify_docs.verify(root))
+    problems, notices = verify_docs.check_ceilings(root)
+    assert problems == []
+    assert any("architecture.yaml" in n and "40 KB index ceiling" in n for n in notices)
+    assert not any("40 KB" in p for p in verify_docs.verify(root))
 
 
 def test_a_document_may_not_live_under_manifest_d(tmp_path):
@@ -671,44 +662,285 @@ def test_a_doc_duplicated_between_root_and_shard_is_caught(tmp_path):
     assert any("listed twice" in p for p in verify_docs.verify(root))
 
 
-CORPUS_SPLIT_DOCUMENTS = (
-    "docs/architecture/callbacks.md",
-    "docs/architecture/callback-delivery.md",
-    "docs/architecture/configuration.md",
-    "docs/architecture/config-reconciliation.md",
-    "docs/architecture/engagements.md",
-    "docs/architecture/engagement-completion-gate.md",
-    "docs/architecture/engagement-finalization.md",
-    "docs/architecture/memory.md",
-    "docs/architecture/memory-scoping.md",
-)
+# --- the base-aware size trigger (#722) ----------------------------------------------
+#
+# The ceiling is a tripwire measured against a base, not a tree-state prohibition:
+# the change that crosses it lands (visibly), the next change touching the
+# over-ceiling document — its file or its manifest row — must split it first, and
+# no document is born over the ceiling. Without a base, size is measured and
+# reported, never failed; the enforcing caller is the pull-request check, which
+# passes the merge-base.
 
-EXPECTED_CORPUS_SPLIT_DOCUMENTS = {
-    "docs/architecture/callbacks.md",
-    "docs/architecture/callback-delivery.md",
-    "docs/architecture/configuration.md",
-    "docs/architecture/config-reconciliation.md",
-    "docs/architecture/engagements.md",
-    "docs/architecture/engagement-completion-gate.md",
-    "docs/architecture/engagement-finalization.md",
-    "docs/architecture/memory.md",
-    "docs/architecture/memory-scoping.md",
-}
+BIG = "# Turn loop\n" + CODE_WINS + "x" * 26_000 + SOURCEMAP
+SMALL = "# Turn loop\n" + CODE_WINS + SOURCEMAP
 
 
-def test_corpus_split_document_list_is_exact():
-    assert len(CORPUS_SPLIT_DOCUMENTS) == len(set(CORPUS_SPLIT_DOCUMENTS)) == 9
-    assert set(CORPUS_SPLIT_DOCUMENTS) == EXPECTED_CORPUS_SPLIT_DOCUMENTS
-
-
-@pytest.mark.parametrize("relative_path", CORPUS_SPLIT_DOCUMENTS)
-def test_each_corpus_split_document_is_below_warn_bytes(relative_path):
-    path = Path(__file__).resolve().parents[1] / relative_path
-    size = path.stat().st_size if path.is_file() else None
-    assert size is not None and size < verify_docs.WARN_BYTES, (
-        f"{relative_path} must exist and measure strictly below "
-        f"WARN_BYTES={verify_docs.WARN_BYTES}; measured {size!r}"
+def _commit(root: Path, message: str = "c") -> str:
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "commit.gpgsign=false", "commit", "-q",
+         "--no-verify", "-m", message],
+        check=True,
     )
+    return subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def test_tree_mode_reports_an_over_ceiling_document_without_failing(tmp_path):
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    assert verify_docs.verify(root) == []
+    problems, notices = verify_docs.check_ceilings(root)
+    assert problems == []
+    assert any("turn-loop.md" in n and "25 KB ceiling" in n for n in notices)
+
+
+def test_the_warn_tier_is_gone():
+    """The 20 KB warn band was a second, stricter size regime holding previously
+    split documents below everyone else's ceiling; the uniform ceiling is the
+    only size rule left."""
+    assert not hasattr(verify_docs, "WARN_BYTES")
+    assert not hasattr(verify_docs, "warnings")
+
+
+def test_a_document_under_the_ceiling_yields_no_size_finding(tmp_path):
+    body = "# Turn loop\n" + CODE_WINS + "x" * 21_000 + SOURCEMAP
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": body})
+    assert verify_docs.check_ceilings(root) == ([], [])
+
+
+def test_a_first_crossing_lands_with_a_notice(tmp_path):
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": SMALL})
+    base = _commit(root)
+    (root / "docs" / "architecture" / "turn-loop.md").write_text(BIG)
+    _commit(root)
+    assert verify_docs.verify(root, base=base) == []
+    problems, notices = verify_docs.check_ceilings(root, base=base)
+    assert problems == []
+    assert any("turn-loop.md" in n and "crossed" in n for n in notices)
+
+
+def test_a_touched_document_past_the_ceiling_at_the_base_fails(tmp_path):
+    """Pins INV-DOC-007's enforced core, with test_a_document_born_over_the_ceiling_fails.
+    Red case demonstrated: disabling the touched-over-at-base arm fails this test."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    (root / "docs" / "architecture" / "turn-loop.md").write_text(BIG + "more\n")
+    _commit(root)
+    assert any(
+        "turn-loop.md" in p and "split it first" in p
+        for p in verify_docs.verify(root, base=base)
+    )
+
+
+def test_a_touched_document_brought_back_under_the_ceiling_passes(tmp_path):
+    """The obligation is discharged by ending under the ceiling — whether that
+    took a split or a trim is the reviewers' judgment, not the machine's."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    (root / "docs" / "architecture" / "turn-loop.md").write_text(SMALL)
+    _commit(root)
+    assert verify_docs.verify(root, base=base) == []
+    assert verify_docs.check_ceilings(root, base=base) == ([], [])
+
+
+def test_an_untouched_document_past_the_ceiling_at_the_base_is_a_notice(tmp_path):
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    (root / "casa" / "a.py").write_text(
+        "class A:\n    def b(self):\n        pass\n# touched elsewhere\n"
+    )
+    _commit(root)
+    problems, notices = verify_docs.check_ceilings(root, base=base)
+    assert problems == []
+    assert any("turn-loop.md" in n and "untouched" in n for n in notices)
+    assert verify_docs.verify(root, base=base) == []
+
+
+NEW_ROW = """
+- doc: architecture/big.md
+  summary: Newly added.
+  when_changing: nothing yet
+"""
+
+
+def test_a_document_born_over_the_ceiling_fails(tmp_path):
+    """Pins INV-DOC-007's enforced core, with test_a_touched_document_past_the_ceiling_at_the_base_fails.
+    Red case demonstrated: disabling the born-over arm fails this test."""
+    root = _corpus(tmp_path)
+    base = _commit(root)
+    (root / "docs" / "architecture" / "big.md").write_text(BIG)
+    manifest = root / "docs" / "manifest.yaml"
+    manifest.write_text(manifest.read_text() + NEW_ROW)
+    _commit(root)
+    assert any(
+        "big.md" in p and "born over" in p for p in verify_docs.verify(root, base=base)
+    )
+
+
+def test_a_renamed_over_ceiling_document_fails_as_born_over(tmp_path):
+    """A rename or copy is a NEW PATH: there is no lineage tracking anywhere in
+    this mechanism, so over-ceiling debt cannot be laundered through history
+    geometry — the renamed document must be split before it first lands."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    subprocess.run(
+        ["git", "-C", str(root), "mv",
+         "docs/architecture/turn-loop.md", "docs/architecture/renamed.md"],
+        check=True,
+    )
+    manifest = root / "docs" / "manifest.yaml"
+    manifest.write_text(
+        manifest.read_text().replace("architecture/turn-loop.md", "architecture/renamed.md")
+    )
+    _commit(root)
+    assert any(
+        "renamed.md" in p and "born over" in p for p in verify_docs.verify(root, base=base)
+    )
+
+
+def test_a_manifest_row_change_touches_an_over_ceiling_document(tmp_path):
+    """"Touched" is the document's file OR its manifest row: the row is the other
+    half of a document's identity, and a row-only change must not slide past an
+    inherited over-ceiling document as not-its-business."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    manifest = root / "docs" / "manifest.yaml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "How one inbound message becomes one agent turn.",
+            "How one inbound message becomes exactly one agent turn.",
+        )
+    )
+    _commit(root)
+    assert any(
+        "turn-loop.md" in p and "split it first" in p
+        for p in verify_docs.verify(root, base=base)
+    )
+
+
+def test_the_tree_kind_binds_the_ceiling_on_a_kind_flip(tmp_path):
+    """A manifest-only kind flip must not land an oversized document: the flip
+    changes the row (touched) and the TREE kind's ceiling is the one that binds,
+    so a 30 KB index reclassified as a document fails against 25 KB."""
+    flip = (
+        "- doc: architecture/big.md\n"
+        "  kind: index\n"
+        "  summary: Big.\n"
+    )
+    root = _corpus(tmp_path, manifest=flip, docs={"architecture/big.md": "x" * 30_000})
+    base = _commit(root)
+    manifest = root / "docs" / "manifest.yaml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "  kind: index\n  summary: Big.\n",
+            "  summary: Big.\n  when_changing: big things\n",
+        )
+    )
+    _commit(root)
+    assert any(
+        "big.md" in p and "25 KB ceiling" in p and "split it first" in p
+        for p in verify_docs.verify(root, base=base)
+    )
+
+
+def test_an_index_born_over_the_index_ceiling_fails(tmp_path):
+    root = _corpus(tmp_path)
+    base = _commit(root)
+    (root / "docs" / "manifest.d").mkdir()
+    (root / "docs" / "manifest.d" / "architecture.yaml").write_text(
+        "[]\n" + "# pad\n" * 8000
+    )
+    manifest = root / "docs" / "manifest.yaml"
+    manifest.write_text(manifest.read_text() + SHARD_META)
+    _commit(root)
+    assert any(
+        "architecture.yaml" in p and "born over" in p and "40 KB index ceiling" in p
+        for p in verify_docs.verify(root, base=base)
+    )
+
+
+def test_an_unresolvable_base_is_a_refusal(tmp_path):
+    """--base is validated eagerly: a wiring mistake in the enforcing caller must
+    surface on the first pull request, not on the first crossing."""
+    root = _corpus(tmp_path)
+    _commit(root)
+    assert any("does not resolve" in p for p in verify_docs.verify(root, base="0" * 40))
+
+
+def test_an_unreadable_base_object_is_a_refusal_not_a_birth(tmp_path):
+    """Absent and unreadable are different answers: a missing base object must
+    refuse, never read as "the path is new at the base"."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    blob = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", f"{base}:docs/architecture/turn-loop.md"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    (root / "docs" / "architecture" / "turn-loop.md").write_text(BIG + "more\n")
+    _commit(root)
+    loose = root / ".git" / "objects" / blob[:2] / blob[2:]
+    assert loose.exists(), "the base blob must be loose for this construction"
+    loose.chmod(0o644)
+    loose.unlink()
+    problems = verify_docs.verify(root, base=base)
+    assert any("turn-loop.md" in p and "unreadable" in p for p in problems)
+    assert not any("born over" in p for p in problems)
+
+
+def test_an_unreadable_base_tree_is_a_refusal_not_a_birth(tmp_path):
+    """The other unreadable shape: a missing TREE object makes ls-tree fail
+    outright (a missing blob still lists, with an unparseable size — the case
+    above). Both must refuse; neither may read as "the path is new at the base"."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    base = _commit(root)
+    tree = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", f"{base}:docs/architecture"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    (root / "docs" / "architecture" / "turn-loop.md").write_text(BIG + "more\n")
+    _commit(root)
+    loose = root / ".git" / "objects" / tree[:2] / tree[2:]
+    assert loose.exists(), "the base tree must be loose for this construction"
+    loose.unlink()
+    problems = verify_docs.verify(root, base=base)
+    assert any("turn-loop.md" in p and "unreadable" in p for p in problems)
+    assert not any("born over" in p for p in problems)
+
+
+def test_an_unparseable_base_manifest_is_a_refusal(tmp_path):
+    """The manifest-row half of "touched" cannot be answered without the base
+    rows; guessing either way would fail open or fail wrong."""
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    manifest = root / "docs" / "manifest.yaml"
+    good = manifest.read_text()
+    manifest.write_text("- doc: [unclosed\n")
+    base = _commit(root)
+    manifest.write_text(good)
+    _commit(root)
+    problems = verify_docs.verify(root, base=base)
+    assert any("cannot tell" in p and "manifest row" in p for p in problems)
+
+
+def test_cli_base_flag_reaches_the_size_check(tmp_path, monkeypatch, capsys):
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    verify_docs.write_nav(root)
+    base = _commit(root)
+    (root / "docs" / "architecture" / "turn-loop.md").write_text(BIG + "words\n")
+    verify_docs.write_nav(root)
+    _commit(root)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root), "--base", base])
+    assert verify_docs.main() == 1
+    assert "split it first" in capsys.readouterr().out
+
+
+def test_cli_without_base_reports_and_passes(tmp_path, monkeypatch, capsys):
+    root = _corpus(tmp_path, docs={"architecture/turn-loop.md": BIG})
+    verify_docs.write_nav(root)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root)])
+    assert verify_docs.main() == 0
+    assert "25 KB ceiling" in capsys.readouterr().out
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

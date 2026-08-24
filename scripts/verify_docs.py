@@ -15,8 +15,14 @@ Mechanical checks only — no model in the loop. What it enforces:
    traceback.
 4. **Anchors resolve and stay inside the published commit**: `file:line` is rejected
    outright, and so are absolute paths, traversal, and paths git does not track.
-5. **Growth budget**: documents ≤ 25 KB so one fits in context beside the code it
-   describes; generated indexes ≤ 40 KB. Nothing shards on its own — exceeding it fails.
+5. **Size trigger**: documents ≤ 25 KB so one fits in context beside the code it
+   describes; generated indexes ≤ 40 KB. Judged against ``--base`` when one is given
+   (the pull-request check passes the merge-base): the change that crosses a ceiling
+   lands with a visible notice, a change touching a document already past its ceiling
+   fails until the document is split, and no document may be born over the ceiling —
+   which is also what refuses an over-ceiling rename or copy, since a renamed or
+   copied file is a new path. Without ``--base`` (local runs, push events) size is
+   reported, never failed. Nothing shards on its own, and the ceiling is not raised.
 6. **Structure**: every document carries exactly one ordered SOURCEMAP marker pair, or its
    generated map silently does not exist.
 7. **Invariants**: defined once, every reference resolves, and `defines_invariants` matches
@@ -25,7 +31,8 @@ Mechanical checks only — no model in the loop. What it enforces:
    otherwise pass every check above while the navigation surfaces had been deleted.
 
 Usage:
-    python -m scripts.verify_docs [repo_root] [--report] [--write-nav] [--check-nav]
+    python -m scripts.verify_docs [repo_root] [--base <commit>] [--report] [--write-nav] \\
+        [--check-nav]
     printf '%s\\n' <changed-paths> | python -m scripts.verify_docs . --impact \\
         [--base-manifest <path>]
 """
@@ -44,7 +51,6 @@ INV_DEFINITION = re.compile(r"\*\*(INV-[A-Z]+-\d+)\*\*\s*:")
 INV_REFERENCE = re.compile(r"\b(INV-[A-Z]+-\d+)\b")
 
 CEILING_BYTES = 25_000
-WARN_BYTES = 20_000
 INDEX_CEILING_BYTES = 40_000
 
 DOCUMENT_KINDS = {"document"}
@@ -542,6 +548,232 @@ def _budget_for(kind: str) -> int:
     return CEILING_BYTES if kind in DOCUMENT_KINDS else INDEX_CEILING_BYTES
 
 
+# --- the size trigger (#722) ---------------------------------------------------------
+
+def _ceiling_label(budget: int) -> str:
+    return "25 KB ceiling" if budget == CEILING_BYTES else "40 KB index ceiling"
+
+
+def _git_or_none(repo_root: Path, *args: str) -> str | None:
+    """Run git, returning stdout — or None on any failure, which callers REFUSE on.
+    Unreadable is a third answer, distinct from both present and absent."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True, text=True,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def _base_resolves(repo_root: Path, base: str) -> bool:
+    return _git_or_none(repo_root, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}") is not None
+
+
+def _touched_files(repo_root: Path, base: str) -> set[str] | None:
+    """Repo-relative paths named in the ``<base>...HEAD`` name-diff, or None on failure.
+
+    ``--no-renames`` on purpose: identity in this mechanism is the path, so a rename is
+    a deletion plus a birth — the born-over rule is what refuses an over-ceiling rename,
+    and no similarity detection exists anywhere here.
+    """
+    out = _git_or_none(
+        repo_root, "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD"
+    )
+    if out is None:
+        return None
+    return {part for part in out.split("\0") if part}
+
+
+def _base_doc_size(repo_root: Path, base: str, doc: str) -> tuple[str, int]:
+    """('present', bytes) | ('absent', 0) | ('unreadable', 0) for docs/<doc> at base."""
+    out = _git_or_none(repo_root, "ls-tree", "-l", base, "--", f"docs/{doc}")
+    if out is None:
+        return "unreadable", 0
+    line = out.strip()
+    if not line:
+        return "absent", 0
+    fields = line.split("\t", 1)[0].split()
+    if len(fields) != 4 or not fields[3].isdigit():
+        return "unreadable", 0
+    return "present", int(fields[3])
+
+
+def _rows_from(texts: list[str]) -> dict[str, dict] | None:
+    """doc -> raw manifest row, or None if any part is unreadable as a manifest.
+
+    RAW rows on purpose: `_load_entries` normalises entries in place, and comparing a
+    normalised row against a raw one would report every over-at-base document touched.
+    """
+    rows: dict[str, dict] = {}
+    for text in texts:
+        try:
+            part = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        if part is None:
+            continue
+        if not isinstance(part, list):
+            return None
+        for entry in part:
+            if isinstance(entry, dict) and isinstance(entry.get("doc"), str):
+                rows[entry["doc"]] = entry
+    return rows
+
+
+def _tree_rows(docs_dir: Path) -> dict[str, dict] | None:
+    texts = []
+    for source in _manifest_files(docs_dir):
+        try:
+            texts.append(source.read_text())
+        except OSError:
+            return None
+    return _rows_from(texts)
+
+
+def _base_rows(repo_root: Path, base: str) -> dict[str, dict] | None:
+    """Manifest rows at base. None = unreadable (refuse); {} = base has no manifest."""
+    listed = _git_or_none(
+        repo_root, "ls-tree", "--name-only", "-z", base, "--", "docs/manifest.yaml"
+    )
+    if listed is None:
+        return None
+    if "docs/manifest.yaml" not in {p for p in listed.split("\0") if p}:
+        return {}
+    texts = []
+    root_text = _git_or_none(repo_root, "show", f"{base}:docs/manifest.yaml")
+    if root_text is None:
+        return None
+    texts.append(root_text)
+    shards = _git_or_none(
+        repo_root, "ls-tree", "--name-only", "-z", base, "--", "docs/manifest.d/"
+    )
+    if shards is None:
+        return None
+    for shard in sorted(p for p in shards.split("\0") if p.endswith(".yaml")):
+        shard_text = _git_or_none(repo_root, "show", f"{base}:{shard}")
+        if shard_text is None:
+            return None
+        texts.append(shard_text)
+    return _rows_from(texts)
+
+
+def check_ceilings(repo_root: Path, base: str | None = None) -> tuple[list[str], list[str]]:
+    """The size trigger. Returns (problems, notices).
+
+    The ceiling is a tripwire measured against a base, not a tree-state prohibition.
+    With ``base``, for each document over its TREE kind's ceiling: under the ceiling
+    at base — the first crossing lands, notice only; over at base and touched by this
+    change (its file or its manifest row) — fail, split it first; over at base and
+    untouched — not this change's business, notice only; absent at base — fail, a
+    document may not be born over the ceiling (a rename or copy is a new path).
+
+    Without ``base`` there is nothing to measure a crossing against: every
+    over-ceiling document is a notice and size never fails — the enforcing caller
+    is the pull-request check, which passes the merge-base.
+
+    Stateless on purpose: "over at base" is re-measured from git on every run, so
+    there is no recorded figure to go stale. Anything unreadable at the base — the
+    commit, a blob, the manifest — is a refusal, never read as absent.
+    """
+    docs_dir = repo_root / "docs"
+    problems: list[str] = []
+    notices: list[str] = []
+    if not (docs_dir / "manifest.yaml").exists():
+        return problems, notices
+    if base is not None and not _base_resolves(repo_root, base):
+        # Eager: a wiring mistake in the enforcing caller must surface on the
+        # first pull request, not on the first crossing.
+        return (
+            [f"--base {base} does not resolve to a commit — cannot judge the size "
+             f"ceiling against it"],
+            notices,
+        )
+
+    entries, _ = _load_entries(docs_dir)
+    cache: dict[str, object] = {}
+
+    def _touched() -> set[str] | None:
+        if "touched" not in cache:
+            cache["touched"] = _touched_files(repo_root, base)
+        return cache["touched"]
+
+    def _rows() -> tuple[dict[str, dict] | None, dict[str, dict] | None]:
+        if "rows" not in cache:
+            cache["rows"] = (_base_rows(repo_root, base), _tree_rows(docs_dir))
+        return cache["rows"]
+
+    for entry in entries:
+        doc = entry["doc"]
+        target = docs_dir / doc
+        if target.is_symlink() or not target.is_file():
+            continue  # missing files and symlinks are other checks' findings
+        size = target.stat().st_size
+        budget = _budget_for(entry.get("kind", "document"))
+        if size <= budget:
+            continue
+        label = _ceiling_label(budget)
+        kb = f"{size / 1000:.1f} KB"
+        if base is None:
+            notices.append(
+                f"{doc} is {kb} — over the {label}; on a pull request the next change "
+                f"touching this document must split it first"
+            )
+            continue
+        state, base_size = _base_doc_size(repo_root, base, doc)
+        if state == "unreadable":
+            problems.append(
+                f"{doc}: unreadable at base {base} — cannot tell an inherited document "
+                f"from a newborn one; fetch the base objects and retry"
+            )
+            continue
+        if state == "absent":
+            problems.append(
+                f"{doc} is {kb} — a document may not be born over the {label}: the path "
+                f"is new at the base (a rename or copy is a new path), so its size is "
+                f"this change's own doing. Split it before it first lands."
+            )
+            continue
+        if base_size <= budget:
+            notices.append(
+                f"{doc} is {kb} — crossed the {label} in this change; the crossing "
+                f"lands, and the next change touching this document (its file or its "
+                f"manifest row) must split it first"
+            )
+            continue
+        touched = _touched()
+        if touched is None:
+            problems.append(
+                f"cannot diff {base}...HEAD — without the touched set the size ceiling "
+                f"cannot be judged for {doc}; fix the base and retry"
+            )
+            continue
+        row_touched = False
+        if f"docs/{doc}" not in touched:
+            base_rows, tree_rows = _rows()
+            if base_rows is None or tree_rows is None:
+                problems.append(
+                    f"the manifest at base {base} (or in the tree) is unreadable — "
+                    f"cannot tell whether this change touches {doc}'s manifest row; "
+                    f"refusing to guess"
+                )
+                continue
+            row_touched = base_rows.get(doc) != tree_rows.get(doc)
+        else:
+            row_touched = True
+        if row_touched:
+            problems.append(
+                f"{doc} is {kb} — past the {label} and touched by this change (its "
+                f"file or its manifest row): split it first. Divide it and manifest "
+                f"the pieces, or move content to an existing document; the ceiling is "
+                f"not raised, and nothing shards on its own."
+            )
+        else:
+            notices.append(
+                f"{doc} is {kb} — over the {label} at the base and untouched by this "
+                f"change; the next change touching it must split it first"
+            )
+    return problems, notices
+
+
 def _check_invariants(docs_dir: Path, entries: list[dict]) -> list[str]:
     defined: dict[str, list[str]] = {}
     statements: dict[str, str] = {}
@@ -604,8 +836,12 @@ def _check_invariants(docs_dir: Path, entries: list[dict]) -> list[str]:
 
 # --- the verifier --------------------------------------------------------------------
 
-def verify(repo_root: Path) -> list[str]:
-    """Return every problem found in the corpus. Empty list means clean."""
+def verify(repo_root: Path, base: str | None = None) -> list[str]:
+    """Return every problem found in the corpus. Empty list means clean.
+
+    ``base`` is consumed ONLY by the size check (see :func:`check_ceilings`); every
+    other check judges the tree alone.
+    """
     docs_dir = repo_root / "docs"
     if not (docs_dir / "manifest.yaml").exists():
         return ["docs/manifest.yaml is missing — the corpus is allowlist-only"]
@@ -658,16 +894,6 @@ def verify(repo_root: Path) -> list[str]:
         problems.extend(path_problems)
         if target is None:
             continue
-
-        size = target.stat().st_size
-        budget = _budget_for(kind)
-        if size > budget:
-            label = "25 KB ceiling" if budget == CEILING_BYTES else "40 KB index ceiling"
-            problems.append(
-                f"{doc} is {size / 1000:.1f} KB — exceeds the {label}. Split it and "
-                f"manifest both halves; the ceiling is not raised, and nothing shards "
-                f"on its own."
-            )
 
         if kind in DOCUMENT_KINDS:
             problems.extend(_check_sourcemap(target, doc))
@@ -722,29 +948,8 @@ def verify(repo_root: Path) -> list[str]:
         problems.append("the corpus contains no documents — only indexes and metadata")
 
     problems.extend(_check_invariants(docs_dir, entries))
+    problems.extend(check_ceilings(repo_root, base)[0])
     return problems
-
-
-def warnings(repo_root: Path) -> list[str]:
-    """Non-fatal growth pressure, printed by CI so it is visible before it fails."""
-    docs_dir = repo_root / "docs"
-    if not (docs_dir / "manifest.yaml").exists():
-        return []
-    entries, _ = _load_entries(docs_dir)
-    out = []
-    for entry in entries:
-        if entry.get("kind", "document") not in DOCUMENT_KINDS:
-            continue
-        target = docs_dir / entry["doc"]
-        if target.is_symlink() or not target.is_file():
-            continue
-        size = target.stat().st_size
-        if WARN_BYTES <= size <= CEILING_BYTES:
-            out.append(
-                f"{entry['doc']} is {size / 1000:.1f} KB — approaching the ceiling; plan "
-                f"the split before it fails"
-            )
-    return out
 
 
 # --- generated navigation ------------------------------------------------------------
@@ -981,8 +1186,27 @@ def impacted_docs(
 
 def main() -> int:
     args = sys.argv[1:]
-    positional = [a for a in args if not a.startswith("-")]
+    value_flags = ("--base", "--base-manifest")
+    positional: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in value_flags:
+            skip_next = True
+            continue
+        if not arg.startswith("-"):
+            positional.append(arg)
     root = Path(positional[0] if positional else ".").resolve()
+
+    base = None
+    if "--base" in args:
+        index = args.index("--base")
+        if index + 1 >= len(args):
+            print("✗ --base needs a value: --base <commit>")
+            return 1
+        base = args[index + 1]
 
     if "--impact" in args:
         raw = sys.stdin.read()
@@ -1029,9 +1253,8 @@ def main() -> int:
         ]
         for doc, size in sorted(sizes, key=lambda pair: -pair[1]):
             print(f"{size / 1000:7.1f} KB  {doc}")
-        near = sum(1 for _, size in sizes if size >= WARN_BYTES)
         total = sum(size for _, size in sizes)
-        print(f"\n{len(sizes)} files, {total / 1000:.1f} KB total, {near} within 20% of the ceiling")
+        print(f"\n{len(sizes)} files, {total / 1000:.1f} KB total")
 
     if "--write-nav" in args:
         for rel in write_nav(root):
@@ -1049,10 +1272,11 @@ def main() -> int:
         print("  run: python -m scripts.verify_docs . --write-nav")
         return 1
 
-    for warning in warnings(root):
-        print(f"! {warning}")
+    _, size_notices = check_ceilings(root, base)
+    for notice in size_notices:
+        print(f"! {notice}")
 
-    problems = verify(root)
+    problems = verify(root, base)
     # The coverage ledger is part of the corpus contract: a surface the code grows that
     # no document claims is the same defect as a document claiming code that is gone.
     ledger_script = Path(__file__).resolve().parent / "coverage_ledger.py"

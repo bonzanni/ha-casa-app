@@ -48,8 +48,22 @@ jobs:
       - run: pip install --quiet pyyaml
 
       - name: Verify manifest, anchors, budget and invariants
+        # On a pull request the size ceiling is judged against the merge-base —
+        # derived exactly as the range steps below derive it, from history the
+        # fetch-depth: 0 checkout already has. The change that crosses a ceiling
+        # lands with a notice; a change touching a document already past its
+        # ceiling fails until the document is split; no document may be born
+        # over the ceiling. Without a base (push events, local runs) size is
+        # reported, never failed — this step on pull_request is the one
+        # enforcing caller of the size rule.
         run: |
-          python -m scripts.verify_docs .
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+            python -m scripts.verify_docs . --base "$base"
+          else
+            python -m scripts.verify_docs .
+          fi
           python3 scripts/coverage_ledger.py check .
 
       - name: Docs-impact acknowledgement logic
