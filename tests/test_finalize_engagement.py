@@ -644,12 +644,34 @@ withheld, which is the decision that branch is itself taking.
 Every entry is a claim a review actually caught in one of these two notices, so
 this records the shape rather than guessing at it.
 
-ONE definition, imported by ``tests/test_launch_death_reporter.py`` for the
-channel-side notice. Two copies were written first and an acceptor found the
-copies had already diverged — the funnel's list was missing the first two
-entries, so a rewording could have reintroduced "did not finish" there with
-every assertion still green. A rule asserted at two sites from two lists is a
-rule at neither."""
+ONE definition, and ONE checker: :func:`assert_no_forbidden_claims`, imported by
+``tests/test_launch_death_reporter.py`` for the channel-side notice. Two copies
+of the list were written first and an acceptor found they had already diverged —
+the funnel's was missing the first two entries, so a rewording could have
+reintroduced "did not finish" there with every assertion still green. A rule
+asserted at two sites from two lists is a rule at neither.
+
+The checker NORMALISES before matching, and that is a generalisation rather than
+another entry. The same acceptor then bypassed the list with
+"Did Not Finish; May Be Partial" — the identical false claims, reaching the
+identical topic, in a spelling no case-sensitive substring test sees. Adding
+capitalised variants to the list would have been the same enumeration one turn
+later, so the comparison is case-folded and whitespace-collapsed instead: it now
+matches the claim rather than one spelling of it."""
+
+
+def assert_no_forbidden_claims(text: str) -> None:
+    """Assert a notice makes none of the claims :data:`FORBIDDEN_NOTICE_CLAIMS`
+    names, in any spelling.
+
+    Case-folded and whitespace-collapsed, so "Did Not Finish" and a
+    line-wrapped "did not\nfinish" are the same claim as "did not finish". The
+    forbidden phrases are lowercase and single-spaced by construction, which is
+    what makes one normalisation on the input enough.
+    """
+    normalised = " ".join(text.split()).casefold()
+    for forbidden in FORBIDDEN_NOTICE_CLAIMS:
+        assert forbidden not in normalised, forbidden
 
 
 _EXPECTED_DISCLOSURE = (
@@ -835,8 +857,7 @@ class TestFinalizeCompletionConfirmation:
         # which is the one topic-lifecycle fact this branch decides. The close
         # is attempted below it and can fail; the retention-ledger append is
         # best-effort; the engager notification is best-effort and downstream.
-        for _forbidden in FORBIDDEN_NOTICE_CLAIMS:
-            assert _forbidden not in _disclosure, _forbidden
+        assert_no_forbidden_claims(_disclosure)
         # The topic is left UNPAINTED — the defect was painting ✅ over a
         # topic that heard nothing. It is still CLOSED, like every
         # terminal topic (R2).

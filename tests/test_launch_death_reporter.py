@@ -1433,12 +1433,14 @@ class TestTerminalStatusIsNotProofOfATelling:
         # confirmed. Each claim is one a review found the notice could not see,
         # and each is asserted independently of the equality above — a
         # rewording that keeps the sentence's shape passes equality against its
-        # own new text and only these catch the content. ONE list, shared with
-        # the funnel's own disclosure test: two copies had already diverged
-        # when an acceptor checked them.
-        from test_finalize_engagement import FORBIDDEN_NOTICE_CLAIMS
-        for _forbidden in FORBIDDEN_NOTICE_CLAIMS:
-            assert _forbidden not in _notice, _forbidden
+        # own new text and only these catch the content. ONE list AND one
+        # checker, shared with the funnel's own disclosure test: two copies had
+        # already diverged when an acceptor checked them, and a case-sensitive
+        # match was then bypassed with "Did Not Finish" — so the comparison is
+        # case-folded and whitespace-collapsed, matching the claim rather than
+        # one spelling of it.
+        from test_finalize_engagement import assert_no_forbidden_claims
+        assert_no_forbidden_claims(_notice)
         # And the funnel had already made its OWN one bounded attempt and
         # failed it, so this notice is not a second telling of the same thing.
         assert len(sends) == 2
