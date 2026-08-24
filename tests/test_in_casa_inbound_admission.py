@@ -258,10 +258,42 @@ async def _mk_channel(tmp_path, fake_telegram_bot, client):
 
 
 async def _drain(ch):
-    for s in ("_turn_tasks", "_inbound_cleanup_tasks"):
-        tasks = list(getattr(ch, s, ()) or ())
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+    """Drain the channel's tracked task sets until BOTH are empty.
+
+    #692: one pass over each set is not enough, and the shortfall is not
+    hypothetical. ``_inbound_cleanup_tasks`` is populated from the DELIVERY
+    task's done-callback, which the loop runs one iteration AFTER the gather
+    that awaited that task resumes — so a single pass snapshots the cleanup
+    set before its task exists, returns, and leaves a pending task behind. The
+    old single-pass version happened to be sufficient only while every
+    delivery path was short enough for both callbacks to land inside the first
+    gather's window; adding a bounded notice attempt to the success path made
+    it insufficient, and a frozen red case caught it.
+
+    Bounded rather than ``while``: a set that never empties is a defect to
+    surface, not to hang the suite on — and surfacing it means RAISING with
+    the leftovers named, not falling off the end of the loop and letting the
+    caller assert on whatever else it was checking. Reviewer finding, first
+    diff round.
+    """
+    for _ in range(20):
+        tasks = [t for s in ("_turn_tasks", "_inbound_cleanup_tasks")
+                 for t in list(getattr(ch, s, ()) or ())]
+        if not tasks:
+            return
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # bpo-46672: gather() over already-done tasks takes the done_futs fast
+        # path and does NOT yield, so the tasks' own done-callbacks — the ones
+        # that both discard from these sets and CREATE the cleanup task — are
+        # still queued. One bare yield flushes what is already queued; nothing
+        # waits for a duration and no asyncio.sleep is patched.
+        await asyncio.sleep(0)
+    raise AssertionError(
+        "tracked tasks did not drain in 20 passes — leftover work: "
+        "_turn_tasks=%r _inbound_cleanup_tasks=%r" % (
+            list(getattr(ch, "_turn_tasks", ()) or ()),
+            list(getattr(ch, "_inbound_cleanup_tasks", ()) or ()),
+        ))
 
 
 class TestManualSeamAdmission:

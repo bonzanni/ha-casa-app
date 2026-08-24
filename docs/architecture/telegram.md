@@ -249,6 +249,23 @@ delivery-failure outcome rather than hanging.
 **Delivering a turn into a topic raises.** Logged, with a best-effort failure notice posted
 to the topic. Cancellation is quiet by design.
 
+**Delivering a turn into a topic RETURNS without the turn having finished.** A different
+shape from the one above, and it used to be silent because of that. The failure notice
+described there lives on the exception path, and an `in_casa` turn cut off mid-tool-loop
+raises nothing — the response iterator simply ends without the turn's result frame — so the
+operator's message was consumed and answered with nothing. The delivery task therefore also
+asks, on its success path, whether the turn it just ran left that artifact, and posts one
+bounded notice when it did not. It stays quiet only when the engagement's settled record is
+terminal AND that terminal path confirmed a telling into this topic — a terminal status on
+its own is not proof anything was said, and where it is not known that the topic was told,
+the notice is posted. What it says depends on that answer, and the two are not
+interchangeable: over a live record the turn really was cut off, while over a terminal one
+it ended because it completed the engagement — whose summary may in fact already be on the
+operator's screen, since a lost acknowledgement is indistinguishable from a failed send
+from here. That notice is a single attempt and is not ordered against a concurrent
+finalization's topic operations; the contract is INV-ENG-012 in
+[`architecture/engagements.md`](engagements.md).
+
 ## Extension points
 
 **Changing transport** touches the manifest schema, the environment-driven selection, the

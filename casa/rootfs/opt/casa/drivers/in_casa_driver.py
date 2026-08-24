@@ -88,6 +88,17 @@ transport EOF, CLI subprocess exit, or the read task being cancelled — or on
 ran to its end always yields one, so its absence means the turn was CUT OFF
 in flight, however many frames were seen first."""
 
+FOLLOWUP_MISSING_RESULT = "followup_missing_result"
+"""#692/#678: a ticketed FOLLOW-UP turn's response stream ended with no
+``ResultMessage`` — the same cut-off fact as :data:`LAUNCH_MISSING_RESULT`,
+one turn over, and recorded in its own slot because the two have different
+owners and must not clobber each other.
+
+There is no follow-up analogue of :data:`LAUNCH_NO_VISIBLE_OUTPUT`. A
+follow-up turn that ran to its end and posted nothing is an ordinary quiet
+turn — the agent may legitimately have done tool work and had nothing to say —
+whereas a LAUNCH turn that posted nothing is an engagement nobody can see."""
+
 LAUNCH_NO_VISIBLE_OUTPUT = "no_visible_output"
 """#678: the launch turn ran to its end but nothing about it is visible.
 
@@ -171,6 +182,16 @@ class InCasaDriver(DriverProtocol):
         # question, asked by the owner. Values: "" | LAUNCH_MISSING_RESULT |
         # LAUNCH_NO_VISIBLE_OUTPUT.
         self._launch_incomplete: dict[str, str] = {}
+        # #692/#678: the same observation for a ticketed FOLLOW-UP turn,
+        # keyed by the exact admission TICKET rather than by engagement.
+        # Per-engagement keying is not merely coarse, it is wrong: the
+        # observation is written AFTER ``_deliver_turn`` releases the
+        # per-engagement turn lock, so turn T1 can write its reason and T2 can
+        # then acquire the lock, run and overwrite or consume it before T1's
+        # delivery task reads — losing one notice or attributing it to the
+        # wrong turn. Both design reviewers reached that interleaving
+        # independently. eid -> {ticket: reason}.
+        self._followup_incomplete: dict[str, dict[object, str]] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -386,6 +407,34 @@ class InCasaDriver(DriverProtocol):
         """
         return self._launch_incomplete.pop(engagement_id, "")
 
+    def followup_turn_incomplete(
+        self, engagement_id: str, inbound_token: object,
+    ) -> str:
+        """SYNCHRONOUS: POP the #692/#678 FOLLOW-UP turn observation for one
+        exact admission ticket.
+
+        Returns ``FOLLOWUP_MISSING_RESULT`` or ``""``. Read once, by the
+        delivery task that owns that ticket, immediately after its
+        ``send_user_turn`` returns; popping means the task-end cleanup
+        backstop that runs after it cannot tell the operator a second time.
+
+        Keyed by TICKET, not by engagement — see ``_followup_incomplete``.
+
+        Not part of ``DriverProtocol``, for the same reason
+        :meth:`launch_turn_incomplete` is not: the owner reaches it through
+        ``getattr`` inside its in_casa branch only, so a ``claude_code``
+        engagement reads as "nothing to report" instead of raising
+        ``AttributeError`` into a handler that would surface a failure for a
+        perfectly healthy turn.
+        """
+        bucket = self._followup_incomplete.get(engagement_id)
+        if bucket is None:
+            return ""
+        reason = bucket.pop(inbound_token, "")
+        if not bucket:
+            self._followup_incomplete.pop(engagement_id, None)
+        return reason
+
     def inbound_in_flight_texts(self, engagement_id: str) -> list[str]:
         """Disclosure-only population: client accepted the text, no
         model-evidence frame processed yet. ``inbound_in_flight_blocking``
@@ -399,6 +448,7 @@ class InCasaDriver(DriverProtocol):
         self._locks.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
         self._launch_incomplete.pop(engagement.id, None)  # #678 map hygiene
+        self._followup_incomplete.pop(engagement.id, None)  # #692 same
         if client is None and ctx is None:
             return
         try:
@@ -481,6 +531,7 @@ class InCasaDriver(DriverProtocol):
         self._locks.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
         self._launch_incomplete.pop(engagement.id, None)  # #678 map hygiene
+        self._followup_incomplete.pop(engagement.id, None)  # #692 same
 
     async def open_fresh(self, engagement: EngagementRecord) -> None:
         """#369: open a NEW session for an engagement whose context was
@@ -782,11 +833,37 @@ class InCasaDriver(DriverProtocol):
                 "no model-evidence frame"
             )
 
+        # #692/#678: OBSERVE whether a ticketed FOLLOW-UP turn left the turn's
+        # own terminal artifact, in its OWN slot keyed by its OWN ticket.
+        #
+        # Reached only after the ``ApiErrorTurn`` and ``EmptyTurnError``
+        # raises above, so a faulted turn and an evidence-less turn keep their
+        # existing owners and never write here. ``evidence_seen`` is
+        # deliberately NOT the predicate — it latches on the FIRST frame, so a
+        # turn cut off mid-tool-loop is indistinguishable from a finished one
+        # on it. The honest predicate is the missing result frame.
+        #
+        # RECORDED, never raised. A raise here would be a new failure mode on
+        # the path every follow-up turn in the tree takes, and it cannot tell
+        # a cutoff from a HEALTHY in_casa self-emit completion — where
+        # ``_finalize_engagement_tail`` closes this engagement's own SDK
+        # client and the response iterator can end with no ``ResultMessage``
+        # on the happy path. The delivery task adjudicates instead, against
+        # the registry's SETTLED status, which is the one place that
+        # distinction can be made.
+        if inbound_token is not None and result_msg is None:
+            self._followup_incomplete.setdefault(
+                engagement.id, {})[inbound_token] = FOLLOWUP_MISSING_RESULT
+            logger.warning(
+                "Engagement %s follow-up turn ended with no ResultMessage "
+                "(frames=%d) — its delivery task reports it",
+                engagement.id[:8], idx,
+            )
+
         # #678: OBSERVE whether this LAUNCH turn left a terminal artifact.
-        # Launch turns only (``inbound_token is None``) — a follow-up turn's
-        # failure owner is the Telegram delivery task's "Turn failed" notice
-        # (#649), which needs no help from here, and writing the slot on that
-        # path could overwrite a launch observation not yet read.
+        # Launch turns only (``inbound_token is None``); the ticketed arm is
+        # directly above and writes a DIFFERENT slot, so neither can overwrite
+        # an observation the other's owner has not read yet.
         #
         # Recorded AFTER ``stream.finalize(final)`` above, deliberately: the
         # ``no_visible_output`` arm is a statement about text that reached the
@@ -797,6 +874,14 @@ class InCasaDriver(DriverProtocol):
         # discover. ``evidence_seen`` is deliberately NOT consulted: it
         # latches on the FIRST frame, so a turn cut off mid-tool-loop is
         # indistinguishable from a finished one on it.
+        #
+        # NOTE (#692): this block used to justify its launch-only scope by
+        # saying a follow-up turn's failure owner "is the Telegram delivery
+        # task's 'Turn failed' notice (#649), which needs no help from here".
+        # That was FALSE and it is why the follow-up cutoff was silent: that
+        # notice lives inside ``except Exception`` around
+        # ``_driver_send_user_turn``, and this delivery does not raise. The
+        # ticketed arm above is the help it needed.
         if inbound_token is None:
             reason = ""
             if result_msg is None:

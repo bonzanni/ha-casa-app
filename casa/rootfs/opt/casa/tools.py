@@ -7993,6 +7993,52 @@ class FinalizeResult(enum.Enum):
 _QUIESCE_FUNNEL_TIMEOUT_S = 5.0
 _DRIVER_CANCEL_TIMEOUT_S = 20.0
 
+_DISCLOSURE_UNCONFIRMED = (
+    "\u26a0\ufe0f This engagement is recorded as {outcome}, but its completion "
+    "summary could not be confirmed as posted here. The topic is left UNMARKED "
+    "on purpose, so the failure stays visible."
+)
+"""#678: what the finalize funnel says in a topic whose completion summary it
+could not confirm.
+
+"could not be CONFIRMED as posted", never "could not be posted": a Telegram
+``TimedOut`` can lose the acknowledgement of a message the wire accepted, so
+claiming the summary is absent would sometimes be false about a message the
+operator can see.
+
+"left UNMARKED" is a statement about what this funnel is about to do, which is
+the one topic-lifecycle fact it can make: the mark is skipped on exactly this
+branch. It says nothing about the close, which is attempted below and can fail.
+
+THE RULE THESE STRINGS OBEY, after the same finding shape three times. A notice
+posted from here may assert ONLY what its own site observed:
+
+  (a) the engagement's SETTLED terminal status, which is durable because the
+      strict transition commits memory and disk together or neither; and
+  (b) that the telling was NOT confirmed.
+
+Everything else was cut rather than reworded a fourth time. Three successive
+reviews found the same shape — prose asserting state the site cannot see: first
+"this turn did not finish … may be partial" (false when the stream carried
+text), then "the outcome was delivered to the engager and is in the engagement
+record" (the notify is best-effort and its failure is caught, and the record
+holds the terminal state rather than the summary text), then "this topic is
+closed … deleted with everything in it at its retention deadline" (the close
+can raise and the retention-ledger append is best-effort too). Sharpening the
+wording once more would have been the fourth patch on one mechanism. The
+mechanism is gone instead: there is no longer any sentence here about topic
+lifecycle, retention, the engager, or the record's contents.
+
+WHICH CONTROL HOLDS THIS, stated exactly, because a blacklist of forbidden
+phrases stood here and was CUT: the suite pins this sentence by WHOLE-SENTENCE
+EQUALITY, so it cannot change silently — a production-only reword fails a test.
+Nothing in the suite stops an author who edits this string and its expectation
+TOGETHER, and nothing can: whether a new sentence is TRUE is a judgment, and the
+blacklist that tried to encode it was bypassed three times by respelling the same
+false claims. So if you are editing this string, the rule above is the control,
+and it is on you. See `architecture/engagement-finalization.md`.
+"""
+
 # #632: detached finalize tails, anchored so the event loop cannot collect
 # them mid-flight. A tail is created only on the in_casa self-emit path (see
 # _finalize_engagement's detach_teardown_tail); the done callback is the only
@@ -8312,6 +8358,13 @@ async def _finalize_engagement(
     if engagement.topic_id is not None and _channel_manager is not None:
         tch = _channel_manager.get(engagement.origin.get("channel", "telegram"))
         if tch is not None:
+            # #678 (INV-ENG-013): the U3 paint is CONDITIONAL on this. Until
+            # this release the completion post's exception was swallowed and
+            # the topic was painted ✅ over having received nothing. The CLOSE
+            # is not conditional (R2, seam review — see the close below).
+            # Local, not a shared helper: a sibling stream owns the
+            # neighbouring regions of this module.
+            completion_post_confirmed = False
             try:
                 summary_text = (
                     f"Engagement {outcome}. Summary:\n{text}"
@@ -8379,58 +8432,179 @@ async def _finalize_engagement(
                 # non-claude_code driver / no live sequencer falls back to the
                 # pre-v0.79 direct send.
                 posted_via_sequencer = False
+                # #678 (SEAM-1): a sequencer post that RAISES is not the same
+                # as one that reports nothing sent. ``post_completion_notice``
+                # returning None means a definite failure and NOTHING landed,
+                # so the direct send below is a legitimate second attempt; a
+                # RAISE can come from page 2 of a 4-page paginated send, so
+                # replaying the whole summary through the direct sender would
+                # duplicate content in the topic and then paint and close over
+                # the duplicate. On a raise there is no resend: the bounded
+                # plain disclosure is the only further thing said.
+                sequencer_attempt_failed = False
                 if driver is not None and hasattr(
                         driver, "finalize_completion_post"):
                     try:
                         posted_via_sequencer = await driver.finalize_completion_post(
                             engagement, summary_text)
                     except Exception as exc:  # noqa: BLE001 — never abort finalize
-                        logger.warning(
-                            "finalize engagement %s: sequencer completion post "
-                            "failed: %s", engagement.id[:8], exc,
+                        sequencer_attempt_failed = True
+                        logger.error(
+                            "finalize engagement %s: the sequencer completion "
+                            "post RAISED part-way — NOT replaying the summary "
+                            "(pages may already be in the topic): %s",
+                            engagement.id[:8], exc,
                         )
-                if not posted_via_sequencer:
+                if posted_via_sequencer:
+                    completion_post_confirmed = True
+                elif not sequencer_attempt_failed:
                     # v0.109.0 (G2/G5): executor completion summaries are
                     # markdown-heavy — render them, paginating past the
                     # 4096/100-entity caps (the in_casa configurator path was
                     # the dominant literal-``**`` topic surface). Channels
                     # without the paged rich sender keep the plain send.
+                    #
+                    # #678: CONFIRMATION is the returned message id, not the
+                    # call returning. Both senders are typed ``-> int`` and
+                    # raise on failure, so a non-None return is a wire
+                    # acknowledgement — which is all it claims, never that a
+                    # person read it.
                     if hasattr(tch, "send_response_to_topic"):
-                        await tch.send_response_to_topic(
+                        _mid = await tch.send_response_to_topic(
                             engagement.topic_id,
                             summary_text,
                         )
                     else:
-                        await tch.send_to_topic(
+                        _mid = await tch.send_to_topic(
                             engagement.topic_id,
                             summary_text,
                         )
+                    completion_post_confirmed = _mid is not None
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "finalize engagement %s: send_to_topic failed: %s",
+                logger.error(
+                    "finalize engagement %s: the completion post FAILED — the "
+                    "topic is left UNMARKED so the loss stays visible: %s",
                     engagement.id[:8], exc,
                 )
-            # E-12 (v0.37.0) Task 23: U3 terminal state — flip the topic title
-            # to <state-emoji>·<role-emoji> <task> before closing so the
-            # closed-topic sidebar carries the outcome at a glance.
-            terminal_state = {
-                "completed": "completed",
-                "cancelled": "cancelled",
-                "error": "failed",
-                "failed": "failed",
-            }.get(outcome)
-            if terminal_state is not None and hasattr(tch, "update_topic_state"):
+            # #678 (INV-ENG-013): whether the topic heard ANYTHING terminal.
+            # The disclosure below counts: if it lands, the topic was told why
+            # the engagement ended, which is the whole point of it.
+            telling_confirmed = completion_post_confirmed
+            if not completion_post_confirmed:
+                # ONE bounded plain disclosure attempt. Deliberately not the
+                # summary again — a paginated rich send can fail after posting
+                # some of its pages, so repeating it would double-post. Plain,
+                # so a rendering fault cannot be the thing that fails twice.
+                # Bounded, because this is a new await in a funnel whose record
+                # is already terminal and unretryable.
+                #
+                # The rule is UNIFORM across outcomes: a 🛑 over a topic that
+                # never heard why is the same lie as a ✅, and uniformity means
+                # nobody has to reason about which outcomes are covered.
+                #
+                # CONFIRMATION here is the returned message id, exactly as for
+                # the summary: a send that returns having sent nothing is not a
+                # telling (``send_to_topic`` is typed ``-> int``).
                 try:
-                    await tch.update_topic_state(
-                        engagement_id=engagement.id, new_state=terminal_state,
+                    _did = await asyncio.wait_for(
+                        tch.send_to_topic(
+                            engagement.topic_id,
+                            _DISCLOSURE_UNCONFIRMED.format(outcome=outcome),
+                        ),
+                        _TOPIC_OP_TIMEOUT_S,
                     )
-                except Exception as exc:  # noqa: BLE001
+                    telling_confirmed = _did is not None
+                except BaseException as exc:  # noqa: BLE001 — one attempt
                     logger.warning(
-                        "finalize engagement %s: U3 state update failed: %s",
+                        "finalize engagement %s: the disclosure of the "
+                        "unconfirmed completion post also failed: %s",
                         engagement.id[:8], exc,
                     )
+            # #678/#692 (R2, seam review): RECORD whether this topic was told,
+            # for the delivery task of any follow-up turn still in flight.
+            #
+            # Terminal STATUS is not that fact, and a reviewer reproduced the
+            # composition where the difference is the whole defect: the summary
+            # fails, the disclosure fails, the tail's ``driver.cancel`` then
+            # ends that turn's iterator, and a status-only reader stays quiet —
+            # a terminal record over a topic that heard nothing, and nobody
+            # tells the operator. Written HERE, before the close and therefore
+            # before the tail, because the reader is woken BY the tail.
+            #
+            # Synchronous and in-memory (never persisted): it coordinates two
+            # tasks in one process and has no meaning after a restart, which
+            # has no surviving turn to adjudicate.
+            if _engagement_registry is not None and hasattr(
+                    _engagement_registry, "record_terminal_telling"):
+                try:
+                    _engagement_registry.record_terminal_telling(
+                        engagement.id, telling_confirmed)
+                except Exception:  # noqa: BLE001 — never abort finalize
+                    logger.warning(
+                        "finalize engagement %s: recording the terminal "
+                        "telling failed", engagement.id[:8], exc_info=True)
+            if completion_post_confirmed:
+                # E-12 (v0.37.0) Task 23: U3 terminal state — flip the topic
+                # title to <state-emoji>·<role-emoji> <task> before closing so
+                # the closed-topic sidebar carries the outcome at a glance.
+                #
+                # #678: the MARK is what is withheld when the post did not
+                # confirm — an outcome mark over a topic that was never told
+                # the outcome is the lie this invariant removes. It is gated on
+                # the SUMMARY's confirmation, not on ``telling_confirmed``: a
+                # disclosure that landed says the summary did NOT, so marking
+                # the topic done would contradict the sentence above it.
+                terminal_state = {
+                    "completed": "completed",
+                    "cancelled": "cancelled",
+                    "error": "failed",
+                    "failed": "failed",
+                }.get(outcome)
+                if terminal_state is not None and hasattr(
+                        tch, "update_topic_state"):
+                    try:
+                        await tch.update_topic_state(
+                            engagement_id=engagement.id,
+                            new_state=terminal_state,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "finalize engagement %s: U3 state update failed: "
+                            "%s", engagement.id[:8], exc,
+                        )
+            # #678 (R2, seam review): the close is UNCONDITIONAL, and BOUNDED.
+            #
+            # Unconditional: an earlier revision of this change left the topic
+            # OPEN when the post did not confirm, as a visible failure signal.
+            # A reviewer showed that signal is not authoritative — the mark and
+            # the close are independent best-effort operations, so a CONFIRMED
+            # post whose mark and close both fail produces the identical
+            # visible state — while the open topic is not harmless: the
+            # retention-ledger append above already ran, unconditionally, and
+            # the sweep deletes the topic and every message in it, so a note
+            # the operator types into a topic that still accepts messages is
+            # deleted with it. The withheld MARK carries the whole signal; the
+            # open state added no authority to it and did add that loss path.
+            #
+            # Bounded: this await has no caller-side bound anywhere in this
+            # module's history, and making it unconditional put it on the path
+            # where the follow-up adjudication depends on the tail running. A
+            # close that never returns would strand ``driver.cancel``, the bus
+            # notification and the retains behind it over an already-terminal
+            # record — and, because ``driver.cancel`` is what ends the response
+            # iterator, would strand the follow-up turn waiting to adjudicate
+            # its own cutoff. Same bound as ``_abort_engagement_topic``'s close.
             try:
-                await tch.close_topic(thread_id=engagement.topic_id)
+                await asyncio.wait_for(
+                    tch.close_topic(thread_id=engagement.topic_id),
+                    _TOPIC_OP_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "finalize engagement %s: close_topic exceeded %.0fs — "
+                    "continuing so the tail still runs",
+                    engagement.id[:8], _TOPIC_OP_TIMEOUT_S,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "finalize engagement %s: close_topic failed: %s",
@@ -8438,6 +8612,7 @@ async def _finalize_engagement(
                 )
             # R5 (v0.89.0): drop the react target (map hygiene). Best-effort —
             # a missed clear is harmless (react's non-live gate rejects it).
+            # Unconditional again, with the close it is hygiene for.
             if hasattr(tch, "clear_inbound"):
                 try:
                     tch.clear_inbound(engagement.id)

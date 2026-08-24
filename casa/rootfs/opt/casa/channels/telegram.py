@@ -503,6 +503,92 @@ _RECONNECT_CAP_MS = 60_000
 _PROBE_INTERVAL = 45.0
 _PROBE_TIMEOUT = 10.0
 
+_TURN_INCOMPLETE_NOTICE_TIMEOUT_S = 5.0
+"""#692: the bound on the ONE cut-off-turn notice attempt. Matches
+``_settle_lost_inbound``'s existing bound for the same reason — a bounded
+best-effort telling, never retried, because retry-until-posted on an
+engagement path is the INV-ENG-003 livelock class."""
+
+_SETTLED_STATUS_TIMEOUT_S = 5.0
+"""#692: the bound on the registry's settled-status read.
+
+The registry lock is held across a tombstone write, and this read happens on a
+Telegram delivery task — which must not be able to wedge behind a wedged
+registry. On timeout the notice is posted ANYWAY: this issue is about silence,
+so the fail-open direction is toward telling the operator."""
+
+_TURN_ENDED_UNCONFIRMED_NOTICE = (
+    "This engagement has ended, and Casa could not confirm that its account of "
+    "the outcome reached this topic. If a summary appears above, that is it."
+)
+"""#678: what a cut-off follow-up turn's owner says when the engagement is
+already TERMINAL and its terminal path could not confirm a telling.
+
+A distinct sentence from :data:`_TURN_CUT_OFF_NOTICE`, on a reviewer's finding
+in the first diff round, because that one would be FALSE here. A Telegram
+``TimedOut`` can lose the acknowledgement of a completion summary the wire
+accepted: the operator then SEES the summary while the funnel recorded the
+telling as unconfirmed, and "this turn did not finish … anything it already
+posted above may be partial" contradicts what is on their screen. The turn
+also did not fail — it ended BECAUSE it completed the engagement.
+
+THE RULE THESE STRINGS OBEY, after the same finding shape three times. A notice
+posted from here may assert ONLY what its own site observed:
+
+  (a) the engagement's SETTLED terminal status, which is durable because the
+      strict transition commits memory and disk together or neither; and
+  (b) that the telling was NOT confirmed.
+
+Everything else was cut rather than reworded a fourth time. Three successive
+reviews found the same shape — prose asserting state the site cannot see: first
+"this turn did not finish … may be partial" (false when the stream carried
+text), then "the outcome was delivered to the engager and is in the engagement
+record" (the notify is best-effort and its failure is caught, and the record
+holds the terminal state rather than the summary text), then "this topic is
+closed … deleted with everything in it at its retention deadline" (the close
+can raise and the retention-ledger append is best-effort too). Sharpening the
+wording once more would have been the fourth patch on one mechanism. The
+mechanism is gone instead: there is no longer any sentence here about topic
+lifecycle, retention, the engager, or the record's contents.
+
+WHICH CONTROL HOLDS THIS, stated exactly, because a blacklist of forbidden
+phrases stood here and was CUT: the suite pins this sentence by WHOLE-SENTENCE
+EQUALITY, so it cannot change silently — a production-only reword fails a test.
+Nothing in the suite stops an author who edits this string and its expectation
+TOGETHER, and nothing can: whether a new sentence is TRUE is a judgment, and the
+blacklist that tried to encode it was bypassed three times by respelling the same
+false claims. So if you are editing this string, the rule above is the control,
+and it is on you. See `architecture/engagement-finalization.md`.
+"""
+
+
+_TURN_CUT_OFF_NOTICE = (
+    "This turn did not finish: its stream stopped without ResultMessage, the "
+    "frame that marks a turn that ran to its end, so its outcome was never "
+    "confirmed. Anything it already posted above may be partial, and work it "
+    "started may already have taken effect \u2014 check before asking for it "
+    "again."
+)
+"""#692: the whole of what a cut-off follow-up turn tells the operator.
+
+It states the terminal-artifact FACT and not merely that something failed: the
+report exists to name why the outcome is unknown, and a notice that dropped
+that would be a different, weaker guarantee. Pinned by whole-sentence equality
+AND by an independent substring assertion, which protect different things — the
+first stops a silent rewording, the second stops a rewording that keeps the
+sentence's shape and loses its content.
+
+It also does NOT say nothing was reported, and does NOT invite a retry, and
+both of those are corrections of an earlier draft that said both. A cut-off
+turn can have streamed assistant text before the stream ended — the driver
+finalizes whatever it accumulated before recording the observation, deliberately
+so — so "nothing was reported back for it" was simply false whenever that
+happened, and "send your message again if you want it retried" invited the
+operator to repeat work that had already taken effect. For non-idempotent work
+that is the notice actively causing harm. What is always true is that the
+turn's outcome was never confirmed and that whatever it did may be partial, so
+that is what it says."""
+
 # Callback type for on_token streaming
 OnTokenCallback = Callable[[str], Awaitable[None]]
 
@@ -627,6 +713,13 @@ class TelegramChannel(Channel):
         # writer — a notice can never land BELOW live narration. Wired by
         # casa_core; None-safe (falls back to a direct send).
         self._driver_post_notice = None
+        # #692: SYNCHRONOUS read of the in_casa driver's follow-up-turn
+        # observation for one exact admission ticket, wired by casa_core;
+        # None-safe, and "" for a claude_code record. The driver OBSERVES that
+        # a ticketed turn ended with no ResultMessage; this channel's delivery
+        # task ADJUDICATES, because only it can tell that cutoff from a
+        # healthy in_casa self-emit completion.
+        self._driver_turn_incomplete = None
         # #369: clearance-downgrade context revocation seams, wired by
         # casa_core per driver; None-safe for tests. ``invalidate_session``
         # tears the live session down (in_casa: close the client; claude_code:
@@ -2005,6 +2098,108 @@ class TelegramChannel(Channel):
         self._inbound_cleanup_tasks.add(t)
         t.add_done_callback(self._inbound_cleanup_tasks.discard)
 
+    async def _report_incomplete_turn(self, rec, token) -> None:
+        """#692/#678: tell the operator when THEIR turn ended without the
+        turn's own terminal artifact and the engagement is still live.
+
+        Called on ``_deliver_turn_bg``'s SUCCESS path only. Every exception
+        path already has an owner — the "Turn failed" notice, the terminal
+        absorb branch, or ``_settle_lost_inbound`` — and adding a telling
+        there too would be a second telling for one turn.
+
+        Three properties carry this:
+
+        1. **One bounded attempt, never retried.** Both awaits are bounded
+           independently (D21); a retry-until-posted here would be an
+           unclearable completion veto.
+        2. **The suppression reads the SETTLED record, not a lock-free
+           snapshot.** A healthy in_casa self-emit completion reaches here
+           looking exactly like a cutoff: ``emit_completion`` commits the
+           terminal transition and ``_finalize_engagement_tail`` then closes
+           the engagement's own SDK client, so the turn ends with no
+           ``ResultMessage``. The flip and the funnel's topic work both
+           precede that close, so a settled read sees them and this stays
+           quiet; a LOCK-FREE read could instead see the transient value of a
+           strict transition that then rolls back, and would swallow a notice
+           that was owed.
+        3. **It is an ATTEMPT, not an ordering guarantee.** Nothing orders an
+           in_casa notice against the finalize funnel's topic operations, so a
+           terminal writer that wins the flip after the read above can paint
+           and close first and this notice lands below the paint, or fails
+           against a closed topic. Installing that ordering needs the
+           in_casa turn-admission fence that does not exist (INV-ENG-009 is
+           claude_code-only) and is deliberately out of scope here. The
+           invariant is written as an attempt for that reason.
+        4. **R2: terminal STATUS is not the suppression predicate — a
+           CONFIRMED terminal telling is.** A seam reviewer reproduced the
+           composition this change would otherwise create with its own other
+           arm: the completion summary fails, the funnel's one bounded
+           disclosure fails too, the tail's ``driver.cancel`` then ends this
+           turn's iterator, and a status-only reader sees ``completed`` and
+           stays quiet — a terminal record over a topic that heard NOTHING,
+           and zero notices. So the read asks the whole question at once
+           (``settled_terminal_state``), and every way of NOT knowing that the
+           topic was told — no record of one, a read that raises, a read that
+           times out — falls through to the one attempt. The harm being fixed
+           is silence, so that is the direction to fail in.
+        """
+        # No ``token is None`` half: the seam is total over a ticket it does
+        # not hold and returns "" for one, so the guard would be unpinnable
+        # (see casa_core.read_followup_incomplete). The seam-wired check IS
+        # load-bearing — an unwired channel has no seam to call.
+        if self._driver_turn_incomplete is None:
+            return
+        try:
+            reason = self._driver_turn_incomplete(rec, token)
+        except Exception:  # noqa: BLE001 — an observation read is never fatal
+            logger.debug("follow-up observation read failed for %s",
+                         rec.id[:8], exc_info=True)
+            return
+        if not reason:
+            return
+        status, told = "", False
+        if self._engagement_registry is not None:
+            try:
+                status, told = await asyncio.wait_for(
+                    self._engagement_registry.settled_terminal_state(rec.id),
+                    _SETTLED_STATUS_TIMEOUT_S)
+            except BaseException:  # noqa: BLE001 — fail TOWARD telling
+                status, told = "", False
+                logger.warning(
+                    "settled terminal-state read did not return for %s — "
+                    "telling the operator anyway", rec.id[:8], exc_info=True)
+        if status in ("completed", "cancelled", "error") and told:
+            logger.info(
+                "turn %s ended without its result frame on an already-terminal "
+                "engagement (%s) whose terminal path DID tell this topic — it "
+                "owns the telling", rec.id[:8], status)
+            return
+        terminal_untold = status in ("completed", "cancelled", "error")
+        if terminal_untold:
+            logger.warning(
+                "turn %s ended without its result frame on a terminal "
+                "engagement (%s) whose terminal path told this topic nothing "
+                "— telling the operator", rec.id[:8], status)
+        logger.warning(
+            "engagement %s: a follow-up turn ended without its result frame "
+            "over a live record (reason=%s) — telling the operator",
+            rec.id[:8], reason)
+        # WHICH telling depends on the state, and the two are not
+        # interchangeable: over a LIVE record the turn really was cut off, and
+        # over a TERMINAL one it ended because it completed the engagement,
+        # whose account may in fact be on the operator's screen already (a lost
+        # acknowledgement is indistinguishable from a failed send from here).
+        try:
+            await asyncio.wait_for(
+                self._post_engagement_notice(
+                    rec,
+                    _TURN_ENDED_UNCONFIRMED_NOTICE if terminal_untold
+                    else _TURN_CUT_OFF_NOTICE),
+                _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
+        except BaseException:  # noqa: BLE001 — one bounded best-effort attempt
+            logger.warning("incomplete-turn notice failed for %s",
+                           rec.id[:8], exc_info=True)
+
     async def _deliver_turn_bg(
         self, rec, text: str, *, tg_message_id: int | None = None,
         answer_token: str | None = None,
@@ -2018,6 +2213,14 @@ class TelegramChannel(Channel):
         concurrent /cancel finalised the driver mid-turn, send_user_turn
         raises (DriverNotAliveError / transport-closed) and we stay quiet —
         that is the expected end of an interrupted turn, not a failure.
+
+        #692: staying quiet is right only when the turn RAISED. A turn cut off
+        mid-tool-loop RETURNS NORMALLY — the SDK's response iterator simply
+        ends without a ResultMessage — so the "Turn failed" notice below,
+        which lives inside ``except Exception``, could never fire for it and
+        the operator's message was consumed and answered with nothing. The
+        success path therefore asks ``_report_incomplete_turn``, which is that
+        shape's owner.
 
         v0.79.0 (§3): ``tg_message_id`` threads the durable inbound envelope to
         the operator's Telegram message (reply-quoting / receipts).
@@ -2060,6 +2263,12 @@ class TelegramChannel(Channel):
             if (inbound_token is not None
                     and self._driver_discharge_inbound is not None):
                 self._driver_discharge_inbound(rec, inbound_token)
+            # #692: the turn RETURNED, which is not the same as the turn
+            # having finished. Ask the driver whether this ticket's turn left
+            # the turn's own terminal artifact, and tell the operator if it
+            # did not. After the discharge above, so the ledger is in its
+            # final state either way.
+            await self._report_incomplete_turn(rec, inbound_token)
         except asyncio.CancelledError:
             _release_inbound()
             # Cancelled before a durable enqueue could promote — roll back.

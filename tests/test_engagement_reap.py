@@ -23,6 +23,32 @@ import pytest
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
+def _driver_double():
+    """A driver double shaped like the REAL engagement drivers.
+
+    A bare ``MagicMock()`` fabricates EVERY attribute, so the funnel's
+    ``hasattr`` probes find ``finalize_completion_post``, ``finalize_summary``,
+    ``settle_all_open_questions`` and ``drain_inbound_spool`` — none of which
+    ``InCasaDriver`` has — and awaiting their non-awaitable returns raises
+    ``TypeError`` into the guards around each one.
+
+    Before #678 that was invisible: the completion post's failure was swallowed
+    and the funnel painted and closed regardless, so these tests asserted a
+    close that only happened because the double was broken. Now a fabricated
+    ``finalize_completion_post`` tells the funnel a sequencer post was
+    ATTEMPTED and failed part-way, and it correctly declines to replay the
+    summary. The double was always wrong; what changed is that it is no longer
+    silent.
+    """
+    d = MagicMock()
+    d.cancel = AsyncMock()
+    for hook in ("finalize_completion_post", "finalize_summary",
+                 "settle_all_open_questions", "drain_inbound_spool"):
+        delattr(d, hook)
+    return d
+
+
+
 @pytest.fixture(autouse=True)
 def _restore_agent_drivers():
     """The reap resolves drivers off the `agent` module globals; save/restore
@@ -47,6 +73,14 @@ def _wire(tmp_path):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
     telegram = MagicMock()
     telegram.send_to_topic = AsyncMock()
+    # #678: the paged rich sender is the one the funnel PREFERS, and a bare
+    # MagicMock fabricates it — so `hasattr` found it, awaiting its
+    # non-awaitable return raised TypeError, the funnel swallowed that and
+    # closed the topic anyway. This test's close assertion was passing because
+    # the double was broken. The real TelegramChannel has this method; the
+    # double now has it too, and returns a message id, which is what the
+    # funnel reads as confirmation.
+    telegram.send_response_to_topic = AsyncMock(return_value=4242)
     telegram.close_topic = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = telegram
@@ -57,8 +91,7 @@ def _wire(tmp_path):
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=reg,
     )
-    driver = MagicMock()
-    driver.cancel = AsyncMock()
+    driver = _driver_double()
     agent_mod.active_claude_code_driver = driver
     agent_mod.active_engagement_driver = driver
     return reg, telegram, bus, driver
@@ -104,7 +137,7 @@ class TestReapStaleEngagements:
         from tools import reap_stale_engagements
 
         reg, telegram, bus, _ = _wire(tmp_path)
-        cc_driver = MagicMock(); cc_driver.cancel = AsyncMock()
+        cc_driver = _driver_double()
         in_casa = MagicMock(); in_casa.cancel = AsyncMock()
         agent_mod.active_claude_code_driver = cc_driver
         agent_mod.active_engagement_driver = in_casa
@@ -120,7 +153,7 @@ class TestReapStaleEngagements:
         from tools import reap_stale_engagements
 
         reg, telegram, bus, _ = _wire(tmp_path)
-        cc_driver = MagicMock(); cc_driver.cancel = AsyncMock()
+        cc_driver = _driver_double()
         in_casa = MagicMock(); in_casa.cancel = AsyncMock()
         agent_mod.active_claude_code_driver = cc_driver
         agent_mod.active_engagement_driver = in_casa
