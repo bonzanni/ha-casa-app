@@ -369,6 +369,11 @@ class EngagementRegistry:
         self._agent_spawn_limiter = agent_spawn_limiter
         self._records: dict[str, EngagementRecord] = {}
         self._topic_index: dict[int, str] = {}
+        # #678/#692: whether the terminal path CONFIRMED a telling into each
+        # terminal engagement's topic. In-memory, never persisted — see
+        # ``record_terminal_telling``. Bounded by the record set: dropped
+        # wherever a record is dropped.
+        self._terminal_telling: dict[str, bool] = {}
         self._lock = asyncio.Lock()
         # #588: strong refs for the background tombstone persists scheduled by
         # ``begin_turn_delivery`` (which may not await). Without a reference the
@@ -527,6 +532,72 @@ class EngagementRegistry:
 
     def get(self, engagement_id: str) -> EngagementRecord | None:
         return self._records.get(engagement_id)
+
+    def record_terminal_telling(
+        self, engagement_id: str, confirmed: bool,
+    ) -> None:
+        """#678/#692: record whether the terminal path CONFIRMED a telling into
+        this engagement's topic — the completion summary or, failing that, the
+        plain disclosure that replaces it.
+
+        In-memory, NEVER persisted, and deliberately not a record field. It
+        coordinates two tasks inside one process — the finalize funnel and the
+        delivery task of a follow-up turn that is still in flight — and it has
+        no meaning after a restart, because a restart has no surviving turn to
+        adjudicate. Making it durable would make it a second terminal state,
+        which is a change to the engagement state machine and is not this.
+
+        Written only from inside the funnel's topic block, BEFORE the topic
+        close and therefore before the tail's ``driver.cancel`` ends the
+        response iterator that the reader is waiting on. Synchronous, so it
+        cannot be reordered across an await.
+
+        Bounded by the record set: the entry is dropped wherever its record is.
+        """
+        self._terminal_telling[engagement_id] = bool(confirmed)
+
+    async def settled_terminal_state(
+        self, engagement_id: str,
+    ) -> tuple[str, bool]:
+        """#692: the record's status AND whether the terminal path confirmed a
+        telling into its topic, read together UNDER the registry lock.
+
+        Two reasons it is one compound accessor rather than two reads.
+
+        The lock, first. :meth:`get` is lock-free by design and every existing
+        caller wants that. This one does not: ``try_transition_terminal``'s
+        strict path commits the terminal fields IN MEMORY, then awaits the
+        tombstone write, then FULL-FIELD restores them if that write fails —
+        all inside ``self._lock``. A lock-free reader landing in that window
+        sees ``completed`` for a transition that rolls back live. The follow-up
+        cutoff owner uses that answer to decide whether to stay silent, so
+        reading the transient value there means swallowing a notice that is
+        owed — the exact harm #692 exists to remove.
+
+        The compounding, second, and it is a review ruling rather than a
+        convenience: a terminal STATUS is not proof that anything was told, and
+        leaving a status-only accessor beside this one "invites the same proxy
+        regression" (Terra, second design round) — the next caller asks the
+        cheap question and re-creates the defect. So there is one question to
+        ask here, and it is the whole question. It also costs one lock
+        acquisition instead of two.
+
+        ``(status, told)``. An unknown id reads ``("", False)``. A record with
+        no recorded telling reads ``False``: not knowing that the topic was
+        told is not knowing that it was, and on this path the fail-open
+        direction is toward telling the operator.
+
+        Nothing is awaited inside the critical section, so this adds no new
+        suspension point to the lock's own holders. Callers must still bound
+        their wait: the lock is held across a tombstone write, and a caller on
+        a Telegram delivery task must not be able to wedge behind a wedged
+        registry.
+        """
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                return ("", False)
+            return (rec.status, self._terminal_telling.get(engagement_id, False))
 
     def by_topic_id(self, topic_id: int) -> EngagementRecord | None:
         rec_id = self._topic_index.get(topic_id)
@@ -767,6 +838,7 @@ class EngagementRegistry:
                         rec.allocated_uid = self._uid_allocator.allocate()
                     except Exception:
                         self._records.pop(engagement_id, None)
+                        self._terminal_telling.pop(engagement_id, None)
                         if (topic_id is not None
                                 and self._topic_index.get(topic_id) == engagement_id):
                             del self._topic_index[topic_id]
@@ -789,6 +861,7 @@ class EngagementRegistry:
             # cancelled mid-``to_thread`` cannot tear memory from disk.
             def _rollback() -> None:
                 self._records.pop(engagement_id, None)
+                self._terminal_telling.pop(engagement_id, None)
                 if (topic_id is not None
                         and self._topic_index.get(topic_id) == engagement_id):
                     del self._topic_index[topic_id]

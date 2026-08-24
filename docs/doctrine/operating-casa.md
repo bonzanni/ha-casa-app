@@ -83,6 +83,14 @@ either way. See `architecture/engagement-completion-gate.md`.
 completion message never reached anyone. If it matters that a person *knows*, confirm rather
 than inferring it from your own success.
 
+**Do not read delivery off the topic's appearance.** Casa's delivery fact is the message id
+the wire returned for the completion post; the outcome mark on the topic and the closing of
+it are separate, best-effort operations that can each fail on their own. So a terminal topic
+carrying no outcome mark is Casa telling you that *something* in that sequence did not
+confirm — the post, or the mark — and it is a prompt to go and check, never proof that the
+summary is missing. A marked topic is not proof anyone read it either. When it matters that
+a person knows, confirm it with them. See `architecture/engagement-finalization.md`.
+
 **Do not infer your capabilities from your persona.** Persona text is presentation and is not
 validated against what you can actually do — it can name a tool you do not have. What you can
 do is what the tool layer gives you. See `architecture/personality.md`.

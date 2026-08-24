@@ -461,6 +461,37 @@ def _gather_reconstruct_evidence(registry, *, data_dir: str):
     return known_uids, dir_owner_uids
 
 
+
+def read_followup_incomplete(engagement_driver, rec, token) -> str:
+    """#692: the ``_driver_turn_incomplete`` seam's whole body, at module
+    level so it can be tested as production code rather than reimplemented in
+    a test double.
+
+    SYNCHRONOUS. Returns ``""`` for a ``claude_code`` record (that driver has
+    its own failure ownership) and for any driver that does not expose the
+    accessor.
+
+    ``getattr``-guarded on purpose: ``followup_turn_incomplete`` is
+    deliberately NOT on ``DriverProtocol``, so a driver without it must read
+    as "nothing to report" rather than raise ``AttributeError`` into a
+    delivery task that would then surface a failure for a healthy turn.
+
+    There is deliberately NO ``token is None`` guard. The accessor is already
+    total over a ticket it does not hold — the observation map is keyed by the
+    admission ticket and the writing branch requires a non-None one, so
+    ``None`` is never a key and a lookup with no ticket returns "" on its own.
+    A guard whose removal changes no observable behaviour cannot be pinned by
+    any test, and an unpinnable guard is the thing this change was told to cut
+    rather than sharpen: the mutation sweep surfaced it exactly that way, as an
+    arm that survived because it was redundant and not because its test was
+    weak.
+    """
+    if rec.driver == "claude_code":
+        return ""
+    fn = getattr(engagement_driver, "followup_turn_incomplete", None)
+    return fn(rec.id, token) if callable(fn) else ""
+
+
 async def replay_undergoing_engagements(
     *, registry, driver, executor_registry=None,
     engagements_root: str = "/data/engagements",
@@ -4411,6 +4442,16 @@ async def main() -> None:
                 return engagement_driver.inbound_token_held(rec.id, token)
             return False
         telegram_channel._driver_inbound_held = _driver_inbound_held
+
+        # #692: SYNCHRONOUS read of the in_casa follow-up-turn observation for
+        # one exact admission ticket. ``getattr``-guarded on purpose — the
+        # accessor is deliberately NOT on DriverProtocol, so a driver without
+        # it reads as "nothing to report" rather than raising AttributeError
+        # into a delivery task that would surface a failure for a healthy
+        # turn. claude_code has its own failure ownership and returns "".
+        telegram_channel._driver_turn_incomplete = (
+            lambda rec, token: read_followup_incomplete(
+                engagement_driver, rec, token))
 
         # #369: clearance-downgrade context revocation. ``invalidate`` tears
         # the pre-clamp session down (the durable context_rebuild_pending flag,

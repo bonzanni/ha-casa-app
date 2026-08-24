@@ -73,6 +73,69 @@ Payload inputs (origin, task, provenance) are snapshotted before the funnel's fi
 post-flip await, so a post-terminal record rewrite (clearance lowering) cannot alter what
 the completion records say.
 
+**Read the scope narrowly: "post-topic" excludes the topic.** The completion post, the
+terminal mark and the close all run before the detach, on the caller's own task, and every
+await after the commit is cancellable. A cancellation there commits the terminal record with
+the topic left open and empty — recoverable, since nothing was closed and nothing was
+marked, and the engager is still told from the surviving tail, but the topic carries no
+account of what happened. This is a known open exposure, not an oversight: closing it means
+moving operator-visible effects across a cancellation boundary in the one funnel that four
+other terminal writers race, with no `in_casa` turn-admission fence to order them
+(INV-ENG-009 is `claude_code` only).
+
+**INV-ENG-013**: A terminal engagement's topic is never marked with an outcome the topic was never told. The completion post counts as delivered only when the wire acknowledged it; an acknowledgement that did not come withholds the outcome mark and produces exactly one bounded plain disclosure in its place. A post that failed part-way is never replayed. The topic is closed exactly once either way, and no topic operation can strand the post-topic tail behind it.
+
+Until this release the completion post's failure was caught and logged, and the funnel then
+marked the topic with its outcome emoji regardless. A record could therefore be durably
+`completed` over a topic that received nothing, wearing a ✅. The mark is the defect, not the
+missing summary: the missing summary is a delivery failure, while the mark is Casa asserting
+that the delivery happened.
+
+**Confirmation is the message id the sender returned, not the fact that the call returned.**
+Both direct topic senders are typed to return an id and to raise on failure, so a non-`None`
+return is a wire acknowledgement — which is all it claims, and never that a person read it.
+The distinction matters because of the sequencer route: the sequencer's completion seam
+reports a *definite* send failure by returning nothing, without raising, and the driver hook
+in front of it used to discard that answer and report success. On that route the funnel
+skipped its own direct send and painted and closed with no exception raised anywhere for
+anyone to catch. A predicate built on "did the call raise?" is blind to it entirely.
+
+A sequencer attempt that *raises* is treated differently from one that reports nothing sent.
+A raise can come part-way through a paginated send, so some pages may already be in the
+topic; replaying the whole summary through the direct sender would duplicate content and
+then paint and close over the duplicate. A definite "nothing sent" is safe to follow with a
+direct attempt; a raise is not, and gets only the disclosure.
+
+The rule is uniform across outcomes. A cancellation emoji over a topic that never heard why
+is the same false assertion as a completion emoji, so `completed`, `cancelled` and `error`
+are all gated the same way.
+
+The disclosure says the summary could not be *confirmed*, never that it was not posted: a
+transport timeout can lose the acknowledgement of a message the wire accepted. It counts as
+a telling in its own right — if it lands, the topic has been told why the engagement ended,
+which is what a follow-up turn's owner reads (INV-ENG-012) — and its confirmation is the
+returned id, on the same rule as the summary's.
+
+**The close is unconditional, and bounded.** Withholding the close as a second failure
+signal was considered and rejected on review. It is not authoritative: the mark and the
+close are independent best-effort operations, so a *confirmed* post whose mark and close both
+fail leaves exactly the state a withheld close was meant to distinguish. And it is not free:
+retention admission happens earlier in this funnel and is not gated on delivery, so the sweep
+deletes the topic and every message in it on its deadline — while a terminal topic left open
+still accepts messages, each answered with a refusal, so anything typed there is deleted with
+it. The withheld MARK carries the whole signal, and the disclosure names the retention
+deadline. The close is bounded like every other topic operation here, because it is the one
+thing standing between an already-terminal record and its tail: a close that never returned
+would strand the driver teardown, the notification and the retains, and with them any
+follow-up turn waiting on the teardown to end its stream.
+
+Three things this invariant does *not* do. It does not re-open a completed record because a
+channel failed — the work did complete, and reverting the transition would restore tool
+authority to an engagement already declared finished. It does not change the funnel's return
+value: the transition won, and only the telling failed. And it does not shield, detach or
+reorder anything, so INV-ENG-010's guarantee is untouched — which is precisely what makes
+this arm separable from the still-open cancellation exposure described under INV-ENG-010.
+
 **INV-ENG-002**: A strict terminal transition never leaves the persisted and in-memory records disagreeing; on a write failure it restores the prior state and raises.
 
 Record *creation* holds the same strictness: a create whose tombstone write fails rolls the
@@ -156,7 +219,12 @@ and no duplicate notification.
 are caught and logged. **The terminal state stays committed** — so an engagement can be
 genuinely finished while no completion message ever reached its topic and no notification
 reached the resident. These are best-effort effects *after* the authoritative state change,
-by design.
+by design. What the topic then SAYS about it is INV-ENG-013's subject: the outcome mark is
+withheld and a plain disclosure is attempted, so a closed topic with no outcome mark is the
+signal that a terminal engagement's summary did not land. Read it as a prompt to check, not
+as proof: the mark and the close are independent best-effort operations, so a confirmed
+summary whose mark failed looks the same, and the returned message id — not the topic's
+appearance — is the delivery fact.
 
 **The driver teardown overruns.** It is bounded as a whole — the compile lock, both s6 stops
 and the recompile — and a timeout is logged and stepped over, so the notification and the
@@ -191,6 +259,7 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - `tests/test_emit_completion_tool.py`
 - `tests/test_cancel_engagement_tool.py`
 - `tests/test_engagement_registry.py`
+- `tests/test_finalize_engagement.py`
 - `tests/test_output_sequencer.py`
 - `tests/test_anchor_narration_buffer.py`
 

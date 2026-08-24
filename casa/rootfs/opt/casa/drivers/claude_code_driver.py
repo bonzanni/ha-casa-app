@@ -2409,9 +2409,15 @@ class ClaudeCodeDriver(DriverProtocol):
         narration + parked/armed intent (``flush_armed_intents`` resolves late
         armed intents; sealing closes open narration), THEN post the completion
         text through ``post_platform_notice`` (single writer, seals + advances
-        high-water). Returns ``True`` if a live sequencer posted it (the caller
-        skips its own direct ``send_to_topic``), ``False`` if there is no live
-        sequencer (caller does the pre-v0.79 direct send)."""
+        high-water).
+
+        #678: returns ``True`` only when a live sequencer posted it AND the
+        wire CONFIRMED the send (the caller then skips its own direct
+        ``send_to_topic``); ``False`` when there is no live sequencer OR the
+        sequencer reported a definite send failure by returning ``None`` — in
+        both cases the caller does the pre-v0.79 direct send. A part-way
+        failure propagates as an exception, which the caller must NOT answer
+        with a replay of the summary."""
         seq = self._sequencers.get(engagement.id)
         if seq is None:
             return False
@@ -2436,8 +2442,26 @@ class ClaudeCodeDriver(DriverProtocol):
         # dedicated completion seam, the ONLY writer permitted post-terminal
         # (``post_platform_notice`` now discards under the terminal latch, so a
         # lagging mutating-tool violation notice can never land below completion).
-        await seq.post_completion_notice(summary_text)
-        return True
+        # #678: PROPAGATE the sequencer's confirmation instead of discarding
+        # it. ``post_completion_notice`` returns ``int | None`` and returns
+        # ``None`` for a DEFINITE send failure — the #392/#332 contract, "a
+        # definite send failure (wire wrapper returned None) is no state
+        # change" — and it does so WITHOUT raising. Returning True over that
+        # told the finalize funnel a post had landed, so the funnel skipped its
+        # own direct send and then painted the topic ✅ and closed it over a
+        # topic that had received nothing, with no exception anywhere for
+        # anyone to catch. A "did the call raise?" predicate cannot see this
+        # route at all.
+        #
+        # ``False`` keeps its documented meaning for the caller — "no confirmed
+        # post here, do the direct send" — so an unconfirmed sequencer post now
+        # gets a second, plainer attempt instead of a lie. Falling back to a
+        # direct send is pre-existing, documented behaviour
+        # (architecture/engagement-finalization.md), so no contract widens.
+        # A part-way failure RAISES rather than returning None, and the funnel
+        # treats a raise differently: it does not replay the summary, because
+        # some of its pages may already be in the topic.
+        return await seq.post_completion_notice(summary_text) is not None
 
     def register_completion_consumption(
         self, engagement_id: str, args: dict,

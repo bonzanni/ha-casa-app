@@ -129,6 +129,60 @@ does and does not settle. The
 admission also expresses no opinion on a record the registry does not know, which is
 unreachable for a live engagement and where the dispatch gate already fails closed.
 
+**INV-ENG-012**: A ticketed FOLLOW-UP turn to an `in_casa` engagement that ends without the turn's own terminal artifact is never answered with silence: exactly one bounded operator-facing notice attempt is made in the engagement's topic, by the owner of that turn's admission ticket, and one turn's observation can never be consumed or lost by another turn's owner. The single thing that excuses the telling is that the engagement's terminal path has already told that topic why the engagement ended; the record merely being terminal is not that fact, and wherever it is not known that the topic was told, the telling is made. A follow-up turn that ends holding its terminal artifact produces no observation and no notice. The driver records, never raises, and never reads the record's status.
+
+INV-ENG-011 covers the launch turn. The turn *after* it had the same hole and no owner at
+all: cut off mid-tool-loop, a ticketed turn raises nothing, records nothing, discharges its
+admission ticket and leaves the record live, so an admitted operator message was consumed
+and answered with nothing. The driver's zero-frame warning does not fire either — it is
+gated on having seen no assistant frame, and a mid-tool-loop cutoff has seen several.
+
+The predicate is the same one INV-ENG-011 uses and for the same reason: the absence of the
+turn's result frame. It is emphatically not the evidence latch, which is set by the first
+frame of any kind and so reads identically for a cut-off turn and a finished one.
+
+**The driver observes; the delivery task adjudicates.** That split is not tidiness, it is
+the only place the distinction can be made. A raise from the driver would be
+indistinguishable from a healthy `in_casa` self-emit completion, where the finalize funnel's
+tail closes the engagement's own client and the response iterator legitimately ends with no
+result frame — so a driver that raised would report a failure for a turn that succeeded. The
+delivery task can tell the two apart because it can ask the registry, and asking is
+something the driver is separately forbidden to do (see the lock-free-read hazard under
+INV-ENG-011).
+
+That question is asked of the *settled* record, under the registry's own lock. A lock-free
+read can land inside a strict transition that has committed its terminal fields in memory
+and not yet survived its tombstone write; if that write fails the transition is fully rolled
+back, and a reader that saw the transient value would suppress a notice that was owed. The
+read is bounded, and a read that does not return in time results in the notice being posted
+anyway: the failure this invariant exists to remove is silence, so the fail-open direction
+is toward telling.
+
+**A terminal status is not proof that anything was told, and the suppression turns on the
+telling.** The two arms of this release compose into the state that makes the difference
+matter: a ticketed turn completes its engagement, the completion post fails, the funnel's
+one bounded disclosure fails too, and the tail then ends that turn's stream — so the turn
+looks cut off, the record reads `completed`, and a reader that asked only for the status
+would stay quiet over a topic that heard nothing at all. The funnel therefore records
+whether its own telling reached the topic, and the delivery task asks for the status and
+that fact together, in one locked read. Not knowing counts as not told: no record of a
+telling, a read that raises, and a read that does not return in time all produce the
+notice. The recorded fact is in-memory and is never persisted — it coordinates two tasks
+inside one process, and a restart has no surviving turn to adjudicate.
+
+The observation is keyed by the **admission ticket**, not by the engagement. The record is
+written after the per-engagement turn lock is released, so two consecutive turns can cross
+there: the first writes its reason, the second runs to completion, and one observation is
+overwritten or read by the wrong turn's owner. Per-engagement keying does not merely blur
+the two, it loses one of them.
+
+**It is one bounded attempt, not an ordering guarantee.** Nothing orders this notice against
+a concurrent finalization's topic operations, so a terminal writer that wins its transition
+after the settled read can paint and close first, leaving the notice below the paint or
+failing against a closed topic. Ordering it would need turn admission for `in_casa` turns,
+which does not exist — INV-ENG-009 is `claude_code` only — and is deliberately not built
+here.
+
 ## Failure behavior
 
 **A delegation is refused at one of its gates.** The ACL, alias, spawn-cap and
@@ -209,6 +263,7 @@ per-engagement sequencer in
 - `tests/test_in_casa_launch_terminal_artifact.py`
 - `tests/test_in_casa_launch_retention_guard.py`
 - `tests/test_launch_death_reporter.py`
+- `tests/test_in_casa_inbound_admission.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
