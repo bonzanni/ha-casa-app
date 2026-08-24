@@ -520,10 +520,10 @@ so the fail-open direction is toward telling the operator."""
 _TURN_ENDED_UNCONFIRMED_NOTICE = (
     "This engagement has ended, but Casa could not confirm that its account of "
     "the outcome reached this topic. If a summary appears above, that is the "
-    "outcome; if none does, the outcome is still in the engagement record and "
-    "was delivered to whoever asked for the work. This topic is closed and is "
-    "deleted with everything in it at its retention deadline, so do not keep "
-    "anything here."
+    "outcome. That the engagement ended is recorded durably; whether its "
+    "summary reached anyone else is a separate best-effort step and is not "
+    "confirmed here either. This topic is closed and is deleted with "
+    "everything in it at its retention deadline, so do not keep anything here."
 )
 """#678: what a cut-off follow-up turn's owner says when the engagement is
 already TERMINAL and its terminal path could not confirm a telling.
@@ -537,10 +537,17 @@ posted above may be partial" contradicts what is on their screen. The turn also
 did not fail — it ended BECAUSE it completed the engagement, and its stream
 ended with no result frame for that reason.
 
-So this says only what is true in both sub-cases: the engagement ended, the
-account of it may or may not have arrived, and the outcome exists elsewhere
-either way. It claims nothing about whether the summary is present, because
-that is exactly what cannot be known from here."""
+So this says only what is true in both sub-cases: the engagement ended, and
+the account of it may or may not have arrived. It claims nothing about whether
+the summary is present, because that is exactly what cannot be known from here.
+
+It also does NOT claim the outcome was delivered to the engager or is in the
+engagement record — a re-acceptance return, and the acceptor was right twice
+over. The engager notification is best-effort and its failure is caught
+(``tools.py``'s finalize tail), and the record stores the terminal STATE rather
+than the completion text, so both halves of that reassurance can be false at
+once. What is durable is that the engagement ended; whether its summary reached
+anywhere else is a separate step this cannot speak for."""
 
 
 _TURN_CUT_OFF_NOTICE = (

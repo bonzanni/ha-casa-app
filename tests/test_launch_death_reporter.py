@@ -962,10 +962,10 @@ The regression case for that exact shape is
 _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE = (
     "This engagement has ended, but Casa could not confirm that its account of "
     "the outcome reached this topic. If a summary appears above, that is the "
-    "outcome; if none does, the outcome is still in the engagement record and "
-    "was delivered to whoever asked for the work. This topic is closed and is "
-    "deleted with everything in it at its retention deadline, so do not keep "
-    "anything here."
+    "outcome. That the engagement ended is recorded durably; whether its "
+    "summary reached anyone else is a separate best-effort step and is not "
+    "confirmed here either. This topic is closed and is deleted with "
+    "everything in it at its retention deadline, so do not keep anything here."
 )
 """RE-SPECIFIED in the first diff round, by the reviewer who did not accept
 this red case, and re-accepted rather than edited on my own authority.
@@ -978,9 +978,17 @@ be looking at the summary while the funnel recorded the telling as unconfirmed
 partial" contradicts their screen. The turn did not fail there either; it ended
 because it completed the engagement.
 
+RE-SPECIFIED AGAIN at re-acceptance, and the acceptor was right: the first
+correction still promised that "the outcome is still in the engagement record
+and was delivered to whoever asked for the work". Both halves can be false at
+once — the engager notification is best-effort and its failure is caught, and
+the record stores the terminal STATE rather than the completion text — so a
+notify that raises after an unconfirmed post makes that sentence a second false
+reassurance in the same place the first one was removed from.
+
 Written out rather than imported, for the same reason as the sentence below it.
-Asserted by whole-sentence equality AND by the two clauses that must NOT come
-back, which protect different things."""
+Asserted by whole-sentence equality AND by the clauses that must NOT come back,
+which protect different things."""
 
 
 def _seam(drv):
@@ -1426,6 +1434,9 @@ class TestTerminalStatusIsNotProofOfATelling:
         # its own new text but not these.
         assert "did not finish" not in _notice
         assert "may be partial" not in _notice
+        # And the reassurance the re-acceptance return removed: this arm cannot
+        # see whether the engager was told, so it must not say it was.
+        assert "delivered to" not in _notice
         # And the funnel had already made its OWN one bounded attempt and
         # failed it, so this notice is not a second telling of the same thing.
         assert len(sends) == 2

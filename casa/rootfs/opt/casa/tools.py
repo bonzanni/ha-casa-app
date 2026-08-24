@@ -7998,8 +7998,9 @@ _DISCLOSURE_UNCONFIRMED = (
     "summary could not be confirmed as posted here. The topic is left "
     "UNMARKED on purpose so the failure stays visible; it is closed like "
     "every finished topic, and it is deleted with everything in it at its "
-    "retention deadline, so do not keep anything here. The outcome was "
-    "delivered to the engager and is in the engagement record."
+    "retention deadline, so do not keep anything here. That the engagement "
+    "ENDED is recorded durably; whether its summary reached the engager is a "
+    "separate best-effort step this cannot speak for."
 )
 """#678: what the finalize funnel says in a topic whose completion summary it
 could not confirm.
@@ -8020,10 +8021,16 @@ goes with it. The withheld MARK carries the signal; what this sentence warns
 about is the retention deletion, which is true of every terminal topic and is
 the thing the operator can still act on.
 
-The last sentence is checked, not decorative: the ``DelegationComplete`` bus
-notify and the retains live in ``_finalize_engagement_tail``, downstream of
-and independent of this block, and they run whether or not the post
-confirmed."""
+The last sentence used to promise more than it could: "the outcome was
+delivered to the engager and is in the engagement record". Both halves can be
+false at once — the ``DelegationComplete`` notify and the retains live
+downstream in ``_finalize_engagement_tail``, they are best-effort and their
+failures are caught, and the record stores the terminal STATE rather than the
+completion text. So it now claims only what this block can actually see: the
+ending is durable, and the rest is a separate step. An acceptor returned the
+sibling channel-side notice for exactly this overclaim; the same sentence was
+here, replayed unchanged from the parked branch, and it is corrected in the
+same commit."""
 
 # #632: detached finalize tails, anchored so the event loop cannot collect
 # them mid-flight. A tail is created only on the in_casa self-emit path (see

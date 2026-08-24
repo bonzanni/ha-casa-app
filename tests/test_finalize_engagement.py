@@ -631,8 +631,9 @@ _EXPECTED_DISCLOSURE = (
     "summary could not be confirmed as posted here. The topic is left "
     "UNMARKED on purpose so the failure stays visible; it is closed like "
     "every finished topic, and it is deleted with everything in it at its "
-    "retention deadline, so do not keep anything here. The outcome was "
-    "delivered to the engager and is in the engagement record."
+    "retention deadline, so do not keep anything here. That the engagement "
+    "ENDED is recorded durably; whether its summary reached the engager is a "
+    "separate best-effort step this cannot speak for."
 )
 """The disclosure's exact sentence, duplicated here rather than imported so a
 reworded production string fails a test. "could not be CONFIRMED as posted",
