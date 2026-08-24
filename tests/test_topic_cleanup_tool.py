@@ -83,6 +83,13 @@ def _telegram_channel(supergroup=SUPERGROUP):
     tch.engagement_supergroup_id = supergroup
     tch.send = AsyncMock()          # #342: direct nag delivery path
     tch.send_to_topic = AsyncMock()
+    # #678: the funnel PREFERS the paged rich sender, and a bare MagicMock
+    # fabricates it — so `hasattr` found it, awaiting its non-awaitable return
+    # raised TypeError, the funnel swallowed that and painted and closed the
+    # topic anyway. These tests' close assertions were passing because the
+    # double was broken. The real TelegramChannel has this method and returns
+    # a message id, which is what the funnel now reads as confirmation.
+    tch.send_response_to_topic = AsyncMock(return_value=4242)
     tch.update_topic_state = AsyncMock()
     tch.close_topic = AsyncMock()
     return tch
