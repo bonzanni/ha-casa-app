@@ -378,8 +378,10 @@ async def test_voice_writes_nothing(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_empty_reply_no_retain(monkeypatch):
-    """If the SDK produces no text, retain must not fire."""
+async def test_empty_reply_retains_caller_turn_only(monkeypatch):
+    """An empty SDK reply no longer suppresses the whole retain (#708): the
+    caller's non-blank task turn — which nothing else writes — is still
+    submitted, alone; the empty answer contributes no item."""
     import agent as agent_mod
     cfg = _specialist_cfg(role="finance", token_budget=4000)
     fake_sem = _FakeSem(recall_ret="")
@@ -392,14 +394,13 @@ async def test_empty_reply_no_retain(monkeypatch):
             cfg, task_text="hi", context_text="")
 
     await _drain_bg()
-    # #699: the EMPTY STRING, on an otherwise successful run — the outer
-    # `and text` gate. Whitespace-only text is a different case and is
-    # deliberately unchanged (it retains the caller turn alone, as it does today).
     assert out == tools.DelegatedOutput(
         text="", structured_output=None,
         run_subtype="success", result_message_seen=True,
     )
-    assert fake_sem.retain_calls == []
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == 1
+    assert fake_sem.retain_calls[0]["items"][0]["content"] == "hi"
 
 
 # ---------------------------------------------------------------------------
@@ -622,12 +623,15 @@ async def test_pin_inv_mem_016_aborted_run_retains_only_caller_task(
         out = await tools._run_delegated_agent(
             cfg, task_text="Q1 cashflow?", context_text="")
 
-    # The whole verdict, not just the derived flag.
+    # The whole verdict, not just the derived flag. `run_is_error` is now
+    # RECORDED on the output (cluster S) — for an aborted run it is evidence
+    # only: the abort taxonomy wins (`caller_error_kind` is None).
     assert out == tools.DelegatedOutput(
         text="partial answer",
         structured_output=None,
         run_subtype=result_subtype,
         result_message_seen=emit_result,
+        run_is_error=result_is_error,
     )
     assert out.run_aborted is True
 
@@ -784,46 +788,43 @@ async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
     )
 
 
-@pytest.mark.parametrize("is_error,terminal_reason,expected_items", [
+@pytest.mark.parametrize("is_error,terminal_reason", [
     # The SDK's own documented shape for a failing API call: `api_error_status`
     # is defined as set "when is_error is True and subtype is 'success'".
-    pytest.param(True, None, 1, id="api-error-under-a-success-subtype"),
-    pytest.param(True, "completed", 1, id="api-error-with-a-completed-reason"),
+    pytest.param(True, None, id="api-error-under-a-success-subtype"),
+    pytest.param(True, "completed", id="api-error-with-a-completed-reason"),
     # The CLI reporting the turn was cancelled mid-stream.
-    pytest.param(False, "aborted_streaming", 1, id="cancelled-streaming"),
-    pytest.param(False, "aborted_tools", 1, id="cancelled-tools"),
+    pytest.param(False, "aborted_streaming", id="cancelled-streaming"),
+    pytest.param(False, "aborted_tools", id="cancelled-tools"),
     # `terminal_reason` is an OPEN namespace — the SDK types it `str | None` and
     # passes the CLI's value through verbatim. These rows exist because a
     # deny-list of the two cancellation reasons above read every OTHER reason as
-    # a finished turn; the test is now against an allow-list of completed ones,
-    # so a reason nobody listed fails CLOSED.
-    pytest.param(False, "max_turns", 1, id="unlisted-reason-max-turns"),
-    pytest.param(False, "model_error", 1, id="unlisted-reason-model-error"),
-    pytest.param(False, "prompt_too_long", 1, id="unlisted-reason-prompt-too-long"),
-    pytest.param(False, "a_reason_this_release_has_never_seen", 1,
+    # a finished turn; the test is against an allow-list of completed ones, so a
+    # reason nobody listed fails CLOSED.
+    pytest.param(False, "max_turns", id="unlisted-reason-max-turns"),
+    pytest.param(False, "model_error", id="unlisted-reason-model-error"),
+    pytest.param(False, "prompt_too_long", id="unlisted-reason-prompt-too-long"),
+    pytest.param(False, "a_reason_this_release_has_never_seen",
                  id="unlisted-reason-from-the-future"),
-    # Controls: a genuinely completed run, with and without a terminal reason
-    # (older CLIs report none), still retains both turns.
-    pytest.param(False, "completed", 2, id="control-completed"),
-    pytest.param(False, None, 2, id="control-no-terminal-reason"),
 ])
 async def test_a_success_subtype_is_not_enough_to_call_the_turn_complete(
-    monkeypatch, is_error, terminal_reason, expected_items,
+    monkeypatch, is_error, terminal_reason,
 ):
     """INV-MEM-016 covers every way the CLI says the turn did not finish.
 
     `subtype` alone is not the verdict. A terminal result carrying
-    `is_error=True` under `subtype="success"` is an API failure, and
-    `terminal_reason` in {"aborted_streaming", "aborted_tools"} is a cancelled
-    turn — in both the accumulated text is a prefix, not an answer, while
-    `DelegatedOutput.run_aborted` reports False and nothing upstream raises
-    (`result_api_error_kind` reads `stop_reason == "refusal"` only).
-
-    `run_aborted` itself is deliberately NOT widened: four non-memory consumers
-    read it, and this is a memory decision.
-    """
+    `is_error=True` under `subtype="success"` is an API failure, and a
+    non-completed `terminal_reason` is a turn the loop ended for another
+    cause. Since cluster S (#709) these END the run as a typed caller fault
+    RAISED before retention — the #568 refusal shape — so the half-finished
+    exchange banks nothing at all: the raise reaches the delegation
+    consumers' exception arms, which record the failure durably; there is no
+    completed exchange for the bank. The pre-#709 rows that expected a
+    caller-turn-only retain moved here as zero-retain rows on the record
+    (converged design, rejected-disagreement #1/#4)."""
     import agent as agent_mod
     import delegated_memory
+    from error_kinds import ApiErrorTurn
 
     monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
 
@@ -836,20 +837,65 @@ async def test_a_success_subtype_is_not_enough_to_call_the_turn_complete(
         result_is_error=is_error, result_terminal_reason=terminal_reason)
 
     with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        with pytest.raises(ApiErrorTurn):
+            await tools._run_delegated_agent(
+                cfg, task_text="Q1 cashflow?", context_text="")
+
+    await _drain_bg()
+
+    assert fake_sem.retain_calls == []
+
+
+@pytest.mark.parametrize("terminal_reason", [
+    pytest.param("completed", id="control-completed"),
+    pytest.param(None, id="control-no-terminal-reason"),
+])
+async def test_a_genuinely_completed_run_still_retains_both_turns(
+    monkeypatch, terminal_reason,
+):
+    """Controls for the caller-fault raise: a genuinely completed run, with
+    and without a terminal reason (older CLIs report none), still retains
+    both turns and raises nothing."""
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response="partial answer", result_subtype="success",
+        result_is_error=False, result_terminal_reason=terminal_reason)
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
         out = await tools._run_delegated_agent(
             cfg, task_text="Q1 cashflow?", context_text="")
 
-    # The returned verdict is UNCHANGED by this rule — it still reads "success".
     assert out.run_subtype == "success"
     assert out.run_aborted is False
 
     await _drain_bg()
 
     assert len(fake_sem.retain_calls) == 1
-    assert len(fake_sem.retain_calls[0]["items"]) == expected_items
-    expected = [_CALLER_ITEM] if expected_items == 1 else [
-        _CALLER_ITEM, _PARTIAL_ANSWER_ITEM]
-    assert fake_sem.retain_calls == [{"bank": "casa", "items": expected}]
+    assert fake_sem.retain_calls == [{
+        "bank": "casa", "items": [_CALLER_ITEM, _PARTIAL_ANSWER_ITEM],
+    }]
+
+
+def test_capture_layer_predicates_are_not_collapsed():
+    """Capture-layer control (Sol, red-case round): `run_aborted` stays a
+    SUBTYPE verdict — `is_error` and terminal/stop evidence widen the
+    caller-fault and memory predicates, never `run_aborted` itself, whose
+    four non-memory consumers pin the abort taxonomy."""
+    out = tools.DelegatedOutput(
+        text="x", run_subtype="success", run_is_error=True,
+        run_terminal_reason="aborted_streaming", run_stop_reason="max_tokens",
+    )
+    assert out.run_aborted is False
+    assert out.answer_incomplete is True
+    assert out.caller_error_kind is not None
 
 
 # ---------------------------------------------------------------------------
@@ -899,3 +945,112 @@ async def test_red_incomplete_stop_reason_withholds_only_the_answer(
     withheld = [r.getMessage() for r in caplog.records
                 if "excluded from the memory retain" in r.getMessage()]
     assert len(withheld) == 1
+
+
+@pytest.mark.parametrize("stop_reason,expected_items,expect_warning", [
+    pytest.param("tool_use", 1, True, id="tool-use-is-an-unfinished-answer"),
+    pytest.param("a_stop_reason_nobody_listed", 1, True, id="unknown-stop-reason"),
+    pytest.param("end_turn", 2, False, id="control-end-turn"),
+    pytest.param("stop_sequence", 2, False, id="control-stop-sequence"),
+    pytest.param(None, 2, False, id="control-legacy-absent"),
+])
+async def test_stop_reason_matrix(
+    monkeypatch, caplog, stop_reason, expected_items, expect_warning,
+):
+    """#710: the answer is admitted only under a completed stop reason —
+    ALLOW-list direction, `None` legacy-completed; `tool_use` is excluded
+    because on the memory-writing paths (`output_format=None`) a terminal
+    tool call is an explicitly unfinished answer (seam round 1)."""
+    import logging
+
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response="partial answer", result_subtype="success",
+        result_stop_reason=stop_reason)
+
+    with caplog.at_level(logging.WARNING, logger="tools"):
+        with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+            out = await tools._run_delegated_agent(
+                cfg, task_text="Q1 cashflow?", context_text="")
+
+    assert out.run_aborted is False
+
+    await _drain_bg()
+
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == expected_items
+    expected = [_CALLER_ITEM] if expected_items == 1 else [
+        _CALLER_ITEM, _PARTIAL_ANSWER_ITEM]
+    assert fake_sem.retain_calls == [{"bank": "casa", "items": expected}]
+
+    withheld = [r.getMessage() for r in caplog.records
+                if "excluded from the memory retain" in r.getMessage()]
+    assert len(withheld) == (1 if expect_warning else 0)
+
+
+async def test_malformed_stop_reason_withholds_the_answer(monkeypatch):
+    """#710/seam round 1: a malformed (non-string) stop reason is the
+    fail-closed sentinel, never legacy None — exactly one caller item."""
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response="partial answer", result_subtype="success",
+        result_stop_reason=789)  # type: ignore[arg-type]
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        out = await tools._run_delegated_agent(
+            cfg, task_text="Q1 cashflow?", context_text="")
+
+    assert out.run_aborted is False
+
+    await _drain_bg()
+
+    assert len(fake_sem.retain_calls) == 1
+    assert fake_sem.retain_calls == [{"bank": "casa", "items": [_CALLER_ITEM]}]
+
+
+@pytest.mark.parametrize("response,stop_reason", [
+    pytest.param("", None, id="blank-task-blank-answer"),
+    pytest.param("partial answer", "max_tokens", id="blank-task-withheld-answer"),
+])
+async def test_whitespace_only_task_submits_nothing(
+    monkeypatch, response, stop_reason,
+):
+    """#708: a whitespace-only task is BLANK — with no admissible answer the
+    retain is never invoked at all (`retain_delegated` never sees an empty
+    turns list). Kills the truthiness-for-strip mutant (seam round 2)."""
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response=response, result_subtype="success",
+        result_stop_reason=stop_reason)
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        await tools._run_delegated_agent(
+            cfg, task_text="   ", context_text="")
+
+    await _drain_bg()
+
+    assert fake_sem.retain_calls == []

@@ -57,7 +57,13 @@ def _resolution(*, name: str = "mtg", manifest: dict | None = None,
 
 class _FakeSDKClient:
     """No-op ClaudeSDKClient stand-in so a REAL _run_delegated_agent can be
-    exercised (builder-identity assertions) without any SDK call."""
+    exercised (builder-identity assertions) without any SDK call.
+
+    Cluster S: it must emit a terminal success ``ResultMessage`` — a stream
+    that ends without one is a CLI ABORT, and the sync arm now honestly
+    reports that as ``status="error"``. This double passed pre-fix only
+    because the misreporting defect completed abandoned streams (the
+    ineffective-double pattern)."""
     def __init__(self, options): pass
 
     async def __aenter__(self): return self
@@ -67,9 +73,16 @@ class _FakeSDKClient:
     async def query(self, prompt): return None
 
     async def receive_response(self):
-        if False:
-            yield None
-        return
+        from claude_agent_sdk import ResultMessage
+        try:
+            result = ResultMessage(session_id="req-sid")
+        except TypeError:
+            result = ResultMessage.__new__(ResultMessage)
+            result.session_id = "req-sid"  # type: ignore[attr-defined]
+        object.__setattr__(result, "structured_output", None)
+        object.__setattr__(result, "subtype", "success")
+        object.__setattr__(result, "is_error", False)
+        yield result
 
 
 def _count_resolve(monkeypatch, tm, resolution) -> list[str]:
