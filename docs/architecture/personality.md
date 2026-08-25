@@ -10,7 +10,9 @@ last_reviewed: 2026-08-25
 
 The separation between what an agent *is* and how it *presents*: role artifacts, personas,
 the binding that ties one to the other, and what prompt is actually served at turn time. It
-does not cover agent declaration and loading, which belong to the taxonomy document.
+does not cover agent declaration and loading, which belong to the taxonomy document. How a
+persona arrives, is approved, and leaves — install, consent, where a ref may resolve,
+removal, the sweep — is [`persona-lifecycle.md`](persona-lifecycle.md)'s.
 
 ## Mental model
 

@@ -49,7 +49,7 @@
 
 - doc: architecture/persona-lifecycle.md
   summary: How a persona arrives, is approved, and leaves — consent-bound install, the approved roots, removal by reference scan, and the operator-run sweep.
-  when_changing: installing or removing a persona, persona install consent or its revocation, applying a persona override, or the persona sweep
+  when_changing: installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep
   covers:
     - casa/rootfs/opt/casa/persona_install.py::persona_references
     - casa/rootfs/opt/casa/persona_install.py::require_persona_present
