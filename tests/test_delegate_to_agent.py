@@ -2678,3 +2678,51 @@ class TestClusterSVerdictMatrix:
         assert out.run_subtype == tools._MALFORMED_EVIDENCE
         assert out.run_stop_reason == tools._MALFORMED_EVIDENCE
         assert out.run_aborted is True
+
+    @pytest.mark.parametrize("is_error_value", [
+        pytest.param(0, id="int-zero"),
+        pytest.param("", id="empty-string"),
+        pytest.param(None, id="null"),
+    ])
+    async def test_falsey_malformed_is_error_fails_closed(
+        self, tmp_path, monkeypatch, is_error_value,
+    ):
+        """Terra review r1 S1: the SDK parser passes `is_error` through from
+        a REQUIRED key verbatim, so a present non-bool (0, "", null) is the
+        CLI writing the wrong type into a bool field — bool() coercion read
+        exactly those as success and banked the partial answer. A present
+        non-bool must read as error evidence (fail closed)."""
+        import tools
+        from error_kinds import ApiErrorTurn
+
+        self._runner_harness(tmp_path)
+        _FakeSpecialistClient.reset(
+            response="prefix", subtype="success", is_error=is_error_value)
+        monkeypatch.setattr(tools, "ClaudeSDKClient", _FakeSpecialistClient)
+
+        with pytest.raises(ApiErrorTurn) as exc_info:
+            await _with_origin(
+                tools._run_delegated_agent(_specialist_cfg(), "q", ""),
+                _origin(),
+            )
+        assert exc_info.value.kind.value == "api_error"
+
+    async def test_boolean_false_is_error_stays_success(
+        self, tmp_path, monkeypatch,
+    ):
+        """Control for the fail-closed flag capture: the genuine bool False
+        (and an absent attribute, which every legacy construction is) claims
+        no error."""
+        import tools
+
+        self._runner_harness(tmp_path)
+        _FakeSpecialistClient.reset(
+            response="fine", subtype="success", is_error=False)
+        monkeypatch.setattr(tools, "ClaudeSDKClient", _FakeSpecialistClient)
+
+        out = await _with_origin(
+            tools._run_delegated_agent(_specialist_cfg(), "q", ""),
+            _origin(),
+        )
+        assert out.text == "fine"
+        assert out.run_is_error is False

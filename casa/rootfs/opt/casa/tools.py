@@ -2200,6 +2200,20 @@ def _terminal_str(value: object) -> str | None:
     return value if isinstance(value, str) else _MALFORMED_EVIDENCE
 
 
+def _flag_failed_closed(value: object) -> bool:
+    """A genuine ``bool`` verbatim; any other value is malformed evidence and
+    reads as ``True`` — fail closed. The SDK parser passes ``is_error``
+    through from a REQUIRED key, so on a parsed result the value is always
+    present and a non-bool (``0``, ``""``, ``None``) is the CLI writing the
+    wrong type into a bool field; ``bool()`` coercion read exactly those as
+    success (Terra review r1, S1). Absence is the caller's ``getattr``
+    default — an object with no such attribute claims no error, which is the
+    legacy/test-construction shape and stays non-error."""
+    if isinstance(value, bool):
+        return value
+    return True
+
+
 def _run_abort_kind(subtype: str | None) -> str:
     """The failure kind for a CLI-aborted run, never raising."""
     return _RUN_ABORT_KINDS.get(subtype or "", _RUN_ABORT_FALLBACK_KIND)
@@ -3062,7 +3076,7 @@ async def _run_delegated_agent(
         ),
         result_message_seen=result_msg is not None,
         run_is_error=(
-            bool(getattr(result_msg, "is_error", False))
+            _flag_failed_closed(getattr(result_msg, "is_error", False))
             if result_msg is not None else False
         ),
         run_api_error_status=(
