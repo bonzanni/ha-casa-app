@@ -85,19 +85,24 @@ class _FakeSDKClient:
     # None is what an older CLI reports and is the default everywhere else in
     # this file, so adding it leaves every existing row behaviourally unchanged.
     result_terminal_reason: str | None = None
+    # Cluster S (#710): same rationale — None is the legacy/absent shape, so
+    # every pre-existing row is unchanged by the knob's existence.
+    result_stop_reason: str | None = None
 
     @classmethod
     def reset(cls, response: str = "specialist reply", *,
               result_subtype: str | None = "success",
               result_is_error: bool = False,
               emit_result: bool = True,
-              result_terminal_reason: str | None = None) -> None:
+              result_terminal_reason: str | None = None,
+              result_stop_reason: str | None = None) -> None:
         cls.captured_prompt = ""
         cls.response_text = response
         cls.result_subtype = result_subtype
         cls.result_is_error = result_is_error
         cls.emit_result = emit_result
         cls.result_terminal_reason = result_terminal_reason
+        cls.result_stop_reason = result_stop_reason
 
     def __init__(self, options):
         self.options = options
@@ -138,6 +143,8 @@ class _FakeSDKClient:
         object.__setattr__(result, "num_turns", 2)
         object.__setattr__(
             result, "terminal_reason", type(self).result_terminal_reason)
+        object.__setattr__(
+            result, "stop_reason", type(self).result_stop_reason)
         yield result
 
 
@@ -677,19 +684,19 @@ async def test_pin_inv_mem_016_seen_result_without_subtype_retains_both_turns(
     pytest.param("error_max_turns", True, id="aborted"),
     pytest.param(None, False, id="aborted-no-result-message"),
 ])
-async def test_empty_answer_writes_nothing_whether_or_not_the_run_aborted(
+async def test_empty_answer_submits_caller_turn_whether_or_not_run_aborted(
     monkeypatch, result_subtype, emit_result,
 ):
-    """The outer `and text` gate is SYMMETRIC and predates INV-MEM-016.
+    """#708 (cluster S red case): an empty specialist answer must not discard
+    the caller's task turn — its ONLY writer is this retain.
 
-    A run that produced no answer text writes nothing at all — no caller turn
-    either — and that is equally true of a completed run and an aborted one. It
-    is pinned here because a reviewer read the aborted case alone as a
-    caller-turn loss introduced by INV-MEM-016; measured at both 10604c19 and at
-    the fix, all three rows retain nothing, so the behaviour is neither new nor
-    abort-specific. Whether the caller's turn SHOULD survive an empty answer is a
-    separate question about that gate, filed as its own issue — narrowing it here
-    would fix the aborted arm only and leave the identical completed arm.
+    This REVISES (never deletes) the pin that previously froze the outer
+    `and text` gate's symmetric zero-retain behaviour: that gate keyed the
+    whole retain on answer text, so a run with an empty answer — completed and
+    aborted alike — silently lost the caller's true utterance. Admission is
+    per turn now: the non-blank caller turn is submitted in all three rows
+    while the (empty) answer contributes nothing. Fails pre-fix with zero
+    retain calls at the outer gate (tools.py:2974).
     """
     import agent as agent_mod
     import delegated_memory
@@ -715,7 +722,9 @@ async def test_empty_answer_writes_nothing_whether_or_not_the_run_aborted(
 
     await _drain_bg()
 
-    assert fake_sem.retain_calls == []
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == 1
+    assert fake_sem.retain_calls == [{"bank": "casa", "items": [_CALLER_ITEM]}]
 
 
 async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
@@ -841,3 +850,52 @@ async def test_a_success_subtype_is_not_enough_to_call_the_turn_complete(
     expected = [_CALLER_ITEM] if expected_items == 1 else [
         _CALLER_ITEM, _PARTIAL_ANSWER_ITEM]
     assert fake_sem.retain_calls == [{"bank": "casa", "items": expected}]
+
+
+# ---------------------------------------------------------------------------
+# Cluster S red case (#710): an output-token-truncated answer is not complete
+# ---------------------------------------------------------------------------
+
+
+async def test_red_incomplete_stop_reason_withholds_only_the_answer(
+    monkeypatch, caplog,
+):
+    """#710 (cluster S red case): `stop_reason="max_tokens"` on an otherwise
+    completed result means the model did NOT finish the answer — the truncated
+    text must be withheld from the bank (audibly) while the caller's task turn
+    is still submitted. The caller-facing verdict is untouched:
+    `run_aborted` stays False. Fails pre-fix with 2 submitted items and 0
+    warnings because the retain gate never reads `stop_reason`
+    (tools.py:3017-3034)."""
+    import logging
+
+    import agent as agent_mod
+    import delegated_memory
+
+    monkeypatch.setattr(delegated_memory, "classify_tier", _tier_stub)
+
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram", cid="cid42")
+    _FakeSDKClient.reset(
+        response="partial answer", result_subtype="success",
+        result_terminal_reason="completed", result_stop_reason="max_tokens")
+
+    with caplog.at_level(logging.WARNING, logger="tools"):
+        with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+            out = await tools._run_delegated_agent(
+                cfg, task_text="Q1 cashflow?", context_text="")
+
+    # The caller-facing verdict is NOT a function of stop_reason.
+    assert out.run_aborted is False
+
+    await _drain_bg()
+
+    assert len(fake_sem.retain_calls) == 1
+    assert len(fake_sem.retain_calls[0]["items"]) == 1
+    assert fake_sem.retain_calls == [{"bank": "casa", "items": [_CALLER_ITEM]}]
+
+    withheld = [r.getMessage() for r in caplog.records
+                if "excluded from the memory retain" in r.getMessage()]
+    assert len(withheld) == 1

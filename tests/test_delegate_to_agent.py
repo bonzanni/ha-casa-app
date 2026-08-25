@@ -124,12 +124,19 @@ class _FakeSpecialistClient:
     # A stream that ends without a ResultMessage certifies nothing — the
     # runner does not raise on that path, so it must still be an abort.
     emit_result: bool = True
+    # Cluster S: the rest of the terminal shape, typed `Any` because the red
+    # cases deliberately feed malformed (non-str / non-int) values through the
+    # pinned parser boundary. `None` reproduces an older CLI omitting the field.
+    result_terminal_reason: Any = None
+    result_stop_reason: Any = None
+    result_api_error_status: Any = None
 
     @classmethod
     def reset(
         cls, response="finance reply", delay=0.0, raise_exc=None,
         structured_output=None, subtype="success", is_error=False,
-        num_turns=2, emit_result=True,
+        num_turns=2, emit_result=True, terminal_reason=None,
+        stop_reason=None, api_error_status=None,
     ):
         cls.emit_result = emit_result
         cls.response_text = response
@@ -141,6 +148,9 @@ class _FakeSpecialistClient:
         cls.result_subtype = subtype
         cls.result_is_error = is_error
         cls.result_num_turns = num_turns
+        cls.result_terminal_reason = terminal_reason
+        cls.result_stop_reason = stop_reason
+        cls.result_api_error_status = api_error_status
 
     def __init__(self, options):
         self.options = options
@@ -206,6 +216,17 @@ class _FakeSpecialistClient:
         )
         object.__setattr__(
             result, "num_turns", _FakeSpecialistClient.result_num_turns,
+        )
+        object.__setattr__(
+            result, "terminal_reason",
+            _FakeSpecialistClient.result_terminal_reason,
+        )
+        object.__setattr__(
+            result, "stop_reason", _FakeSpecialistClient.result_stop_reason,
+        )
+        object.__setattr__(
+            result, "api_error_status",
+            _FakeSpecialistClient.result_api_error_status,
         )
         yield result
 
@@ -1957,3 +1978,309 @@ class TestSyncCompletionPersistFailure:
         assert payload["status"] == "ok"
         assert payload["text"] == "invoice drafted"
         recon.assert_called_once_with(payload["delegation_id"])
+
+# ---------------------------------------------------------------------------
+# Cluster S red cases (issues 675/708/709/710) — specified by Sol, written
+# before any production change; each fails on the pre-fix tree for the stated
+# reason. INV-S-A: a CLI-aborted run fails at every non-voice consumer.
+# INV-S-B: the terminal verdict is honest and honestly persisted.
+# ---------------------------------------------------------------------------
+
+
+def _seeded_delegation_harness(tmp_path, monkeypatch, *, register_bus_queue=False):
+    """The standard sync/async harness: seeded finance specialist + real
+    registries. Returns (reg, bus)."""
+    from tools import init_tools
+
+    specialists = tmp_path / "ex"
+    specialists.mkdir()
+    _seed_specialist_dir(specialists, "finance", enabled=True)
+    _use_synthetic_roles_dir(monkeypatch, tmp_path, "finance")
+    reg = SpecialistRegistry(str(specialists),
+                             tombstone_path=str(tmp_path / "del.json"))
+    reg.load()
+    bus = MessageBus()
+    if register_bus_queue:
+        bus.register("assistant", None)
+    cm = ChannelManager()
+    init_tools(cm, bus, reg,
+               agent_role_map={"assistant": _caller_cfg(delegates=("finance",))})
+    return reg, bus
+
+
+async def _job_rows_settled(reg, *, timeout_s: float = 5.0):
+    """Poll until every durable row is terminal (the callback writes via
+    detached tasks); returns the rows."""
+    from job_registry import ExecutionState
+    live = {ExecutionState.ACCEPTED, ExecutionState.RUNNING}
+    async with asyncio.timeout(timeout_s):
+        while True:
+            rows = reg.job_registry.all()
+            if rows and all(j.execution_state not in live for j in rows):
+                return rows
+            await asyncio.sleep(0.01)
+
+
+class TestClusterSRedAbortFanOut:
+    """INV-S-A minimal reds."""
+
+    @pytest.mark.parametrize("consumer", ["sync_in_budget", "completion_callback"])
+    async def test_red_nonvoice_abort_reaches_both_consumers(
+        self, tmp_path, monkeypatch, consumer,
+    ):
+        """A CLI abort (error_max_turns, is_error=True beside it) must reach
+        the caller as status=error with the mapped kind and NO partial text,
+        and the durable row must end FAILED — pre-fix both consumers read only
+        `.text` and record SUCCEEDED/status=ok (tools.py:5403, tools.py:3103).
+        """
+        from job_registry import ExecutionState
+        from tools import delegate_to_agent
+
+        reg, bus = _seeded_delegation_harness(
+            tmp_path, monkeypatch, register_bus_queue=True)
+
+        complete_calls = []
+        real_complete = reg.complete_delegation
+
+        async def _spy_complete(delegation_id):
+            complete_calls.append(delegation_id)
+            return await real_complete(delegation_id)
+
+        monkeypatch.setattr(reg, "complete_delegation", _spy_complete)
+
+        partial_canary = "PARTIAL STREAMED PREFIX"
+        _FakeSpecialistClient.reset(
+            response=partial_canary, subtype="error_max_turns", is_error=True)
+
+        if consumer == "sync_in_budget":
+            with patch("tools.ClaudeSDKClient", _FakeSpecialistClient):
+                result = await _with_origin(
+                    delegate_to_agent.handler({
+                        "agent": "finance", "task": "x", "context": "",
+                        "mode": "sync",
+                    }),
+                    _origin(),
+                )
+            payload = json.loads(result["content"][0]["text"])
+            assert payload["status"] == "error"
+            assert payload["kind"] == "specialist_turn_limit"
+            assert payload.get("text") != partial_canary
+        else:
+            with patch("tools.ClaudeSDKClient", _FakeSpecialistClient), \
+                 patch("plugin_registry.resolve_for",
+                       return_value=ResolutionResult(registry_valid=True)):
+                await _with_origin(
+                    delegate_to_agent.handler({
+                        "agent": "finance", "task": "x", "context": "",
+                        "mode": "async",
+                    }),
+                    _origin(),
+                )
+                found = None
+                async with asyncio.timeout(5.0):
+                    while found is None:
+                        if not bus.queues["assistant"].empty():
+                            _pri, _seq, m = await bus.queues["assistant"].get()
+                            if m.type == MessageType.NOTIFICATION:
+                                found = m
+                        else:
+                            await asyncio.sleep(0.01)
+                assert isinstance(found.content, DelegationComplete)
+                assert found.content.status == "error"
+                assert found.content.kind == "specialist_turn_limit"
+                assert (found.content.text or "") != partial_canary
+
+        rows = await _job_rows_settled(reg)
+        assert sum(
+            j.execution_state is ExecutionState.FAILED
+            and j.failure is not None
+            and j.failure.kind == "specialist_turn_limit"
+            for j in rows
+        ) == 1
+        assert sum(
+            j.execution_state is ExecutionState.SUCCEEDED for j in rows
+        ) == 0
+        assert len(complete_calls) == 0
+
+    async def test_red_abort_write_failure_reconciles_original_failure_only(
+        self, tmp_path, monkeypatch,
+    ):
+        """A failed abort terminal write retries ONLY through failure
+        reconciliation, carrying the ORIGINAL typed JobFailure — pre-fix no
+        abort write exists at all (the run completes), so zero failure
+        reconciliations are scheduled."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from job_registry import JobFailure
+        from tools import delegate_to_agent
+
+        reg, _bus = _seeded_delegation_harness(tmp_path, monkeypatch)
+
+        monkeypatch.setattr(
+            reg.job_registry, "fail_compat",
+            AsyncMock(side_effect=OSError("terminal write failed")))
+        failure_recon = MagicMock()
+        completion_recon = MagicMock()
+        monkeypatch.setattr(
+            reg.job_registry, "schedule_failure_reconciliation", failure_recon)
+        monkeypatch.setattr(
+            reg.job_registry, "schedule_completion_reconciliation",
+            completion_recon)
+
+        _FakeSpecialistClient.reset(response="", subtype="error_max_turns")
+        with patch("tools.ClaudeSDKClient", _FakeSpecialistClient):
+            result = await _with_origin(
+                delegate_to_agent.handler({
+                    "agent": "finance", "task": "x", "context": "",
+                    "mode": "sync",
+                }),
+                _origin(),
+            )
+        payload = json.loads(result["content"][0]["text"])
+        # The caller must still learn the run aborted even when the write dies.
+        assert payload["status"] == "error"
+
+        assert failure_recon.call_count == 1
+        scheduled_failures = [
+            a for call in failure_recon.call_args_list
+            for a in (*call.args, *call.kwargs.values())
+            if isinstance(a, JobFailure)
+        ]
+        assert sum(
+            f.kind == "specialist_turn_limit" for f in scheduled_failures
+        ) == 1
+        assert completion_recon.call_count == 0
+
+
+class TestClusterSRedTerminalVerdict:
+    """INV-S-B minimal reds."""
+
+    @pytest.mark.parametrize("is_error,api_error_status,terminal_reason,expected_kind", [
+        pytest.param(True, 429, "completed", "rate_limit",
+                     id="is-error-429-is-a-rate-limit-fault"),
+        pytest.param(False, None, "aborted_streaming", "sdk_error",
+                     id="non-completed-terminal-reason-is-an-sdk-fault"),
+        pytest.param(False, None, 0, "sdk_error",
+                     id="malformed-terminal-reason-fails-closed"),
+    ])
+    async def test_red_terminal_evidence_becomes_a_caller_fault(
+        self, tmp_path, monkeypatch, is_error, api_error_status,
+        terminal_reason, expected_kind,
+    ):
+        """A terminal result carrying is_error=True or a non-completed (or
+        malformed) terminal_reason under subtype=success must END the run as a
+        typed caller fault raised before retention — pre-fix nothing raises
+        (`result_api_error_kind` reads only refusal, error_kinds.py:89-102)
+        and the streamed prefix is returned as a completed answer."""
+        import tools
+        from error_kinds import ApiErrorTurn
+
+        reg = SpecialistRegistry(
+            str(tmp_path / "ex"), tombstone_path=str(tmp_path / "del.json"),
+        )
+        tools.init_tools(ChannelManager(), MessageBus(), reg,
+                         agent_role_map={"assistant": _caller_cfg()})
+        _FakeSpecialistClient.reset(
+            response="streamed prefix", subtype="success", is_error=is_error,
+            terminal_reason=terminal_reason, api_error_status=api_error_status)
+        monkeypatch.setattr(tools, "ClaudeSDKClient", _FakeSpecialistClient)
+
+        with pytest.raises(ApiErrorTurn) as exc_info:
+            await _with_origin(
+                tools._run_delegated_agent(
+                    _specialist_cfg(), "question", ""),
+                _origin(),
+            )
+        assert exc_info.value.kind.value == expected_kind
+
+    async def test_red_malformed_terminal_shape_never_becomes_legacy_none(
+        self, tmp_path, monkeypatch,
+    ):
+        """A malformed (non-string) subtype must never normalize to the legacy
+        `None` that reads as a completed run — pre-fix `_str_or_none`
+        (tools.py:2319) does exactly that, so `run_aborted` reports False and
+        the partial text is treated as a completed answer."""
+        import tools
+
+        reg = SpecialistRegistry(
+            str(tmp_path / "ex"), tombstone_path=str(tmp_path / "del.json"),
+        )
+        tools.init_tools(ChannelManager(), MessageBus(), reg,
+                         agent_role_map={"assistant": _caller_cfg()})
+        _FakeSpecialistClient.reset(
+            response="streamed prefix", subtype=123,
+            terminal_reason=456, stop_reason=789)
+        monkeypatch.setattr(tools, "ClaudeSDKClient", _FakeSpecialistClient)
+
+        out = await _with_origin(
+            tools._run_delegated_agent(_specialist_cfg(), "question", ""),
+            _origin(),
+        )
+        assert out.run_aborted is True
+
+    @pytest.mark.parametrize("consumer", ["sync_in_budget", "completion_callback"])
+    async def test_red_typed_caller_kind_is_persisted_by_both_exception_consumers(
+        self, tmp_path, monkeypatch, consumer,
+    ):
+        """The durable row's JobFailure.kind must equal the caller-visible
+        classified kind — pre-fix both exception arms pass the raw exception
+        through `fail_delegation`, and `_failure_envelope`
+        (job_registry.py:1840) persists the exception CLASS NAME
+        (\"ApiErrorTurn\") while the payload/notification says \"rate_limit\"."""
+        import tools
+        from error_kinds import ApiErrorTurn, ErrorKind
+        from job_registry import ExecutionState
+        from tools import delegate_to_agent
+
+        reg, bus = _seeded_delegation_harness(
+            tmp_path, monkeypatch, register_bus_queue=True)
+
+        async def _raise_bounded(*a, **k):
+            raise ApiErrorTurn(ErrorKind.RATE_LIMIT, "injected upstream fault")
+
+        monkeypatch.setattr(tools, "_run_delegated_agent_bounded", _raise_bounded)
+
+        if consumer == "sync_in_budget":
+            result = await _with_origin(
+                delegate_to_agent.handler({
+                    "agent": "finance", "task": "x", "context": "",
+                    "mode": "sync",
+                }),
+                _origin(),
+            )
+            payload = json.loads(result["content"][0]["text"])
+            assert payload["status"] == "error"
+            assert payload["kind"] == "rate_limit"
+        else:
+            await _with_origin(
+                delegate_to_agent.handler({
+                    "agent": "finance", "task": "x", "context": "",
+                    "mode": "async",
+                }),
+                _origin(),
+            )
+            found = None
+            async with asyncio.timeout(5.0):
+                while found is None:
+                    if not bus.queues["assistant"].empty():
+                        _pri, _seq, m = await bus.queues["assistant"].get()
+                        if m.type == MessageType.NOTIFICATION:
+                            found = m
+                    else:
+                        await asyncio.sleep(0.01)
+            assert isinstance(found.content, DelegationComplete)
+            assert found.content.status == "error"
+            assert found.content.kind == "rate_limit"
+
+        rows = await _job_rows_settled(reg)
+        assert sum(
+            j.failure is not None and j.failure.kind == "rate_limit"
+            for j in rows
+        ) == 1
+        assert sum(
+            j.failure is not None and j.failure.kind == "ApiErrorTurn"
+            for j in rows
+        ) == 0
+        assert sum(
+            j.execution_state is ExecutionState.FAILED for j in rows
+        ) == 1
