@@ -42,6 +42,13 @@ opentelemetry-api>=1.43.0
 # resolvers on every bump.
 anyio>=4,<5
 pydantic>=2,<3
+# Declared for #665: channels/telegram.py imports httpx DIRECTLY (the
+# pre-send-cause classifier reads httpx.ConnectError/ConnectTimeout/
+# PoolTimeout off TelegramError.__cause__) while only python-telegram-bot's
+# transitive pin guaranteed it. Compatible range, not an exact pin, for the
+# same reason as anyio/pydantic above: PTB owns the working version and an
+# exact pin here would fight its resolver on every bump.
+httpx>=0.27,<1
 # E-12 (v0.37.0): Channels MCP capability — used by casa_engagement_channel.
 # Build-time probe (docs/superpowers/specs/2026-05-12-e12-claude_code-channels-A6-findings.md
 # §A.6.1) confirmed FastMCP `instructions=` kwarg + `Server.create_initialization_options(
