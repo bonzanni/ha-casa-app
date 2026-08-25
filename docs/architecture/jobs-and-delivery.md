@@ -237,14 +237,21 @@ keyboard is posted.
 
 **Execution fails — an exception, an aborted run, or an invalid structured result.** A safe
 failed envelope is persisted, with no model or result text interpolated into the failure
-message; a routed job becomes ready so the failure itself is delivered.
+message; a routed job becomes ready so the failure itself is delivered. This is true of
+every delegation arm, voice and non-voice alike: a CLI-aborted run fails the row with its
+specific abort kind before the success write is reachable, and a run the terminal result
+itself reports as faulted fails the row with the same classified kind its caller was told —
+the envelope carries a kind, never an exception class name.
 
 **The terminal write fails.** The voice lifecycle falls back to a compatibility failure
 write; if that also fails, registry-owned reconciliation retries in the background and the
 live row stays restart-recoverable. A synchronous delegation whose *successful* terminal
 write fails still returns its result — the record is completed by the same background
 reconciliation rather than raising the answer away — and a cancellation whose write fails is
-likewise retried in the background. Runtime ownership (the permit) is released either way.
+likewise retried in the background. A failed *failure* write retries only a failure
+transition, carrying the original typed failure when its caller had one: an abort or fault
+can never be completed by a background retry, and the retry does not launder the kind into
+the generic persistence fallback. Runtime ownership (the permit) is released either way.
 
 **The process is stopping.** A cancellation caused by the stop is not written at all
 (INV-JOB-009): the row stays live, and the retry that would otherwise chase a terminal it

@@ -34,13 +34,13 @@ the bank-wide profile overlay is not filterable at all. The exclusion is therefo
 made by the writer, at the point where the terminal verdict is known: the
 incomplete answer is never built into an item.
 
-The rest of that exchange is unaffected, and the rule is best read together with
-its one condition. A delegated run writes at all only when it produced some answer
-text — that gate is older than this rule, and it applies to a run that finished
-just as much as to one that did not, so an empty answer stores nothing on either
-path, request turn included. Where such a run does write, what it writes is the
-caller's own request turn alone, because the caller did genuinely make it and
-nothing else records it.
+The rest of that exchange is admitted turn by turn. The caller's request turn
+is submitted whenever it is non-blank — the caller did genuinely make it, and
+nothing else records it — regardless of whether the specialist produced any
+answer text, so an empty answer no longer discards the request. The answer
+turn is submitted only when it is non-empty and the terminal evidence says the
+model actually finished it; a withheld answer is logged at the assembly site,
+and a blank request beside a withheld answer submits nothing at all.
 
 **When a session goes cold is tunable, and retention deduplicates.** The
 freshness windows that decide when a session stops being resumable and
@@ -144,35 +144,38 @@ retain path.
 What it does not cover: the seam's retain method itself enforces nothing. A
 future caller that skips the builder and the policy check would bypass both.
 
-**INV-MEM-016**: A delegated specialist run that ends without the CLI completing the turn never retains its partial answer to the shared bank; where such a run retains anything at all, what it retains is the caller's own task turn.
+**INV-MEM-016**: A delegated specialist answer the terminal evidence does not certify complete — an aborted run, a terminal fault, or an answer the model did not finish — is never retained to the shared bank; the caller's own non-blank task turn is submitted independently of the answer.
 
-The runner computes the CLI's terminal verdict before it assembles the retain,
-and assembles the answer turn only when the turn is known to have completed.
-That test is deliberately wider than the run's own reported verdict, because the
-terminal subtype is not the only place the CLI says otherwise: a result carrying
-an error flag while still naming itself a success is a failed API call, and a
-result naming any reason for stopping other than a completed one — cancellation
-among them — is a turn that ended some other way. Both leave a prefix rather than
-an answer. That second test names the reasons that mean *finished*, never the
-ones that mean *stopped*: the reason vocabulary belongs to the CLI and can grow,
-so a list of known-bad values would read every reason nobody had listed as a
-completed turn. A reason this release has never heard of therefore withholds the
-answer rather than banking it. The reported verdict itself is left alone — it has
-consumers outside memory, and widening it there would change what they see.
-"Did not complete" covers every non-success terminal subtype — including one this
-release has never seen — and a stream that ends with no terminal message at all,
-which certifies nothing. A terminal message that *was* seen but carries no subtype
-is a completed run, not an abort.
+The runner records the whole terminal shape once, beside the returned text, and
+assembles the answer turn only when a single completeness predicate on that
+evidence says the model finished. The predicate is deliberately wider than the
+run's own reported verdict, in three ways. A result carrying an error flag while
+still naming itself a success is a failed API call, and a result naming any
+reason for stopping other than a completed one — cancellation among them — is a
+turn that ended some other way; both now end the run as a typed caller failure,
+raised before the retain is ever assembled, so those exchanges bank nothing at
+all. An otherwise completed result whose *stop reason* says the model ran out of
+output tokens — or says anything else not on the short list of reasons that mean
+*finished* — is a caller-visible success whose unfinished answer is withheld from
+the bank, audibly. Both vocabularies belong to the CLI and can grow, so each is
+tested against an allow-list of completed values, never a list of known-bad
+ones: a reason this release has never heard of withholds the answer rather than
+banking it. A value that is not even a string is normalized at capture to a
+sentinel that fails every such list — malformed evidence never reads as the
+absent-field legacy case, which counts as completed. The reported verdict
+itself is left alone — it has consumers outside memory, and widening it there
+would change what they see. "Did not complete" covers every non-success terminal
+subtype — including one this release has never seen — and a stream that ends
+with no terminal message at all, which certifies nothing. A terminal message
+that *was* seen but carries no subtype is a completed run, not an abort.
 
 The caller's turn is kept deliberately: it is a true utterance, and this is its
 only writer — a resident's own session save never sees the paraphrase it sent to
 the specialist. The two are independent content-addressed documents rather than
-one paired record, so withholding the answer leaves nothing dangling.
-
-The retain as a whole is still gated on the run having produced some answer text,
-which is why the invariant says *where such a run retains anything at all*: a run
-that produced no text writes nothing, and that is true of a completed run just as
-much as an aborted one. That gate predates this rule and is not part of it.
+one paired record, so withholding the answer leaves nothing dangling. Admission
+is per turn: the request turn no longer rides on the answer having text, a
+whitespace-only request is blank, and the writer is invoked only when at least
+one turn survived admission.
 
 What it does not cover: documents already stored. This narrows what is written
 from here on; it does not inspect or repair anything the bank already holds, and
