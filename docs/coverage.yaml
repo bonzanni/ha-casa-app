@@ -162,7 +162,7 @@
 - item: casa/rootfs/opt/casa/plugin_grants.py
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_health.py
-  doc: architecture/plugins.md
+  doc: architecture/plugin-health.md
 - item: casa/rootfs/opt/casa/plugin_outbox.py
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_registry.py
