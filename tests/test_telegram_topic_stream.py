@@ -355,3 +355,72 @@ class TestAmbiguousEmitWeakensTheClaim:
 
         assert bot.send_message.await_count == 2
         assert outcome is DeliveryOutcome.NOT_DELIVERED
+
+
+class TestPreSendFailuresEstablishAbsence:
+    """#665 diff r2 (Sol S2): PTB 22.7 wraps httpx's pre-send failures —
+    ConnectTimeout, PoolTimeout (both surfaced as TimedOut) and ConnectError
+    (surfaced as NetworkError) — with `raise ... from err`, so the cause
+    survives and proves the request never reached Telegram. Those establish
+    absence like a refusal; only read/write acknowledgement ambiguity stays
+    UNKNOWN."""
+
+    @staticmethod
+    def _timed_out_from(cause):
+        from telegram.error import TimedOut
+        exc = TimedOut()
+        exc.__cause__ = cause
+        return exc
+
+    async def test_connect_timeouts_establish_not_delivered(self):
+        import httpx
+        from channels import DeliveryOutcome
+        ch, bot = _mk_channel_with_fake_bot()
+        bot.send_message.side_effect = [
+            self._timed_out_from(httpx.ConnectTimeout("no route")),
+            self._timed_out_from(httpx.ConnectTimeout("no route")),
+        ]
+
+        handle = ch.create_topic_stream(topic_id=42)
+        await handle.emit("never sent")
+        outcome = await handle.finalize("never sent, finished")
+
+        assert bot.send_message.await_count == 2
+        assert bot.edit_message_text.await_count == 0
+        assert outcome is DeliveryOutcome.NOT_DELIVERED
+
+    async def test_pool_timeout_and_connect_error_also_establish_absence(self):
+        import httpx
+        from telegram.error import NetworkError
+        from channels import DeliveryOutcome
+        ch, bot = _mk_channel_with_fake_bot()
+        conn_err = NetworkError("httpx.ConnectError: refused")
+        conn_err.__cause__ = httpx.ConnectError("refused")
+        bot.send_message.side_effect = [
+            self._timed_out_from(httpx.PoolTimeout("pool full")),
+            conn_err,
+        ]
+
+        handle = ch.create_topic_stream(topic_id=42)
+        await handle.emit("never sent")
+        outcome = await handle.finalize("never sent, finished")
+
+        assert outcome is DeliveryOutcome.NOT_DELIVERED
+
+    async def test_read_timeout_keeps_the_ambiguity(self):
+        """The control: a ReadTimeout means the request may have been accepted
+        with only the acknowledgement lost — widening the unsent set to it
+        would re-create the false-kill the r1 fix removed."""
+        import httpx
+        from channels import DeliveryOutcome
+        ch, bot = _mk_channel_with_fake_bot()
+        bot.send_message.side_effect = [
+            self._timed_out_from(httpx.ReadTimeout("ack lost")),
+            self._timed_out_from(httpx.ReadTimeout("ack lost")),
+        ]
+
+        handle = ch.create_topic_stream(topic_id=42)
+        await handle.emit("maybe on screen")
+        outcome = await handle.finalize("maybe on screen, finished")
+
+        assert outcome is DeliveryOutcome.UNKNOWN

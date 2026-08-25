@@ -20,6 +20,8 @@ import hashlib
 import logging
 import os
 import time
+
+import httpx
 from io import BytesIO
 from typing import Any, Awaitable, Callable
 
@@ -4760,6 +4762,26 @@ _SERVER_REFUSALS = (
 )
 
 
+def _established_unsent(exc: TelegramError) -> bool:
+    """#665 (diff r2, Sol): the transport failure's CAUSE proves the request
+    never reached Telegram.
+
+    PTB 22.7 wraps httpx errors with ``raise ... from err``, so the cause
+    survives: a ``ConnectTimeout`` or ``ConnectError`` failed before a
+    connection existed, and a ``PoolTimeout``'s own PTB message says the
+    request "was *not* sent to Telegram". All three establish absence exactly
+    as a refusal does, even though PTB surfaces the first and third as
+    ``TimedOut`` — which is otherwise ambiguous (a read/write timeout can lose
+    the acknowledgement of a request Telegram accepted, and stays ``UNKNOWN``).
+    Scoped to the topic stream on purpose: the DM paths' shared
+    ``_edit_failure_outcome`` taxonomy is not widened by this cluster.
+    """
+    return isinstance(
+        exc.__cause__,
+        (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout),
+    )
+
+
 def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
     """Classify a failed edit: established negative, or merely ambiguous?
 
@@ -4840,7 +4862,8 @@ class TopicStreamHandle:
                 self._message_id = result.message_id
                 self._last_edit = now
             except TelegramError as exc:
-                if not isinstance(exc, _SERVER_REFUSALS):
+                if (not isinstance(exc, _SERVER_REFUSALS)
+                        and not _established_unsent(exc)):
                     self._maybe_delivered = True
                 logger.warning("Stream send failed: %s", exc)
             return
@@ -4907,6 +4930,8 @@ class TopicStreamHandle:
                     # then a refusal here cannot claim the turn invisible.
                     if self._maybe_delivered:
                         return DeliveryOutcome.UNKNOWN
+                    if _established_unsent(exc):
+                        return DeliveryOutcome.NOT_DELIVERED
                     return _edit_failure_outcome(exc)
                 # Multi-page: the raise cannot say whether page 1 landed, and
                 # claiming NOT_DELIVERED for a partially-visible turn would
