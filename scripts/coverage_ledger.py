@@ -390,12 +390,44 @@ def _manifest_docs(repo_root: Path) -> set[str]:
     return out
 
 
+def _covers_claimants(repo_root: Path) -> dict[str, set[str]]:
+    """Path -> documents whose manifest ``covers`` anchors claim it.
+
+    Resolution mirrors ``verify_docs._claimants``: an anchor claims its PATH
+    component (``path::Symbol`` -> ``path``), which is also how
+    ``verify_docs --impact`` names documents for a changed file — the point of
+    the cross-check in ``check`` is that this ledger and that guard cannot
+    name different owners for the same path. Read from the root manifest plus
+    every docs/manifest.d/*.yaml shard, like ``_manifest_docs``; an unreadable
+    manifest yields no claims, which is safe because ``check`` already refuses
+    every assignment against an empty manifest doc set.
+    """
+    docs_dir = repo_root / "docs"
+    sources = [docs_dir / "manifest.yaml"] + sorted((docs_dir / "manifest.d").glob("*.yaml"))
+    out: dict[str, set[str]] = {}
+    for source in sources:
+        try:
+            raw = yaml.safe_load(source.read_text())
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(raw, list):
+            continue
+        for entry in raw:
+            if not isinstance(entry, dict) or not isinstance(entry.get("doc"), str):
+                continue
+            for cov in entry.get("covers") or []:
+                if isinstance(cov, str):
+                    out.setdefault(cov.split("::", 1)[0], set()).add(entry["doc"])
+    return out
+
+
 def check(repo_root: Path) -> list[str]:
     """Return every coverage problem. Empty list means every surface is accounted for."""
     entries, problems = _load_ledger(repo_root)
     if problems and not entries:
         return problems
     manifest = _manifest_docs(repo_root)
+    claimants = _covers_claimants(repo_root)
     enumerated = set(enumerate_items(repo_root))
 
     seen: set[str] = set()
@@ -413,6 +445,19 @@ def check(repo_root: Path) -> list[str]:
         if doc is not None and doc not in manifest:
             problems.append(
                 f"coverage: {item!r} is assigned to {doc!r}, which is not in the manifest"
+            )
+        # #717 (ruled: option B, fatal): where the two ownership maps OVERLAP
+        # they must agree. An item some document's `covers` claims must be
+        # assigned to one of its claimants — otherwise `verify_docs --impact`
+        # names one owner while this ledger asserts another. Items nothing
+        # claims are deliberately not judged here: widening the guard's
+        # coverage is a separate decision, and namespaced items (option:,
+        # s6:, tool:, route:) never key a covers path at all.
+        if doc is not None and item in claimants and doc not in claimants[item]:
+            problems.append(
+                f"coverage: {item!r} is assigned to {doc!r}, but the manifest "
+                f"covers claim it for {', '.join(sorted(claimants[item]))} — "
+                f"the two ownership maps disagree"
             )
         if excluded is not None and (not isinstance(excluded, str) or not excluded.strip()):
             problems.append(
