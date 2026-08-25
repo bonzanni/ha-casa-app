@@ -259,3 +259,107 @@ def test_manifest_docs_includes_shard_entries(tmp_path):
     docs = coverage_ledger._manifest_docs(tmp_path)
     assert "architecture/x.md" in docs
     assert "manifest.yaml" in docs
+
+
+# --- where the two ownership maps overlap they must agree (#717, ruled) ---------------
+
+MANIFEST_WITH_COVERS = """
+- doc: manifest.yaml
+  kind: meta
+  summary: Allowlist.
+- doc: architecture/thing.md
+  summary: A doc.
+  when_changing: things
+- doc: architecture/other.md
+  summary: Another doc.
+  when_changing: other things
+  covers:
+    - casa/rootfs/opt/casa/big.py::SomeClass.method
+"""
+
+SHARD_WITH_COVERS = """
+- doc: architecture/third.md
+  summary: A shard doc.
+  when_changing: third things
+  covers:
+    - casa/rootfs/opt/casa/big.py
+"""
+
+
+def _ledger_with(root, overrides):
+    lines = []
+    for item in coverage_ledger.enumerate_items(root):
+        doc = overrides.get(item, "architecture/thing.md")
+        lines.append(f"- item: {item}\n  doc: {doc}\n")
+    return "".join(lines)
+
+
+def test_an_assignment_disagreeing_with_a_covers_claim_is_refused(tmp_path):
+    root = _repo(tmp_path)
+    (root / "docs" / "manifest.yaml").write_text(MANIFEST_WITH_COVERS)
+    # big.py is claimed by other.md's covers but assigned to thing.md
+    (root / "docs" / "coverage.yaml").write_text(_ledger_with(root, {}))
+    problems = coverage_ledger.check(root)
+    assert any("big.py" in p and "disagree" in p for p in problems), problems
+    # the disagreement names the claimant so the fix is one hop away
+    assert any("architecture/other.md" in p for p in problems)
+
+
+def test_an_assignment_matching_its_covers_claimant_passes(tmp_path):
+    root = _repo(tmp_path)
+    (root / "docs" / "manifest.yaml").write_text(MANIFEST_WITH_COVERS)
+    (root / "docs" / "coverage.yaml").write_text(
+        _ledger_with(root, {"casa/rootfs/opt/casa/big.py": "architecture/other.md"})
+    )
+    assert coverage_ledger.check(root) == []
+
+
+def test_a_multi_claimant_item_passes_when_assigned_to_any_claimant(tmp_path):
+    root = _repo(tmp_path)
+    (root / "docs" / "manifest.yaml").write_text(MANIFEST_WITH_COVERS)
+    shard_dir = root / "docs" / "manifest.d"
+    shard_dir.mkdir()
+    (shard_dir / "extra.yaml").write_text(SHARD_WITH_COVERS)
+    # big.py now has two claimants (other.md by symbol anchor, third.md by bare
+    # path from a shard); assignment to the SHARD's claimant must pass — this
+    # also pins that claimants are read from manifest.d, not the root alone.
+    (root / "docs" / "coverage.yaml").write_text(
+        _ledger_with(root, {"casa/rootfs/opt/casa/big.py": "architecture/third.md"})
+    )
+    assert coverage_ledger.check(root) == []
+
+
+def test_an_item_no_covers_claims_is_not_judged_by_the_cross_check(tmp_path):
+    """The ruled boundary: the predicate fires only where the maps OVERLAP.
+
+    small.py has no covers anchor anywhere; its assignment to thing.md must not
+    draw a disagreement — widening the guard's coverage is a separate decision,
+    and a cross-check that fired on every unclaimed module would red the build
+    on all of them today.
+    """
+    root = _repo(tmp_path)
+    (root / "docs" / "manifest.yaml").write_text(MANIFEST_WITH_COVERS)
+    (root / "docs" / "coverage.yaml").write_text(
+        _ledger_with(root, {"casa/rootfs/opt/casa/big.py": "architecture/other.md"})
+    )
+    problems = coverage_ledger.check(root)
+    assert not any("small.py" in p for p in problems)
+    # namespaced non-path items (option:, s6:, tool:, route:) never key a covers
+    # path, so they are structurally outside the cross-check too
+    assert not any("option:" in p or "s6:" in p for p in problems)
+
+
+def test_a_duplicate_covers_key_fails_closed_not_open(tmp_path):
+    """Round-1 S1 (Terra): safe_load keeps the LAST duplicate key, so an entry
+    with two `covers` blocks would silently DROP the first block's claims and
+    let a disagreement pass unjudged. The strict loader refuses instead, and
+    the refusal is a ledger problem — fail closed, visibly.
+    """
+    root = _repo(tmp_path)
+    (root / "docs" / "manifest.yaml").write_text(
+        MANIFEST_WITH_COVERS
+        + "  covers:\n    - casa/rootfs/opt/casa/small.py\n"
+    )
+    (root / "docs" / "coverage.yaml").write_text(_ledger_with(root, {}))
+    problems = coverage_ledger.check(root)
+    assert any("strict manifest parse" in p for p in problems), problems

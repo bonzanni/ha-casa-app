@@ -390,12 +390,89 @@ def _manifest_docs(repo_root: Path) -> set[str]:
     return out
 
 
+_STRICT_LOADER = None
+
+
+def _strict_loader():
+    """verify_docs._DuplicateKeyLoader, loaded from the sibling file by path.
+
+    ONE loader on both sides (#717 review round 1, Terra S1): PyYAML's
+    ``safe_load`` silently keeps the LAST of a duplicate key, so a manifest
+    entry carrying two ``covers`` blocks would hand this ledger a different
+    claimant map from the one ``verify_docs`` parses strictly for the impact
+    rule — and the cross-check below would fail open on exactly that shape.
+    Loaded by file location because this script runs standalone, as a
+    subprocess of verify_docs, and via file-location import in the tests — no
+    package context is guaranteed in any of them.
+    """
+    global _STRICT_LOADER
+    if _STRICT_LOADER is None:
+        import importlib.util
+
+        path = Path(__file__).resolve().parent / "verify_docs.py"
+        spec = importlib.util.spec_from_file_location("casa_verify_docs_for_ledger", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _STRICT_LOADER = mod._DuplicateKeyLoader
+    return _STRICT_LOADER
+
+
+def _covers_claimants(repo_root: Path) -> tuple[dict[str, set[str]], list[str]]:
+    """Path -> documents whose manifest ``covers`` anchors claim it, plus problems.
+
+    Resolution mirrors ``verify_docs._claimants``: an anchor claims its PATH
+    component (``path::Symbol`` -> ``path``), which is also how
+    ``verify_docs --impact`` names documents for a changed file — the point of
+    the cross-check in ``check`` is that this ledger and that guard cannot
+    name different owners for the same path. Read from the root manifest plus
+    every docs/manifest.d/*.yaml shard, like ``_manifest_docs`` — but with the
+    strict duplicate-key-rejecting loader, and a parse failure PROPAGATES as a
+    ledger problem rather than silently yielding no claims: a claimant map the
+    ledger cannot trust must fail the check, not weaken it.
+    """
+    problems: list[str] = []
+    try:
+        loader = _strict_loader()
+    except Exception as exc:  # noqa: BLE001 — any failure here disables the cross-check
+        return {}, [
+            f"coverage: cannot load the strict manifest loader from verify_docs.py "
+            f"({exc}) — the covers cross-check cannot run"
+        ]
+    docs_dir = repo_root / "docs"
+    sources = [docs_dir / "manifest.yaml"] + sorted((docs_dir / "manifest.d").glob("*.yaml"))
+    out: dict[str, set[str]] = {}
+    for source in sources:
+        try:
+            text = source.read_text()
+        except OSError:
+            continue  # a missing root manifest already reds check() via _manifest_docs
+        try:
+            raw = yaml.load(text, loader)
+        except yaml.YAMLError as exc:
+            problems.append(
+                f"coverage: {source.name} fails the strict manifest parse ({exc}) — "
+                f"the covers cross-check cannot trust its claims"
+            )
+            continue
+        if not isinstance(raw, list):
+            continue
+        for entry in raw:
+            if not isinstance(entry, dict) or not isinstance(entry.get("doc"), str):
+                continue
+            for cov in entry.get("covers") or []:
+                if isinstance(cov, str):
+                    out.setdefault(cov.split("::", 1)[0], set()).add(entry["doc"])
+    return out, problems
+
+
 def check(repo_root: Path) -> list[str]:
     """Return every coverage problem. Empty list means every surface is accounted for."""
     entries, problems = _load_ledger(repo_root)
     if problems and not entries:
         return problems
     manifest = _manifest_docs(repo_root)
+    claimants, claim_problems = _covers_claimants(repo_root)
+    problems.extend(claim_problems)
     enumerated = set(enumerate_items(repo_root))
 
     seen: set[str] = set()
@@ -413,6 +490,19 @@ def check(repo_root: Path) -> list[str]:
         if doc is not None and doc not in manifest:
             problems.append(
                 f"coverage: {item!r} is assigned to {doc!r}, which is not in the manifest"
+            )
+        # #717 (ruled: option B, fatal): where the two ownership maps OVERLAP
+        # they must agree. An item some document's `covers` claims must be
+        # assigned to one of its claimants — otherwise `verify_docs --impact`
+        # names one owner while this ledger asserts another. Items nothing
+        # claims are deliberately not judged here: widening the guard's
+        # coverage is a separate decision, and namespaced items (option:,
+        # s6:, tool:, route:) never key a covers path at all.
+        if doc is not None and item in claimants and doc not in claimants[item]:
+            problems.append(
+                f"coverage: {item!r} is assigned to {doc!r}, but the manifest "
+                f"covers claim it for {', '.join(sorted(claimants[item]))} — "
+                f"the two ownership maps disagree"
             )
         if excluded is not None and (not isinstance(excluded, str) or not excluded.strip()):
             problems.append(

@@ -74,15 +74,15 @@
 - item: casa/rootfs/opt/casa/drivers/claude_code_driver.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/in_casa_driver.py
-  doc: architecture/engagements.md
+  doc: architecture/engagement-completion-gate.md
 - item: casa/rootfs/opt/casa/drivers/s6_rc.py
-  doc: architecture/overview.md
+  doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/drivers/summary_controller.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/topic_stream.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/workspace.py
-  doc: architecture/engagements.md
+  doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/engagement_registry.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/engagement_quiesce.py
@@ -120,7 +120,7 @@
 - item: casa/rootfs/opt/casa/hindsight_provenance_contract.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/hooks.py
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/hook-resolution.md
 - item: casa/rootfs/opt/casa/ingress_identity.py
   doc: architecture/http-surface.md
 - item: casa/rootfs/opt/casa/internal_handlers.py
@@ -132,7 +132,7 @@
 - item: casa/rootfs/opt/casa/log_redact.py
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/mcp_envelope.py
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/tools-interface.md
 - item: casa/rootfs/opt/casa/memory_provenance.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/memory_wipe.py
@@ -154,9 +154,9 @@
 - item: casa/rootfs/opt/casa/plugin_completion_guard.py
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_dispatch.py
-  doc: architecture/plugins.md
+  doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/plugin_env_conf.py
-  doc: architecture/plugins.md
+  doc: architecture/plugin-runtime.md
 - item: casa/rootfs/opt/casa/plugin_events.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/plugin_grants.py
@@ -164,15 +164,15 @@
 - item: casa/rootfs/opt/casa/plugin_health.py
   doc: architecture/plugin-health.md
 - item: casa/rootfs/opt/casa/plugin_outbox.py
-  doc: architecture/plugins.md
+  doc: architecture/plugin-runtime.md
 - item: casa/rootfs/opt/casa/plugin_registry.py
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_setup_episodes.py
-  doc: architecture/plugins.md
+  doc: architecture/plugin-setup.md
 - item: casa/rootfs/opt/casa/plugin_store.py
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_triggers.py
-  doc: architecture/triggers.md
+  doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/policies.py
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/prompt_compiler.py
@@ -232,13 +232,13 @@
 - item: casa/rootfs/opt/casa/specialist_install_consent.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_limits.py
-  doc: architecture/specialist-lifecycle.md
+  doc: architecture/delegation.md
 - item: casa/rootfs/opt/casa/specialist_materialize.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_receipt.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_registry.py
-  doc: architecture/agent-taxonomy.md
+  doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/supervisor_discovery.py
   doc: architecture/home-assistant-control.md
 - item: casa/rootfs/opt/casa/svc_casa_mcp.py
@@ -256,13 +256,13 @@
 - item: casa/rootfs/opt/casa/topic_ledger.py
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/trigger_acks.py
-  doc: architecture/triggers.md
+  doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/resident_trigger_secrets.py
   doc: architecture/trigger-secrets.md
 - item: casa/rootfs/opt/casa/trigger_consent.py
   doc: architecture/triggers.md
 - item: casa/rootfs/opt/casa/trigger_reconcile.py
-  doc: architecture/triggers.md
+  doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/trigger_registry.py
   doc: architecture/triggers.md
 - item: casa/rootfs/opt/casa/verdict_broker.py
@@ -534,13 +534,13 @@
 - item: casa/rootfs/opt/casa/drivers/driver_protocol.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/hook_bridge.py
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/hook-resolution.md
 - item: casa/rootfs/opt/casa/error_kinds.py
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/markdown_sections.py
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/mcp_registry.py
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/home-assistant-control.md
 - item: casa/rootfs/opt/casa/media_policies.py
   doc: architecture/tools-interface.md
 - item: casa/rootfs/opt/casa/persona_install_consent.py

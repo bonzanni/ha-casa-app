@@ -79,7 +79,10 @@ class-qualified `Class::method` identifiers both — so a binding that would not
 fails the build (that the reference is a genuine *pinning* test is still established by
 the red-case discipline, not by CI); the code-derived
 coverage ledger in both directions (every enumerated
-surface assigned to a document or excluded with a reason, no stale entries); the required
+surface assigned to a document or excluded with a reason, no stale entries) — and, where
+a surface is claimed by some document's `covers`, that the ledger's assignment agrees
+with a claimant, so the ledger and the impact rule cannot name different owners for one
+path; the required
 skeleton; and that all generated navigation is current.
 
 **The pre-push gate enforces**, before anything is published rather than after a pull
@@ -142,9 +145,11 @@ cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`.
 - `scripts/verify_docs.py::_check_sourcemap`
 - `scripts/verify_docs.py::_check_invariants`
 - `scripts/verify_docs.py::write_nav`
+- `scripts/coverage_ledger.py::check`
 
 **Tests**
 - `tests/test_verify_docs.py`
+- `tests/test_coverage_ledger.py`
 
 **Related**
 - [`doctrine/publishing.md`](../doctrine/publishing.md)
