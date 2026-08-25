@@ -2200,6 +2200,21 @@ def _terminal_str(value: object) -> str | None:
     return value if isinstance(value, str) else _MALFORMED_EVIDENCE
 
 
+def _required_terminal_str(value: object) -> str:
+    """A REQUIRED terminal field: ``str`` verbatim; anything else — ``null``
+    included — is the ``_MALFORMED_EVIDENCE`` sentinel. The parser reads
+    ``subtype`` with ``data["subtype"]``, so on a parsed result the field is
+    always present and a ``None`` is the CLI writing null into a required
+    field, not an older CLI omitting it (omission raises in the parser and no
+    ResultMessage exists at all — the abort path). The absent-is-legacy
+    direction belongs only to OPTIONAL fields (``data.get(...)`` —
+    ``terminal_reason``, ``stop_reason``), which keep ``_terminal_str``.
+    Generalised from two same-shape findings (Terra r1: falsey ``is_error``;
+    Sol r2: null ``subtype``): every required field fails CLOSED on a
+    mistyped value; only optional fields have a legacy reading for absence."""
+    return value if isinstance(value, str) else _MALFORMED_EVIDENCE
+
+
 def _flag_failed_closed(value: object) -> bool:
     """A genuine ``bool`` verbatim; any other value is malformed evidence and
     reads as ``True`` — fail closed. The SDK parser passes ``is_error``
@@ -3058,20 +3073,21 @@ async def _run_delegated_agent(
     # ordinary provenance-attributed exchange, indistinguishable at every reader
     # from a completed one. Reading this object's own `run_aborted` rather than
     # re-expressing the predicate keeps the gate and the returned verdict
-    # single-sourced — and preserves the property's deliberate asymmetry, which a
-    # local `subtype == "success"` would silently break: a ResultMessage that WAS
-    # seen but carries no subtype is a completed legacy run, not an abort.
+    # single-sourced. The no-subtype-is-completed asymmetry now lives ONLY on
+    # direct `DelegatedOutput` constructions (the field default): on a PARSED
+    # result `subtype` is a required field, so null is malformed evidence and
+    # captures as the sentinel, i.e. an abort (Sol review r2, S1).
     output = DelegatedOutput(
         text=text,
         structured_output=(
             getattr(result_msg, "structured_output", None)
             if result_msg is not None else None
         ),
-        # `_terminal_str`, not `_str_or_none`: a malformed (non-string) value
-        # must become the fail-closed sentinel, never the legacy-completed
-        # `None` (seam round 1, both reviewers independently).
+        # `_required_terminal_str`: a malformed value — null included, this
+        # being a required field — must become the fail-closed sentinel,
+        # never the legacy-completed `None` (seam round 1; review rounds 1-2).
         run_subtype=(
-            _terminal_str(getattr(result_msg, "subtype", None))
+            _required_terminal_str(getattr(result_msg, "subtype", None))
             if result_msg is not None else None
         ),
         result_message_seen=result_msg is not None,

@@ -262,9 +262,9 @@ counters are in-memory: a restart refills them — this is a quota, not an autho
 
 **A delegated specialist run ends without completing its turn.** The runner records the
 whole terminal shape — subtype, error flag, API status, terminal reason, stop reason — at
-one capture point, normalizing a malformed (non-string) value to a sentinel that no
-allow-list admits rather than to the absent-field legacy case, and every consumer reads
-that one verdict. The CLI's own terminal aborts — a turn limit, a spend ceiling, a
+one capture point, normalizing a malformed value — a non-string anywhere, and null in a
+required field such as the subtype or the error flag — to fail-closed evidence rather
+than to the absent-field legacy case, and every consumer reads that one verdict. The CLI's own terminal aborts — a turn limit, a spend ceiling, a
 result-contract failure, an execution error, an unrecognised future verdict, or a stream
 that ends with no terminal message at all — reach every caller the same way: the sync
 result and the completion notification say `status="error"` with the mapped specialist

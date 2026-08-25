@@ -166,8 +166,11 @@ absent-field legacy case, which counts as completed. The reported verdict
 itself is left alone — it has consumers outside memory, and widening it there
 would change what they see. "Did not complete" covers every non-success terminal
 subtype — including one this release has never seen — and a stream that ends
-with no terminal message at all, which certifies nothing. A terminal message
-that *was* seen but carries no subtype is a completed run, not an abort.
+with no terminal message at all, which certifies nothing. The subtype is a
+*required* field on a parsed terminal message, so a null there is malformed
+evidence and reads as an abort too; the completed-without-subtype reading
+survives only for directly constructed outputs, which is where the legacy and
+test shapes live.
 
 The caller's turn is kept deliberately: it is a true utterance, and this is its
 only writer — a resident's own session save never sees the paraphrase it sent to

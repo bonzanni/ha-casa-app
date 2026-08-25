@@ -642,15 +642,17 @@ async def test_pin_inv_mem_016_aborted_run_retains_only_caller_task(
     assert fake_sem.retain_calls == [{"bank": "casa", "items": [_CALLER_ITEM]}]
 
 
-async def test_pin_inv_mem_016_seen_result_without_subtype_retains_both_turns(
+async def test_pin_inv_mem_016_null_subtype_on_a_parsed_result_is_an_abort(
     monkeypatch,
 ):
-    """The deliberate asymmetry of `DelegatedOutput.run_aborted`: a ResultMessage
-    that WAS seen but carries no subtype is a completed run (legacy/test
-    construction), so both turns are still retained.
-
-    This is the control that a `subtype == "success"` re-expression of the
-    predicate would break.
+    """OVERTURNED on the record (Sol review r2, S1): `subtype` is a REQUIRED
+    field on a parsed ResultMessage (`data["subtype"]`), so a null there is
+    the CLI writing the wrong value into a required field — malformed
+    evidence, an abort — not the older-CLI legacy case (omission raises in
+    the parser and no ResultMessage exists at all). This pin previously
+    asserted the opposite (both turns retained); the capture boundary now
+    fails closed, and only a DIRECT DelegatedOutput construction keeps the
+    no-subtype-is-completed default (asserted below).
     """
     import agent as agent_mod
     import delegated_memory
@@ -667,20 +669,19 @@ async def test_pin_inv_mem_016_seen_result_without_subtype_retains_both_turns(
         out = await tools._run_delegated_agent(
             cfg, task_text="Q1 cashflow?", context_text="")
 
-    assert out == tools.DelegatedOutput(
-        text="partial answer", structured_output=None,
-        run_subtype=None, result_message_seen=True,
-    )
-    assert out.run_aborted is False
+    assert out.run_subtype == tools._MALFORMED_EVIDENCE
+    assert out.run_aborted is True
 
     await _drain_bg()
 
     assert len(fake_sem.retain_calls) == 1
-    assert len(fake_sem.retain_calls[0]["items"]) == 2
-    assert fake_sem.retain_calls == [{
-        "bank": "casa",
-        "items": [_CALLER_ITEM, _PARTIAL_ANSWER_ITEM],
-    }]
+    assert len(fake_sem.retain_calls[0]["items"]) == 1
+    assert fake_sem.retain_calls == [{"bank": "casa", "items": [_CALLER_ITEM]}]
+
+    # The object-level asymmetry survives for direct constructions: absent
+    # subtype on a seen result stays completed there, which is what every
+    # legacy/test construction relies on.
+    assert tools.DelegatedOutput(text="x").run_aborted is False
 
 
 @pytest.mark.parametrize("result_subtype,emit_result", [
