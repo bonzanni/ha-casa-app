@@ -57,6 +57,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the documentation rules themselves, or adding a document to the corpus | [`contributing/doc-contract.md`](contributing/doc-contract.md) |
 | the engagement uid allocator, workspace ownership, root's access into a workspace, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep | [`architecture/engagement-containment.md`](architecture/engagement-containment.md) |
 | the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools | [`architecture/plugin-events.md`](architecture/plugin-events.md) |
+| the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
 | the setup tool's dispatch, its consent gating, or the route gate a setup obligation passes through | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
 | the turn lifecycle, the warm client pool, retry behaviour, or turn teardown | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
 | trigger types, resident webhook routing, one-shot firing and cleanup, or scheduling | [`architecture/triggers.md`](architecture/triggers.md) |

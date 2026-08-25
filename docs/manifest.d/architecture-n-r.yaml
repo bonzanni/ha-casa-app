@@ -137,6 +137,21 @@
     INV-EV-005: [tests/test_tools_ack_event.py::test_ack_event_token_never_in_reply_or_logs, tests/test_event_acceptance.py::test_no_envelope_bytes_or_ack_token_reach_any_log_surface, tests/test_event_attempts.py::test_envelope_extra_key_refused_meta_included, tests/test_event_spool.py::test_stale_token_cas_after_fold_rotates_it]
     INV-EV-006: [tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_synthetic_key_is_reserved, tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_event_wake_value_is_stripped_from_external_context, tests/test_event_wiring.py::TestAskUserRejectsEventDispatchedTurn::test_ask_user_rejects_event_wake_origin]
 
+- doc: architecture/plugin-health.md
+  summary: How a plugin's problems reach the operator — the standing health report, the notice and DM with their dedup marks, and the status tool.
+  when_changing: the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool
+  covers:
+    - casa/rootfs/opt/casa/plugin_health.py::render_notice
+    - casa/rootfs/opt/casa/plugin_health.py::mark_notified
+    - casa/rootfs/opt/casa/casa_core.py::notify_plugin_health
+  tests:
+    - tests/test_plugin_health.py
+    - tests/test_plugin_health_notify.py
+  related: [architecture/plugins.md, architecture/plugin-events.md, architecture/telegram.md]
+  defines_invariants: [INV-PLUG-013]
+  invariant_tests:
+    INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]
+
 - doc: architecture/plugin-runtime.md
   summary: The environment a plugin's MCP servers need before an agent can use it, plus the env-conf and media side channels.
   when_changing: plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox
@@ -208,9 +223,6 @@
     - casa/rootfs/opt/casa/plugin_store.py::artifact_verdict
     - casa/rootfs/opt/casa/plugin_store.py::manifest_protected_tools
     - casa/rootfs/opt/casa/plugin_grants.py::protected_map
-    - casa/rootfs/opt/casa/plugin_health.py::render_notice
-    - casa/rootfs/opt/casa/plugin_health.py::mark_notified
-    - casa/rootfs/opt/casa/casa_core.py::notify_plugin_health
     - casa/rootfs/opt/casa/authz_grants.py::GrantKey
     - casa/rootfs/opt/casa/authz_grants.py::GrantStore
     - casa/rootfs/opt/casa/plugin_boot.py::main
@@ -221,10 +233,8 @@
     - tests/test_authz_grants.py
     - tests/test_authz_hook.py
     - tests/test_plugin_boot.py
-    - tests/test_plugin_health.py
-    - tests/test_plugin_health_notify.py
-  related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md]
-  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007, INV-PLUG-013]
+  related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md, architecture/plugin-health.md]
+  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007]
   invariant_tests:
     INV-PLUG-001: [tests/test_plugin_registry.py::test_artifact_id_mismatch_is_per_entry_skip]
     INV-PLUG-002: [tests/test_pin_plugin_invariants.py::test_pin_inv_plug_002_checksum_drift_and_symlinked_locations]
@@ -233,7 +243,6 @@
     INV-PLUG-005: [tests/test_authz_hook.py::test_restart_loses_grants_fresh_store_rechallenges]
     INV-PLUG-006: [tests/test_agent_plugin_binding.py::test_executor_options_have_plugins_but_no_grants_no_callback]
     INV-PLUG-007: [tests/test_authz_hook.py::test_non_operator_sender_is_denied_with_no_challenge, tests/test_authz_hook.py::test_non_operator_with_live_grant_consumes_nothing, tests/test_authz_hook.py::test_accept_all_mode_denies_protected_tools_for_everyone]
-    INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]
 
 - doc: architecture/reminders.md
   summary: How an agent comes to nudge someone later — entry ownership, the narrow writer, delivery, and the sweep that redeems a past-dated one-shot the process was down for.

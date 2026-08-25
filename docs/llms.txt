@@ -30,6 +30,7 @@ Code is the source of truth; these files are a map.
 - [architecture/persistent-state.md](architecture/persistent-state.md): What the application writes to disk, how it treats a missing or corrupt file, and what that means for recovery.
 - [architecture/personality.md](architecture/personality.md): What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.
 - [architecture/plugin-events.md](architecture/plugin-events.md): Plugin-emitted domain events — casa-minted generations, per-subscriber delivery receipts, and consent-gated headless wakes.
+- [architecture/plugin-health.md](architecture/plugin-health.md): How a plugin's problems reach the operator — the standing health report, the notice and DM with their dedup marks, and the status tool.
 - [architecture/plugin-runtime.md](architecture/plugin-runtime.md): The environment a plugin's MCP servers need before an agent can use it, plus the env-conf and media side channels.
 - [architecture/plugin-setup.md](architecture/plugin-setup.md): Who runs a plugin's declared setup tool — the single-runner obligation, the consent verdict that releases it, and the applied-state gate it passes through.
 - [architecture/plugin-triggers.md](architecture/plugin-triggers.md): What a plugin's declared webhook must satisfy before it routes — the overlay, its preconditions, and the operator approval gating them.
