@@ -185,6 +185,18 @@ naive reading:
 A raise carries the same question and cannot answer it through a return value, so the head
 fact is stamped on the turn context and consulted on the exception path.
 
+The engagement-topic stream handle joins the contract at finalize, with the head keyed
+differently — and the difference is the rule's own rationale applied, not an exception to
+it. No one-shot notice rides the topic stream, so the question its consumer (the `in_casa`
+driver) asks is whether the turn was *wholly invisible*, not whether the final edit landed:
+the first successful topic output latches `delivered`, and a failed final edit or overflow
+page cannot un-show it (those failures stay warnings). `not delivered` remains a claim —
+reported only when every operation was positively refused, or when no Bot API call was
+possible before any output landed. One imprecision is deliberate: a finalize with no prior
+emit sends through the shared paginating helper, whose multi-page raise cannot say whether
+page 1 landed, so that raise reads as the ambiguity it is rather than as a claim that would
+hand a false death to a partially visible turn.
+
 What it does not cover: channels that have not adopted the contract. They return nothing,
 which reads as `UNKNOWN` and preserves their existing behavior. That case is deliberately
 distinct from a negative — treating "cannot report" as "failed" would re-offer a notice on
@@ -303,6 +315,7 @@ units but sends unformatted text only.
 - `tests/test_telegram_new_reset.py`
 - `tests/test_telegram_supervisor.py`
 - `tests/test_telegram_split.py`
+- `tests/test_telegram_topic_stream.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

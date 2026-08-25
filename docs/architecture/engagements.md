@@ -129,7 +129,7 @@ does and does not settle. The
 admission also expresses no opinion on a record the registry does not know, which is
 unreachable for a live engagement and where the dispatch gate already fails closed.
 
-**INV-ENG-012**: A ticketed FOLLOW-UP turn to an `in_casa` engagement that ends without the turn's own terminal artifact is never answered with silence: exactly one bounded operator-facing notice attempt is made in the engagement's topic, by the owner of that turn's admission ticket, and one turn's observation can never be consumed or lost by another turn's owner. The single thing that excuses the telling is that the engagement's terminal path has already told that topic why the engagement ended; the record merely being terminal is not that fact, and wherever it is not known that the topic was told, the telling is made. A follow-up turn that ends holding its terminal artifact produces no observation and no notice. The driver records, never raises, and never reads the record's status.
+**INV-ENG-012**: A ticketed FOLLOW-UP turn to an `in_casa` engagement that ends without the turn's own terminal artifact — or that finishes holding it while finalization has *established* that its streamed text was wholly undelivered — is never answered with silence: exactly one bounded operator-facing notice attempt is made in the engagement's topic, by the owner of that turn's admission ticket, and one turn's observation can never be consumed or lost by another turn's owner. The single thing that excuses the telling is that the engagement's terminal path has already told that topic why the engagement ended; the record merely being terminal is not that fact, and wherever it is not known that the topic was told, the telling is made. A follow-up turn that ends holding its terminal artifact with no established delivery failure produces no observation and no notice; an *ambiguous* delivery (a lost acknowledgement, or a handle off the delivery contract) is not an established failure and records nothing. The driver records, never raises, and never reads the record's status.
 
 INV-ENG-011 covers the launch turn. The turn *after* it had the same hole and no owner at
 all: cut off mid-tool-loop, a ticketed turn raises nothing, records nothing, discharges its
@@ -140,6 +140,16 @@ gated on having seen no assistant frame, and a mid-tool-loop cutoff has seen sev
 The predicate is the same one INV-ENG-011 uses and for the same reason: the absence of the
 turn's result frame. It is emphatically not the evidence latch, which is set by the first
 frame of any kind and so reads identically for a cut-off turn and a finished one.
+
+The second arm is the delivery failure. A follow-up turn can finish — its result frame
+arrives — with every Telegram operation on its streamed text positively refused, and such a
+turn used to read as an ordinary quiet one. The stream handle's finalize now reports a
+delivery outcome (INV-TG-006 in [`telegram.md`](telegram.md)), and only an *established*
+failure is recorded: a lost acknowledgement may already be on the operator's screen, and
+reporting it would tell them about — or, on the launch side, kill — a delivered turn. The
+notice for this arm asserts only what its site observed: the turn finished, and its response
+could not be delivered to the topic. It names no cause, because the reason carries none — an
+absent Telegram application produces the same established failure as a refusal.
 
 **The driver observes; the delivery task adjudicates.** That split is not tidiness, it is
 the only place the distinction can be made. A raise from the driver would be

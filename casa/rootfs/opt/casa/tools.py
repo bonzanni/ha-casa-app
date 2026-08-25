@@ -7880,6 +7880,8 @@ _LAUNCH_INCOMPLETE_DETAIL = {
         "the initial turn ended without ResultMessage",
     "no_visible_output":
         "the initial turn ended without ResultMessage output or a completion",
+    "text_not_delivered":
+        "the initial turn produced text but none of it reached the topic",
 }
 
 
