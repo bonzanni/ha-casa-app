@@ -21,6 +21,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | When you are changing… | Read |
 |---|---|
 | Telegram transport, callback namespaces, topic output ordering, or message rendering | [`architecture/telegram.md`](architecture/telegram.md) |
+| a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, plugin mutation sequencing, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |

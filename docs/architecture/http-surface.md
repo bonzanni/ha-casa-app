@@ -102,41 +102,6 @@ The tolerance default is a literal in the code, not an absent value the operator
 supply, and configured values are constrained to a bounded range. Replay is in the threat
 model for every mode; choosing a mode chooses how long the window stays open.
 
-The secrets themselves have a lifecycle worth knowing, and the two halves of the surface do
-not share one. **Plugin** trigger secrets are minted *per trigger identity* — bound to the
-plugin artifact, so a plugin update means a new identity and a fresh secret — and are
-retired when the artifact's grant is revoked, so a later artifact cannot inherit a
-credential. **Resident** trigger secrets are minted per NAME, when the trigger is
-registered: at boot and on every reload that installs triggers, never on the request that
-verifies one. Nothing retires a resident secret, so a trigger recreated under an old name
-inherits the old credential; the names are globally unique, and a name is the whole
-identity.
-
-That inheritance is still open, and the reason it is hard is worth stating: the owner rules
-accept a Casa-minted token as a valid *provider* value too, so nothing about a file's shape
-says who wrote it — and Casa can neither regenerate nor import an operator's credential. A
-retirement that guessed wrong would destroy something unrecoverable. So a resident mint now
-writes a **receipt** next to the slot, holding a digest of the minted value and never the
-value itself. It is written only when that mint actually created the file: the publish step
-keeps whoever reached the name first rather than clobbering them, and the winner can be an
-operator placing a credential by hand, whose bytes must never be certified as Casa's.
-A receipt is likewise never written over a value a later pass merely found.
-
-Because it binds the value rather than the name, it stops certifying the moment the bytes
-change — by a hand replacement, by a rotation promotion, by anything — with no path needing
-to notice; and a receipt that is missing, malformed, stale or unreadable reads as *unproven*
-rather than as consent. Failing to write one is not an error: the secret already works, and
-only the proof is missing. None of this retires anything. It records the durable fact a
-later, owner-aware retirement would have to stand on, and the reload report surfaces it per
-slot.
-
-Two things this paragraph used to claim, and the code does not do. There is **no
-dual-accept window**: the verifier takes a single secret, and the rotation state machine
-has no caller outside its own tests. And a resident credential **can** survive a
-declaration change — a casa-minted token also satisfies the provider validation rule, so
-flipping `secret_owner` carries the live value over rather than replacing it. Changing the
-owner of an existing trigger is not supported; delete it and create it under a new name.
-
 The invoke route's concrete contract is easy to guess wrong: the global rate limit runs
 *before* authentication; no configured secret is a 403 and a failed body-HMAC a 401; only
 agents declaring the webhook capability are reachable; and the payload's `chat_id` decides
