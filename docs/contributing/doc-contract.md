@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-07-29
+last_reviewed: 2026-08-25
 ---
 
 # How to keep this corpus true and readable
@@ -21,8 +21,10 @@ pressure, not a reference work.
 
 Two consequences do most of the work. **Front-load**, so an agent that stops reading after
 two sections has still got the load-bearing part. And **stay small**, so a document fits in
-context *beside* the code it describes — which is the actual working set, and the reason the
-ceiling is a hard 25 KB rather than a suggestion.
+context *beside* the code it describes — which is the actual working set, and the reason
+there is an enforced 25 KB ceiling rather than a suggestion. The ceiling is a tripwire, not
+a tree-state prohibition: the change that crosses it lands, and the next change touching
+that document must split it first.
 
 ## Contracts & invariants
 
@@ -53,14 +55,21 @@ true.
 
 **INV-DOC-005**: Anchors are typed symbols (`path/to/file.py::Class.method`, `config.yaml::schema.key`, `tests/test_x.py::test_name`) or tracked bare paths; never `file:line`, which rots silently on the next edit.
 
-**INV-DOC-006**: Growth splits, it never appends. A document that reaches the ceiling is divided and both halves manifested. The ceiling is not raised, and nothing shards on its own.
+**INV-DOC-007**: Growth splits, it never appends: the change that crosses the size ceiling lands visibly, the next change touching the over-ceiling document — its file or its manifest row — must split it first, a new path may not be born over the ceiling, and the ceiling is not raised; nothing shards on its own.
 
 ## Failure behavior
 
 Knowing which rules a machine enforces matters, because claiming a convention is enforced is
 how a corpus rots while passing.
 
-**CI enforces**: the size budget; allowlist exactness in both directions against
+**CI enforces**: the size trigger — on a pull request, judged against the merge-base: a
+first crossing of the 25 KB ceiling (40 KB for generated indexes and manifest shards)
+lands with a notice, a change touching a document already past its ceiling — its file or
+its manifest row, at the ceiling of its manifest `kind` as it stands in the tree — fails
+until the document ends back under it, and no document may be born over the ceiling, which
+is also what refuses an over-ceiling rename or copy, since a renamed or copied file is a
+new path; local and push-event runs report over-ceiling documents without failing, so the
+pull-request check is the enforcing caller; allowlist exactness in both directions against
 `git ls-files`; admitted extensions; manifest schema and required fields; anchor resolution
 and containment; the marker pair in every document; invariant define-once, reference
 resolution, and declaration accuracy; that every declared invariant carries at least one
@@ -86,7 +95,11 @@ under its author's name for exactly that reason.
 
 **A reviewer enforces**: front matter and the code-wins line; the section order; present
 tense; whether a document is one-hop sufficient; whether the same rule has been restated in
-different words somewhere else; and whether any of it is true. No script can tell a correct
+different words somewhere else; whether an over-ceiling document's resolution genuinely
+reorganizes rather than trims content to get back under the number — reduce-to-fit is
+refused in review, deliberately not by machine, because a machine test for "a split
+happened" would prescribe the shape of the fix, and a legitimate resolution may move
+content to an existing document and create nothing; and whether any of it is true. No script can tell a correct
 rule from a plausible one.
 
 Those reviewer obligations are the periodic sweep's job, per release, oldest `last_reviewed`
@@ -125,6 +138,7 @@ cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`.
 
 **Source**
 - `scripts/verify_docs.py::verify`
+- `scripts/verify_docs.py::check_ceilings`
 - `scripts/verify_docs.py::_check_sourcemap`
 - `scripts/verify_docs.py::_check_invariants`
 - `scripts/verify_docs.py::write_nav`

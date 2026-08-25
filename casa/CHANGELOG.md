@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.233.0] - 2026-08-25
+
+### Changed
+
+- The documentation-corpus size ceiling is now a tripwire judged against a pull
+  request's merge-base instead of a flat prohibition on the tree. The change
+  that first pushes a document over its ceiling lands, with a visible notice;
+  after that, any change touching the over-ceiling document - its file or its
+  manifest row - fails until the document is split (or otherwise ends back
+  under the ceiling), and a new document may not be born over the ceiling,
+  which also refuses an over-ceiling rename or copy, since a renamed or copied
+  file is a new path. Local runs and push events report over-ceiling documents
+  without failing; the pull-request check is the enforcing caller. Anything
+  unreadable at the base - the commit, a blob, the manifest - is a refusal,
+  never guessed around.
+
+### Removed
+
+- The 20 KB "warn band" on documents and the fixed 20 KB test pins that held
+  eight previously split documents below everyone else's limit. The uniform
+  25 KB ceiling (40 KB for generated indexes) is the only size rule, so those
+  eight documents now get the same headroom as every other document.
+
 ## [0.232.0] - 2026-08-24
 
 ### Fixed

@@ -101,17 +101,20 @@
   when_changing: the documentation rules themselves, or adding a document to the corpus
   covers:
     - scripts/verify_docs.py::verify
+    - scripts/verify_docs.py::check_ceilings
     - scripts/verify_docs.py::_check_sourcemap
     - scripts/verify_docs.py::_check_invariants
     - scripts/verify_docs.py::write_nav
   tests:
     - tests/test_verify_docs.py
   related: [doctrine/publishing.md]
-  defines_invariants: [INV-DOC-001, INV-DOC-002, INV-DOC-003, INV-DOC-004, INV-DOC-005, INV-DOC-006]
+  defines_invariants: [INV-DOC-001, INV-DOC-002, INV-DOC-003, INV-DOC-004, INV-DOC-005, INV-DOC-007]
   invariant_tests:
     INV-DOC-001: [tests/test_pin_doc_corpus_shape.py::test_pin_inv_doc_001_front_matter_and_code_wins_line]
     INV-DOC-002: [tests/test_pin_doc_corpus_shape.py::test_pin_inv_doc_002_architecture_documents_follow_the_section_order]
     INV-DOC-003: [tests/test_pin_doc_corpus_shape.py::test_pin_inv_doc_003_no_changelog_voice_markers]
     INV-DOC-004: [tests/test_verify_docs.py::test_an_invariant_defined_twice_is_caught]
     INV-DOC-005: [tests/test_verify_docs.py::test_a_line_number_anchor_is_rejected]
-    INV-DOC-006: [tests/test_verify_docs.py::test_a_document_over_the_ceiling_is_rejected]
+    INV-DOC-007:
+      - tests/test_verify_docs.py::test_a_touched_document_past_the_ceiling_at_the_base_fails
+      - tests/test_verify_docs.py::test_a_document_born_over_the_ceiling_fails
