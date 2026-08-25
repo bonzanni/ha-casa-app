@@ -37,7 +37,7 @@ import asyncio
 import json
 
 import pytest
-from broker_helpers import deliver
+from broker_helpers import deliver, wait_until
 from aiohttp import web
 from unittest.mock import AsyncMock, MagicMock
 
@@ -298,8 +298,17 @@ async def test_body_identical_across_post_persist_and_settle(
         "question": "Which account?", "options": options, "timeout_s": 60,
     }
     task = asyncio.ensure_future(ask(_FakeRequest(payload)))
-    await asyncio.sleep(0.02)
-    assert deliver(fresh, 
+    # #731: wait on the condition delivery actually needs — the broker
+    # registration of ("engagement_ask", eid, "a1") — not a fixed sleep (a
+    # loaded worker delivered before registration and got 'stale') and not
+    # the keyboard-post append (the post races the registration). The handler
+    # reaches ensure_posted with no await after BROKER.register, so once the
+    # key is live the setup task exists and set_finish_hook fires
+    # retroactively on an already-resolved future — the post and settle
+    # asserts below hold even for this earliest possible delivery.
+    await wait_until(
+        lambda: "a1" in fresh.pending(namespace="engagement_ask", scope=eid))
+    assert deliver(fresh,
         namespace="engagement_ask", scope=eid, request_id="a1",
         option_index=0, actor_id=555) == "delivered"
     resp = await asyncio.wait_for(task, timeout=1.0)
@@ -322,6 +331,40 @@ async def test_body_identical_across_post_persist_and_settle(
     # path ran over the SAME entry; the persisted text identity is asserted in
     # the reconcile test below where the entry survives.
     assert list(persisted) == []
+
+
+async def test_delivery_survives_slow_registration(tmp_path, monkeypatch) -> None:
+    """Red case for #731: delivery must synchronize on the broker registration
+    of ``("engagement_ask", eid, "a1")`` — the condition delivery actually
+    needs — not on a fixed sleep. The ask handler awaits
+    ``allocate_question_number`` BEFORE it reaches ``BROKER.register``
+    (channel_handlers._maybe_allocate_number), so delaying the allocator by
+    50 ms deterministically postpones registration past any 20 ms bet: with a
+    fixed-sleep synchronization the delivery claims an unregistered key and
+    the broker answers ``"stale"`` (assert "stale" == "delivered"). A
+    condition wait makes the same drive pass regardless of allocator latency.
+
+    The delay is injected at the CLASS attribute because the registry instance
+    is created inside the driven test; the patch is monkeypatch-scoped, so no
+    other test sees it. It wraps the real allocator — never
+    ``<module>.asyncio.sleep`` (memory-cage rule)."""
+    from engagement_registry import EngagementRegistry
+
+    calls = 0
+    real_allocate = EngagementRegistry.allocate_question_number
+
+    async def delayed_allocate(self, engagement_id):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return await real_allocate(self, engagement_id)
+
+    monkeypatch.setattr(
+        EngagementRegistry, "allocate_question_number", delayed_allocate)
+
+    await test_body_identical_across_post_persist_and_settle(
+        tmp_path, monkeypatch)
+    assert calls == 1
 
 
 async def test_reconcile_settles_over_persisted_render_ask_body(
