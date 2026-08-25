@@ -105,7 +105,7 @@
 
 - doc: architecture/triggers.md
   summary: What makes an agent act without a person speaking — a resident's scheduled and webhook triggers, and who may write the file they live in.
-  when_changing: trigger types, resident webhook routing, one-shot firing and cleanup, or scheduling
+  when_changing: trigger types, resident webhook routing, one-shot firing and cleanup, scheduling, or who may write a resident's trigger file
   covers:
     - casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry
     - casa/rootfs/opt/casa/casa_core.py::_make_webhook_handler

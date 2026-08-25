@@ -61,7 +61,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
 | the setup tool's dispatch, its consent gating, or the route gate a setup obligation passes through | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
 | the turn lifecycle, the warm client pool, retry behaviour, or turn teardown | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
-| trigger types, resident webhook routing, one-shot firing and cleanup, or scheduling | [`architecture/triggers.md`](architecture/triggers.md) |
+| trigger types, resident webhook routing, one-shot firing and cleanup, scheduling, or who may write a resident's trigger file | [`architecture/triggers.md`](architecture/triggers.md) |
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |
 <!-- END ROUTING -->
 

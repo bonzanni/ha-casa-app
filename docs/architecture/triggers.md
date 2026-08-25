@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-08
+last_reviewed: 2026-08-25
 ---
 
 # Triggers and scheduling
@@ -11,7 +11,8 @@ last_reviewed: 2026-08-08
 What makes an agent act without a person speaking: a resident's scheduled and webhook
 triggers, how they are registered and fired, and who may write the file they live in. It does
 not cover what the resulting turn does, nor webhook authentication mechanics, which belong to
-the HTTP surface. What a **plugin-declared** trigger must satisfy before it routes — the
+the HTTP surface. The secrets that authenticate a resident webhook — minting, receipts,
+the per-slot report — are [`trigger-secrets.md`](trigger-secrets.md)'s. What a **plugin-declared** trigger must satisfy before it routes — the
 overlay, its preconditions and the operator approval gating them — is
 [`architecture/plugin-triggers.md`](plugin-triggers.md); plugin-declared *authorization
 callbacks* share that shape but produce no turn and grant no access, and are
@@ -272,7 +273,9 @@ the current set is four.
 
 **A new resident webhook** needs the trigger declaration and a name outside the reserved
 plugin prefix. Declaring the webhook channel on the resident is *not* checked for webhooks —
-the channel gate is scheduled-only (see INV-TRIG-001).
+the channel gate is scheduled-only (see INV-TRIG-001). Its secret — minted at
+registration, receipted, reported per slot — is
+[`trigger-secrets.md`](trigger-secrets.md)'s subject.
 
 **A new plugin trigger** needs the manifest declaration, an assigned target that accepts
 webhooks, secret backing, and operator consent — and reconciliation must then run. The

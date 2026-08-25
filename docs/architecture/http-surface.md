@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-01
+last_reviewed: 2026-08-25
 ---
 
 # The HTTP surface
@@ -101,6 +101,9 @@ binding, no nonce, no expiry.
 The tolerance default is a literal in the code, not an absent value the operator must
 supply, and configured values are constrained to a bounded range. Replay is in the threat
 model for every mode; choosing a mode chooses how long the window stays open.
+
+The lifecycle of the secrets those modes compare against — who mints one, the receipt,
+what nothing retires — is [`trigger-secrets.md`](trigger-secrets.md)'s subject.
 
 The invoke route's concrete contract is easy to guess wrong: the global rate limit runs
 *before* authentication; no configured secret is a 403 and a failed body-HMAC a 401; only
@@ -256,4 +259,5 @@ this document establishes; check the call sites for the one you care about.
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
+- [`architecture/trigger-secrets.md`](../architecture/trigger-secrets.md)
 <!-- END SOURCEMAP -->

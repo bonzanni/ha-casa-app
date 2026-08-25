@@ -51,7 +51,8 @@ declaration change — a casa-minted token also satisfies the provider validatio
 flipping `secret_owner` carries the live value over rather than replacing it. Changing the
 owner of an existing trigger is not supported; delete it and create it under a new name.
 
-Its **secret exists from the moment the trigger is registered**, which is what makes the
+A resident webhook trigger's **secret exists from the moment the trigger is
+registered**, which is what makes the
 setup instruction true when it is given. `static_header` and `timestamped_hmac` are backed
 by a per-trigger file; `hmac_body` rides the one global secret and writes nothing. Casa
 mints only what it owns: a slot declared `secret_owner: provider` is never written, because
@@ -62,12 +63,6 @@ absent. It never deletes, replaces or overwrites one, and it never raises: a fil
 fault leaves the trigger registered and refusing requests rather than silently changing
 which routes exist.
 
-A mint also records a **receipt** beside the slot — a digest of the value, never the value —
-and only for a slot the mint itself created, never onto one it merely found. A Casa token
-also satisfies the provider rule, so a receipt written over a value Casa did not mint would
-certify the operator's own credential as Casa's. See [`http-surface.md`](http-surface.md)
-for the mechanism.
-
 ## Contracts & invariants
 
 **INV-TRIG-014**: A mint receipt certifies that Casa generated the bytes in a slot only when Casa itself created that slot and the receipt's digest matches those exact bytes; every other state is unproven and is never authority to alter the slot.
@@ -77,7 +72,7 @@ fact a later, owner-aware retirement would have to stand on.
 
 ## Failure behavior
 
-Every reload envelope that touches registration therefore carries `trigger_secrets`, one
+Every reload envelope that touches registration carries `trigger_secrets`, one
 row per trigger, plus counts. The rows are derived from the **registry** — what a request is
 actually verified with — and from a real read of the file, never from the declaration alone:
 those are different questions, and a route can run at a clearance or an auth mode the file
@@ -95,7 +90,7 @@ failure would withhold it exactly when it is wanted.
 
 ## Extension points
 
-**A new writer of a secret slot** inherits the rules above: a mint only ever creates a
+**A new resident-secret mint path** inherits the rules above: a mint only ever creates a
 file that is absent, a receipt is written only for a slot that mint itself created, and
 no state a receipt cannot prove is authority to alter a slot (INV-TRIG-014). A writer
 that certified bytes it merely found would certify the operator’s own credential as
