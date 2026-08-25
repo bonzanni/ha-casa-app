@@ -180,7 +180,7 @@
     - tests/test_voice_channel_sse.py
     - tests/test_voice_channel_ws.py
     - tests/test_voice_context_sanitize.py
-  related: [architecture/overview.md, architecture/http-surface.md, architecture/turn-loop.md]
+  related: [architecture/overview.md, architecture/http-surface.md, architecture/turn-loop.md, architecture/personality.md]
   defines_invariants: [INV-VOICE-001, INV-VOICE-002, INV-VOICE-003, INV-VOICE-004, INV-VOICE-005, INV-VOICE-006, INV-VOICE-007]
   invariant_tests:
     INV-VOICE-001: [tests/test_voice_auth_failclosed.py::test_sse_turn_rejected_and_never_dispatched, tests/test_voice_auth_failclosed.py::test_ws_upgrade_rejected, tests/test_voice_auth_failclosed.py::test_catalog_rejected, tests/test_voice_auth_failclosed.py::test_mis_signed_turn_rejected, tests/test_voice_malformed_input.py::test_sse_non_ascii_signature_is_401, tests/test_voice_malformed_input.py::test_ws_non_ascii_signature_is_401]

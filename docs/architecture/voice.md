@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-07-31
+last_reviewed: 2026-08-25
 ---
 
 # The voice channel
@@ -11,7 +11,9 @@ last_reviewed: 2026-07-31
 How spoken input becomes a turn and how the answer gets back: the two transports, what
 authenticates them, the turn budget, and the deferred-delivery path that lets an answer
 arrive after the turn is over. It does not cover speech recognition or synthesis, which
-happen outside this application, nor the companion integration's own internals.
+happen outside this application, nor the companion integration's own internals. What the
+voice prompt carries, and the voice surface's persona/token admission ceilings, are
+[`personality.md`](personality.md)'s.
 
 ## Mental model
 
@@ -245,4 +247,5 @@ not the route's capabilities. Those answer different questions.
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/http-surface.md`](../architecture/http-surface.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/personality.md`](../architecture/personality.md)
 <!-- END SOURCEMAP -->
