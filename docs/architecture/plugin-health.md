@@ -13,7 +13,8 @@ operator-facing surfaces — the in-band notice and the DM — with the marks th
 them from repeating themselves, and the read-only status tool. It does not cover what
 puts a plugin into a broken state: installation, artifact identity and per-call
 authorization are [`plugins.md`](plugins.md); environment resolution and withholding
-are [`plugin-runtime.md`](plugin-runtime.md).
+are [`plugin-runtime.md`](plugin-runtime.md); the setup-episode lifecycle behind a
+setup row is [`plugin-setup.md`](plugin-setup.md)'s.
 
 ## Mental model
 
@@ -117,6 +118,10 @@ records it for every role. And a changed `detail` on an unchanged fingerprint no
 re-shows in-band; the DM never re-announced it either, so this closes an undesigned channel
 rather than removing a guarantee.
 
+A consent approval rewrites the stored report too — without a notification pass of
+its own; the reconcile contract that owes that rewrite is
+[`plugin-events.md`](plugin-events.md)'s.
+
 ## Contracts & invariants
 
 **INV-PLUG-013**: A plugin-health fingerprint is recorded as announced only for a row an operator message actually named, on a send the channel did not report as undelivered, and only while the report that message described is still current; a fingerprint that is not recorded is suppressed on neither operator surface.
@@ -167,6 +172,7 @@ fingerprint.
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)
+- [`architecture/plugin-setup.md`](../architecture/plugin-setup.md)
 - [`architecture/plugin-events.md`](../architecture/plugin-events.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 <!-- END SOURCEMAP -->

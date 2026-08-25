@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-07
+last_reviewed: 2026-08-25
 ---
 
 # Plugins
@@ -11,6 +11,8 @@ last_reviewed: 2026-08-07
 How a plugin becomes something an agent can use: the registry that assigns it, the store
 that holds its bytes, what pins its identity, and what stands between a plugin's tools and
 an operator's approval. It does not cover authoring a plugin, nor the MCP protocol itself.
+How a plugin's problems reach the operator — the health report, the notices and their
+dedup — is [`plugin-health.md`](plugin-health.md).
 
 ## Mental model
 
