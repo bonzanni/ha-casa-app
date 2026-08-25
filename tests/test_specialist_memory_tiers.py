@@ -1032,8 +1032,11 @@ async def test_whitespace_only_task_submits_nothing(
     monkeypatch, response, stop_reason,
 ):
     """#708: a whitespace-only task is BLANK — with no admissible answer the
-    retain is never invoked at all (`retain_delegated` never sees an empty
-    turns list). Kills the truthiness-for-strip mutant (seam round 2)."""
+    retain is never invoked at all: the assertion is on the `retain_delegated`
+    CALL, not only the bank write, because `build_retain_items` also drops
+    blank turns downstream and would mask a removed assembly-site guard
+    (mutation check M7). Kills the truthiness-for-strip mutant (seam round 2).
+    """
     import agent as agent_mod
     import delegated_memory
 
@@ -1047,10 +1050,20 @@ async def test_whitespace_only_task_submits_nothing(
         response=response, result_subtype="success",
         result_stop_reason=stop_reason)
 
+    retain_invocations = []
+    real_retain_delegated = tools.retain_delegated
+
+    async def _spy_retain_delegated(sem, **kwargs):
+        retain_invocations.append(kwargs.get("turns"))
+        return await real_retain_delegated(sem, **kwargs)
+
+    monkeypatch.setattr(tools, "retain_delegated", _spy_retain_delegated)
+
     with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
         await tools._run_delegated_agent(
             cfg, task_text="   ", context_text="")
 
     await _drain_bg()
 
+    assert retain_invocations == []
     assert fake_sem.retain_calls == []
