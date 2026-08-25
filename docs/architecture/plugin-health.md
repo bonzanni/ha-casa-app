@@ -18,8 +18,9 @@ setup row is [`plugin-setup.md`](plugin-setup.md)'s.
 
 ## Mental model
 
-**Plugin failures degrade; they do not stop the container.** The boot path writes health data
-and exits successfully whatever it finds. One broken plugin costs that plugin. The health
+**Plugin failures degrade; they do not stop the container.** The boot path attempts to
+write health data and exits successfully whatever it finds — the exit is the guarantee,
+the write is not. One broken plugin costs that plugin. The health
 report's operator-DM dedup (fingerprints already notified) is a read-merge-write over one
 file from both the event loop and worker threads; a process-wide lock serializes it, and the
 regeneration reads the previous report inside that critical section, so a regeneration
@@ -138,6 +139,16 @@ forever. What holding this costs is a repeated message when a regeneration lands
 and a large incident being named five rows at a time.
 
 ## Failure behavior
+
+**The report cannot be written at boot.** Boot still exits successfully — deliberately,
+because plugin health must never block the service — with the failure logged and nothing
+persisted by that write. A failure *earlier* in boot still produces a report: the handler
+appends its own issue row and writes again; it is the write itself failing that leaves
+nothing behind. The write is an atomic regeneration, so what remains on disk is the
+previous boot's report or no file at all. The operator surfaces do not currently
+distinguish that from health: a leftover report keeps being read as the standing set,
+and an absent or unreadable one loads as no report — which the status tool reports as
+an empty standing set.
 
 A report is normalized as it is read, and normalization filters rather than rejects. External
 corruption of the report file — a non-object document, a row that is not a mapping, an
