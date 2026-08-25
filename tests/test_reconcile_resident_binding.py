@@ -445,20 +445,22 @@ def test_reconcile_resident_binding_stages_and_commits_under_the_materialize_loc
 
     seen: dict[str, list[bool]] = {"stage": [], "commit": [], "discard": []}
     real_stage = InstanceDir.stage_desired
-    real_commit = InstanceDir.commit_desired_to_active
-    real_discard = InstanceDir.discard_desired
+    # #715: the reconcile flow commits and discards through the
+    # snapshot-consuming entry points — the lock pin moves with it.
+    real_commit = InstanceDir.commit_from_snapshot
+    real_discard = InstanceDir.discard_from_snapshot
 
     def spy_stage(self, tuple_):
         seen["stage"].append(MATERIALIZE_LOCK.locked())
         return real_stage(self, tuple_)
 
-    def spy_commit(self):
+    def spy_commit(self, *args, **kwargs):
         seen["commit"].append(MATERIALIZE_LOCK.locked())
-        return real_commit(self)
+        return real_commit(self, *args, **kwargs)
 
-    def spy_discard(self, *, reason):
+    def spy_discard(self, *args, **kwargs):
         seen["discard"].append(MATERIALIZE_LOCK.locked())
-        return real_discard(self, reason=reason)
+        return real_discard(self, *args, **kwargs)
 
     def _clear():
         for v in seen.values():
@@ -474,8 +476,8 @@ def test_reconcile_resident_binding_stages_and_commits_under_the_materialize_loc
 
     import unittest.mock as mock
     with mock.patch.object(InstanceDir, "stage_desired", spy_stage), \
-         mock.patch.object(InstanceDir, "commit_desired_to_active", spy_commit), \
-         mock.patch.object(InstanceDir, "discard_desired", spy_discard):
+         mock.patch.object(InstanceDir, "commit_from_snapshot", spy_commit), \
+         mock.patch.object(InstanceDir, "discard_from_snapshot", spy_discard):
         # (1) Fresh install: reconcile stages + commits the image default.
         _clear()
         reconcile_resident_binding(

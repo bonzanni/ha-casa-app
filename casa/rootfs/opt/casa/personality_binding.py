@@ -1,10 +1,12 @@
 # casa/rootfs/opt/casa/personality_binding.py
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 import re
+import stat
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -324,10 +326,12 @@ def _raw_from_tuple(tuple_: InstanceTuple) -> dict[str, object]:
     }
 
 
-def load_instance_tuple(path: Path) -> InstanceTuple | None:
-    if not path.exists():
-        return None
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+def _parse_instance_tuple(text: str, path: Path) -> InstanceTuple:
+    """The ONE tuple parse, shared by `load_instance_tuple` (pathname callers)
+    and `_observe_tuple` (#715: the observer reads its own bytes and parses
+    through the same pipeline, so observation and action cannot disagree on
+    what a document means)."""
+    raw = yaml.safe_load(text)
     try:
         # #372: before schema validation — the sentinel deliberately fails the
         # digest pattern, and the typed message must win over the opaque
@@ -341,6 +345,100 @@ def load_instance_tuple(path: Path) -> InstanceTuple | None:
         return verify_instance_tuple(raw)
     except ValueError as exc:
         raise ValueError(f"{path}: {exc}") from exc
+
+
+def load_instance_tuple(path: Path) -> InstanceTuple | None:
+    if not path.exists():
+        return None
+    return _parse_instance_tuple(path.read_text(encoding="utf-8"), path)
+
+
+class _TupleObservation:
+    """One entry tuple observed bottom-up (#715, design revision 10).
+
+    `state` is "absent" (ENOENT at open — a missing directory entry, and
+    nothing else), "unreadable" (any other failure, `error` naming the class
+    and `exc` retaining the ORIGINAL for the action path's re-raise), or
+    "read" (`tuple` parsed, `raw` the exact bytes read — the archive source,
+    so a snapshot-consuming write byte-matches what was observed)."""
+
+    __slots__ = ("state", "file", "error", "exc", "tuple", "raw")
+
+    def __init__(self, state: str, file: str, *, error: "str | None" = None,
+                 exc: "BaseException | None" = None,
+                 tuple_: "InstanceTuple | None" = None,
+                 raw: "bytes | None" = None) -> None:
+        self.state, self.file, self.error = state, file, error
+        self.exc, self.tuple, self.raw = exc, tuple_, raw
+
+
+def _error_class(exc: BaseException) -> str:
+    """The failure class the record carries: the exception's own type name,
+    with the errno name appended for OSError so ELOOP/ENXIO/EIO are visible
+    without parsing platform message text."""
+    name = type(exc).__name__
+    if isinstance(exc, OSError) and exc.errno is not None:
+        name = f"{name}[{errno.errorcode.get(exc.errno, exc.errno)}]"
+    return name
+
+
+def _observe_tuple(path: Path) -> _TupleObservation:
+    """Observe one entry tuple, owning the WHOLE I/O stack (#715, ruled).
+
+    open(O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC): ENOENT alone means absent;
+    a final-component symlink (live, dangling, or looped) fails ELOOP; a Unix
+    socket fails ENXIO — every open failure other than ENOENT is unreadable
+    with its original OSError retained. fstat on the DESCRIPTOR refuses
+    non-regular files (a directory or FIFO opens; O_NONBLOCK keeps the FIFO
+    open from blocking, and the refusal happens before any read) with the
+    synthetic `"tuple file is not a regular file (...)"`. read(fd) then the
+    shared parse; any failure — RecursionError from pathological nesting
+    included — is unreadable with its class, totality BY CONSTRUCTION
+    (`except Exception`; the interpreter-exit family propagates; three design
+    rounds killed exception-list-keeping). close is a suppressing finally,
+    OSError only — it never changes classification or precedence."""
+    fd = None
+    try:
+        try:
+            fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK
+                         | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return _TupleObservation("absent", str(path))
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            kind = _S_IFMT_NAMES.get(stat.S_IFMT(st.st_mode),
+                                     hex(stat.S_IFMT(st.st_mode)))
+            synthetic = ValueError(
+                f"tuple file is not a regular file ({kind}): {path}")
+            return _TupleObservation(
+                "unreadable", str(path),
+                error=f"{kind}: {synthetic}", exc=synthetic)
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        parsed = _parse_instance_tuple(raw.decode("utf-8"), path)
+        return _TupleObservation("read", str(path), tuple_=parsed, raw=raw)
+    except Exception as exc:  # noqa: BLE001 — totality by construction (#715)
+        return _TupleObservation("unreadable", str(path),
+                                 error=_error_class(exc), exc=exc)
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                # A close failure never changes classification or precedence
+                # (#715 design round 8); a BaseException from close propagates.
+                pass
+
+
+_S_IFMT_NAMES = {
+    stat.S_IFDIR: "S_IFDIR", stat.S_IFIFO: "S_IFIFO", stat.S_IFCHR: "S_IFCHR",
+    stat.S_IFBLK: "S_IFBLK", stat.S_IFSOCK: "S_IFSOCK", stat.S_IFLNK: "S_IFLNK",
+}
 
 
 def atomic_write_instance_tuple(path: Path, tuple_: InstanceTuple) -> None:
@@ -395,8 +493,38 @@ class InstanceDir:
         if candidate is None:
             raise ValueError(f"{self._dir}: no desired tuple staged to commit")
         active_path = self._path("active.yaml")
-        prior_path = self._path("active.prior.yaml")
         current_active = load_instance_tuple(active_path)
+        return self._commit_core(
+            candidate, current_active,
+            copy_rollback=lambda: self._copy_to_temp(active_path)
+            if active_path.exists() else None)
+
+    def commit_from_snapshot(
+            self, candidate: InstanceTuple,
+            observed_active: "InstanceTuple | None",
+            observed_active_raw: "bytes | None") -> InstanceTuple:
+        """#715: the reconcile flow's snapshot-consuming commit. Identical to
+        `commit_desired_to_active` arm for arm — the SOLE change is that the
+        candidate and current active come from the caller's observation
+        instead of re-reading the entry pathnames, and the rollback copy is
+        written from the OBSERVED raw bytes so the archived generation
+        byte-matches what reconciliation actually judged."""
+        def copy_rollback() -> "Path | None":
+            if observed_active_raw is None:
+                return None
+            temp = self._path("active.yaml.rollback-tmp")
+            temp.write_bytes(observed_active_raw)
+            os.chmod(temp, 0o600)
+            return temp
+        return self._commit_core(candidate, observed_active,
+                                 copy_rollback=copy_rollback)
+
+    def _commit_core(self, candidate: InstanceTuple,
+                     current_active: "InstanceTuple | None",
+                     *, copy_rollback) -> InstanceTuple:
+        desired_path = self._path("desired.yaml")
+        active_path = self._path("active.yaml")
+        prior_path = self._path("active.prior.yaml")
         # Task N1c fix: compare the FULL tuple (root included), not just
         # binding_digest. binding_digest deliberately excludes `root`
         # (compute_binding_digest's eight normative fields never include it
@@ -463,9 +591,7 @@ class InstanceDir:
         # nothing gained. Now a failure at any point leaves prior intact,
         # and a crash after the active write is completed by the
         # crash-retry branch above (the .rollback-tmp copy IS the journal).
-        pending_prior = (
-            self._copy_to_temp(active_path) if active_path.exists() else None
-        )
+        pending_prior = copy_rollback()
         try:
             atomic_write_instance_tuple(active_path, candidate)
         except BaseException:
@@ -521,6 +647,20 @@ class InstanceDir:
         payload["_error_reason"] = reason
         error_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
         desired_path.unlink()
+
+    def discard_from_snapshot(self, staged_raw: bytes, *, reason: str) -> None:
+        """#715: the reconcile flow's snapshot-consuming discard. Today's
+        semantics — serialize(mapping + `_error_reason`), write the error
+        artifact, then unlink — derived SOLELY from the SNAPSHOT-KNOWN
+        generation (the entry observation, or the candidate this pass
+        staged), never from a re-read of the pathname. An externally removed
+        desired file no longer silences the archive: the observation is what
+        is being archived."""
+        error_path = self._path("desired.error.yaml")
+        payload = yaml.safe_load(staged_raw.decode("utf-8")) or {}
+        payload["_error_reason"] = reason
+        error_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        self._path("desired.yaml").unlink(missing_ok=True)
 
     # --- Owned-plugins sidecar triple (Task 10, spec §3.4) ------------------
     # A specialist's owned-plugin set (and its component source receipt) is
@@ -754,6 +894,43 @@ def check_persona_requirements(role: Mapping[str, object], persona: PersonaPack)
     )
 
 
+def _tuple_facts(obs: "_TupleObservation", *, arm: str,
+                 override_found: "str | None") -> object:
+    """Render one observation for the refusal record (#715).
+
+    Pin/restore facts attach by the selection's role in the flow: an ACTIVE
+    selection keyed to the reload's own dispatch (`_activate_resident_binding`
+    splits image-default vs everything else — a retained component-default
+    reloads through the override roots, so its facts are operationally real);
+    a STAGED selection only where reconciliation itself selects it as an
+    override (every other staged mode is replaced by the slot default, so its
+    facts were never in play). `found_checksum` is never invented: it is set
+    only on the arm whose pack the flow actually resolved."""
+    if obs.state == "absent":
+        return "absent"
+    if obs.state == "unreadable":
+        return {"state": "unreadable", "file": obs.file, "error": obs.error}
+    binding = obs.tuple.binding
+    if arm == "active":
+        facts = binding.mode != "image-default"
+    else:
+        facts = binding.mode == "override"
+    ref = f"{binding.persona_id}@{binding.persona_version}"
+    return {
+        "state": "read", "file": obs.file, "mode": binding.mode,
+        "persona_ref": ref,
+        "pinned_checksum": binding.persona_checksum if facts else None,
+        "found_checksum": override_found if facts else None,
+        "restore_path": (
+            f"personas/{binding.persona_id}/{binding.persona_version}/"
+            if facts else None),
+    }
+
+
+_RECOVERY = {"requires": "app stopped",
+             "procedure": "docs/architecture/personality.md"}
+
+
 def reconcile_resident_binding(
     *, role: RoleSlot, image_default_persona_loader: Callable[[str], PersonaPack],
     override_persona_loader: Callable[[str], PersonaPack], instance_dir: InstanceDir,
@@ -825,8 +1002,35 @@ def reconcile_resident_binding(
     standalone process, and ``tools.validate_config_repo`` via ``asyncio.to_thread``.
     """
     with MATERIALIZE_LOCK:
-        active = instance_dir.active()
-        staged = instance_dir.desired()
+        # #715 (ruled design, ten rounds): BOTH entry tuples are observed
+        # independently and unconditionally through the bottom-up primitive,
+        # and the parsed snapshots are the SOLE input to selection, the
+        # refusal record, the writes, and the returned value — the entry
+        # pathnames are never re-read anywhere in this flow.
+        obs_active = _observe_tuple(instance_dir._path("active.yaml"))
+        obs_staged = _observe_tuple(instance_dir._path("desired.yaml"))
+        staged_this_pass: "tuple[InstanceTuple, bytes] | None" = None
+        if obs_active.state == "unreadable" or obs_staged.state == "unreadable":
+            # Record-then-re-raise: outcomes are byte-for-byte today's (the
+            # original exception propagates, active-first), the delta is that
+            # the refusal is now diagnosed. Gated on `commit` exactly as the
+            # ordinary refusal record is — the validation replay stays silent.
+            first = obs_active if obs_active.state == "unreadable" else obs_staged
+            if commit:
+                logger.error("persona_binding_reconcile_failed %s", json.dumps({
+                    "resident": role.role_id,
+                    "persona_ref": None, "pinned_checksum": None,
+                    "found_checksum": None,
+                    "active_tuple": _tuple_facts(obs_active, arm="active",
+                                                 override_found=None),
+                    "staged_tuple": _tuple_facts(obs_staged, arm="staged",
+                                                 override_found=None),
+                    "recovery": _RECOVERY,
+                    "reason": str(first.exc),
+                }, sort_keys=True))
+            raise first.exc
+        active = obs_active.tuple
+        staged = obs_staged.tuple
 
         source_binding = staged.binding if staged is not None else (
             active.binding if active is not None and active.binding.mode == "override" else None
@@ -889,7 +1093,9 @@ def reconcile_resident_binding(
 
             if active is not None and active.binding.binding_digest == candidate_binding.binding_digest:
                 if staged is not None and commit:
-                    instance_dir.discard_desired(reason="no-op: candidate matches the already-active binding")
+                    instance_dir.discard_from_snapshot(
+                        obs_staged.raw,
+                        reason="no-op: candidate matches the already-active binding")
                 return active
 
             candidate_tuple = make_instance_tuple(
@@ -910,7 +1116,13 @@ def reconcile_resident_binding(
                 # activate without writing any InstanceDir state.
                 return candidate_tuple
             instance_dir.stage_desired(candidate_tuple)
-            return instance_dir.commit_desired_to_active()
+            # #715: the staged-truth rule — the record reflects what this
+            # pass itself staged, and the commit consumes the snapshot.
+            staged_this_pass = (candidate_tuple, yaml.safe_dump(
+                _raw_from_tuple(candidate_tuple), sort_keys=False,
+            ).encode("utf-8"))
+            return instance_dir.commit_from_snapshot(
+                candidate_tuple, active, obs_active.raw)
         except (ValueError, OSError) as exc:
             # #670: this handler used to be the end of the diagnosis. It passed
             # the reason to discard_desired() and nowhere else, and
@@ -950,19 +1162,57 @@ def reconcile_resident_binding(
             # operator config commit. A report that manufactures ERROR records
             # into the live process log is noise, not diagnosis.
             if commit:
+                # #715: the flat top-level fields are the shipped narrowed
+                # contract (#670) and stay; the per-tuple objects, the
+                # staged-truth rule and the recovery facts are the fuller
+                # contract (INV-PERS-010). found_checksum is set only on the
+                # SOURCE selection's arm — the one whose pack the flow
+                # actually resolved.
+                source_is_staged = staged is not None or staged_this_pass is not None
+                if staged_this_pass is not None:
+                    candidate_binding_ = staged_this_pass[0].binding
+                    staged_rendered: object = {
+                        "state": "read",
+                        "file": str(instance_dir._path("desired.yaml")),
+                        "mode": candidate_binding_.mode,
+                        "persona_ref": (f"{candidate_binding_.persona_id}@"
+                                        f"{candidate_binding_.persona_version}"),
+                        "pinned_checksum": (
+                            candidate_binding_.persona_checksum
+                            if candidate_binding_.mode == "override" else None),
+                        "found_checksum": (
+                            found_checksum
+                            if candidate_binding_.mode == "override" else None),
+                        "restore_path": (
+                            f"personas/{candidate_binding_.persona_id}/"
+                            f"{candidate_binding_.persona_version}/"
+                            if candidate_binding_.mode == "override" else None),
+                    }
+                else:
+                    staged_rendered = _tuple_facts(
+                        obs_staged, arm="staged",
+                        override_found=found_checksum if source_is_staged else None)
                 logger.error("persona_binding_reconcile_failed %s", json.dumps({
                     "resident": role.role_id,
                     "persona_ref": persona_ref,
                     "pinned_checksum": pinned_checksum,
                     "found_checksum": found_checksum,
-                    "active_tuple": "present" if active is not None else "absent",
-                    "staged_tuple": "present" if staged is not None else "absent",
+                    "active_tuple": _tuple_facts(
+                        obs_active, arm="active",
+                        override_found=None if source_is_staged else found_checksum),
+                    "staged_tuple": staged_rendered,
+                    "recovery": _RECOVERY,
                     "reason": str(exc),
                 }, sort_keys=True))
-            # discard_desired() is a no-op when nothing was ever staged (e.g. the
-            # persona loader itself raised before stage_desired ran).
+            # The discard consumes the SNAPSHOT-KNOWN generation — the entry
+            # observation, or the candidate this pass staged (#715 round 9);
+            # nothing was ever staged -> nothing to discard, exactly as the
+            # old early-return behaved.
             if commit:
-                instance_dir.discard_desired(reason=str(exc))
+                staged_known = (staged_this_pass[1] if staged_this_pass is not None
+                                else obs_staged.raw)
+                if staged_known is not None:
+                    instance_dir.discard_from_snapshot(staged_known, reason=str(exc))
             if active is None:
                 raise ValueError(
                     f"resident {role.role_id}: no prior active binding exists and the "
