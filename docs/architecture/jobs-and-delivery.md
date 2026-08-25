@@ -102,12 +102,14 @@ rule for this file: a capability that must survive a restart has to be *in the r
 
 **INV-JOB-009**: A live job that a graceful stop itself settles is not settled at all — the row is left as it stands, so the boot reconciliation treats it exactly as it treats a job lost to a crash. A settling the stop did not cause, and every success or non-cancellation verdict, still commits mid-stop.
 
-Enforced at the three registry functions that can take a live row out of recovery's
-reach, never at the call sites: the two compatibility cancellation transitions, and the
-continuation compensation that settles by *deleting* the child row. That list is closed by
-construction rather than by inspection — of the registry's durable publish points, those
-three are the only ones that move a live row out of the set boot recovery converts. The
-delivery-expiry sweeps touch delivery state alone and never execution state.
+Enforced inside the registry, never at the call sites: the shutdown-deferral guard sits
+at three registry transitions — the two compatibility cancellation transitions, and the
+continuation compensation that settles by *deleting* the child row. What is closed is a
+property, not a roster of publish points: a cancellation-reasoned settlement is deferred
+to boot, while a success or non-cancellation verdict still commits mid-stop through
+whichever registry transition carries it — the next paragraph narrows *which*
+cancellations defer. The delivery-expiry sweeps touch delivery state alone and never
+execution state.
 
 This exists because the shape a shutdown used to write was not merely lossy but false —
 the same "cancelled" envelope a *creator* cancellation writes, which recovery deliberately
