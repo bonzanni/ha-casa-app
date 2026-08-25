@@ -409,10 +409,10 @@ def _observe_tuple(path: Path) -> _TupleObservation:
             kind = _S_IFMT_NAMES.get(stat.S_IFMT(st.st_mode),
                                      hex(stat.S_IFMT(st.st_mode)))
             synthetic = ValueError(
-                f"tuple file is not a regular file ({kind}): {path}")
+                f"tuple file is not a regular file ({kind})")
             return _TupleObservation(
                 "unreadable", str(path),
-                error=f"{kind}: {synthetic}", exc=synthetic)
+                error=f"ValueError: {synthetic}", exc=synthetic)
         chunks = []
         while True:
             chunk = os.read(fd, 1 << 16)

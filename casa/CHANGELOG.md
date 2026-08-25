@@ -17,10 +17,12 @@
 - A persona tuple file that cannot be read at all - empty, malformed,
   pathologically nested, a symlink, a directory, or any other non-regular
   file - now draws the same single diagnostic record before the failure
-  propagates exactly as it did before. One deliberate behavior change rides
-  this: a FIFO (or similar special file) sitting where a tuple belongs is
-  refused in bounded time instead of blocking startup forever on a read that
-  can never return.
+  propagates exactly as it did before — for regular files. The special-file
+  classes are deliberate behavior changes: a symlink sitting where a tuple
+  belongs is refused rather than followed, a directory is refused with a
+  typed message rather than its native error, and a FIFO is refused in
+  bounded time instead of blocking startup forever on a read that can never
+  return.
 - What the reconciliation writes back on a refusal - the rollback copy and
   the discarded-candidate archive - is now derived from the exact bytes the
   reconciliation observed and judged, never from re-reading files that may

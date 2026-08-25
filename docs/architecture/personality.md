@@ -293,10 +293,13 @@ recovery facts: the procedure requires the app stopped, and its steps are in thi
 document. The record asserts nothing about what is live, what was written, or whether
 startup is prevented — the same reconciliation serves a boot that is fatal, a reload
 that leaves the live resident serving, and a validation replay that writes and logs
-nothing. A tuple file that cannot even be read — empty, malformed, pathological,
-a symlink, a directory, any non-regular file — now draws the same single record before
-the original failure propagates exactly as it always did; a FIFO in a tuple's place is
+nothing. A tuple file that cannot be read — empty, malformed, pathological — draws
+the same single record before the original failure propagates exactly as it always
+did. The special-file classes are DELIBERATE outcome changes, not parity: a symlink in
+a tuple's place — live, dangling, or looped — is refused rather than followed; a
+directory is refused with the typed message rather than its native error; a FIFO is
 refused in bounded time rather than blocking boot on a read that can never return.
+Exact original-exception parity is a regular-file property.
 
 **It names no tool.** Every persona tool resolves a resident's role through
 `casa/rootfs/opt/casa/tools.py::_resolve_resident_role`, which answers `runtime_unavailable` without a live

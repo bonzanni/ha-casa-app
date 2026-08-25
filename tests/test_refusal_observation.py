@@ -594,20 +594,24 @@ def test_injected_close_error_never_changes_classification(
     assert record["reason"].startswith(f"persona {_REF} on disk has checksum")
 
 
-@pytest.mark.parametrize("site", ["open", "fstat", "read", "close"])
+@pytest.mark.parametrize("exit_exc", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("site", ["open", "fstat", "read", "parse", "close"])
 def test_interpreter_exit_propagates_from_every_site(
-        tmp_path, monkeypatch, site):
-    """14f: KeyboardInterrupt injected at each observer site propagates —
-    zero refusal records, disk untouched."""
+        tmp_path, monkeypatch, site, exit_exc):
+    """14f: KeyboardInterrupt AND SystemExit injected at each observer site —
+    open, fstat, read, parse and close — propagate: zero refusal records,
+    disk untouched (the except-BaseException/except-SystemExit mutants die)."""
     (config_dir, personas_root, bindings_root, policies, role,
      pinned, instance_dir, approved) = _setup(tmp_path, monkeypatch)
     before = _inventory(instance_dir._dir)
     import personality_binding as pb
 
     def boom(*a, **kw):
-        raise KeyboardInterrupt
-    target = {"open": "open", "fstat": "fstat", "read": "read", "close": "close"}[site]
-    monkeypatch.setattr(pb.os, target, boom)
+        raise exit_exc
+    if site == "parse":
+        monkeypatch.setattr(pb, "_parse_instance_tuple", boom)
+    else:
+        monkeypatch.setattr(pb.os, site, boom)
 
     from policies import load_policies  # noqa: F401  (already loaded)
     import logging as _logging
@@ -616,7 +620,7 @@ def test_interpreter_exit_propagates_from_every_site(
     handler.emit = lambda r: records.append(r)
     _logging.getLogger("personality_binding").addHandler(handler)
     try:
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(exit_exc):
             from agent_loader import load_agent_from_dir
             load_agent_from_dir(f"{_AGENTS}/concierge", policies=policies,
                                 bindings_dir=str(bindings_root))
