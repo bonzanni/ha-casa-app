@@ -37,7 +37,7 @@ import asyncio
 import json
 
 import pytest
-from broker_helpers import deliver
+from broker_helpers import deliver, wait_until
 from aiohttp import web
 from unittest.mock import AsyncMock, MagicMock
 
@@ -298,8 +298,17 @@ async def test_body_identical_across_post_persist_and_settle(
         "question": "Which account?", "options": options, "timeout_s": 60,
     }
     task = asyncio.ensure_future(ask(_FakeRequest(payload)))
-    await asyncio.sleep(0.02)
-    assert deliver(fresh, 
+    # #731: wait on the condition delivery actually needs — the broker
+    # registration of ("engagement_ask", eid, "a1") — not a fixed sleep (a
+    # loaded worker delivered before registration and got 'stale') and not
+    # the keyboard-post append (the post races the registration). The handler
+    # reaches ensure_posted with no await after BROKER.register, so once the
+    # key is live the setup task exists and set_finish_hook fires
+    # retroactively on an already-resolved future — the post and settle
+    # asserts below hold even for this earliest possible delivery.
+    await wait_until(
+        lambda: "a1" in fresh.pending(namespace="engagement_ask", scope=eid))
+    assert deliver(fresh,
         namespace="engagement_ask", scope=eid, request_id="a1",
         option_index=0, actor_id=555) == "delivered"
     resp = await asyncio.wait_for(task, timeout=1.0)
