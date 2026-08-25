@@ -49,7 +49,7 @@
 
 - doc: architecture/personality.md
   summary: What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.
-  when_changing: personas, bindings, prompt composition, or the binding digest
+  when_changing: personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest
   covers:
     - casa/rootfs/opt/casa/personality_binding.py
     - casa/rootfs/opt/casa/personality_types.py
