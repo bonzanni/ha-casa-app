@@ -3348,7 +3348,33 @@ class TestCompletionGateDriverSurface:
         d._inbound = {}
         d._completion_refusals = {}
         d._inbound_reservations = {}
+        d._inbound_command_reservations = {}
         return d
+
+    def test_message_reservation_projection_bookkeeping(self):
+        """#664: a command-born reservation counts toward the veto total but
+        never toward the disclosure projection; each kind's release
+        decrements its own counter, clamped, and a mismatch under-discloses
+        rather than fabricating a lost message."""
+        d = self._driver()
+        d.reserve_inbound("e1")                     # ordinary message
+        d.reserve_inbound("e1", command=True)       # /cancel in processing
+        assert d.inbound_reservations("e1") == 2    # veto sees both
+        assert d.inbound_message_reservations("e1") == 1
+        d.release_inbound_reservation("e1", command=True)
+        assert d.inbound_reservations("e1") == 1
+        assert d.inbound_message_reservations("e1") == 1
+        d.release_inbound_reservation("e1")
+        assert d.inbound_reservations("e1") == 0
+        assert d.inbound_message_reservations("e1") == 0
+        assert "e1" not in d._inbound_reservations          # no leak
+        assert "e1" not in d._inbound_command_reservations  # no leak
+        # over-release of the command kind clamps; the projection stays
+        # non-negative even if the command counter outlives the total
+        d.reserve_inbound("e2", command=True)
+        d.release_inbound_reservation("e2")   # WRONG kind released (bug)
+        assert d.inbound_reservations("e2") == 0
+        assert d.inbound_message_reservations("e2") == 0  # clamped, not -1
 
     def test_reservation_counter_lifecycle(self):
         d = self._driver()

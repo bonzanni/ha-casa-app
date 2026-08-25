@@ -1144,6 +1144,13 @@ class ClaudeCodeDriver(DriverProtocol):
         # G4 (v0.96.0): completion-gate state
         self._completion_refusals: dict[str, int] = {}
         self._inbound_reservations: dict[str, int] = {}
+        # #664: the sub-population of reservations held by a recognized
+        # command (/cancel, /complete, /silent) currently being processed by
+        # the Telegram handler. Classified at birth by the only reservation
+        # writer; a command is consumed by the handler and never delivered to
+        # the model, so it is excluded from the lost-inbound DISCLOSURE while
+        # still counting toward the completion VETO (total above).
+        self._inbound_command_reservations: dict[str, int] = {}
         # v0.83.0 (§A3, Sol r6-4 + r7-2): in-memory ANSWERED overlay. When
         # ``mark_question_answered``'s STRICT persist raises (the durable envelope
         # is already spooled, so the agent WILL get the answer — the question must
@@ -1829,6 +1836,7 @@ class ClaudeCodeDriver(DriverProtocol):
         self._inbound.pop(engagement.id, None)
         self._completion_refusals.pop(engagement.id, None)
         self._inbound_reservations.pop(engagement.id, None)
+        self._inbound_command_reservations.pop(engagement.id, None)
         self._reply_texts.pop(engagement.id, None)
         self._epoch_pending.pop(engagement.id, None)
         self._turn_running.pop(engagement.id, None)
@@ -3336,23 +3344,49 @@ class ClaudeCodeDriver(DriverProtocol):
             return 0
         return spool.in_flight_blocking_depth(_IN_FLIGHT_VETO_WINDOW_S)
 
-    def reserve_inbound(self, engagement_id: str) -> None:
+    def reserve_inbound(self, engagement_id: str, *,
+                        command: bool = False) -> None:
         """G4 D2: SYNCHRONOUS ingress reservation — taken by the trusted
         Telegram handler under the topic lock BEFORE the background
         delivery task exists, so an accepted-but-not-yet-spooled message
-        counts as unread at completion time."""
+        counts as unread at completion time.
+
+        #664: ``command=True`` marks a reservation held for a recognized
+        command the handler consumes itself. It still counts toward the
+        completion veto (the total) but never toward the lost-inbound
+        disclosure (:meth:`inbound_message_reservations`) — under EVERY
+        terminal winner, not only the command's own finalize."""
         self._inbound_reservations[engagement_id] = (
             self._inbound_reservations.get(engagement_id, 0) + 1)
+        if command:
+            self._inbound_command_reservations[engagement_id] = (
+                self._inbound_command_reservations.get(engagement_id, 0) + 1)
 
-    def release_inbound_reservation(self, engagement_id: str) -> None:
+    def release_inbound_reservation(self, engagement_id: str, *,
+                                    command: bool = False) -> None:
         n = self._inbound_reservations.get(engagement_id, 0) - 1
         if n <= 0:
             self._inbound_reservations.pop(engagement_id, None)
         else:
             self._inbound_reservations[engagement_id] = n
+        if command:
+            c = self._inbound_command_reservations.get(engagement_id, 0) - 1
+            if c <= 0:
+                self._inbound_command_reservations.pop(engagement_id, None)
+            else:
+                self._inbound_command_reservations[engagement_id] = c
 
     def inbound_reservations(self, engagement_id: str) -> int:
         return self._inbound_reservations.get(engagement_id, 0)
+
+    def inbound_message_reservations(self, engagement_id: str) -> int:
+        """#664: the DISCLOSURE projection — reservations minus the ones a
+        recognized command holds for itself. Clamped: a bookkeeping mismatch
+        must under-disclose, never fabricate a lost message."""
+        return max(
+            0,
+            self._inbound_reservations.get(engagement_id, 0)
+            - self._inbound_command_reservations.get(engagement_id, 0))
 
     def record_completion_refusal(self, engagement_id: str) -> int:
         """G4 D3: bump + return the count of consecutive unread_inbound

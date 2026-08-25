@@ -1729,8 +1729,13 @@ class TelegramChannel(Channel):
                 inbound_reserved = False
                 if self._driver_reserve_inbound is not None:
                     try:
+                        # #664: classified at birth — a recognized command's
+                        # reservation still vetoes a racing completion but is
+                        # excluded from every lost-inbound disclosure (the
+                        # command is consumed here, never delivered).
                         inbound_reserved = bool(
-                            self._driver_reserve_inbound(rec))
+                            self._driver_reserve_inbound(
+                                rec, command=recognized is not None))
                     except Exception:  # noqa: BLE001
                         logger.debug("reserve_inbound failed", exc_info=True)
                 answer_token = None
@@ -1984,7 +1989,10 @@ class TelegramChannel(Channel):
                         if inbound_reserved and (
                                 self._driver_release_inbound is not None):
                             try:
-                                self._driver_release_inbound(rec)
+                                # #664: release with the kind it was born
+                                # with, so the command sub-counter pairs.
+                                self._driver_release_inbound(
+                                    rec, command=recognized is not None)
                             except Exception:  # noqa: BLE001
                                 logger.debug(
                                     "release_inbound failed", exc_info=True)

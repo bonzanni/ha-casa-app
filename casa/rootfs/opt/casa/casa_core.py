@@ -4503,16 +4503,17 @@ async def main() -> None:
         # delivery task exists) and released after the spool enqueue resolves.
         # Terminalization refuses while reservations > 0, closing the
         # accepted-but-not-yet-spooled completion race.
-        def _driver_reserve_inbound(rec):
+        def _driver_reserve_inbound(rec, *, command=False):
             if rec.driver == "claude_code":
-                claude_code_driver.reserve_inbound(rec.id)
+                claude_code_driver.reserve_inbound(rec.id, command=command)
                 return True
             return False
         telegram_channel._driver_reserve_inbound = _driver_reserve_inbound
 
-        def _driver_release_inbound(rec):
+        def _driver_release_inbound(rec, *, command=False):
             if rec.driver == "claude_code":
-                claude_code_driver.release_inbound_reservation(rec.id)
+                claude_code_driver.release_inbound_reservation(
+                    rec.id, command=command)
         telegram_channel._driver_release_inbound = _driver_release_inbound
 
         async def _driver_rollback_answer_reservation(
