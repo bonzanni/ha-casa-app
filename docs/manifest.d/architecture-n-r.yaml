@@ -47,6 +47,28 @@
     INV-STATE-004: [tests/test_job_registry.py::test_failed_snapshot_write_does_not_publish_memory_mutation]
     INV-STATE-005: [tests/test_private_state.py::test_inventory_pins_every_path_the_advisory_named, tests/test_private_state.py::test_enforce_repairs_a_preexisting_world_readable_file, tests/test_private_state.py::test_enforce_repairs_directories_without_recursing, tests/test_private_state.py::test_enforce_covers_the_quarantine_alias_shape, tests/test_private_state.py::test_traversal_roots_are_never_declared, tests/test_private_state.py::test_config_sync_report_stays_group_and_world_readable, tests/test_private_state.py::test_enforce_refuses_to_chmod_through_a_symlink, tests/test_private_state_refusal.py::test_uid_allocation_refuses_while_a_credential_is_exposed, tests/test_private_state_refusal.py::test_preflight_refuses_a_fresh_launch_while_a_credential_is_exposed, tests/test_private_state_refusal.py::test_absent_credential_paths_refuse_nothing, tests/test_private_state_refusal.py::test_a_private_only_failure_refuses_nothing, tests/test_private_state_write_sites.py::test_atomic_io_default_is_still_world_readable, tests/test_private_state_dropped_uid.py::test_no_declared_private_file_is_readable, tests/test_private_state_dropped_uid.py::test_the_control_set_is_still_readable, tests/test_boot_replay.py::test_exposed_credential_refuses_all_resumes, tests/test_boot_replay.py::test_exposed_credential_refuses_a_complete_pair_fast_path, tests/test_boot_replay.py::test_healthy_modes_do_not_refuse_resumes]
 
+- doc: architecture/persona-lifecycle.md
+  summary: How a persona arrives, is approved, and leaves — consent-bound install, the approved roots, removal by reference scan, and the operator-run sweep.
+  when_changing: installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep
+  covers:
+    - casa/rootfs/opt/casa/persona_install.py::persona_references
+    - casa/rootfs/opt/casa/persona_install.py::require_persona_present
+    - casa/rootfs/opt/casa/persona_install.py::remove_installed_persona
+    - casa/rootfs/opt/casa/persona_install.py::prune_installed_personas
+    - casa/rootfs/opt/casa/persona_install.py::list_installed_personas
+    - casa/rootfs/opt/casa/persona_install.py::apply_persona_override
+  tests:
+    - tests/test_persona_install.py
+    - tests/test_persona_removal.py
+    - tests/test_persona_apply_resident_staging.py
+    - tests/test_persona_pack.py
+  related: [architecture/personality.md, architecture/specialist-lifecycle.md]
+  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007]
+  invariant_tests:
+    INV-PERS-005: [tests/test_persona_pack.py::test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to]
+    INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
+    INV-PERS-007: [tests/test_persona_apply_resident_staging.py::test_resident_apply_stages_and_does_not_promote, tests/test_persona_apply_resident_staging.py::test_resident_apply_writes_nothing_when_the_candidate_cannot_compile]
+
 - doc: architecture/personality.md
   summary: What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.
   when_changing: personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest
@@ -57,12 +79,6 @@
     - casa/rootfs/opt/casa/role_slot.py
     - casa/rootfs/opt/casa/prompt_compiler.py::compile_projection_set
     - casa/rootfs/opt/casa/markdown_sections.py::root_sections
-    - casa/rootfs/opt/casa/persona_install.py::persona_references
-    - casa/rootfs/opt/casa/persona_install.py::require_persona_present
-    - casa/rootfs/opt/casa/persona_install.py::remove_installed_persona
-    - casa/rootfs/opt/casa/persona_install.py::prune_installed_personas
-    - casa/rootfs/opt/casa/persona_install.py::list_installed_personas
-    - casa/rootfs/opt/casa/persona_install.py::apply_persona_override
     - casa/rootfs/opt/casa/agent_loader.py::make_candidate_compile_validator
     - casa/rootfs/opt/casa/agent_loader.py::_activate_resident_binding
     - casa/rootfs/opt/casa/prompt_compiler.py::compile_prompt_bundle
@@ -72,23 +88,17 @@
     - tests/test_resident_refusal_diagnosis.py
     - tests/test_resident_refusal_record_boundaries.py
     - tests/test_refusal_observation.py
-    - tests/test_persona_install.py
-    - tests/test_persona_removal.py
     - tests/test_personality_admin_handlers.py
-    - tests/test_persona_apply_resident_staging.py
     - tests/test_response_shape_write_guard.py
     - tests/test_prompt_compiler.py
     - tests/test_persona_pack.py
-  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md]
-  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-008, INV-PERS-009, INV-PERS-010]
+  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/persona-lifecycle.md]
+  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-008, INV-PERS-009, INV-PERS-010]
   invariant_tests:
     INV-PERS-001: [tests/test_tools_specialist_options.py::test_build_specialist_options_prefers_compiled_bundle_when_present]
     INV-PERS-002: [tests/test_persona_pack.py::test_pin_inv_pers_002_capability_claims_are_not_semantically_validated]
     INV-PERS-003: [tests/test_phase_a_compiler_integration.py::test_missing_override_persona_blob_at_reload_raises_load_error]
     INV-PERS-004: [tests/test_prompt_compiler.py::test_compiler_order_and_restricted_projection]
-    INV-PERS-005: [tests/test_persona_pack.py::test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to]
-    INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
-    INV-PERS-007: [tests/test_persona_apply_resident_staging.py::test_resident_apply_stages_and_does_not_promote, tests/test_persona_apply_resident_staging.py::test_resident_apply_writes_nothing_when_the_candidate_cannot_compile]
     INV-PERS-008: [tests/test_response_shape_write_guard.py::TestResponseShapeWriteGuard::test_denies_every_write_primitive_on_every_resident, tests/test_response_shape_write_guard.py::TestTheFileIsActuallyDead::test_every_resident_role_requires_a_persona]
     INV-PERS-010: [tests/test_refusal_observation.py::test_divergent_damaged_overrides_one_record_carries_both_restore_facts, tests/test_refusal_observation.py::test_active_unreadable_with_staged_readable, tests/test_refusal_observation.py::test_both_unreadable_one_record_active_error_wins, tests/test_refusal_observation.py::test_dangling_symlink_tuple_is_unreadable_never_absent, tests/test_refusal_observation.py::test_staged_image_default_beside_failing_default_shows_null_facts, tests/test_refusal_observation.py::test_commit_failure_after_fresh_stage_reports_the_candidate, tests/test_refusal_observation.py::test_recovery_names_no_runtime_tool_and_only_universal_facts, tests/test_refusal_observation.py::test_fact_rule_component_default_active_gets_facts_staged_does_not, tests/test_refusal_observation.py::test_fresh_install_default_failure_has_no_restore_facts]
     INV-PERS-009: [tests/test_prompt_compiler.py::test_a_nested_subsection_reaches_the_text_projection_exactly_once, tests/test_prompt_compiler.py::test_a_second_root_and_its_subsection_each_reach_text_once, tests/test_prompt_compiler.py::test_a_section_authored_above_core_is_emitted_once_and_only_once, tests/test_persona_pack.py::test_root_sections_returns_the_prefix_minimum_rows_in_document_order]
