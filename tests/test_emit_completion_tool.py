@@ -509,9 +509,11 @@ class _FakeInboundDriver:
     up" cannot exercise the defect.
     """
     def __init__(self, depth=0, reservations=0, texts=(),
-                 in_flight=(), in_flight_blocking=None):
+                 in_flight=(), in_flight_blocking=None,
+                 command_reservations=0):
         self._depth = depth
         self._resv = reservations
+        self._cmd_resv = command_reservations
         self._texts = list(texts)
         self._in_flight = list(in_flight)
         self._in_flight_blocking = (
@@ -523,6 +525,10 @@ class _FakeInboundDriver:
 
     def inbound_unread_depth(self, eng_id): return self._depth
     def inbound_reservations(self, eng_id): return self._resv
+    def inbound_message_reservations(self, eng_id):
+        # #664: the disclosure projection — reservations minus the ones a
+        # recognized command holds for itself (mirrors the real driver).
+        return max(0, self._resv - self._cmd_resv)
     def inbound_unread_texts(self, eng_id): return list(self._texts)
     def inbound_in_flight_texts(self, eng_id): return list(self._in_flight)
     def inbound_in_flight_blocking(self, eng_id): return self._in_flight_blocking
@@ -663,6 +669,38 @@ class TestCompletionInboundGate:
         # provable for an envelope already handed to the CLI.
         assert "no turn start recorded" in posted
         assert "msg-that-was-never-read" in posted
+
+    async def test_error_terminal_discloses_a_pending_reservation_count(
+            self, tmp_path):
+        """RED CASE (#664, reviewer-specified): a message still inside its
+        ingress-reservation window — accepted by the Telegram handler,
+        reserved, not yet spooled, so no text exists anywhere — dies with an
+        error terminal and today is disclosed to nobody: the rendering fires
+        only on ``unread_snapshot`` (in-flight + queued texts) and the
+        reservation count feeds only the completed-path gate predicate.
+
+        Pins: a pending ingress reservation at a non-completed terminal is
+        disclosed to the engagement topic as a count. Because the reservation
+        is anonymous at this base, the disclosed total is an upper bound and
+        the copy says so ("up to N"); with no text there is no excerpt bullet
+        and the sentence ends with "." rather than ":".
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0, reservations=1)
+        reg, rec, tch = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "error"
+        assert tch.send_response_to_topic.call_count == 1
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert "up to 1 inbound message(s)" in posted
+        assert "no turn start recorded" in posted
+        assert "•" not in posted  # no excerpt bullet — no text exists
 
     async def test_race_message_lands_between_gate_and_flip(
             self, tmp_path, monkeypatch):
