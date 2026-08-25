@@ -28,6 +28,7 @@ Code is the source of truth; these files are a map.
 - [architecture/observability.md](architecture/observability.md): How work is traced across components, what reaches a log, and what the health surfaces actually assert.
 - [architecture/overview.md](architecture/overview.md): What Casa is made of — supervised services, the three agent tiers, and where configuration enters.
 - [architecture/persistent-state.md](architecture/persistent-state.md): What the application writes to disk, how it treats a missing or corrupt file, and what that means for recovery.
+- [architecture/persona-lifecycle.md](architecture/persona-lifecycle.md): How a persona arrives, is approved, and leaves — consent-bound install, the approved roots, removal by reference scan, and the operator-run sweep.
 - [architecture/personality.md](architecture/personality.md): What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.
 - [architecture/plugin-events.md](architecture/plugin-events.md): Plugin-emitted domain events — casa-minted generations, per-subscriber delivery receipts, and consent-gated headless wakes.
 - [architecture/plugin-health.md](architecture/plugin-health.md): How a plugin's problems reach the operator — the standing health report, the notice and DM with their dedup marks, and the status tool.
