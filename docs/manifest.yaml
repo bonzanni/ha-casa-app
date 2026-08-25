@@ -105,8 +105,10 @@
     - scripts/verify_docs.py::_check_sourcemap
     - scripts/verify_docs.py::_check_invariants
     - scripts/verify_docs.py::write_nav
+    - scripts/coverage_ledger.py::check
   tests:
     - tests/test_verify_docs.py
+    - tests/test_coverage_ledger.py
   related: [doctrine/publishing.md]
   defines_invariants: [INV-DOC-001, INV-DOC-002, INV-DOC-003, INV-DOC-004, INV-DOC-005, INV-DOC-007]
   invariant_tests:
