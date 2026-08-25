@@ -191,8 +191,10 @@ it. No one-shot notice rides the topic stream, so the question its consumer (the
 driver) asks is whether the turn was *wholly invisible*, not whether the final edit landed:
 the first successful topic output latches `delivered`, and a failed final edit or overflow
 page cannot un-show it (those failures stay warnings). `not delivered` remains a claim —
-reported only when every operation was positively refused, or when no Bot API call was
-possible before any output landed. One imprecision is deliberate: a finalize with no prior
+reported only when every attempted output was positively refused, or when no Bot API call
+was possible before any output was attempted. An earlier attempt that failed *ambiguously*
+(a lost acknowledgement) weakens the claim to `unknown` — its text may be on screen, so a
+later refusal cannot establish that the turn was wholly invisible. One imprecision is deliberate: a finalize with no prior
 emit sends through the shared paginating helper, whose multi-page raise cannot say whether
 page 1 landed, so that raise reads as the ambiguity it is rather than as a claim that would
 hand a false death to a partially visible turn.

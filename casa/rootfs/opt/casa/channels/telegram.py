@@ -4805,6 +4805,13 @@ class TopicStreamHandle:
         self._topic_id = topic_id
         self._message_id: int | None = None
         self._last_edit: float = 0.0
+        # #665 (diff r1, Sol+Terra): a first send that failed AMBIGUOUSLY
+        # (non-refusal — e.g. TimedOut, where Telegram may have accepted the
+        # message with only the acknowledgement lost) leaves ``_message_id``
+        # unset, but the text may be on the operator's screen. A later refusal
+        # therefore cannot establish that the turn was wholly invisible, so
+        # this latch downgrades every would-be NOT_DELIVERED to UNKNOWN.
+        self._maybe_delivered: bool = False
 
     async def emit(self, accumulated_text: str) -> None:
         """Throttled cumulative-text emit. First call sends a new
@@ -4833,6 +4840,8 @@ class TopicStreamHandle:
                 self._message_id = result.message_id
                 self._last_edit = now
             except TelegramError as exc:
+                if not isinstance(exc, _SERVER_REFUSALS):
+                    self._maybe_delivered = True
                 logger.warning("Stream send failed: %s", exc)
             return
 
@@ -4875,9 +4884,11 @@ class TopicStreamHandle:
         if bot is None:
             # No API call possible. A landed emit still means the head is
             # on the operator's screen — NOT_DELIVERED is a CLAIM that
-            # nothing reached them, and here it would be false.
-            return (DeliveryOutcome.DELIVERED
-                    if self._message_id is not None
+            # nothing reached them, and here it would be false. An
+            # ambiguously-failed emit weakens the claim the same way.
+            if self._message_id is not None:
+                return DeliveryOutcome.DELIVERED
+            return (DeliveryOutcome.UNKNOWN if self._maybe_delivered
                     else DeliveryOutcome.NOT_DELIVERED)
 
         if self._message_id is None:
@@ -4891,7 +4902,11 @@ class TopicStreamHandle:
                 logger.warning("Stream finalize rich send failed: %s", exc)
                 if len(render_paged(full_text)) == 1:
                     # A single rendered page performs only its head send, so
-                    # the raise is necessarily the head's.
+                    # the raise is necessarily the head's — but a prior
+                    # ambiguously-failed emit may already be on screen, and
+                    # then a refusal here cannot claim the turn invisible.
+                    if self._maybe_delivered:
+                        return DeliveryOutcome.UNKNOWN
                     return _edit_failure_outcome(exc)
                 # Multi-page: the raise cannot say whether page 1 landed, and
                 # claiming NOT_DELIVERED for a partially-visible turn would

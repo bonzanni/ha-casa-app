@@ -302,3 +302,56 @@ class TestTopicStreamDeliveryOutcome:
         # 1 emit + one send per overflow page, page-2 failure non-aborting.
         assert bot.send_message.await_count == 1 + (len(pages) - 1)
         assert outcome is DeliveryOutcome.DELIVERED
+
+
+class TestAmbiguousEmitWeakensTheClaim:
+    """#665 diff r1 (Sol S1 / Terra S2): an emit whose send failed AMBIGUOUSLY
+    (TimedOut — Telegram may have accepted it with only the acknowledgement
+    lost) may already be on the operator's screen, so a later refusal cannot
+    establish that the turn was wholly invisible. NOT_DELIVERED stays a claim:
+    it needs every attempted output to be positively refused."""
+
+    async def test_timed_out_emit_then_refused_finalize_is_unknown(self):
+        from telegram.error import Forbidden, TimedOut
+        from channels import DeliveryOutcome
+        ch, bot = _mk_channel_with_fake_bot()
+        bot.send_message.side_effect = [TimedOut(), Forbidden("blocked")]
+
+        handle = ch.create_topic_stream(topic_id=42)
+        await handle.emit("maybe on screen")
+        outcome = await handle.finalize("maybe on screen, finished")
+
+        assert bot.send_message.await_count == 2
+        assert bot.edit_message_text.await_count == 0
+        assert outcome is DeliveryOutcome.UNKNOWN
+
+    async def test_timed_out_emit_then_absent_bot_is_unknown(self):
+        from telegram.error import TimedOut
+        from channels import DeliveryOutcome
+        ch, bot = _mk_channel_with_fake_bot()
+        bot.send_message.side_effect = TimedOut()
+
+        handle = ch.create_topic_stream(topic_id=42)
+        await handle.emit("maybe on screen")
+        ch._app = None
+        outcome = await handle.finalize("maybe on screen, finished")
+
+        assert bot.send_message.await_count == 1
+        assert outcome is DeliveryOutcome.UNKNOWN
+
+    async def test_a_refused_emit_does_not_weaken_the_claim(self):
+        """The control, asserted next to the latch: a REFUSAL is evaluated and
+        declined, so it establishes absence and must not latch ambiguity —
+        otherwise every NOT_DELIVERED would decay to UNKNOWN and the defect
+        this issue fixes would return as silence."""
+        from telegram.error import Forbidden
+        from channels import DeliveryOutcome
+        ch, bot = _mk_channel_with_fake_bot()
+        bot.send_message.side_effect = Forbidden("blocked")
+
+        handle = ch.create_topic_stream(topic_id=42)
+        await handle.emit("refused")
+        outcome = await handle.finalize("refused, finished")
+
+        assert bot.send_message.await_count == 2
+        assert outcome is DeliveryOutcome.NOT_DELIVERED
