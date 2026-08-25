@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.234.0] - 2026-08-25
+
+### Changed
+
+- A refused persona selection now tells the operator everything the failure
+  point knows, for every selection involved. The refusal record reports the
+  active and the staged selection each in its own right - absent, unreadable
+  (with the file and what failed), or read (with the file, the mode, the
+  persona ref, and, where a pin genuinely applies, the pinned checksum and the
+  exact path under the config root whose bytes must reproduce it) - together
+  with the offline recovery facts: the procedure requires the app stopped, and
+  its steps are in the documentation. Previously the record could name only
+  one selection, and the docs had to warn that the log may not have named the
+  one that fails next.
+- A persona tuple file that cannot be read at all - empty, malformed,
+  pathologically nested, a symlink, a directory, or any other non-regular
+  file - now draws the same single diagnostic record before the failure
+  propagates exactly as it did before. One deliberate behavior change rides
+  this: a FIFO (or similar special file) sitting where a tuple belongs is
+  refused in bounded time instead of blocking startup forever on a read that
+  can never return.
+- What the reconciliation writes back on a refusal - the rollback copy and
+  the discarded-candidate archive - is now derived from the exact bytes the
+  reconciliation observed and judged, never from re-reading files that may
+  have changed underneath it.
+
+### Notes
+
+- `docs/architecture/personality.md` crosses the corpus size ceiling with
+  this change - the documented first-crossing case: it lands with a notice,
+  and the next change touching that document must split it first. The topical
+  cut point is already established on the record.
+
+
 ## [0.233.0] - 2026-08-25
 
 ### Changed

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-01
+last_reviewed: 2026-08-25
 ---
 
 # Personality: roles, personas and bindings
@@ -282,12 +282,21 @@ specialist is unavailable and the system continues.
 reported as a load failure rather than a separate class. An *active* override whose pinned
 persona bytes have gone missing, gone unreadable or changed is not re-materialized — the
 altered bytes are never served — but the load of those same bytes then fails, and that
-failure is boot-fatal per INV-PERS-003. The refusal is logged as fields: the resident, the
-persona ref, the checksum the binding pins, the checksum found when a pack resolved at all,
-whether an active and a staged tuple were present, and the reason caught. It states nothing
-else — not what is live, not what was written, not whether startup is prevented — because
-the same reconciliation serves a boot that is fatal, a reload that leaves the live resident
-serving, and a validation replay that writes and logs nothing.
+failure is boot-fatal per INV-PERS-003. The refusal is logged as fields (INV-PERS-010):
+the resident, the source selection's persona ref, pinned checksum, found checksum and
+reason — and, for EACH of the active and staged selections, whether it was absent (no
+directory entry), unreadable (its file and failure class), or read (its file, its mode
+verbatim, its persona ref, and — for a selection whose reload dispatches through the
+non-image-default arm, or a staged override — its own pinned checksum and the
+config-relative path its bytes must be restored under), together with the offline
+recovery facts: the procedure requires the app stopped, and its steps are in this
+document. The record asserts nothing about what is live, what was written, or whether
+startup is prevented — the same reconciliation serves a boot that is fatal, a reload
+that leaves the live resident serving, and a validation replay that writes and logs
+nothing. A tuple file that cannot even be read — empty, malformed, pathological,
+a symlink, a directory, any non-regular file — now draws the same single record before
+the original failure propagates exactly as it always did; a FIFO in a tuple's place is
+refused in bounded time rather than blocking boot on a read that can never return.
 
 **It names no tool.** Every persona tool resolves a resident's role through
 `casa/rootfs/opt/casa/tools.py::_resolve_resident_role`, which answers `runtime_unavailable` without a live
@@ -303,6 +312,24 @@ and the swap has to be applied again. **Or discard the pin** by deleting the res
 files with the app stopped — and it must be every selection that would load, not only the one
 the log named, because an active and a staged tuple can name different personas and deleting
 one leaves the other to fail.
+
+**INV-PERS-010**: A committing persona reconciliation that refuses logs exactly one structured record stating, for each of the active and staged selections, whether it was absent (no directory entry), unreadable — naming its file and failure class — or read — naming its file, mode and persona ref, carrying pin and config-relative restore facts for an active selection the reload dispatches through its non-image-default arm and for a staged selection only where reconciliation selects it as an override, and a found checksum only where a pack actually resolved; when the pass staged a candidate before failing, the staged observation reflects that candidate; and the structured record names no recovery requiring the live runtime.
+
+The statement is the fuller form of the narrowed #670 contract, which it subsumes: the
+flat source-selection fields remain, and the per-selection objects are what make the
+recovery in this document followable from the refusal alone — the record enumerates
+every selection that would load, so the operator no longer has to be warned that the
+log may have named only one. The recovery steps themselves deliberately stay HERE:
+five review rounds established that an emitted string cannot carry the conditions
+under which each step applies, so the record carries the condition-free inputs — the
+files observed, the pins, the restore paths — and this document carries the judgment.
+One caution the record's file list does not remove: it is an observation at refusal
+time, and the reconciliation itself discards a staged candidate it rejected, so
+re-check what is present before deleting anything.
+
+What it does not cover: the validation replay, which writes and logs nothing by
+design (its own test pins that silence); the record's level; and any claim about the
+outcome — retaining a tuple is not surviving it (INV-PERS-003).
 
 **A removal is refused.** Nothing is mutated — the bytes stay, and so does the install approval,
 which is only revoked on a removal that goes through. The refusal names its referrers; freeing
@@ -353,12 +380,15 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `casa/rootfs/opt/casa/persona_install.py::list_installed_personas`
 - `casa/rootfs/opt/casa/persona_install.py::apply_persona_override`
 - `casa/rootfs/opt/casa/agent_loader.py::make_candidate_compile_validator`
+- `casa/rootfs/opt/casa/agent_loader.py::_activate_resident_binding`
+- `casa/rootfs/opt/casa/prompt_compiler.py::compile_prompt_bundle`
 - `casa/rootfs/opt/casa/hooks.py::make_response_shape_write_guard`
 
 **Tests**
 - `tests/test_personality_binding.py`
 - `tests/test_resident_refusal_diagnosis.py`
 - `tests/test_resident_refusal_record_boundaries.py`
+- `tests/test_refusal_observation.py`
 - `tests/test_persona_install.py`
 - `tests/test_persona_removal.py`
 - `tests/test_personality_admin_handlers.py`
