@@ -347,3 +347,19 @@ def test_an_item_no_covers_claims_is_not_judged_by_the_cross_check(tmp_path):
     # namespaced non-path items (option:, s6:, tool:, route:) never key a covers
     # path, so they are structurally outside the cross-check too
     assert not any("option:" in p or "s6:" in p for p in problems)
+
+
+def test_a_duplicate_covers_key_fails_closed_not_open(tmp_path):
+    """Round-1 S1 (Terra): safe_load keeps the LAST duplicate key, so an entry
+    with two `covers` blocks would silently DROP the first block's claims and
+    let a disagreement pass unjudged. The strict loader refuses instead, and
+    the refusal is a ledger problem — fail closed, visibly.
+    """
+    root = _repo(tmp_path)
+    (root / "docs" / "manifest.yaml").write_text(
+        MANIFEST_WITH_COVERS
+        + "  covers:\n    - casa/rootfs/opt/casa/small.py\n"
+    )
+    (root / "docs" / "coverage.yaml").write_text(_ledger_with(root, {}))
+    problems = coverage_ledger.check(root)
+    assert any("strict manifest parse" in p for p in problems), problems
