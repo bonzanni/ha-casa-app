@@ -1156,3 +1156,51 @@ class TestInCasaApiFaultCarriesItsKind:
             await drv.send_user_turn(rec, "please do the thing")
         assert drv.is_alive(rec) is True, (
             "a refused turn must not tear the engagement's client down")
+
+
+class TestLaunchStreamedTextDelivery:
+    """#665 red case (specified by Terra, accepted separately).
+
+    A launch turn whose only output is streamed topic text, with every
+    Telegram send positively refused (persistent ``Forbidden``), currently
+    leaves ``launch_turn_incomplete`` EMPTY: emit and finalize swallow the
+    refusals into WARN logs and return None, and the #678 observation keys on
+    ``final`` being non-empty (text existing), not on text arriving. The loss
+    is silent — the operator has a topic with no evidence anything happened
+    and no launch owner ever fires."""
+
+    async def test_wholly_refused_launch_turn_is_observable(self, monkeypatch):
+        from telegram.error import Forbidden
+        from channels.telegram import TelegramChannel
+        from drivers.in_casa_driver import InCasaDriver
+
+        fake_bot = MagicMock()
+        fake_bot.send_message = AsyncMock(
+            side_effect=Forbidden("bot was blocked by the user"))
+        fake_bot.edit_message_text = AsyncMock()
+        fake_app = MagicMock()
+        fake_app.bot = fake_bot
+        ch = TelegramChannel(
+            bot_token="x:y", chat_id=100, default_agent="assistant",
+            engagement_supergroup_id=-1001,
+        )
+        ch._app = fake_app
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("launch text"), _mk_result_msg()))
+        # The REAL factory and handle: the swallow under test lives in
+        # TopicStreamHandle, so a fake handle would prove nothing.
+        drv = InCasaDriver(topic_stream_factory=ch.create_topic_stream)
+        rec = _make_record()
+
+        await drv.start(rec, prompt="launch prompt",
+                        options=ClaudeAgentOptions(model="sonnet"))
+
+        # The arrangement reached both refused sends: one from emit's first
+        # send, one from finalize's no-prior-message fresh send.
+        assert fake_bot.send_message.await_count == 2
+        assert fake_bot.edit_message_text.await_count == 0
+        # The invariant: a turn that produced text, none of which reached the
+        # topic, must be observable to the launch-incomplete machinery.
+        assert drv.launch_turn_incomplete(rec.id) != ""
