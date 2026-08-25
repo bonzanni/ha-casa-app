@@ -171,14 +171,27 @@ def test_a_refused_pinned_override_reports_its_own_pin_and_what_it_found(
     assert loud[0].name == "personality_binding"
     event, _, payload = loud[0].getMessage().partition(" ")
     assert event == "persona_binding_reconcile_failed"
+    # #715: the flat fields are the shipped narrowed contract and stay; the
+    # per-tuple objects, staged-truth and recovery facts are the fuller
+    # contract (INV-PERS-010).
     assert json.loads(payload) == {
-        "active_tuple": "present",
+        "active_tuple": {
+            "state": "read",
+            "file": str(instance_dir._path("active.yaml")),
+            "mode": "override",
+            "persona_ref": _REF,
+            "pinned_checksum": pinned,
+            "found_checksum": found,
+            "restore_path": f"personas/{_ID}/{_VERSION}/",
+        },
+        "staged_tuple": "absent",
+        "recovery": {"requires": "app stopped",
+                     "procedure": "docs/architecture/personality.md"},
         "found_checksum": found,
         "persona_ref": _REF,
         "pinned_checksum": pinned,
         "reason": expected_reason,
         "resident": "resident:concierge",
-        "staged_tuple": "absent",
     }
 
     # (2) The altered bytes were never accepted into the binding, and nothing
