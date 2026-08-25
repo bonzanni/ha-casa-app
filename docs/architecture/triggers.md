@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-08
+last_reviewed: 2026-08-25
 ---
 
 # Triggers and scheduling
@@ -11,7 +11,8 @@ last_reviewed: 2026-08-08
 What makes an agent act without a person speaking: a resident's scheduled and webhook
 triggers, how they are registered and fired, and who may write the file they live in. It does
 not cover what the resulting turn does, nor webhook authentication mechanics, which belong to
-the HTTP surface. What a **plugin-declared** trigger must satisfy before it routes — the
+the HTTP surface. The secrets that authenticate a resident webhook — minting, receipts,
+the per-slot report — are [`trigger-secrets.md`](trigger-secrets.md)'s. What a **plugin-declared** trigger must satisfy before it routes — the
 overlay, its preconditions and the operator approval gating them — is
 [`architecture/plugin-triggers.md`](plugin-triggers.md); plugin-declared *authorization
 callbacks* share that shape but produce no turn and grant no access, and are
@@ -272,45 +273,9 @@ the current set is four.
 
 **A new resident webhook** needs the trigger declaration and a name outside the reserved
 plugin prefix. Declaring the webhook channel on the resident is *not* checked for webhooks —
-the channel gate is scheduled-only (see INV-TRIG-001).
-
-Its **secret exists from the moment the trigger is registered**, which is what makes the
-setup instruction true when it is given. `static_header` and `timestamped_hmac` are backed
-by a per-trigger file; `hmac_body` rides the one global secret and writes nothing. Casa
-mints only what it owns: a slot declared `secret_owner: provider` is never written, because
-Casa can neither regenerate nor import that value. Minting runs *after* registration — the
-cross-role name-collision check lives there, and minting first would write into another
-role's slot for a registration about to be refused — and it only ever creates a file that is
-absent. It never deletes, replaces or overwrites one, and it never raises: a filesystem
-fault leaves the trigger registered and refusing requests rather than silently changing
-which routes exist.
-
-A mint also records a **receipt** beside the slot — a digest of the value, never the value —
-and only for a slot the mint itself created, never onto one it merely found. A Casa token
-also satisfies the provider rule, so a receipt written over a value Casa did not mint would
-certify the operator's own credential as Casa's. See [`http-surface.md`](http-surface.md)
-for the mechanism.
-
-**INV-TRIG-014**: A mint receipt certifies that Casa generated the bytes in a slot only when Casa itself created that slot and the receipt's digest matches those exact bytes; every other state is unproven and is never authority to alter the slot.
-
-Nothing retires a resident secret, so a recreated name still inherits. This records the
-fact a later, owner-aware retirement would have to stand on.
-
-Every reload envelope that touches registration therefore carries `trigger_secrets`, one
-row per trigger, plus counts. The rows are derived from the **registry** — what a request is
-actually verified with — and from a real read of the file, never from the declaration alone:
-those are different questions, and a route can run at a clearance or an auth mode the file
-no longer says. A row states what a request would do, so `readable` means bytes are present
-that satisfy the owner's rule, not that the integration works — which is why a `readable`
-row also carries `provenance`, read against its owner: under `casa`, `unproven` says Casa
-cannot prove it minted the bytes that authenticate — not that it did not, since a receipt
-that failed to write reads the same; under `provider`, `casa_minted` does prove the route
-authenticates with a Casa token rather than the credential the operator meant to supply.
-`awaiting_import` says
-plainly that no Casa surface can place a provider secret; `invalid` and `unreadable` say
-plainly that the file cannot be repaired or removed through any Casa surface. The report
-rides the error envelope too — it exists to explain a failed pass, so withholding it on
-failure would withhold it exactly when it is wanted.
+the channel gate is scheduled-only (see INV-TRIG-001). Its secret — minted at
+registration, receipted, reported per slot — is
+[`trigger-secrets.md`](trigger-secrets.md)'s subject.
 
 **A new plugin trigger** needs the manifest declaration, an assigned target that accepts
 webhooks, secret backing, and operator consent — and reconciliation must then run. The
@@ -342,7 +307,6 @@ there is none today.
 
 **Source**
 - `casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry`
-- `casa/rootfs/opt/casa/resident_trigger_secrets.py`
 - `casa/rootfs/opt/casa/casa_core.py::_make_webhook_handler`
 - `casa/rootfs/opt/casa/tools.py::config_trigger_upsert`
 - `casa/rootfs/opt/casa/tools.py::config_trigger_delete`
@@ -355,9 +319,6 @@ there is none today.
 - `tests/test_agent_loader_trigger_auth.py`
 - `tests/test_casa_reload_triggers_resident.py`
 - `tests/test_config_trigger_tools.py`
-- `tests/test_resident_trigger_secrets.py`
-- `tests/test_webhook_secrets.py`
-- `tests/test_webhook_mint_receipt.py`
 - `tests/test_scheduled_media_delivery.py`
 - `tests/test_scheduled_delivery_durable.py`
 
@@ -366,4 +327,5 @@ there is none today.
 - [`architecture/http-surface.md`](../architecture/http-surface.md)
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/reminders.md`](../architecture/reminders.md)
+- [`architecture/trigger-secrets.md`](../architecture/trigger-secrets.md)
 <!-- END SOURCEMAP -->

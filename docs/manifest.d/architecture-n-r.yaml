@@ -206,7 +206,7 @@
     - tests/test_plugin_triggers_overlay.py
     - tests/test_plugin_triggers_manifest.py
     - tests/test_trigger_consent.py
-  related: [architecture/triggers.md, architecture/plugins.md, architecture/callbacks.md, architecture/plugin-setup.md]
+  related: [architecture/triggers.md, architecture/trigger-secrets.md, architecture/plugins.md, architecture/callbacks.md, architecture/plugin-setup.md]
   defines_invariants: [INV-TRIG-003, INV-TRIG-004, INV-TRIG-005]
   invariant_tests:
     INV-TRIG-003: [tests/test_plugin_triggers_reconcile.py::test_per_plugin_all_or_nothing]

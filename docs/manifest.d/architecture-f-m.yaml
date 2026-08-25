@@ -39,7 +39,7 @@
     - tests/test_setup_nginx_ingress.py
     - tests/test_admin_peercred_gate.py
     - tests/test_svc_ttyd_socket.py
-  related: [architecture/overview.md, architecture/callbacks.md]
+  related: [architecture/overview.md, architecture/callbacks.md, architecture/trigger-secrets.md]
   defines_invariants: [INV-HTTP-001, INV-HTTP-002, INV-HTTP-003, INV-HTTP-004, INV-HTTP-005, INV-HTTP-006, INV-HTTP-007]
   invariant_tests:
     INV-HTTP-001: [tests/test_webhook_auth.py::test_hmac_body_valid, tests/test_webhook_auth.py::test_static_header_valid_and_missing, tests/test_webhook_auth.py::test_timestamped_hmac_valid_within_tolerance, tests/test_webhook_auth.py::test_unknown_mode_fails]

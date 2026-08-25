@@ -127,6 +127,7 @@ those leaves the old overlay live until a covered scope runs.
 
 **Related**
 - [`architecture/triggers.md`](../architecture/triggers.md)
+- [`architecture/trigger-secrets.md`](../architecture/trigger-secrets.md)
 - [`architecture/plugins.md`](../architecture/plugins.md)
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
 - [`architecture/plugin-setup.md`](../architecture/plugin-setup.md)

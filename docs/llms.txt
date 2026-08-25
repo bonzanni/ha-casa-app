@@ -39,6 +39,7 @@ Code is the source of truth; these files are a map.
 - [architecture/specialist-lifecycle.md](architecture/specialist-lifecycle.md): Specialist install/upgrade/rollback — instance tuples, the store, consent receipts, materialization, the crash journal.
 - [architecture/telegram.md](architecture/telegram.md): How Telegram messages become turns — transports, authentication, the per-topic causal log, keyboards, and rendering.
 - [architecture/tools-interface.md](architecture/tools-interface.md): The mutation interface — the one tool registry, result envelopes, and which failures roll back versus report.
+- [architecture/trigger-secrets.md](architecture/trigger-secrets.md): The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.
 - [architecture/triggers.md](architecture/triggers.md): What makes an agent act without a person speaking — a resident's scheduled and webhook triggers, and who may write the file they live in.
 - [architecture/turn-loop.md](architecture/turn-loop.md): How one inbound message becomes one agent turn, and what bounds it.
 - [architecture/voice.md](architecture/voice.md): How speech becomes a turn and the answer gets back — transports, auth, turn budget, deferred delivery.

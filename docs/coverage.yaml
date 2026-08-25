@@ -258,7 +258,7 @@
 - item: casa/rootfs/opt/casa/trigger_acks.py
   doc: architecture/triggers.md
 - item: casa/rootfs/opt/casa/resident_trigger_secrets.py
-  doc: architecture/triggers.md
+  doc: architecture/trigger-secrets.md
 - item: casa/rootfs/opt/casa/trigger_consent.py
   doc: architecture/triggers.md
 - item: casa/rootfs/opt/casa/trigger_reconcile.py
