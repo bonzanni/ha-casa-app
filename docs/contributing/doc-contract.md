@@ -55,6 +55,10 @@ true.
 
 **INV-DOC-005**: Anchors are typed symbols (`path/to/file.py::Class.method`, `config.yaml::schema.key`, `tests/test_x.py::test_name`) or tracked bare paths; never `file:line`, which rots silently on the next edit.
 
+**INV-DOC-009**: An invariant id cited in a comment or a docstring of a tracked Python file outside `docs/`, in a family the corpus defines, must be an id the corpus defines.
+
+The idiom already dominates: code prose cites invariant ids far more often than it names document paths, and an id is the one handle that survives a split, because an invariant is defined once and the generated index maps it to its document. What was missing was the other direction of the check the corpus already runs inside `docs/` — so a retired or renumbered id stayed cited from a test docstring indefinitely, which is how a citation of the retired OBS 002 id outlived it. The check reads Python comments and PEP 258 docstrings only, and only for families the corpus defines: a synthetic fixture citing a family this corpus never defines is not a citation, and a rule that fired on the verifier's own test data would be waved through. A shell or Markdown comment outside `docs/` is NOT checked.
+
 **INV-DOC-008**: A `Docs-impact:` waiver is checked against the diff it ships with — the waived documents are exactly the documents the change impacts and does not update, no document is waived twice, the reserved token `none` asserts that set is empty, only the tip commit may carry a waiver line, a subject line is never one, and every tip carries a line; whether a waiver's reason is true remains a review question.
 
 **INV-DOC-007**: Growth splits, it never appends: the change that crosses the size ceiling lands visibly, the next change touching the over-ceiling document — its file or its manifest row — must split it first, a new path may not be born over the ceiling, and the ceiling is not raised; nothing shards on its own.
@@ -74,7 +78,9 @@ new path; local and push-event runs report over-ceiling documents without failin
 pull-request check is the enforcing caller; allowlist exactness in both directions against
 `git ls-files`; admitted extensions; manifest schema and required fields; anchor resolution
 and containment; the marker pair in every document; invariant define-once, reference
-resolution, and declaration accuracy; that every declared invariant carries at least one
+resolution, and declaration accuracy; that an invariant id cited in a comment or a PEP 258
+docstring of a tracked Python file outside `docs/` — a file named `*.py` or carrying a Python
+shebang — resolves, when its family is one the corpus defines; that every declared invariant carries at least one
 `invariant_tests` binding to a tracked file that is not the missing-test sentinel, with any
 named test node resolved structurally against the file — module-level functions and
 class-qualified `Class::method` identifiers both — so a binding that would not collect
@@ -161,6 +167,7 @@ cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`.
 - `scripts/verify_docs.py::check_ceilings`
 - `scripts/verify_docs.py::_check_sourcemap`
 - `scripts/verify_docs.py::_check_invariants`
+- `scripts/verify_docs.py::_check_prose_invariant_references`
 - `scripts/verify_docs.py::write_nav`
 - `scripts/coverage_ledger.py::check`
 

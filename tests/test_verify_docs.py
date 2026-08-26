@@ -295,8 +295,8 @@ def test_a_python_docstring_citing_an_undefined_id_in_a_defined_family_is_caught
 
     Red case demonstrated: at the base commit the verifier had no
     tracked-prose pass at all and returned zero problems for this tree,
-    exactly as it returned zero for the live `INV-OBS-002` citation in
-    `tests/test_pin_g5_invariants.py`.
+    exactly as it returned zero for the live citation of the retired
+    OBS 002 id in `tests/test_pin_g5_invariants.py`.
     """
     manifest = _inv_manifest(
         "\n  invariant_tests:\n"
@@ -320,6 +320,173 @@ def test_a_python_docstring_citing_an_undefined_id_in_a_defined_family_is_caught
     )
     assert problems.count(expected) == 1
     assert len(problems) == 1
+
+
+
+def _code(root: Path, files: dict[str, bytes]) -> list[str]:
+    """Add tracked files to a miniature corpus and verify it.
+
+    The corpus defines INV-X-001, so family X is defined INSIDE this fixture and
+    undefined in the repository that holds these literals — which is why the same
+    tokens are checked there and inert here.
+    """
+    for rel, body in files.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    return verify_docs.verify(root)
+
+
+def _prose_corpus(tmp_path: Path) -> Path:
+    manifest = _inv_manifest(
+        "\n  invariant_tests:\n    INV-X-001: [tests/test_a.py::test_b]"
+    )
+    return _corpus(tmp_path, manifest, docs=INV_DOC)
+
+
+def test_an_undefined_id_in_a_python_comment_is_caught(tmp_path):
+    problems = _code(_prose_corpus(tmp_path), {"casa/b.py": b"# INV-X-999\nx = 1\n"})
+    assert problems == ["casa/b.py:1: INV-X-999 is not defined; family X defines INV-X-001"]
+
+
+def test_a_defined_id_in_a_python_comment_passes(tmp_path):
+    assert _code(_prose_corpus(tmp_path), {"casa/b.py": b"# INV-X-001 holds\n"}) == []
+
+
+def test_an_ordinary_literal_is_not_prose_even_beside_a_comment(tmp_path):
+    """The comment TOKEN is scanned, not the physical line. Reviewers reproduced that a
+    whole-line scan turns an unrelated trailing comment into a refusal of fixture data."""
+    files = {"casa/b.py": b'payload = "INV-X-999"  # fixture value\n'}
+    assert _code(_prose_corpus(tmp_path), files) == []
+
+
+def test_a_citation_deep_in_a_docstring_reports_its_own_physical_line(tmp_path):
+    body = b'def f():\n    """one\n    two\n    INV-X-999 here\n    """\n'
+    problems = _code(_prose_corpus(tmp_path), {"casa/b.py": body})
+    assert problems == ["casa/b.py:4: INV-X-999 is not defined; family X defines INV-X-001"]
+
+
+def test_two_ids_on_one_line_are_two_problems_and_a_repeat_is_one(tmp_path):
+    body = b'# INV-X-999 INV-X-998 INV-X-999\n'
+    problems = _code(_prose_corpus(tmp_path), {"casa/b.py": body})
+    assert problems == [
+        "casa/b.py:1: INV-X-998 is not defined; family X defines INV-X-001",
+        "casa/b.py:1: INV-X-999 is not defined; family X defines INV-X-001",
+    ]
+
+
+def test_an_attribute_docstring_is_prose_at_module_class_and_init_scope(tmp_path):
+    body = (b'A = 1\n"""INV-X-999 module attribute."""\n\n\n'
+            b'class C:\n    B: int = 2\n    """INV-X-998 class attribute."""\n\n'
+            b'    def __init__(self):\n        self.d = 3\n'
+            b'        """INV-X-997 init attribute."""\n')
+    problems = _code(_prose_corpus(tmp_path), {"casa/b.py": body})
+    assert problems == [
+        "casa/b.py:2: INV-X-999 is not defined; family X defines INV-X-001",
+        "casa/b.py:7: INV-X-998 is not defined; family X defines INV-X-001",
+        "casa/b.py:11: INV-X-997 is not defined; family X defines INV-X-001",
+    ]
+
+
+def test_a_string_after_an_assignment_in_an_ordinary_function_is_not_prose(tmp_path):
+    """PEP 258 places attribute docstrings at module scope, class scope and a class's
+    `__init__` — nowhere else. A no-op literal in an ordinary function is data, and
+    refusing it would fail a correct tree."""
+    body = (b'def work():\n    payload = 1\n    "INV-X-999"\n\n'
+            b'def __init__(self):\n    x = 1\n    "INV-X-998"\n')
+    assert _code(_prose_corpus(tmp_path), {"casa/b.py": body}) == []
+
+
+def test_a_bare_string_that_is_not_a_docstring_is_not_prose(tmp_path):
+    body = (b'def f(flag):\n    if flag:\n        "INV-X-999"\n\n'
+            b'def g():\n    work()\n    "INV-X-998"\n\n'
+            b'def h():\n    work()\n    "fixture"\n    "INV-X-997"\n')
+    assert _code(_prose_corpus(tmp_path), {"casa/b.py": body}) == []
+
+
+def test_a_second_docstring_after_the_first_is_prose(tmp_path):
+    body = b'"""primary."""\n"""INV-X-999 secondary."""\n'
+    problems = _code(_prose_corpus(tmp_path), {"casa/b.py": body})
+    assert problems == ["casa/b.py:2: INV-X-999 is not defined; family X defines INV-X-001"]
+
+
+def test_an_unknown_family_is_never_checked(tmp_path):
+    """The verifier's own fixtures cite INV-X-* and INV-GHOST-*; a gate that fired on
+    the corpus machinery's own test data would be waved through."""
+    assert _code(_prose_corpus(tmp_path), {"casa/b.py": b"# INV-GHOST-009\n"}) == []
+
+
+def test_an_extensionless_python_script_is_checked_by_its_shebang(tmp_path):
+    files = {"bin/casactl": b"#!/usr/bin/env python3\n# INV-X-999\n",
+             "bin/other": b"#!/usr/bin/python3.11 -u\n# INV-X-998\n"}
+    problems = _code(_prose_corpus(tmp_path), files)
+    assert problems == [
+        "bin/casactl:2: INV-X-999 is not defined; family X defines INV-X-001",
+        "bin/other:2: INV-X-998 is not defined; family X defines INV-X-001",
+    ]
+
+
+def test_a_non_python_comment_is_a_named_residual_not_a_refusal(tmp_path):
+    """DELIBERATE (#679, D33 Part 1): the surface is Python. A `#`-line rule over shell
+    and YAML was refuted — the repository's own shell citations live inside heredocs,
+    and YAML block scalars and fenced Markdown are data. Closing this needs per-language
+    comment grammars and is filed, not smuggled in."""
+    files = {"run.sh": b"# INV-X-999\n", "c.yaml": b"# INV-X-998\n"}
+    assert _code(_prose_corpus(tmp_path), files) == []
+
+
+def test_an_untracked_python_file_is_not_checked(tmp_path):
+    root = _prose_corpus(tmp_path)
+    (root / "casa" / "loose.py").write_bytes(b"# INV-X-999\n")
+    assert verify_docs.verify(root) == []
+
+
+def test_a_python_file_with_an_encoding_cookie_is_decoded_as_python_would(tmp_path):
+    body = ("# -*- coding: latin-1 -*-\n# caf\N{LATIN SMALL LETTER E WITH ACUTE}"
+            " INV-X-999\n").encode("latin-1")
+    problems = _code(_prose_corpus(tmp_path), {"casa/b.py": body})
+    assert problems == ["casa/b.py:2: INV-X-999 is not defined; family X defines INV-X-001"]
+
+
+def test_an_uninspectable_python_file_is_a_problem_not_an_exemption(tmp_path):
+    files = {"casa/b.py": b"def (:\n# INV-X-999\n", "casa/c.py": b"x = 1\n\x00\n"}
+    problems = _code(_prose_corpus(tmp_path), files)
+    assert len(problems) == 2
+    assert all("cannot be inspected" in p for p in problems)
+    assert [p.split(":")[0] for p in problems] == ["casa/b.py", "casa/c.py"]
+
+
+def test_a_tracked_symlink_is_a_problem_not_a_followed_path(tmp_path):
+    root = _prose_corpus(tmp_path)
+    (root / "casa" / "real.py").write_bytes(b"# INV-X-001\n")
+    (root / "casa" / "link.py").symlink_to("real.py")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    problems = verify_docs.verify(root)
+    assert problems == ["casa/link.py: a tracked symlink is not read — its target is not "
+                        "the committed blob, so prose inside it cannot be checked"]
+
+
+def test_a_tracked_file_missing_from_the_worktree_is_a_problem(tmp_path):
+    root = _prose_corpus(tmp_path)
+    (root / "casa" / "gone.py").write_bytes(b"# INV-X-001\n")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    (root / "casa" / "gone.py").unlink()
+    assert verify_docs.verify(root) == [
+        "casa/gone.py: cannot be read (FileNotFoundError) — the corpus gate must be "
+        "able to see every tracked file"
+    ]
+
+
+def test_an_undefined_reference_inside_docs_is_reported_once(tmp_path):
+    """`_check_invariants` owns docs/; the prose pass must not report it a second time."""
+    root = _corpus(tmp_path, docs={
+        "architecture/turn-loop.md": "# T\n" + CODE_WINS + "See INV-GHOST-009.\n" + SOURCEMAP,
+    })
+    problems = verify_docs.verify(root)
+    assert [p for p in problems if "INV-GHOST-009" in p] == [
+        "architecture/turn-loop.md: INV-GHOST-009 is referenced but never defined"
+    ]
 
 
 # --- invariant → pinning-test binding -------------------------------------------------

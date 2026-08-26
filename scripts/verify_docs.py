@@ -39,9 +39,11 @@ Usage:
 from __future__ import annotations
 
 import ast
+import io
 import re
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 import yaml
@@ -49,6 +51,12 @@ import yaml
 LINE_ANCHOR = re.compile(r"^[^:]+:\d+$")
 INV_DEFINITION = re.compile(r"\*\*(INV-[A-Z]+-\d+)\*\*\s*:")
 INV_REFERENCE = re.compile(r"\b(INV-[A-Z]+-\d+)\b")
+# A tracked file is Python when git-visible evidence says so: the suffix, or a shebang
+# naming an interpreter. Both real extensionless Python scripts in the tree use
+# `#!/usr/bin/env python3`, but `#!/usr/bin/python3` and `env -S python3` are the same
+# claim, so the token is matched anywhere on the shebang line rather than at one
+# fixed offset.
+PY_SHEBANG = re.compile(r"^#!.*\bpython[0-9.]*\b")
 
 CEILING_BYTES = 25_000
 INDEX_CEILING_BYTES = 40_000
@@ -794,7 +802,16 @@ def check_ceilings(repo_root: Path, base: str | None = None) -> tuple[list[str],
     return problems, notices
 
 
-def _check_invariants(docs_dir: Path, entries: list[dict]) -> list[str]:
+def _corpus_invariants(docs_dir: Path, entries: list[dict]) -> tuple[
+        dict[str, list[str]], dict[str, str], dict[str, str], dict[str, set[str]]]:
+    """Read every manifested document once: what it defines, states and references.
+
+    Extracted from :func:`_check_invariants` unchanged, so that the tests->corpus
+    direction (:func:`_check_prose_invariant_references`) judges membership against the
+    SAME id set the docs->docs direction does. #717's lesson at a smaller scale: two
+    readers of one fact disagree eventually, and a second scan here would let an id be
+    defined for one check and undefined for the other.
+    """
     defined: dict[str, list[str]] = {}
     statements: dict[str, str] = {}
     referenced: dict[str, str] = {}
@@ -816,6 +833,11 @@ def _check_invariants(docs_dir: Path, entries: list[dict]) -> list[str]:
                 per_doc[doc].add(inv)
         for inv in INV_REFERENCE.findall(text):
             referenced.setdefault(inv, doc)
+    return defined, statements, referenced, per_doc
+
+
+def _check_invariants(docs_dir: Path, entries: list[dict]) -> list[str]:
+    defined, statements, referenced, per_doc = _corpus_invariants(docs_dir, entries)
 
     problems: list[str] = []
     for inv, homes in sorted(defined.items()):
@@ -851,6 +873,147 @@ def _check_invariants(docs_dir: Path, entries: list[dict]) -> list[str]:
             problems.append(f"{doc}: manifest declares {inv} but the file does not define it")
         for inv in sorted(actual - declared):
             problems.append(f"{doc}: defines {inv} but the manifest does not declare it")
+    return problems
+
+
+def _is_string_statement(node: ast.stmt) -> bool:
+    return (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str))
+
+
+def _docstring_statements(tree: ast.Module) -> list[ast.Expr]:
+    """PEP 258's docstrings, and nothing else that merely looks like one.
+
+    Three admitted positions, each of them Python's own definition rather than this
+    file's: the FIRST statement of a module, class or function body; a string following
+    an assignment at module scope, class scope or in a class's `__init__` (the attribute
+    docstring); and a string following another ADMITTED docstring. Review reproduced why
+    each qualifier is load-bearing: `def f(): work(); "INV-X-999"` and a bare string
+    under an `if` are ordinary no-op literals, not prose, and refusing them would fail a
+    correct tree; and testing "the previous statement is a string" instead of "is an
+    admitted docstring" would admit the tail of an unrooted chain.
+    """
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    found: list[ast.Expr] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        attribute_scope = isinstance(node, (ast.Module, ast.ClassDef)) or (
+            node.name == "__init__" and isinstance(parents.get(node), ast.ClassDef))
+        previous: ast.stmt | None = None
+        admitted = False
+        for index, statement in enumerate(node.body):
+            here = _is_string_statement(statement) and (
+                index == 0
+                or (admitted and _is_string_statement(previous))
+                or (attribute_scope and isinstance(previous, (ast.Assign, ast.AnnAssign)))
+            )
+            if here:
+                found.append(statement)
+            previous, admitted = statement, here
+    return found
+
+
+def _python_prose(path: Path) -> tuple[list[tuple[int, str]], str | None]:
+    """Every comment and docstring in one Python file, with its own start line.
+
+    Returns `(units, failure)`. A unit's text is the COMMENT token's own text or the
+    docstring's exact source segment — never the physical line, because
+    `payload = "INV-X-999"  # note` would otherwise let an unrelated trailing comment
+    drag an ordinary literal into the checked surface.
+
+    `tokenize.open` applies the PEP 263 coding cookie and strips a BOM, i.e. it decodes
+    exactly as CPython does, and universal-newline translation leaves `\n` as the only
+    line separator — so a line number obtained by counting `\n` in a source segment is
+    the tokenizer's own. `str.splitlines()`, which also splits on NEL, VT, FF, LS and PS,
+    is deliberately never called.
+    """
+    try:
+        with tokenize.open(path) as handle:
+            text = handle.read()
+        tree = ast.parse(text)
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError, LookupError,
+            tokenize.TokenError) as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+
+    units = [(tok.start[0], tok.string) for tok in tokens if tok.type == tokenize.COMMENT]
+    for statement in _docstring_statements(tree):
+        segment = ast.get_source_segment(text, statement)
+        if segment is None:                     # positions missing: do not guess
+            return [], "a docstring has no resolvable source segment"
+        units.append((statement.lineno, segment))
+    return units, None
+
+
+def _check_prose_invariant_references(repo_root: Path, tracked: set[str],
+                                      defined: set[str]) -> list[str]:
+    """INV-DOC-009: an id cited in tracked Python prose must be an id the corpus defines.
+
+    The corpus already refuses an id that a DOCUMENT references and nothing defines
+    (`_check_invariants`); nothing looked the other way, so a retired or renumbered id
+    stayed cited from code prose forever. The retired OBS 002 id was cited at
+    `tests/test_pin_g5_invariants.py:54` while the corpus defined INV-OBS-001, -003 and
+    -004 and no second one, and every gate was green.
+
+    Scoped to FAMILIES the corpus defines, which is what makes it a check on real
+    citations rather than a rule about synthetic data: the verifier's own fixtures cite
+    `INV-X-*` and `INV-GHOST-*`, families this corpus does not define, so they are inert
+    here and active inside a fixture corpus that defines them.
+
+    `docs/` is excluded because `_check_invariants` owns it — scanning it here would
+    report the same undefined reference twice.
+    """
+    families = {_invariant_family(inv) for inv in defined}
+    problems: list[str] = []
+    hits: set[tuple[str, int, str]] = set()
+
+    for rel in sorted(tracked):
+        if rel.startswith("docs/"):
+            continue
+        target = repo_root / rel
+        if target.is_symlink():
+            problems.append(
+                f"{rel}: a tracked symlink is not read — its target is not the committed "
+                f"blob, so prose inside it cannot be checked"
+            )
+            continue
+        if target.is_dir():                     # a gitlink: nothing of ours to read
+            continue
+        try:
+            head = target.open("rb").readline()
+        except OSError as exc:
+            problems.append(f"{rel}: cannot be read ({type(exc).__name__}) — the corpus "
+                            f"gate must be able to see every tracked file")
+            continue
+        if not (rel.endswith(".py")
+                or PY_SHEBANG.match(head.decode("utf-8", errors="replace"))):
+            continue
+
+        units, failure = _python_prose(target)
+        if failure is not None:
+            problems.append(f"{rel}: this tracked Python file cannot be inspected "
+                            f"({failure}) — an unreadable file is not an exemption")
+            continue
+        for start, chunk in units:
+            for match in INV_REFERENCE.finditer(chunk):
+                hits.add((rel, start + chunk[:match.start()].count("\n"), match.group(1)))
+
+    by_family: dict[str, list[str]] = {}
+    for inv in defined:
+        by_family.setdefault(_invariant_family(inv), []).append(inv)
+    for rel, line, inv in sorted(hits):
+        family = _invariant_family(inv)
+        if family in families and inv not in defined:
+            problems.append(
+                f"{rel}:{line}: {inv} is not defined; family {family} defines "
+                f"{', '.join(sorted(by_family[family]))}"
+            )
     return problems
 
 
@@ -968,6 +1131,8 @@ def verify(repo_root: Path, base: str | None = None) -> list[str]:
         problems.append("the corpus contains no documents — only indexes and metadata")
 
     problems.extend(_check_invariants(docs_dir, entries))
+    problems.extend(_check_prose_invariant_references(
+        repo_root, tracked, set(_corpus_invariants(docs_dir, entries)[0])))
     problems.extend(check_ceilings(repo_root, base)[0])
     return problems
 

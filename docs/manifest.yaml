@@ -104,6 +104,7 @@
     - scripts/verify_docs.py::check_ceilings
     - scripts/verify_docs.py::_check_sourcemap
     - scripts/verify_docs.py::_check_invariants
+    - scripts/verify_docs.py::_check_prose_invariant_references
     - scripts/verify_docs.py::write_nav
     - scripts/coverage_ledger.py::check
   tests:
@@ -111,7 +112,7 @@
     - tests/test_coverage_ledger.py
     - tests/test_docs_impact_contract.py
   related: [doctrine/publishing.md]
-  defines_invariants: [INV-DOC-001, INV-DOC-002, INV-DOC-003, INV-DOC-004, INV-DOC-005, INV-DOC-007, INV-DOC-008]
+  defines_invariants: [INV-DOC-001, INV-DOC-002, INV-DOC-003, INV-DOC-004, INV-DOC-005, INV-DOC-007, INV-DOC-008, INV-DOC-009]
   invariant_tests:
     INV-DOC-001: [tests/test_pin_doc_corpus_shape.py::test_pin_inv_doc_001_front_matter_and_code_wins_line]
     INV-DOC-002: [tests/test_pin_doc_corpus_shape.py::test_pin_inv_doc_002_architecture_documents_follow_the_section_order]
@@ -124,3 +125,5 @@
     INV-DOC-008:
       - tests/test_docs_impact_contract.py::test_inv_doc_008_a_waiver_for_an_updated_document_is_refused
       - tests/test_docs_impact_contract.py::test_inv_doc_008_only_the_tip_commit_may_carry_a_waiver
+    INV-DOC-009:
+      - tests/test_verify_docs.py::test_a_python_docstring_citing_an_undefined_id_in_a_defined_family_is_caught

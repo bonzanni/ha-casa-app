@@ -1,7 +1,7 @@
 """P-5 (unified plugin arch): plugin MCP-tool grants + required env vars
 derived from the RESOLVED artifact path; fail-closed can_use_tool.
 
-Grant namespace per code.claude.com/docs/en/mcp.md ("Plugin MCP tool names"):
+Grant namespace per https://code.claude.com/docs/en/mcp.md ("Plugin MCP tool names"):
 mcp__plugin_<plugin>_<server>; server-level (no __<tool> suffix). The
 resident/specialist/executor option-builder integration tests live in
 tests/test_agent_plugin_binding.py (Task 7)."""
