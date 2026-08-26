@@ -160,6 +160,19 @@ now reports the set of plugins it actually iterated, and the gate requires membe
 POSITIVELY before reading the absence of an issue as a verdict (INV-PLUG-011). Absence is not
 consent, and this was the last place in this design that treated it as such.
 
+**A plugin's setup history outlives the plugin, and standing health must not.** The
+episode store is durable and deliberately so: it is the only record of why a setup
+failed, and the status tool answers from it long after the fact. The health report is
+the other thing entirely — what is wrong *now* — so the projection from one to the other
+is filtered to plugins the registry still lists. Without that filter a plugin the
+operator removed kept a live standing issue, and a notification with it, until the
+episode aged out days later. The filter runs only when the registry read was valid, and
+consults the very name map that read produced: a torn or unreadable registry yields no
+names, and treating that emptiness as authority would erase every setup row in the
+report — the same defect, relocated and worse. So on a bad read nothing is filtered and
+every row stands. Removal clears the row's notification mark along with the row, which
+is what lets a reinstall that fails again be announced once more rather than silently.
+
 ## Failure behavior
 
 **No consent verdict has settled for an artifact.** The obligation holds, indefinitely and

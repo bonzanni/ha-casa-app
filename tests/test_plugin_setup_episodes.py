@@ -1062,3 +1062,126 @@ async def test_execution_retries_exhaust_to_failed_with_note(wired):
     assert row["execution_retries"] == 3
     await asyncio.sleep(0)                  # note is scheduled, not awaited
     assert any("manually" in n for n in wired["notes"])
+
+
+# --- #653: a removed plugin's setup history is not a standing health issue --
+
+def _regen_into(monkeypatch, health, *, registered, extras=()):
+    """Run the real ``tools._regenerate_plugin_health`` against *health*, with
+    a registry that lists exactly *registered* (None ⇒ an INVALID registry).
+
+    Only the inputs this station does not own are faked: the resolver, the
+    registry, and the three reconciler recomputations. The setup-episode merge
+    under test is the production one, reading the real durable store.
+    """
+    import plugin_registry
+    import tools
+
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", health)
+    monkeypatch.setattr(plugin_registry, "resolve_all",
+                        lambda: SimpleNamespace(issues=[], warnings=[]))
+    monkeypatch.setattr(
+        plugin_registry, "load_registry",
+        lambda *a, **k: SimpleNamespace(
+            raw={"schema_version": 1, "plugins": []},
+            valid=registered is not None,
+            entries=[{"name": n, "targets": []} for n in (registered or [])]))
+    for mod_name in ("trigger_reconcile", "callback_reconcile",
+                     "event_reconcile"):
+        monkeypatch.setattr(__import__(mod_name), "current_issues", lambda: [])
+    # A registered plugin is also graded by the runtime verify lane; keep it
+    # ready so the counts below describe the setup lane alone.
+    monkeypatch.setattr(tools, "_tool_verify_plugin_state",
+                        lambda **k: {"ready": True, "targets": []})
+    tools._regenerate_plugin_health(list(extras))
+    import plugin_health
+    return plugin_health.load_report(health)
+
+
+def _setup_rows(report, plugin="elevenlabs"):
+    return [d for d in report["issues"]
+            if d["stage"] == "setup" and d["name"] == plugin]
+
+
+@pytest.mark.asyncio
+async def test_removed_plugin_setup_failure_stops_standing_and_can_recur(
+        wired, monkeypatch, tmp_path):
+    """#653: the setup-episode merge appended every ``health_issues()`` row with
+    no registration filter, so a plugin the operator REMOVED kept a standing
+    health issue — and its notification — until the 72h decay.
+
+    The whole sequence is asserted on counts, because the interesting failure is
+    a row that lingers and a fingerprint that outlives it: removal must clear
+    the row AND its mark, so that a reinstall which fails again is announceable
+    exactly once more.
+    """
+    import plugin_health
+    health = tmp_path / "health.json"
+
+    _prompt()
+    await _decide()
+    pse._update_episode(pse.episodes()[0]["id"], status="failed",
+                        last_error="ambiguous server binding")
+
+    # Registered and failed: it stands, and it is announceable.
+    r1 = _regen_into(monkeypatch, health, registered=["elevenlabs"])
+    assert len(_setup_rows(r1)) == 1
+    fp = _setup_rows(r1)[0]["fingerprint"]
+    assert len(plugin_health.new_fingerprints(r1)) == 1
+    plugin_health.mark_notified([fp], path=health,
+                                generation=r1["generation"])
+    assert len(plugin_health.load_report(health)["notified_fingerprints"]) == 1
+
+    # Removed from a VALID registry: the row goes, and so does its mark.
+    r2 = _regen_into(monkeypatch, health, registered=[])
+    assert len(_setup_rows(r2)) == 0
+    assert len(r2["notified_fingerprints"]) == 0
+    # The durable episode itself is untouched — only the health projection.
+    assert len(pse.episodes()) == 1
+
+    # Reinstalled and failing again: exactly one new announcement, not zero.
+    r3 = _regen_into(monkeypatch, health, registered=["elevenlabs"])
+    assert len(_setup_rows(r3)) == 1
+    assert len(plugin_health.new_fingerprints(r3)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_registry_erases_no_setup_row(wired, monkeypatch,
+                                                       tmp_path):
+    """The filter must FAIL OPEN. A torn or unreadable registry read yields an
+    empty registered-name set, and a filter that consulted it anyway would erase
+    every setup row in the report — the #653 defect, relocated and worse. The
+    guard is that the filter runs only under the same ``reg.valid`` that builds
+    the name map at all.
+    """
+    health = tmp_path / "health.json"
+    _prompt()
+    await _decide()
+    pse._update_episode(pse.episodes()[0]["id"], status="failed",
+                        last_error="ambiguous server binding")
+
+    report = _regen_into(monkeypatch, health, registered=None)   # invalid
+    assert len(_setup_rows(report)) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_filter_touches_only_the_setup_merge(wired, monkeypatch,
+                                                       tmp_path):
+    """Rows from every OTHER lane survive a valid registry that lists none of
+    them: a carried-forward extra for an unregistered plugin is exactly the
+    shape the D2/B3 carry-forward rule exists to preserve.
+    """
+    from plugin_registry import PluginIssue
+    health = tmp_path / "health.json"
+    _prompt()
+    await _decide()
+    pse._update_episode(pse.episodes()[0]["id"], status="failed",
+                        last_error="ambiguous server binding")
+
+    extra = PluginIssue(name="gone-plugin", target=None, stage="reload",
+                        reason_code="reload_required")
+    report = _regen_into(monkeypatch, health, registered=["elevenlabs"],
+                         extras=[extra])
+    assert len(_setup_rows(report)) == 1
+    assert len([d for d in report["issues"]
+                if d["name"] == "gone-plugin"]) == 1

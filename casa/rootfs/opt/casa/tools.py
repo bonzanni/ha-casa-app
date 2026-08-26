@@ -10915,6 +10915,23 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
     try:
         import plugin_setup_episodes
         for row in plugin_setup_episodes.health_issues():
+            # #653: a removed plugin's failed episode is durable state, and
+            # merging it unfiltered left it standing as a LIVE health issue —
+            # and a notification — for a plugin no longer installed, until the
+            # 72h decay. Filter to registered names.
+            #
+            # The filter is gated on the SAME `reg.valid` that already gated
+            # `entry_targets` above, and reuses that very map. That is the
+            # fail-open guarantee, structurally rather than as a second
+            # condition that could drift: when the registry read is torn or
+            # invalid, entry_targets is empty AND this branch does not run, so
+            # a bad read can never erase every setup row. The membership test
+            # is only ever applied to a set a valid registry produced. Nothing
+            # else here is filtered — not the resolver issues, the extras, the
+            # runtime rows, the trigger/callback/event rows, nor the episode
+            # HISTORY the status tool reads separately.
+            if reg.valid and (row.get("plugin") or "") not in entry_targets:
+                continue
             # #554: health_issues() emits the episode's last_error as `detail`
             # and this call site dropped it, so a failed setup reached the
             # operator as a bare reason code while the explanation sat unread.
