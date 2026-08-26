@@ -222,10 +222,15 @@ keyboard's settled post outcome rather than from the pending rows it computed, s
 re-issue that needed keyboards and landed none is a typed `delivery_failed`, never a
 success with nothing on screen.
 
-**A store the status tool needs cannot be read.** The unreadable store is named in the
-result — `standing_unavailable`, `history_unavailable`, `routing_unavailable` — instead of
-reaching the agent as an empty list that reads as health. `ok` stays true: a partial answer
-honestly labelled is still a successful read.
+**A store the status tool needs cannot be read.** Where the tool can see the failure it
+names the store in the result — `standing_unavailable`, `history_unavailable`,
+`routing_unavailable` — rather than letting it reach the agent as an empty list that reads
+as health; `ok` stays true, because a partial answer honestly labelled is still a successful
+read. Where the failure is absorbed below the tool the marker is simply absent, and its
+absence is not a claim that the answer is complete: a setup-episode store that fails to load
+is reset to an empty one underneath, so the tool reads zero rows successfully and cannot
+tell that from a box where no setup has ever run. Which conditions each marker covers, and
+the one it does not, is in [`plugin-health.md`](plugin-health.md).
 
 ## Extension points
 
