@@ -65,7 +65,8 @@ broker holding it is in-memory, so a record on disk is what keeps a keyboard on 
 honest across a restart, and what guarantees the waiting session is eventually told
 *something*. It is the same disk-leads discipline as a job, with the opposite duplicate
 policy (INV-JOB-006), and it is deliberately timid about the operator's attention —
-a machine-timed question yields to a human one in both directions (INV-JOB-008).
+a machine-timed question yields to a human one in both directions, and only to a human
+one that actually reached the screen (INV-JOB-008).
 
 **Cancellation has a physical boundary.** Ready or claimed work cancels; authorized work
 enters a stopping/revocation handshake; playing or delivered is too late — a cancellation
@@ -180,8 +181,13 @@ start until this reconcile runs, records exist on disk and the broker is empty, 
 revocation landing in that window cancels nothing. Each revocation therefore leaves a
 process-local MARKER carrying the selector it used — a role, a role and a trigger's labels,
 or a chat — and the reconciler settles, rather than restores, a record that matches one.
-The markers are retired once the pass completes, after which every surviving record is in
-the broker and a revocation's own scan sees it. The rule stays intact — no live decision
+Not every retirement is a revocation, and only revocations mark. A DISPLACEMENT — a
+human question taking the lane — has nothing to settle: if the live map is empty, the
+previous process's keyboard is still on screen, unedited, and nobody was told anything,
+so marking the record revoked would assert an event that did not happen. Those callers
+deliberately leave no marker and let this reconcile decide from the lane's real
+occupancy. The markers are retired once the pass completes, after which every surviving
+record is in the broker and a revocation's own scan sees it. The rule stays intact — no live decision
 reads the store — and the one state where the broker cannot speak for it is handled where
 the store is legitimately read. The selector has to be the revocation's OWN: keying it on
 the role's lifecycle epoch, which a single-trigger revocation also bumps, discarded every
@@ -205,13 +211,33 @@ What it does not cover: the shutdown cancel, which settles nothing, edits nothin
 the record for the next boot — the keyboard is still on screen and the question is still
 honest. Nor does it cover a bus enqueue that is accepted and then never runs.
 
-**INV-JOB-008**: A scheduled question never displaces a live operator question: it is admitted only into an idle attention lane, and an authorization challenge cancels a live scheduled one before registering its own.
+**INV-JOB-008**: A scheduled question never displaces a live operator question: it is admitted only into an idle attention lane, and a human question retires a live scheduled one only once that human question is itself delivered and still live.
 
 Enforced synchronously in the broker: registration with an idle requirement across both
 halves of the lane (plain asks and authorization challenges are separate scopes), and a
-predicate cancel from the challenge's own no-await block. Refused, the tool answers
-`operator_busy` and asks nothing. The direction is one-way by design — a human question
-supersedes a machine one, never the reverse.
+predicate cancel run after the keyboard is on screen, guarded by asking the broker's live
+map for that exact request id — in one no-await block, so a tap cannot land between the
+question and the answer. Refused admission, the tool answers `operator_busy` and asks
+nothing. The direction is one-way by design — a human question supersedes a machine one,
+never the reverse.
+
+The delivered-and-still-live half is the whole rule, not a detail of it. Retiring a
+scheduled question cannot be undone: its finish hook has already edited the keyboard to
+expired and delivered the terminal continuation to the session that asked (INV-JOB-007).
+So a question that retires one at ADMISSION and then fails to post leaves the operator
+with neither — the machine one expired, the human one never on screen. Displacing at
+delivery instead makes that state unreachable on the live path rather than rarer (the one
+window it does not reach is named below), and there is nothing to compensate afterwards
+because nothing was spent. A challenge that displaces therefore
+leaves no boot-revocation marker: it has taken the lane in this process, and the marker
+exists only to speak for a revocation the live map could not see.
+
+What it does not cover: a boot reconcile that runs strictly BETWEEN a challenge's
+registration and its post settling. The idle requirement reads scope occupancy and cannot
+tell a posting challenge from a delivered one, so it settles the durable record
+`operator_busy` and a post that then fails leaves neither question. That loss belongs to
+the reconciler's notion of occupancy, not to the challenge's ordering, and no ordering
+change closes it.
 
 What it does not cover: selection from the durable record file. Live decisions read the
 broker, which is synchronous; the record file is written after an await and would miss an
@@ -229,9 +255,10 @@ exactly the rule a live one gets, with no second mechanism to keep in step. The 
 above is unchanged: a human question still supersedes a machine one, never the reverse. What
 changed is when — the displacement happens once the replacement is DELIVERED and still live,
 not when it is merely registered, so a keyboard whose post fails, or which is cancelled while
-that post is in flight, no longer takes a waiting question with it. The authorization
-challenge is the stated exception and keeps clearing the lane at admission, before its own
-keyboard is posted.
+that post is in flight, no longer takes a waiting question with it. Since #680 that is the
+whole rule, with no exception: an authorization challenge — and every other challenge the
+coordinator raises — displaces on delivery too, from its own driver, rather than clearing
+the lane at admission.
 
 ## Failure behavior
 
@@ -311,6 +338,8 @@ long an attempt may hold.
 - `tests/test_voice_job_result.py`
 - `tests/test_scheduled_ask_user.py`
 - `tests/test_scheduled_ask_attention_lane.py`
+- `tests/test_challenge_delivery_displacement.py`
+- `tests/test_scheduled_ask_boot_window_displacement.py`
 
 **Related**
 - [`architecture/voice.md`](../architecture/voice.md)

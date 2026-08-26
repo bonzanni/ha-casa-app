@@ -435,3 +435,73 @@ async def test_cancel_for_chat_selects_only_same_dm_scheduled(_fresh_broker):
     assert len(finishes["interactive-same"]) == 0
     assert len(finishes["scheduled-authz"]) == 0
     assert len(finishes["scheduled-other"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. #680 — a challenge that never reached the screen displaces nothing
+# ---------------------------------------------------------------------------
+
+
+class _FailingPostChannel(_FakeChannel):
+    """`post_dm_keyboard` DELIVERS for the scheduled ask and then FAILS for the
+    challenge — the one asymmetry the red case needs."""
+
+    def __init__(self):
+        super().__init__()
+        self.fail_next = False
+
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               short_labels=False):
+        self.posts.append((chat_id, request_id, text, tuple(options)))
+        self.calls.append("post")
+        if self.fail_next:
+            return None
+        return self._post_result
+
+
+async def test_failed_challenge_post_leaves_scheduled_live(
+    _fresh_broker, _fresh_store,
+):
+    """RED pre-fix (#680). `ChallengeCoordinator.register_challenge` retires the
+    live scheduled question at ADMISSION, in the same no-await block as its own
+    `broker.register` and strictly BEFORE the owned driver posts the keyboard.
+    When that post then fails the broker unregisters the challenge, so the
+    operator is left with NEITHER question: the machine-timed one already
+    expired and continued, and the human one never appeared.
+
+    Drives the REAL coordinator, never `scheduled_asks.cancel_for_chat` — the
+    ordering is the defect, and every existing assertion about this seam calls
+    the helper directly, which cannot see an ordering at all.
+    """
+    import authz_grants
+
+    channel = _FailingPostChannel()
+    scheduled = await _ask_on(channel, _scheduled_origin())
+    assert scheduled["status"] == "awaiting_user"
+    scheduled_rid = scheduled["request_id"]
+    assert len(_fresh_store.all()) == 1
+
+    channel.fail_next = True
+    coordinator = authz_grants.ChallengeCoordinator()
+    handle = coordinator.register_challenge(
+        ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
+        channel=channel, challenge_text="Approve send_email?",
+    )
+    assert handle.created is True
+    assert await handle.settled_post() == "delivery_failed"
+    await _fresh_broker.drain_hooks()
+
+    # The challenge is gone — that is the premise, not the finding.
+    assert len(_fresh_broker.pending(
+        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 0
+    # Two posts were attempted: the scheduled keyboard, then the failed one.
+    assert len(channel.posts) == 2
+    assert sum(p[1] == scheduled_rid for p in channel.posts) == 1
+
+    # The finding: the operator's scheduled question is untouched.
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    assert len(live) == 1
+    assert sum(r == scheduled_rid for r in live) == 1
+    assert len(channel.edits) == 0
+    assert len(channel.scheduled_dispatches) == 0
+    assert len(_fresh_store.all()) == 1
