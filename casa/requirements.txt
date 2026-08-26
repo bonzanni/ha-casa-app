@@ -19,7 +19,7 @@
 # Casa-side by H-2 (v0.36.1): every hook callback returns {} / _deny(...),
 # never None (hooks.py) — Casa is immune regardless of the upstream guard.
 claude-agent-sdk==0.2.128
-python-telegram-bot==22.7
+python-telegram-bot==22.8
 # Bumped 3.13.5 -> 3.14.1 (v0.59.1): clears 11 security advisories (deserialization,
 # HTTP request-smuggling/pipelining, websocket memory-limit bypass, etc.), all
 # fixed by <=3.14.1. Dependabot #97 (branch deleted before recreate).
