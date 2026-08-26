@@ -201,7 +201,7 @@ guards, and the privileged-role check every mutating tool applies, all run ahead
 commit, so the refusal leaves the registry exactly as it was and says which phase it
 stopped in (INV-TOOL-003). What a refusal does not unwind is work that already landed
 outside the registry: a published store artifact stays published and an installed system
-requirement stays installed, to be reused or swept later rather than rolled back here.
+requirement stays installed.
 
 **The registry commits and the runtime does not follow.** A reload or verification failure
 after the save is reported as committed-but-not-ready rather than compensated
