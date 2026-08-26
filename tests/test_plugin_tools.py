@@ -1383,8 +1383,13 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
 
     root = (Path(tools_mod.__file__).parent / "defaults/agents/executors"
             / "configurator/doctrine/recipes")
-    remove = (root / "plugin/remove.md").read_text().lower()
-    uninstall = (root / "specialist/uninstall.md").read_text().lower()
+    # Whitespace-normalized: a fragment assertion that a line rewrap can break
+    # is pinning the prose's layout, not its instruction.
+    def _flat(p):
+        return " ".join((root / p).read_text().lower().split())
+
+    remove = _flat("plugin/remove.md")
+    uninstall = _flat("specialist/uninstall.md")
 
     assert sum(fragment in remove for fragment in (
         "claude_plugin_data", "not deleted", "re-attaches",
@@ -1395,6 +1400,10 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     assert sum(fragment in remove for fragment in (
         "report `plugin_data_note` to the operator verbatim",
         "restate it as a deletion or a revocation")) == 2
+    # Sol/Terra diff-review r1: the recipe covers unassign TOO, and
+    # plugin_unassign never carries the note — an unconditional reporting step
+    # invites a survival warning after an operation that removed nothing.
+    assert "only when the result carries `plugin_data_note`" in remove
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (
@@ -1402,7 +1411,7 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
         "neither credential deletion nor provider revocation")) == 2
     assert sum(fragment in uninstall for fragment in (
         "plugin_data_note", "plugin_data_plugins", "claude_plugin_data",
-        "not\n   deleted", "no provider revocation")) == 5
+        "not deleted", "no provider revocation")) == 5
     assert sum(fragment in uninstall for fragment in (
         "report it to the operator verbatim",
         "do not restate it as a deletion or a revocation")) == 2

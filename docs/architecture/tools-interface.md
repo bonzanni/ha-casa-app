@@ -217,9 +217,13 @@ Enforced in the synchronous cores, after the registry commit: `_plugin_remove_sy
 the disclosure into its ok payload — so a committed-but-not-ready outcome (INV-TOOL-004)
 carries it too, since the survival fact is settled the moment the registry saves — and
 `specialist_uninstall` adds it, naming the cascaded plugins, whenever its bundle swapped owned
-entries out. The one `ok:false` envelope whose registry mutation persists, the
-`compensation_failed` arm of a failed uninstall sequencer, carries it in attempted-removal
-wording. The shipped surfaces say the same thing: the tool's own description, the plugin
+entries out. The one `ok:false` envelope whose registry mutation can persist, the
+`compensation_failed` arm of a failed uninstall sequencer, discloses on measurement rather
+than on the flag: a failed compensation does not establish that the removal survived, because
+the rollback restores the registry in its first step and then does fallible work, so the arm
+reads the registry back and names only the entries actually still absent. A read that fails
+establishes nothing either way and the envelope says so, while still stating the two facts
+that hold regardless — nothing was deleted and nothing was revoked. The shipped surfaces say the same thing: the tool's own description, the plugin
 removal recipe, and the specialist uninstall recipe, each instructing the engager to relay the
 note rather than restate it as a deletion.
 

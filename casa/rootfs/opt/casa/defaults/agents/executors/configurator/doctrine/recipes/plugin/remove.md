@@ -25,10 +25,13 @@ and `plugin_data_note`.
 3. The tool reloads the affected in-casa agents and verifies the plugin is GONE
    from their bindings (an `absent` postcondition). A non-ok result means an
    agent still binds it — surface it.
-4. Report `plugin_data_note` to the operator verbatim, alongside the outcome —
-   it is the only place they learn that stored authorizations survived. Do NOT
-   restate it as a deletion or a revocation: Casa performed neither. If they
-   want the access to end, they revoke it at the provider.
+4. **Only when the result carries `plugin_data_note`** — a `plugin_remove`
+   that committed; a `plugin_unassign` never carries it, and there is nothing
+   to warn about after one — report `plugin_data_note` to the operator
+   verbatim, alongside the outcome. It is the only place they learn that
+   stored authorizations survived. Do NOT restate it as a deletion or a
+   revocation: Casa performed neither. If they want the access to end, they
+   revoke it at the provider.
 
 If the plugin required secrets, clear its plugin-env.conf entries afterward (see
 `secrets.md`) — and that clearing DOES need its own

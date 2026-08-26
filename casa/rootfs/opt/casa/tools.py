@@ -10783,12 +10783,22 @@ _PLUGIN_DATA_NOTE_COMMITTED = (
     "the same plugin re-attaches to it. No provider revocation was performed; "
     "revoke at the provider if that access should end.")
 _PLUGIN_DATA_NOTE_ATTEMPTED = (
-    "The registry removal persists although the rollback did not complete. "
-    "Casa removed registry entries only: the plugins' CLI-managed persistent "
-    "data directories (CLAUDE_PLUGIN_DATA — they may hold stored "
+    "The rollback did not complete and these registry entries are still "
+    "removed. Casa removed registry entries only: the plugins' CLI-managed "
+    "persistent data directories (CLAUDE_PLUGIN_DATA — they may hold stored "
     "authorizations such as OAuth tokens) were not deleted, and a reinstall "
     "re-attaches to them. No provider revocation was performed; revoke at the "
     "provider if that access should end.")
+# Sol diff-review r1: the registry could not be read back, so whether these
+# entries are still removed is UNKNOWN — and the envelope says so rather than
+# picking a side. The two facts that do not depend on the answer are stated
+# flatly; they are true either way.
+_PLUGIN_DATA_NOTE_INDETERMINATE = (
+    "The rollback did not complete and Casa could not read the registry back, "
+    "so whether these entries are still removed is unknown. Either way Casa "
+    "deleted no plugin data: their CLI-managed persistent data directories "
+    "(CLAUDE_PLUGIN_DATA — they may hold stored authorizations such as OAuth "
+    "tokens) were not deleted, and no provider revocation was performed.")
 
 
 def _plugin_data_disclosure(note: str, plugins: "list[str] | None" = None) -> dict:
@@ -10802,6 +10812,28 @@ def _plugin_data_disclosure(note: str, plugins: "list[str] | None" = None) -> di
     if plugins is not None:
         fields["plugin_data_plugins"] = list(plugins)
     return fields
+
+
+def _absent_owned_names(txn, names: "list[str]") -> "tuple[list[str], bool]":
+    """Which of `names` are absent from the registry NOW, and whether the
+    registry could be read at all. Sync — callers on the loop use to_thread.
+
+    `(_, False)` means unreadable or invalid: it is not evidence of absence and
+    must never be reported as any. Never raises; an unexpected read failure is
+    the same answer as an invalid document."""
+    try:
+        data = plugin_registry.load_registry(
+            getattr(txn, "registry_path", None) or plugin_registry.REGISTRY_PATH)
+        if not data.valid:
+            return [], False
+        present = {e.get("name") for e in (data.raw.get("plugins") or [])
+                   if isinstance(e, dict)}
+    except Exception:  # noqa: BLE001 — an unreadable registry is "unknown"
+        logger.warning("could not read the registry back after a failed bundle "
+                       "compensation; plugin-data disclosure is indeterminate",
+                       exc_info=True)
+        return [], False
+    return [n for n in names if n not in present], True
 
 
 # #554: the variable NAMES are the one actionable fact in an env-shaped health
@@ -11570,8 +11602,24 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         owned = [e.get("name") for e in (getattr(txn, "before_entries", None) or [])
                  if isinstance(e, dict) and e.get("name")]
         if getattr(txn, "op", "") == "uninstall" and owned:
-            env.update(_plugin_data_disclosure(
-                _PLUGIN_DATA_NOTE_ATTEMPTED, owned))
+            # Sol diff-review r1: `compensation_failed` does NOT establish that
+            # the removal persisted. rollback_disk() restores the registry in
+            # its FIRST step and then does fallible work (tuple/sidecar writes,
+            # the fresh-install symlink GC, the ack re-insert), any of which can
+            # raise after the entries are already back. Disclosing on the flag
+            # alone would tell an operator their plugin data survived a removal
+            # that had just been undone — the false-warning half of this
+            # invariant. So MEASURE it: read the registry back and disclose only
+            # for the names actually still absent. A read that fails establishes
+            # nothing either way, and says so.
+            still_absent, readable = await asyncio.to_thread(
+                _absent_owned_names, txn, owned)
+            if not readable:
+                env.update(_plugin_data_disclosure(
+                    _PLUGIN_DATA_NOTE_INDETERMINATE, owned))
+            elif still_absent:
+                env.update(_plugin_data_disclosure(
+                    _PLUGIN_DATA_NOTE_ATTEMPTED, still_absent))
         return env
     env["rolled_back"] = True
     if compensated["runtime_ok"]:

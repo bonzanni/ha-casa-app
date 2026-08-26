@@ -2000,3 +2000,92 @@ async def test_rolled_back_and_non_uninstall_arms_disclose_nothing(
         assert env[expect_flag] is True
         counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
     assert counts == [0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_failed_compensation_that_restored_the_registry_discloses_nothing(
+        monkeypatch) -> None:
+    """Sol diff-review r1: `compensation_failed` does not prove the removal
+    persisted — rollback_disk() restores the registry FIRST and then does
+    fallible work. When the entries are back, a survival warning would be the
+    false half of the invariant."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    # The registry read-back finds the entry restored.
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
+    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
+        {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
+    assert env["compensation_failed"] is True
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_compensation_discloses_only_the_names_still_absent(
+        monkeypatch) -> None:
+    """A partial restore is the interesting case: one entry back, one still
+    removed. Only the one still removed is named."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
+    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
+        {"name": "mtg.gmail", "artifact_id": "a" * 64},
+        {"name": "mtg.calendar", "artifact_id": "b" * 64}])
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 4
+    assert env["plugin_data_plugins"] == ["mtg.calendar"]
+    assert "still removed" in env["plugin_data_note"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_registry_after_failed_compensation_says_unknown(
+        monkeypatch) -> None:
+    """A read that fails establishes nothing either way. Both arms — an
+    invalid document and a raising loader — say so rather than picking a side,
+    and still state the two facts that hold regardless."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
+        {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    def _raise(path=None):
+        raise OSError("registry unreadable")
+
+    counts = []
+    for loader in (lambda path=None: RegistryData(
+            raw={}, entries=[], entry_issues=[], valid=False), _raise):
+        monkeypatch.setattr(plugin_registry, "load_registry", loader)
+        env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+        assert "unknown" in env["plugin_data_note"]
+        assert env["plugin_data_plugins"] == ["mtg.gmail"]
+        assert env["provider_revocation_performed"] is False
+    assert counts == [4, 4]
