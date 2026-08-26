@@ -178,8 +178,11 @@ and that re-running is safe either way. The tap-callback never-raise contract is
 — `except Exception`, so `CancelledError` stays control flow.
 
 What it does not cover, deliberately: `True` is **not a delivery receipt**, and it is not
-a deliverability claim either. It says exactly two things: the delivery seam returned
-normally, and the record sampled immediately afterwards still had `active`/`idle` status.
+a deliverability claim either. It says exactly one thing: the requesting engagement's
+record still had `active`/`idle` status when the tap reached the callback. That sample is
+taken *before* the delivery seam runs, not after — a terminal transition can win the
+registry lock during the seam's own bookkeeping await, after which the turn is handed off
+anyway, and a later sample would report that real hand-off as a failure.
 `deliver_system_turn` still returns `None`, so a first resume failure, a failed context
 rebuild or the shutdown gate can abandon delivery after a positive report; those paths
 surface only best-effort in the engagement topic (their own send failures are swallowed), and the success wording therefore claims only that a continuation was

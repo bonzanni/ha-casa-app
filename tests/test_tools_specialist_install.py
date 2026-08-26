@@ -1846,3 +1846,40 @@ async def test_662_production_reconcile_cb_reports_a_literal_false(
     actual = (len(observations), [result])
     assert actual == (1 if tap_state == "gone" else 2, [False]), (
         f"reconciliation facts: {actual!r}")
+
+
+@pytest.mark.asyncio
+async def test_662_a_handed_off_turn_is_not_reported_as_a_failure(
+    monkeypatch, tmp_path,
+) -> None:
+    """Diff review round 5: the record can go terminal AFTER the tap and still
+    have its turn handed off — `_resume_and_ready` re-resolves, passes, and
+    only then awaits `update_user_turn`, where a queued terminal transition can
+    win the registry lock before `create_task`. A status sample taken after the
+    seam would call that real hand-off a failure and tell the operator to start
+    over. The sample is therefore taken BEFORE the seam, which is also the
+    question INV-SPEC-010 actually asks: was the engagement live at tap time?"""
+    from tools import specialist_install_inspect, engagement_var
+
+    delivered: list = []
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+
+    async def _deliver(r, text):
+        # The seam hands the turn off, and the engagement terminalises inside
+        # it — exactly the window `update_user_turn` opens.
+        delivered.append((r, text))
+        r.status = "completed"
+
+    _wire_inspect(monkeypatch, tmp_path, channel=_resume_channel(
+        registry=SimpleNamespace(get=lambda eid: rec), deliver=_deliver))
+    cap = _capture_reconcile(monkeypatch)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        await specialist_install_inspect.handler(
+            {"repo": "owner/repo", "ref": "main"})
+    finally:
+        engagement_var.reset(token)
+
+    actual = (await cap["reconcile_cb"](), len(delivered), rec.status)
+    assert actual == (True, 1, "completed"), f"hand-off facts: {actual!r}"

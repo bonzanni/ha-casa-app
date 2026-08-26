@@ -12106,6 +12106,20 @@ async def specialist_install_inspect(args: dict) -> dict:
             rec = registry.get(eng.id)
             if rec is None:
                 return False
+            # Sampled BEFORE the seam runs. The question this answers is the
+            # invariant's own — was the requesting engagement live AT TAP TIME
+            # — and a sample taken afterwards answers a different one badly: a
+            # terminal transition can win the registry lock during
+            # `_resume_and_ready`'s own `update_user_turn` await, after which
+            # the turn IS handed off and a post-sample would report the
+            # hand-off as a failure. The seam is still called for a record this
+            # sample already rejects: it owns the #649 inbound admission and
+            # re-resolves under its own lock, and leaving that call pattern
+            # alone keeps this diff off the shared hook body.
+            #
+            # What this result does and does not establish is stated once, in
+            # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
+            live = getattr(rec, "status", None) in ("active", "idle")
             await deliver(
                 rec,
                 "The operator approved the install consent for "
@@ -12114,12 +12128,7 @@ async def specialist_install_inspect(args: dict) -> dict:
                 "the staged values, then finish the recipe (wire delegation, "
                 "config_git_commit, casa_reload, emit_completion).",
             )
-            # Sampled AFTER the await, not before it: `registry.get` hands
-            # back the registry's own object, so a terminalisation landing
-            # during the await is caught, which a pre-check would have missed.
-            # What this result does and does not establish is stated once, in
-            # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
-            return getattr(rec, "status", None) in ("active", "idle")
+            return live
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent auto-resume failed (slug=%s) — operator can nudge "
@@ -12587,6 +12596,9 @@ async def persona_install_inspect(args: dict) -> dict:
             rec = registry.get(eng.id)
             if rec is None:
                 return False
+            # Sampled BEFORE the seam — same as the specialist sibling above,
+            # and for the same reason; INV-PERS-011.
+            live = getattr(rec, "status", None) in ("active", "idle")
             await deliver(
                 rec,
                 "The operator approved the install consent for persona "
@@ -12595,8 +12607,7 @@ async def persona_install_inspect(args: dict) -> dict:
                 "values, then finish the recipe (config_git_commit, casa_reload, "
                 "emit_completion).",
             )
-            # Same as the specialist sibling above; INV-PERS-011.
-            return getattr(rec, "status", None) in ("active", "idle")
+            return live
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent persona auto-resume failed (persona_id=%s) — "
