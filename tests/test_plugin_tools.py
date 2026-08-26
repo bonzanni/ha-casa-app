@@ -1359,6 +1359,29 @@ async def test_plugin_update_discloses_nothing(monkeypatch, tmp_path):
     assert sum(k in payload for k in _disclosure_keys()) == 0
 
 
+def test_the_disclosure_notes_claim_only_what_they_can():
+    """Terra diff-review r6: the note is relayed VERBATIM to the operator, so
+    its own opening is an operator-facing claim. "Casa removed the registry
+    entry only" was false — a removal also purges the artifact grants, cancels
+    the challenges and revokes the trigger consents. Third occurrence of one
+    shape (an operator-facing claim overstating what Casa did), so the clause
+    is cut rather than qualified: each note states the two facts it can
+    establish and nothing about Casa's internal teardown."""
+    import tools as tools_mod
+
+    notes = (tools_mod._PLUGIN_DATA_NOTE_COMMITTED,
+             tools_mod._PLUGIN_DATA_NOTE_ATTEMPTED,
+             tools_mod._PLUGIN_DATA_NOTE_INDETERMINATE)
+    assert sum("registry entr" in n.lower() and "only" in n.lower()
+               for n in notes) == 0
+    # Every revocation statement names the provider side.
+    for n in notes:
+        low = n.lower()
+        assert low.count("revocation") == low.count("provider revocation")
+        assert "revoked" not in low or "revoke at the provider" in low
+    assert sum("not deleted" in n.lower() for n in notes) == 3
+
+
 async def test_plugin_remove_description_discloses_survival_without_claiming_more(
         monkeypatch, tmp_path):
     """#676: the description is the only surface an agent reads BEFORE calling.

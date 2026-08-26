@@ -223,7 +223,8 @@ than on the flag: a failed compensation does not establish that the removal surv
 the rollback restores the registry in its first step and then does fallible work, so the arm
 reads the registry back and names only the entries actually still absent. A read that fails
 establishes nothing either way and the envelope says so, while still stating the two facts
-that hold regardless — nothing was deleted and nothing was revoked. The shipped surfaces say the same thing: the tool's own description, the plugin
+that hold regardless — the plugin's CLI-managed persistent data was not deleted, and no
+provider revocation was performed. The shipped surfaces say the same thing: the tool's own description, the plugin
 removal recipe, and the specialist uninstall recipe, each instructing the engager to relay the
 note rather than restate it as a deletion.
 
@@ -240,7 +241,8 @@ direct `plugin_remove` whose reload-and-verify tail raises. In both the mutation
 committed and there is no result envelope to carry the disclosure, so the operator gets a
 hard error where a persisting removal went unstated. That is a bounded, non-silent gap: the
 error is loud, and the removal recipe tells the engager to say the removal may have taken
-effect and to check with `plugin_list()`. Closing it properly means converting exception
+effect, that the plugin's CLI-managed persistent data was not deleted and no provider
+revocation was performed either way, and to check with `plugin_list()`. Closing it properly means converting exception
 handling on these paths into structured outcomes — a different change, and one that touches
 every bundle tool rather than the removal ones.
 

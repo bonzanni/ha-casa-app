@@ -10777,14 +10777,14 @@ _PLUGIN_HEALTH_PATH = "/data/plugin-health.json"
 # perform rather than the grant's state, which INV-TOOL-005 forbids it to
 # claim either way.
 _PLUGIN_DATA_NOTE_COMMITTED = (
-    "Casa removed the registry entry only. The plugin's CLI-managed "
-    "persistent data directory (CLAUDE_PLUGIN_DATA — it may hold stored "
-    "authorizations such as OAuth tokens) was not deleted, and a reinstall of "
-    "the same plugin re-attaches to it. No provider revocation was performed; "
-    "revoke at the provider if that access should end.")
+    "The plugin's CLI-managed persistent data directory (CLAUDE_PLUGIN_DATA — "
+    "it may hold stored authorizations such as OAuth tokens) was not deleted, "
+    "and a reinstall of the same plugin re-attaches to it. No provider "
+    "revocation was performed; revoke at the provider if that access should "
+    "end.")
 _PLUGIN_DATA_NOTE_ATTEMPTED = (
     "The rollback did not complete and these registry entries are still "
-    "removed. Casa removed registry entries only: the plugins' CLI-managed "
+    "removed. Their plugins' CLI-managed "
     "persistent data directories (CLAUDE_PLUGIN_DATA — they may hold stored "
     "authorizations such as OAuth tokens) were not deleted, and a reinstall "
     "re-attaches to them. No provider revocation was performed; revoke at the "
