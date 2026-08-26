@@ -49,6 +49,15 @@ broadly — and it is outside the specialist dispatch ceiling, so a third-party 
 reach it. It answers two different questions from two stores: what is standing wrong now, and
 what happened during a past setup, which only the episode row's recorded error can say.
 
+Its result envelope carries an optional third thing: whether an answer is COMPLETE. A
+store it could not read used to reach the agent as an empty list, which reads as health,
+so the tool now adds a conditional statement naming what it could not see —
+`standing_unavailable`, `history_unavailable`, `routing_unavailable`. They are conditional
+rather than always present, so the healthy answer keeps exactly the keys it always had;
+`ok` stays true, because a partial answer honestly labelled is still a successful read.
+See [`plugin-health.md`](plugin-health.md) for which conditions each one covers, and for
+the one it does not.
+
 **One table is the whole media surface, and a kind is not a file type.** The
 `send_media` capability derives everything type-specific — the schema's `kind` enum, the
 argument check, the content gate, the delivered-filename extension allowlist, the size cap

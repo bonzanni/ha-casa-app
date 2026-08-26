@@ -167,9 +167,22 @@ persisted by that write. A failure *earlier* in boot still produces a report: th
 appends its own issue row and writes again; it is the write itself failing that leaves
 nothing behind. The write is an atomic regeneration, so what remains on disk is the
 previous boot's report or no file at all. The operator surfaces do not currently
-distinguish that from health: a leftover report keeps being read as the standing set,
-and an absent or unreadable one loads as no report — which the status tool reports as
-an empty standing set.
+distinguish that from health in one respect: a leftover report keeps being read as the
+standing set. What the status tool no longer does is present an unreadable one as health.
+A report that is absent, unreadable, unparseable, or valid JSON that is not an object all
+load as no report, and the tool used to answer all four with an empty standing set —
+indistinguishable from a box where nothing is wrong, so the assistant asserted the absence
+of problems on the strength of a file it could not read. Absence alone is ordinary and
+still says nothing; every other case, including a probe that cannot tell which it is,
+now carries a statement that the standing set is not the full one. The same holds for a
+setup history whose read raises, and for the case where a routing overlay is unavailable
+so the report's trigger and callback rows describe a state no reconcile has confirmed.
+
+Those statements are conditional keys, deliberately: the healthy answer keeps the exact
+shape it always had, because an answer that always carries a caveat is an answer whose
+caveat stops being read. And the history statement covers a read that raises, not a
+store that is malformed — that one is caught below the tool, which sees a successful read
+of zero rows, so the marker's absence is not a claim that the history is complete.
 
 A report is normalized as it is read, and normalization filters rather than rejects. External
 corruption of the report file — a non-object document, a row that is not a mapping, an

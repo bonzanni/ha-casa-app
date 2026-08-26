@@ -217,3 +217,129 @@ def test_selection_through_the_shipped_grants_exposes_it_and_no_mutation_tool():
 def test_takes_no_arguments_and_declares_none():
     assert tools_mod.plugin_status.input_schema.get("properties") == {}
     assert not tools_mod.plugin_status.input_schema.get("required")
+
+
+# --- #677: an unreadable report is damage, never presented as health --------
+
+async def test_a_healthy_empty_report_stays_exactly_three_keys(store):
+    """The disclosure keys are CONDITIONAL. A box with a readable report and
+    nothing wrong must keep answering in the shape it always did — otherwise
+    every healthy answer starts carrying a caveat, which is how a real one stops
+    being read."""
+    out = await _call()
+    assert out == {"ok": True, "standing": [], "history": []}
+
+
+async def test_an_absent_report_is_ordinary_absence(store, tmp_path,
+                                                    monkeypatch):
+    """No report yet is the normal state of a box that has not regenerated
+    health. It is the one None case that is not damage, so it discloses
+    nothing."""
+    monkeypatch.setattr(tools_mod, "_PLUGIN_HEALTH_PATH",
+                        str(tmp_path / "absent.json"))
+    out = await _call()
+    assert out == {"ok": True, "standing": [], "history": []}
+
+
+@pytest.mark.parametrize("body", ["{not json", '"a string"', "[1, 2]"])
+async def test_a_present_unreadable_report_is_disclosed(store, tmp_path, body):
+    """#677: `load_report` returns None for unreadable, unparseable, and valid
+    JSON that is not an object alike, and `or {}` made all three indistinguishable
+    from a healthy empty report — so the agent asserted absence of problems on
+    the strength of a file it could not read."""
+    (tmp_path / "plugin-health.json").write_text(body, encoding="utf-8")
+    out = await _call()
+    assert out["standing"] == []
+    assert "standing_unavailable" in out
+    assert "could not be read" in out["standing_unavailable"]
+
+
+async def test_a_failing_existence_probe_is_disclosed_as_damage(store,
+                                                                monkeypatch):
+    """"Cannot tell" must not read as "healthy": when the probe that would
+    distinguish absent from unreadable fails itself, the answer discloses."""
+    import pathlib
+    real_exists = pathlib.Path.exists
+
+    def boom(self):
+        if str(self).endswith("plugin-health.json"):
+            raise OSError("probe failed")
+        return real_exists(self)
+    monkeypatch.setattr(tools_mod, "_PLUGIN_HEALTH_PATH", "/nope/plugin-health.json")
+    monkeypatch.setattr(pathlib.Path, "exists", boom)
+    out = await _call()
+    assert "standing_unavailable" in out
+
+
+async def test_a_raising_health_read_is_disclosed(store, monkeypatch):
+    monkeypatch.setattr(plugin_health, "load_report",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    out = await _call()
+    assert out["standing"] == []
+    assert "standing_unavailable" in out
+
+
+async def test_a_raising_history_read_is_disclosed(store, monkeypatch):
+    """The two halves still degrade independently: a broken history must not
+    cost the standing set, and it must say so rather than showing an empty
+    record."""
+    set_health, _ = store
+    set_health(issues=[_issue()])
+    monkeypatch.setattr(plugin_setup_episodes, "episodes",
+                        lambda status=None: (_ for _ in ()).throw(OSError("x")))
+    out = await _call()
+    assert len(out["standing"]) == 1
+    assert "history_unavailable" in out
+    assert "standing_unavailable" not in out
+
+
+async def test_the_tool_never_raises_when_both_halves_are_broken(store,
+                                                                 monkeypatch):
+    monkeypatch.setattr(plugin_health, "load_report",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(plugin_setup_episodes, "episodes",
+                        lambda status=None: (_ for _ in ()).throw(OSError("x")))
+    out = await _call()
+    assert out["ok"] is True
+    assert len([k for k in out if k.endswith("_unavailable")]) == 2
+
+
+@pytest.mark.parametrize("which", ["plugin", "callback"])
+async def test_unavailable_routing_is_disclosed_over_a_readable_report(
+        store, monkeypatch, which):
+    """The joint with #606. A readable report can still be stale in a specific,
+    invisible way: while a routing overlay is the unavailable sentinel, no
+    reconcile has published an authoritative set, so the trigger, callback and
+    pending-approval rows in it describe a routing state nobody has confirmed.
+    The report reads clean, so nothing else discloses this.
+    """
+    import agent as agent_mod
+    from types import SimpleNamespace
+
+    registry = SimpleNamespace(
+        plugin_overlay_unavailable=lambda: which == "plugin",
+        callback_overlay_unavailable=lambda: which == "callback")
+    monkeypatch.setattr(agent_mod, "active_runtime",
+                        SimpleNamespace(trigger_registry=registry),
+                        raising=False)
+    out = await _call()
+    assert out["standing"] == []
+    assert "routing_unavailable" in out
+    assert "standing_unavailable" not in out
+
+
+async def test_a_registry_whose_probe_raises_never_breaks_the_tool(
+        store, monkeypatch):
+    import agent as agent_mod
+    from types import SimpleNamespace
+
+    def boom():
+        raise RuntimeError("registry probe exploded")
+    monkeypatch.setattr(
+        agent_mod, "active_runtime",
+        SimpleNamespace(trigger_registry=SimpleNamespace(
+            plugin_overlay_unavailable=boom,
+            callback_overlay_unavailable=boom)),
+        raising=False)
+    out = await _call()
+    assert out == {"ok": True, "standing": [], "history": []}

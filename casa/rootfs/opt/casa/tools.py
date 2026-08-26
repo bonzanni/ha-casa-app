@@ -13357,17 +13357,52 @@ def _tool_plugin_status() -> dict:
     broadly, since it holds secrets.
 
     Each half degrades independently: a corrupt report must not cost the
-    operator the episode history that would have explained the failure."""
+    operator the episode history that would have explained the failure.
+
+    #677: damage is DISCLOSED, never presented as health. `load_report` returns
+    None for a report that is absent, unreadable, unparseable, or valid JSON
+    that is not an object — and `or {}` collapsed all four into `standing: []`,
+    byte-identical to a healthy report with no problems. So the agent asserted
+    that nothing was wrong on the strength of a file it could not read. The
+    absent case really is ordinary (a box that has not regenerated health yet),
+    so only that one is silent; every other case adds a conditional
+    `standing_unavailable`. The keys are conditional so the healthy answer stays
+    exactly `{"ok": True, "standing": [], "history": []}` — a genuinely empty
+    report still reads as health.
+
+    `history_unavailable` covers an episode read that RAISES. It does not cover
+    a malformed or wrong-schema store: `plugin_setup_episodes._load()` catches
+    that itself and returns an empty store, so `episodes()` succeeds with zero
+    rows and nothing here can tell it from a box where no setup has ever run.
+    Disclosing that needs an availability-bearing read on the episode store, and
+    is not in this change — so the absence of this marker is not a claim that
+    the history is complete."""
     standing: list = []
     history: list = []
+    unavailable: dict = {}
     try:
         import plugin_health
-        report = plugin_health.load_report(Path(_PLUGIN_HEALTH_PATH)) or {}
+        report = plugin_health.load_report(Path(_PLUGIN_HEALTH_PATH))
+        if report is None:
+            # Absent is ordinary; anything else is damage. A probe that itself
+            # fails is damage too — "cannot tell" must not read as "healthy".
+            try:
+                present = Path(_PLUGIN_HEALTH_PATH).exists()
+            except Exception:  # noqa: BLE001
+                present = True
+            if present:
+                unavailable["standing_unavailable"] = (
+                    "the plugin health report exists but could not be read, so "
+                    "the standing problems below are not the full set")
+            report = {}
         standing = [plugin_health.describe_issue(d)
                     for d in (list(report.get("issues") or [])
                               + list(report.get("warnings") or []))]
     except Exception:  # noqa: BLE001 — a read tool must never raise at a resident
         logger.exception("plugin_status: health report read failed")
+        unavailable["standing_unavailable"] = (
+            "the plugin health report could not be read, so the standing "
+            "problems below are not the full set")
     try:
         import plugin_setup_episodes
         rows = [r for r in plugin_setup_episodes.episodes()
@@ -13376,7 +13411,26 @@ def _tool_plugin_status() -> dict:
         history = [_episode_sentence(r) for r in rows[:_STATUS_HISTORY_LIMIT]]
     except Exception:  # noqa: BLE001
         logger.exception("plugin_status: episode store read failed")
-    return {"ok": True, "standing": standing, "history": history}
+        unavailable["history_unavailable"] = (
+            "the plugin setup history could not be read, so the entries below "
+            "are not the full record")
+    # Best-effort and never raising: while a plugin routing overlay is the
+    # unavailable sentinel, no reconcile has published an authoritative set, so
+    # trigger/callback/pending-approval rows in the report may be stale.
+    try:
+        import agent as agent_mod
+        registry = getattr(getattr(agent_mod, "active_runtime", None),
+                           "trigger_registry", None)
+        if registry is not None and (registry.plugin_overlay_unavailable()
+                                     or registry.callback_overlay_unavailable()):
+            unavailable["routing_unavailable"] = (
+                "plugin webhook/callback routing is not currently established, "
+                "so trigger, callback and pending-approval entries may be stale")
+    except Exception:  # noqa: BLE001
+        logger.debug("plugin_status: routing availability probe skipped",
+                     exc_info=True)
+    return {"ok": True, "standing": standing, "history": history,
+            **unavailable}
 
 
 @tool(
