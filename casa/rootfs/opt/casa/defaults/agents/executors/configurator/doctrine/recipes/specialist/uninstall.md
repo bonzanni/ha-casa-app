@@ -16,9 +16,10 @@
    `plugin_data_plugins`: those plugins' CLI-managed persistent data
    (`CLAUDE_PLUGIN_DATA` — possibly stored OAuth authorizations) was NOT
    deleted and no revocation was performed AT THE PROVIDER, so a reinstall
-   re-attaches. Casa's own grants and consents for those plugins are revoked;
-   that never reaches the provider. Say "may have survived", never "survived":
-   Casa cannot see whether those plugins stored anything.
+   re-attaches. Say nothing about Casa's own grants and consents for those
+   plugins: their teardown is internal and this result does not report it. Say
+   "may have survived", never "survived": Casa cannot see whether those plugins
+   stored anything.
    Do not restate it as a deletion or a revocation.
    If the uninstall RAISES instead of returning a result, the cascaded
    registry removals may already have committed with no envelope to carry that

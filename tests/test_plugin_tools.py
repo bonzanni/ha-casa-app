@@ -1426,11 +1426,23 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     # revocation statement is provider-scoped, and both recipes say which side
     # of Casa each fact lives on.
     assert sum("at the provider" in text for text in (remove, uninstall)) == 2
-    assert sum(("grants and consents" in text and "are revoked" in text)
-               for text in (remove, uninstall)) == 2
     for text in (remove, uninstall):
         assert "nothing was revoked. " not in text
         assert "casa performed neither. " not in text
+    # Rounds 4 and 5, same shape twice: an operator-facing claim about
+    # revocation that overstates what Casa did. Round 4 killed the unqualified
+    # "Casa revoked nothing" (false — a removal DOES tear down Casa's own
+    # grants and consents). Round 5 found the replacement equally wrong in two
+    # ways: `specialist_uninstall` never calls _remove_plugin_callbacks at all,
+    # and even on the direct path the revoke is best-effort and swallows its
+    # own failure. So the affirmative claim is CUT, not sharpened — neither
+    # recipe asserts a Casa-side revocation in either direction.
+    for text in (remove, uninstall):
+        assert "consents for the plugin are revoked" not in text
+        assert "consents for those plugins are revoked" not in text
+    assert sum(fragment in text for text, fragment in (
+        (remove, "not reported in the result"),
+        (uninstall, "this result does not report it"))) == 2
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (
