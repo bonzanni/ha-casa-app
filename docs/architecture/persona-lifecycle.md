@@ -148,9 +148,10 @@ reused *if it still applies*, because an explicit revocation legitimately makes 
 prompt correct. A contained callback raise takes the same third, weaker wording as the
 specialist sibling.
 
-What it does not cover: `True` is not a delivery receipt. See INV-SPEC-010 in
-`architecture/specialist-lifecycle.md` for exactly what a positive report establishes and
-what remains outside it.
+What it does not cover: `True` is not a delivery receipt, and the report can be wrong in
+both directions. See INV-SPEC-010 in `architecture/specialist-lifecycle.md` for exactly
+what a positive report establishes, what remains outside it, and why the absence of a
+positive report is not a guarantee that the operator learned anything.
 
 ## Failure behavior
 

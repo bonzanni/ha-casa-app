@@ -178,17 +178,27 @@ and that re-running is safe either way. The tap-callback never-raise contract is
 — `except Exception`, so `CancelledError` stays control flow.
 
 What it does not cover, deliberately: `True` is **not a delivery receipt**, and it is not
-a deliverability claim either. It says exactly one thing: the requesting engagement's
-record still had `active`/`idle` status when the tap reached the callback. That sample is
-taken *before* the delivery seam runs, not after — a terminal transition can win the
-registry lock during the seam's own bookkeeping await, after which the turn is handed off
-anyway, and a later sample would report that real hand-off as a failure.
-`deliver_system_turn` still returns `None`, so a first resume failure, a failed context
-rebuild or the shutdown gate can abandon delivery after a positive report; those paths
-only ATTEMPT to surface in the engagement topic — the notice is best-effort and its own
-send failure is swallowed, so such a path can stay entirely silent. The success wording
-therefore claims only that a continuation was *requested*. Reporting an actual hand-off
-would widen the channel delivery contract, which is separate work.
+a deliverability claim either. It says exactly one thing — the requesting engagement's
+record still had `active`/`idle` status when the tap reached the callback — and that is
+all the DM claims: that a continuation was *requested*.
+
+The report can be wrong in **both** directions, and neither is closable from here.
+`deliver_system_turn` returns `None`, so nothing tells the callback whether a turn was
+handed off; the sample is a lock-free read of the record either side of a seam that makes
+its own decision under its own lock. A first resume failure, a failed context rebuild or
+the shutdown gate abandons delivery after a positive report; conversely a status that is
+transiently terminal — a strict terminal transition whose persistence then rolls back —
+produces a negative report for a turn that IS handed off. **Do not read the absence of a
+positive report as a guarantee that the operator learned anything.** Some of these paths
+attempt a topic notice, but the attempt is best-effort, its own send failure is swallowed,
+and some of them (a shutdown with no held inbound ticket, for one) make no attempt at all:
+assume such a path can be entirely silent. The one case that is closed here is #662's own,
+and it is closed because it is decided before the seam is ever consulted: a record already
+terminal or gone at tap time.
+
+Reporting an actual hand-off would mean `deliver_system_turn` reporting the outcome it
+already knows locally. That widens a channel contract other work depends on, and is
+tracked separately.
 
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 
