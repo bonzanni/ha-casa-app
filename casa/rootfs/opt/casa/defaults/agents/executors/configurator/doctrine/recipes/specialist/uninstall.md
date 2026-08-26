@@ -3,7 +3,7 @@
 1. Find all delegate references (Grep tool: pattern `<slug>` across
    `/config/agents/*/delegates.yaml`) and unwire them first by applying ONLY the
    edit step of `recipes/delegate/unwire.md` (do NOT run its commit/reload/emit_completion
-   — steps 3–5 below do that once) — an uninstall does NOT auto-unwire delegates.
+   — steps 4–6 below do that once) — an uninstall does NOT auto-unwire delegates.
 2. `specialist_uninstall(slug=...)`. This cascades: any plugin registry entry the slug's
    install/upgrade OWNS (registry name `<slug>.<name>`) is removed automatically as part of this
    ONE call — never `plugin_remove` it yourself (it refuses an owned entry with `kind:
@@ -11,10 +11,16 @@
    `targets` list names `specialist:<slug>`) is a DIFFERENT thing and is left alone — it is not
    removed, just left with a target nothing currently answers (surfaces as `pending_targets` the
    next time it is reloaded/verified).
-3. `config_git_commit(message="uninstall specialist <slug>")`.
-4. `casa_reload(scope="agents")` — evicts the removed agent from the live
+3. If the result carries `plugin_data_note` (it does whenever step 2 cascaded
+   owned plugins out), report it to the operator verbatim with the list in
+   `plugin_data_plugins`: those plugins' CLI-managed persistent data
+   (`CLAUDE_PLUGIN_DATA` — possibly stored OAuth authorizations) was NOT
+   deleted and no provider revocation was performed, so a reinstall re-attaches.
+   Do not restate it as a deletion or a revocation.
+4. `config_git_commit(message="uninstall specialist <slug>")`.
+5. `casa_reload(scope="agents")` — evicts the removed agent from the live
    registry (canonical commit → reload → emit order, see `completion.md`).
-5. `emit_completion(...)`.
+6. `emit_completion(...)`.
 
 CAS blobs are NOT deleted by uninstall (retained for a possible future re-install at the same
 digest, and GC sweep execution is out of this plan's scope — see Task N1d's CAS pin/reference

@@ -1883,3 +1883,120 @@ async def test_662_a_handed_off_turn_is_not_reported_as_a_failure(
 
     actual = (await cap["reconcile_cb"](), len(delivered), rec.status)
     assert actual == (True, 1, "completed"), f"hand-off facts: {actual!r}"
+
+
+# ---------------------------------------------------------------------------
+# #676 (INV-TOOL-006): an uninstall that cascades owned plugins out is a
+# committed plugin removal reached by another door, and owes the same
+# disclosure. The rolled-back arms do not — the entries are back.
+# ---------------------------------------------------------------------------
+
+_DISCLOSURE_KEYS = {"plugin_data_may_remain", "provider_revocation_performed",
+                    "plugin_data_note", "plugin_data_plugins"}
+
+
+def _uninstall_txn(monkeypatch, owned_names, *, op="uninstall"):
+    """Patch uninstall_specialist to hand back a txn whose before_entries are
+    exactly the owned rows the swap removed."""
+    import specialist_install
+    from types import SimpleNamespace
+
+    txn = SimpleNamespace(
+        slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
+        journal_path="/tmp/does-not-matter.json", op=op,
+        before_entries=[{"name": n, "artifact_id": "a" * 64} for n in owned_names])
+    monkeypatch.setattr(specialist_install, "uninstall_specialist",
+                        lambda *, slug, **kw: txn)
+    return txn
+
+
+@pytest.mark.asyncio
+async def test_uninstall_discloses_exactly_the_cascaded_plugins(monkeypatch) -> None:
+    from tools import specialist_uninstall
+
+    _uninstall_txn(monkeypatch, ["mtg.gmail", "mtg.calendar"])
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_uninstall.handler({"slug": "mtg"}))
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    assert payload["plugin_data_plugins"] == ["mtg.gmail", "mtg.calendar"]
+    assert sum((payload["plugin_data_may_remain"] is True,
+                payload["provider_revocation_performed"] is False)) == 2
+    note = payload["plugin_data_note"].lower()
+    assert sum(f in note for f in ("cli-managed", "persistent", "not deleted",
+                                   "reinstall")) == 4
+
+
+@pytest.mark.asyncio
+async def test_uninstall_with_no_owned_plugins_discloses_nothing(monkeypatch) -> None:
+    """A warning about nothing is noise: zero cascaded plugins removed no
+    plugin data, so the envelope carries zero disclosure fields."""
+    from tools import specialist_uninstall
+
+    _uninstall_txn(monkeypatch, [])
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_uninstall.handler({"slug": "mtg"}))
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_compensation_on_uninstall_discloses_the_persisting_removal(
+        monkeypatch) -> None:
+    """The one ok:false envelope whose registry mutation PERSISTS. The
+    operator is told the removal did not roll back — they must also be told
+    what it did not delete."""
+    import tools as tools_mod
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
+        {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
+    assert env["compensation_failed"] is True
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 4
+    assert env["plugin_data_plugins"] == ["mtg.gmail"]
+    assert "rollback did not complete" in env["plugin_data_note"]
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_and_non_uninstall_arms_disclose_nothing(
+        monkeypatch) -> None:
+    """Three separate negatives, each measured on its own: a rollback that
+    restored the entries; a rollback whose runtime did not converge; and an
+    INSTALL reaching the failed-compensation arm, where before_entries is the
+    PRE-SWAP owned set and nothing was removed."""
+    import tools as tools_mod
+    from types import SimpleNamespace
+
+    async def _comp_ok(txn):
+        return {"disk_ok": True, "runtime_ok": True}
+
+    async def _comp_partial(txn):
+        return {"disk_ok": True, "runtime_ok": False}
+
+    async def _comp_failed(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    def _txn(op):
+        return SimpleNamespace(slug="mtg", op=op, before_entries=[
+            {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+    counts = []
+    for comp, op, expect_flag in ((_comp_ok, "uninstall", "rolled_back"),
+                                  (_comp_partial, "uninstall",
+                                   "runtime_compensation_incomplete"),
+                                  (_comp_failed, "install",
+                                   "compensation_failed")):
+        monkeypatch.setattr(tools_mod, "_bundle_compensate", comp)
+        env = await tools_mod._bundle_seq_failure(_txn(op), seq, slug="mtg")
+        assert env[expect_flag] is True
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+    assert counts == [0, 0, 0]

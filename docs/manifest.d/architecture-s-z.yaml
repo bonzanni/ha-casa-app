@@ -84,6 +84,7 @@
     - tests/test_plugin_tools.py
     - tests/test_emit_completion_tool.py
     - tests/test_assistant_prompts.py
+    - tests/test_tools_specialist_install.py
   related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugins.md]
   defines_invariants: [INV-TOOL-001, INV-TOOL-002, INV-TOOL-003, INV-TOOL-004, INV-TOOL-005, INV-TOOL-006]
   invariant_tests:
@@ -93,6 +94,7 @@
     INV-TOOL-003: [tests/test_plugin_tools.py::test_envelope_pre_activation_failure_is_pinned_shape]
     INV-TOOL-004: [tests/test_plugin_tools.py::test_envelope_committed_but_not_ready]
     INV-TOOL-005: [tests/test_assistant_prompts.py::test_shipped_setup_prompt_carries_the_liveness_prohibition, tests/test_assistant_prompts.py::test_no_shipped_prompt_reverts_to_a_known_liveness_claim, tests/test_assistant_prompts.py::test_setup_handback_prompts_defer_to_the_tools_own_result, tests/test_assistant_prompts.py::test_assistant_refuses_to_relay_a_connection_verdict, tests/test_assistant_prompts.py::test_liveness_prohibition_reaches_a_persona_bound_assistant]
+    INV-TOOL-006: [tests/test_plugin_tools.py::test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not_v2, tests/test_plugin_tools.py::test_plugin_remove_refusals_disclose_nothing, tests/test_plugin_tools.py::test_plugin_remove_description_discloses_survival_without_claiming_more, tests/test_plugin_tools.py::test_removal_recipes_instruct_the_engager_to_surface_the_note, tests/test_tools_specialist_install.py::test_uninstall_discloses_exactly_the_cascaded_plugins, tests/test_tools_specialist_install.py::test_uninstall_with_no_owned_plugins_discloses_nothing, tests/test_tools_specialist_install.py::test_failed_compensation_on_uninstall_discloses_the_persisting_removal, tests/test_tools_specialist_install.py::test_rolled_back_and_non_uninstall_arms_disclose_nothing]
 
 - doc: architecture/trigger-secrets.md
   summary: The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.

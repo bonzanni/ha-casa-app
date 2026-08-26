@@ -10,6 +10,14 @@ Two tools, two scopes:
   removed default stays removed across upgrades (the registry's `seeded_defaults`
   bookkeeping is intentionally untouched — no resurrection).
 
+**Neither one deletes the plugin's data or revokes anything.** A removal drops
+Casa's registry entry. The plugin's CLI-managed persistent data directory
+(`CLAUDE_PLUGIN_DATA`) is NOT deleted — it may hold stored authorizations such
+as OAuth tokens, it survives the removal, and reinstalling the same plugin
+re-attaches to it. Casa performs no provider-side revocation. The tool's own
+result says so, in `plugin_data_may_remain`, `provider_revocation_performed`
+and `plugin_data_note`.
+
 ## Do it
 
 1. `plugin_list()` to confirm the name + its current targets.
@@ -17,7 +25,14 @@ Two tools, two scopes:
 3. The tool reloads the affected in-casa agents and verifies the plugin is GONE
    from their bindings (an `absent` postcondition). A non-ok result means an
    agent still binds it — surface it.
+4. Report `plugin_data_note` to the operator verbatim, alongside the outcome —
+   it is the only place they learn that stored authorizations survived. Do NOT
+   restate it as a deletion or a revocation: Casa performed neither. If they
+   want the access to end, they revoke it at the provider.
 
 If the plugin required secrets, clear its plugin-env.conf entries afterward (see
-`secrets.md`). **No separate casa_reload is needed** — reload + verify happen
+`secrets.md`) — and that clearing DOES need its own
+`casa_reload(scope="plugin_env")`, exactly as `secrets.md` instructs; clearing
+an entry is neither credential deletion nor provider revocation. **For the
+removal itself no separate casa_reload is needed** — reload + verify happen
 inside the tool. Report the outcome and `emit_completion(...)`.

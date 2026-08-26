@@ -10763,6 +10763,47 @@ async def _plugin_tools_reload_guard(scope: str):
 _PLUGIN_HEALTH_PATH = "/data/plugin-health.json"
 
 
+# #676 (INV-TOOL-006): a removal that COMMITS says what survives it. No Casa
+# code path touches the Claude CLI's per-plugin persistent data directory
+# (CLAUDE_PLUGIN_DATA) — the plugin-developer doctrine establishes that it
+# lives on the config volume and outlives every lifecycle operation — so a
+# stored authorization survives a remove and a same-name reinstall silently
+# re-adopts it. Casa does not derive or delete that path (a wrong derivation
+# is data loss, and deleting it still could not revoke the grant at the
+# provider); it DISCLOSES instead, which is the operator-delegated choice on
+# #676. The wording is operation-scoped on purpose: `may remain` because Casa
+# cannot see whether the plugin ever stored anything, and
+# `provider_revocation_performed: False` names an operation Casa did not
+# perform rather than the grant's state, which INV-TOOL-005 forbids it to
+# claim either way.
+_PLUGIN_DATA_NOTE_COMMITTED = (
+    "Casa removed the registry entry only. The plugin's CLI-managed "
+    "persistent data directory (CLAUDE_PLUGIN_DATA — it may hold stored "
+    "authorizations such as OAuth tokens) was not deleted, and a reinstall of "
+    "the same plugin re-attaches to it. No provider revocation was performed; "
+    "revoke at the provider if that access should end.")
+_PLUGIN_DATA_NOTE_ATTEMPTED = (
+    "The registry removal persists although the rollback did not complete. "
+    "Casa removed registry entries only: the plugins' CLI-managed persistent "
+    "data directories (CLAUDE_PLUGIN_DATA — they may hold stored "
+    "authorizations such as OAuth tokens) were not deleted, and a reinstall "
+    "re-attaches to them. No provider revocation was performed; revoke at the "
+    "provider if that access should end.")
+
+
+def _plugin_data_disclosure(note: str, plugins: "list[str] | None" = None) -> dict:
+    """The three (or four) disclosure fields for a PERSISTING committed
+    removal. Callers add them AFTER the registry commit, never before: a
+    pre-commit refusal changed nothing, so disclosing survival there would be
+    a claim about state the operator still has."""
+    fields = {"plugin_data_may_remain": True,
+              "provider_revocation_performed": False,
+              "plugin_data_note": note}
+    if plugins is not None:
+        fields["plugin_data_plugins"] = list(plugins)
+    return fields
+
+
 # #554: the variable NAMES are the one actionable fact in an env-shaped health
 # row, and nothing else carries them to the operator. The detail was attached to
 # `env_unresolved` only, so a `setup_env_unprovisioned` row — the commonest
@@ -11518,6 +11559,19 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
            "verify": seq.get("verify")}
     if not compensated["disk_ok"]:
         env["compensation_failed"] = True
+        # #676: this arm is the one ok:false envelope whose registry mutation
+        # PERSISTS. On an uninstall that cascaded owned plugins out, that is a
+        # committed removal the operator is being told about — so it owes the
+        # same disclosure, in attempted-removal wording. The other two arms
+        # (rolled_back, runtime_compensation_incomplete) restored the entries,
+        # so the same fields there would be false. An install/upgrade/rollback
+        # reaching this arm removed nothing: its `before_entries` is the
+        # PRE-SWAP owned set, not a removal.
+        owned = [e.get("name") for e in (getattr(txn, "before_entries", None) or [])
+                 if isinstance(e, dict) and e.get("name")]
+        if getattr(txn, "op", "") == "uninstall" and owned:
+            env.update(_plugin_data_disclosure(
+                _PLUGIN_DATA_NOTE_ATTEMPTED, owned))
         return env
     env["rolled_back"] = True
     if compensated["runtime_ok"]:
@@ -12492,8 +12546,19 @@ async def specialist_uninstall(args: dict) -> dict:
         if not seq.get("ok", True):
             return _result(await _bundle_seq_failure(txn, seq, slug=slug))
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
-    return _result({"ok": True, "slug": slug, "reloaded": seq["reloaded"],
-                     "verify": seq["verify"]})
+    # #676: the uninstall CASCADED these owned plugins out of the registry —
+    # the same persisting committed removal, reached by another door, so the
+    # same disclosure is owed. Zero owned plugins removes nothing and discloses
+    # nothing. txn.before_entries is the swap's own validated capture of exactly
+    # the entries this slug owned.
+    owned = [e.get("name") for e in (getattr(txn, "before_entries", None) or [])
+             if isinstance(e, dict) and e.get("name")]
+    payload = {"ok": True, "slug": slug, "reloaded": seq["reloaded"],
+               "verify": seq["verify"]}
+    if owned:
+        payload.update(_plugin_data_disclosure(
+            _PLUGIN_DATA_NOTE_COMMITTED, owned))
+    return _result(payload)
 
 
 @tool(
@@ -12867,8 +12932,13 @@ def _plugin_remove_sync(*, name: str) -> dict:
     _safe_remove_manifest(name)
     for stale in removed_bins:
         retire_stale_bin(stale, name, Path("/config/tools"))
+    # #676: the disclosure rides the sync core's payload, added AFTER
+    # save_registry — the survival fact is true the moment the registry commits,
+    # so a committed-but-not-ready outcome (INV-TOOL-004) must carry it too, and
+    # `core.update(seq)` in the async wrapper cannot drop it.
     return {"ok": True, "name": name, "targets": targets,
-            "artifact_retained": True, "artifact_id": artifact_id}
+            "artifact_retained": True, "artifact_id": artifact_id,
+            **_plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED)}
 
 
 def _tool_plugin_list() -> dict:
@@ -12946,7 +13016,10 @@ async def plugin_unassign(args: dict) -> dict:
 
 @tool(
     "plugin_remove",
-    "Remove a plugin from the registry entirely (artifact retained for GC).",
+    "Remove a plugin from the registry entirely (artifact retained for GC). Does NOT delete the "
+    "plugin's CLI-managed persistent data directory (CLAUDE_PLUGIN_DATA), which may hold stored "
+    "authorizations such as OAuth tokens: that data survives and a reinstall re-attaches to it. "
+    "Performs no provider-side revocation.",
     {"name": str},
 )
 async def plugin_remove(args: dict) -> dict:

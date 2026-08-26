@@ -1241,7 +1241,7 @@ async def test_plugin_unassign_absent_path_still_dispatches(
 # --- #676 INV-TOOL-006: a persisting committed removal discloses what survives -
 
 
-async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not(
+async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not_v2(
         monkeypatch, tmp_path):
     """Red case for INV-TOOL-006 (issue #676, option 2 — honest disclosure).
 
@@ -1249,8 +1249,13 @@ async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not
     weakest ok payload the operator can be handed — must disclose that the
     CLI-managed per-plugin persistent data directory was NOT deleted, that no
     provider revocation was performed, and that a reinstall re-attaches. A
-    NON-persisting envelope (a no-op plugin_unassign) must carry none of it, so
-    an unconditional implementation cannot satisfy this pin.
+    NON-persisting envelope (a no-op plugin_unassign) carries none of it, so an
+    unconditional implementation cannot satisfy this pin.
+
+    (v2: the first specification stubbed the sequencer on the shared module
+    attribute and never restored it, so its own negative arm could not reach a
+    successful no-op unassign. Re-specified and re-accepted; the superseded
+    version is gone rather than edited.)
     """
     disclosure_keys = {
         "plugin_data_may_remain",
@@ -1259,9 +1264,11 @@ async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not
         "plugin_data_plugins",
     }
 
+    # Positive: removal has committed, but runtime convergence failed.
     st = _State()
     _registered(st, name="probe", targets=["resident:assistant"])
     tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    real_seq = tools_mod._reload_and_verify_targets
 
     async def stub_seq(name, targets, *, expect):
         return {"ok": False, "kind": "postcondition_failed",
@@ -1273,28 +1280,120 @@ async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not
     r = await tools_mod.plugin_remove.handler({"name": "probe"})
     removed = json.loads(r["content"][0]["text"])
 
-    # The two predicates that establish this IS the committed-but-not-ready
-    # removal path (INV-TOOL-004), so the pin cannot drift onto another arm.
+    # Both predicates establish the committed-but-not-ready removal arm.
     assert sum((removed["activation_committed"] is True,
                 removed["runtime_ready"] is False)) == 2
-    # Exactly the three removal disclosures: plugin_data_plugins belongs to the
-    # cascaded specialist path and must be absent for an ordinary removal.
+    # Exactly the three ordinary-removal disclosures; the cascaded-removal
+    # plugin-list field belongs to specialist_uninstall and is absent here.
     assert sum(key in removed for key in disclosure_keys) == 3
-    # The mandated VALUES — a present-but-false "may remain", or a claimed
-    # provider revocation, is worse than silence.
+    # Both required boolean values are exact — a present-but-false "may remain"
+    # or a claimed provider revocation is worse than silence.
     assert sum((removed.get("plugin_data_may_remain") is True,
                 removed.get("provider_revocation_performed") is False)) == 2
     note = removed.get("plugin_data_note", "").lower()
     assert sum(fragment in note for fragment in (
         "cli-managed", "persistent", "not deleted", "reinstall")) == 4
 
-    # The negative arm: a no-op unassign commits nothing that survives, so it
-    # discloses nothing.
+    # Restore the real module function before the separate negative operation.
+    monkeypatch.setattr(tools_mod, "_reload_and_verify_targets", real_seq)
+
+    # Negative: a no-op unassignment is not a committed plugin removal.
     st2 = _State()
     _registered(st2, name="probe", targets=["resident:butler"])
     tools_mod2 = _wire(monkeypatch, tmp_path, st2, publish=_pr())
     r2 = await tools_mod2.plugin_unassign.handler({
         "name": "probe", "target": "specialist:finance"})
     unassigned = json.loads(r2["content"][0]["text"])
+
     assert unassigned["ok"] is True
     assert sum(key in unassigned for key in disclosure_keys) == 0
+
+
+def _disclosure_keys():
+    return {"plugin_data_may_remain", "provider_revocation_performed",
+            "plugin_data_note", "plugin_data_plugins"}
+
+
+async def test_plugin_remove_refusals_disclose_nothing(monkeypatch, tmp_path):
+    """#676: a refusal precedes the registry write — nothing committed, so
+    nothing survived, and a survival warning there would be a claim about state
+    the operator still has. All three pre-commit refusals carry zero fields."""
+    import plugin_registry as preg
+    from plugin_registry import RegistryData
+
+    st = _State()
+    _registered(st, name="probe", targets=["resident:assistant"])
+    st.raw["plugins"].append({
+        "name": "fin.owned", "owner": "specialist:finance",
+        "artifact_id": "d" * 64,
+        "version": "1.0.0", "targets": [],
+        "source": {"type": "github", "repo": "o/r", "ref": "v1",
+                   "revision": "git:" + "d" * 40, "subdir": ""}})
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+
+    kinds = []
+    for name in ("ghost", "fin.owned"):
+        r = await tools_mod.plugin_remove.handler({"name": name})
+        payload = json.loads(r["content"][0]["text"])
+        kinds.append(payload["kind"])
+        assert sum(k in payload for k in _disclosure_keys()) == 0
+
+    monkeypatch.setattr(preg, "load_registry", lambda path=None: RegistryData(
+        raw={}, entries=[], entry_issues=[], valid=False))
+    r = await tools_mod.plugin_remove.handler({"name": "probe"})
+    payload = json.loads(r["content"][0]["text"])
+    kinds.append(payload["kind"])
+    assert sum(k in payload for k in _disclosure_keys()) == 0
+    assert kinds == ["not_registered", "owned_by_specialist", "registry_invalid"]
+
+
+async def test_plugin_update_discloses_nothing(monkeypatch, tmp_path):
+    """#676 negative arm: an update replaces the artifact and keeps the entry —
+    the data surviving it is by design and is not a removal."""
+    st = _State()
+    st.raw["plugins"].append(_entry())
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(version="2.0.0"))
+    r = await tools_mod.plugin_update.handler({"name": "probe", "new_ref": "v2"})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _disclosure_keys()) == 0
+
+
+async def test_plugin_remove_description_discloses_survival_without_claiming_more(
+        monkeypatch, tmp_path):
+    """#676: the description is the only surface an agent reads BEFORE calling.
+    It must state the survival — and must not claim a deletion or revocation."""
+    import tools as tools_mod
+    desc = tools_mod.plugin_remove.description.lower()
+    assert sum(fragment in desc for fragment in (
+        "cli-managed", "persistent", "not delete", "reinstall",
+        "no provider-side revocation")) == 5
+    for claim in ("revokes the", "deletes the plugin's data",
+                  "authorization is revoked", "credentials are deleted"):
+        assert claim not in desc
+
+
+def test_removal_recipes_instruct_the_engager_to_surface_the_note():
+    """#676: the payload-to-operator seam. Every disclosure field can be
+    present and correct while the shipped doctrine never tells the engager to
+    relay it — in which case the operator learns nothing, which is the outcome
+    the change exists to prevent."""
+    from pathlib import Path
+    import tools as tools_mod
+
+    root = (Path(tools_mod.__file__).parent / "defaults/agents/executors"
+            / "configurator/doctrine/recipes")
+    remove = (root / "plugin/remove.md").read_text().lower()
+    uninstall = (root / "specialist/uninstall.md").read_text().lower()
+
+    assert sum(fragment in remove for fragment in (
+        "claude_plugin_data", "not deleted", "re-attaches",
+        "no provider-side revocation", "plugin_data_note")) == 5
+    # The plugin-env clarification: clearing an entry needs its OWN reload, and
+    # is not credential deletion.
+    assert sum(fragment in remove for fragment in (
+        'casa_reload(scope="plugin_env")',
+        "neither credential deletion nor provider revocation")) == 2
+    assert sum(fragment in uninstall for fragment in (
+        "plugin_data_note", "plugin_data_plugins", "claude_plugin_data",
+        "not\n   deleted", "no provider revocation")) == 5

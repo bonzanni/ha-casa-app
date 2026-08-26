@@ -199,6 +199,42 @@ assert each shipped surface carries the prohibition and has not reverted to a
 previously-shipped phrasing, which is not the same as proving no new phrasing can express the
 claim.
 
+**INV-TOOL-006**: Every result envelope describing a plugin removal that has committed and persists discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
+
+A plugin's persistent data directory belongs to the Claude CLI, not to Casa: it lives on the
+config volume, the CLI injects its path, and it outlives every lifecycle operation Casa
+performs. Nothing on the removal path touches it. So a plugin that stored an OAuth
+authorization there keeps it after `plugin_remove`, and installing the same plugin again
+re-adopts the standing grant — which used to happen with no surface saying so, because the
+removal result named only the retained artifact (#676).
+
+The fix is disclosure, not deletion, and the choice was the operator's. Deleting would bind
+Casa to an external path convention it does not own, where a derivation error is data loss
+rather than a failed operation; and it would still not revoke anything, because the grant
+lives at the provider. Disclosure is the part that is true under either option.
+
+Enforced in the synchronous cores, after the registry commit: `_plugin_remove_sync` spreads
+the disclosure into its ok payload — so a committed-but-not-ready outcome (INV-TOOL-004)
+carries it too, since the survival fact is settled the moment the registry saves — and
+`specialist_uninstall` adds it, naming the cascaded plugins, whenever its bundle swapped owned
+entries out. The one `ok:false` envelope whose registry mutation persists, the
+`compensation_failed` arm of a failed uninstall sequencer, carries it in attempted-removal
+wording. The shipped surfaces say the same thing: the tool's own description, the plugin
+removal recipe, and the specialist uninstall recipe, each instructing the engager to relay the
+note rather than restate it as a deletion.
+
+The wording is bounded by INV-TOOL-005, which is why it reads the way it does. `may remain`,
+because Casa cannot see whether the plugin ever stored anything; and
+`provider_revocation_performed: false` names an operation Casa did not perform rather than the
+grant's state, which Casa has no standing to report in either direction.
+
+What it does not cover: envelopes that describe no persisting removal carry none of it — the
+pre-commit refusals, `plugin_unassign`, `plugin_update`, and the rolled-back arms, where the
+entries are back. Nor does it cover the arm where the uninstall sequencer raises: compensation
+runs and the exception propagates, so there is no result envelope to disclose in, and the
+operator gets a hard error rather than a green result. Making that arm speak would mean
+converting exception handling into structured outcomes, which is a different change.
+
 ## Failure behavior
 
 **A malformed request.** Invalid JSON, a missing or unknown name, a non-object request,
@@ -352,6 +388,7 @@ that distinction is the contract.
 - `tests/test_plugin_tools.py`
 - `tests/test_emit_completion_tool.py`
 - `tests/test_assistant_prompts.py`
+- `tests/test_tools_specialist_install.py`
 
 **Related**
 - [`architecture/mcp-and-tools.md`](../architecture/mcp-and-tools.md)
