@@ -161,6 +161,14 @@ _662_CORRECTIVE = (
 )
 
 
+_662_UNCERTAIN = (
+    "⚠️ Approved and saved — but the install of 'mtg' hit an internal error "
+    "and its automatic start could not be confirmed. Check the configurator "
+    "topic; re-running the install is safe either way, and the approval "
+    "recorded for this exact version is reused if it still applies."
+)
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
@@ -262,8 +270,11 @@ async def test_662_a_raising_callback_is_contained_and_selects_the_corrective_ed
     finish = coordinator.finish_factory(88, req)
     await finish({"outcome": "answered", "option_index": 0})  # must not raise
 
+    # A raise is the ONE branch where the outcome is unknown rather than
+    # known-negative — the callback may have handed the turn off before it blew
+    # up — so it must not assert a definite non-start (diff review round 3).
     actual = (len(acks.records), len(channel.edits), channel.edits[0][2])
-    assert actual == (1, 1, _662_CORRECTIVE), f"raise facts: {actual!r}"
+    assert actual == (1, 1, _662_UNCERTAIN), f"raise facts: {actual!r}"
 
 
 async def test_662_an_absent_callback_selects_the_corrective_edit() -> None:

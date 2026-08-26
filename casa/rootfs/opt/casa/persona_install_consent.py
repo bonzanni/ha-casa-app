@@ -87,6 +87,7 @@ def prompt_persona_install_consent(
                 # establishes is stated once, in INV-PERS-011 (which defers to
                 # INV-SPEC-010 for the detail).
                 outcome: object = False
+                raised = False
                 if reconcile_cb is not None:
                     try:
                         outcome = await reconcile_cb()
@@ -95,12 +96,23 @@ def prompt_persona_install_consent(
                         logger.exception(
                             "post-consent persona install reconcile raised "
                             "(persona_id=%s)", inspection.persona_id)
-                        outcome = False
+                        outcome, raised = False, True
                 if outcome is True:
                     await channel.edit_dm_message(
                         chat_id, message_id,
                         "✅ Approved — requested an automatic configurator "
                         f"continuation for {inspection.persona_id!r}")
+                elif raised:
+                    # See the specialist sibling: the one branch where the
+                    # outcome is unknown rather than known-negative.
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        f"⚠️ Approved and saved — but the install of "
+                        f"{inspection.persona_id!r} hit an internal error and "
+                        "its automatic start could not be confirmed. Check the "
+                        "configurator topic; re-running the install is safe "
+                        "either way, and the approval recorded for this exact "
+                        "version is reused if it still applies.")
                 else:
                     await channel.edit_dm_message(
                         chat_id, message_id,

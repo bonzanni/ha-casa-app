@@ -32,6 +32,14 @@ def _inspection() -> SimpleNamespace:
     )
 
 
+_UNCERTAIN = (
+    "⚠️ Approved and saved — but the install of 'judge' hit an internal error "
+    "and its automatic start could not be confirmed. Check the configurator "
+    "topic; re-running the install is safe either way, and the approval "
+    "recorded for this exact version is reused if it still applies."
+)
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
@@ -141,8 +149,9 @@ async def test_662_a_raising_callback_is_contained_and_selects_the_corrective_ed
     finish = coordinator.finish_factory(88, req)
     await finish({"outcome": "answered", "option_index": 0})  # must not raise
 
+    # See the specialist sibling: a raise must not assert a definite non-start.
     actual = (len(acks.records), len(channel.edits), channel.edits[0][2])
-    assert actual == (1, 1, _CORRECTIVE), f"raise facts: {actual!r}"
+    assert actual == (1, 1, _UNCERTAIN), f"raise facts: {actual!r}"
 
 
 async def test_662_an_absent_callback_selects_the_corrective_edit() -> None:

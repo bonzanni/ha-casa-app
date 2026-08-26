@@ -350,6 +350,7 @@ def prompt_specialist_install_consent(
                 # each overclaimed; this comment deliberately does not add a
                 # fourth.
                 outcome: object = False
+                raised = False
                 if reconcile_cb is not None:
                     try:
                         outcome = await reconcile_cb()
@@ -359,12 +360,27 @@ def prompt_specialist_install_consent(
                         logger.exception(
                             "post-consent specialist install reconcile raised "
                             "(slug=%s)", inspection.slug)
-                        outcome = False
+                        outcome, raised = False, True
                 if outcome is True:
                     await channel.edit_dm_message(
                         chat_id, message_id,
                         "✅ Approved — requested an automatic configurator "
                         f"continuation for {inspection.slug!r}",
+                    )
+                elif raised:
+                    # A raise is a CONTRACT VIOLATION (no production callback
+                    # can produce one), and it is the single branch where the
+                    # outcome is genuinely unknown rather than known-negative:
+                    # the callback may have handed the turn off before it blew
+                    # up. Say uncertain, not "not started".
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        f"⚠️ Approved and saved — but the install of "
+                        f"{inspection.slug!r} hit an internal error and its "
+                        "automatic start could not be confirmed. Check the "
+                        "configurator topic; re-running the install is safe "
+                        "either way, and the approval recorded for this exact "
+                        "version is reused if it still applies.",
                     )
                 else:
                     await channel.edit_dm_message(

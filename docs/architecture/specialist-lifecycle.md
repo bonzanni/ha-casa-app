@@ -157,10 +157,12 @@ remediation for an affected install is secret rotation. A slug whose tuple was
 tombstoned surfaces as an error-state instance; recovery is uninstall + reinstall with
 fresh consent.
 
-**INV-SPEC-010**: An install approval whose requesting engagement is terminal or gone when the operator taps it does not leave the DM claiming an install: the approval stays recorded, and the single approval edit is selected from the reconciliation outcome rather than written before it.
+**INV-SPEC-010**: An install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
 
-The acknowledgement is written synchronously at tap-commit and is never revoked by a
-failed continuation, so the recovery the corrective DM names — start a new configurator
+The invariant is conditioned on a recorded approval because an approval can legitimately
+fail to record — the persona store refuses a tap whose consent was revoked underneath it —
+and that case takes its own earlier branch, which reconciliation never reaches. When the
+acknowledgement IS written (synchronously, at tap-commit) it is never revoked by a so the recovery the corrective DM names — start a new configurator
 engagement and re-run the install — short-circuits as `pre_authorized` whenever an ack
 for that exact artifact identity is still on file. The finish hook awaits the
 reconciliation callback *before* it edits, and only a literal `True` selects the success
