@@ -168,10 +168,11 @@ wording; a bare `None`, a false, an absent callback and a (contract-violating) r
 select the corrective wording. The tap-callback never-raise contract is unchanged —
 `CancelledError` stays control flow.
 
-What it does not cover, deliberately: `True` is **not a delivery receipt**. It says the
-record was deliverable when the seam returned, nothing more. `deliver_system_turn` still
-returns `None`, so a first resume failure, a failed context rebuild or the shutdown gate
-can abandon delivery after a positive report; those paths surface — best-effort — in the
+What it does not cover, deliberately: `True` is **not a delivery receipt**, and it is not
+a deliverability claim either. It says exactly two things: the delivery seam returned
+normally, and the record sampled immediately afterwards still had `active`/`idle` status.
+`deliver_system_turn` still returns `None`, so a first resume failure, a failed context
+rebuild or the shutdown gate can abandon delivery after a positive report; those paths surface — best-effort — in the
 engagement topic, and the success wording therefore claims only that a continuation was
 *requested*. Reporting an actual hand-off would widen the channel delivery contract,
 which is separate work.

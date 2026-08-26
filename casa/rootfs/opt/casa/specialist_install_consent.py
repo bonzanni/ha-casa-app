@@ -344,10 +344,10 @@ def prompt_specialist_install_consent(
                 # bare None on every failure path, and a truthiness test would
                 # read that as success again the moment anyone forgets a
                 # `return`. What True establishes is narrow and the wording
-                # says no more than that: the engagement was live at tap time
-                # and the continuation was REQUESTED of the delivery seam. It
-                # is not a delivery receipt (deliver_system_turn is still
-                # `-> None`; INV-SPEC-010).
+                # says no more than that: the continuation was REQUESTED of the
+                # delivery seam, which returned normally with the record still
+                # active. It is neither a delivery receipt nor a deliverability
+                # claim (deliver_system_turn is still `-> None`; INV-SPEC-010).
                 outcome: object = False
                 if reconcile_cb is not None:
                     try:

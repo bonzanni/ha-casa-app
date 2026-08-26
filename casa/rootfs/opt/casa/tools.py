@@ -12114,13 +12114,15 @@ async def specialist_install_inspect(args: dict) -> dict:
                 "the staged values, then finish the recipe (wire delegation, "
                 "config_git_commit, casa_reload, emit_completion).",
             )
-            # Deliverability is read from the LIVE record AFTER the seam has
-            # run, not before it: `registry.get` hands back the registry's own
-            # object, `_resume_and_ready` re-resolves it under the topic lock,
-            # and `("active", "idle")` is that gate's own deliverable set
-            # (channels/telegram.py). Reading it here rather than up front also
-            # catches a terminalisation that lands during the await — which the
-            # pre-check ordering would have missed.
+            # What this reports, exactly: the seam returned normally, and the
+            # record SAMPLED immediately afterwards still had active/idle
+            # status. That is NOT deliverability — `_resume_and_ready` can
+            # accept the record and the `_stopping` gate then create no task,
+            # and a first resume failure leaves the record `active` too. The
+            # sample is taken AFTER the await rather than before it because
+            # `registry.get` hands back the registry's own object, so a
+            # terminalisation landing during the await is caught; a pre-check
+            # would have missed it.
             return getattr(rec, "status", None) in ("active", "idle")
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
@@ -12597,8 +12599,9 @@ async def persona_install_inspect(args: dict) -> dict:
                 "values, then finish the recipe (config_git_commit, casa_reload, "
                 "emit_completion).",
             )
-            # Same as the specialist sibling: deliverability is read from the
-            # live record AFTER the seam has run.
+            # Same as the specialist sibling: this reports that the seam
+            # returned normally and the record sampled afterwards was still
+            # active/idle — not that the turn was deliverable or delivered.
             return getattr(rec, "status", None) in ("active", "idle")
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
