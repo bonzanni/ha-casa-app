@@ -1975,7 +1975,7 @@ def commit_specialist_install(
                     before_entries=before_entries, before_tuple_files=before_tuple_files,
                     ack_records=ack_records, removed_artifact_ids=removed,
                     new_artifact_ids=tuple(sorted(new_artifact_ids)),
-                    op="install",
+                    op="install", owned_swap_committed=True,
                     target_root=component_root_string(
                         component_id=inspection.component_id, version=inspection.version,
                         component_checksum=inspection.root_digest),
@@ -2201,18 +2201,22 @@ def upgrade_specialist(
                 with specialist_materialize.MATERIALIZE_LOCK:
                     InstanceDir(slug_dir).stage_desired_owned_plugins(sidecar_doc)
                     InstanceDir(slug_dir).commit_owned_plugins_desired_to_active()
+                swapped = True
             else:
                 # pending/error: old owned generation untouched (spec §3.4).
                 before_entries = before_owned
                 removed = ()
                 new_artifact_ids = set()
+                # #676: nothing was swapped, so before_entries is the UNCHANGED
+                # owned set and holds no removal candidate.
+                swapped = False
             specialist_bundle_journal.mark_step(journal, "committed")
             txn = BundleTxn(
                 journal_path=journal, slug=slug, before_entries=before_entries,
                 before_tuple_files=before_tuple_files, ack_records=ack_records,
                 removed_artifact_ids=removed,
                 new_artifact_ids=tuple(sorted(new_artifact_ids)),
-                op="upgrade",
+                op="upgrade", owned_swap_committed=swapped,
                 target_root=component_root_string(
                     component_id=inspection.component_id, version=inspection.version,
                     component_checksum=inspection.root_digest),
@@ -3025,7 +3029,8 @@ def rollback_specialist(
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             removed_artifact_ids=removed,
             new_artifact_ids=tuple(sorted(prior_ids)),
-            op="rollback", registry_path=registry_path, specialists_dir=specialists_dir,
+            op="rollback", owned_swap_committed=True,
+            registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
     except BaseException:
@@ -3292,7 +3297,8 @@ def uninstall_specialist(
             journal_path=journal, slug=slug, before_entries=before_entries,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             removed_artifact_ids=all_ids, new_artifact_ids=(),
-            op="uninstall", registry_path=registry_path, specialists_dir=specialists_dir,
+            op="uninstall", owned_swap_committed=True,
+            registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
     except BaseException:

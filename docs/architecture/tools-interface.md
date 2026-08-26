@@ -223,10 +223,14 @@ entries out. The one `ok:false` envelope whose registry mutation can persist, th
 `compensation_failed` arm of a failed bundle sequencer, discloses on measurement rather
 than on the flag: a failed compensation does not establish that the removal survived, because
 the rollback restores the registry in its first step and then does fallible work, so the arm
-reads the registry back and names only the entries actually still absent. That measurement
-is the whole gate, and the operation is not part of it: an upgrade or a rollback swaps the
+reads the registry back and names only the entries actually still absent. That measurement decides
+WHICH names are disclosed, and the operation is not part of that decision: an upgrade or a rollback swaps the
 owned set wholesale and can drop a plugin the previous set had, which is the same persisting
-removal reached by a third door. A read that fails
+removal reached by a third door. What the measurement cannot decide is whether there was
+anything to measure: a pending-configuration or error upgrade never swaps the owned set and
+hands the UNCHANGED set through in the same field, so the transaction records whether it
+actually swapped, and one that did not says nothing — including on the indeterminate arm,
+where there is nothing to read back that could correct it. A read that fails
 establishes nothing either way and the envelope says so, while still stating the two facts
 that hold regardless — the plugin's CLI-managed persistent data was not deleted, and no
 provider revocation was performed. The shipped surfaces say the same thing: the tool's own description, the plugin

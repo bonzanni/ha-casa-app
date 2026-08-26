@@ -1055,3 +1055,30 @@ def test_bundle_install_rollback_removes_fresh_op_symlink(tmp_path: Path, monkey
 
     assert not link.is_symlink() and not link.exists()
     assert not (tmp_path / "agents" / target_name).exists()
+
+
+def test_a_pending_upgrade_does_not_claim_it_swapped_the_owned_set(
+        tmp_path: Path, monkeypatch) -> None:
+    """#676 (Terra diff-review r11): a pending/error upgrade leaves the old
+    owned generation untouched and hands the UNCHANGED owned set through as
+    `before_entries`. Read as a removal, that warns an operator about surviving
+    plugin data after an operation that removed nothing — so the transaction
+    says whether it actually swapped, and this one did not."""
+    import specialist_lifecycle
+    ctx = _prep(tmp_path, monkeypatch)
+    specialist_install.commit_specialist_install(**ctx.kw)
+
+    kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
+    _, active_txn = specialist_install.upgrade_specialist(**kw2)
+    assert active_txn.owned_swap_committed is True
+
+    kw3 = _prep_v2(tmp_path, monkeypatch, ctx, ref="v3", marker="v3")
+    monkeypatch.setattr(specialist_lifecycle, "satisfy_config",
+                        lambda **kw: (False, ["API_KEY"]))
+    instance, pending_txn = specialist_install.upgrade_specialist(**kw3)
+
+    assert instance.state == "pending-configuration"
+    assert pending_txn.owned_swap_committed is False
+    # …and it is NOT that before_entries is empty: the field carries the
+    # unchanged owned set, which is exactly why the flag has to exist.
+    assert len(pending_txn.before_entries) == 1

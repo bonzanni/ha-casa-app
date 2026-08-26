@@ -319,6 +319,15 @@ class BundleTxn:
     ack_records: list[dict]
     removed_artifact_ids: tuple[str, ...] = ()
     new_artifact_ids: tuple[str, ...] = ()
+    # #676 (INV-TOOL-006): did this transaction actually run the owned-plugin
+    # swap? `before_entries` alone cannot answer it — a pending/error upgrade
+    # sets it to the UNCHANGED owned set (spec §3.4), so a caller reading it as
+    # "the entries this op removed" would warn about surviving plugin data
+    # after an operation that removed nothing. Only a transaction that swapped
+    # has removal candidates at all. Default False is the fail-closed answer:
+    # a constructor that does not say it swapped is treated as one that did
+    # not, which can only under-claim.
+    owned_swap_committed: bool = False
     # #372 (D9b): provenance the restore-side sanitizer needs. Defaults are
     # the fail-closed shape — a constructor that does not thread them gets
     # all-keys stripping for any secret-bearing capture, never plaintext.

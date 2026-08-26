@@ -11599,9 +11599,15 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         # so the same fields there would be false. An install/upgrade/rollback
         # reaching this arm removed nothing: its `before_entries` is the
         # PRE-SWAP owned set, not a removal.
+        # Terra diff-review r11: `before_entries` is only a removal candidate
+        # when the transaction actually swapped the owned set. A pending/error
+        # upgrade leaves that set UNCHANGED and hands the same field through, so
+        # reading it as a removal warns about surviving plugin data after an
+        # operation that removed nothing — and the indeterminate arm cannot
+        # measure its way out of that, because there is nothing to measure.
         owned = [e.get("name") for e in (getattr(txn, "before_entries", None) or [])
                  if isinstance(e, dict) and e.get("name")]
-        if owned:
+        if owned and getattr(txn, "owned_swap_committed", False):
             # Sol diff-review r1: `compensation_failed` does NOT establish that
             # the removal persisted. rollback_disk() restores the registry in
             # its FIRST step and then does fallible work (tuple/sidecar writes,

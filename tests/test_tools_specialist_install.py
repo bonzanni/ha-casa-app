@@ -1904,6 +1904,7 @@ def _uninstall_txn(monkeypatch, owned_names, *, op="uninstall"):
     txn = SimpleNamespace(
         slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
         journal_path="/tmp/does-not-matter.json", op=op,
+        owned_swap_committed=True,
         before_entries=[{"name": n, "artifact_id": "a" * 64} for n in owned_names])
     monkeypatch.setattr(specialist_install, "uninstall_specialist",
                         lambda *, slug, **kw: txn)
@@ -1955,8 +1956,9 @@ async def test_failed_compensation_on_uninstall_discloses_the_persisting_removal
         return {"disk_ok": False, "runtime_ok": False}
 
     monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
-    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
-        {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
     env = await tools_mod._bundle_seq_failure(
         txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
     assert env["compensation_failed"] is True
@@ -1985,8 +1987,9 @@ async def test_rolled_back_and_non_uninstall_arms_disclose_nothing(
         return {"disk_ok": False, "runtime_ok": False}
 
     def _txn(op):
-        return SimpleNamespace(slug="mtg", op=op, before_entries=[
-            {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+        return SimpleNamespace(slug="mtg", op=op, owned_swap_committed=True,
+                               before_entries=[
+                                   {"name": "mtg.gmail", "artifact_id": "a" * 64}])
 
     import plugin_registry
     from plugin_registry import RegistryData
@@ -2034,9 +2037,10 @@ async def test_every_bundle_op_discloses_a_drop_its_rollback_could_not_undo(
 
     counts, named = [], []
     for op in ("upgrade", "rollback", "install", "uninstall"):
-        txn = SimpleNamespace(slug="mtg", op=op, before_entries=[
-            {"name": "mtg.gmail", "artifact_id": "a" * 64},
-            {"name": "mtg.dropped", "artifact_id": "b" * 64}])
+        txn = SimpleNamespace(slug="mtg", op=op, owned_swap_committed=True,
+                              before_entries=[
+                                  {"name": "mtg.gmail", "artifact_id": "a" * 64},
+                                  {"name": "mtg.dropped", "artifact_id": "b" * 64}])
         env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
         counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
         named.append(env.get("plugin_data_plugins"))
@@ -2064,8 +2068,9 @@ async def test_failed_compensation_that_restored_the_registry_discloses_nothing(
     monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
         raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
         valid=True))
-    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
-        {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
     env = await tools_mod._bundle_seq_failure(
         txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
     assert env["compensation_failed"] is True
@@ -2089,9 +2094,10 @@ async def test_failed_compensation_discloses_only_the_names_still_absent(
     monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
         raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
         valid=True))
-    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
-        {"name": "mtg.gmail", "artifact_id": "a" * 64},
-        {"name": "mtg.calendar", "artifact_id": "b" * 64}])
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64},
+                              {"name": "mtg.calendar", "artifact_id": "b" * 64}])
     env = await tools_mod._bundle_seq_failure(
         txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
     assert sum(k in env for k in _DISCLOSURE_KEYS) == 4
@@ -2114,8 +2120,9 @@ async def test_unreadable_registry_after_failed_compensation_says_unknown(
         return {"disk_ok": False, "runtime_ok": False}
 
     monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
-    txn = SimpleNamespace(slug="mtg", op="uninstall", before_entries=[
-        {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
     seq = {"ok": False, "kind": "bundle_sequence_failed"}
 
     def _raise(path=None):
@@ -2131,3 +2138,48 @@ async def test_unreadable_registry_after_failed_compensation_says_unknown(
         assert env["plugin_data_plugins"] == ["mtg.gmail"]
         assert env["provider_revocation_performed"] is False
     assert counts == [4, 4]
+
+
+@pytest.mark.asyncio
+async def test_a_transaction_that_never_swapped_discloses_nothing(monkeypatch) -> None:
+    """Terra diff-review r11: a pending/error upgrade leaves the owned set
+    UNCHANGED and hands the same `before_entries` through. Reading that as a
+    removal warns about surviving plugin data after an operation that removed
+    nothing — and the indeterminate arm cannot measure its way out, because
+    there is nothing to measure. Both read-back outcomes are checked."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    txn = SimpleNamespace(slug="mtg", op="upgrade", owned_swap_committed=False,
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    counts = []
+    for loader in (lambda path=None: RegistryData(raw={}, entries=[],
+                                                  entry_issues=[], valid=False),
+                   lambda path=None: RegistryData(
+                       raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[],
+                       entry_issues=[], valid=True)):
+        monkeypatch.setattr(plugin_registry, "load_registry", loader)
+        env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+        assert env["compensation_failed"] is True
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+    assert counts == [0, 0]
+
+
+def test_only_a_committed_owned_swap_declares_itself() -> None:
+    """The flag is fail-closed by construction: the default is False, so a
+    BundleTxn built without saying it swapped can only UNDER-claim. Measured
+    against the real dataclass, not a double."""
+    from specialist_bundle_journal import BundleTxn
+
+    txn = BundleTxn(journal_path="/tmp/x.json", slug="mtg", before_entries=[],
+                    before_tuple_files={}, ack_records=[])
+    assert txn.owned_swap_committed is False
