@@ -509,9 +509,11 @@ class _FakeInboundDriver:
     up" cannot exercise the defect.
     """
     def __init__(self, depth=0, reservations=0, texts=(),
-                 in_flight=(), in_flight_blocking=None):
+                 in_flight=(), in_flight_blocking=None,
+                 command_reservations=0):
         self._depth = depth
         self._resv = reservations
+        self._cmd_resv = command_reservations
         self._texts = list(texts)
         self._in_flight = list(in_flight)
         self._in_flight_blocking = (
@@ -523,6 +525,10 @@ class _FakeInboundDriver:
 
     def inbound_unread_depth(self, eng_id): return self._depth
     def inbound_reservations(self, eng_id): return self._resv
+    def inbound_message_reservations(self, eng_id):
+        # #664: the disclosure projection — reservations minus the ones a
+        # recognized command holds for itself (mirrors the real driver).
+        return max(0, self._resv - self._cmd_resv)
     def inbound_unread_texts(self, eng_id): return list(self._texts)
     def inbound_in_flight_texts(self, eng_id): return list(self._in_flight)
     def inbound_in_flight_blocking(self, eng_id): return self._in_flight_blocking
@@ -664,6 +670,38 @@ class TestCompletionInboundGate:
         assert "no turn start recorded" in posted
         assert "msg-that-was-never-read" in posted
 
+    async def test_error_terminal_discloses_a_pending_reservation_count(
+            self, tmp_path):
+        """RED CASE (#664, reviewer-specified): a message still inside its
+        ingress-reservation window — accepted by the Telegram handler,
+        reserved, not yet spooled, so no text exists anywhere — dies with an
+        error terminal and today is disclosed to nobody: the rendering fires
+        only on ``unread_snapshot`` (in-flight + queued texts) and the
+        reservation count feeds only the completed-path gate predicate.
+
+        Pins: a pending ingress reservation at a non-completed terminal is
+        disclosed to the engagement topic as a count. Because the reservation
+        is anonymous at this base, the disclosed total is an upper bound and
+        the copy says so ("up to N"); with no text there is no excerpt bullet
+        and the sentence ends with "." rather than ":".
+        """
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=0, reservations=1)
+        reg, rec, tch = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "error"
+        assert tch.send_response_to_topic.call_count == 1
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert "up to 1 inbound message(s)" in posted
+        assert "no turn start recorded" in posted
+        assert "•" not in posted  # no excerpt bullet — no text exists
+
     async def test_race_message_lands_between_gate_and_flip(
             self, tmp_path, monkeypatch):
         """G4 D2: depth flips to >0 after the handler gate but before the
@@ -686,6 +724,209 @@ class TestCompletionInboundGate:
         # the pre-registered consumption debt was rolled back
         assert any(r[1].startswith("emit_completion:")
                    for r in drv.cancelled_intents) or drv.cancelled_intents == []
+
+
+class TestReservationDisclosure:
+    """#664 — a message still inside its ingress-reservation window dies
+    TOLD, on every non-completed terminal. The reviewer-accepted red case
+    lives in TestCompletionInboundGate; these pin the arithmetic's edges:
+    the upper-bound copy, the command exclusion, strict typing, and the
+    accessor-failure containment.
+    """
+
+    _emit = TestCompletionInboundGate._emit
+
+    async def _setup(self, tmp_path, driver):
+        import agent as agent_mod
+        from engagement_registry import EngagementRegistry
+        from tools import init_tools
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
+                                 bus=None)
+        rec = await reg.create(
+            kind="executor", role_or_type="probe-exec",
+            driver="claude_code", task="t",
+            origin={"role": "assistant", "channel": "telegram"}, topic_id=42,
+        )
+        tch = MagicMock(); tch.send_to_topic = AsyncMock()
+        tch.send_response_to_topic = AsyncMock()
+        tch.close_topic = AsyncMock()
+        cm = MagicMock(); cm.get.return_value = tch
+        bus = MagicMock(); bus.notify = AsyncMock()
+        init_tools(
+            channel_manager=cm, bus=bus,
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=reg,
+        )
+        agent_mod.active_claude_code_driver = driver
+        return reg, rec, tch, bus
+
+    @staticmethod
+    def _posted(tch):
+        return "".join(
+            str(c.args) + str(c.kwargs)
+            for c in (list(tch.send_to_topic.call_args_list)
+                      + list(tch.send_response_to_topic.call_args_list)))
+
+    async def test_mixed_populations_fold_reservations_into_an_upper_bound(
+            self, tmp_path):
+        """Texts keep their excerpts (each exactly once); reservations add
+        a count; a total that includes anonymous reservations is an upper
+        bound and the copy says so."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=1, texts=["q-text-queued"],
+                                 in_flight=["f-text-in-flight"],
+                                 reservations=2)
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        posted = self._posted(tch)
+        assert "up to 4 inbound message(s)" in posted
+        assert posted.count("q-text-queued") == 1
+        assert posted.count("f-text-in-flight") == 1
+
+    async def test_text_only_total_keeps_the_exact_copy(self, tmp_path):
+        """The qualifier appears ONLY when reservations contribute — a
+        text-only disclosure keeps today's exact claim byte-for-byte."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(depth=2, texts=["a-text", "b-text"])
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        posted = self._posted(tch)
+        assert "2 inbound message(s)" in posted
+        assert "up to" not in posted
+
+    async def test_a_command_reservation_is_not_disclosed_by_a_racing_terminal(
+            self, tmp_path):
+        """seam pin (#664): /cancel reserves, then awaits; an agent error
+        terminal wins. The winner must not disclose the command being
+        processed as a lost message — the exclusion is classified at the
+        reservation's BIRTH, so it holds for every winner, not only the
+        command's own finalize."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(reservations=1, command_reservations=1)
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "error"
+        assert "inbound message(s)" not in self._posted(tch)
+
+    async def test_a_foreign_reservation_is_disclosed_past_a_command(
+            self, tmp_path):
+        import agent as agent_mod
+        drv = _FakeInboundDriver(reservations=2, command_reservations=1)
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert "up to 1 inbound message(s)" in self._posted(tch)
+
+    async def test_command_reservations_still_veto_completion(self, tmp_path):
+        """The exclusion is DISCLOSURE-only: the gate keeps the raw total,
+        so a command reservation still vetoes a racing successful
+        completion (the property that keeps /cancel-vs-completed races
+        deciding as before)."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(reservations=1, command_reservations=1)
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_non_int_message_reservations_reads_as_zero(self, tmp_path):
+        """Strict typing: a duck/mock accessor must read as no lost
+        reservations, never fabricate a count."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver()
+        drv.inbound_message_reservations = lambda eng_id: "1"
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        assert "inbound message(s)" not in self._posted(tch)
+
+    async def test_a_raising_accessor_costs_only_the_new_coverage(
+            self, tmp_path):
+        """seam pin: the NEW accessor lives in its own try — its failure
+        must not erase the text disclosure that already worked."""
+        import agent as agent_mod
+        def _boom(eng_id):
+            raise RuntimeError("accessor down")
+        drv = _FakeInboundDriver(depth=1, texts=["kept-text"])
+        drv.inbound_message_reservations = _boom
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        posted = self._posted(tch)
+        assert "1 inbound message(s)" in posted
+        assert "kept-text" in posted
+        assert "up to" not in posted
+
+    async def test_a_raising_accessor_cannot_disable_the_gate(self, tmp_path):
+        """seam pin: nor may the new accessor's failure switch off the veto
+        that already existed — the gate reads the raw total from its own
+        try."""
+        import agent as agent_mod
+        def _boom(eng_id):
+            raise RuntimeError("accessor down")
+        drv = _FakeInboundDriver(reservations=1)
+        drv.inbound_message_reservations = _boom
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec)
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["kind"] == "unread_inbound"
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    async def test_in_flight_failure_keeps_the_reservation_disclosure(
+            self, tmp_path):
+        """The in-flight try failing costs only the in-flight population;
+        queued texts AND the reservation count still reach the topic."""
+        import agent as agent_mod
+        def _boom(eng_id):
+            raise RuntimeError("in-flight accessor down")
+        drv = _FakeInboundDriver(depth=1, texts=["q-survives"],
+                                 reservations=1)
+        drv.inbound_in_flight_texts = _boom
+        reg, rec, tch, _ = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        posted = self._posted(tch)
+        assert "up to 2 inbound message(s)" in posted
+        assert "q-survives" in posted
+
+    async def test_disclosure_stays_out_of_the_bus_payload(self, tmp_path):
+        """Topic-only: the count rides summary_text; the bus notification
+        (which flows to semantic memory) must never carry it."""
+        import agent as agent_mod
+        drv = _FakeInboundDriver(reservations=1)
+        reg, rec, tch, bus = await self._setup(tmp_path, drv)
+        try:
+            await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert "up to 1 inbound message(s)" in self._posted(tch)
+        assert "inbound message(s)" not in str(bus.notify.call_args_list)
 
 
 class TestCompletionGateSeesTurnsInThePipe:

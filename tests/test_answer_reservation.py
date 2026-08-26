@@ -981,9 +981,11 @@ class TestInboundIngressReservation:
         ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
         ch._observer = MagicMock()
         ch._driver_reserve_inbound = (
-            lambda r: (drv.reserve_inbound(r.id), True)[1])
+            lambda r, command=False: (
+                drv.reserve_inbound(r.id, command=command), True)[1])
         ch._driver_release_inbound = (
-            lambda r: drv.release_inbound_reservation(r.id))
+            lambda r, command=False: drv.release_inbound_reservation(
+                r.id, command=command))
         return ch, reg, rec, drv
 
     async def test_reservation_visible_at_first_await(
@@ -1286,3 +1288,91 @@ class TestInCasaCompletionInboundGate:
             client.release_first.set()
             await asyncio.wait_for(first, 5)
             await _drain_turns(ch)
+
+
+class TestReservationKindThreading:
+    """#664: the command classification is decided ONCE, at the reservation's
+    birth in the handler, and travels with it to release — across the
+    channel hook, the casa_core wrapper, and the driver. A dropped kind at
+    any hop either falsely discloses the command being processed (reserve
+    hop) or leaves a phantom command counter that later hides one real
+    message (release hop)."""
+
+    async def _spied_ctx(self, tmp_path, fake_telegram_bot):
+        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
+        ch._observer = MagicMock()
+        calls: list[tuple[str, bool]] = []
+
+        def _res(r, command=False):
+            calls.append(("reserve", command))
+            drv.reserve_inbound(r.id, command=command)
+            return True
+
+        def _rel(r, command=False):
+            calls.append(("release", command))
+            drv.release_inbound_reservation(r.id, command=command)
+
+        ch._driver_reserve_inbound = _res
+        ch._driver_release_inbound = _rel
+        return ch, reg, rec, drv, calls
+
+    async def test_a_recognized_command_reserves_and_releases_as_command(
+        self, tmp_path, fake_telegram_bot,
+    ):
+        ch, reg, rec, drv, calls = await self._spied_ctx(
+            tmp_path, fake_telegram_bot)
+        u = _mk_update(chat_id=-1001, text="/silent", thread_id=555,
+                       user_id=77)
+        await ch.handle_update(u)
+        await _drain_turns(ch)
+        assert calls == [("reserve", True), ("release", True)], calls
+        # end-to-end: nothing lingers on any counter after the command
+        assert drv.inbound_reservations(rec.id) == 0
+        assert drv.inbound_message_reservations(rec.id) == 0
+        # ...and a subsequent ordinary reservation projects as exactly one
+        # lost-disclosable message (a phantom command counter would hide it)
+        drv.reserve_inbound(rec.id)
+        assert drv.inbound_message_reservations(rec.id) == 1
+        drv.release_inbound_reservation(rec.id)
+
+    async def test_an_ordinary_message_reserves_and_releases_as_message(
+        self, tmp_path, fake_telegram_bot,
+    ):
+        ch, reg, rec, drv, calls = await self._spied_ctx(
+            tmp_path, fake_telegram_bot)
+        u = _mk_update(chat_id=-1001, text="please look again",
+                       thread_id=555, user_id=77)
+        await ch.handle_update(u)
+        await _drain_turns(ch)
+        assert ("reserve", False) in calls, calls
+        assert ("reserve", True) not in calls, calls
+        assert ("release", True) not in calls, calls
+        assert drv.inbound_reservations(rec.id) == 0
+
+    def test_casa_core_wrappers_forward_the_kind(self):
+        """The production wrappers are closures inside casa_core.main(),
+        unreachable without booting it — pin the forwarding at the source
+        (the idiom test_callback_wiring.py already uses for main()'s
+        wiring). Mutation: dropping `command=command` at either hop fails
+        here."""
+        import ast as _ast
+        from pathlib import Path as _Path
+        src = (_Path(__file__).resolve().parents[1]
+               / "casa" / "rootfs" / "opt" / "casa"
+               / "casa_core.py").read_text(encoding="utf-8")
+        tree = _ast.parse(src)
+        found = {}
+        for node in _ast.walk(tree):
+            if (isinstance(node, _ast.FunctionDef) and node.name in (
+                    "_driver_reserve_inbound", "_driver_release_inbound")):
+                kwonly = [a.arg for a in node.args.kwonlyargs]
+                forwards = any(
+                    isinstance(c, _ast.Call)
+                    and any(k.arg == "command"
+                            and isinstance(k.value, _ast.Name)
+                            and k.value.id == "command"
+                            for k in c.keywords)
+                    for c in _ast.walk(node))
+                found[node.name] = ("command" in kwonly, forwards)
+        assert found.get("_driver_reserve_inbound") == (True, True), found
+        assert found.get("_driver_release_inbound") == (True, True), found

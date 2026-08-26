@@ -72,12 +72,29 @@ escalation forces, while an in-flight one is already past that boundary and kill
 could destroy a message a turn had just consumed.
 
 **A message that dies with the engagement is disclosed, not swallowed.** Every terminal
-outcome posts the messages no turn ever took up into the topic — both populations, at any
-age, excerpted and counted. The claim it makes is what the system can evidence: that no turn
-start was *recorded* for them before the engagement ended. It does not claim they were never
-read, because that is not provable for a message already handed to the CLI — the CLI can read
-the line and emit its init frame before the relay processes it, and a cancellation landing in
-that interval would otherwise assert something false about a message the agent did see.
+outcome posts the messages no turn ever took up into the topic — both text populations, at
+any age, excerpted and counted, plus a count of pending ingress reservations. The claim it
+makes is what the system can evidence: that no turn start was *recorded* for them before the
+engagement ended. It does not claim they were never read, because that is not provable for a
+message already handed to the CLI — the CLI can read the line and emit its init frame before
+the relay processes it, and a cancellation landing in that interval would otherwise assert
+something false about a message the agent did see.
+
+**A reservation contributes a count, and the count is an upper bound.** A message still
+inside its ingress-reservation window has no text anywhere — the reservation is a bare
+counter — so it cannot be excerpted, only counted. And because the reservation is anonymous,
+it can alias a text the disclosure already excerpts: a message is durably spooled before its
+reservation is released, and a terminal landing inside that window sees the same message in
+both populations. A total that includes reservations therefore reads "up to N", which is
+true in that window; a text-only total keeps the exact claim. One reservation is excluded
+by construction: the one a recognized command (`/cancel`, `/complete`, `/silent`) holds for
+itself while the handler processes it — classified at the reservation's birth, so the
+exclusion holds under *every* terminal winner, not only the command's own finalize — still
+counts toward the completion veto but is never disclosed as lost, because a command is
+consumed by the handler and never delivered to the model. The operator's ungated complete
+command finalizes past unread input deliberately (above), and it does so *disclosing* —
+the topic post counts what it committed past, including foreign reservations.
+The launch-death reporter folds the same projection into its own disclosure.
 
 ## Failure behavior
 
@@ -110,6 +127,7 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_texts`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_blocking`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_message_reservations`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.record_completion_refusal`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.force_completion_turn_boundary`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth`

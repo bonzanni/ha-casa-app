@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.235.0] - 2026-08-26
+
+### Fixed
+
+- A message you send while an engagement is dying is now counted in that
+  topic's closing post instead of vanishing silently. Whichever way the
+  engagement ends - an error, a cancellation, a timeout, or your own
+  `/complete` - the closing post now reports that up to N inbound
+  message(s) had no turn start recorded. Previously only the agent's own
+  completion looked for such a message, and only to decide whether to
+  refuse; every other ending committed past it without a word.
+- A `/cancel` or `/complete` that is still being processed is no longer
+  miscounted as a lost message. A recognised command is marked as one the
+  moment it is taken in, so it never shows up in the closing post's count -
+  including when a different ending wins the race.
+
+### Notes
+
+- The disclosed figure is an upper bound, which is why the copy says "up
+  to": a message taken in can already be safely queued by the time the
+  engagement ends, and the two are not distinguishable yet.
+
+
 ## [0.234.0] - 2026-08-25
 
 ### Changed

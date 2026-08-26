@@ -821,6 +821,36 @@ class TestTheBoundaries:
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
 
+    async def test_a_pending_reservation_is_folded_as_an_upper_bound(
+        self, tmp_path, monkeypatch,
+    ):
+        """#664: the launch-death fold reads the MESSAGE projection — a
+        reservation held by a recognized command being processed is
+        excluded (here raw=5 vs message=1, so folding the raw count is the
+        mutation this catches) — and a total that includes anonymous
+        reservations is an upper bound, said as one.
+        """
+        probe = _Probe()
+        engage_executor, registry, channel, driver = _build(
+            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
+        )
+        monkeypatch.setattr(
+            driver, "inbound_message_reservations", lambda eng_id: 1,
+            raising=False)
+        monkeypatch.setattr(
+            driver, "inbound_reservations", lambda eng_id: 5,
+            raising=False)
+
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "error"
+
+        assert len(probe.notice_texts) == 1
+        notice = probe.notice_texts[0]
+        assert "up to 1 inbound message(s)" in notice, notice
+        assert "5" not in notice, notice
+        # count-only: no text exists for a reservation, so no excerpt bullet
+        assert "•" not in notice, notice
+
 
 class TextBearingCutoffClient(ScriptedCutoffClient):
     """The production shape in full: the executor narrates, calls tools, gets

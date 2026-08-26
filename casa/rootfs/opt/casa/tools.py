@@ -7702,8 +7702,12 @@ async def _report_launch_death(
                 rec.id[:8], exc_info=True)
             in_flight = []
         try:
-            _r = (driver.inbound_reservations(rec.id)
-                  if hasattr(driver, "inbound_reservations") else 0)
+            # #664: the DISCLOSURE projection — a reservation held by a
+            # recognized command being processed is not lost input and is
+            # excluded here as at every _finalize_engagement terminal; the
+            # completion gate elsewhere keeps reading the raw total.
+            _r = (driver.inbound_message_reservations(rec.id)
+                  if hasattr(driver, "inbound_message_reservations") else 0)
             lost_reservations = _r if type(_r) is int else 0
         except Exception:  # noqa: BLE001 — fail open
             lost_reservations = 0
@@ -7768,8 +7772,11 @@ async def _report_launch_death(
                 _parts.append(f"\u2022 {_ex}")
             _more = len(lost_texts) - len(_parts)
             _total = len(lost_texts) + lost_reservations
+            # #664: reservation counts are an upper bound (see the
+            # _finalize_engagement rendering); text-only totals stay exact.
+            _count = f"up to {_total}" if lost_reservations else f"{_total}"
             text += (
-                f"\n\n\u26a0\ufe0f {_total} inbound message(s) had no turn "
+                f"\n\n\u26a0\ufe0f {_count} inbound message(s) had no turn "
                 "start recorded before this engagement ended \u2014 they may "
                 "never have been read"
                 + ((":\n" + "\n".join(_parts)) if _parts else ".")
@@ -8124,8 +8131,10 @@ async def _finalize_engagement(
     # after the flip). Accessor failures fail OPEN with a warning: a driver
     # bug must not wedge termination forever.
     unread_snapshot: list[str] = []
+    lost_reservations = 0
 
     def _terminal_hook():
+        nonlocal lost_reservations
         if driver is None or not hasattr(driver, "inbound_unread_texts"):
             return None
         try:
@@ -8168,6 +8177,25 @@ async def _finalize_engagement(
                 "unread gate below still stands", engagement.id[:8],
                 exc_info=True)
             in_flight, blocking = [], 0
+        # #664: a message still inside its ingress-reservation window has no
+        # text anywhere, but it dies with this terminal all the same — carry
+        # the DISCLOSURE projection (reservations minus the ones a recognized
+        # command holds for itself) out of the hook so the post-flip
+        # rendering can tell the operator. Guarded in its OWN try (seam
+        # review): this accessor is NEW, and its failure must cost only the
+        # new coverage — never the texts, the raw reservation count, or the
+        # gate those already feed. The GATE keeps raw ``resv``: a command
+        # reservation still vetoes a racing successful completion.
+        try:
+            _mr = (driver.inbound_message_reservations(engagement.id)
+                   if hasattr(driver, "inbound_message_reservations") else 0)
+            lost_reservations = _mr if type(_mr) is int else 0
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "finalize engagement %s: message-reservation accessor "
+                "failed — reservation disclosure skipped", engagement.id[:8],
+                exc_info=True)
+            lost_reservations = 0
         # Disclosure covers BOTH populations at any age; the veto counts only
         # in-flight young enough to still be arriving (see the driver's
         # in_flight_blocking_depth — an unbounded veto here could make a
@@ -8396,7 +8424,7 @@ async def _finalize_engagement(
                 # notification and semantic memory) and BOUNDED to one
                 # message: excerpts + count, full texts stay in the durable
                 # spool file.
-                if unread_snapshot:
+                if unread_snapshot or lost_reservations:
                     _budget = 2800
                     _parts = []
                     for _t in unread_snapshot:
@@ -8414,11 +8442,20 @@ async def _finalize_engagement(
                     # stated, the overflow text is not recoverable).
                     _spooled = driver is not None and hasattr(
                         driver, "drain_inbound_spool")
+                    # #664: reservations contribute a COUNT only — no text
+                    # exists for a message that never reached the spool. An
+                    # anonymous reservation can alias an already-spooled text
+                    # in the enqueue-to-release window, so a total that
+                    # includes reservations is an upper bound and the copy
+                    # says so; a text-only total keeps the exact claim.
+                    _total = len(unread_snapshot) + lost_reservations
+                    _count = (f"up to {_total}" if lost_reservations
+                              else f"{_total}")
                     summary_text += (
-                        f"\n\n⚠️ {len(unread_snapshot)} inbound message(s) "
+                        f"\n\n⚠️ {_count} inbound message(s) "
                         "had no turn start recorded before this engagement "
-                        "ended — they may never have been read:\n"
-                        + "\n".join(_parts)
+                        "ended — they may never have been read"
+                        + ((":\n" + "\n".join(_parts)) if _parts else ".")
                         + ((f"\n…and {_more} more (kept in the engagement's "
                             "inbound spool file)." if _spooled
                             else f"\n…and {_more} more.")
