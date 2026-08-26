@@ -135,16 +135,55 @@ different question, and the answer is that neither persisting ledger checks it a
 cross-ledger contract is owed — reasoned in
 [`architecture/engagement-finalization.md`](engagement-finalization.md).
 
-What it does not cover: **delivery**, and terminal work. The restart-orphan notice is
-acknowledged when it is *enqueued*, not when the operator has it, so this invariant is
-about the durable row and its entry into recovery — a notice already handed to the bus can
-still die with the process, exactly as it can after a crash. And a job that reaches a
-terminal state *during* the stop is outside recovery's reach altogether: recovery converts
-only live rows, so a delegation that succeeds mid-stop is announced by the live path or not
-at all. Nor does it cover a job the creator had *already* cancelled: its durable
-cancel-pending flag means a completion arriving mid-stop still writes a cancelled terminal
-through the completion path, and recovery still settles such a row silently as a creator
-cancellation — which is the correct outcome, and the reason silence there is not a gap.
+What it does not cover: the *announcement*. This invariant is about the durable row and
+its entry into recovery; whether anyone is ever told is INV-JOB-010's subject, and the two
+are settled separately because a row can be perfectly reconciled and still reach nobody.
+Nor does it cover a job the creator had *already* cancelled: its durable cancel-pending
+flag means a completion arriving mid-stop still writes a cancelled terminal through the
+completion path, and recovery still settles such a row silently as a creator cancellation —
+which is the correct outcome, and the reason silence there is not a gap.
+
+**INV-JOB-010**: An announcement Casa owes a creator is durably owed until it has been DELIVERED — the row's pending marker is cleared only once the consuming resident's channel reports that its turn reached the transport, never when the bus accepted the notice for enqueue — so an announcement lost with the process is announced again at the next boot.
+
+Two markers carry it, and a row can only ever hold one. `orphan_notification_pending` is
+written where it always was, by the conversion of a *live* row at boot.
+`terminal_notification_pending` is new, and is written **in the same snapshot as the
+terminal itself** by the arm that actually posts a notification — the async and
+degraded-to-pending delegation callback, in all three of its shapes (a CLI abort, an
+answer, an exception). A synchronous delegation arms nothing: its answer went back to the
+caller in-band and no notice is owed, so arming it would re-announce every sync delegation
+of the last result-TTL window at the next boot. A cancelled terminal arms nothing either,
+for the reason the paragraph above gives.
+
+What "delivered" means here is what the channel already says it means (INV-TG-006): the
+first unit of output was accepted by the transport. A *normal return* is deliberately not
+enough — every delivery method returns normally when the Telegram application is absent,
+having made zero Bot API calls — and neither is a generic turn-failure reply, which tells
+the operator that something broke rather than what their delegation did. Every ambiguous
+answer keeps the obligation, because the cost of keeping it is one duplicate announcement
+and the cost of dropping it is silence.
+
+What it does **not** claim is that the resident's words describe the delegation. The
+acknowledgement is discharged by Casa's own output for that notification reaching the
+transport, and nothing inspects the narration's content — a resident that answers something
+else entirely still discharges it. That limit is deliberate and is the same one the LIVE
+completion path has always had: a delegation that finishes while Casa is up is narrated by
+a resident in its own words, with no verification either. Holding the recovery path to a
+stricter standard would mean the announcement could no longer be a resident's narration at
+all, which is a different product, not a stricter guard.
+
+That duplicate is the accepted trade, stated plainly: a process lost between the delivery
+and the durable acknowledgement announces the same outcome again at the next boot, as does
+a terminal whose snapshot write failed and was landed afterwards by the registry-owned
+retry. Boot never waits for any of it — a resident's turn can take minutes — so recovery
+enqueues its notices and returns.
+
+A terminal replayed at boot carries no answer text. Casa does not retain a non-voice
+specialist's answer (see *What Casa keeps about a finished delegation* below), so a
+delegation that succeeded during a stop is announced truthfully as having completed with
+its answer unavailable — never as an empty answer, and never laundered into a failure. A
+delegation that *failed* replays its own durable typed kind, exactly as the live path would
+have reported it.
 
 **INV-JOB-003**: Every delivery transition is a compare-and-set against both the expected durable state and the recorded attempt id; a stale or mismatched frame is denied without mutation.
 
@@ -265,6 +304,28 @@ whole rule, with no exception: an authorization challenge — and every other ch
 coordinator raises — displaces on delivery too, from its own driver, rather than clearing
 the lane at admission.
 
+## What Casa keeps about a finished delegation
+
+The durable row holds the *caller's* prose — the request as it was made — the specialist's
+role, the origin, the terminal state and its typed failure envelope, for the terminal
+result TTL (24 h; a trusted voice-delivery row uses the shorter voice TTL). The file is
+written 0600.
+
+What it does **not** hold, on the Telegram and synchronous arms, is the specialist's
+**answer**: the completion writes an empty result deliberately, and nothing since has
+changed that. The decision was taken explicitly rather than inherited (#688): a truthful
+boot announcement needs the role, the request, the terminal time and the execution state,
+all of which are already on the row, so retaining the answer would buy quality of outcome
+and cost a widened retention posture on a file that backups and config-git snapshots
+reach. The empty string is also load-bearing — the registry-owned completion retry treats
+it as *not a stored result to clobber* — so making it meaningful would change that contract
+with it.
+
+The voice arm is the stated exception, and the asymmetry is deliberate rather than
+accidental: a voice answer is persisted because the device delivery protocol and its
+continuations replay it, which is a capability that must survive a restart and therefore
+has to be in the row.
+
 ## Failure behavior
 
 **Execution fails — an exception, an aborted run, or an invalid structured result.** A safe
@@ -337,6 +398,7 @@ long an attempt may hold.
 
 **Tests**
 - `tests/test_job_registry.py`
+- `tests/test_delivery_acked_announcements.py`
 - `tests/test_graceful_shutdown_jobs.py`
 - `tests/test_graceful_shutdown_cause.py`
 - `tests/test_voice_delivery.py`

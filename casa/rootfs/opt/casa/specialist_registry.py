@@ -87,6 +87,12 @@ class DelegationComplete:
     # `_MAX_OUTPUT_CHARS` before this notification was assembled, so the
     # narrating resident can disclose the answer was cut short.
     output_truncated: bool = False
+    # #701/#688: False when this is a BOOT REPLAY of a delegation that really
+    # did succeed but whose answer text was never retained (Casa does not
+    # persist a non-voice specialist's answer). `status` stays truthful — the
+    # work succeeded — and the empty `text` must never be narrated as if it
+    # were the answer.
+    result_available: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -357,9 +363,21 @@ class SpecialistRegistry:
     # launch cancellation is covered by the lexical ``owned`` guard in
     # delegate_to_agent. (Interactive engagements, which have no task done-
     # callback, DO release in EngagementRegistry terminal transitions.)
-    async def complete_delegation(self, delegation_id: str) -> None:
+    async def complete_delegation(
+        self, delegation_id: str, *, announce_creator: bool = False,
+    ) -> VoiceJob | None:
+        """Persist the successful terminal; return the durable row.
+
+        #701: the row is RETURNED because the announcing caller must ask it one
+        question before it enqueues anything — whether the creator cancelled
+        while the specialist was finishing, in which case the terminal is
+        CANCELLED and the creator is deliberately not told it completed.
+        ``announce_creator`` arms the durable obligation to announce; only the
+        path that actually posts a notification passes it.
+        """
         await self._job_registry.load()
-        await self._job_registry.finish_compat(delegation_id, "")
+        return await self._job_registry.finish_compat(
+            delegation_id, "", announce_creator=announce_creator)
 
     async def fail_delegation(
         self, delegation_id: str, exc: Exception,

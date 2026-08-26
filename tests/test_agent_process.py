@@ -13,7 +13,7 @@ import pytest
 import retry as retry_mod
 from agent import Agent, ResumeDecision
 from bus import BusMessage, MessageType
-from channels import ChannelManager
+from channels import ChannelManager, DeliveryOutcome
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from mcp_registry import McpServerRegistry
 from semantic_memory import SemanticMemory
@@ -3133,3 +3133,158 @@ class TestIssue650RedCases:
         assert FakeClient.attempts == 1
         assert sleep.await_count == 0
         assert len(channel.deliveries) == 0
+
+
+class TestDeliveryAcknowledgedAnnouncements:
+    """#701: a durable announcement is discharged by DELIVERY, not by a turn.
+
+    The seam is the one #556 already established — a normal return from a
+    delivery method proves nothing, because every one of them returns normally
+    when the PTB app is absent, having made zero Bot API calls. So the channel's
+    own outcome decides, and every ambiguous answer keeps the obligation.
+    """
+
+    def _agent(self, tmp_path):
+        agent = _make_agent(tmp_path, role="assistant")
+        stub = _StubTelegramChannel()
+        agent._channel_manager.register(stub)
+        return agent, stub
+
+    def _notice(self, acks, text="narrated"):
+        async def _ack() -> None:
+            acks.append(text)
+        return _ack
+
+    @pytest.mark.parametrize(
+        "outcome,acknowledged",
+        [
+            (DeliveryOutcome.DELIVERED, True),
+            (DeliveryOutcome.NOT_DELIVERED, False),
+            (DeliveryOutcome.UNKNOWN, False),
+            (None, False),
+        ],
+        ids=["delivered", "not-delivered", "unknown", "off-contract"],
+    )
+    async def test_only_a_transport_confirmed_delivery_acknowledges(
+        self, tmp_path, outcome, acknowledged,
+    ):
+        agent, stub = self._agent(tmp_path)
+        stub.finalize_response_stream.return_value = outcome
+        acks: list = []
+        msg = _msg("telegram", "123", "hi")
+        msg.on_delivery = self._notice(acks)
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(msg)
+
+        assert stub.finalize_response_stream.call_count == 1
+        assert acks == (["narrated"] if acknowledged else [])
+
+    async def test_a_head_that_landed_acknowledges_before_the_tail_raises(
+        self, tmp_path,
+    ):
+        """A reply whose first page reached Telegram HAS announced the
+        delegation, whatever happens to page three."""
+        agent, stub = self._agent(tmp_path)
+        acks: list = []
+        msg = _msg("telegram", "123", "hi")
+        msg.on_delivery = self._notice(acks)
+
+        async def _head_then_raise(text, context, on_token):
+            context["_delivery_head_sent"] = True
+            raise RuntimeError("page three failed")
+
+        stub.finalize_response_stream.side_effect = _head_then_raise
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            with pytest.raises(RuntimeError):
+                await agent.handle_message(msg)
+
+        assert acks == ["narrated"]
+
+    async def test_a_raise_before_the_head_acknowledges_nothing(self, tmp_path):
+        agent, stub = self._agent(tmp_path)
+        acks: list = []
+        msg = _msg("telegram", "123", "hi")
+        msg.on_delivery = self._notice(acks)
+        stub.finalize_response_stream.side_effect = RuntimeError("channel down")
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            with pytest.raises(RuntimeError):
+                await agent.handle_message(msg)
+
+        assert acks == []
+
+    async def test_a_silent_turn_acknowledges_nothing(self, tmp_path):
+        agent, stub = self._agent(tmp_path)
+        acks: list = []
+        msg = _msg("telegram", "123", "hi")
+        msg.on_delivery = self._notice(acks)
+
+        with patch.object(agent, "_process",
+                          AsyncMock(return_value="<silent/>")):
+            await agent.handle_message(msg)
+
+        assert stub.finalize_response_stream.call_count == 0
+        assert acks == []
+
+    async def test_a_generic_error_reply_acknowledges_nothing(self, tmp_path):
+        """The text that reached the operator is the turn-failure notice, not
+        the delegation's narration. They were told something broke; they were
+        not told what their delegation did."""
+        agent, stub = self._agent(tmp_path)
+        stub.finalize_stream.return_value = DeliveryOutcome.DELIVERED
+        stub.send.return_value = DeliveryOutcome.DELIVERED
+        acks: list = []
+        msg = _msg("telegram", "123", "hi")
+        msg.on_delivery = self._notice(acks)
+
+        with patch.object(agent, "_process",
+                          AsyncMock(side_effect=RuntimeError("turn exploded"))):
+            await agent.handle_message(msg)
+
+        # Something WAS delivered — just not the announcement.
+        assert (stub.finalize_stream.call_count + stub.send.call_count) == 1
+        assert acks == []
+
+    async def test_a_failing_acknowledgement_leaves_the_obligation_owed(
+        self, tmp_path, caplog,
+    ):
+        agent, stub = self._agent(tmp_path)
+        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        msg = _msg("telegram", "123", "hi")
+        calls: list = []
+
+        async def _ack() -> None:
+            calls.append(1)
+            raise OSError("snapshot write failed")
+
+        msg.on_delivery = _ack
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(msg)
+
+        # The turn is not broken by it, and the marker was never cleared.
+        assert calls == [1]
+
+    async def test_the_acknowledgement_fires_at_most_once(self, tmp_path):
+        agent, stub = self._agent(tmp_path)
+        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        acks: list = []
+        msg = _msg("telegram", "123", "hi")
+        msg.on_delivery = self._notice(acks)
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(msg)
+            await agent.handle_message(msg)
+
+        assert acks == ["narrated"]
+
+    async def test_an_ordinary_turn_carries_no_obligation(self, tmp_path):
+        agent, stub = self._agent(tmp_path)
+        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        msg = _msg("telegram", "123", "hi")
+        assert msg.on_delivery is None
+
+        with patch.object(agent, "_process", AsyncMock(return_value="hello")):
+            await agent.handle_message(msg)
+        assert msg.on_delivery is None

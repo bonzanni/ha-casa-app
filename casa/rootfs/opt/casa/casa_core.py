@@ -3384,6 +3384,27 @@ async def _authz_grant_sweep() -> None:
 # ------------------------------------------------------------------
 
 
+def _recovery_delivery_ack(job_registry, job):
+    """The delivery acknowledgement a recovery notice carries (#701).
+
+    Clears whichever durable marker the row was announced for. Both are cleared
+    because both are idempotent and the two can only ever be set one at a time
+    (the orphan marker is written by the live-row conversion, the terminal one
+    by a terminal that was already reached) — asking which is which twice would
+    be a second place to get it wrong.
+
+    Deliberately no exception handling here: the agent's acknowledgement seam
+    owns that, and its rule is that a failed acknowledgement leaves the marker
+    set so the announcement is repeated at the next boot.
+    """
+    async def _ack() -> None:
+        if job.orphan_notification_pending:
+            await job_registry.ack_orphan_notification(job.id)
+        if job.terminal_notification_pending:
+            await job_registry.ack_terminal_notification(job.id)
+    return _ack
+
+
 async def _notify_recovered_delegations(
     recovered_jobs,
     job_registry,
@@ -3391,11 +3412,32 @@ async def _notify_recovered_delegations(
     *,
     assistant_role: str,
 ) -> None:
-    """Notify restart-orphaned Telegram jobs, then durably acknowledge."""
+    """Announce every Telegram row that still owes its creator a notice.
+
+    #701: "then durably acknowledge" is exactly what this used to do and no
+    longer does. `bus.notify` reports only that a message was ACCEPTED onto a
+    queue; the turn that owes the operator its narration runs later, in a
+    dispatch task nothing gathers at shutdown. Acknowledging here cleared the
+    durable obligation while nothing had been delivered, and since recovery
+    converts only LIVE rows, the announcement was lost permanently rather than
+    retried. Each notice now carries an `on_delivery` callback the resident
+    invokes once its channel reports the turn reached the transport, and THAT
+    clears the marker. Boot does not wait for any of it — a resident turn can
+    take minutes — so this returns as soon as the last message is enqueued.
+
+    Two shapes are announced. A row carrying a failure envelope (a restart
+    orphan, or a delegation that FAILED during the stop) replays its own typed
+    kind. A row that SUCCEEDED during the stop replays as a success whose
+    answer is unavailable: Casa does not retain a non-voice specialist's answer
+    (#688, decided), and the row carries everything a truthful notice needs.
+    """
     from specialist_registry import DelegationComplete
 
     for job in recovered_jobs:
-        if job.creator_peer != "telegram" or job.failure is None:
+        if job.creator_peer != "telegram":
+            continue
+        if not (job.orphan_notification_pending
+                or job.terminal_notification_pending):
             continue
         target_role = job.creating_role or assistant_role
         if target_role not in bus.queues:
@@ -3407,13 +3449,20 @@ async def _notify_recovered_delegations(
 
         # This compatibility signal carries only the stable failure envelope
         # and origin metadata. No specialist output is reintroduced into the
-        # resident's context during restart recovery.
+        # resident's context during restart recovery. #688 decided that as a
+        # RETENTION posture too: a non-voice specialist's answer is not kept
+        # across a restart, so a successful replay reports the fact of the
+        # answer rather than the answer, and never presents its empty stored
+        # result as one.
+        succeeded = job.failure is None
         synthetic = DelegationComplete(
             delegation_id=job.id,
             agent=job.specialist_role,
-            status="error",
-            kind=job.failure.kind,
-            message=job.failure.message,
+            status="ok" if succeeded else "error",
+            kind="" if succeeded else job.failure.kind,
+            message="" if succeeded else job.failure.message,
+            # No replay carries an answer: nothing was retained to carry.
+            result_available=False,
             origin={
                 "role": job.creating_role,
                 "channel": job.creator_peer,
@@ -3440,6 +3489,7 @@ async def _notify_recovered_delegations(
                     "chat_id": job.scope_id,
                     "delegation_id": job.id,
                 },
+                on_delivery=_recovery_delivery_ack(job_registry, job),
             ))
         except asyncio.CancelledError:
             raise
@@ -3453,16 +3503,6 @@ async def _notify_recovered_delegations(
             )
             continue
 
-        try:
-            await job_registry.ack_orphan_notification(job.id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — notification was at-least-once
-            logger.error(
-                "Orphan notification failed: id=%s phase=ack — retained",
-                job.id[:8],
-            )
-            continue
         logger.warning(
             "Orphan delegation recovered: id=%s agent=%s — NOTIFICATION posted",
             job.id[:8], job.specialist_role,

@@ -1085,6 +1085,15 @@ async def test_recovered_orphan_carries_scheduled_delivery_across_restart(
 async def test_recovered_orphan_failure_isolated_before_later_success(
     tmp_path, caplog, failure_phase,
 ):
+    """One bad recovery must not block the ones behind it.
+
+    #701 moved the acknowledgement off the enqueue and onto the notice's
+    `on_delivery` callback, so the two phases are now measured where they
+    happen: a notify that raises is isolated inside the loop, and an ack that
+    raises does so in the CALLBACK, whose failure the agent's seam absorbs.
+    Both leave the failing row's durable marker set, which is what makes the
+    next boot announce it again.
+    """
     import logging
 
     from casa_core import _notify_recovered_delegations
@@ -1106,6 +1115,7 @@ async def test_recovered_orphan_failure_isolated_before_later_success(
     await registry.create(failed_job)
     await registry.create(next_job)
     events = []
+    acks = []
     secret = "SECRET-notification-detail"
 
     class RegistryProbe:
@@ -1124,17 +1134,39 @@ async def test_recovered_orphan_failure_isolated_before_later_success(
             if (failure_phase == "notify"
                     and message.content.delegation_id == "job-fail"):
                 raise RuntimeError(secret)
+            # Only an ACCEPTED notice can ever be delivered.
+            acks.append((message.content.delegation_id, message.on_delivery))
 
     with caplog.at_level(logging.ERROR, logger="casa_core"):
         await _notify_recovered_delegations(
             registry.all(), RegistryProbe(), BusProbe(),
             assistant_role="concierge",
         )
-    expected = [("notify", "job-fail")]
-    if failure_phase == "ack":
-        expected.append(("ack", "job-fail"))
-    expected.extend([("notify", "job-next"), ("ack", "job-next")])
-    assert events == expected
+
+    # Enqueue acknowledges nothing at all now, for either job.
+    assert events == [("notify", "job-fail"), ("notify", "job-next")]
+    assert registry.get("job-fail").orphan_notification_pending is True
+    assert registry.get("job-next").orphan_notification_pending is True
+
+    # The notices that were accepted are then delivered.
+    for job_id, ack in acks:
+        if failure_phase == "ack" and job_id == "job-fail":
+            with pytest.raises(RuntimeError):
+                await ack()
+        else:
+            await ack()
+
+    if failure_phase == "notify":
+        # job-fail never reached the bus, so it was never delivered.
+        assert events == [
+            ("notify", "job-fail"), ("notify", "job-next"),
+            ("ack", "job-next"),
+        ]
+    else:
+        assert events == [
+            ("notify", "job-fail"), ("notify", "job-next"),
+            ("ack", "job-fail"), ("ack", "job-next"),
+        ]
     assert registry.get("job-fail").orphan_notification_pending is True
     assert registry.get("job-next").orphan_notification_pending is False
     assert secret not in caplog.text
@@ -1519,3 +1551,74 @@ async def test_fail_compat_cancelled_kind_persists_cancelled_state(tmp_path):
         "job-1", JobFailure("cancelled", "Specialist job was cancelled."))
     assert finished.execution_state is ExecutionState.CANCELLED
     assert finished.delivery_state is DeliveryState.NONE
+
+
+async def test_recovered_orphan_enqueue_without_consumer_stays_durably_owed(
+    tmp_path,
+):
+    """#701 (INV-JOB-010): enqueue is not delivery.
+
+    A recovered Telegram orphan is announced onto a REAL bus whose consumer
+    loop was never started: the message is in the queue, no dispatch task
+    exists, no handler ran and nothing was sent. The process is then lost (the
+    bus instance is discarded and the registry reloaded from disk). The durable
+    obligation must still be owed, so the next boot announces it again.
+
+    Pre-fix, `_notify_recovered_delegations` acknowledges immediately after
+    `bus.notify` returns, and `bus.send_checked` returns the moment the message
+    is put on the queue — so the marker is cleared while nothing has been
+    delivered, and recovery never re-arms it (it converts only live rows).
+    """
+    from bus import MessageBus
+    from casa_core import _notify_recovered_delegations
+
+    jobs_path = tmp_path / "jobs.json"
+    first = JobRegistry(jobs_path, clock=lambda: 120.0)
+    await first.load()
+    await first.create(make_job(
+        creator_peer="telegram",
+        scope_id="chat-1",
+        origin_route_id="route-1",
+        origin_device_id=None,
+        started_at=101.0,
+        execution_state=ExecutionState.RUNNING,
+    ))
+
+    recovered = await first.recover_after_restart()
+    assert len(recovered) == 1
+    assert first.get("job-1").orphan_notification_pending is True
+
+    handler_calls = []
+    channel_sends = []
+
+    async def target_handler(message):
+        handler_calls.append(message)
+        channel_sends.append(message)
+
+    bus = MessageBus()
+    bus.register("concierge", target_handler)
+    # Deliberately NO bus.start_agent_loop("concierge"): the message is
+    # accepted into the queue and consumed by nobody.
+
+    await _notify_recovered_delegations(
+        recovered, first, bus, assistant_role="concierge",
+    )
+
+    assert bus.queues["concierge"].qsize() == 1
+    assert len(bus.dispatch_tasks_for("concierge")) == 0
+    assert len(handler_calls) == 0
+    assert len(channel_sends) == 0
+
+    # The process is lost with the message still in the queue.
+    reloaded = JobRegistry(jobs_path, clock=lambda: 121.0)
+    await reloaded.load()
+    assert sum(
+        job.orphan_notification_pending is True for job in reloaded.all()
+    ) == 1
+
+    # ...and the next boot owes it again. What clears the obligation is a
+    # DELIVERY signal from the consumer, which is pinned separately: this test
+    # is frozen against the pre-fix tree and deliberately names no new symbol.
+
+    reannounced = await reloaded.recover_after_restart()
+    assert len(reannounced) == 1

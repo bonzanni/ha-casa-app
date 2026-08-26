@@ -102,10 +102,18 @@ typed failure through the same compatibility route the voice arms already used, 
 failure-reconciliation retry accepts that failure so a write that dies cannot resurface as
 the generic persistence fallback — or, worse, as a success.
 
+The completion callback now settles the durable terminal BEFORE it enqueues the
+notification, rather than spawning the two independently, and it asks the settled row one
+question first: a row the creator had already cancelled ends CANCELLED — as it always did
+— and is no longer announced as a completion, because a creator who withdrew the question
+is not told it was answered. The notice it does enqueue carries a delivery
+acknowledgement, so the obligation to announce it outlives a restart (INV-JOB-010).
+
 What it does not cover: interactive specialist engagements, which run under the in-casa
 driver and its own finalize funnel, and the voice arms, whose abort handling predates this
-rule and is unchanged. It also says nothing about *retries of the run itself* — nothing
-retries a delegated run; the kind is diagnostic, not routing.
+rule and is unchanged. Nor does it cover a creator-cancelled row, per the paragraph above.
+It also says nothing about *retries of the run itself* — nothing retries a delegated run;
+the kind is diagnostic, not routing.
 
 ## Failure behavior
 

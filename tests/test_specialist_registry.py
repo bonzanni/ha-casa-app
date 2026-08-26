@@ -407,10 +407,16 @@ class TestDelegationLifecycle:
         finally:
             jobs._lock.release()
 
-        assert await asyncio.gather(complete, fail, return_exceptions=True) == [
-            None, None,
-        ]
+        # #701: complete_delegation returns the durable row (the announcing
+        # caller has to ask it whether the creator cancelled meanwhile);
+        # fail_delegation still returns nothing. Neither raises, and exactly
+        # one terminal is written.
+        outcomes = await asyncio.gather(complete, fail, return_exceptions=True)
+        assert [isinstance(o, BaseException) for o in outcomes] == [False, False]
+        assert outcomes[1] is None
         terminal = jobs.get("d-race")
+        if outcomes[0] is not None:
+            assert outcomes[0].id == "d-race"
         assert terminal.execution_state in {
             ExecutionState.SUCCEEDED, ExecutionState.FAILED,
         }

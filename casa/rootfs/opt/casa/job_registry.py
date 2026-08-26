@@ -107,6 +107,15 @@ class VoiceJob:
     lease_until: float | None
     cancel_pending: bool
     orphan_notification_pending: bool = False
+    # #701: a TERMINAL row whose creator is still owed an announcement. Written
+    # in the same snapshot as the terminal state by the announcing path only,
+    # and cleared only once the notification has been DELIVERED — never when
+    # the bus accepted it for enqueue. A row still carrying it at boot is
+    # re-announced, which is what makes an announcement lost with the process
+    # survive it. Defaults False: a row written before this field existed owes
+    # nothing, the fail-closed direction (it is announced by the live path or,
+    # if it was still live, by the orphan conversion).
+    terminal_notification_pending: bool = False
     prompted_delivery: bool = False
     # Server-bound HA route identity used for cross-satellite job control.
     # None is the backward-compatible legacy row shape, which remains scoped
@@ -553,6 +562,7 @@ class JobRegistry:
 
     def schedule_failure_reconciliation(
         self, job_id: str, failure: JobFailure | None = None,
+        *, announce_creator: bool = False,
     ) -> None:
         """Strongly own a metadata-only retry for a still-live failed write.
 
@@ -561,7 +571,16 @@ class JobRegistry:
         the retry persists the ORIGINAL failure; the no-argument form keeps
         the ``persistence_failed`` fallback for callers that have nothing
         better to say. A failed abort/fault write can therefore retry only a
-        failure transition — never a completion."""
+        failure transition — never a completion.
+
+        #701: ``announce_creator`` rides the retry, because the obligation to
+        announce belongs to the terminal, not to the attempt that failed to
+        write it. It is passed unconditionally by the announcing path rather
+        than being cancelled when the live notice was delivered: coordinating
+        those two would put a check outside the registry's own lock, and the
+        cost of not coordinating is one extra announcement at the next boot —
+        the same at-least-once duplicate this design already accepts, in the
+        same direction (told twice beats never told)."""
         if failure is None:
             failure = JobFailure(
                 "persistence_failed",
@@ -569,25 +588,36 @@ class JobRegistry:
             )
         self._schedule_terminal_reconciliation(
             job_id,
-            lambda: self.fail_compat(job_id, failure),
+            lambda: self.fail_compat(
+                job_id, failure, announce_creator=announce_creator),
         )
 
-    def schedule_completion_reconciliation(self, job_id: str) -> None:
+    def schedule_completion_reconciliation(
+        self, job_id: str, *, announce_creator: bool = False,
+    ) -> None:
         """#321: registry-owned retry completing a job whose result was
         already returned to the caller but whose terminal snapshot write
         failed — the answer must never be discarded by restart recovery
         (ORPHANED) just because the metadata write lost a race with disk.
 
-        SYNC-DELEGATION ONLY (Terra r4): the empty result string here is not
-        a placeholder — it reproduces ``complete_delegation``'s intended
-        terminal exactly (``finish_compat(id, "")``). Sync results are
-        returned synchronously to the engager and are never persisted in the
-        durable job (created with ``delivery_state=NONE``), so there is no
-        stored result to clobber. Voice results go through
-        ``finish_voice_result`` and the ``_persist_voice_terminal`` fallback,
-        never this method."""
+        NON-VOICE DELEGATION ONLY (Terra r4, widened by #701): the empty
+        result string here is not a placeholder — it reproduces
+        ``complete_delegation``'s intended terminal exactly
+        (``finish_compat(id, "")``). No non-voice delegation persists its
+        answer, sync or async (#688, decided: answer text is not retained), so
+        there is no stored result to clobber on either arm. Voice results go
+        through ``finish_voice_result`` and the ``_persist_voice_terminal``
+        fallback, never this method.
+
+        #701: the ASYNC arm reaches here too, and passes
+        ``announce_creator=True`` — its caller was promised a notification, so
+        a retry that lands the terminal must land the obligation with it. The
+        sync arm keeps the default: its answer went back in-band."""
         self._schedule_terminal_reconciliation(
-            job_id, lambda: self.finish_compat(job_id, ""))
+            job_id,
+            lambda: self.finish_compat(
+                job_id, "", announce_creator=announce_creator),
+        )
 
     def schedule_cancel_reconciliation(self, job_id: str) -> None:
         """#321: registry-owned retry for a cancellation whose snapshot write
@@ -824,8 +854,17 @@ class JobRegistry:
 
     async def finish_compat(
         self, job_id: str, result: str = "",
+        *, announce_creator: bool = False,
     ) -> VoiceJob | None:
-        """Idempotently finish a live job for legacy delegation callbacks."""
+        """Idempotently finish a live job for legacy delegation callbacks.
+
+        #701: ``announce_creator`` is the caller stating that this terminal
+        still OWES its creator an announcement — true only for a delegation
+        whose caller was already told a notification would follow. A sync
+        delegation, whose answer went back in-band, owes nothing and passes
+        False; arming those rows would re-announce every sync delegation of the
+        last result-TTL window at the next boot.
+        """
         async with self._lock:
             self._require_loaded()
             current = self._jobs.get(job_id)
@@ -834,12 +873,17 @@ class JobRegistry:
                         ExecutionState.ACCEPTED, ExecutionState.RUNNING,
                     }):
                 return current
-            return await self._finish_current_locked(current, result)
+            return await self._finish_current_locked(
+                current, result, announce_creator=announce_creator)
 
     async def fail_compat(
         self, job_id: str, failure: JobFailure | BaseException,
+        *, announce_creator: bool = False,
     ) -> VoiceJob | None:
-        """Idempotently fail a live job for legacy delegation callbacks."""
+        """Idempotently fail a live job for legacy delegation callbacks.
+
+        ``announce_creator`` carries the same meaning as in
+        :meth:`finish_compat` (#701)."""
         async with self._lock:
             self._require_loaded()
             current = self._jobs.get(job_id)
@@ -848,7 +892,8 @@ class JobRegistry:
                         ExecutionState.ACCEPTED, ExecutionState.RUNNING,
                     }):
                 return current
-            return await self._fail_current_locked(current, failure)
+            return await self._fail_current_locked(
+                current, failure, announce_creator=announce_creator)
 
     async def request_cancel(self, job_id: str, *, actor: Any) -> CancelResult:
         """Authorize creator cancellation without racing playback start."""
@@ -1193,9 +1238,16 @@ class JobRegistry:
         async with self._lock:
             self._require_loaded()
             now = self._now()
+            # #701: BOTH durable markers. The orphan marker is written by the
+            # live-row conversion below; the terminal marker is written by a
+            # terminal that was reached while the process was still up but
+            # whose announcement was never delivered. They cannot both be set
+            # on one row — the conversion only ever runs on a LIVE row, which
+            # by definition has no terminal marker.
             recovered_ids = [
                 job.id for job in self.all()
                 if job.orphan_notification_pending
+                or job.terminal_notification_pending
             ]
             candidate = dict(self._jobs)
             changed = False
@@ -1285,13 +1337,34 @@ class JobRegistry:
             ]
 
     async def ack_orphan_notification(self, job_id: str) -> VoiceJob:
-        """Durably acknowledge a restart-orphan Telegram notification."""
+        """Durably acknowledge a restart-orphan Telegram notification.
+
+        #701: "acknowledge" means DELIVERED. The only production caller is the
+        delivery callback the recovery notice carries, invoked by the resident
+        after its channel reported the turn reached the transport — never the
+        bus accepting the message for enqueue.
+        """
         async with self._lock:
             current = self._require_job(job_id)
             if not current.orphan_notification_pending:
                 return current
             return await self._persist_job_locked(replace(
                 current, orphan_notification_pending=False,
+            ))
+
+    async def ack_terminal_notification(self, job_id: str) -> VoiceJob:
+        """Durably acknowledge a DELIVERED terminal-outcome announcement.
+
+        The same contract as :meth:`ack_orphan_notification` for the marker a
+        terminal write arms (#701): idempotent, lock-held, durable, and reached
+        only from a delivery signal.
+        """
+        async with self._lock:
+            current = self._require_job(job_id)
+            if not current.terminal_notification_pending:
+                return current
+            return await self._persist_job_locked(replace(
+                current, terminal_notification_pending=False,
             ))
 
     async def close(self) -> None:
@@ -1384,6 +1457,9 @@ class JobRegistry:
                 orphan_notification_pending=bool(
                     row.get("orphan_notification_pending", False)
                 ),
+                terminal_notification_pending=bool(
+                    row.get("terminal_notification_pending", False)
+                ),
                 prompted_delivery=bool(row.get("prompted_delivery", False)),
                 job_control_id=JobRegistry._optional_str(
                     row.get("job_control_id")
@@ -1449,6 +1525,7 @@ class JobRegistry:
             "lease_until": job.lease_until,
             "cancel_pending": job.cancel_pending,
             "orphan_notification_pending": job.orphan_notification_pending,
+            "terminal_notification_pending": job.terminal_notification_pending,
             "prompted_delivery": job.prompted_delivery,
             "job_control_id": job.job_control_id,
             "handoff_id": job.handoff_id,
@@ -1527,8 +1604,22 @@ class JobRegistry:
             return self._voice_result_ttl_seconds
         return self.RESULT_TTL_SECONDS
 
+    def _owes_announcement(
+        self, current: VoiceJob, announce_creator: bool,
+    ) -> bool:
+        """#701: does this terminal still owe its creator an announcement?
+
+        Only a Telegram-created row — the same predicate the restart-orphan
+        conversion already uses, because that channel is the only one this
+        announcement path can reach — and only when the caller says a notice is
+        owed. A CANCELLED terminal is excluded by the callers below: a creator
+        who cancelled is deliberately not told their job then finished.
+        """
+        return announce_creator and current.creator_peer == "telegram"
+
     async def _finish_current_locked(
         self, current: VoiceJob, result: str,
+        *, announce_creator: bool = False,
     ) -> VoiceJob:
         now = self._now()
         if current.cancel_pending:
@@ -1561,6 +1652,8 @@ class JobRegistry:
                 delivery_attempt_id=None,
                 lease_until=None,
                 cancel_pending=False,
+                terminal_notification_pending=self._owes_announcement(
+                    current, announce_creator),
             )
         return await self._persist_job_locked(updated)
 
@@ -1618,6 +1711,8 @@ class JobRegistry:
         self,
         current: VoiceJob,
         failure: JobFailure | BaseException,
+        *,
+        announce_creator: bool = False,
     ) -> VoiceJob:
         envelope = self._failure_envelope(failure)
         cancelled = (
@@ -1659,6 +1754,13 @@ class JobRegistry:
             delivery_attempt_id=None,
             lease_until=None,
             cancel_pending=False,
+            # #701: a CANCELLED terminal owes nothing — a creator who cancelled
+            # is not told the job then finished, exactly as restart recovery
+            # settles such a row in silence.
+            terminal_notification_pending=(
+                state is not ExecutionState.CANCELLED
+                and self._owes_announcement(current, announce_creator)
+            ),
         )
         return await self._persist_job_locked(updated)
 

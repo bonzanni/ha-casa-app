@@ -50,6 +50,15 @@ class BusMessage:
     # the handler — a cancelled voice utterance must not run a full SDK
     # turn later. In-memory only; BusMessage is never persisted.
     cancelled: bool = False
+    # #701: a process-local delivery acknowledgement. Set ONLY by a producer
+    # that holds a durable obligation to announce something (restart recovery
+    # and the delegation terminal callback), and invoked by the consuming
+    # agent once its channel reports that the turn reached the transport — not
+    # when this message was accepted onto a queue, which is all `send_checked`
+    # can report. Never serialised, never decoded from payload or context, and
+    # `None` for every other producer on the bus.
+    on_delivery: Callable[[], Coroutine[Any, Any, None]] | None = field(
+        default=None, repr=False, compare=False)
 
 
 class BusShutdownError(RuntimeError):
