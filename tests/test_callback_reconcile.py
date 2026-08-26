@@ -18,6 +18,7 @@ import callback_reconcile as cr
 import callback_spool
 from callback_acks import CallbackAckStore
 from plugin_callbacks import ack_identity, declaration_digest
+import trigger_registry as _treg
 from trigger_registry import TriggerRegistry
 
 BASE = "https://casa.example.org"
@@ -155,7 +156,12 @@ class _SpyRegistry(TriggerRegistry):
         self._calls = calls if calls is not None else []
 
     def replace_callback_overlay(self, overlay):
-        self._calls.append(("swap", dict(overlay)))
+        # #606: record the SENTINEL as itself. Coercing it with dict() here
+        # would hide from every assertion below the difference between "no
+        # authoritative computation" and the authoritative claim "nothing
+        # should route" — the exact conflation the sentinel exists to end.
+        self._calls.append(("swap", overlay if overlay is _treg.ROUTING_UNAVAILABLE
+                            else dict(overlay)))
         super().replace_callback_overlay(overlay)
 
 
@@ -1872,19 +1878,27 @@ async def test_current_issues_recomputes_from_active_runtime(
     monkeypatch.setattr(cr, "_default_entries", lambda: _entries(p))
     monkeypatch.setattr(cr, "_default_acks", lambda: acks)
     monkeypatch.setattr(cr, "_default_spool", lambda: spool)
+    # #606: the runtime's registry here has never had a reconcile publish to
+    # it, so its callback overlay is the ROUTING_UNAVAILABLE sentinel and the
+    # honesty row leads. That is the point: "no authoritative routing
+    # computation stands behind this" is now stated rather than silent.
     assert [i.reason_code for i in cr.current_issues()] == [
-        "callback_pending_ack"]
+        "callback_routing_unavailable", "callback_pending_ack"]
     _ack(acks)
     # #453: the ack alone no longer makes the recomputation clean. The redirect
     # URI a setup tool registers with its provider is read out of the marker
     # pair, and only the reconcile's post-swap half writes it — so until it
     # does, the plugin still carries a gap and the setup gate holds.
     assert [i.reason_code for i in cr.current_issues()] == [
-        "callback_spool_error"]
+        "callback_routing_unavailable", "callback_spool_error"]
     desired = cr.compute_desired(role_configs=runtime.role_configs, acks=acks,
                                  resolver=_resolver([p]), entries=_entries(p))
     cr._publish_markers_post_swap(spool, desired, desired.routed)
-    assert cr.current_issues() == []
+    # Every per-plugin gap is now closed. The routing row remains, correctly:
+    # nothing in this test ever ran a reconcile, so the registry still carries
+    # no authoritative callback overlay.
+    assert [i.reason_code for i in cr.current_issues()] == [
+        "callback_routing_unavailable"]
 
 
 async def test_current_issues_without_runtime_is_empty(monkeypatch):
@@ -1902,7 +1916,13 @@ async def test_current_issues_never_raises(monkeypatch):
         raise RuntimeError("resolver exploded")
 
     monkeypatch.setattr(cr, "_default_resolver", _boom)
-    assert cr.current_issues() == []
+    # #606: it still never RAISES — that is what this test is for — but it no
+    # longer degrades to []. A live runtime with role configs whose fresh
+    # compute exploded is exactly "could not compute", and reporting that as
+    # "nothing is wrong" is the defect. This runtime carries no registry, so
+    # only the recomputation row applies.
+    assert [i.reason_code for i in cr.current_issues()] == [
+        "callback_state_unavailable"]
 
 
 # ---------------------------------------------------------------------------

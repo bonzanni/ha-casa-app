@@ -90,6 +90,15 @@ dispatches without any channel-declaration check at all.
 Enforced by rejecting a name already owned by another role, and structurally by the schema
 reserving the plugin prefix so a user trigger can never take a plugin-shaped name.
 
+The disjointness has a second consequence worth knowing here, because the registry's lookup
+methods are shared. Each of them consults the resident maps first and the plugin overlay only
+as a fallback, and that overlay can be in a state that is neither a route nor an absence: a
+marker saying no authoritative routing computation stands behind it. Under it every plugin
+lookup answers as though the name were unregistered — no role, no auth policy, and the
+default clearance rather than a stale one — while resident routing is completely unaffected,
+which is the point of keeping the namespaces apart. What that marker is and when it is
+published is [`plugin-triggers.md`](plugin-triggers.md)'s.
+
 **INV-TRIG-013**: A webhook trigger carries no prompt — writing one is refused, while a document already holding one still loads, with a warning, and delivers nothing extra.
 
 A webhook turn is built from the trigger name and the request body; only a scheduled turn

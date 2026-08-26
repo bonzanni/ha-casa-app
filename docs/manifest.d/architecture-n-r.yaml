@@ -222,11 +222,12 @@
     - tests/test_plugin_triggers_manifest.py
     - tests/test_trigger_consent.py
   related: [architecture/triggers.md, architecture/trigger-secrets.md, architecture/plugins.md, architecture/callbacks.md, architecture/plugin-setup.md]
-  defines_invariants: [INV-TRIG-003, INV-TRIG-004, INV-TRIG-005]
+  defines_invariants: [INV-TRIG-003, INV-TRIG-004, INV-TRIG-005, INV-TRIG-006]
   invariant_tests:
     INV-TRIG-003: [tests/test_plugin_triggers_reconcile.py::test_per_plugin_all_or_nothing]
     INV-TRIG-004: [tests/test_plugin_triggers_consent.py::test_tampered_identity_fails_whole_store_closed]
     INV-TRIG-005: [tests/test_plugin_triggers_overlay.py::test_replace_is_atomic_full_swap_stale_swept]
+    INV-TRIG-006: [tests/test_plugin_routing_sentinel.py::test_every_plugin_accessor_closes_ingress_under_the_sentinel, tests/test_plugin_routing_sentinel.py::test_every_callback_accessor_closes_ingress_under_the_sentinel, tests/test_plugin_routing_sentinel.py::test_the_snapshot_returns_the_singleton_by_identity, tests/test_plugin_routing_sentinel.py::test_an_invalid_registry_publishes_the_sentinel_not_an_empty_map, tests/test_plugin_routing_sentinel.py::test_an_authoritative_pass_publishes_a_real_map_and_clears_it, tests/test_plugin_routing_sentinel.py::test_a_compute_failure_publishes_the_sentinel_and_re_raises, tests/test_plugin_routing_sentinel.py::test_revoke_preserves_the_sentinel_instead_of_sweeping_it, tests/test_plugin_routing_sentinel.py::test_a_one_shot_failure_yields_exactly_one_routing_row, tests/test_plugin_routing_sentinel.py::test_a_persistent_failure_yields_two_independent_rows]
 
 - doc: architecture/plugins.md
   summary: How a plugin becomes usable — registry, content-addressed store, artifact identity, and per-call authorization.

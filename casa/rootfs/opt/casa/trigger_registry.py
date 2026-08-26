@@ -30,6 +30,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _RoutingUnavailable:
+    """The type of :data:`ROUTING_UNAVAILABLE` — a unique sentinel, never
+    constructed a second time, never equal to anything but itself. Modelled on
+    :class:`event_spool._RoutingUnavailable`, which is the same idea for the
+    event routing map."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:                          # pragma: no cover
+        return "ROUTING_UNAVAILABLE"
+
+
+#: Published into a PLUGIN overlay when no authoritative routing computation
+#: stands behind it — the reconcile raised, or it ran against a registry it
+#: could not read, or it has simply never run yet (#606). Distinguished from an
+#: authoritative EMPTY ``{}``, which is a real compute result that says "nothing
+#: should route": both close plugin ingress, but only one of them is a claim.
+#: Reading them as the same thing is what let a failed reconcile regenerate
+#: health and report nothing wrong while ingress was shut.
+ROUTING_UNAVAILABLE = _RoutingUnavailable()
+
+
 class TriggerError(Exception):
     """Raised on any trigger-wiring conflict or invalid shape."""
 
@@ -163,7 +185,10 @@ class TriggerRegistry:
         # rebind) by the reconciler, so a request read sees the old-complete or
         # new-complete overlay, never a partial one. Each value:
         # ``{"role": str, "clearance": str, "auth": dict}``.
-        self._plugin_overlay: dict[str, dict] = {}
+        # #606: starts UNAVAILABLE, not empty — before the first successful
+        # reconcile nothing authoritative has been computed, and ``{}`` would
+        # claim otherwise.
+        self._plugin_overlay = ROUTING_UNAVAILABLE
         # Plugin-declared authorization callbacks are a SECOND,
         # independent overlay keyed by effective name (also ``plg-<plugin>--
         # <declared>``, in its OWN namespace — the callback endpoint is
@@ -175,7 +200,7 @@ class TriggerRegistry:
         # handler 404s) and readers never see a partial overlay. Each value:
         # ``{"plugin": str, "declared": str, "path": str}`` (``path`` is the
         # RESOLVED artifact root the discovery index is keyed by).
-        self._callback_overlay: dict[str, dict] = {}
+        self._callback_overlay = ROUTING_UNAVAILABLE      # #606, as above
 
     def register_agent(
         self,
@@ -460,6 +485,8 @@ class TriggerRegistry:
         role = self._webhook_targets.get(name)
         if role is not None:
             return role
+        if self._plugin_overlay is ROUTING_UNAVAILABLE:
+            return None                                  # #606: closed ingress
         entry = self._plugin_overlay.get(name)
         return entry["role"] if entry is not None else None
 
@@ -484,6 +511,8 @@ class TriggerRegistry:
         """
         if name in self._webhook_clearances:
             return self._webhook_clearances[name]
+        if self._plugin_overlay is ROUTING_UNAVAILABLE:
+            return "public"                              # #606: closed ingress
         entry = self._plugin_overlay.get(name)
         return entry["clearance"] if entry is not None else "public"
 
@@ -494,6 +523,8 @@ class TriggerRegistry:
         policy = self._webhook_auth_policies.get(name)
         if policy is not None:
             return policy
+        if self._plugin_overlay is ROUTING_UNAVAILABLE:
+            return None                                  # #606: closed ingress
         entry = self._plugin_overlay.get(name)
         return entry["auth"] if entry is not None else None
 
@@ -505,7 +536,15 @@ class TriggerRegistry:
         assigned, valid, acked plugin trigger) and swaps it here in one dict
         rebind — so a removed/unresolved/revoked plugin's ingress is swept
         (absent from the new map → 404) and readers never see a partial set.
+
+        #606: accepts :data:`ROUTING_UNAVAILABLE` too, and stores the SINGLETON
+        — never ``dict(sentinel)``, which would silently downgrade "no
+        authoritative computation stands behind this" to the authoritative
+        claim "nothing should route".
         """
+        if overlay is ROUTING_UNAVAILABLE:
+            self._plugin_overlay = ROUTING_UNAVAILABLE
+            return
         self._plugin_overlay = dict(overlay)
 
     def replace_callback_overlay(self, overlay: dict[str, dict]) -> None:
@@ -518,7 +557,13 @@ class TriggerRegistry:
         callback) and swaps it in a single dict rebind, so an unrouted
         plugin's callback endpoint is swept by absence and a concurrent
         request read sees the old-complete or new-complete overlay.
+
+        #606: accepts :data:`ROUTING_UNAVAILABLE`, stored as the singleton —
+        see :meth:`replace_plugin_overlay`.
         """
+        if overlay is ROUTING_UNAVAILABLE:
+            self._callback_overlay = ROUTING_UNAVAILABLE
+            return
         self._callback_overlay = dict(overlay)
 
     def get_callback(self, name: str) -> dict | None:
@@ -527,21 +572,46 @@ class TriggerRegistry:
         handler consults this to 404 unknown names and to learn which plugin's
         spool a deposit belongs to. There is no resident-callback layer: unlike
         webhooks, callbacks exist only as plugin declarations."""
+        if self._callback_overlay is ROUTING_UNAVAILABLE:
+            return None                                  # #606: closed ingress
         return self._callback_overlay.get(name)
 
     def callback_overlay_names(self) -> list[str]:
-        """Effective names currently live in the callback overlay."""
+        """Effective names currently live in the callback overlay. Empty under
+        :data:`ROUTING_UNAVAILABLE` — nothing routes."""
+        if self._callback_overlay is ROUTING_UNAVAILABLE:
+            return []
         return list(self._callback_overlay)
 
     def plugin_overlay_names(self) -> list[str]:
-        """Effective names currently live in the plugin overlay."""
+        """Effective names currently live in the plugin overlay. Empty under
+        :data:`ROUTING_UNAVAILABLE` — nothing routes."""
+        if self._plugin_overlay is ROUTING_UNAVAILABLE:
+            return []
         return list(self._plugin_overlay)
 
     def plugin_overlay_snapshot(self) -> dict[str, dict]:
         """A shallow copy of the current overlay — for callers that must
         derive a swept replacement WITHOUT a resolver pass (the revoke
-        tool's fail-closed direct sweep)."""
+        tool's fail-closed direct sweep).
+
+        #606: under :data:`ROUTING_UNAVAILABLE` this returns the SINGLETON, not
+        a copy and not ``{}``. A caller deriving a swept replacement from it
+        would otherwise publish an authoritative empty map built from state it
+        never had — see the revoke sweep, which checks identity and skips."""
+        if self._plugin_overlay is ROUTING_UNAVAILABLE:
+            return ROUTING_UNAVAILABLE
         return dict(self._plugin_overlay)
+
+    def plugin_overlay_unavailable(self) -> bool:
+        """True while no authoritative plugin-trigger routing computation
+        stands behind the overlay (#606)."""
+        return self._plugin_overlay is ROUTING_UNAVAILABLE
+
+    def callback_overlay_unavailable(self) -> bool:
+        """True while no authoritative plugin-callback routing computation
+        stands behind the overlay (#606)."""
+        return self._callback_overlay is ROUTING_UNAVAILABLE
 
     def _unwind_role(self, role: str) -> list[str]:
         """Drop every scheduler job and webhook-allowlist entry owned by

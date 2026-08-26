@@ -12976,11 +12976,20 @@ async def trigger_ack_revoke(args: dict) -> dict:
             # must not depend on resolver health. Match on the entry's OWN
             # plugin attribution (Sol shipB-r2 P1-3), with the name prefix
             # as belt-and-braces for any entry lacking it.
-            registry.replace_plugin_overlay({
-                eff: entry
-                for eff, entry in registry.plugin_overlay_snapshot().items()
-                if entry.get("plugin", "") != name
-                and not eff.startswith(prefix)})
+            #
+            # #606: under the routing sentinel there is nothing to sweep —
+            # plugin ingress is ALREADY closed — and sweeping anyway would be
+            # actively wrong twice over: `.items()` on the sentinel raises, and
+            # deriving `{}` from it would publish an authoritative "nothing
+            # should route" built from state this process never had.
+            import trigger_registry as _treg
+            snapshot = registry.plugin_overlay_snapshot()
+            if snapshot is not _treg.ROUTING_UNAVAILABLE:
+                registry.replace_plugin_overlay({
+                    eff: entry
+                    for eff, entry in snapshot.items()
+                    if entry.get("plugin", "") != name
+                    and not eff.startswith(prefix)})
         try:
             await trigger_reconcile.reconcile_from_runtime(
                 runtime, prompt=False)

@@ -132,7 +132,14 @@ rather than removing a guarantee.
 
 A consent approval rewrites the stored report too — without a notification pass of
 its own; the reconcile contract that owes that rewrite is
-[`plugin-events.md`](plugin-events.md)'s.
+[`plugin-events.md`](plugin-events.md)'s. That rewrite now happens whether the approve-time
+reconcile succeeded or raised, which is the only way the acked trigger's stale pending row
+ever clears — and it is why the report gained rows saying that routing itself is unknown.
+Each routing half contributes two, because they clear on different things: one reports that
+the applied overlay carries no authoritative computation, the other that a fresh computation
+could not run for this pass. Regenerating on the failure path without them would have
+replaced one false report with a worse one — all-clear, while ingress was shut. See
+[`plugin-triggers.md`](plugin-triggers.md) for the marker they read.
 
 ## Contracts & invariants
 

@@ -125,8 +125,15 @@ otherwise-routable plugin surfaces `callback_base_url_invalid`, and no readiness
 entry is written. A bare IP, a path, userinfo or an embedded control character is rejected the
 same as unset.
 
-**A reconcile compute fails.** The overlay fails closed to empty and the pruning of stale acks is
-skipped — a resolution hiccup must never vaporize consent.
+**A reconcile compute fails.** The overlay fails closed and the pruning of stale acks is
+skipped — a resolution hiccup must never vaporize consent. What it fails closed TO is the
+typed unavailable marker, not an empty map, for the reason
+[`plugin-triggers.md`](plugin-triggers.md) gives at length: an empty map is the authoritative
+claim that nothing should route, and a pass that computed nothing has not earned it. A
+registry that could not be read reaches the same marker, because that case returns normally
+rather than raising. Ingress is closed identically either way — `/callback/{name}` 404s —
+and both halves of this pair publish the same marker from the same reconcile, since a trigger
+revoke can shift callback assignment too.
 
 ## Extension points
 
