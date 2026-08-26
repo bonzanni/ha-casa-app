@@ -57,8 +57,8 @@ def _commit(repo: Path, message: str) -> None:
     _git(repo, "commit", "-q", "--allow-empty", "-m", message)
 
 
-def _decide(repo: Path, impacted: str, touched: str = "",
-            deleted: str = "") -> tuple[int, str]:
+def _decide(repo: Path, impacted: str, touched: str = "", deleted: str = "",
+            ack: str | None = None) -> tuple[int, str]:
     """Run the shipping decision over a synthetic commit graph."""
     script = "\n".join([
         "set -euo pipefail",
@@ -66,11 +66,12 @@ def _decide(repo: Path, impacted: str, touched: str = "",
         'err() { echo "docs-impact: $*" >&2; }',
         'impacted="$1" touched="$2" deleted="$3"',
         'base=main',
-        'ack_commit="$(git rev-parse HEAD)"',
+        'ack_commit="${4:-$(git rev-parse HEAD)}"',
         _block(),
     ])
     proc = subprocess.run(("bash", "-c", script, "decide", impacted, touched,
-                           deleted), cwd=repo, capture_output=True, text=True)
+                           deleted, ack or ""), cwd=repo, capture_output=True,
+                          text=True)
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -153,6 +154,34 @@ def test_inv_doc_008_every_tip_carries_a_line(repo: Path) -> None:
     rc, out = _decide(repo, impacted="")
     assert rc == 1, out
     assert "carries no Docs-impact line" in out, out
+
+
+def test_a_root_ack_commit_has_no_provenance_question(repo: Path) -> None:
+    """A dry run builds the prospective squash message as a PARENTLESS object and
+    asks whether it would pass — the only way to see the post-merge text before
+    the merge. A root commit summarises nothing, so there is no earlier message
+    that could be concatenated with it and nothing to refuse."""
+    _commit(repo, f"change\n\nDocs-impact: {D1} — a good waiver")
+    tree = _git(repo, "rev-parse", "HEAD^{tree}").strip()
+    probe = _git(repo, "commit-tree", tree, "-m",
+                 f"squashed\n\nDocs-impact: {D1} — a good waiver").strip()
+    rc, out = _decide(repo, impacted=D1, ack=probe)
+    assert rc == 0, out
+    assert "non_tip=0" in out and "is a root commit" in out, out
+
+
+def test_a_detached_non_root_ack_is_refused(repo: Path) -> None:
+    """Not a root and no shared history with the base: intermediate commits do
+    exist and cannot be enumerated. Reporting non_tip=0 there would be a count
+    that was never measured, so it fails closed instead."""
+    _commit(repo, f"change\n\nDocs-impact: {D1} — a good waiver")
+    tree = _git(repo, "rev-parse", "HEAD^{tree}").strip()
+    root = _git(repo, "commit-tree", tree, "-m", "unrelated root").strip()
+    probe = _git(repo, "commit-tree", tree, "-p", root, "-m",
+                 f"detached\n\nDocs-impact: {D1} — a good waiver").strip()
+    rc, out = _decide(repo, impacted=D1, ack=probe)
+    assert rc == 1, out
+    assert "have no common ancestor" in out, out
 
 
 def test_the_shipping_script_has_no_early_return_above_the_waiver_block() -> None:

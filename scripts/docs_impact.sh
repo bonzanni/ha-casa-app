@@ -196,13 +196,28 @@ deleted="$(git diff --name-only --diff-filter=D "$base"...HEAD | grep '^docs/' |
 # grammar error for a line that has no business existing at all, which is what
 # #694 looked like from the push arm, after publication.
 ack_full="$(git rev-parse --verify "$ack_commit^{commit}")"
-if ! merge_point="$(git merge-base "$base" "$ack_commit" 2>/dev/null)"; then
-  err "'$base' and '$ack_commit' have no common ancestor — cannot tell which"
-  err "commits belong to this change. Refusing rather than guessing."
+# A FILE, never a pipe, for the same reason the waiver loop below uses one.
+: > "$tmp/range.txt"
+if merge_point="$(git merge-base "$base" "$ack_commit" 2>/dev/null)"; then
+  git rev-list "$merge_point..$ack_commit" > "$tmp/range.txt"
+elif [ -z "$(git log -1 --format=%P "$ack_commit")" ]; then
+  # A ROOT commit summarises nothing: it has no history, so no earlier commit's
+  # message can be concatenated with its own and there is no provenance question
+  # to answer. This is the shape an off-graph DRY RUN takes — building the
+  # prospective squash message as a parentless object and asking whether it
+  # would pass — and refusing it would refuse the one check that catches the
+  # arm asymmetry before the merge rather than after.
+  echo "note: '$ack_commit' is a root commit — no earlier commit can carry a waiver"
+else
+  # Not a root, and no shared history with the base: intermediate commits exist
+  # and this cannot enumerate them. Refuse rather than report a provenance count
+  # of zero that was never measured.
+  err "'$base' and '$ack_commit' have no common ancestor, and '$ack_commit' is"
+  err "not a root commit — the commits belonging to this change cannot be"
+  err "enumerated, so a waiver's provenance cannot be checked. Refusing rather"
+  err "than guessing."
   exit 1
 fi
-# A FILE, never a pipe, for the same reason the waiver loop below uses one.
-git rev-list "$merge_point..$ack_commit" > "$tmp/range.txt"
 while IFS= read -r rev; do
   [ -n "$rev" ] || continue
   [ "$rev" = "$ack_full" ] && continue
