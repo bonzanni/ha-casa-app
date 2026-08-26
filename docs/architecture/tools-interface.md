@@ -240,10 +240,12 @@ where there is nothing to read back that could correct it. A read that fails
 establishes nothing either way and the envelope says so, while still stating the two facts
 that hold regardless — the plugin's CLI-managed persistent data was not deleted, and no
 provider revocation was performed. The shipped surfaces say the same thing: the tool's own description, the plugin
-removal recipe, and the specialist uninstall, upgrade and rollback recipes, each instructing the
-engager to relay the note rather than restate it as a deletion — and the upgrade and rollback
-recipes name the successful-swap arm too, since on that arm the removal is confirmed rather
-than measured or unknown.
+removal recipe, and all four specialist recipes — install, upgrade, rollback and uninstall —
+each instructing the engager to relay the note rather than restate it as a deletion, and the
+three that can now receive it from a successful swap naming that arm too, since there the
+removal is confirmed rather than measured or unknown. A payload no recipe relays is a
+disclosure the operator never sees, so the payload gate and the recipe gate cover the same
+set of doors.
 
 The wording is bounded by INV-TOOL-005, which is why it reads the way it does. `may remain`,
 because Casa cannot see whether the plugin ever stored anything; and

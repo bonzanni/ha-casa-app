@@ -43,7 +43,14 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    slug=..., staged_dir=..., receipt_id=..., config={...}, secret_names_provided=[...])` using the
    EXACT values `specialist_install_inspect` returned, `receipt_id` included. Omitting it (or
    passing a stale one from an earlier inspect) refuses with `kind: "receipt_required"` — re-run
-   inspect and retry with the fresh id; never fabricate one.
+   inspect and retry with the fresh id; never fabricate one. If the result carries
+   `plugin_data_note` — the commit's owned-set swap replaced a stale owned entry, which
+   is rare but is a removal — relay it verbatim with the names in `plugin_data_plugins`,
+   exactly as `recipes/plugin/remove.md` step 4 describes, whichever `state` came back.
+   Do not restate it as a confirmed removal unless the note itself
+   says so: the note says which of the three it is — the successful owned-set
+   swap dropped those entries, or a failed compensation left them measured
+   still removed, or Casa could not read the registry back and does not know.
 5. If `state == "pending-configuration"`: report which config/secret names are still missing; the
    operator supplies them via a follow-up `specialist_install_commit` call with the SAME
    `staged_dir` and `receipt_id` (re-inspect if `staged_dir` has been cleaned up — staging is not

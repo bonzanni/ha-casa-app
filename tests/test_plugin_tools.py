@@ -1471,11 +1471,21 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     # wholesale, so either can leave a plugin removed when its compensation
     # fails. Their recipes owe the same conditional relay — unpinned recipe
     # prose is exactly the seam round 3 measured open.
-    for name in ("specialist/upgrade.md", "specialist/rollback.md"):
+    # Sol diff-review a3-r1: the install recipe owes the same relay. The
+    # install commit's swap runs unconditionally, so it can drop a stale owned
+    # entry and return the disclosure — and a payload no recipe tells the
+    # engager to relay is a disclosure the operator never sees, which is the
+    # outcome this change exists to prevent.
+    for name in ("specialist/upgrade.md", "specialist/rollback.md",
+                 "specialist/install.md"):
         text = _flat(name)
         assert sum(fragment in text for fragment in (
             "if the result carries `plugin_data_note`",
             "relay it verbatim with the names in `plugin_data_plugins`")) == 2
+        # …and the install arm says it applies whichever state came back: a
+        # pending-configuration commit swapped the owned set too.
+        assert ("whichever `state` came back" in text) == (
+            name == "specialist/install.md")
         # Sol diff-review r10: the note is emitted on the INDETERMINATE arm too,
         # where the removal is explicitly unknown. A recipe that glosses the
         # field as "a plugin ended up removed" turns that into a confirmed
