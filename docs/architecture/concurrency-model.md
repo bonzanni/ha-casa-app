@@ -172,6 +172,14 @@ caller with a handler-error response rather than leaving it to time out. A handl
 returning nothing produces an empty response rather than a hang, and a handler that
 raises produces an error response.
 
+**Accepted is not delivered.** Enqueueing reports only that the target had a registered
+queue and the message went onto it; the consumer spawns the turn later and nothing gathers
+those dispatch tasks at shutdown. A producer holding a durable obligation to announce
+something therefore cannot treat acceptance as delivery — it attaches a process-local
+acknowledgement to the message, which the consuming agent invokes once its channel reports
+the output reached the transport. The bus itself is unchanged by this: it neither invokes
+nor inspects the callback, and every other producer leaves it unset (INV-JOB-010).
+
 **The process is shutting down.** Once the shutdown gate is set, new requests fail
 immediately with a typed shutdown error rather than enqueueing for consumers that are
 about to be cancelled, and after the consumers are gone every still-pending request
