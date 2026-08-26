@@ -133,6 +133,22 @@ reconciliation discards it and retains the last-known-good, exactly as INV-PERS-
 describes. It also says nothing about specialists, which activate on reload rather than
 restart.
 
+**INV-PERS-011**: A persona install approval whose requesting engagement is terminal or gone when the operator taps it does not leave the DM claiming an install: the approval stays recorded, and the single approval edit is selected from the reconciliation outcome rather than written before it.
+
+The persona and specialist consent finish hooks are separately written copies of one
+shape, so this is the sibling of INV-SPEC-010 and holds for the same reasons: the
+acknowledgement is written at tap-commit (subject to the revocation-generation check that
+makes a racing `persona_ack_revoke` authoritative), the hook awaits the reconciliation
+callback before it edits, and only a literal `True` selects the success wording. The
+corrective wording names a recovery valid from a terminal engagement — start a new
+configurator engagement and re-run the install — and says the recorded approval is reused
+*if it still applies*, because an explicit revocation legitimately makes a fresh prompt
+correct.
+
+What it does not cover: `True` is not a delivery receipt. See INV-SPEC-010 in
+`architecture/specialist-lifecycle.md` for exactly what a positive report establishes and
+what remains outside it.
+
 ## Failure behavior
 
 **An operator applies a persona a resident cannot compile.** Refused at the point of asking,
@@ -178,6 +194,8 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `tests/test_persona_removal.py`
 - `tests/test_persona_apply_resident_staging.py`
 - `tests/test_persona_pack.py`
+- `tests/test_persona_install_consent.py`
+- `tests/test_tools_persona_install.py`
 
 **Related**
 - [`architecture/personality.md`](../architecture/personality.md)

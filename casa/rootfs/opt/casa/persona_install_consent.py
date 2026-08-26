@@ -35,7 +35,8 @@ def render_persona_install_consent_message(inspection: Any) -> str:
 
 def prompt_persona_install_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int, inspection: Any,
-    acks: "PersonaInstallAckStore", reconcile_cb: "Callable[[], Awaitable[None]] | None" = None,
+    acks: "PersonaInstallAckStore",
+    reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
 ) -> Any:
     identity = persona_install_consent_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
@@ -80,15 +81,34 @@ def prompt_persona_install_consent(
                         "revoked, or the write failed) — re-run the install to be "
                         "prompted again")
                     return
-                await channel.edit_dm_message(
-                    chat_id, message_id, f"✅ Approved — installing {inspection.persona_id!r}")
+                # #662: sibling of specialist_install_consent — the outcome
+                # decides the wording, so the edit happens AFTER reconciliation
+                # and only a literal True selects the success text. See the
+                # comment there for why a truthiness test is not enough
+                # (INV-PERS-011).
+                outcome: object = False
                 if reconcile_cb is not None:
                     try:
-                        await reconcile_cb()
-                    except Exception:  # noqa: BLE001
+                        outcome = await reconcile_cb()
+                    except Exception:  # noqa: BLE001 — never-raise contract;
+                        # defence in depth, CancelledError stays control flow.
                         logger.exception(
-                            "post-consent persona install commit failed (persona_id=%s)",
-                            inspection.persona_id)
+                            "post-consent persona install reconcile raised "
+                            "(persona_id=%s)", inspection.persona_id)
+                        outcome = False
+                if outcome is True:
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        "✅ Approved — requested an automatic configurator "
+                        f"continuation for {inspection.persona_id!r}")
+                else:
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        f"⚠️ Approved and saved — but the install of "
+                        f"{inspection.persona_id!r} was not started "
+                        "automatically. Start a new configurator engagement "
+                        "and re-run the install; the approval recorded for "
+                        "this exact version is reused if it still applies.")
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {inspection.persona_id!r} was not installed")

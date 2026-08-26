@@ -62,12 +62,15 @@
     - tests/test_persona_removal.py
     - tests/test_persona_apply_resident_staging.py
     - tests/test_persona_pack.py
+    - tests/test_persona_install_consent.py
+    - tests/test_tools_persona_install.py
   related: [architecture/personality.md, architecture/specialist-lifecycle.md]
-  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007]
+  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-011]
   invariant_tests:
     INV-PERS-005: [tests/test_persona_pack.py::test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to]
     INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
     INV-PERS-007: [tests/test_persona_apply_resident_staging.py::test_resident_apply_stages_and_does_not_promote, tests/test_persona_apply_resident_staging.py::test_resident_apply_writes_nothing_when_the_candidate_cannot_compile]
+    INV-PERS-011: [tests/test_persona_install_consent.py::test_662_only_a_literal_true_outcome_selects_the_success_edit, tests/test_tools_persona_install.py::test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement]
 
 - doc: architecture/personality.md
   summary: What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.

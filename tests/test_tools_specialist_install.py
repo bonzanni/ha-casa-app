@@ -1194,7 +1194,7 @@ async def test_reconcile_cb_resumes_the_captured_engagement(monkeypatch, tmp_pat
     from tools import specialist_install_inspect, engagement_var
 
     delivered: list = []
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa")
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec if eid == "eng-abc" else None)
 
     async def _deliver(r, text):
@@ -1213,7 +1213,9 @@ async def test_reconcile_cb_resumes_the_captured_engagement(monkeypatch, tmp_pat
     assert payload["consent"] == "keyboard_posted"
 
     # The tap-callback finish hook fires reconcile_cb after Approve+ack.
-    await cap["reconcile_cb"]()
+    # #662: the callback REPORTS its outcome — a bare None here is what let a
+    # late tap show "installing" with nothing installed.
+    assert await cap["reconcile_cb"]() is True
     assert len(delivered) == 1
     assert delivered[0][0] is rec  # resolved for the captured engagement id
     assert "specialist_install_commit" in delivered[0][1]
@@ -1224,7 +1226,7 @@ async def test_reconcile_cb_resumes_the_captured_engagement(monkeypatch, tmp_pat
 async def test_reconcile_cb_swallows_a_delivery_failure(monkeypatch, tmp_path) -> None:
     from tools import specialist_install_inspect, engagement_var
 
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa")
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec)
 
     async def _deliver(r, text):
@@ -1240,8 +1242,9 @@ async def test_reconcile_cb_swallows_a_delivery_failure(monkeypatch, tmp_path) -
     finally:
         engagement_var.reset(token)
 
-    # Fail-safe: reconcile_cb never propagates into the tap-callback path.
-    await cap["reconcile_cb"]()  # must not raise
+    # Fail-safe: reconcile_cb never propagates into the tap-callback path —
+    # and #662: it reports the swallowed failure instead of a bare None.
+    assert await cap["reconcile_cb"]() is False  # must not raise
 
 
 @pytest.mark.asyncio
@@ -1264,7 +1267,7 @@ async def test_reconcile_cb_is_a_noop_when_the_engagement_is_gone(monkeypatch, t
     finally:
         engagement_var.reset(token)
 
-    await cap["reconcile_cb"]()
+    assert await cap["reconcile_cb"]() is False
     assert delivered == []
 
 
@@ -1275,7 +1278,7 @@ async def test_reconcile_cb_is_a_noop_when_no_engagement_was_captured(
     from tools import specialist_install_inspect
 
     delivered: list = []
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa")
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec)
 
     async def _deliver(r, text):
@@ -1287,7 +1290,7 @@ async def test_reconcile_cb_is_a_noop_when_no_engagement_was_captured(
 
     # engagement_var is left at its default (None) — no configurator context.
     await specialist_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
-    await cap["reconcile_cb"]()
+    assert await cap["reconcile_cb"]() is False
     assert delivered == []
 
 

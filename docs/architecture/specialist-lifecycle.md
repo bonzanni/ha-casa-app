@@ -157,6 +157,25 @@ remediation for an affected install is secret rotation. A slug whose tuple was
 tombstoned surfaces as an error-state instance; recovery is uninstall + reinstall with
 fresh consent.
 
+**INV-SPEC-010**: An install approval whose requesting engagement is terminal or gone when the operator taps it does not leave the DM claiming an install: the approval stays recorded, and the single approval edit is selected from the reconciliation outcome rather than written before it.
+
+The acknowledgement is written synchronously at tap-commit and is never revoked by a
+failed continuation, so the recovery the corrective DM names — start a new configurator
+engagement and re-run the install — short-circuits as `pre_authorized` whenever an ack
+for that exact artifact identity is still on file. The finish hook awaits the
+reconciliation callback *before* it edits, and only a literal `True` selects the success
+wording; a bare `None`, a false, an absent callback and a (contract-violating) raise all
+select the corrective wording. The tap-callback never-raise contract is unchanged —
+`CancelledError` stays control flow.
+
+What it does not cover, deliberately: `True` is **not a delivery receipt**. It says the
+record was deliverable when the seam returned, nothing more. `deliver_system_turn` still
+returns `None`, so a first resume failure, a failed context rebuild or the shutdown gate
+can abandon delivery after a positive report; those paths surface — best-effort — in the
+engagement topic, and the success wording therefore claims only that a continuation was
+*requested*. Reporting an actual hand-off would widen the channel delivery contract,
+which is separate work.
+
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 
 Enforced in the tarball strategy: a requirement that can never succeed (no safe
@@ -312,6 +331,8 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - `tests/test_specialist_materialize.py`
 - `tests/test_specialist_bundle_journal.py`
 - `tests/test_system_requirements_installer_tarball.py`
+- `tests/test_specialist_install_consent.py`
+- `tests/test_tools_specialist_install.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)
