@@ -723,6 +723,32 @@ _ASK_TIMEOUT_DEFAULT = 300.0
 _ASK_TIMEOUT_MIN = 30.0
 _ASK_TIMEOUT_MAX = 570.0
 
+# #682 (INV-TOOL-008). A two-turn arm's LAST synchronous act is to ask the
+# broker whether its request is still live. `message_id` cannot answer that:
+# `_run_setup` writes it AFTER the post await, onto the same `PendingRequest`
+# object the tool holds, and `_finish` retires a request by popping it from
+# `_live` and snapshotting a COPY of `meta` — so the marker keeps arriving for
+# a request that is already gone.
+#
+# Absence from `_live` is all the read supports, and it is consistent with
+# cancelled, superseded, timed out AND answered. So the status is `settled`,
+# which names no outcome, and the message says so rather than claiming that
+# nothing happened: an Approve tapped inside the post window may already have
+# started the detached wipe.
+#
+# `settled` is deliberately NOT an error kind. Under INV-TOOL-001 `_result`
+# marks `status == "error"` as an outer MCP error, and every way a request is
+# retired here — a `/new`, a typed answer, a replacement question, the
+# request's own timeout, an operator tap, shutdown — is a benign operator or
+# system action that telemetry must not record as a tool failure.
+_SETTLED_ASK_MESSAGE = (
+    "the question settled before ask_user returned; no outcome is reported"
+)
+_SETTLED_WIPE_MESSAGE = (
+    "the consent request settled before wipe_memory returned; "
+    "no outcome is reported"
+)
+
 ASK_USER_SCHEMA = {
     # r1-B3: explicit JSON Schema — only question+options are required;
     # timeout_s is optional (defaults to _ASK_TIMEOUT_DEFAULT, clamped).
@@ -891,7 +917,12 @@ async def _ask_user_scheduled(
     "ask_user",
     "Ask the operator a multiple-choice question with tappable buttons in "
     "their DM. Two-turn: returns awaiting_user immediately; the answer "
-    "arrives as the user's next message. Works from one of your own scheduled "
+    "arrives as the user's next message. A `settled` status instead means the "
+    "question was already over by the time this call returned (a /new, a "
+    "typed answer, a replacement question, a timeout, a tap, a shutdown): do "
+    "NOT wait on that request id and do not re-ask automatically; if the "
+    "operator did answer, it reaches you as an ordinary next message. Works "
+    "from one of your own scheduled "
     "trigger turns too — there the answer (or a timeout, or a cancellation) "
     "comes back into that same scheduled session, and if the operator already "
     "has a question open you get operator_busy instead. NOT an authorization "
@@ -1067,8 +1098,17 @@ async def ask_user(args: dict) -> dict:
     # that — `_run_setup` records it even for a request cancelled or answered
     # while its post was in flight — so liveness is asked of the broker's live
     # map, synchronously, immediately before the displacement.
-    if rid in BROKER.pending(namespace="resident_ask", scope=scope):
-        scheduled_asks.displace_scheduled_for_chat(chat_id, "superseded")
+    #
+    # #682: ONE sample, TWO consumers. The same boolean decides the
+    # displacement and the status reported to the agent, so they can never
+    # disagree — before this the guard knew the request was gone and the return
+    # value still said otherwise. The sample is synchronous, so this block
+    # gains no await and stays indivisible against the tap handler.
+    live = rid in BROKER.pending(namespace="resident_ask", scope=scope)
+    if not live:
+        return _result({"status": "settled", "request_id": rid,
+                        "message": _SETTLED_ASK_MESSAGE})
+    scheduled_asks.displace_scheduled_for_chat(chat_id, "superseded")
     return _result({"status": "awaiting_user", "request_id": rid})
 
 
@@ -1079,7 +1119,10 @@ async def ask_user(args: dict) -> dict:
     "retention). Operator-only and consent-gated: posts an Approve/Cancel "
     "keyboard to the operator's DM and executes only on the operator's "
     "Approve tap. Two-turn: returns awaiting_user immediately; the outcome "
-    "is edited into the keyboard message when the wipe finishes.",
+    "is edited into the keyboard message when the wipe finishes. A `settled` "
+    "status instead means the consent request was already over when this call "
+    "returned: nothing is pending on it, and whether anything was deleted is "
+    "reported in that keyboard message, not here.",
     {},
 )
 async def wipe_memory(args: dict) -> dict:
@@ -1211,6 +1254,12 @@ async def wipe_memory(args: dict) -> dict:
             "status": "error", "kind": "delivery_failed",
             "message": "could not deliver the consent keyboard to the operator",
         })
+    # #682: the same last-moment liveness question the plain arm asks. This
+    # lane (`authz:{chat_id}`) is retired by `/new`'s scope cancel, by the
+    # 300 s timeout, by an operator tap and by shutdown's `cancel_all`.
+    if rid not in BROKER.pending(namespace="resident_ask", scope=scope):
+        return _result({"status": "settled", "request_id": rid,
+                        "message": _SETTLED_WIPE_MESSAGE})
     return _result({
         "status": "awaiting_user", "request_id": rid,
         "message": (

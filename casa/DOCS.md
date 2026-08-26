@@ -53,14 +53,21 @@ is enabled by pointing Casa at a self-hosted **Hindsight** app.
 **Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
 bank, drops any pending durable retry records, and forgets every conversation
 pointer without saving it — closing the "cleared it by hand but items kept
-reappearing" gap. Two ways to run it, both explicit: ask the assistant (the
-`wipe_memory` tool posts an Approve/Cancel keyboard to the configured operator's
-DM and executes only on the operator's own tap, reporting exactly what it
-removed), or from the add-on terminal run `casactl memory-wipe --yes` (refuses
-without the flag). With `telegram_chat_id` empty nobody is the operator, so the
-assistant-side wipe is denied for everyone. A conversation or engagement already
-in flight when the wipe runs may still contribute one item afterwards; everything
-durable is removed.
+reappearing" gap. **There is one way to run it: from the add-on terminal, run
+`casactl memory-wipe --yes`** (it refuses without the flag). A conversation or
+engagement already in flight when the wipe runs may still contribute one item
+afterwards; everything durable is removed.
+
+Casa also carries a consent-gated agent door for the same operation — the
+`wipe_memory` tool, which posts an Approve/Cancel keyboard to the configured
+operator's DM and executes only on the operator's own tap — but **no shipped
+agent is granted it**, so asking your assistant to wipe memory will get you a
+plain "I can't do that, run `casactl memory-wipe --yes`" rather than a wipe.
+Earlier versions of this page described asking the assistant as a supported
+route; it never was on a default install. (If you have granted the tool by hand
+in your own agent configuration, the tool's own gates apply: with
+`telegram_chat_id` empty nobody is the operator, so the wipe is then denied for
+everyone.)
 
 The following env var is **auto-derived** from `hindsight_api_url` and rarely needs
 setting by hand:

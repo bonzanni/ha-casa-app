@@ -111,6 +111,17 @@ flush-close must be able to take. With no operator configured, nobody can
 consent and the tool door refuses everyone. At most one wipe runs at a time,
 and shutdown freezes new admissions before draining a running one.
 
+**Which door a shipped install actually has.** The terminal door, and only
+that one. A Casa tool reaches an agent's MCP server only when that agent's
+resolved grants name it, and no shipped runtime, role or executor artifact
+names the wipe tool — so the agent door exists, is correct, and is held by
+nobody. An operator's own agent configuration can grant it, and the tool's
+gates then apply unchanged. Because the door is unreachable by default, every
+shipped resident's doctrine carries the matching refusal: claim the capability
+only when the tool is actually present, and otherwise say plainly that this
+agent cannot do it and name the terminal command, rather than delegating the
+request or promising a confirmation that will never arrive.
+
 **Writers that straddle a wipe discard.** Every bank writer captures a
 *fence generation* in the same no-await block as the decision that commits
 it to its source data — beside the pool's resume decision for a superseded

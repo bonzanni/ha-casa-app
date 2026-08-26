@@ -82,11 +82,12 @@
     - tests/test_internal_handlers.py
     - tests/test_emit_completion_tool.py
   related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md]
-  defines_invariants: [INV-TOOL-001, INV-TOOL-002, INV-TOOL-006]
+  defines_invariants: [INV-TOOL-001, INV-TOOL-002, INV-TOOL-006, INV-TOOL-008]
   invariant_tests:
     INV-TOOL-001: [tests/test_internal_handlers.py::test_pin_inv_tool_001_result_marks_errors_only_for_error_status]
     INV-TOOL-006: [tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_nonvoice_abort_reaches_both_consumers, tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_abort_write_failure_reconciles_original_failure_only, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_nonvoice_abort_matrix, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_empty_text_completed_run_is_still_successful, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_abort_write_failure_retries_the_original_failure]
     INV-TOOL-002: [tests/test_internal_handlers.py::test_tools_call_inactive_engagement_is_rejected_fail_closed, tests/test_internal_handlers.py::test_tools_call_terminal_engagement_binds_for_emit_completion]
+    INV-TOOL-008: [tests/test_scheduled_ask_attention_lane.py::test_plain_text_during_human_post_cancels_replacement_not_scheduled, tests/test_scheduled_ask_attention_lane.py::test_a_live_plain_ask_still_returns_the_unchanged_awaiting_payload, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_during_post_returns_neutral_settlement, tests/test_wipe_memory_tool.py::TestConsentFlow::test_a_live_consent_request_returns_the_unchanged_payload, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_during_live_state_save_returns_awaiting_and_restores]
 
 - doc: architecture/trigger-secrets.md
   summary: The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.
