@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.242.0] - 2026-08-26
+
+### Fixed
+
+- A delegation whose result arrived while Casa was restarting is now
+  announced in your chat — and stays owed until it actually reaches you,
+  instead of being dropped the moment it was handed to the queue.
+
 ## [0.241.0] - 2026-08-26
 
 ### Fixed
