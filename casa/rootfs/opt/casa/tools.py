@@ -12087,15 +12087,11 @@ async def specialist_install_inspect(args: dict) -> dict:
         # which the finish hook could not tell from success — so a tap landing
         # after its engagement terminalised left "installing" on screen with
         # nothing installed and no pointer to the recovery. Report the outcome
-        # instead. What True means is narrow, and the DM says no more than it:
-        # the engagement was live here and the continuation was REQUESTED of
-        # deliver_system_turn, which returned normally. It is NOT a delivery
-        # receipt — deliver_system_turn is still `-> None`, and it can still
-        # abandon delivery under its own lock (a first resume failure, a failed
-        # context rebuild, the shutdown gate, or a terminalisation that wins the
-        # race with this check). Those residuals surface in the engagement
-        # topic; the already-terminal case, which is #662's, surfaces nowhere at
-        # all, and that is the one this closes.
+        # instead. What the result does and does not establish, and which
+        # residuals it leaves open, are stated once — in INV-SPEC-010
+        # (docs/architecture/specialist-lifecycle.md). This comment does not
+        # restate them: five review rounds were spent on paraphrases of that
+        # contract that each drifted from it.
         if eng is None:
             return False
         try:

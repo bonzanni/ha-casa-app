@@ -185,9 +185,10 @@ registry lock during the seam's own bookkeeping await, after which the turn is h
 anyway, and a later sample would report that real hand-off as a failure.
 `deliver_system_turn` still returns `None`, so a first resume failure, a failed context
 rebuild or the shutdown gate can abandon delivery after a positive report; those paths
-surface only best-effort in the engagement topic (their own send failures are swallowed), and the success wording therefore claims only that a continuation was
-*requested*. Reporting an actual hand-off would widen the channel delivery contract,
-which is separate work.
+only ATTEMPT to surface in the engagement topic — the notice is best-effort and its own
+send failure is swallowed, so such a path can stay entirely silent. The success wording
+therefore claims only that a continuation was *requested*. Reporting an actual hand-off
+would widen the channel delivery contract, which is separate work.
 
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 
