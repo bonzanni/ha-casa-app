@@ -16,6 +16,8 @@
    `plugin_data_plugins`: those plugins' CLI-managed persistent data
    (`CLAUDE_PLUGIN_DATA` — possibly stored OAuth authorizations) was NOT
    deleted and no provider revocation was performed, so a reinstall re-attaches.
+   Say "may have survived", never "survived": Casa cannot see whether those
+   plugins stored anything.
    Do not restate it as a deletion or a revocation.
 4. `config_git_commit(message="uninstall specialist <slug>")`.
 5. `casa_reload(scope="agents")` — evicts the removed agent from the live

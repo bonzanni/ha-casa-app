@@ -234,10 +234,15 @@ grant's state, which Casa has no standing to report in either direction.
 
 What it does not cover: envelopes that describe no persisting removal carry none of it — the
 pre-commit refusals, `plugin_unassign`, `plugin_update`, and the rolled-back arms, where the
-entries are back. Nor does it cover the arm where the uninstall sequencer raises: compensation
-runs and the exception propagates, so there is no result envelope to disclose in, and the
-operator gets a hard error rather than a green result. Making that arm speak would mean
-converting exception handling into structured outcomes, which is a different change.
+entries are back. Nor does it cover a removal path that RAISES after the registry commit — the
+uninstall sequencer, where compensation runs and the exception propagates, and equally a
+direct `plugin_remove` whose reload-and-verify tail raises. In both the mutation has
+committed and there is no result envelope to carry the disclosure, so the operator gets a
+hard error where a persisting removal went unstated. That is a bounded, non-silent gap: the
+error is loud, and the removal recipe tells the engager to say the removal may have taken
+effect and to check with `plugin_list()`. Closing it properly means converting exception
+handling on these paths into structured outcomes — a different change, and one that touches
+every bundle tool rather than the removal ones.
 
 ## Failure behavior
 

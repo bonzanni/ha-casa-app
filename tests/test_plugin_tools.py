@@ -1404,6 +1404,15 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     # plugin_unassign never carries the note — an unconditional reporting step
     # invites a survival warning after an operation that removed nothing.
     assert "only when the result carries `plugin_data_note`" in remove
+    # Sol diff-review r2: the payload says "may remain" because Casa cannot see
+    # whether the plugin ever stored anything. A recipe that tells the engager
+    # the operator will learn authorizations SURVIVED converts that into a
+    # confident claim about credentials Casa never observed. Both recipes must
+    # carry the qualifier, and neither may make the categorical claim.
+    assert sum(fragment in text for text, fragment in (
+        (remove, "may have survived"), (uninstall, "may have survived"))) == 2
+    for text in (remove, uninstall):
+        assert "authorizations survived" not in text
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (

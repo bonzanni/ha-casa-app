@@ -13,8 +13,9 @@ Two tools, two scopes:
 **Neither one deletes the plugin's data or revokes anything.** A removal drops
 Casa's registry entry. The plugin's CLI-managed persistent data directory
 (`CLAUDE_PLUGIN_DATA`) is NOT deleted — it may hold stored authorizations such
-as OAuth tokens, it survives the removal, and reinstalling the same plugin
-re-attaches to it. Casa performs no provider-side revocation. The tool's own
+as OAuth tokens, whatever it holds survives the removal, and reinstalling the
+same plugin re-attaches to it. Casa cannot see whether the plugin stored
+anything there, so every wording is "may", never "did". Casa performs no provider-side revocation. The tool's own
 result says so, in `plugin_data_may_remain`, `provider_revocation_performed`
 and `plugin_data_note`.
 
@@ -29,9 +30,15 @@ and `plugin_data_note`.
    that committed; a `plugin_unassign` never carries it, and there is nothing
    to warn about after one — report `plugin_data_note` to the operator
    verbatim, alongside the outcome. It is the only place they learn that
-   stored authorizations survived. Do NOT restate it as a deletion or a
+   stored authorizations may have survived — "may", because Casa cannot see
+   whether the plugin ever stored any. Do NOT restate it as a deletion or a
    revocation: Casa performed neither. If they want the access to end, they
    revoke it at the provider.
+
+If a removal raises instead of returning a result, the registry may already
+have committed. Say that: the removal may have taken effect, and if it did,
+the same survival applies — nothing was deleted and nothing was revoked. Run
+`plugin_list()` to see which.
 
 If the plugin required secrets, clear its plugin-env.conf entries afterward (see
 `secrets.md`) — and that clearing DOES need its own
