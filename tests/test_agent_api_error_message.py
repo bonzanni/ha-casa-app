@@ -705,13 +705,16 @@ async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
     )
 
     failed: list = []
-    real_fail = reg.fail_delegation
+    real_fail_compat = reg.job_registry.fail_compat
 
-    async def _recording_fail(did, exc):
-        failed.append(did)
-        return await real_fail(did, exc)
+    async def _recording_fail_compat(did, failure):
+        failed.append(failure)
+        return await real_fail_compat(did, failure)
 
-    monkeypatch.setattr(reg, "fail_delegation", _recording_fail)
+    # Cluster S (#709): the sync exception arm persists the CLASSIFIED
+    # JobFailure through `fail_compat` — not `fail_delegation(id, exc)`,
+    # whose envelope records the exception class name.
+    monkeypatch.setattr(reg.job_registry, "fail_compat", _recording_fail_compat)
 
     result = await _with_origin(
         tools.delegate_to_agent.handler({
@@ -723,6 +726,7 @@ async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
 
     # The durable record must agree with what the caller was told.
     assert len(failed) == 1
+    assert failed[0].kind == ErrorKind.REFUSAL.value
     payload = result["content"][0]["text"]
     assert '"status": "error"' in payload
     assert ErrorKind.REFUSAL.value in payload
@@ -743,9 +747,19 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
     failed: list = []
     completed: list = []
 
+    class _JobRegistry:
+        # Cluster S (#709): the exception arm persists the CLASSIFIED
+        # JobFailure through `fail_compat` — `fail_delegation(id, exc)` would
+        # durably record the exception class name instead of the kind the
+        # caller was told.
+        async def fail_compat(self, did, failure):
+            failed.append((did, failure))
+
+        def schedule_failure_reconciliation(self, did, failure=None):
+            raise AssertionError("write did not fail; no retry expected")
+
     class _Registry:
-        async def fail_delegation(self, did, exc):
-            failed.append((did, exc))
+        job_registry = _JobRegistry()
 
         async def complete_delegation(self, did):
             completed.append(did)
@@ -772,6 +786,9 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
 
     assert completed == []
     assert [d for d, _ in failed] == ["d-1"]
+    # The durable kind equals the caller-visible kind — never the exception
+    # class name (#709).
+    assert [f.kind for _, f in failed] == [ErrorKind.REFUSAL.value]
     assert len(notified) == 1
     complete = notified[0].content
     assert complete.status == "error"

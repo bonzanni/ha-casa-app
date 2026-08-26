@@ -67,7 +67,7 @@ from claude_runtime import CLAUDE_CLI_PATH
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
 from error_kinds import (
-    ApiErrorTurn, _USER_MESSAGES, _classify_error, api_error_kind,
+    ApiErrorTurn, ErrorKind, _USER_MESSAGES, _classify_error, api_error_kind,
     result_api_error_kind,
 )
 from mcp_registry import McpServerRegistry
@@ -2131,6 +2131,13 @@ _KNOWN_RESULT_SUBTYPES = frozenset({
     "error_max_structured_output_retries", "error_during_execution",
 })
 
+# LOG-time allow-list for stop reasons, mirroring `_KNOWN_RESULT_SUBTYPES`:
+# the decision predicates read the raw field; only rendering goes through
+# `_known_token`, where echoing an unrecognised token would be the risk.
+_KNOWN_STOP_REASONS = frozenset({
+    "end_turn", "stop_sequence", "tool_use", "max_tokens", "refusal",
+})
+
 # Each abort mode has a DIFFERENT repair, so each gets its own failure kind:
 # a turn limit is raised in the specialist's role.yaml, a contract failure is
 # a collision between the envelope and the specialist's own result contract,
@@ -2159,6 +2166,68 @@ _RUN_ABORT_FALLBACK_KIND = "specialist_run_failed"
 # Failing open costs a false one that nothing can find again.
 _COMPLETED_TERMINAL_REASONS = frozenset({"completed"})
 
+# The stop reasons under which the MODEL finished its answer, same ALLOW-list
+# rationale as `_COMPLETED_TERMINAL_REASONS`: `stop_reason` is an open
+# `str | None` namespace, and a deny-list of {"max_tokens"} would read every
+# unheard-of non-completed reason as a finished answer — the silent direction
+# for a memory write. `None` counts completed (an older CLI reports no reason,
+# as does a result that bypassed the query loop), expressed at the read site as
+# `is not None and not in`, exactly the terminal_reason shape. `tool_use` is
+# deliberately EXCLUDED: on the memory-writing delegation paths
+# (`output_format=None`) a terminal result that stopped on a tool call is an
+# explicitly unfinished answer with `deferred_tool_use` beside it; the
+# structured-output runs that legitimately end on a tool call are voice-only,
+# where retention is a no-op (Sol seam round 1). The known cost is one true
+# document lost audibly when a future CLI mints a novel completed reason.
+_COMPLETED_STOP_REASONS = frozenset({"end_turn", "stop_sequence"})
+
+# Capture-time normalization sentinel for MALFORMED terminal evidence. The SDK
+# parser passes non-string values through verbatim, and the old `_str_or_none`
+# capture read a malformed subtype/terminal_reason/stop_reason as `None` —
+# which every predicate deliberately treats as legacy-COMPLETED, the fail-open
+# direction (Sol + Terra, seam round 1, independently). The sentinel is not
+# `None`, not `success`, and in no allow-list, so every downstream predicate
+# fails CLOSED on it with no extra validity fields.
+_MALFORMED_EVIDENCE = "<malformed>"
+
+
+def _terminal_str(value: object) -> str | None:
+    """``None`` iff absent (the legacy/completed direction), ``str`` verbatim,
+    anything else the ``_MALFORMED_EVIDENCE`` sentinel — never coerced, so no
+    foreign ``__str__`` is ever executed (the `_str_or_none` discipline)."""
+    if value is None:
+        return None
+    return value if isinstance(value, str) else _MALFORMED_EVIDENCE
+
+
+def _required_terminal_str(value: object) -> str:
+    """A REQUIRED terminal field: ``str`` verbatim; anything else — ``null``
+    included — is the ``_MALFORMED_EVIDENCE`` sentinel. The parser reads
+    ``subtype`` with ``data["subtype"]``, so on a parsed result the field is
+    always present and a ``None`` is the CLI writing null into a required
+    field, not an older CLI omitting it (omission raises in the parser and no
+    ResultMessage exists at all — the abort path). The absent-is-legacy
+    direction belongs only to OPTIONAL fields (``data.get(...)`` —
+    ``terminal_reason``, ``stop_reason``), which keep ``_terminal_str``.
+    Generalised from two same-shape findings (Terra r1: falsey ``is_error``;
+    Sol r2: null ``subtype``): every required field fails CLOSED on a
+    mistyped value; only optional fields have a legacy reading for absence."""
+    return value if isinstance(value, str) else _MALFORMED_EVIDENCE
+
+
+def _flag_failed_closed(value: object) -> bool:
+    """A genuine ``bool`` verbatim; any other value is malformed evidence and
+    reads as ``True`` — fail closed. The SDK parser passes ``is_error``
+    through from a REQUIRED key, so on a parsed result the value is always
+    present and a non-bool (``0``, ``""``, ``None``) is the CLI writing the
+    wrong type into a bool field; ``bool()`` coercion read exactly those as
+    success (Terra review r1, S1). Absence is the caller's ``getattr``
+    default — an object with no such attribute claims no error, which is the
+    legacy/test-construction shape and stays non-error."""
+    if isinstance(value, bool):
+        return value
+    return True
+
 
 def _run_abort_kind(subtype: str | None) -> str:
     """The failure kind for a CLI-aborted run, never raising."""
@@ -2182,6 +2251,14 @@ class DelegatedOutput:
     # path, and treating it as a completed turn sent it to the envelope parser
     # to be misreported as a malformed result (Sol review, P1).
     result_message_seen: bool = True
+    # The rest of the terminal shape, recorded RAW at the single construction
+    # site (cluster S): predicates are derived properties below, single-sourced
+    # with the evidence, never re-expressed at a consumer. Neutral defaults
+    # keep every legacy/test construction valid.
+    run_is_error: bool = False
+    run_api_error_status: int | None = None
+    run_terminal_reason: str | None = None
+    run_stop_reason: str | None = None
 
     @property
     def run_aborted(self) -> bool:
@@ -2191,6 +2268,53 @@ class DelegatedOutput:
         return (
             self.run_subtype is not None
             and self.run_subtype != _CLI_RUN_SUCCESS
+        )
+
+    @property
+    def caller_error_kind(self) -> ErrorKind | None:
+        """The typed caller fault this terminal result reports, or ``None``.
+
+        Abort precedence first: a non-success subtype keeps its specific
+        specialist abort taxonomy — ``is_error=True`` beside it must not
+        flatten ``error_max_turns`` into a generic API fault. Then
+        ``is_error`` (the SDK's documented shape for a failing API call under
+        ``subtype="success"``), mapped by ``api_error_status``: 429/529 are
+        the transient overload pair (RATE_LIMIT); other 500-599 SDK_ERROR;
+        anything else — missing, malformed, out of range — fails CLOSED to
+        API_ERROR. Last, a terminal_reason outside the completed allow-list
+        (the CLI's loop stopped for another cause) is SDK_ERROR.
+        """
+        if self.run_aborted:
+            return None
+        if self.run_is_error:
+            status = self.run_api_error_status
+            if status in (429, 529):
+                return ErrorKind.RATE_LIMIT
+            if status is not None and 500 <= status <= 599:
+                return ErrorKind.SDK_ERROR
+            return ErrorKind.API_ERROR
+        if (self.run_terminal_reason is not None
+                and self.run_terminal_reason not in _COMPLETED_TERMINAL_REASONS):
+            return ErrorKind.SDK_ERROR
+        return None
+
+    @property
+    def answer_incomplete(self) -> bool:
+        """Memory-boundary completeness: at least as wide as every
+        caller-facing verdict BY CONSTRUCTION (first two clauses), not by
+        call-order — a run judged incomplete for callers must never be banked
+        as complete, even if a future caller stops raising. The last clause is
+        memory-only: an output-token-truncated answer (``max_tokens``, or any
+        stop reason outside the allow-list) stays a caller-visible success
+        while the unfinished text is withheld from the bank (#710)."""
+        if self.run_aborted or self.run_is_error:
+            return True
+        if (self.run_terminal_reason is not None
+                and self.run_terminal_reason not in _COMPLETED_TERMINAL_REASONS):
+            return True
+        return (
+            self.run_stop_reason is not None
+            and self.run_stop_reason not in _COMPLETED_STOP_REASONS
         )
 
 
@@ -2949,21 +3073,58 @@ async def _run_delegated_agent(
     # ordinary provenance-attributed exchange, indistinguishable at every reader
     # from a completed one. Reading this object's own `run_aborted` rather than
     # re-expressing the predicate keeps the gate and the returned verdict
-    # single-sourced — and preserves the property's deliberate asymmetry, which a
-    # local `subtype == "success"` would silently break: a ResultMessage that WAS
-    # seen but carries no subtype is a completed legacy run, not an abort.
+    # single-sourced. The no-subtype-is-completed asymmetry now lives ONLY on
+    # direct `DelegatedOutput` constructions (the field default): on a PARSED
+    # result `subtype` is a required field, so null is malformed evidence and
+    # captures as the sentinel, i.e. an abort (Sol review r2, S1).
     output = DelegatedOutput(
         text=text,
         structured_output=(
             getattr(result_msg, "structured_output", None)
             if result_msg is not None else None
         ),
+        # `_required_terminal_str`: a malformed value — null included, this
+        # being a required field — must become the fail-closed sentinel,
+        # never the legacy-completed `None` (seam round 1; review rounds 1-2).
         run_subtype=(
-            _str_or_none(getattr(result_msg, "subtype", None))
+            _required_terminal_str(getattr(result_msg, "subtype", None))
             if result_msg is not None else None
         ),
         result_message_seen=result_msg is not None,
+        run_is_error=(
+            _flag_failed_closed(getattr(result_msg, "is_error", False))
+            if result_msg is not None else False
+        ),
+        run_api_error_status=(
+            _int_or_none(getattr(result_msg, "api_error_status", None))
+            if result_msg is not None else None
+        ),
+        run_terminal_reason=(
+            _terminal_str(getattr(result_msg, "terminal_reason", None))
+            if result_msg is not None else None
+        ),
+        run_stop_reason=(
+            _terminal_str(getattr(result_msg, "stop_reason", None))
+            if result_msg is not None else None
+        ),
     )
+
+    # Cluster S (#709): a terminal result that carries `is_error=True` or a
+    # non-completed terminal_reason under `subtype="success"` is a failing
+    # run, not an empty success — end it as a typed caller fault, exactly as
+    # the #568 refusal raise above already ends a result-only refusal. The
+    # raise PRECEDES the retain below, so a half-finished exchange is never
+    # written to memory as a complete one; every consumer's existing exception
+    # arm classifies `ApiErrorTurn` by its carried kind. CLI aborts do NOT
+    # raise here — `caller_error_kind` yields to the specialist abort
+    # taxonomy, which the consumers read from `run_aborted`.
+    _caller_fault = output.caller_error_kind
+    if _caller_fault is not None:
+        logger.warning(
+            "delegated agent %s run ended by a terminal API fault kind=%s",
+            _known_role(getattr(cfg, "role", None)), _caller_fault.value,
+        )
+        raise ApiErrorTurn(_caller_fault)
 
     # Specialist write: one explicit tier-classified retain of the exchange
     # OFFERED to the shared bank, gated by the PARENT channel's write-trust
@@ -2971,20 +3132,24 @@ async def _run_delegated_agent(
     # session registry, so the freshness reaper never sees them; the retain is
     # explicit. It is best-effort and detached: reaching this block is not
     # evidence that anything was stored.
-    if cfg.memory.token_budget > 0 and text:
+    if cfg.memory.token_budget > 0:
         sem = getattr(agent_mod, "active_semantic_memory", None)
         if sem is not None:
-            # INV-MEM-016: the CALLER's task turn is SUBMITTED either way — it
-            # is a true utterance the caller genuinely made, and this is the ONLY
-            # writer of it (the resident's own session save never sees the
-            # paraphrase it sent to the specialist). The two items are
-            # independent content-addressed documents rather than a paired
-            # record, so withholding one is well defined. Suppressing the whole
-            # retain would lose the caller turn; marking the answer instead would
-            # not suppress anything, because recall runs `tags_match="any"` (an
-            # additive tag BROADENS) and the mental-model overlay is a bank-wide
-            # `profile()` with no filter hook at all. Writer-side exclusion is
-            # the only shape that protects every reader by construction.
+            # INV-MEM-016: admission is PER TURN (#708) — the CALLER's task
+            # turn is submitted whenever it is non-blank, independent of the
+            # answer: it is a true utterance the caller genuinely made, and
+            # this is the ONLY writer of it (the resident's own session save
+            # never sees the paraphrase it sent to the specialist). The old
+            # outer `and text` gate keyed the WHOLE retain on answer text, so
+            # an empty answer silently discarded the caller turn too. The two
+            # items are independent content-addressed documents rather than a
+            # paired record, so withholding one is well defined. Suppressing
+            # the whole retain would lose the caller turn; marking the answer
+            # instead would not suppress anything, because recall runs
+            # `tags_match="any"` (an additive tag BROADENS) and the
+            # mental-model overlay is a bank-wide `profile()` with no filter
+            # hook at all. Writer-side exclusion is the only shape that
+            # protects every reader by construction.
             #
             # SUBMITTED, not written: what is assembled here is an ARGUMENT to a
             # best-effort writer that can still decline it — a voice or webhook
@@ -2994,54 +3159,51 @@ async def _run_delegated_agent(
             # therefore not this site's to assert, and the log below deliberately
             # claims only what this site DECIDES.
             #
-            # The terminal subtype is NOT the only way the CLI says "this turn
-            # did not finish", so the completeness test here is deliberately
-            # WIDER than `run_aborted` (which stays exactly as it is — four
-            # non-memory consumers read it, and this is a memory decision):
-            #   * `is_error` with `subtype="success"` is the SDK's documented
-            #     shape for a failing API call — its own `api_error_status`
-            #     field is defined as being set "when is_error is True and
-            #     subtype is 'success'". `result_api_error_kind` does not catch
-            #     it (it reads `stop_reason == "refusal"` only), so nothing
-            #     upstream raises. The resident turn path already treats an
-            #     is_error result as a failure (sdk_client_pool.py); this one
-            #     only LOGGED it.
-            #   * a `terminal_reason` that is not a completed one — the CLI
-            #     reporting the loop stopped for some other cause, cancellation
-            #     ("aborted_streaming", "aborted_tools") among them. Tested
-            #     against the ALLOW-list, never against a list of known bad
-            #     reasons: the field is an open namespace and a deny-list would
-            #     read every unlisted reason as a finished turn.
-            # Either way the accumulated text is a prefix, not an answer, and
-            # `subtype` alone would call it complete.
-            _terminal_reason = _str_or_none(
-                getattr(result_msg, "terminal_reason", None))
-            _incomplete = (
-                output.run_aborted
-                or bool(getattr(result_msg, "is_error", False))
-                or (_terminal_reason is not None
-                    and _terminal_reason not in _COMPLETED_TERMINAL_REASONS)
-            )
-            turns = [RetainedTurn(task_text, caller_provenance)]
-            if _incomplete:
-                logger.warning(
-                    "delegated agent %s run did not complete (kind=%s) — its "
-                    "partial answer is excluded from the memory retain",
-                    _known_role(getattr(cfg, "role", None)),
-                    _run_abort_kind(output.run_subtype),
-                )
-            else:
+            # The answer is admitted only when `answer_incomplete` is false —
+            # the single memory-boundary predicate on the evidence-carrying
+            # output object, strictly wider than `run_aborted` by
+            # construction. The `is_error` / non-completed-terminal_reason
+            # arms raise upstream now (#709) and cannot reach this block; they
+            # stay in the predicate so the gate's width never depends on
+            # call-order. The `stop_reason` arm is the memory-only one (#710):
+            # a `max_tokens`-truncated answer is a caller-visible success
+            # whose unfinished text must not be banked as a completed,
+            # provenance-attributed document.
+            turns = []
+            if task_text.strip():
+                turns.append(RetainedTurn(task_text, caller_provenance))
+            if text and not output.answer_incomplete:
                 turns.append(RetainedTurn(text, executing_provenance))
-            # #411: fence generation captured synchronously with the exchange
-            # content — the detached task may not run until after a wipe.
-            from memory_wipe import FENCE
-            bg = asyncio.create_task(retain_delegated(
-                sem, origin_channel=str(parent.get("channel", "")),
-                turns=turns,
-                fence_generation=FENCE.generation(),
-            ))
-            _specialist_bg_tasks.add(bg)
-            bg.add_done_callback(_specialist_bg_tasks.discard)
+            elif text:
+                if output.run_aborted:
+                    logger.warning(
+                        "delegated agent %s run did not complete (kind=%s) — "
+                        "its partial answer is excluded from the memory "
+                        "retain",
+                        _known_role(getattr(cfg, "role", None)),
+                        _run_abort_kind(output.run_subtype),
+                    )
+                else:
+                    logger.warning(
+                        "delegated agent %s answer did not finish "
+                        "(stop_reason=%s) — its partial answer is excluded "
+                        "from the memory retain",
+                        _known_role(getattr(cfg, "role", None)),
+                        _known_token(output.run_stop_reason,
+                                     _KNOWN_STOP_REASONS),
+                    )
+            if turns:
+                # #411: fence generation captured synchronously with the
+                # exchange content — the detached task may not run until
+                # after a wipe.
+                from memory_wipe import FENCE
+                bg = asyncio.create_task(retain_delegated(
+                    sem, origin_channel=str(parent.get("channel", "")),
+                    turns=turns,
+                    fence_generation=FENCE.generation(),
+                ))
+                _specialist_bg_tasks.add(bg)
+                bg.add_done_callback(_specialist_bg_tasks.discard)
 
     return output
 
@@ -3082,6 +3244,47 @@ def _permit_release_callback(permit) -> "callable":
     return _cb
 
 
+async def _fail_delegation_durably(delegation_id: str, failure: JobFailure) -> None:
+    """Persist a typed FAILED terminal for a delegation, never raising away
+    the caller's answerable state.
+
+    The explicit ``JobFailure`` goes through ``fail_compat`` — the route the
+    voice arms already use — because ``fail_delegation(id, exc)`` persists the
+    exception CLASS NAME as the durable kind (``_failure_envelope``), so the
+    ledger would say ``ApiErrorTurn`` while the caller was told
+    ``rate_limit`` (Sol, seam round 1). A failed terminal write retries only
+    through failure reconciliation, CARRYING THE ORIGINAL typed failure — an
+    abort or caller fault must never be completed by a background retry, and
+    a bare detached ``fail_compat`` task would lose its own write failure
+    silently."""
+    try:
+        await _specialist_registry.job_registry.fail_compat(
+            delegation_id, failure)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Delegation %s failure terminal write failed (%s); scheduling "
+            "failure reconciliation", delegation_id[:8], exc,
+        )
+        try:
+            (_specialist_registry.job_registry
+             .schedule_failure_reconciliation(delegation_id, failure))
+        except Exception:  # noqa: BLE001 — restart recovery remains authoritative
+            logger.error(
+                "Delegation %s failure reconciliation scheduling failed; "
+                "restart recovery required", delegation_id[:8],
+            )
+
+
+def _run_abort_failure(output: DelegatedOutput) -> JobFailure:
+    """The explicit typed failure for a CLI-aborted delegated run."""
+    return JobFailure(
+        kind=_run_abort_kind(output.run_subtype),
+        message="Specialist could not complete the delegated task.",
+    )
+
+
 def _attach_completion_callback(
     task: asyncio.Task,
     record: DelegationRecord,
@@ -3106,24 +3309,45 @@ def _attach_completion_callback(
             return
         complete: DelegationComplete | None = None
         try:
-            text = t.result().text
-            bounded, output_truncated = specialist_limits.truncate_output(text)
-            if output_truncated:
-                logger.warning(
-                    "delegated agent %s output truncated: %d > %d chars "
-                    "(spec §4.6)", record.agent, len(text),
-                    specialist_limits._MAX_OUTPUT_CHARS,
+            output = t.result()
+            if output.run_aborted:
+                # Cluster S (#675): the CLI aborted the run — the streamed
+                # prefix is not an answer. Exactly one error notification,
+                # no partial text, and a typed FAILED terminal; the cancelled
+                # and exception arms are untouched (#671 latch preserved).
+                failure = _run_abort_failure(output)
+                complete = DelegationComplete(
+                    delegation_id=record.id,
+                    agent=record.agent,
+                    status="error",
+                    kind=failure.kind,
+                    message=failure.message,
+                    origin=record.origin,
+                    elapsed_s=time.time() - record.started_at,
                 )
-            complete = DelegationComplete(
-                delegation_id=record.id,
-                agent=record.agent,
-                status="ok",
-                text=bounded,
-                origin=record.origin,
-                elapsed_s=time.time() - record.started_at,
-                output_truncated=output_truncated,
-            )
-            loop.create_task(_specialist_registry.complete_delegation(record.id))
+                loop.create_task(
+                    _fail_delegation_durably(record.id, failure))
+            else:
+                text = output.text
+                bounded, output_truncated = (
+                    specialist_limits.truncate_output(text))
+                if output_truncated:
+                    logger.warning(
+                        "delegated agent %s output truncated: %d > %d chars "
+                        "(spec §4.6)", record.agent, len(text),
+                        specialist_limits._MAX_OUTPUT_CHARS,
+                    )
+                complete = DelegationComplete(
+                    delegation_id=record.id,
+                    agent=record.agent,
+                    status="ok",
+                    text=bounded,
+                    origin=record.origin,
+                    elapsed_s=time.time() - record.started_at,
+                    output_truncated=output_truncated,
+                )
+                loop.create_task(
+                    _specialist_registry.complete_delegation(record.id))
         except Exception as exc:
             kind = _classify_error(exc).value
             complete = DelegationComplete(
@@ -3135,7 +3359,10 @@ def _attach_completion_callback(
                 origin=record.origin,
                 elapsed_s=time.time() - record.started_at,
             )
-            loop.create_task(_specialist_registry.fail_delegation(record.id, exc))
+            # The typed kind the caller was just told is also what the ledger
+            # records — never the exception class name (#709).
+            loop.create_task(_fail_delegation_durably(
+                record.id, JobFailure(kind=kind, message=str(exc))))
 
         if _bus is None or complete is None:
             return
@@ -5266,7 +5493,6 @@ async def delegate_to_agent(args: dict) -> dict:
             kind = _classify_error(exc).value
             elapsed = time.time() - started_at
             if is_voice:
-                from job_registry import JobFailure
                 failure = JobFailure(
                     kind=kind,
                     message="Specialist could not complete the voice job.",
@@ -5286,7 +5512,12 @@ async def delegate_to_agent(args: dict) -> dict:
                     "elapsed_s": elapsed,
                 })
 
-            await _specialist_registry.fail_delegation(delegation_id, exc)
+            # The typed kind the caller is told below is also what the ledger
+            # records — `fail_delegation(id, exc)` would persist the exception
+            # CLASS NAME instead (#709); a failed write retries through
+            # failure reconciliation carrying this same typed failure.
+            await _fail_delegation_durably(
+                delegation_id, JobFailure(kind=kind, message=str(exc)))
             logger.info(
                 "Delegation %s → %s failed: %s (%s)",
                 delegation_id[:8], agent_name, kind, exc,
@@ -5306,7 +5537,6 @@ async def delegate_to_agent(args: dict) -> dict:
             # See _run_voice_job_lifecycle: a run the CLI aborted has no
             # envelope to be malformed, and must not be reported as one (#254).
             if delegated_output.run_aborted:
-                from job_registry import JobFailure
                 failure = JobFailure(
                     kind=_run_abort_kind(delegated_output.run_subtype),
                     message="Specialist could not complete the voice job.",
@@ -5335,7 +5565,6 @@ async def delegate_to_agent(args: dict) -> dict:
                 voice_result = parse_voice_job_result(
                     delegated_output.structured_output)
             except VoiceJobResultError as exc:
-                from job_registry import JobFailure
                 failure = JobFailure(
                     kind="invalid_specialist_result",
                     message="Specialist returned an invalid structured result.",
@@ -5390,6 +5619,32 @@ async def delegate_to_agent(args: dict) -> dict:
                 voice_meta["assumptions"] = _bounded_str_list(
                     voice_result.assumptions)
         else:
+            # Cluster S (#675): the abort check sits BEFORE truncation and
+            # `complete_delegation`, mirroring the voice arm above (#254) —
+            # an aborted run can therefore never reach
+            # `schedule_completion_reconciliation`; the hole is closed
+            # structurally, not by another gate. No partial text on the wire:
+            # the streamed prefix is not an answer.
+            if delegated_output.run_aborted:
+                failure = _run_abort_failure(delegated_output)
+                await _fail_delegation_durably(delegation_id, failure)
+                elapsed = time.time() - started_at
+                logger.warning(
+                    "Delegation %s → %s aborted by the CLI kind=%s subtype=%s "
+                    "status=failed (%.2fs)",
+                    delegation_id[:8], agent_name, failure.kind,
+                    _known_token(
+                        delegated_output.run_subtype, _KNOWN_RESULT_SUBTYPES),
+                    elapsed,
+                )
+                return _result({
+                    "status": "error",
+                    "delegation_id": delegation_id,
+                    "agent": agent_name,
+                    "kind": failure.kind,
+                    "message": failure.message,
+                    "elapsed_s": elapsed,
+                })
             text = delegated_output.text
         # Task 6 (spec §4.6): bound the synchronous result + expose the flag on
         # the wire so the narrating resident can disclose a clipped answer.

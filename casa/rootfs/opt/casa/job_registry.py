@@ -551,17 +551,25 @@ class JobRegistry:
                 if not waiters:
                     self._reconciliation_waiters.pop(job_id, None)
 
-    def schedule_failure_reconciliation(self, job_id: str) -> None:
-        """Strongly own a metadata-only retry for a still-live failed write."""
+    def schedule_failure_reconciliation(
+        self, job_id: str, failure: JobFailure | None = None,
+    ) -> None:
+        """Strongly own a metadata-only retry for a still-live failed write.
+
+        Cluster S (#675): callers that already hold a typed terminal
+        ``JobFailure`` (an abort kind, a classified caller fault) pass it so
+        the retry persists the ORIGINAL failure; the no-argument form keeps
+        the ``persistence_failed`` fallback for callers that have nothing
+        better to say. A failed abort/fault write can therefore retry only a
+        failure transition — never a completion."""
+        if failure is None:
+            failure = JobFailure(
+                "persistence_failed",
+                "Specialist result could not be saved.",
+            )
         self._schedule_terminal_reconciliation(
             job_id,
-            lambda: self.fail_compat(
-                job_id,
-                JobFailure(
-                    "persistence_failed",
-                    "Specialist result could not be saved.",
-                ),
-            ),
+            lambda: self.fail_compat(job_id, failure),
         )
 
     def schedule_completion_reconciliation(self, job_id: str) -> None:

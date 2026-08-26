@@ -164,6 +164,21 @@ invariant applies to Casa's own claims.
 What it does not cover: **which** runner executes the setup tool — because there is no longer a
 choice to make. Casa runs a declared `casa.setupTool` and nothing else does; a mutation result
 reports the declared tool but routes nothing, and no completion or prompt hands it to an agent.
+
+**INV-TOOL-006**: A delegated run the CLI aborted reaches every non-voice caller-facing consumer as a failure — the durable row ends failed with the mapped abort kind, the tool result and completion notification carry an error status with no partial text, a success write is unreachable, and a failed abort write retries only a failure transition carrying the original typed failure. Completion is never keyed on empty answer text.
+
+Enforced in both non-voice terminal implementations: the synchronous arm tests the recorded
+abort verdict before output truncation and before the success write, and the shared
+completion callback (async mode and the degraded synchronous wait use the same one) reads
+the whole terminal verdict rather than the accumulated text. Both persist the explicit
+typed failure through the same compatibility route the voice arms already used, and the
+failure-reconciliation retry accepts that failure so a write that dies cannot resurface as
+the generic persistence fallback — or, worse, as a success.
+
+What it does not cover: interactive specialist engagements, which run under the in-casa
+driver and its own finalize funnel, and the voice arms, whose abort handling predates this
+rule and is unchanged. It also says nothing about *retries of the run itself* — nothing
+retries a delegated run; the kind is diagnostic, not routing.
 See [`plugin-setup.md`](plugin-setup.md) (INV-PLUG-010) for what releases the run. That
 matters to this invariant for a reason beyond tidiness: a hand-back the plugin did not need used
 to cause an unnecessary run, and idempotence means repeat calls converge on the same state, not
@@ -245,23 +260,31 @@ artifacts in its result text; a specialist-classified call with *no* quota key i
 rather than passed unmetered. Residents and executor engagements are unmetered. The
 counters are in-memory: a restart refills them — this is a quota, not an authorization.
 
-**A delegated specialist run ends without completing its turn.** The runner already
-raises ahead of the memory write when the CLI reports an API-level fault, so a
-half-finished exchange is not stored as a complete one. The same holds for the CLI's own
-terminal aborts — a turn limit, a spend ceiling, a result-contract failure, an execution
-error, an unrecognised future verdict, or a stream that ends with no terminal message at
-all: the delegating turn still receives whatever text accumulated, but that text is not
-written to the shared memory bank. The terminal subtype is not the only signal, and the
-memory boundary reads the others too: a terminal result that reports an API error while
-still calling itself a success, and one whose reported reason for stopping is anything
-other than a completed one — cancellation among them — are both incomplete for this
-purpose even though the run's own verdict says otherwise. That second test names the
-reasons that mean finished rather than the ones that mean stopped, so a reason this
-release has never seen withholds the answer instead of banking it. What is written, when anything is, is the caller's own
-request turn alone, which nothing else records — and nothing is written at all by a run
-that produced no text, which is equally true of a run that completed. This is the write
-boundary only; it says nothing about documents the bank already holds (INV-MEM-016, and
-see [`memory-lifecycle.md`](memory-lifecycle.md)).
+**A delegated specialist run ends without completing its turn.** The runner records the
+whole terminal shape — subtype, error flag, API status, terminal reason, stop reason — at
+one capture point, normalizing a malformed value — a non-string anywhere, and null in a
+required field such as the subtype or the error flag — to fail-closed evidence rather
+than to the absent-field legacy case, and every consumer reads that one verdict. The CLI's own terminal aborts — a turn limit, a spend ceiling, a
+result-contract failure, an execution error, an unrecognised future verdict, or a stream
+that ends with no terminal message at all — reach every caller the same way: the sync
+result and the completion notification say `status="error"` with the mapped specialist
+abort kind and carry no partial text, and the durable job row ends failed with that same
+kind, checked before the success write so a background completion retry can never repaint
+an abort as success. A terminal result that reports an API-level fault while still calling
+itself a success — the error flag, or a reason for stopping other than a completed one —
+ends the run as a typed failure raised before the memory write, classified from the
+API status (429/529 as the transient overload pair, other 5xx as an SDK fault, anything
+else failing closed), and the kind persisted on the durable row is the kind the caller
+was told, never an exception class name. A specialist abort keeps precedence: an error
+flag beside a non-success subtype does not flatten the abort taxonomy. None of these
+verdicts is ever keyed on empty answer text — a completed run with an empty answer stays
+a success. Memory admission is per turn: the caller's own non-blank request turn, which
+nothing else records, is submitted regardless of the answer; the answer itself needs the
+completeness predicate, including a stop reason on the finished list — an answer the
+model did not finish (output tokens exhausted among the reasons) stays a caller-visible
+success whose text is withheld from the bank, audibly (INV-MEM-016, and see
+[`memory-lifecycle.md`](memory-lifecycle.md); the ledger and reconciliation rules are in
+[`jobs-and-delivery.md`](jobs-and-delivery.md)).
 
 **Memory cannot answer.** The recall tools report unavailability as its own status and
 refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.237.0] - 2026-08-26
+
+### Fixed
+
+- A specialist run the CLI aborted, or that ended in a fault, is now reported
+  to the caller as a failure instead of an empty success. Previously such a
+  run answered `ok` with whatever text had accumulated, and the job it came
+  from was settled as if it had finished; now the caller is told it failed,
+  and the durable record carries the same reason the caller was given.
+- A partial answer from a run that did not finish is never banked to shared
+  memory. That includes an answer the model ran out of room to complete: the
+  caller still gets it, but it is not written to the bank where a later turn
+  would read it back as a settled fact.
+- The task you asked a specialist to do is now remembered even when the
+  specialist answers with nothing. Previously an empty answer discarded the
+  request as well, so the exchange left no trace at all.
+
+### Notes
+
+- Terminal evidence the CLI reports in a shape Casa does not recognise is
+  read as a failure rather than as a completed run, so a malformed report can
+  no longer pass as success.
+
+
 ## [0.236.0] - 2026-08-26
 
 ### Fixed
