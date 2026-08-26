@@ -286,6 +286,42 @@ def test_a_wrapped_invariant_statement_is_caught(tmp_path):
     assert any("complete on ONE line" in p for p in verify_docs.verify(root))
 
 
+# --- an invariant id cited in tracked Python prose (INV-DOC-009) ----------------------
+
+def test_a_python_docstring_citing_an_undefined_id_in_a_defined_family_is_caught(
+    tmp_path,
+):
+    """Pins INV-DOC-009. Specified by Sol, drive run 2026-08-25, cluster C7.
+
+    Red case demonstrated: at the base commit the verifier had no
+    tracked-prose pass at all and returned zero problems for this tree,
+    exactly as it returned zero for the live `INV-OBS-002` citation in
+    `tests/test_pin_g5_invariants.py`.
+    """
+    manifest = _inv_manifest(
+        "\n  invariant_tests:\n"
+        "    INV-X-001: [tests/test_a.py::test_b]"
+    )
+    root = _corpus(tmp_path, manifest, docs=INV_DOC)
+
+    fixture = (
+        b"def test_b():\n"
+        b'    """INV-X-001 replaces INV-X-002; INV-X-002 and '
+        b'INV-GHOST-009 remain fixture prose."""\n'
+        b"    pass\n"
+    )
+    (root / "tests" / "test_a.py").write_bytes(fixture)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+
+    problems = verify_docs.verify(root)
+    expected = (
+        "tests/test_a.py:2: INV-X-002 is not defined; "
+        "family X defines INV-X-001"
+    )
+    assert problems.count(expected) == 1
+    assert len(problems) == 1
+
+
 # --- invariant → pinning-test binding -------------------------------------------------
 
 INV_DOC = {"architecture/turn-loop.md":
