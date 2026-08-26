@@ -1050,3 +1050,33 @@ def test_impact_accepts_an_empty_diff_piped_as_a_newline():
         cwd=REPO_ROOT, input="\n", capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout.strip() == ""
+
+
+
+def test_engagements_is_named_when_tools_changes():
+    """`engagements.md` already describes behaviour implemented in `tools.py` —
+    a launch whose driver fails to start is marked errored, its topic cleanup
+    attempted and its caller told — and its manifest row's `when_changing`
+    names "engagement launch". Yet that row claimed no `tools.py` symbol, so a
+    change to the launch-failure arms or to the silent topic close did not name
+    the document that rules on them, and the ruling recorded there could go
+    stale under a green corpus gate.
+    """
+    impact = sorted(verify_docs.impacted_docs(
+        REPO_ROOT, ["casa/rootfs/opt/casa/tools.py"]))
+
+    assert impact.count("architecture/engagements.md") == 1, impact
+
+
+def test_engagement_finalization_is_named_when_job_registry_changes():
+    """The terminal-authority ruling published in `engagement-finalization.md`
+    is about BOTH persisting ledgers, and the job half is the one whose home is
+    furthest from its subject. `related` links do not participate in impact
+    resolution, so without a `covers` claim a job-terminal change could update
+    or waive `jobs-and-delivery.md` alone while the ruling went stale.
+    """
+    impact = sorted(verify_docs.impacted_docs(
+        REPO_ROOT, ["casa/rootfs/opt/casa/job_registry.py"]))
+
+    assert impact.count("architecture/engagement-finalization.md") == 1, impact
+    assert impact.count("architecture/jobs-and-delivery.md") == 1, impact

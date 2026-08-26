@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-19
+last_reviewed: 2026-08-26
 ---
 
 # Engagement finalization
@@ -206,6 +206,53 @@ sit over a record disk still calls live. And the single-winner contract means th
 learns, in the same operation, whether the engagement had already reported itself: a lost
 transition is the instruction to do nothing, because the winner owns every side effect.
 
+**Who may assert a terminal outcome, and why no cross-ledger contract governs it.** Neither
+persisting ledger conditions a terminal transition on the writer's authority to assert *that*
+outcome. The job ledger's terminal execution transitions
+([`architecture/jobs-and-delivery.md`](jobs-and-delivery.md)) take no actor at all; this
+registry's accept any caller. What guards them is not identity — it is the single-winner rule
+above, and the staleness compare-and-set where a caller asks for one. Identity is checked
+elsewhere on the job ledger — on a creator's cancellation *request*, whose accepted path drives
+that ledger's separate delivery machine, and where a continuation is created or compensated —
+but on no terminal transition of either ledger. The
+question that absence raises has been asked and answered: **no cross-ledger authority contract
+is owed, and none should be minted.**
+
+The question presupposes that what is missing is a precondition on the *writer*. Every measured
+instance says otherwise: what was missing was a fact the writer already held and did not record.
+A graceful stop wrote the shape a creator's cancellation writes, which it had no business
+writing. A launch died and nothing wrote anything at all. One delegation arm banked an aborted
+run as complete while two sibling arms already read the field that says so. And a graceful stop
+records a launch as cancelled during launch and then tells nobody (#698). The first three were
+fixed where they stood, by making the site record or read what it knew, and the fourth is the
+same shape. A precondition on the caller would have prevented none of them: every one of those
+writers was authorized.
+
+Such a precondition is also unbuildable here without a caller roster. Two terminalizers are
+legitimate and have no work behind them at all — boot recovery, which terminalizes rows whose
+work died with the previous process (INV-JOB-002), and the shutdown cancel-all — and a naive
+"the work must assert its own terminal" predicate refuses both. Refusing boot recovery is a
+worse defect than any it would prevent.
+
+What the tree has instead is the right rule on the right axis, and on the job ledger it is
+already published as INV-JOB-009: *the discriminator is the cause of the settling, and cause is
+carried, not inferred*. That conditions on what the site knows rather than on who the site is,
+which is the axis on which the information exists, and it composes with boot recovery instead of
+refusing it.
+
+The strongest evidence against one shared contract is that the same rule cannot reach the same
+remedy on the two ledgers. The job ledger can leave a stop-caused settling exactly as it stands,
+because its boot recovery terminalizes the row and makes the loss deliverable. This ledger
+cannot: its boot reconcile rewrites `active` to `idle`, announces nothing, and is not a terminal
+transition at all — a row left behind here is a live-looking engagement nobody is ever told
+about, not a loss the next boot reports. The carried
+cause that means *leave it for boot* on one ledger cannot mean that here, and a contract written
+once for both would have been wrong on one of them.
+
+This settles the proposed ledger-wide precondition and nothing else. It certifies no existing
+terminal writer as correct, and the one open instance above is being fixed where it stands like
+the other three — which is itself the evidence.
+
 ## Failure behavior
 
 **Completion is called with a bad status or arguments.** Rejected before any transition; the
@@ -258,6 +305,7 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 **Source**
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.create`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal`
+- `casa/rootfs/opt/casa/job_registry.py::JobRegistry`
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement`
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement_tail`
 - `casa/rootfs/opt/casa/tools.py::FinalizeResult`
@@ -279,4 +327,5 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 - [`architecture/overview.md`](../architecture/overview.md)
+- [`architecture/jobs-and-delivery.md`](../architecture/jobs-and-delivery.md)
 <!-- END SOURCEMAP -->

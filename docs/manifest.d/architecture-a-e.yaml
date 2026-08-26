@@ -253,10 +253,11 @@
 
 - doc: architecture/engagement-finalization.md
   summary: How a durable engagement ends — the single-winner terminal transition, strict creation and terminal persistence, the finalization side effects behind the flip, and topic output ordering.
-  when_changing: terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering
+  when_changing: who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.create
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal
+    - casa/rootfs/opt/casa/job_registry.py::JobRegistry
     - casa/rootfs/opt/casa/tools.py::_finalize_engagement
     - casa/rootfs/opt/casa/tools.py::_finalize_engagement_tail
     - casa/rootfs/opt/casa/tools.py::FinalizeResult
@@ -270,7 +271,7 @@
     - tests/test_finalize_engagement.py
     - tests/test_output_sequencer.py
     - tests/test_anchor_narration_buffer.py
-  related: [architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/engagement-containment.md, architecture/tools-interface.md, architecture/overview.md]
+  related: [architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/engagement-containment.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
   defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-005, INV-ENG-010, INV-ENG-013]
   invariant_tests:
     INV-ENG-001: [tests/test_emit_completion_tool.py::test_cancel_during_g2_reload_window_finalizes_once, tests/test_engagement_registry.py::test_mark_idle_never_overwrites_terminal, tests/test_engagement_registry.py::test_mark_error_loses_to_terminal_winner, tests/test_engagement_registry.py::test_sweep_does_not_resurrect_concurrently_finalized]
@@ -287,6 +288,7 @@
     - casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol
     - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
     - casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements
+    - casa/rootfs/opt/casa/tools.py::_abort_engagement_topic
   tests:
     - tests/test_delegate_to_agent.py
     - tests/test_delegate_to_agent_interactive.py
