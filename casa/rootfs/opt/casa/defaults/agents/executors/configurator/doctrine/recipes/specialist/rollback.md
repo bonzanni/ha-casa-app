@@ -10,10 +10,11 @@ pinned in CAS from when it was active.
    anything the prior version owned is restored — atomically with the tuple itself, no separate
    plugin step. If it returns `kind: "no_prior_tuple"`, there is nothing to roll back to (either
    never upgraded, or already rolled back once). If the result carries
-   `plugin_data_note` — it does when an owned plugin ended up removed and the
-   rollback could not undo it — relay it verbatim with the names in
+   `plugin_data_note`, relay it verbatim with the names in
    `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
-   describes.
+   describes. Do not restate it as a confirmed removal: the note itself says
+   whether those entries were measured still removed or whether Casa could not
+   read the registry back and does not know.
 3. `config_git_commit`, `casa_reload(scope="agents")`, `emit_completion` (canonical
    commit -> reload -> emit order — see `completion.md`).
 

@@ -1476,6 +1476,12 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
         assert sum(fragment in text for fragment in (
             "if the result carries `plugin_data_note`",
             "relay it verbatim with the names in `plugin_data_plugins`")) == 2
+        # Sol diff-review r10: the note is emitted on the INDETERMINATE arm too,
+        # where the removal is explicitly unknown. A recipe that glosses the
+        # field as "a plugin ended up removed" turns that into a confirmed
+        # removal in the operator's report.
+        assert "do not restate it as a confirmed removal" in text
+        assert "ended up removed" not in text
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (
