@@ -1238,12 +1238,12 @@ async def test_plugin_unassign_absent_path_still_dispatches(
     assert "dispatch:mtg" in st.log             # absent path unchanged
 
 
-# --- #676 INV-TOOL-006: a persisting committed removal discloses what survives -
+# --- #676 INV-TOOL-007: a persisting committed removal discloses what survives -
 
 
 async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not_v2(
         monkeypatch, tmp_path):
-    """Red case for INV-TOOL-006 (issue #676, option 2 — honest disclosure).
+    """Red case for INV-TOOL-007 (issue #676, option 2 — honest disclosure).
 
     A COMMITTED plugin removal — here the committed-but-not-ready arm, the
     weakest ok payload the operator can be handed — must disclose that the

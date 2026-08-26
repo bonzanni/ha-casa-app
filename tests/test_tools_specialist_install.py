@@ -1886,7 +1886,7 @@ async def test_662_a_handed_off_turn_is_not_reported_as_a_failure(
 
 
 # ---------------------------------------------------------------------------
-# #676 (INV-TOOL-006): an uninstall that cascades owned plugins out is a
+# #676 (INV-TOOL-007): an uninstall that cascades owned plugins out is a
 # committed plugin removal reached by another door, and owes the same
 # disclosure. The rolled-back arms do not — the entries are back.
 # ---------------------------------------------------------------------------
@@ -2205,7 +2205,7 @@ def test_only_a_committed_owned_swap_declares_itself() -> None:
 
 
 # ---------------------------------------------------------------------------
-# #676 (INV-TOOL-006), Terra handback review: a SUCCESSFUL upgrade or rollback
+# #676 (INV-TOOL-007), Terra handback review: a SUCCESSFUL upgrade or rollback
 # whose owned-set swap dropped a plugin is a persisting committed removal and
 # owes the same disclosure its uninstall sibling already carried. The txn field
 # these doubles set is pinned against the real producers in

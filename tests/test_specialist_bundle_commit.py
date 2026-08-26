@@ -1085,7 +1085,7 @@ def test_a_pending_upgrade_does_not_claim_it_swapped_the_owned_set(
 
 
 # ---------------------------------------------------------------------------
-# #676 (INV-TOOL-006), Terra handback review: an owned-set swap that DROPS a
+# #676 (INV-TOOL-007), Terra handback review: an owned-set swap that DROPS a
 # plugin is a persisting committed removal whatever door reached it. The
 # transaction records exactly which names it dropped, so the success payloads
 # can disclose them. These pin the recording against the REAL install/upgrade/

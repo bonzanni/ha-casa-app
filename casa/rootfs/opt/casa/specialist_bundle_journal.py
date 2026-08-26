@@ -319,7 +319,7 @@ class BundleTxn:
     ack_records: list[dict]
     removed_artifact_ids: tuple[str, ...] = ()
     new_artifact_ids: tuple[str, ...] = ()
-    # #676 (INV-TOOL-006): did this transaction actually run the owned-plugin
+    # #676 (INV-TOOL-007): did this transaction actually run the owned-plugin
     # swap? `before_entries` alone cannot answer it — a pending/error upgrade
     # sets it to the UNCHANGED owned set (spec §3.4), so a caller reading it as
     # "the entries this op removed" would warn about surviving plugin data
@@ -328,7 +328,7 @@ class BundleTxn:
     # a constructor that does not say it swapped is treated as one that did
     # not, which can only under-claim.
     owned_swap_committed: bool = False
-    # #676 (INV-TOOL-006): the owned-plugin NAMES this swap dropped — present
+    # #676 (INV-TOOL-007): the owned-plugin NAMES this swap dropped — present
     # in the pre-swap owned set, absent from the set that replaced it. The
     # success payloads disclose exactly these, so the field records the answer
     # at the one moment it is authoritative (inside the atomic swap), rather

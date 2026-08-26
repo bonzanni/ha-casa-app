@@ -10763,7 +10763,7 @@ async def _plugin_tools_reload_guard(scope: str):
 _PLUGIN_HEALTH_PATH = "/data/plugin-health.json"
 
 
-# #676 (INV-TOOL-006): a removal that COMMITS says what survives it. No Casa
+# #676 (INV-TOOL-007): a removal that COMMITS says what survives it. No Casa
 # code path touches the Claude CLI's per-plugin persistent data directory
 # (CLAUDE_PLUGIN_DATA) — the plugin-developer doctrine establishes that it
 # lives on the config volume and outlives every lifecycle operation — so a
@@ -10836,7 +10836,7 @@ def _swap_dropped_names(txn) -> "list[str]":
 
 
 def _swap_removal_disclosure(txn) -> dict:
-    """#676 (INV-TOOL-006): the disclosure a SUCCESSFUL bundle owed for the
+    """#676 (INV-TOOL-007): the disclosure a SUCCESSFUL bundle owed for the
     owned plugins its registry swap dropped, or `{}` when it dropped none.
 
     A successful swap is the strongest evidence there is that the removal

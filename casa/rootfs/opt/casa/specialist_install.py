@@ -1518,7 +1518,7 @@ def _removed_artifact_ids(before_entries: "list[dict]",
 
 def _removed_owned_names(before_entries: "list[dict]",
                          new_entries: "list[dict]") -> "tuple[str, ...]":
-    """#676 (INV-TOOL-006): the owned-plugin names this swap DROPPED — present
+    """#676 (INV-TOOL-007): the owned-plugin names this swap DROPPED — present
     in the pre-swap owned set, absent from the set that replaced it. An
     uninstall passes `new_entries=[]`, so every name is dropped; an upgrade or
     a rollback drops only what the new generation no longer carries; an install
