@@ -1389,6 +1389,12 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     assert sum(fragment in remove for fragment in (
         "claude_plugin_data", "not deleted", "re-attaches",
         "no provider-side revocation", "plugin_data_note")) == 5
+    # Naming the field is not instructing the engager to relay it: the
+    # disclosure paragraph names it too, so a mutation deleting the reporting
+    # step survived a mention-only assertion.
+    assert sum(fragment in remove for fragment in (
+        "report `plugin_data_note` to the operator verbatim",
+        "restate it as a deletion or a revocation")) == 2
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (
@@ -1397,3 +1403,6 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     assert sum(fragment in uninstall for fragment in (
         "plugin_data_note", "plugin_data_plugins", "claude_plugin_data",
         "not\n   deleted", "no provider revocation")) == 5
+    assert sum(fragment in uninstall for fragment in (
+        "report it to the operator verbatim",
+        "do not restate it as a deletion or a revocation")) == 2
