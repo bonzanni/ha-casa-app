@@ -581,7 +581,7 @@ async def test_persona_reconcile_cb_resumes_the_captured_engagement(
         return _Handle(settled="posted")
 
     delivered: list = []
-    rec = SimpleNamespace(id="eng-p", driver="in_casa")
+    rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec if eid == "eng-p" else None)
 
     async def _deliver(r, text):
@@ -601,7 +601,8 @@ async def test_persona_reconcile_cb_resumes_the_captured_engagement(
         engagement_var.reset(token)
     assert payload["consent"] == "keyboard_posted"
 
-    await cap["reconcile_cb"]()
+    # #662: the callback REPORTS its outcome (see the specialist sibling).
+    assert await cap["reconcile_cb"]() is True
     assert len(delivered) == 1
     assert delivered[0][0] is rec
     assert "persona_install_commit" in delivered[0][1]
@@ -621,7 +622,7 @@ async def test_persona_reconcile_cb_swallows_a_delivery_failure(
         cap["reconcile_cb"] = kwargs["reconcile_cb"]
         return _Handle(settled="posted")
 
-    rec = SimpleNamespace(id="eng-p", driver="in_casa")
+    rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec)
 
     async def _deliver(r, text):
@@ -639,4 +640,58 @@ async def test_persona_reconcile_cb_swallows_a_delivery_failure(
     finally:
         engagement_var.reset(token)
 
-    await cap["reconcile_cb"]()  # fail-safe: must not raise
+    # fail-safe: must not raise — and #662: it reports the swallowed failure.
+    assert await cap["reconcile_cb"]() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tap_state", ["gone", "terminal"])
+async def test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement(
+    monkeypatch, tmp_path, tap_state,
+) -> None:
+    """#662, persona surface: a tap landing after the requesting engagement is
+    gone or terminal must report False, so the finish hook writes the
+    corrective DM instead of claiming an install. The specialist sibling is
+    pinned end-to-end in test_tools_specialist_install.py; this pins that the
+    persona callback — a separately written copy — agrees."""
+    import persona_install_consent
+    from tools import persona_install_inspect, engagement_var
+
+    cap: dict = {}
+
+    def _prompt(**kwargs):
+        cap["reconcile_cb"] = kwargs["reconcile_cb"]
+        return _Handle(settled="posted")
+
+    delivered: list = []
+    rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
+    state = {"present": True}
+
+    def _get(eid):
+        return rec if (state["present"] and eid == "eng-p") else None
+
+    async def _deliver(r, text):
+        delivered.append((r, text))
+
+    channel = SimpleNamespace(
+        chat_id="123", _engagement_registry=SimpleNamespace(get=_get),
+        deliver_system_turn=_deliver)
+    _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
+    monkeypatch.setattr(
+        persona_install_consent, "prompt_persona_install_consent", _prompt)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-p"))
+    try:
+        await persona_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
+    finally:
+        engagement_var.reset(token)
+
+    if tap_state == "gone":
+        state["present"] = False
+    else:
+        rec.status = "completed"
+
+    result = await cap["reconcile_cb"]()
+    actual = (result, len(delivered))
+    assert actual == (False, 0 if tap_state == "gone" else 1), (
+        f"persona reconciliation facts: {actual!r}")

@@ -12071,7 +12071,7 @@ async def specialist_install_inspect(args: dict) -> dict:
     # manual topic nudge.
     eng = engagement_var.get(None)
 
-    async def _reconcile_cb() -> None:
+    async def _reconcile_cb() -> bool:
         # Post-Approve+ack: deliver a synthetic RESUME turn so the LLM finishes
         # the WHOLE recipe itself (commit + delegation wiring + config_git +
         # reload + emit_completion) — never commit server-side, the recipe does
@@ -12082,16 +12082,40 @@ async def specialist_install_inspect(args: dict) -> dict:
         # IDEMPOTENT: a resume turn PLUS a stray manual nudge are both safe — a
         # second specialist_install_commit on the now-active slug fails closed
         # with a clean typed `concurrent_mutation` the LLM handles.
+        #
+        # #662: every one of those failure paths used to return a bare None,
+        # which the finish hook could not tell from success — so a tap landing
+        # after its engagement terminalised left "installing" on screen with
+        # nothing installed and no pointer to the recovery. Report the outcome
+        # instead. What the result does and does not establish, and which
+        # residuals it leaves open, are stated once — in INV-SPEC-010
+        # (docs/architecture/specialist-lifecycle.md). This comment does not
+        # restate them: five review rounds were spent on paraphrases of that
+        # contract that each drifted from it.
         if eng is None:
-            return
+            return False
         try:
             registry = getattr(channel, "_engagement_registry", None)
             deliver = getattr(channel, "deliver_system_turn", None)
             if registry is None or deliver is None:
-                return
+                return False
             rec = registry.get(eng.id)
             if rec is None:
-                return
+                return False
+            # Sampled BEFORE the seam runs. The question this answers is the
+            # invariant's own — was the requesting engagement live AT TAP TIME
+            # — and a sample taken afterwards answers a different one badly: a
+            # terminal transition can win the registry lock during
+            # `_resume_and_ready`'s own `update_user_turn` await, after which
+            # the turn IS handed off and a post-sample would report the
+            # hand-off as a failure. The seam is still called for a record this
+            # sample already rejects: it owns the #649 inbound admission and
+            # re-resolves under its own lock, and leaving that call pattern
+            # alone keeps this diff off the shared hook body.
+            #
+            # What this result does and does not establish is stated once, in
+            # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
+            live = getattr(rec, "status", None) in ("active", "idle")
             await deliver(
                 rec,
                 "The operator approved the install consent for "
@@ -12100,10 +12124,12 @@ async def specialist_install_inspect(args: dict) -> dict:
                 "the staged values, then finish the recipe (wire delegation, "
                 "config_git_commit, casa_reload, emit_completion).",
             )
+            return live
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent auto-resume failed (slug=%s) — operator can nudge "
                 "manually", result.slug, exc_info=True)
+            return False
 
     try:
         # Round-3 fix (finding #3): register_challenge (authz_grants.py)
@@ -12543,7 +12569,7 @@ async def persona_install_inspect(args: dict) -> dict:
     # is LIVE here (this tool runs inside the configurator's own turn).
     eng = engagement_var.get(None)
 
-    async def _reconcile_cb() -> None:
+    async def _reconcile_cb() -> bool:
         # Post-Approve+ack: deliver a synthetic RESUME turn so the LLM finishes
         # the whole persona recipe itself (commit + config_git + reload +
         # emit_completion). FAIL-SAFE: runs from the tap-callback finish hook,
@@ -12551,16 +12577,24 @@ async def persona_install_inspect(args: dict) -> dict:
         # the operator's manual nudge as the fallback. IDEMPOTENT: a resume turn
         # plus a stray manual nudge are both safe — persona_install_commit on
         # the SAME approved persona is a checksum-verified no-op re-commit.
+        #
+        # #662: sibling of specialist_install_inspect's callback above — report
+        # the outcome instead of returning a bare None the finish hook cannot
+        # tell from success. See that comment for exactly what True does and
+        # does not establish.
         if eng is None:
-            return
+            return False
         try:
             registry = getattr(channel, "_engagement_registry", None)
             deliver = getattr(channel, "deliver_system_turn", None)
             if registry is None or deliver is None:
-                return
+                return False
             rec = registry.get(eng.id)
             if rec is None:
-                return
+                return False
+            # Sampled BEFORE the seam — same as the specialist sibling above,
+            # and for the same reason; INV-PERS-011.
+            live = getattr(rec, "status", None) in ("active", "idle")
             await deliver(
                 rec,
                 "The operator approved the install consent for persona "
@@ -12569,10 +12603,12 @@ async def persona_install_inspect(args: dict) -> dict:
                 "values, then finish the recipe (config_git_commit, casa_reload, "
                 "emit_completion).",
             )
+            return live
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent persona auto-resume failed (persona_id=%s) — "
                 "operator can nudge manually", result.persona_id, exc_info=True)
+            return False
 
     try:
         # Round-3 fix (finding #3): same event-loop requirement as

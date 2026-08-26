@@ -133,6 +133,26 @@ reconciliation discards it and retains the last-known-good, exactly as INV-PERS-
 describes. It also says nothing about specialists, which activate on reload rather than
 restart.
 
+**INV-PERS-011**: A persona install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
+
+The persona and specialist consent finish hooks are separately written copies of one
+shape, so this is the sibling of INV-SPEC-010 and holds for the same reasons — and it
+carries the same condition, which bites harder here: the acknowledgement is written at
+tap-commit only if the revocation-generation check passes, so a tap that lands after a
+`persona_ack_revoke` records nothing and takes the earlier "this approval was not
+recorded" branch, which reconciliation never reaches. When it IS recorded, the hook awaits
+the reconciliation callback before it edits, and only a literal `True` selects the success
+wording. The corrective wording names a recovery valid from a terminal engagement — start
+a new configurator engagement and re-run the install — and says the recorded approval is
+reused *if it still applies*, because an explicit revocation legitimately makes a fresh
+prompt correct. A contained callback raise takes the same third, weaker wording as the
+specialist sibling.
+
+What it does not cover: `True` is not a delivery receipt, and the report can be wrong in
+both directions. See INV-SPEC-010 in `architecture/specialist-lifecycle.md` for exactly
+what a positive report establishes, what remains outside it, and why the absence of a
+positive report is not a guarantee that the operator learned anything.
+
 ## Failure behavior
 
 **An operator applies a persona a resident cannot compile.** Refused at the point of asking,
@@ -178,6 +198,8 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `tests/test_persona_removal.py`
 - `tests/test_persona_apply_resident_staging.py`
 - `tests/test_persona_pack.py`
+- `tests/test_persona_install_consent.py`
+- `tests/test_tools_persona_install.py`
 
 **Related**
 - [`architecture/personality.md`](../architecture/personality.md)

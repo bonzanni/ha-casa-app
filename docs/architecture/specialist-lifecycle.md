@@ -157,6 +157,51 @@ remediation for an affected install is secret rotation. A slug whose tuple was
 tombstoned surfaces as an error-state instance; recovery is uninstall + reinstall with
 fresh consent.
 
+**INV-SPEC-010**: An install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
+
+The invariant is conditioned on a recorded approval because an approval can legitimately
+fail to record — the persona store refuses a tap whose consent was revoked underneath it —
+and that case takes its own earlier branch, which reconciliation never reaches. When the
+acknowledgement IS written (synchronously, at tap-commit) a failed continuation never
+revokes it, so the recovery the corrective DM names — start a new configurator engagement
+and re-run the install — short-circuits as `pre_authorized` whenever an ack for that exact
+artifact identity is still on file.
+
+The finish hook awaits the reconciliation callback *before* it edits, and the edit it then
+makes is one of three. A literal `True` selects the success wording. A `False`, a bare
+`None` and an absent callback select the corrective wording, which states that the install
+was not started automatically. That is the callback's report, not a proof: see the
+both-directions caveat below, under which a `False` can accompany a real hand-off. A
+contained raise selects a third, weaker wording: a raise is a contract
+violation with no production producer, and it is the one branch where the outcome is
+unknown rather than known-negative, so it says the automatic start could not be confirmed
+and that re-running is safe either way. The tap-callback never-raise contract is unchanged
+— `except Exception`, so `CancelledError` stays control flow.
+
+What it does not cover, deliberately: `True` is **not a delivery receipt**, and it is not
+a deliverability claim either. It says exactly one thing — the requesting engagement's
+record still had `active`/`idle` status when the tap reached the callback — and that is
+all the DM claims: that a continuation was *requested*.
+
+The report can be wrong in **both** directions, and neither is closable from here.
+`deliver_system_turn` returns `None`, so nothing tells the callback whether a turn was
+handed off; the sample is a lock-free read of the record either side of a seam that makes
+its own decision under its own lock. A first resume failure, a failed context rebuild or
+the shutdown gate abandons delivery after a positive report; conversely a status that is
+transiently terminal — a strict terminal transition whose persistence then rolls back —
+produces a negative report for a turn that IS handed off. **Do not read the absence of a
+positive report as a guarantee that the operator learned anything.** Some of these paths
+attempt a topic notice, but the attempt is best-effort, its own send failure is swallowed,
+and some of them (a shutdown with no held inbound ticket, for one) make no attempt at all:
+assume such a path can be entirely silent. The one case that is closed here is #662's own —
+a record already terminal or gone at tap time — and it is closed because the answer comes
+from the pre-seam sample, independently of the seam's result. (The seam is still called;
+it owns the inbound admission bookkeeping and makes its own decision under its own lock.)
+
+Reporting an actual hand-off would mean `deliver_system_turn` reporting the outcome it
+already knows locally. That widens a channel contract other work depends on, and is
+tracked separately.
+
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 
 Enforced in the tarball strategy: a requirement that can never succeed (no safe
@@ -312,6 +357,8 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - `tests/test_specialist_materialize.py`
 - `tests/test_specialist_bundle_journal.py`
 - `tests/test_system_requirements_installer_tarball.py`
+- `tests/test_specialist_install_consent.py`
+- `tests/test_tools_specialist_install.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)

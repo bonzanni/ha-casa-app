@@ -297,7 +297,7 @@ def render_install_consent_message(inspection: Any) -> str:
 def prompt_specialist_install_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int, inspection: Any,
     acks: "SpecialistInstallAckStore",
-    reconcile_cb: "Callable[[], Awaitable[None]] | None" = None,
+    reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
 ) -> Any:
     # Task 7: thread `receipt_digest` (Task 8's bundled-plugin receipt digest)
     # into the identity so a bundled-plugin closure change forces
@@ -338,21 +338,59 @@ def prompt_specialist_install_consent(
                         "be prompted again",
                     )
                     return
-                await channel.edit_dm_message(
-                    chat_id, message_id, f"✅ Approved — installing {inspection.slug!r}",
-                )
+                # #662: the outcome decides the wording, so the edit happens
+                # AFTER reconciliation, never before it, and only a literal
+                # True selects the success text — a truthiness test would
+                # accept any truthy value a future callback returned in place
+                # of the contract's bool.
+                #
+                # What True does and does not establish is stated once, in
+                # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
+                # Three review rounds were spent on restatements of it that
+                # each overclaimed; this comment deliberately does not add a
+                # fourth.
+                outcome: object = False
+                raised = False
                 if reconcile_cb is not None:
                     try:
-                        await reconcile_cb()
-                    except Exception:  # noqa: BLE001 — surface, never raise
+                        outcome = await reconcile_cb()
+                    except Exception:  # noqa: BLE001 — the callback contract is
+                        # never-raise; this is defence in depth, and it leaves
+                        # CancelledError as control flow.
                         logger.exception(
-                            "post-consent specialist install commit failed (slug=%s)",
-                            inspection.slug)
-                        await channel.edit_dm_message(
-                            chat_id, message_id,
-                            f"⚠️ Approved, but installing {inspection.slug!r} "
-                            "failed — check the configurator topic",
-                        )
+                            "post-consent specialist install reconcile raised "
+                            "(slug=%s)", inspection.slug)
+                        outcome, raised = False, True
+                if outcome is True:
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        "✅ Approved — requested an automatic configurator "
+                        f"continuation for {inspection.slug!r}",
+                    )
+                elif raised:
+                    # A raise is a CONTRACT VIOLATION (no production callback
+                    # can produce one), and it is the single branch where the
+                    # outcome is genuinely unknown rather than known-negative:
+                    # the callback may have handed the turn off before it blew
+                    # up. Say uncertain, not "not started".
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        f"⚠️ Approved and saved — but the install of "
+                        f"{inspection.slug!r} hit an internal error and its "
+                        "automatic start could not be confirmed. Check the "
+                        "configurator topic; re-running the install is safe "
+                        "either way, and the approval recorded for this exact "
+                        "version is reused if it still applies.",
+                    )
+                else:
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        f"⚠️ Approved and saved — but the install of "
+                        f"{inspection.slug!r} was not started automatically. "
+                        "Start a new configurator engagement and re-run the "
+                        "install; the approval recorded for this exact version "
+                        "is reused if it still applies.",
+                    )
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {inspection.slug!r} was not installed",

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.239.0] - 2026-08-26
+
+### Fixed
+
+- Approving an install after its configurator engagement has ended no longer
+  shows a false "installing" message — the DM now says the install was not
+  started automatically and points at re-running it.
+
 ## [0.238.0] - 2026-08-26
 
 ### Fixed
