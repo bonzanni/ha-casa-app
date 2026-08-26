@@ -55,6 +55,8 @@ true.
 
 **INV-DOC-005**: Anchors are typed symbols (`path/to/file.py::Class.method`, `config.yaml::schema.key`, `tests/test_x.py::test_name`) or tracked bare paths; never `file:line`, which rots silently on the next edit.
 
+**INV-DOC-008**: A `Docs-impact:` waiver is checked against the diff it ships with — the waived documents are exactly the documents the change impacts and does not update, no document is waived twice, the reserved token `none` asserts that set is empty, only the tip commit may carry a waiver line, a subject line is never one, and every tip carries a line; whether a waiver's reason is true remains a review question.
+
 **INV-DOC-007**: Growth splits, it never appends: the change that crosses the size ceiling lands visibly, the next change touching the over-ceiling document — its file or its manifest row — must split it first, a new path may not be born over the ceiling, and the ceiling is not raised; nothing shards on its own.
 
 ## Failure behavior
@@ -92,9 +94,24 @@ per-document reasoned waiver (`Docs-impact: <doc> — <why the prose is still tr
 tip commit. CI runs the identical script as a backstop for pushes made with hooks
 uninstalled. The order matters and was learned the hard way: as a CI-only check it reported
 after the pull request existed, leaving a red mark that a fast merge could pass, and one
-did — six documents' worth of drift shipped that way. What no layer can enforce is that a
-waiver is *sincere*; that is a review question, and the waiver is recorded in the commit
-under its author's name for exactly that reason.
+did — six documents' worth of drift shipped that way.
+
+A waiver is *checked against the diff it ships with*. The waived documents must be
+exactly the documents the change impacts and does not update: waiving a document the
+same change edits is refused (the waiver says the prose is still true, so you did not
+edit it — the diff says otherwise), as is waiving a document the change does not impact,
+and as is waiving one document twice. When no document needs a waiver the tip says so in
+the same grammar, with the reserved token `Docs-impact: none — <reason>`; every tip
+carries a line, so the absence of one is itself a refusal. Only the tip commit may carry
+a waiver line: the squash message concatenates every commit's, so a line left behind in
+an earlier commit would otherwise reach `main` waiving a diff it never saw, and the
+pull-request check and the post-merge check would judge different text for one change.
+
+What no layer can enforce is that a waiver is *sincere*. Whether the reason is true — or
+is the one a reviewer read, rather than one substituted when the squash message was
+written — is a review question; that is why the waiver is recorded in the commit under
+its author's name. The gate checks which documents are named, not whether the sentence
+beside each is honest.
 
 **A reviewer enforces**: front matter and the code-wins line; the section order; present
 tense; whether a document is one-hop sufficient; whether the same rule has been restated in
@@ -150,6 +167,7 @@ cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`.
 **Tests**
 - `tests/test_verify_docs.py`
 - `tests/test_coverage_ledger.py`
+- `tests/test_docs_impact_contract.py`
 
 **Related**
 - [`doctrine/publishing.md`](../doctrine/publishing.md)
