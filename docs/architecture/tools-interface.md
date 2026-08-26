@@ -203,15 +203,17 @@ claim.
 
 A plugin's persistent data directory belongs to the Claude CLI, not to Casa: it lives on the
 config volume, the CLI injects its path, and it outlives every lifecycle operation Casa
-performs. Nothing on the removal path touches it. So a plugin that stored an OAuth
-authorization there keeps it after `plugin_remove`, and installing the same plugin again
-re-adopts the standing grant — which used to happen with no surface saying so, because the
-removal result named only the retained artifact (#676).
+performs. Nothing on the removal path touches it. So whatever a plugin stored there — an
+OAuth token among the possibilities — is still there after `plugin_remove`, and installing
+the same plugin again re-attaches to those bytes. Whether they still authorize anything is a
+question about the provider, which Casa cannot answer in either direction. What was wrong
+before #676 is that no surface said any of this: the removal result named only the retained
+artifact.
 
 The fix is disclosure, not deletion, and the choice was the operator's. Deleting would bind
 Casa to an external path convention it does not own, where a derivation error is data loss
-rather than a failed operation; and it would still not revoke anything, because the grant
-lives at the provider. Disclosure is the part that is true under either option.
+rather than a failed operation; and it would still revoke nothing at the provider, which is
+where a grant lives. Disclosure is the part that is true under either option.
 
 Enforced in the synchronous cores, after the registry commit: `_plugin_remove_sync` spreads
 the disclosure into its ok payload — so a committed-but-not-ready outcome (INV-TOOL-004)
