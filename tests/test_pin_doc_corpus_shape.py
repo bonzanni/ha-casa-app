@@ -165,3 +165,46 @@ def test_inv_tool_005_supporting_passages_sit_in_its_own_block():
     for passage in INV_TOOL_005_PASSAGES:
         corpus = sum((DOCS / doc).read_text().count(passage) for doc in documents)
         assert (corpus, block_005.count(passage), block_006.count(passage)) == (1, 1, 0), passage
+
+
+def _ledger_owner(item):
+    """The document `docs/coverage.yaml` assigns `item` to."""
+    ledger = yaml.safe_load((DOCS / "coverage.yaml").read_text())
+    owners = [e["doc"] for e in ledger
+              if e.get("item") == item and e.get("doc")]
+    assert len(owners) == 1, (item, owners)
+    return owners[0]
+
+
+def test_every_document_naming_consent_reprompt_links_to_its_contract():
+    """A cross-document route is a LINK to a path, never a document's title or
+    a facility name.
+
+    Two rounds of review found the same shape here: `plugin-triggers.md`,
+    `callbacks.md` and `triggers.md` routed a `consent_reprompt` reader to "the
+    tool interface" — the title of `tools-interface.md` — and
+    `plugin-events.md` to "the callback facility". A title reference is
+    invisible to a grep for the path, so a split cannot enumerate what it
+    broke, and it is silently wrong the moment that path's content moves.
+
+    The owning document is resolved from the coverage ledger rather than
+    hard-coded, so this follows the tool if it is ever reassigned. The
+    SOURCEMAP block is excluded on purpose: a generated `related` edge at the
+    foot of the file is not the route the prose paragraph offers.
+
+    Red case demonstrated: restoring any one of the four prose references to
+    its title form fails this test, each independently.
+    """
+    owner = _ledger_owner("tool:consent_reprompt")
+    link = re.compile(r"\]\((?:\.\./architecture/)?" + re.escape(Path(owner).name) + r"\)")
+    checked = 0
+    for doc in _documents():
+        if doc == owner or not doc.startswith("architecture/"):
+            continue
+        text = (DOCS / doc).read_text()
+        if "consent_reprompt" not in text:
+            continue
+        body = text.split("<!-- BEGIN SOURCEMAP -->")[0]
+        assert link.search(body), doc
+        checked += 1
+    assert checked >= 4, checked
