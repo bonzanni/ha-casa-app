@@ -197,11 +197,11 @@ issue rather than as a setup run against a credential that does not exist.
 dispatched; the operator gets one note naming re-consent as the way forward, not a manual
 run they have no tool call for. A later re-prompt for the same artifact re-arms it — via
 `ensure_obligation` when a lifecycle pass sees the consent pending again, or, for an
-approval arriving through the on-demand `consent_reprompt` path after the round was
-already consumed (an expired keyboard settles its member as denied), via the same
-synchronous commit step that persists the ack: a refused obligation whose exact artifact
-still resolves is re-armed to `pending`/`awaiting_verdict`, and the approve-time
-reconcile's fresh authoritative seal releases it.
+approval arriving through the on-demand [`consent_reprompt`](plugin-mutation-tools.md)
+path after the round was already consumed (an expired keyboard settles its member as
+denied), via the same synchronous commit step that persists the ack: a refused obligation
+whose exact artifact still resolves is re-armed to `pending`/`awaiting_verdict`, and the
+approve-time reconcile's fresh authoritative seal releases it.
 
 **The registry cannot be resolved at dispatch time.** The obligation stays released and
 retries on later kicks, bounded; past that bound it goes stale with an operator note, since

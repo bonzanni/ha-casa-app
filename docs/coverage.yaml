@@ -18,7 +18,7 @@
 - item: casa/rootfs/opt/casa/callback_consent.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/consent_denials.py
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: casa/rootfs/opt/casa/callback_episodes.py
   doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_http.py
@@ -350,7 +350,7 @@
 - item: tool:config_git_commit
   doc: architecture/tools-interface.md
 - item: tool:consent_reprompt
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:config_trigger_upsert
   doc: architecture/triggers.md
 - item: tool:config_trigger_delete
@@ -396,19 +396,19 @@
 - item: tool:persona_remove
   doc: architecture/tools-interface.md
 - item: tool:plugin_add
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:plugin_assign
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:plugin_list
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:plugin_remove
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:plugin_status
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:plugin_unassign
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:plugin_update
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:query_engager
   doc: architecture/tools-interface.md
 - item: tool:react
@@ -416,7 +416,7 @@
 - item: tool:recall_memory
   doc: architecture/tools-interface.md
 - item: tool:remove_plugin_env_reference
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:resident_persona_reset
   doc: architecture/tools-interface.md
 - item: tool:resident_persona_swap
@@ -426,23 +426,23 @@
 - item: tool:send_message
   doc: architecture/tools-interface.md
 - item: tool:set_plugin_env_reference
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:specialist_install_commit
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:specialist_install_inspect
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:specialist_rollback
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:specialist_uninstall
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:specialist_upgrade
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:trigger_ack_revoke
   doc: architecture/tools-interface.md
 - item: tool:verify_plugin_secrets
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:verify_plugin_state
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-mutation-tools.md
 - item: tool:voice_job_status
   doc: architecture/tools-interface.md
 - item: tool:wipe_memory

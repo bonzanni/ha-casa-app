@@ -249,4 +249,5 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
 - [`architecture/plugin-health.md`](../architecture/plugin-health.md)
+- [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
 <!-- END SOURCEMAP -->

@@ -170,6 +170,24 @@
     INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]
     INV-PLUG-014: [tests/test_plugin_boot.py::test_boot_partial_health_write_preserves_standing_mark_and_exposes_new_issue, tests/test_plugin_health.py::test_carry_forward_dedup_and_reappearance]
 
+- doc: architecture/plugin-mutation-tools.md
+  summary: What the plugin and specialist mutation tools guarantee — the commit-then-converge ordering, what an envelope may claim about an integration, and what a committed removal discloses.
+  when_changing: plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, the removal disclosure, or re-issuing a plugin-consent DM on demand
+  covers:
+    - casa/rootfs/opt/casa/tools.py::plugin_add
+    - casa/rootfs/opt/casa/consent_denials.py
+  tests:
+    - tests/test_plugin_tools.py
+    - tests/test_assistant_prompts.py
+    - tests/test_tools_specialist_install.py
+  related: [architecture/tools-interface.md, architecture/plugins.md, architecture/plugin-setup.md, architecture/plugin-health.md]
+  defines_invariants: [INV-TOOL-003, INV-TOOL-004, INV-TOOL-005, INV-TOOL-007]
+  invariant_tests:
+    INV-TOOL-003: [tests/test_plugin_tools.py::test_envelope_pre_activation_failure_is_pinned_shape]
+    INV-TOOL-004: [tests/test_plugin_tools.py::test_envelope_committed_but_not_ready]
+    INV-TOOL-005: [tests/test_assistant_prompts.py::test_shipped_setup_prompt_carries_the_liveness_prohibition, tests/test_assistant_prompts.py::test_no_shipped_prompt_reverts_to_a_known_liveness_claim, tests/test_assistant_prompts.py::test_setup_handback_prompts_defer_to_the_tools_own_result, tests/test_assistant_prompts.py::test_assistant_refuses_to_relay_a_connection_verdict, tests/test_assistant_prompts.py::test_liveness_prohibition_reaches_a_persona_bound_assistant]
+    INV-TOOL-007: [tests/test_plugin_tools.py::test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not_v2, tests/test_plugin_tools.py::test_plugin_remove_refusals_disclose_nothing, tests/test_plugin_tools.py::test_plugin_remove_description_discloses_survival_without_claiming_more, tests/test_plugin_tools.py::test_removal_recipes_instruct_the_engager_to_surface_the_note, tests/test_tools_specialist_install.py::test_uninstall_discloses_exactly_the_cascaded_plugins, tests/test_tools_specialist_install.py::test_uninstall_with_no_owned_plugins_discloses_nothing, tests/test_tools_specialist_install.py::test_failed_compensation_on_uninstall_discloses_the_persisting_removal, tests/test_tools_specialist_install.py::test_rolled_back_and_non_uninstall_arms_disclose_nothing, tests/test_tools_specialist_install.py::test_failed_compensation_that_restored_the_registry_discloses_nothing, tests/test_tools_specialist_install.py::test_failed_compensation_discloses_only_the_names_still_absent, tests/test_tools_specialist_install.py::test_unreadable_registry_after_failed_compensation_says_unknown, tests/test_plugin_tools.py::test_the_disclosure_notes_claim_only_what_they_can, tests/test_tools_specialist_install.py::test_a_transaction_that_never_swapped_discloses_nothing, tests/test_specialist_bundle_commit.py::test_a_pending_upgrade_does_not_claim_it_swapped_the_owned_set, tests/test_specialist_bundle_commit.py::test_a_real_upgrade_records_the_owned_plugin_it_dropped, tests/test_specialist_bundle_commit.py::test_a_real_upgrade_that_keeps_its_owned_set_records_no_drop, tests/test_specialist_bundle_commit.py::test_a_real_rollback_records_the_owned_plugin_it_dropped, tests/test_specialist_bundle_commit.py::test_a_real_uninstall_records_every_owned_name_it_dropped, tests/test_specialist_bundle_commit.py::test_a_pending_upgrade_records_no_dropped_names, tests/test_tools_specialist_install.py::test_a_successful_upgrade_discloses_the_plugin_its_swap_dropped, tests/test_tools_specialist_install.py::test_a_successful_upgrade_that_dropped_nothing_discloses_nothing, tests/test_tools_specialist_install.py::test_an_upgrade_that_never_swapped_discloses_nothing, tests/test_tools_specialist_install.py::test_a_successful_rollback_discloses_the_plugin_its_swap_dropped, tests/test_tools_specialist_install.py::test_a_successful_rollback_that_dropped_nothing_discloses_nothing, tests/test_tools_specialist_install.py::test_a_successful_install_commit_discloses_a_stale_entry_its_swap_dropped, tests/test_tools_specialist_install.py::test_an_unreadable_registry_names_only_what_the_swap_dropped]
+
 - doc: architecture/plugin-runtime.md
   summary: The environment a plugin's MCP servers need before an agent can use it, plus the env-conf and media side channels.
   when_changing: plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox
@@ -252,7 +270,7 @@
     - tests/test_authz_grants.py
     - tests/test_authz_hook.py
     - tests/test_plugin_boot.py
-  related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md, architecture/plugin-health.md]
+  related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md, architecture/plugin-health.md, architecture/plugin-mutation-tools.md]
   defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007]
   invariant_tests:
     INV-PLUG-001: [tests/test_plugin_registry.py::test_artifact_id_mismatch_is_per_entry_skip]
