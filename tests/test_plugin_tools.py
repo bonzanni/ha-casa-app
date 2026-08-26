@@ -1419,6 +1419,18 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     # here leaves that seam open on the path that removes MORE.
     assert sum("may have taken effect" in text for text in (remove, uninstall)) == 2
     assert sum("`plugin_list()`" in text for text in (remove, uninstall)) == 2
+    # Terra diff-review r4: a removal DOES revoke Casa's own authorizations —
+    # _invalidate_lifecycle purges the artifact grants and trigger consents,
+    # _remove_plugin_callbacks revokes the persisted callback consents. An
+    # unqualified "Casa revoked nothing" contradicts the code; every no-
+    # revocation statement is provider-scoped, and both recipes say which side
+    # of Casa each fact lives on.
+    assert sum("at the provider" in text for text in (remove, uninstall)) == 2
+    assert sum(("grants and consents" in text and "are revoked" in text)
+               for text in (remove, uninstall)) == 2
+    for text in (remove, uninstall):
+        assert "nothing was revoked. " not in text
+        assert "casa performed neither. " not in text
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (
@@ -1426,7 +1438,7 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
         "neither credential deletion nor provider revocation")) == 2
     assert sum(fragment in uninstall for fragment in (
         "plugin_data_note", "plugin_data_plugins", "claude_plugin_data",
-        "not deleted", "no provider revocation")) == 5
+        "not deleted", "no revocation was performed at the provider")) == 5
     assert sum(fragment in uninstall for fragment in (
         "report it to the operator verbatim",
         "do not restate it as a deletion or a revocation")) == 2

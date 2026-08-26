@@ -15,15 +15,16 @@
    owned plugins out), report it to the operator verbatim with the list in
    `plugin_data_plugins`: those plugins' CLI-managed persistent data
    (`CLAUDE_PLUGIN_DATA` — possibly stored OAuth authorizations) was NOT
-   deleted and no provider revocation was performed, so a reinstall re-attaches.
-   Say "may have survived", never "survived": Casa cannot see whether those
-   plugins stored anything.
+   deleted and no revocation was performed AT THE PROVIDER, so a reinstall
+   re-attaches. Casa's own grants and consents for those plugins are revoked;
+   that never reaches the provider. Say "may have survived", never "survived":
+   Casa cannot see whether those plugins stored anything.
    Do not restate it as a deletion or a revocation.
    If the uninstall RAISES instead of returning a result, the cascaded
    registry removals may already have committed with no envelope to carry that
    caveat. Say so: the removals may have taken effect, and if they did, the
-   same survival applies — nothing was deleted and nothing was revoked. Run
-   `plugin_list()` to see which entries are gone.
+   same survival applies — no plugin data was deleted and nothing was revoked
+   at the provider. Run `plugin_list()` to see which entries are gone.
 4. `config_git_commit(message="uninstall specialist <slug>")`.
 5. `casa_reload(scope="agents")` — evicts the removed agent from the live
    registry (canonical commit → reload → emit order, see `completion.md`).

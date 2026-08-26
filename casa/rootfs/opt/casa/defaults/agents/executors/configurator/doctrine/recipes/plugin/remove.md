@@ -10,8 +10,11 @@ Two tools, two scopes:
   removed default stays removed across upgrades (the registry's `seeded_defaults`
   bookkeeping is intentionally untouched — no resurrection).
 
-**Neither one deletes the plugin's data or revokes anything.** A removal drops
-Casa's registry entry. The plugin's CLI-managed persistent data directory
+**Neither one deletes the plugin's data, and neither revokes anything at the
+provider.** A removal drops Casa's registry entry and, with it, Casa's OWN
+authorizations for that plugin: its artifact grants, its trigger consents and
+its persisted callback consents are revoked here (unlike an update, which keeps
+them). What survives is on the other side of Casa. The plugin's CLI-managed persistent data directory
 (`CLAUDE_PLUGIN_DATA`) is NOT deleted — it may hold stored authorizations such
 as OAuth tokens, whatever it holds survives the removal, and reinstalling the
 same plugin re-attaches to it. Casa cannot see whether the plugin stored
@@ -32,13 +35,15 @@ and `plugin_data_note`.
    verbatim, alongside the outcome. It is the only place they learn that
    stored authorizations may have survived — "may", because Casa cannot see
    whether the plugin ever stored any. Do NOT restate it as a deletion or a
-   revocation: Casa performed neither. If they want the access to end, they
-   revoke it at the provider.
+   revocation at the provider: Casa performed neither of those. Casa's own
+   grants and consents for the plugin ARE revoked — a different thing, and one
+   that never reaches the provider. If they want the external access to end,
+   they revoke it at the provider.
 
 If a removal raises instead of returning a result, the registry may already
 have committed. Say that: the removal may have taken effect, and if it did,
-the same survival applies — nothing was deleted and nothing was revoked. Run
-`plugin_list()` to see which.
+the same survival applies — no plugin data was deleted and nothing was revoked
+at the provider. Run `plugin_list()` to see which.
 
 If the plugin required secrets, clear its plugin-env.conf entries afterward (see
 `secrets.md`) — and that clearing DOES need its own
