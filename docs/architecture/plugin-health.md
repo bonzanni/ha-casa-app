@@ -94,7 +94,18 @@ appears. Two messages carrying the same warning therefore rarely carry the same 
 defeats suppression keyed on the rendered line; and any separate record of "already
 delivered" has a lifetime that must be cleared, which is how a recurrence goes unannounced.
 Filtering per row needs neither: the field it reads is pruned to fingerprints still present
-on every regeneration, so the report's own resolution pruning *is* the lifetime.
+on every *authoritative* regeneration, so the report's own resolution pruning *is* the
+lifetime.
+
+The qualifier is load-bearing, because not every writer is authoritative. Pruning is how
+this report says a row **resolved**, so only a writer that could have observed the
+resolution may do it. Boot's write cannot: it is built from the resolver pass alone and
+carries no runtime, trigger, callback, event or setup row, so pruning against it claimed
+every such row had resolved and erased its mark. The regeneration that follows minutes
+later then found the unchanged problem unmarked and announced it again — once per boot,
+forever. Boot therefore carries the previous marks forward untouched, and the full
+regeneration in the tools layer remains the one writer that clears them. A partial write
+adds no mark either, so a problem that is genuinely new at that boot is still announced.
 
 That filter is only as honest as the mark behind it, so the mark is narrowed on both axes.
 It covers the rows the message actually **named** — a row behind the "and N more" count was
@@ -137,6 +148,16 @@ condition is deliberately "not reported as undelivered" rather than "confirmed":
 that cannot report either way must not be read as having failed, or its notices would repeat
 forever. What holding this costs is a repeated message when a regeneration lands mid-send,
 and a large incident being named five rows at a time.
+
+**INV-PLUG-014**: A health-report write that is not an authoritative full regeneration never clears a notification fingerprint; a standing problem unchanged across a restart is announced at most once across any number of boots, while a problem first seen at that boot is still announced.
+
+Both halves are load-bearing and each fails silently on its own. Dropping the first turns
+every restart into a repeat announcement of everything already known, which is how an
+operator learns to ignore the channel. Dropping the second — by never pruning at all —
+buys that silence with a worse one: a genuinely new problem inherits a mark it never
+earned, and nothing ever tells anyone. So the pin holds the pair, not the parameter: a mark
+must survive the partial write, and the next authoritative write that no longer carries the
+row must still clear it, leaving a later recurrence newly announceable.
 
 ## Failure behavior
 

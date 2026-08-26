@@ -36,9 +36,13 @@ def _wire(monkeypatch, tmp_path, *, valid=True, import_issues=None,
                         lambda: ResolutionResult(registry_valid=valid,
                                                  issues=list(resolve_issues or [])))
 
-    def _write(*, issues, warnings, path=None):
+    def _write(*, issues, warnings, path=None, prune=True):
         reports["issues"] = list(issues)
         reports["warnings"] = list(warnings)
+        # #669: recorded, not merely tolerated — a double that silently
+        # accepted `prune` would let the boot writers stop passing it without
+        # any test noticing.
+        reports.setdefault("prune", []).append(prune)
     monkeypatch.setattr(plugin_health, "write_report", _write)
     return reports
 

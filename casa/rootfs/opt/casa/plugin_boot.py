@@ -104,7 +104,13 @@ def main() -> int:
                 reason_code="registry_invalid"))
         issues.extend(res.issues)
         warnings.extend(res.warnings)
-        plugin_health.write_report(issues=issues, warnings=warnings)
+        # #669: prune=False — this report is resolver-only. It carries no
+        # runtime/trigger/callback/event/setup row, so it cannot have observed
+        # any such row resolving, and pruning against it erased the very
+        # notification marks that stop step 13c re-announcing an unchanged
+        # standing problem on every boot.
+        plugin_health.write_report(issues=issues, warnings=warnings,
+                                   prune=False)
     except Exception as exc:  # noqa: BLE001 — spec 3.6: never block svc-casa
         log.exception("plugin store boot degraded: %s", exc)
         try:
@@ -112,7 +118,10 @@ def main() -> int:
             from plugin_registry import PluginIssue
             issues.append(PluginIssue(name="*", target=None, stage="boot",
                                       reason_code="boot_exception"))
-            plugin_health.write_report(issues=issues, warnings=warnings)
+            # #669: partial for the same reason as the normal writer above,
+            # and more so — this one ran because the boot pass DIED.
+            plugin_health.write_report(issues=issues, warnings=warnings,
+                                       prune=False)
         except Exception:  # noqa: BLE001
             pass
     return 0

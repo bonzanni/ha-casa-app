@@ -162,9 +162,10 @@
     - tests/test_plugin_health.py
     - tests/test_plugin_health_notify.py
   related: [architecture/plugins.md, architecture/plugin-setup.md, architecture/plugin-events.md, architecture/telegram.md]
-  defines_invariants: [INV-PLUG-013]
+  defines_invariants: [INV-PLUG-013, INV-PLUG-014]
   invariant_tests:
     INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]
+    INV-PLUG-014: [tests/test_plugin_boot.py::test_boot_partial_health_write_preserves_standing_mark_and_exposes_new_issue, tests/test_plugin_health.py::test_carry_forward_dedup_and_reappearance]
 
 - doc: architecture/plugin-runtime.md
   summary: The environment a plugin's MCP servers need before an agent can use it, plus the env-conf and media side channels.

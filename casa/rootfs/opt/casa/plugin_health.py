@@ -189,10 +189,24 @@ def load_report(path: Path = HEALTH_PATH) -> dict | None:
 
 def write_report(*, issues: list, warnings: list,
                  path: Path = HEALTH_PATH,
-                 registry_path=None) -> dict:
+                 registry_path=None, prune: bool = True) -> dict:
     """Regenerate the health report atomically. `notified_fingerprints` are
     carried forward from the previous report but pruned to fingerprints still
     present (a resolved issue clears its fingerprint). Returns the report.
+
+    #669: pruning is how this report says a row RESOLVED, so only a writer that
+    could have OBSERVED the resolution may do it. `prune=False` carries the
+    previous notified set forward unchanged instead. Exactly one caller sets it:
+    `plugin_boot.main()`, whose report is built from `plugin_registry.
+    resolve_all()` alone and therefore contains no runtime, trigger, callback,
+    event or setup row — pruning against that partial set claimed every such row
+    had resolved, erasing its mark, so step 13c's full regeneration re-announced
+    unchanged standing problems on EVERY boot. Only fingerprints cross a partial
+    write: the rows, warnings, ledger and generation always describe the new
+    pass, and `tools._regenerate_plugin_health` stays the one authority that
+    CLEARS a mark. A partial write never adds a mark either (`mark_notified` is
+    the only adder), so a problem that is genuinely new at this boot is unmarked
+    and is still announced.
 
     Task 11 (additive, no fingerprint impact — §3.10's fingerprint hashes only
     the first five PluginIssue fields via `fingerprint()`): the report also
@@ -222,7 +236,8 @@ def write_report(*, issues: list, warnings: list,
             "generation": _next_generation(prev),
             "issues": issue_dicts,
             "warnings": warning_dicts,
-            "notified_fingerprints": sorted(prev_notified & current_fps),
+            "notified_fingerprints": sorted(
+                prev_notified & current_fps if prune else prev_notified),
             "quarantined_bundles": quarantined_bundles,
             "boot_reconcile_actions": boot_actions,
         }
