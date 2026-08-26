@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,6 +7,7 @@ from specialist_install import DependencyResolution, InspectionResult
 from specialist_install_consent import (
     SpecialistInstallAckStore,
     install_consent_identity,
+    prompt_specialist_install_consent,
     render_install_consent_message,
 )
 
@@ -140,3 +142,79 @@ def test_render_message_discloses_role_casa_tool_grants() -> None:
 def test_render_message_omits_casa_tools_line_when_role_grants_none() -> None:
     text = render_install_consent_message(_inspection())
     assert "Casa tools:" not in text
+
+# --- #662 red case -------------------------------------------------------
+#
+# Specified by the red-case reviewer at 1c8033bb; frozen once accepted. The
+# approval edit must be SELECTED from the reconciliation outcome rather than
+# written before it, and only a literal True may select the success text — a
+# bare None (what the pre-fix production callback and deliver_system_turn both
+# return on the defect path) must not.
+_662_SUCCESS = (
+    "✅ Approved — requested an automatic configurator continuation for 'mtg'"
+)
+_662_CORRECTIVE = (
+    "⚠️ Approved and saved — but the install of 'mtg' was not "
+    "started automatically. Start a new configurator engagement and re-run "
+    "the install; the approval recorded for this exact version is reused "
+    "if it still applies."
+)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (True, _662_SUCCESS),
+        (False, _662_CORRECTIVE),
+        (None, _662_CORRECTIVE),
+        (1, _662_CORRECTIVE),
+    ],
+    ids=["true", "false", "none", "truthy-one"],
+)
+async def test_662_only_a_literal_true_outcome_selects_the_success_edit(
+    outcome, expected,
+) -> None:
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            self.on_commit_sync = kwargs["on_commit_sync"]
+            self.finish_factory = kwargs["finish_factory"]
+            return SimpleNamespace(created=True)
+
+    class _Acks:
+        def __init__(self):
+            self.records = []
+
+        def record(self, **kwargs):
+            self.records.append(kwargs)
+
+    class _Channel:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text):
+            self.edits.append((chat_id, message_id, text))
+
+    coordinator = _Coordinator()
+    acks = _Acks()
+    channel = _Channel()
+    reconcile_calls = []
+
+    async def _reconcile_cb():
+        reconcile_calls.append(True)
+        return outcome
+
+    prompt_specialist_install_consent(
+        coordinator=coordinator, channel=channel, chat_id=701, operator_id=701,
+        inspection=_inspection(), acks=acks, reconcile_cb=_reconcile_cb,
+    )
+
+    req = SimpleNamespace(meta={})
+    coordinator.on_commit_sync(0, req.meta)
+    finish = coordinator.finish_factory(88, req)
+    await finish({"outcome": "answered", "option_index": 0})
+
+    actual = (
+        len(acks.records), len(reconcile_calls), len(channel.edits),
+        channel.edits[0][2],
+    )
+    assert actual == (1, 1, 1, expected), f"consent facts: {actual!r}"

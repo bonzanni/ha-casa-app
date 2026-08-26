@@ -1680,3 +1680,166 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
     # plugins omitted.
     assert payload["required_env_vars"] == {
         "mtg.bankfeed": ["BANKFEED_OP_VAULT"]}
+
+
+# ---------------------------------------------------------------------------
+# #662 red case (specified by the red-case reviewer at 1c8033bb; frozen once
+# accepted). A tap that lands after its requesting engagement is terminal or
+# gone must not leave the DM claiming an install. These run the PRODUCTION
+# reconcile_cb the inspect tool builds — not a stub — through the REAL consent
+# finish hook and the REAL Telegram lifecycle gate, so a fix that merely
+# tightens the finish hook while the production callback still exits `None`
+# cannot pass.
+# ---------------------------------------------------------------------------
+
+_662_CORRECTIVE = (
+    "⚠️ Approved and saved — but the install of 'mtg' was not "
+    "started automatically. Start a new configurator engagement and re-run "
+    "the install; the approval recorded for this exact version is reused "
+    "if it still applies."
+)
+
+
+def _capture_real_consent(monkeypatch):
+    """Wrap prompt_specialist_install_consent, keeping the REAL prompt (hence
+    the real _on_commit_sync/_finish) and the production reconcile_cb, and
+    swapping in only a capturing coordinator."""
+    import specialist_install_consent as sic
+
+    real = sic.prompt_specialist_install_consent
+    cap: dict = {}
+
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            cap["on_commit_sync"] = kwargs["on_commit_sync"]
+            cap["finish_factory"] = kwargs["finish_factory"]
+            return _Handle(settled="posted")
+
+    def _prompt(**kwargs):
+        cap["reconcile_cb"] = kwargs["reconcile_cb"]
+        kwargs["coordinator"] = _Coordinator()
+        return real(**kwargs)
+
+    monkeypatch.setattr(sic, "prompt_specialist_install_consent", _prompt)
+    return cap
+
+
+def _662_channel(registry, edits):
+    """A channel carrying the REAL deliver_system_turn/_resume_and_ready, so a
+    terminal record is rejected by production code rather than by a fake."""
+    from types import MethodType
+
+    from channels.telegram import TelegramChannel
+
+    chan = SimpleNamespace(
+        chat_id="701", _engagement_registry=registry,
+        _engagement_handler_locks={}, _driver_admit_inbound=None,
+        _driver_discharge_inbound=None, _engagement_driver=None,
+        _engagement_context_rebuilder=None, _stopping=False,
+        _turn_tasks=set(), _rebuild_preambles={},
+    )
+
+    async def _edit_dm_message(chat_id, message_id, text):
+        edits.append((chat_id, message_id, text))
+
+    chan.edit_dm_message = _edit_dm_message
+    chan._resume_and_ready = MethodType(TelegramChannel._resume_and_ready, chan)
+    chan.deliver_system_turn = MethodType(TelegramChannel.deliver_system_turn, chan)
+    return chan
+
+
+def _662_registry(edits, ack_path, observations):
+    """Registry whose every lookup records (DM edits so far, acks so far) —
+    the ordering proof: the ack must precede reconciliation, and the sole DM
+    edit must follow it."""
+    from specialist_install_consent import SpecialistInstallAckStore
+
+    rec = SimpleNamespace(id="eng-abc", topic_id=9, driver="in_casa",
+                          status="active", sdk_session_id=None)
+    state = {"present": True}
+
+    def _get(eid):
+        acked = len(SpecialistInstallAckStore(path=ack_path)._load()) \
+            if ack_path.exists() else 0
+        observations.append((len(edits), acked))
+        if not state["present"] or eid != "eng-abc":
+            return None
+        return rec
+
+    return SimpleNamespace(get=_get), rec, state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tap_state", ["gone", "terminal"])
+async def test_662_terminal_or_gone_engagement_uses_the_production_outcome(
+    monkeypatch, tmp_path, tap_state,
+) -> None:
+    from tools import specialist_install_inspect, engagement_var
+
+    edits: list = []
+    observations: list = []
+    ack_path = tmp_path / "acks.json"
+    registry, rec, state = _662_registry(edits, ack_path, observations)
+    _wire_inspect(monkeypatch, tmp_path,
+                  channel=_662_channel(registry, edits))
+    cap = _capture_real_consent(monkeypatch)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        payload = _payload(await specialist_install_inspect.handler(
+            {"repo": "owner/repo", "ref": "main"}))
+    finally:
+        engagement_var.reset(token)
+    assert payload["consent"] == "keyboard_posted"
+
+    # The tap lands AFTER the requesting engagement is gone / terminal.
+    if tap_state == "gone":
+        state["present"] = False
+    else:
+        rec.status = "completed"
+
+    req = SimpleNamespace(meta={})
+    cap["on_commit_sync"](0, req.meta)
+    finish = cap["finish_factory"](88, req)
+    await finish({"outcome": "answered", "option_index": 0})
+
+    from specialist_install_consent import SpecialistInstallAckStore
+    ack_count = len(SpecialistInstallAckStore(path=ack_path)._load())
+    actual = (ack_count, observations[0], len(edits), edits)
+    assert actual == (1, (0, 1), 1, [(701, 88, _662_CORRECTIVE)]), (
+        f"approval facts: {actual!r}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tap_state", ["gone", "terminal"])
+async def test_662_production_reconcile_cb_reports_a_literal_false(
+    monkeypatch, tmp_path, tap_state,
+) -> None:
+    """The half a finish-hook truthiness patch cannot fake: the PRODUCTION
+    callback must return the literal `False`, not a bare `None`."""
+    from tools import specialist_install_inspect, engagement_var
+
+    edits: list = []
+    observations: list = []
+    ack_path = tmp_path / "acks.json"
+    registry, rec, state = _662_registry(edits, ack_path, observations)
+    _wire_inspect(monkeypatch, tmp_path,
+                  channel=_662_channel(registry, edits))
+    cap = _capture_real_consent(monkeypatch)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        await specialist_install_inspect.handler(
+            {"repo": "owner/repo", "ref": "main"})
+    finally:
+        engagement_var.reset(token)
+
+    if tap_state == "gone":
+        state["present"] = False
+    else:
+        rec.status = "completed"
+
+    result = await cap["reconcile_cb"]()
+    actual = (len(observations), [result])
+    assert actual == (1 if tap_state == "gone" else 2, [False]), (
+        f"reconciliation facts: {actual!r}")
