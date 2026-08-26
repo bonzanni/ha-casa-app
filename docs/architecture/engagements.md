@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-19
+last_reviewed: 2026-08-26
 ---
 
 # Engagements
@@ -202,6 +202,32 @@ plugin-withholding refusals, and what each payload discloses, are described in
 **A driver fails to start after the record exists.** The engagement is marked errored, topic
 cleanup is attempted, and the caller is told the start failed.
 
+These launch-failure arms — a missing driver, a clearance change during launch, a superseded
+plugin, a missing prompt template, an API-level fault, and a start that raised — deliberately
+do NOT take the launch-death path's bounded topic notice. The reason is not that the death
+path has no caller left; its post-start arm answers one too, with `launch_turn_incomplete`,
+unless another writer won the terminal first, and its cancellation arm answers nobody because
+the cancellation is re-raised. The reason is that these arms carry a *named fault* and the
+death path carries only an *absence*. Each of the six is a fact about why the launch did not
+happen, returned synchronously to the turn that asked for it, in a kind string it can act on
+— one of them carries retry advice only that caller can use. The topic is aborted silently
+because the launch never reached the point where the engagement is handed over as live: the
+tool call still owns it, and is the one answering for it. That is not a claim that nothing
+ran — the API-fault arm is raised after the stream is drained, so text the turn had already
+posted progressively can be standing in the topic and cannot be retracted — it is a claim
+about who answers. A launch death has no such fact to hand back: the turn ran to its end and
+left nothing, or the launch was cancelled, and an operator's topic that says nothing is what
+the notice exists to explain.
+
+The claim is bounded to what the tree provides, and it is a claim about the *caller*: the
+failure kind reaches the live invoking turn. Whether it then reaches the operator is that
+turn's own business, and nothing here relays it. The exemption is from the notice, and from
+nothing else — it does not extend to a cancellation, nor to a launch turn that ended after
+starting without its terminal artifact, both of which stay on the launch-death path
+(INV-ENG-011). It also does not settle whether the ledger's best-effort mark, whose result
+these arms do not read, may authorize an irreversible topic close; that question is #757 and
+is not answered here.
+
 **A restart interrupts an engagement.** Persisted records load with `active` rewritten to
 `idle`. Replay is attempted only for the driver kind that supports it. A record whose
 workspace or recorded plugin artifact is missing is *refused* with a warning — validated
@@ -251,6 +277,8 @@ serialization will either fail or persist something meaningless.
 **A new terminal path, and a new topic output**, belong with the finalize funnel and the
 per-engagement sequencer in
 [`architecture/engagement-finalization.md`](engagement-finalization.md).
+Whether a terminal writer needed authority to assert *that* outcome — and why neither
+persisting ledger checks it — is answered in the same document.
 
 ## Source & test map
 
@@ -262,6 +290,7 @@ per-engagement sequencer in
 - `casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
 - `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
+- `casa/rootfs/opt/casa/tools.py::_abort_engagement_topic`
 
 **Tests**
 - `tests/test_delegate_to_agent.py`

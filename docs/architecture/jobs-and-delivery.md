@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-07-31
+last_reviewed: 2026-08-26
 ---
 
 # Durable jobs and voice delivery
@@ -129,6 +129,11 @@ records it, and only an *unrecorded* settling defers. Unrecorded is therefore th
 default: a site that records nothing errs toward telling the operator, and a bare
 cancellation — which cannot tell a barge-in from process death — is exactly the unrecorded
 case this invariant exists for.
+
+Whether the *writer* of a terminal also needed authority to assert that outcome is a
+different question, and the answer is that neither persisting ledger checks it and no
+cross-ledger contract is owed — reasoned in
+[`architecture/engagement-finalization.md`](engagement-finalization.md).
 
 What it does not cover: **delivery**, and terminal work. The restart-orphan notice is
 acknowledged when it is *enqueued*, not when the operator has it, so this invariant is
@@ -346,4 +351,5 @@ long an attempt may hold.
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/triggers.md`](../architecture/triggers.md)
+- [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 <!-- END SOURCEMAP -->

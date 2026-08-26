@@ -1066,3 +1066,17 @@ def test_engagements_is_named_when_tools_changes():
         REPO_ROOT, ["casa/rootfs/opt/casa/tools.py"]))
 
     assert impact.count("architecture/engagements.md") == 1, impact
+
+
+def test_engagement_finalization_is_named_when_job_registry_changes():
+    """The terminal-authority ruling published in `engagement-finalization.md`
+    is about BOTH persisting ledgers, and the job half is the one whose home is
+    furthest from its subject. `related` links do not participate in impact
+    resolution, so without a `covers` claim a job-terminal change could update
+    or waive `jobs-and-delivery.md` alone while the ruling went stale.
+    """
+    impact = sorted(verify_docs.impacted_docs(
+        REPO_ROOT, ["casa/rootfs/opt/casa/job_registry.py"]))
+
+    assert impact.count("architecture/engagement-finalization.md") == 1, impact
+    assert impact.count("architecture/jobs-and-delivery.md") == 1, impact
