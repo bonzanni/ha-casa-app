@@ -1516,6 +1516,22 @@ def _removed_artifact_ids(before_entries: "list[dict]",
     return tuple(dict.fromkeys(removed))
 
 
+def _removed_owned_names(before_entries: "list[dict]",
+                         new_entries: "list[dict]") -> "tuple[str, ...]":
+    """#676 (INV-TOOL-006): the owned-plugin names this swap DROPPED — present
+    in the pre-swap owned set, absent from the set that replaced it. An
+    uninstall passes `new_entries=[]`, so every name is dropped; an upgrade or
+    a rollback drops only what the new generation no longer carries; an install
+    over an empty owned set drops nothing. Names, not artifact ids, because the
+    name is the plugin identity the CLI's persistent-data directory is keyed by
+    and the only one an operator can act on."""
+    kept = {e.get("name") for e in new_entries if isinstance(e, dict)}
+    dropped = [e["name"] for e in before_entries
+               if isinstance(e, dict) and isinstance(e.get("name"), str)
+               and e["name"] not in kept]
+    return tuple(dict.fromkeys(dropped))
+
+
 def _reject_receiptless_sourced_deps(
     component: "SpecialistComponent", *, receipt: "SourceReceipt | None",
 ) -> None:
@@ -1976,6 +1992,8 @@ def commit_specialist_install(
                     ack_records=ack_records, removed_artifact_ids=removed,
                     new_artifact_ids=tuple(sorted(new_artifact_ids)),
                     op="install", owned_swap_committed=True,
+                    removed_owned_names=_removed_owned_names(
+                        before_entries, new_entries),
                     target_root=component_root_string(
                         component_id=inspection.component_id, version=inspection.version,
                         component_checksum=inspection.root_digest),
@@ -2217,6 +2235,8 @@ def upgrade_specialist(
                 removed_artifact_ids=removed,
                 new_artifact_ids=tuple(sorted(new_artifact_ids)),
                 op="upgrade", owned_swap_committed=swapped,
+                removed_owned_names=_removed_owned_names(
+                    before_entries, new_entries) if swapped else (),
                 target_root=component_root_string(
                     component_id=inspection.component_id, version=inspection.version,
                     component_checksum=inspection.root_digest),
@@ -3030,6 +3050,8 @@ def rollback_specialist(
             removed_artifact_ids=removed,
             new_artifact_ids=tuple(sorted(prior_ids)),
             op="rollback", owned_swap_committed=True,
+            removed_owned_names=_removed_owned_names(
+                before_entries, prior_entries),
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
@@ -3298,6 +3320,7 @@ def uninstall_specialist(
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             removed_artifact_ids=all_ids, new_artifact_ids=(),
             op="uninstall", owned_swap_committed=True,
+            removed_owned_names=_removed_owned_names(before_entries, []),
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)

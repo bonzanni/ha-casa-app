@@ -1082,3 +1082,175 @@ def test_a_pending_upgrade_does_not_claim_it_swapped_the_owned_set(
     # …and it is NOT that before_entries is empty: the field carries the
     # unchanged owned set, which is exactly why the flag has to exist.
     assert len(pending_txn.before_entries) == 1
+
+
+# ---------------------------------------------------------------------------
+# #676 (INV-TOOL-006), Terra handback review: an owned-set swap that DROPS a
+# plugin is a persisting committed removal whatever door reached it. The
+# transaction records exactly which names it dropped, so the success payloads
+# can disclose them. These pin the recording against the REAL install/upgrade/
+# rollback/uninstall — the tool-level tests use doubles for the txn, and a
+# double that drifts from the producer proves nothing about the producer.
+# ---------------------------------------------------------------------------
+
+def _prep_multi(tmp_path: Path, monkeypatch, names: "list[str]", *,
+                root: str = "v1", ref: str = "main", sha: str = "a" * 40,
+                base_ctx=None):
+    """A component declaring one bundled plugin per entry in `names`, inspected
+    (install mode when `base_ctx` is None, upgrade mode otherwise) with consent
+    recorded. Returns the kwargs the corresponding lifecycle call takes."""
+    import plugin_store
+    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_registry import InstalledSpecialistIndex
+
+    comp, mpath = write_minimal_component(tmp_path / root, slug="mtg")
+    manifest = _json.loads(mpath.read_text(encoding="utf-8"))
+    for name in names:
+        write_bundled_plugin(comp, name)
+        # Distinguish generations so an upgrade is a real content change.
+        (comp / "plugins" / name / "README.md").write_text(root, encoding="utf-8")
+        digest = "sha256:" + plugin_store.content_checksum(comp / "plugins" / name)
+        manifest["dependencies"].append({
+            "kind": "plugin/implementation", "identifier": name, "digest": digest,
+            "source": {"type": "bundled", "path": f"plugins/{name}"}})
+    if base_ctx is not None:
+        manifest["version"] = "0.2.0"
+    mpath.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", _subdir_stub(comp, sha))
+    idx = InstalledSpecialistIndex(specialists_dir=str(tmp_path / "installed-index"))
+    idx.load()
+    extra = ({} if base_ctx is None
+             else dict(mode="upgrade", target_slug="mtg",
+                       specialists_dir=tmp_path / "specialists"))
+    inspection = specialist_install.inspect_specialist_repo(
+        "org/repo", ref, staging_root=tmp_path / f"staging-{root}",
+        installed_index=idx, receipts_dir=tmp_path / "receipts", **extra)
+    receipt = specialist_receipt.load(inspection.receipt_id,
+                                      receipts_dir=tmp_path / "receipts")
+    assert receipt is not None
+
+    acks = base_ctx.acks if base_ctx is not None else SpecialistInstallAckStore(
+        path=tmp_path / "acks.json")
+    identity = install_consent_identity(
+        component_id=inspection.component_id, version=inspection.version,
+        root_digest=inspection.root_digest, slug=inspection.slug,
+        receipt_digest=inspection.receipt_digest)
+    acks.record(identity=identity, component_id=inspection.component_id,
+                version=inspection.version, component_checksum=inspection.root_digest,
+                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
+
+    common = dict(
+        inspection=inspection, receipt=receipt, config={},
+        secret_names_provided=frozenset(), acks=acks,
+        specialists_dir=tmp_path / "specialists",
+        agents_specialists_dir=tmp_path / "agents",
+        registry_path=tmp_path / "registry.json",
+        plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
+    if base_ctx is not None:
+        common["slug"] = "mtg"
+    return _Ctx(acks=acks, inspection=inspection, receipt=receipt, kw=common)
+
+
+def test_a_real_upgrade_records_the_owned_plugin_it_dropped(
+        tmp_path: Path, monkeypatch) -> None:
+    """The positive case Terra's handback finding names: v1 owns two plugins,
+    v2 owns one, and the swap that publishes v2 removes the other's registry
+    entry. `removed_owned_names` is that name — and `before_entries` is not,
+    because it still carries the plugin the upgrade re-published."""
+    ctx = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"])
+    specialist_install.commit_specialist_install(**ctx.kw)
+    reg = ctx.kw["registry_path"]
+    assert sorted(e["name"] for e in _owned(reg, "mtg")) == ["mtg.extra", "mtg.mtg"]
+
+    up = _prep_multi(tmp_path, monkeypatch, ["mtg"], root="v2", ref="v2",
+                     sha="b" * 40, base_ctx=ctx)
+    instance, txn = specialist_install.upgrade_specialist(**up.kw)
+
+    assert instance.state == "active"
+    assert [e["name"] for e in _owned(reg, "mtg")] == ["mtg.mtg"]
+    assert txn.owned_swap_committed is True
+    assert txn.removed_owned_names == ("mtg.extra",)
+    assert sorted(e["name"] for e in txn.before_entries) == ["mtg.extra", "mtg.mtg"]
+
+
+def test_a_real_upgrade_that_keeps_its_owned_set_records_no_drop(
+        tmp_path: Path, monkeypatch) -> None:
+    """The negative arm, measured separately: an upgrade that re-publishes the
+    same owned names removed nothing, and a survival warning there would be
+    the false half of the invariant."""
+    ctx = _prep(tmp_path, monkeypatch)
+    specialist_install.commit_specialist_install(**ctx.kw)
+    kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
+    _, txn = specialist_install.upgrade_specialist(**kw2)
+
+    assert txn.owned_swap_committed is True
+    assert txn.removed_owned_names == ()
+    assert len(txn.before_entries) == 1
+
+
+def test_a_real_rollback_records_the_owned_plugin_it_dropped(
+        tmp_path: Path, monkeypatch) -> None:
+    """A rollback republishes the RETAINED prior owned set, so a plugin the
+    current generation added and the prior one never had is dropped by that
+    swap — the same removal, reached by the fourth door."""
+    ctx = _prep_multi(tmp_path, monkeypatch, ["mtg"])
+    specialist_install.commit_specialist_install(**ctx.kw)
+    reg = ctx.kw["registry_path"]
+
+    up = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"], root="v2", ref="v2",
+                     sha="b" * 40, base_ctx=ctx)
+    specialist_install.upgrade_specialist(**up.kw)
+    assert sorted(e["name"] for e in _owned(reg, "mtg")) == ["mtg.extra", "mtg.mtg"]
+
+    instance, txn = specialist_install.rollback_specialist(
+        slug="mtg", bundle=True, acks=ctx.acks,
+        specialists_dir=tmp_path / "specialists",
+        agents_specialists_dir=tmp_path / "agents", registry_path=reg,
+        plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
+
+    assert instance.state == "active"
+    assert [e["name"] for e in _owned(reg, "mtg")] == ["mtg.mtg"]
+    assert txn.owned_swap_committed is True
+    assert txn.removed_owned_names == ("mtg.extra",)
+
+
+def test_a_real_uninstall_records_every_owned_name_it_dropped(
+        tmp_path: Path, monkeypatch) -> None:
+    """The uninstall's swap publishes an EMPTY owned set, so every pre-swap
+    name is dropped. This is the claim the tool-level double asserts, pinned
+    against the real `uninstall_specialist`."""
+    ctx = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"])
+    specialist_install.commit_specialist_install(**ctx.kw)
+    reg = ctx.kw["registry_path"]
+
+    txn = specialist_install.uninstall_specialist(
+        slug="mtg", bundle=True, acks=ctx.acks,
+        specialists_dir=tmp_path / "specialists",
+        agents_specialists_dir=tmp_path / "agents", registry_path=reg,
+        ops_dir=tmp_path / "ops")
+
+    assert _owned(reg, "mtg") == []
+    assert txn.owned_swap_committed is True
+    assert sorted(txn.removed_owned_names) == ["mtg.extra", "mtg.mtg"]
+
+
+def test_a_pending_upgrade_records_no_dropped_names(
+        tmp_path: Path, monkeypatch) -> None:
+    """The fail-closed pairing with owned_swap_committed=False: a pending
+    upgrade never swapped, so there is nothing it dropped — even though its
+    `before_entries` carries the whole unchanged owned set."""
+    import specialist_lifecycle
+    ctx = _prep(tmp_path, monkeypatch)
+    specialist_install.commit_specialist_install(**ctx.kw)
+    kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
+    specialist_install.upgrade_specialist(**kw2)
+
+    kw3 = _prep_v2(tmp_path, monkeypatch, ctx, ref="v3", marker="v3")
+    monkeypatch.setattr(specialist_lifecycle, "satisfy_config",
+                        lambda **kw: (False, ["API_KEY"]))
+    _, pending_txn = specialist_install.upgrade_specialist(**kw3)
+
+    assert pending_txn.owned_swap_committed is False
+    assert pending_txn.removed_owned_names == ()
+    assert len(pending_txn.before_entries) == 1

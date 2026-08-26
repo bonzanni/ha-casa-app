@@ -27,9 +27,10 @@
    activated) — no separate plugin step here. If the result carries
    `plugin_data_note`, relay it verbatim with the names in
    `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
-   describes. Do not restate it as a confirmed removal: the note itself says
-   whether those entries were measured still removed or whether Casa could not
-   read the registry back and does not know.
+   describes. Do not restate it as a confirmed removal unless the note itself
+   says so: the note says which of the three it is — the successful owned-set
+   swap dropped those entries, or a failed compensation left them measured
+   still removed, or Casa could not read the registry back and does not know.
 
 ## Common mistakes
 

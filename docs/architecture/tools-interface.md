@@ -199,7 +199,7 @@ assert each shipped surface carries the prohibition and has not reverted to a
 previously-shipped phrasing, which is not the same as proving no new phrasing can express the
 claim.
 
-**INV-TOOL-006**: A committed plugin removal reported by `plugin_remove`, by a specialist uninstall's cascade, or by a bundle compensation that measured the entry still removed — or that could not read the registry back and says so in the same envelope — discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
+**INV-TOOL-006**: A committed plugin removal reported by `plugin_remove`, by the owned-set swap of a SUCCESSFUL specialist bundle — install, upgrade, rollback or uninstall alike — or by a bundle compensation that measured the entry still removed — or that could not read the registry back and says so in the same envelope — discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
 
 A plugin's persistent data directory belongs to the Claude CLI, not to Casa: it lives on the
 config volume, the CLI injects its path, and it outlives every lifecycle operation Casa
@@ -217,16 +217,22 @@ where a grant lives. Disclosure is the part that is true under either option.
 
 Enforced in the synchronous cores, after the registry commit: `_plugin_remove_sync` spreads
 the disclosure into its ok payload — so a committed-but-not-ready outcome (INV-TOOL-004)
-carries it too, since the survival fact is settled the moment the registry saves — and
-`specialist_uninstall` adds it, naming the cascaded plugins, whenever its bundle swapped owned
-entries out. The one `ok:false` envelope whose registry mutation can persist, the
+carries it too, since the survival fact is settled the moment the registry saves — and every
+SUCCESSFUL specialist bundle adds it, naming the owned plugins its registry swap dropped. That
+swap is where the four bundle operations become one door: an uninstall publishes an empty owned
+set so every entry is dropped, an upgrade or a rollback publishes a new generation and drops
+whatever it no longer carries, and an install drops any stale owned entry it replaces. So the
+transaction records the dropped NAMES at the moment its swap is authoritative rather than
+leaving the payload to re-derive them from the pre-swap set, which for an upgrade or a rollback
+mostly names plugins that very operation re-published. A successful swap needs no read-back to
+confirm it: it is atomic, it saved, its sequencer then succeeded and its journal completed, all
+inside the plugin-tools mutation lock. The one `ok:false` envelope whose registry mutation can persist, the
 `compensation_failed` arm of a failed bundle sequencer, discloses on measurement rather
 than on the flag: a failed compensation does not establish that the removal survived, because
 the rollback restores the registry in its first step and then does fallible work, so the arm
 reads the registry back and names only the entries actually still absent. That measurement decides
-WHICH names are disclosed, and the operation is not part of that decision: an upgrade or a rollback swaps the
-owned set wholesale and can drop a plugin the previous set had, which is the same persisting
-removal reached by a third door. What the measurement cannot decide is whether there was
+WHICH names are disclosed, and the operation is not part of that decision — any of the four can
+reach this arm with an entry still gone. What the measurement cannot decide is whether there was
 anything to measure: a pending-configuration or error upgrade never swaps the owned set and
 hands the UNCHANGED set through in the same field, so the transaction records whether it
 actually swapped, and one that did not says nothing — including on the indeterminate arm,
@@ -234,8 +240,10 @@ where there is nothing to read back that could correct it. A read that fails
 establishes nothing either way and the envelope says so, while still stating the two facts
 that hold regardless — the plugin's CLI-managed persistent data was not deleted, and no
 provider revocation was performed. The shipped surfaces say the same thing: the tool's own description, the plugin
-removal recipe, and the specialist uninstall recipe, each instructing the engager to relay the
-note rather than restate it as a deletion.
+removal recipe, and the specialist uninstall, upgrade and rollback recipes, each instructing the
+engager to relay the note rather than restate it as a deletion — and the upgrade and rollback
+recipes name the successful-swap arm too, since on that arm the removal is confirmed rather
+than measured or unknown.
 
 The wording is bounded by INV-TOOL-005, which is why it reads the way it does. `may remain`,
 because Casa cannot see whether the plugin ever stored anything; and
@@ -244,12 +252,10 @@ grant's state, which Casa has no standing to report in either direction.
 
 What it does not cover: envelopes that describe no persisting removal carry none of it — the
 pre-commit refusals, `plugin_unassign`, `plugin_update`, and the rolled-back arms, where the
-entries are back. Nor does it reach a SUCCESSFUL upgrade or rollback that drops an owned
-plugin, which is why the invariant names its three envelopes rather than quantifying over
-every persisting removal: that drop IS one, and its result says nothing about it. Only the
-failed-compensation arm of those operations discloses today. Saying so in the statement
-rather than only in this paragraph is the point — an invariant whose exclusions live below
-it is still false as declared, and it is the declaration that gets read. Nor does it cover a removal path that RAISES after the registry commit — the
+entries are back, and a bundle that never ran its swap, which the paragraph above separates from
+one that did. Saying what the statement covers in the statement rather than only in this paragraph is the point —
+an invariant whose exclusions live below it is still false as declared, and it is the
+declaration that gets read. What it genuinely does not reach is a removal path that RAISES after the registry commit — the
 uninstall sequencer, where compensation runs and the exception propagates, and equally a
 direct `plugin_remove` whose reload-and-verify tail raises. In both the mutation has
 committed and there is no result envelope to carry the disclosure, so the operator gets a

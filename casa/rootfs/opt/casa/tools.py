@@ -10814,6 +10814,32 @@ def _plugin_data_disclosure(note: str, plugins: "list[str] | None" = None) -> di
     return fields
 
 
+def _swap_removal_disclosure(txn) -> dict:
+    """#676 (INV-TOOL-006): the disclosure a SUCCESSFUL bundle owed for the
+    owned plugins its registry swap dropped, or `{}` when it dropped none.
+
+    A successful swap is the strongest evidence there is that the removal
+    persisted — it is atomic, it saved, the sequencer then succeeded and the
+    journal completed, and the whole window is inside `_PLUGIN_TOOLS_LOCK`, so
+    unlike the failed-compensation arm there is nothing a read-back could
+    correct. `removed_owned_names` is the swap's own answer, recorded at that
+    moment; `before_entries` is NOT a substitute, because for an upgrade or a
+    rollback it is the pre-swap set and most of it was re-published.
+
+    Terra handback review (attempt 2): an upgrade or a rollback whose new owned
+    generation omits an old plugin removes that plugin's registry entry exactly
+    as an uninstall's cascade does, and returned ok with nothing said — the
+    same persisting removal, reached by a door this disclosure did not cover.
+    """
+    if not getattr(txn, "owned_swap_committed", False):
+        return {}
+    names = [n for n in (getattr(txn, "removed_owned_names", None) or ())
+             if isinstance(n, str) and n]
+    if not names:
+        return {}
+    return _plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED, names)
+
+
 def _absent_owned_names(txn, names: "list[str]") -> "tuple[list[str], bool]":
     """Which of `names` are absent from the registry NOW, and whether the
     registry could be read at all. Sync — callers on the loop use to_thread.
@@ -12436,7 +12462,17 @@ async def specialist_install_commit(args: dict) -> dict:
                      "required_env_vars": {
                          row.scoped_name: list(row.env_names)
                          for row in receipt.plugins if row.env_names
-                     }})
+                     },
+                     # #676: an install's swap normally replaces an EMPTY owned
+                     # set and drops nothing, so this adds no fields. It is not
+                     # decoration: the swap runs unconditionally here, and a
+                     # slug carrying stale owned entries (a crash between a
+                     # bundle's registry save and its journal completing, then
+                     # reconciled away from the tuple side) has those entries
+                     # dropped by it. Every successful owned-set swap answers
+                     # for what it dropped — the class, not three of its four
+                     # doors.
+                     **_swap_removal_disclosure(txn)})
 
 
 @tool(
@@ -12540,7 +12576,11 @@ async def specialist_upgrade(args: dict) -> dict:
             _prune_bundle_receipt(receipt.receipt_id)
             specialist_install_mod.reclaim_staging_tree(staged_dir)
     return _result({"ok": True, "slug": instance.slug, "state": instance.state,
-                     "reloaded": seq["reloaded"], "verify": seq["verify"]})
+                     "reloaded": seq["reloaded"], "verify": seq["verify"],
+                     # #676: an upgrade whose new owned generation omits an old
+                     # plugin removed that plugin's registry entry. Same
+                     # persisting removal, same disclosure.
+                     **_swap_removal_disclosure(txn)})
 
 
 @tool(
@@ -12573,7 +12613,11 @@ async def specialist_rollback(args: dict) -> dict:
             return _result(await _bundle_seq_failure(txn, seq, slug=txn.slug))
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
     return _result({"ok": True, "slug": instance.slug, "state": instance.state,
-                     "reloaded": seq["reloaded"], "verify": seq["verify"]})
+                     "reloaded": seq["reloaded"], "verify": seq["verify"],
+                     # #676: a rollback republishes the RETAINED prior owned
+                     # set, so a plugin the current generation added and the
+                     # prior one never had is dropped by the swap.
+                     **_swap_removal_disclosure(txn)})
 
 
 @tool(
@@ -12612,15 +12656,14 @@ async def specialist_uninstall(args: dict) -> dict:
     # #676: the uninstall CASCADED these owned plugins out of the registry —
     # the same persisting committed removal, reached by another door, so the
     # same disclosure is owed. Zero owned plugins removes nothing and discloses
-    # nothing. txn.before_entries is the swap's own validated capture of exactly
-    # the entries this slug owned.
-    owned = [e.get("name") for e in (getattr(txn, "before_entries", None) or [])
-             if isinstance(e, dict) and e.get("name")]
+    # nothing. One gate serves every successful bundle now (Terra handback
+    # review, attempt 2): an uninstall's swap publishes an EMPTY owned set, so
+    # `removed_owned_names` is exactly the entries this slug owned — the same
+    # answer the hand-rolled `before_entries` read gave here, now derived the
+    # one way an upgrade and a rollback can share.
     payload = {"ok": True, "slug": slug, "reloaded": seq["reloaded"],
                "verify": seq["verify"]}
-    if owned:
-        payload.update(_plugin_data_disclosure(
-            _PLUGIN_DATA_NOTE_COMMITTED, owned))
+    payload.update(_swap_removal_disclosure(txn))
     return _result(payload)
 
 

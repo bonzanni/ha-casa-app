@@ -1897,7 +1897,13 @@ _DISCLOSURE_KEYS = {"plugin_data_may_remain", "provider_revocation_performed",
 
 def _uninstall_txn(monkeypatch, owned_names, *, op="uninstall"):
     """Patch uninstall_specialist to hand back a txn whose before_entries are
-    exactly the owned rows the swap removed."""
+    exactly the owned rows the swap removed.
+
+    `removed_owned_names` mirrors what the REAL uninstall records: its swap
+    publishes an empty owned set, so every pre-swap name is dropped. The
+    double is only as good as that claim, which
+    test_specialist_bundle_commit.py::test_a_real_uninstall_records_every_owned_name_it_dropped
+    pins against the real `uninstall_specialist`."""
     import specialist_install
     from types import SimpleNamespace
 
@@ -1905,6 +1911,7 @@ def _uninstall_txn(monkeypatch, owned_names, *, op="uninstall"):
         slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
         journal_path="/tmp/does-not-matter.json", op=op,
         owned_swap_committed=True,
+        removed_owned_names=tuple(owned_names),
         before_entries=[{"name": n, "artifact_id": "a" * 64} for n in owned_names])
     monkeypatch.setattr(specialist_install, "uninstall_specialist",
                         lambda *, slug, **kw: txn)
@@ -2183,3 +2190,166 @@ def test_only_a_committed_owned_swap_declares_itself() -> None:
     txn = BundleTxn(journal_path="/tmp/x.json", slug="mtg", before_entries=[],
                     before_tuple_files={}, ack_records=[])
     assert txn.owned_swap_committed is False
+
+
+# ---------------------------------------------------------------------------
+# #676 (INV-TOOL-006), Terra handback review: a SUCCESSFUL upgrade or rollback
+# whose owned-set swap dropped a plugin is a persisting committed removal and
+# owes the same disclosure its uninstall sibling already carried. The txn field
+# these doubles set is pinned against the real producers in
+# tests/test_specialist_bundle_commit.py (the _prep_multi tests).
+# ---------------------------------------------------------------------------
+
+def _swap_txn(dropped, *, op, swapped=True):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
+        journal_path="/tmp/does-not-matter.json", op=op,
+        owned_swap_committed=swapped, removed_owned_names=tuple(dropped),
+        before_entries=[{"name": "mtg.mtg", "artifact_id": "a" * 64}]
+        + [{"name": n, "artifact_id": "b" * 64} for n in dropped])
+
+
+async def _run_upgrade(monkeypatch, tmp_path, txn):
+    """Drive the real specialist_upgrade handler to its success return with
+    `upgrade_specialist` stubbed to hand back `txn`."""
+    from test_specialist_install import _write_component
+    from specialist_component import load_specialist_component
+    from specialist_install import compute_install_root_digest, resolve_dependency_closure
+    import specialist_install
+    import tools as tools_mod
+    from tools import specialist_upgrade
+    from types import SimpleNamespace
+
+    staged = _write_component(tmp_path / "staged", slug="mtg")
+    component = load_specialist_component(staged, staged / "manifest.json")
+    deps = resolve_dependency_closure(component, staged)
+    digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+
+    instance = SimpleNamespace(slug="mtg", state="active")
+    monkeypatch.setattr(specialist_install, "upgrade_specialist",
+                        lambda **kw: (instance, txn))
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
+    _inject_fake_receipt(monkeypatch)
+    _stub_bundle_sequencer(monkeypatch)
+
+    return _payload(await specialist_upgrade.handler({
+        "slug": "mtg", "component_id": component.component_id,
+        "version": component.version, "staged_dir": str(staged),
+        "receipt_id": "a" * 32, "root_digest": digest}))
+
+
+async def _run_rollback(monkeypatch, txn):
+    import specialist_install
+    from tools import specialist_rollback
+    from types import SimpleNamespace
+
+    instance = SimpleNamespace(slug="mtg", state="active")
+    monkeypatch.setattr(specialist_install, "rollback_specialist",
+                        lambda **kw: (instance, txn))
+    _stub_bundle_sequencer(monkeypatch)
+    return _payload(await specialist_rollback.handler({"slug": "mtg"}))
+
+
+@pytest.mark.asyncio
+async def test_a_successful_upgrade_discloses_the_plugin_its_swap_dropped(
+        monkeypatch, tmp_path) -> None:
+    payload = await _run_upgrade(
+        monkeypatch, tmp_path, _swap_txn(["mtg.extra"], op="upgrade"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    # ONLY the dropped plugin — not the whole pre-swap owned set, which still
+    # carries mtg.mtg, re-published by this very upgrade.
+    assert payload["plugin_data_plugins"] == ["mtg.extra"]
+    assert sum((payload["plugin_data_may_remain"] is True,
+                payload["provider_revocation_performed"] is False)) == 2
+    note = payload["plugin_data_note"].lower()
+    assert sum(f in note for f in ("cli-managed", "persistent", "not deleted",
+                                   "reinstall")) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_successful_upgrade_that_dropped_nothing_discloses_nothing(
+        monkeypatch, tmp_path) -> None:
+    """The false-warning half, measured on its own: an upgrade that
+    re-published its whole owned set removed nothing."""
+    payload = await _run_upgrade(monkeypatch, tmp_path, _swap_txn([], op="upgrade"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_an_upgrade_that_never_swapped_discloses_nothing(
+        monkeypatch, tmp_path) -> None:
+    """The swap gate is independent of the dropped list: a transaction that
+    did not swap has no removal to report even if a caller handed it names."""
+    payload = await _run_upgrade(
+        monkeypatch, tmp_path,
+        _swap_txn(["mtg.extra"], op="upgrade", swapped=False))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_successful_rollback_discloses_the_plugin_its_swap_dropped(
+        monkeypatch) -> None:
+    payload = await _run_rollback(
+        monkeypatch, _swap_txn(["mtg.extra"], op="rollback"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    assert payload["plugin_data_plugins"] == ["mtg.extra"]
+    assert payload["plugin_data_may_remain"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_successful_rollback_that_dropped_nothing_discloses_nothing(
+        monkeypatch) -> None:
+    payload = await _run_rollback(monkeypatch, _swap_txn([], op="rollback"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_successful_install_commit_discloses_a_stale_entry_its_swap_dropped(
+        monkeypatch, tmp_path) -> None:
+    """The fourth door. An install's swap normally replaces an EMPTY owned set
+    and this adds nothing — but the swap runs unconditionally, so a slug
+    carrying stale owned entries has them dropped by it, and the gate is the
+    dropped list rather than the operation."""
+    from test_specialist_install import _write_component
+    from specialist_component import load_specialist_component
+    from specialist_install import compute_install_root_digest, resolve_dependency_closure
+    import specialist_install
+    import tools as tools_mod
+    from tools import specialist_install_commit
+    from types import SimpleNamespace
+
+    staged = _write_component(tmp_path / "staged", slug="mtg")
+    component = load_specialist_component(staged, staged / "manifest.json")
+    deps = resolve_dependency_closure(component, staged)
+    root_digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+
+    txn = _swap_txn(["mtg.stale"], op="install")
+    monkeypatch.setattr(specialist_install, "commit_specialist_install",
+                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active"), txn))
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
+    _inject_fake_receipt(monkeypatch)
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_install_commit.handler({
+        "component_id": component.component_id, "version": component.version,
+        "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
+        "receipt_id": "a" * 32}))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    assert payload["plugin_data_plugins"] == ["mtg.stale"]

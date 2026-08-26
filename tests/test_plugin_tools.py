@@ -1482,6 +1482,15 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
         # removal in the operator's report.
         assert "do not restate it as a confirmed removal" in text
         assert "ended up removed" not in text
+        # Terra handback review (attempt 2): the note now also reaches these
+        # two recipes from the SUCCESS path — an upgrade or a rollback whose
+        # owned-set swap dropped a plugin — where it IS a confirmed removal.
+        # The relay instruction has to admit that arm, or an engager told only
+        # about the compensation/indeterminate cases hedges a removal that
+        # actually happened.
+        assert sum(fragment in text for fragment in (
+            "the successful owned-set swap dropped those entries",
+            "unless the note itself says so")) == 2
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (
