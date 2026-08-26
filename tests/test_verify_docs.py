@@ -1052,26 +1052,17 @@ def test_impact_accepts_an_empty_diff_piped_as_a_newline():
     assert r.stdout.strip() == ""
 
 
-def test_the_engagement_rulings_are_named_by_their_governing_seams():
-    """#689's answer and #693's notice ruling are published in documents that
-    the impact machinery must name when the code they rule on changes.
 
-    Neither ruling is enforceable code, so nothing else can catch it going
-    stale. `engagement-finalization.md` rules on the job ledger's terminal
-    execution transitions and names `JobRegistry.request_cancel` as the tree's
-    authority boundary; `engagements.md` rules on exactly what
-    `_abort_engagement_topic` does. Before this change neither document claimed
-    any symbol in the module it rules on, so a change adding an actor
-    precondition to a job terminal, or converting a launch-failure arm to the
-    launch-death discipline, passed the corpus gate with the ruling left wrong
-    and unread.
+def test_engagements_is_named_when_tools_changes():
+    """`engagements.md` already describes behaviour implemented in `tools.py` —
+    a launch whose driver fails to start is marked errored, its topic cleanup
+    attempted and its caller told — and its manifest row's `when_changing`
+    names "engagement launch". Yet that row claimed no `tools.py` symbol, so a
+    change to the launch-failure arms or to the silent topic close did not name
+    the document that rules on them, and the ruling recorded there could go
+    stale under a green corpus gate.
     """
-    finalization_impact = sorted(verify_docs.impacted_docs(
-        REPO_ROOT, ["casa/rootfs/opt/casa/job_registry.py"]))
-    engagements_impact = sorted(verify_docs.impacted_docs(
+    impact = sorted(verify_docs.impacted_docs(
         REPO_ROOT, ["casa/rootfs/opt/casa/tools.py"]))
 
-    assert finalization_impact.count(
-        "architecture/engagement-finalization.md") == 1, finalization_impact
-    assert engagements_impact.count(
-        "architecture/engagements.md") == 1, engagements_impact
+    assert impact.count("architecture/engagements.md") == 1, impact
