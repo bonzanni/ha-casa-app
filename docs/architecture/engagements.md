@@ -222,8 +222,11 @@ cleanup is attempted, and the caller is told the start failed.
 **A launch that aborts rolls back what it provisioned, and finishes doing so.** The
 `claude_code` launch removes, in order, the s6 service directory (recompiling after it), the
 workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group
-identity and its private outbox. Every one of those removals runs once the rollback has been
-entered — including when a cancellation is delivered at one of the rollback's own awaits. Such
+identity and its private outbox. Every one of those removals is *attempted* once the rollback
+has been entered — including when a cancellation is delivered at one of the rollback's own
+awaits. Each attempt keeps the best-effort floor it already had: a removal that raises is
+logged and swallowed, so that one rollback failure cannot mask the launch failure underneath
+it. What cannot happen is that an attempt is skipped; a `rmtree` that fails still fails. Such
 a cancellation is recorded rather than propagated, no further rollback await is attempted after
 it, and it is re-raised once the removals have run, carrying the launch failure it interrupted
 as its context so a reader downstream holds both facts rather than one. The removals being
@@ -237,7 +240,11 @@ reused (INV-CONT-001), so every such abort leaked a workspace tree, a control di
 identity and an outbox permanently. *Which* removals a rollback is entered to run is a separate
 question this does not answer: a shutdown-caused abort is not yet distinguished from a genuine
 provisioning failure, which is #698's work under the ruling that a stop and a failure are
-different events.
+different events. Nor is the *reporting* of the two combined: a launch that failed and was then
+cancelled during its rollback reaches the caller's cancellation arm and is announced as a
+cancellation, the failure surviving only as that exception's context and reaching no operator.
+That routing is unchanged by this release — the escaping cancellation reached the same arm
+before it — and it is the observability half of the same later work.
 
 These launch-failure arms — a missing driver, a clearance change during launch, a superseded
 plugin, a missing prompt template, an API-level fault, and a start that raised — deliberately
