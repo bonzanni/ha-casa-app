@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.241.0] - 2026-08-26
+
+### Fixed
+
+- A confirmation prompt that fails to reach your chat no longer takes the
+  question you were already waiting on with it.
+
 ## [0.240.0] - 2026-08-26
 
 ### Fixed
