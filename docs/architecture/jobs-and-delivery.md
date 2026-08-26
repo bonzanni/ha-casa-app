@@ -163,6 +163,15 @@ the operator that something broke rather than what their delegation did. Every a
 answer keeps the obligation, because the cost of keeping it is one duplicate announcement
 and the cost of dropping it is silence.
 
+What it does **not** claim is that the resident's words describe the delegation. The
+acknowledgement is discharged by Casa's own output for that notification reaching the
+transport, and nothing inspects the narration's content — a resident that answers something
+else entirely still discharges it. That limit is deliberate and is the same one the LIVE
+completion path has always had: a delegation that finishes while Casa is up is narrated by
+a resident in its own words, with no verification either. Holding the recovery path to a
+stricter standard would mean the announcement could no longer be a resident's narration at
+all, which is a different product, not a stricter guard.
+
 That duplicate is the accepted trade, stated plainly: a process lost between the delivery
 and the durable acknowledgement announces the same outcome again at the next boot, as does
 a terminal whose snapshot write failed and was landed afterwards by the registry-owned
