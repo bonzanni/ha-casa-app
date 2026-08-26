@@ -450,10 +450,17 @@ def cancel_for_chat(chat_id: int, reason: str) -> int:
 
     The operator's attention lane is not one broker scope — a protected-action
     challenge registers under ``authz:<chat>`` while these live under
-    ``dm:<chat>`` — so the challenge's admission calls this, in its own
-    no-await block, to make the machine-timed question non-actionable before
-    the human one is raised. An operator's own ``ask_user`` carries no
-    ``scheduled`` marker and is never touched.
+    ``dm:<chat>`` — and this makes a machine-timed question non-actionable in
+    one no-await block against the broker's own live map. An operator's own
+    ``ask_user`` carries no ``scheduled`` marker and is never touched.
+
+    #680: the authorization challenge no longer calls this. It displaced at
+    ADMISSION, so a challenge whose keyboard then failed to post left the
+    operator with neither question; it now calls the marker-free
+    :func:`displace_scheduled_for_chat` from its own driver, once the keyboard
+    is on screen. What remains here is the marker-WRITING primitive — the
+    selection is identical, and the boot-revocation marker is the whole
+    difference between the two.
     """
     from verdict_broker import BROKER
 

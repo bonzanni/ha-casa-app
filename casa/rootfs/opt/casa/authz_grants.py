@@ -571,24 +571,10 @@ class ChallengeCoordinator:
             "_scope": scope,
         }
         meta.update(meta_extra or {})
-        # #573: the operator's attention lane spans two scopes. A live
-        # SCHEDULED question in `dm:{chat_id}` is machine-timed and the
-        # operator did not ask for it, so it yields to this human-facing
-        # challenge — cancelled HERE, in the same no-await block as the
-        # registration below, and selected from the broker's own live map
-        # rather than from the durable record file (which is written after an
-        # await, and so can miss an ask that just won its lane). An operator's
-        # own `ask_user` question carries no `scheduled` marker and is left
-        # exactly as it was.
-        try:
-            import scheduled_asks
-
-            scheduled_asks.cancel_for_chat(chat_id, "operator_challenge")
-        except Exception:  # noqa: BLE001 — never block a challenge on this
-            logger.warning(
-                "authz challenge: scheduled-ask cancellation failed for "
-                "chat_id=%s", chat_id, exc_info=True,
-            )
+        # #573/#680: the operator's attention lane spans two scopes, and a live
+        # SCHEDULED question in `dm:{chat_id}` yields to this human-facing
+        # challenge — but NOT from here. Displacement happens in `_drive`, once
+        # the keyboard is actually on screen; see the note there for why.
         req, _created = broker.register(
             namespace="resident_ask", scope=scope, request_id=rid,
             timeout_s=(_CHALLENGE_TTL_S if timeout_s is None else timeout_s),
@@ -631,7 +617,7 @@ class ChallengeCoordinator:
         # posting / setup settlement (single registration owner — register
         # already happened synchronously above).
         driver = asyncio.get_running_loop().create_task(
-            self._drive(ch, _post, _finish_factory)
+            self._drive(ch, _post, _finish_factory, chat_id=chat_id)
         )
         ch.driver = driver
         self._drivers.add(driver)
@@ -704,9 +690,48 @@ class ChallengeCoordinator:
         self, ch: _Challenge,
         post_factory: Callable[[], Any],
         finish_factory: Callable[[int], Callable[[dict], Any]],
+        *, chat_id: int,
     ) -> None:
         req = ch.req
         await ch.broker.ensure_posted(req, post_factory, finish_factory)
+        # #680: the operator's live SCHEDULED question is retired HERE, at
+        # DELIVERY, never at admission. Retiring one is IRREVERSIBLE — its
+        # single-owner finish hook edits the keyboard to expired and dispatches
+        # the terminal continuation to the session that asked (INV-JOB-007) —
+        # so a challenge that displaced it at admission and then failed to post
+        # left the operator with NEITHER question. Displacing only once the
+        # replacement is on screen makes that state unreachable rather than
+        # rarer; there is nothing to compensate, because there is nothing lost.
+        #
+        # The predicate is exactly the one the human-`ask_user` half already
+        # ships (`tools.py`, #648): membership of THIS rid in the broker's live
+        # map. It is strictly stronger than "a message_id was recorded" —
+        # `_run_setup` unregisters on a raise or a non-int, and `_finish` pops
+        # the entry on any terminal outcome, so a live exact rid proves the post
+        # delivered AND that a tap, timeout or /new did not settle it while the
+        # post was in flight. Scope truthiness would NOT do: a sibling challenge
+        # in the same `authz:{chat_id}` scope would answer for this one.
+        #
+        # NO AWAIT between the check and the displacement — the pair must stay
+        # atomic against the Telegram callback handler, exactly as the admission
+        # -time call was. Do not insert one.
+        #
+        # An operator's own `ask_user` carries no `scheduled` marker and is left
+        # exactly as it was; the marker-free helper is deliberate (see its
+        # docstring) — a boot-window displacement has nothing to settle.
+        if ch.rid in ch.broker.pending(
+            namespace="resident_ask", scope=ch.scope,
+        ):
+            try:
+                import scheduled_asks
+
+                scheduled_asks.displace_scheduled_for_chat(
+                    chat_id, "operator_challenge")
+            except Exception:  # noqa: BLE001 — never fail a DELIVERED challenge
+                logger.warning(
+                    "authz challenge: scheduled-ask displacement failed for "
+                    "chat_id=%s", chat_id, exc_info=True,
+                )
         if req._setup_task is None:
             # The request was ALREADY terminal before any post — ensure_posted
             # no-ops on a done future, so no setup task exists. Settle the

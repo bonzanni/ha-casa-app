@@ -112,6 +112,17 @@ engagement rather than a resident continuation. A non-authorizable engagement re
 active specialist with a topic and a reachable operator) still denies, fail-closed, before any
 grant lookup.
 
+Every challenge the coordinator raises — the protected-tool one above and the trigger,
+callback, event, specialist-install and persona-install consents alike — shares the
+operator's attention lane with any machine-timed question already waiting there. The lane
+rule itself lives with the scheduled question in
+[`jobs-and-delivery.md`](jobs-and-delivery.md) (INV-JOB-008), and the part that matters
+here is one line: a challenge retires a waiting scheduled question only once its own
+keyboard is on screen, so a challenge that fails to post does not cost the operator the
+question that was waiting. The one window that rule does not reach — a boot reconcile
+running while the challenge's post is still in flight — is named with the invariant
+itself.
+
 Who may approve is a separate guarantee, INV-PLUG-007: read this invariant as "one
 approval authorises one action" and that one as "the approver is the configured operator".
 
