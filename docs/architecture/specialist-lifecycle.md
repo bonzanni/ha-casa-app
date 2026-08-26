@@ -178,29 +178,34 @@ unknown rather than known-negative, so it says the automatic start could not be 
 and that re-running is safe either way. The tap-callback never-raise contract is unchanged
 — `except Exception`, so `CancelledError` stays control flow.
 
-What it does not cover, deliberately: `True` is **not a delivery receipt**, and it is not
-a deliverability claim either. It says exactly one thing — the requesting engagement's
-record still had `active`/`idle` status when the tap reached the callback — and that is
-all the DM claims: that a continuation was *requested*.
+What it does not cover, deliberately: `True` is **not a delivery receipt**. It now says one
+thing rather than a weaker one — the seam accepted the continuation and a delivery task exists
+for it — and that remains exactly what the DM claims: that a continuation was *requested*.
 
-The report can be wrong in **both** directions, and neither is closable from here.
-`deliver_system_turn` returns `None`, so nothing tells the callback whether a turn was
-handed off; the sample is a lock-free read of the record either side of a seam that makes
-its own decision under its own lock. A first resume failure, a failed context rebuild or
-the shutdown gate abandons delivery after a positive report; conversely a status that is
-transiently terminal — a strict terminal transition whose persistence then rolls back —
-produces a negative report for a turn that IS handed off. **Do not read the absence of a
-positive report as a guarantee that the operator learned anything.** Some of these paths
-attempt a topic notice, but the attempt is best-effort, its own send failure is swallowed,
-and some of them (a shutdown with no held inbound ticket, for one) make no attempt at all:
-assume such a path can be entirely silent. The one case that is closed here is #662's own —
-a record already terminal or gone at tap time — and it is closed because the answer comes
-from the pre-seam sample, independently of the seam's result. (The seam is still called;
-it owns the inbound admission bookkeeping and makes its own decision under its own lock.)
+That is a narrowing of what this paragraph used to say, and it is worth being precise about
+which half moved. The report used to be a lock-free status sample taken *before* the seam ran,
+and it could be wrong in both directions: a resume failure, a failed context rebuild or the
+shutdown gate abandoned delivery after a positive report, while a transiently terminal status —
+a strict terminal transition whose persistence then rolled back — produced a negative report
+for a turn that WAS handed off. Both of those are gone, because the answer is now the seam's
+own decision rather than a guess about it: the gate the seam runs is what decides, and it
+decides under the topic lock after the context rebuild.
 
-Reporting an actual hand-off would mean `deliver_system_turn` reporting the outcome it
-already knows locally. That widens a channel contract other work depends on, and is
-tracked separately.
+**One direction remains open, and it is not closable from here.** The seam reports its
+hand-off, not the driver's admission: the admission is taken inside the engagement's per-turn
+lock, which is held for a whole turn, and waiting for it would park this tap callback behind
+an unbounded model turn — measured, not supposed, and the reason the seam reports what it
+does. So an ungated terminal writer (a cancellation, the operator's own complete command, the
+stale-engagement reap, a forced workspace delete, a failed or cancelled completion outcome, a
+direct error mark) can still terminalize between the hand-off and the admission, after this DM
+has said a continuation was requested. **Do not read a positive report as a guarantee that a
+turn ran.** The engagement's own terminal path discloses the un-taken message, and the recorded
+approval makes a re-run safe — but this DM is not where that is learned.
+
+The pre-admission half of the race is separately closed, and not by this report: the tap now
+takes a synchronous ingress reservation at its commit step, so a successful completion can no
+longer commit in the interval between the operator's tap and the continuation's admission. See
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
 
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 

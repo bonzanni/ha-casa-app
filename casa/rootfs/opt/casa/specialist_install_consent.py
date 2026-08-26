@@ -298,7 +298,13 @@ def prompt_specialist_install_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int, inspection: Any,
     acks: "SpecialistInstallAckStore",
     reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
+    inbound_reservation: Any | None = None,
 ) -> Any:
+    # #663: ``inbound_reservation`` is the requesting engagement's SYNCHRONOUS
+    # ingress lease, built by the caller (which is the only party that knows
+    # the engagement) and taken at the tap-commit below. This module stays
+    # ignorant of engagements: it holds a duck-typed object with ``take()`` and
+    # ``release()`` and nothing else.
     # Task 7: thread `receipt_digest` (Task 8's bundled-plugin receipt digest)
     # into the identity so a bundled-plugin closure change forces
     # re-approval.
@@ -319,9 +325,33 @@ def prompt_specialist_install_consent(
                         component_checksum=inspection.root_digest, slug=inspection.slug,
                         receipt_digest=receipt_digest)
             meta["acked"] = True
+            # #663: AFTER the ack, never before it — this step must not
+            # reorder around the authoritative record write. Approve only:
+            # Deny dispatches no continuation, so there is nothing to reserve
+            # against. This is the one synchronous instant inside the window
+            # (the Telegram callback runs it with no await after
+            # ``BROKER.commit``), so the reservation exists before the finish
+            # hook's task has even been scheduled.
+            if inbound_reservation is not None:
+                inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
+            # #663: the reservation's release-guarantee. Wrapping the WHOLE
+            # body is what covers every arm that never reaches the delivery
+            # seam — deny, expiry, an unrecorded ack, a raising body,
+            # cancellation, a channel that is down. On the ordinary approve
+            # path the seam has already released it and this is a no-op; the
+            # lease is idempotent precisely so both owners can call it. An
+            # unreleased reservation would make a successful completion
+            # permanently impossible under INV-ENG-003.
+            try:
+                await _finish_inner(outcome)
+            finally:
+                if inbound_reservation is not None:
+                    inbound_reservation.release()
+
+        async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 await channel.edit_dm_message(

@@ -12427,29 +12427,28 @@ async def specialist_install_inspect(args: dict) -> dict:
             rec = registry.get(eng.id)
             if rec is None:
                 return False
-            # Sampled BEFORE the seam runs. The question this answers is the
-            # invariant's own — was the requesting engagement live AT TAP TIME
-            # — and a sample taken afterwards answers a different one badly: a
-            # terminal transition can win the registry lock during
-            # `_resume_and_ready`'s own `update_user_turn` await, after which
-            # the turn IS handed off and a post-sample would report the
-            # hand-off as a failure. The seam is still called for a record this
-            # sample already rejects: it owns the #649 inbound admission and
-            # re-resolves under its own lock, and leaving that call pattern
-            # alone keeps this diff off the shared hook body.
+            # #663: report what the SEAM decided, not a status sampled before
+            # it ran. The old pre-seam sample existed because a post-seam
+            # status read answers a different question badly — a terminal
+            # transition can win the registry lock during `_resume_and_ready`'s
+            # own `update_user_turn` await, after which the turn IS handed off
+            # and a post-sample reports that hand-off as a failure. The seam's
+            # own return has neither problem: it is the gate's decision, taken
+            # under the topic lock after the context rebuild.
             #
-            # What this result does and does not establish is stated once, in
-            # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
-            live = getattr(rec, "status", None) in ("active", "idle")
-            await deliver(
+            # It is a HAND-OFF report and nothing more — not a delivery
+            # receipt, not a turn outcome. The driver's admission fence runs
+            # later, inside the engagement's per-turn lock, and what that
+            # leaves open is stated once, in INV-SPEC-010
+            # (docs/architecture/specialist-lifecycle.md).
+            return bool(await deliver(
                 rec,
                 "The operator approved the install consent for "
                 f"specialist:{result.slug}. Continue the recipe now without "
                 "waiting for further input: call specialist_install_commit with "
                 "the staged values, then finish the recipe (wire delegation, "
                 "config_git_commit, casa_reload, emit_completion).",
-            )
-            return live
+            ))
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent auto-resume failed (slug=%s) — operator can nudge "
@@ -12467,6 +12466,9 @@ async def specialist_install_inspect(args: dict) -> dict:
             coordinator=CHALLENGES,
             channel=channel, chat_id=chat_id, operator_id=operator_id, inspection=result,
             acks=acks, reconcile_cb=_reconcile_cb,
+            # #663: taken synchronously at the tap-commit, released the instant
+            # the seam admits the continuation's ticket.
+            inbound_reservation=_continuation_inbound_reservation(channel, eng),
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("specialist install consent prompt failed to post")
@@ -12484,6 +12486,28 @@ async def specialist_install_inspect(args: dict) -> dict:
 # elsewhere), so this normally settles in one Telegram round-trip; the bound
 # exists so a wedged channel yields a structured failure, not a hung tool.
 _INSTALL_CONSENT_POST_TIMEOUT_S = 30.0
+
+
+def _continuation_inbound_reservation(channel: Any, engagement: Any) -> Any:
+    """#663: build the requesting engagement's SYNCHRONOUS ingress lease, or
+    ``None`` when there is nothing to reserve against.
+
+    Built HERE because this is the layer that knows the engagement — the
+    consent modules deliberately do not. Duck-typed on the channel so those
+    modules hold an object with ``take()`` and ``release()`` and nothing more.
+    ``None`` (no engagement in context, or a channel without the seam) means
+    the tap simply takes no reservation, which is exactly today's behaviour.
+    """
+    if engagement is None:
+        return None
+    factory = getattr(channel, "engagement_inbound_reservation", None)
+    if factory is None:
+        return None
+    try:
+        return factory(engagement.id)
+    except Exception:  # noqa: BLE001 — never abort an inspect over this
+        logger.debug("inbound reservation factory failed", exc_info=True)
+        return None
 
 
 async def _settle_install_consent_post(handle) -> "dict | None":
@@ -12945,18 +12969,18 @@ async def persona_install_inspect(args: dict) -> dict:
             rec = registry.get(eng.id)
             if rec is None:
                 return False
-            # Sampled BEFORE the seam — same as the specialist sibling above,
-            # and for the same reason; INV-PERS-011.
-            live = getattr(rec, "status", None) in ("active", "idle")
-            await deliver(
+            # #663: the seam's HAND-OFF decision, not a pre-seam status
+            # sample — same as the specialist sibling above, and for the same
+            # reason; INV-PERS-011 defers to INV-SPEC-010 for what it does and
+            # does not establish.
+            return bool(await deliver(
                 rec,
                 "The operator approved the install consent for persona "
                 f"{result.persona_id}. Continue the recipe now without waiting "
                 "for further input: call persona_install_commit with the staged "
                 "values, then finish the recipe (config_git_commit, casa_reload, "
                 "emit_completion).",
-            )
-            return live
+            ))
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent persona auto-resume failed (persona_id=%s) — "
@@ -12973,6 +12997,8 @@ async def persona_install_inspect(args: dict) -> dict:
             coordinator=CHALLENGES,
             channel=channel, chat_id=chat_id, operator_id=operator_id, inspection=result,
             acks=acks, reconcile_cb=_reconcile_cb,
+            # #663: see the specialist sibling.
+            inbound_reservation=_continuation_inbound_reservation(channel, eng),
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("persona install consent prompt failed to post")

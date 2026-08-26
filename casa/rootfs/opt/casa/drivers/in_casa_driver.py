@@ -79,6 +79,20 @@ class DriverNotAliveError(RuntimeError):
     """Raised when a turn is fed to a driver that has no open client."""
 
 
+class EngagementTerminalError(DriverNotAliveError):
+    """#690: the registry refused this turn's admission — the record is
+    terminal and must not be written to.
+
+    A SUBCLASS of :class:`DriverNotAliveError` on purpose. Every handler that
+    already treats "no live client" correctly treats this identically, which
+    is the whole reason the fence needs no new exit anywhere: the delivery
+    task's ``except Exception`` re-reads the record, sees a terminal status,
+    and takes its quiet branch — one bounded lost-inbound notice attempt while
+    the ticket is still held, then discharge. The distinct class buys a
+    distinct log line and a distinct assertion, nothing more.
+    """
+
+
 LAUNCH_MISSING_RESULT = "missing_result_message"
 """#678: the launch turn's response stream ended with no ``ResultMessage``.
 
@@ -163,6 +177,7 @@ class InCasaDriver(DriverProtocol):
         persist_session_id: SessionIdPersister | None = None,
         result_observer: "ResultObserver | None" = None,
         record_lookup: Callable[[str], Any] | None = None,
+        begin_turn_delivery: "Callable[[str], bool] | None" = None,
     ) -> None:
         self._topic_stream_factory = topic_stream_factory
         self._persist_session_id = persist_session_id
@@ -173,6 +188,13 @@ class InCasaDriver(DriverProtocol):
         # a clearance clamp can land during __aenter__, after the launcher's
         # own checks. None-safe for tests and legacy wiring.
         self._record_lookup = record_lookup
+        # #690: the registry's SYNCHRONOUS turn-admission decision
+        # (``EngagementRegistry.begin_turn_delivery``), injected rather than
+        # imported for the same reason ``record_lookup`` is — the driver stays
+        # pure and testable. ``None`` means NO FENCE, i.e. the pre-#690
+        # behaviour, matching the ``getattr(..., None)`` guard the claude_code
+        # driver already uses around the same seam.
+        self._begin_turn_delivery = begin_turn_delivery
         self._clients: dict[str, ClaudeSDKClient] = {}
         self._ctx_stack: dict[str, Any] = {}
         # Per-engagement asyncio.Lock guards query/receive_response sequencing:
@@ -199,6 +221,25 @@ class InCasaDriver(DriverProtocol):
         #              spool; a ticket alive at process death dies with it.
         self._inbound_unread: dict[str, dict[object, str]] = {}
         self._inbound_accepted: dict[str, dict[object, str]] = {}
+        # #663 INGRESS RESERVATION counters — the claude_code driver's
+        # ``_inbound_reservations`` / ``_inbound_command_reservations`` pair,
+        # for this driver's broker-driven system continuations. A reservation
+        # is taken at the SYNCHRONOUS tap-commit, before the finish-hook task
+        # has even been scheduled, and released the instant the text-bearing
+        # ticket exists.
+        #
+        # These have NO ATTACH STEP AND NO DETACH STEP, and that is a property
+        # the accessors below depend on rather than a coincidence. There is no
+        # spool to re-adopt, nothing in ``cancel`` pops them, and nothing else
+        # removes an engagement's entry except a release reaching zero — so an
+        # absent key is a POSITIVE zero ("no reservation is held"), never
+        # "the answer is unavailable". Adding a lifecycle pop here would
+        # reintroduce #740's shape by construction: a count silently zeroed by
+        # an event that is not a release. See
+        # ``test_c1_continuation_admission.py::
+        # TestTheReservationCounterHasNoAttachStep``.
+        self._inbound_reservations: dict[str, int] = {}
+        self._inbound_command_reservations: dict[str, int] = {}
         # #678: per-engagement observation of the LAUNCH turn's terminal
         # artifacts, written once by _deliver_turn (launch path only, so a
         # follow-up turn can never overwrite it) and POPPED by the launch
@@ -421,6 +462,71 @@ class InCasaDriver(DriverProtocol):
         veto re-check inside the transition and the dying-message
         disclosure."""
         return list(self._inbound_unread.get(engagement_id, {}).values())
+
+    # -- #663 ingress reservations ----------------------------------------
+
+    def reserve_inbound(self, engagement_id: str, *,
+                        command: bool = False) -> None:
+        """SYNCHRONOUS ingress reservation for a system continuation whose
+        text does not exist anywhere yet.
+
+        Taken inside a broker challenge's ``on_commit_sync`` — the one instant
+        after ``BROKER.commit()`` at which nothing has awaited, so the finish
+        hook's task has not been scheduled and no completion can have
+        interleaved. It is released at ``deliver_system_turn``'s entry, in the
+        same event-loop step that admits the text-bearing ticket, so the
+        completion gate never observes both populations empty.
+
+        ``command`` mirrors the claude_code signature so the three gate sites
+        read ONE contract. No production caller passes it on this driver —
+        every in_casa reservation is a system continuation, never a recognized
+        command the handler consumes itself — but the counter is maintained so
+        :meth:`inbound_message_reservations` cannot become a fabricated
+        disclosure the day one appears.
+        """
+        self._inbound_reservations[engagement_id] = (
+            self._inbound_reservations.get(engagement_id, 0) + 1)
+        if command:
+            self._inbound_command_reservations[engagement_id] = (
+                self._inbound_command_reservations.get(engagement_id, 0) + 1)
+
+    def release_inbound_reservation(self, engagement_id: str, *,
+                                    command: bool = False) -> None:
+        """Release one reservation, clamped at zero.
+
+        Release-guaranteed by its owner on EVERY exit — deny, TTL expiry,
+        ack/mint failure, exception, ``/new`` scope cancel, shutdown
+        ``cancel_all``, refused registration, post-never-settled, channel
+        down. An unreleased one would make a successful completion
+        permanently impossible under INV-ENG-003, which the terminal hook's
+        own rule forbids.
+        """
+        n = self._inbound_reservations.get(engagement_id, 0) - 1
+        if n <= 0:
+            self._inbound_reservations.pop(engagement_id, None)
+        else:
+            self._inbound_reservations[engagement_id] = n
+        if command:
+            c = self._inbound_command_reservations.get(engagement_id, 0) - 1
+            if c <= 0:
+                self._inbound_command_reservations.pop(engagement_id, None)
+            else:
+                self._inbound_command_reservations[engagement_id] = c
+
+    def inbound_reservations(self, engagement_id: str) -> int:
+        """The GATE read: a reservation vetoes a successful completion exactly
+        as an unread ticket does. Absent key = zero held (see the ledger
+        comment in ``__init__`` for why that is a positive answer here)."""
+        return self._inbound_reservations.get(engagement_id, 0)
+
+    def inbound_message_reservations(self, engagement_id: str) -> int:
+        """#664 DISCLOSURE projection — reservations minus the ones a
+        recognized command holds for itself. Clamped: a bookkeeping mismatch
+        must under-disclose, never fabricate a lost message."""
+        return max(
+            0,
+            self._inbound_reservations.get(engagement_id, 0)
+            - self._inbound_command_reservations.get(engagement_id, 0))
 
     def launch_turn_incomplete(self, engagement_id: str) -> str:
         """SYNCHRONOUS: POP the #678 launch-turn observation.
@@ -651,8 +757,53 @@ class InCasaDriver(DriverProtocol):
         token = engagement_var.set(engagement)
         try:
             async with lock:
+                # #690 — the in_casa half of INV-ENG-009, and the ONLY point
+                # at which it can be made. Everything from here to
+                # ``client.query`` below is synchronous, so no other coroutine
+                # on casa-main's loop — no inbound MCP tool call, no terminal
+                # transition — can run between the registry's admission and
+                # the hand-off. Placing this beside the ``is_alive`` check in
+                # ``send_user_turn`` instead would be followed by the lock
+                # acquisition above, which AWAITS, and reopens exactly the
+                # window this closes.
+                #
+                # The guarantee is stated at its true strength: for
+                # claude_code the admission precedes the first BYTE, because
+                # the byte leaves in a synchronous ``os.write``. Here the
+                # hand-off is ``await client.query(prompt)``, whose internals
+                # may suspend before the SDK transport write — so what this
+                # fences is that no CASA coroutine runs in between, which is
+                # what stops a terminal transition interleaving.
+                #
+                # Armed by ``inbound_token``, the SAME condition the
+                # ``_accept_inbound`` call below uses, so fence and acceptance
+                # cannot diverge: ``send_user_turn`` always holds a ticket
+                # (seam-passed or self-admitted), and ``start()``'s LAUNCH
+                # prompt holds none. Excluding the launch turn is deliberate —
+                # a refusal there would raise into the launch owners'
+                # ``mark_error`` / ``_report_launch_death`` machinery, telling
+                # the operator a launch died for an engagement a racing writer
+                # (or their own /cancel) just ended, which INV-ENG-013
+                # forbids. The launch turn keeps INV-ENG-011's owner.
+                #
+                # NOT wrapped in ``try``: "the fence could not answer" is not
+                # "deliver". A raise here must fail the turn loudly into the
+                # delivery task's existing failure ownership rather than be
+                # swallowed into a write to a dead engagement — the opposite
+                # polarity from the completion GATES, which fail open because
+                # their failure mode is wedging a termination forever.
+                if (inbound_token is not None
+                        and self._begin_turn_delivery is not None
+                        and not self._begin_turn_delivery(engagement.id)):
+                    raise EngagementTerminalError(
+                        f"engagement {engagement.id[:8]} is terminal — "
+                        "not delivering a turn"
+                    )
                 # #649: unread -> accepted, synchronously, before the
                 # hand-off — see _accept_inbound for why not after query().
+                # AFTER the fence: a refused turn leaves its ticket in the
+                # unread population the terminal snapshot already disclosed,
+                # and the client never accepted anything.
                 if inbound_token is not None:
                     self._accept_inbound(engagement.id, inbound_token)
                 await client.query(prompt)

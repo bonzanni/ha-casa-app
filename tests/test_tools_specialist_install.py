@@ -1199,6 +1199,9 @@ async def test_reconcile_cb_resumes_the_captured_engagement(monkeypatch, tmp_pat
 
     async def _deliver(r, text):
         delivered.append((r, text))
+        # C1/#663: the production seam reports its HAND-OFF decision. A double
+        # returning None would read as a refusal and pass silently.
+        return True
 
     _wire_inspect(monkeypatch, tmp_path,
                   channel=_resume_channel(registry=registry, deliver=_deliver))
@@ -1869,6 +1872,10 @@ async def test_662_a_handed_off_turn_is_not_reported_as_a_failure(
         # it — exactly the window `update_user_turn` opens.
         delivered.append((r, text))
         r.status = "completed"
+        # C1/#663: the real seam returns True HERE — it returns as soon as the
+        # delivery task exists, and the terminal landed after that. Reporting
+        # the hand-off is what keeps this case from being called a failure.
+        return True
 
     _wire_inspect(monkeypatch, tmp_path, channel=_resume_channel(
         registry=SimpleNamespace(get=lambda eid: rec), deliver=_deliver))

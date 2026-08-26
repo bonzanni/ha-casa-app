@@ -108,7 +108,16 @@ provenance is an engagement routes through the same DM authorization challenge, 
 additionally binds the engagement id, so an approval minted inside one engagement can never
 consume a matching call in another. Identity for the engagement path comes from the live
 engagement record (its own operator DM), and on approval the challenge resumes that
-engagement rather than a resident continuation. A non-authorizable engagement record (not an
+engagement rather than a resident continuation. Both taps resume it — a denial dispatches its
+own continuation so the engagement stops retrying — and both take the engagement's ingress
+reservation at the tap's synchronous commit step, before either the approval edit or the
+dispatch. That ordering matters here specifically: this arm awaits a message edit *before* it
+dispatches, so without the reservation a successful completion committing during that round
+trip would take the engagement terminal while the continuation still had no existence anywhere.
+The edit still precedes the dispatch — the reservation makes that order harmless rather than
+moving it — and if the dispatch does not hand off, the DM is corrected to say so.
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns the
+reservation's lifetime. A non-authorizable engagement record (not an
 active specialist with a topic and a reachable operator) still denies, fail-closed, before any
 grant lookup.
 

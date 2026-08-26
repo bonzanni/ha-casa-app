@@ -4227,6 +4227,12 @@ async def main() -> None:
         # #369: last-instant launch gate — start() re-reads the live record
         # before delivering the initial prompt.
         record_lookup=engagement_registry.get,
+        # #690: the in_casa half of INV-ENG-009. The registry's SYNCHRONOUS
+        # admission decision, called inside the driver's per-turn lock
+        # immediately before the client hand-off. Same seam claude_code has
+        # used since #588; injected so the driver stays importable without a
+        # registry.
+        begin_turn_delivery=engagement_registry.begin_turn_delivery,
     )
 
     # claude_code driver: send_to_topic doubles as the live TopicStreamRelay's

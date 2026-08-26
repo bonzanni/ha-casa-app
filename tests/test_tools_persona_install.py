@@ -586,6 +586,9 @@ async def test_persona_reconcile_cb_resumes_the_captured_engagement(
 
     async def _deliver(r, text):
         delivered.append((r, text))
+        # C1/#663: the production seam reports its HAND-OFF decision; a double
+        # returning None would read as a refusal and pass silently.
+        return True
 
     channel = SimpleNamespace(
         chat_id="123", _engagement_registry=registry, deliver_system_turn=_deliver)

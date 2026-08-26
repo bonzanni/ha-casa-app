@@ -36,6 +36,14 @@ bounded failure notice (the engagements document owns the ticket lifecycle, and
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns what the
 gate does with a ticket it finds).
 
+A continuation dispatched from an operator's tap is admitted the same way, but its ticket
+cannot be the first thing that exists for it: the tap commits before the seam runs. That
+interval is covered by an ingress reservation taken at the tap and handed over to the ticket
+in the seam's own synchronous entry. The seam returns whether it handed the turn off — false
+when the resume gate refused or shutdown had begun — which is what the tap's operator-facing
+message is selected from. It is a hand-off report and not an admission receipt; the driver's
+admission is taken later, under the engagement's per-turn lock.
+
 **Update dispatch is concurrent; ordering is re-imposed per scope, not globally.** Handlers
 run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement
 topics re-serialize under a per-topic handler lock, and direct messages re-serialize per
@@ -310,9 +318,12 @@ units but sends unformatted text only.
 - `casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer`
 - `casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged`
 - `casa/rootfs/opt/casa/verdict_broker.py::VerdictBroker`
+- `casa/rootfs/opt/casa/channels/telegram.py::_InboundReservation`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.engagement_inbound_reservation`
 
 **Tests**
 - `tests/test_telegram_update_handler.py`
+- `tests/test_c1_continuation_admission.py`
 - `tests/test_telegram_dm_settle.py`
 - `tests/test_tg_richtext_remnants.py`
 - `tests/test_verdict_broker.py`

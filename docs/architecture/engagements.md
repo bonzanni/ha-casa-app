@@ -64,7 +64,23 @@ subject.** The allocation, the ownership it implies, and the boundary built on i
 
 ## Contracts & invariants
 
-**INV-ENG-009**: A `claude_code` turn is admitted before its first byte reaches the engagement — a record found idle is `active` by then, and a terminal record is not written to at all.
+**INV-ENG-009**: A turn is admitted by the registry immediately before it reaches the engagement, with no suspension point in between — a record found idle is `active` by then, and a terminal record is not written to at all. For `claude_code` the admission precedes the first BYTE; for `in_casa` it precedes the client HAND-OFF, and covers follow-up turns only — the launch turn is INV-ENG-011's. A refused turn is never reported as delivered and never told twice.
+
+**One decision, asked at two different instants.** The registry answers it synchronously and
+identically for both drivers — terminal refuses, `idle` delivers and becomes `active` without
+re-stamping the last-turn time, `active` delivers, and an unknown record delivers rather than
+refusing. What differs is *where the answer can be placed*, and that placement is what makes
+the invariant's two halves differ in strength: for `claude_code` there is an instant at which
+the engagement has provably seen nothing, and for `in_casa` there is not.
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) carries that
+account, next to the driver inbound surface it belongs to.
+
+The `in_casa` admission covers FOLLOW-UP turns only, which is a decision rather than an
+omission. A refusal on the launch turn would surface through the launch owners' error-marking
+and death-reporting path, telling the operator a launch died for an engagement that a racing
+writer — or their own cancellation — had just deliberately ended, which INV-ENG-013 forbids;
+and the only writer racing that window is the coroutine that created the record moments
+earlier. The launch turn's owner stays INV-ENG-011.
 
 **INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record or operator-visible topic output — or the launch reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never retains to the shared memory bank.
 
@@ -189,9 +205,10 @@ the two, it loses one of them.
 **It is one bounded attempt, not an ordering guarantee.** Nothing orders this notice against
 a concurrent finalization's topic operations, so a terminal writer that wins its transition
 after the settled read can paint and close first, leaving the notice below the paint or
-failing against a closed topic. Ordering it would need turn admission for `in_casa` turns,
-which does not exist — INV-ENG-009 is `claude_code` only — and is deliberately not built
-here.
+failing against a closed topic. `in_casa` turn admission now exists, and it does not close
+this: admission decides whether a turn is *delivered*, not where a notice *lands*. Ordering
+the notice would additionally require the finalization's own topic operations to be sequenced
+against it, which is not built here.
 
 ## Failure behavior
 

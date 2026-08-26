@@ -130,8 +130,14 @@ class TestLedger:
         assert type(drv.inbound_unread_texts(rec.id)) is list
         assert type(drv.inbound_in_flight_texts(rec.id)) is list
         assert not hasattr(drv, "inbound_in_flight_blocking")
-        assert not hasattr(drv, "inbound_reservations")
         assert not hasattr(drv, "force_completion_turn_boundary")
+        # C1/#663: the reservation accessors are no longer absent — the
+        # continuation window needs something for the gate to be vetoed on.
+        # What the gate demands of them is unchanged and pinned here: STRICT
+        # int, because the reads are `type(x) is int` and a duck driver must
+        # read as "nothing held" rather than fabricate a depth.
+        assert type(drv.inbound_reservations(rec.id)) is int
+        assert type(drv.inbound_message_reservations(rec.id)) is int
 
 
 # ===========================================================================
