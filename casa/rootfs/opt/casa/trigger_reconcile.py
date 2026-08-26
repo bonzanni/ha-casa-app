@@ -44,6 +44,10 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
 import plugin_triggers
+# Aliased: the reconcile functions take a `trigger_registry` INSTANCE
+# parameter that shadows the module name (#606 needs the module's
+# ROUTING_UNAVAILABLE sentinel from inside them).
+import trigger_registry as trigger_registry_mod
 import webhook_auth
 from plugin_triggers import ack_identity
 
@@ -159,6 +163,12 @@ class DesiredTriggers:
     # ever name it. Empty under an invalid registry, which is what makes the
     # fail-closed return above readable as such by a gate.
     observed: set[str] = field(default_factory=set)
+    # #606: did an AUTHORITATIVE computation produce this result? False until
+    # the invalid-registry fail-closed return below has been passed. Without
+    # it, an unreadable registry returns NORMALLY with an empty overlay and the
+    # reconciler's success branch publishes `{}` — a positive claim that
+    # nothing should route, made by a pass that read nothing.
+    registry_valid: bool = False
 
 
 def compute_desired(
@@ -181,6 +191,7 @@ def compute_desired(
         # Fail-closed: an invalid registry routes NO plugin ingress (its own
         # registry-stage issues surface via the resolver / health pass).
         return out
+    out.registry_valid = True
     out.observed = {rp.name for rp in all_res.plugins}
 
     # Assignment authority (target-scoped): plugin p may route to
@@ -447,7 +458,8 @@ async def reconcile_plugin_triggers(
         return (desired, union, union_ok, candidates, peer_unknown,
                 one_generation(pinned))
 
-    async with _RECONCILE_LOCK:
+    try:
+      async with _RECONCILE_LOCK:
         try:
             (desired, callback_pending, callback_ok, setup_cands,
              peer_unknown, one_gen) = await asyncio.to_thread(_compute_and_mint)
@@ -458,9 +470,21 @@ async def reconcile_plugin_triggers(
             # ingress — resident triggers are untouched — then propagate so
             # the caller logs/surfaces it; the next successful reconcile
             # restores the valid set.
-            trigger_registry.replace_plugin_overlay({})
+            #
+            # #606: the sentinel, not `{}`. Both close ingress; only `{}` is a
+            # CLAIM that nothing should route, and publishing that claim from a
+            # pass that computed nothing is what let the health regeneration
+            # below report all-clear while ingress was shut.
+            trigger_registry.replace_plugin_overlay(
+                trigger_registry_mod.ROUTING_UNAVAILABLE)
             raise
-        trigger_registry.replace_plugin_overlay(desired.overlay)
+        # #606: only an authoritative computation may publish a map. An
+        # invalid registry returns NORMALLY with an empty overlay, and
+        # publishing that would clear the sentinel without anything having been
+        # read.
+        trigger_registry.replace_plugin_overlay(
+            desired.overlay if desired.registry_valid
+            else trigger_registry_mod.ROUTING_UNAVAILABLE)
         # v0.112.0 (impl r5, Terra): the overlay is now live — wake the
         # setup-episode worker so any pending episode gated on a
         # previously-down route dispatches. This fires on EVERY reconcile
@@ -509,10 +533,17 @@ async def reconcile_plugin_triggers(
                 acks=acks, secrets_dir=secrets_dir, resolver=resolver,
                 global_secret_ok=global_secret_ok,
                 nonce_by_identity=nonce_by_identity)
-    if regen_health:
-        # After the lock: the overlay + persisted ack are already live, so the
-        # fresh health pass sees the routed (no-longer-pending) state.
-        await _regen_health_safe()
+    finally:
+        # #606: on BOTH exits. The raise path used to skip this entirely — the
+        # regeneration sat after the `async with`, and the exception left over
+        # it — so an approve-time reconcile that failed left the acked trigger's
+        # stale `trigger_pending_ack` row standing with nothing to clear it.
+        # Mirrors the event twin (event_reconcile.py). The `finally` is OUTSIDE
+        # the `async with`, which is what preserves the lock ORDER:
+        # _regen_health_safe takes tools._plugin_tools_guard only after
+        # _RECONCILE_LOCK is released, never nested inside it.
+        if regen_health:
+            await _regen_health_safe()
     return desired.issues
 
 
@@ -992,5 +1023,83 @@ def current_issues() -> list:
     unrelated refreshes. Never raises (health must always regenerate); a
     failure degrades to no extras. The setup gate uses :func:`issue_state`
     instead, because for that consumer "could not compute" must not read as
-    "nothing is wrong"."""
-    return issue_state()[1]
+    "nothing is wrong".
+
+    #606: an ``ok=False`` degradation used to reach here as ``[]`` — "nothing is
+    wrong" — while ingress was shut. It now carries the two unavailable rows.
+    """
+    # ONE issue_state() call, and its result feeds BOTH the state-row decision
+    # and the returned issues. Computing it twice let the guard pass on a first
+    # call that succeeded while the second silently failed to [] — zero rows,
+    # from a runtime whose computation had just failed (review r1 S2).
+    state = issue_state()
+    return _unavailable_rows(state) + list(state.issues)
+
+
+def _live_registry():
+    """The registry the running system actually routes through, or None. The
+    tests that pin the health rows below MUST install it here — a registry
+    handed only to a reconciler is not the one this consumer reads, and a test
+    that does that reports green while measuring nothing."""
+    import agent as agent_mod
+    runtime = getattr(agent_mod, "active_runtime", None)
+    return getattr(runtime, "trigger_registry", None) if runtime else None
+
+
+def _unavailable_rows(state=None) -> "list[dict]":
+    """#606: the two independent honesty rows, as plain PluginIssue-shaped
+    dicts — never PluginIssue instances, so they are concatenated DIRECTLY into
+    write_report's issues= and never routed through the attribute-only
+    _add()/_rediscoverable() helpers, which would degrade a dict row's fields to
+    None instead of raising. Same contract as the event sibling.
+
+    They are separate rows because their clearing predicates are independent.
+    ``trigger_routing_unavailable`` is an APPLIED-state fact: the live overlay carries no
+    authoritative computation, so plugin ingress is shut. ``trigger_state_unavailable`` is a
+    RECOMPUTATION fact: a fresh compute for this health pass could not run. One
+    can be true without the other — a one-shot failure publishes the sentinel
+    and then recomputes fine, which is one row, not two.
+
+    The state row is gated on a live runtime WITH role configs, because
+    issue_state() legitimately reports ok=False before the runtime is up and
+    crying wolf on every boot is how a real row stops being read. Never raises:
+    a probe that explodes is treated as unavailable, which is the fail-closed
+    direction for a disclosure.
+    """
+    rows: list = []
+    try:
+        import trigger_registry as _treg          # noqa: F401  (identity only)
+        registry = _live_registry()
+        if registry is not None and registry.plugin_overlay_unavailable():
+            rows.append(_health_row("trigger_routing_unavailable"))
+    except Exception:  # noqa: BLE001
+        logger.exception("trigger routing availability probe failed")
+        rows.append(_health_row("trigger_routing_unavailable"))
+    try:
+        import agent as agent_mod
+        runtime = getattr(agent_mod, "active_runtime", None)
+        if runtime is not None and getattr(runtime, "role_configs", None):
+            if not (state if state is not None else issue_state()).ok:
+                rows.append(_health_row("trigger_state_unavailable"))
+    except Exception:  # noqa: BLE001
+        logger.exception("trigger state availability probe failed")
+        rows.append(_health_row("trigger_state_unavailable"))
+    return rows
+
+
+def _health_row(reason_code: str):
+    """A registry-GLOBAL health row (``name="*"``, the established spelling for
+    one — see plugin_boot's ``registry_invalid``).
+
+    A ``PluginIssue``, not the plain dict the EVENT sibling emits. That sibling
+    uses dicts because its rows would otherwise pass through
+    ``_regenerate_plugin_health``'s attribute-only ``_add``/``_rediscoverable``
+    helpers, which degrade a dict's fields to None rather than raising. These
+    rows do not: this module's issues are concatenated straight into
+    ``write_report``'s ``issues=``, and every other row this function's callers
+    return is already a ``PluginIssue``. Matching the module's own type keeps a
+    consumer that reads ``.reason_code`` working, which a dict would silently
+    break."""
+    from plugin_registry import PluginIssue
+    return PluginIssue(name="*", target=None, stage="triggers",
+                       reason_code=reason_code, artifact_id=None)

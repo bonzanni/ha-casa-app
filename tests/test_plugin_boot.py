@@ -36,9 +36,13 @@ def _wire(monkeypatch, tmp_path, *, valid=True, import_issues=None,
                         lambda: ResolutionResult(registry_valid=valid,
                                                  issues=list(resolve_issues or [])))
 
-    def _write(*, issues, warnings, path=None):
+    def _write(*, issues, warnings, path=None, prune=True):
         reports["issues"] = list(issues)
         reports["warnings"] = list(warnings)
+        # #669: recorded, not merely tolerated — a double that silently
+        # accepted `prune` would let the boot writers stop passing it without
+        # any test noticing.
+        reports.setdefault("prune", []).append(prune)
     monkeypatch.setattr(plugin_health, "write_report", _write)
     return reports
 
@@ -132,3 +136,83 @@ def test_boot_exception_returns_zero_with_boot_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin_store, "import_bundle", _boom)
     assert plugin_boot.main() == 0
     assert any(i.reason_code == "boot_exception" for i in reports["issues"])
+
+
+# --- #669: a partial boot write must not clear a notification mark ----------
+#
+# Red case specified by the drive review round (redcase-specify-sol, run
+# 2026-08-25 cluster P). It pins the INVARIANT, not the parameter that
+# implements it: a fingerprint marked notified must SURVIVE boot's
+# resolver-only write and be cleared only by an authoritative full
+# regeneration that genuinely no longer carries the row.
+#
+# The health writer here is the REAL `plugin_health.write_report` — the
+# monkeypatch is a forwarding adapter that only redirects the path, so every
+# transition executes production code. It forwards `**kwargs` rather than a
+# fixed signature so that on the pre-fix tree no argument that does not exist
+# yet is ever synthesized: the test fails on a fingerprint COUNT, never on a
+# TypeError.
+
+@pytest.mark.parametrize("writer", ["normal", "exception"])
+def test_boot_partial_health_write_preserves_standing_mark_and_exposes_new_issue(
+        monkeypatch, tmp_path, writer):
+    path = tmp_path / "health.json"
+    registry_path = tmp_path / "registry.json"
+    real_write_report = plugin_health.write_report
+
+    # A runtime-class row boot can never observe: only a full regeneration
+    # (which runs verify over every registered plugin) produces it.
+    x = PluginIssue(name="plg-a", target="resident:assistant", stage="verify",
+                    reason_code="secret_missing")
+    fp_x = plugin_health.fingerprint(x)
+
+    r0 = real_write_report(issues=[x], warnings=[], path=path,
+                           registry_path=registry_path)
+    plugin_health.mark_notified([fp_x], path=path,
+                                generation=r0["generation"])
+    assert len(plugin_health.load_report(path)["notified_fingerprints"]) == 1
+
+    # A genuinely NEW problem, present at this boot and never announced.
+    if writer == "normal":
+        y = PluginIssue(name="plg-b", target=None, stage="resolve",
+                        reason_code="artifact_missing")
+        _wire(monkeypatch, tmp_path, resolve_issues=[y])
+    else:
+        # The degraded exception writer at plugin_boot.py:115 — its sole row
+        # is the boot_exception one it appends itself.
+        _wire(monkeypatch, tmp_path)
+        monkeypatch.setattr(plugin_store, "import_bundle",
+                            lambda root: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    def write_to_test_path(*, issues, warnings, **kwargs):
+        kwargs.pop("path", None)
+        return real_write_report(issues=issues, warnings=warnings, path=path,
+                                 registry_path=registry_path, **kwargs)
+    monkeypatch.setattr(plugin_health, "write_report", write_to_test_path)
+
+    assert plugin_boot.main() == 0
+    partial = plugin_health.load_report(path)
+    # X's mark SURVIVED a write that could not have observed X resolving...
+    assert len(partial["notified_fingerprints"]) == 1
+    # ...and the genuinely new row is still announceable.
+    assert len(plugin_health.new_fingerprints(partial)) == 1
+
+    # The authoritative full regeneration carries X again: unchanged, so it is
+    # announced no second time, while only the new row remains new.
+    monkeypatch.setattr(plugin_health, "write_report", real_write_report)
+    y_full = PluginIssue(name="plg-b", target=None, stage="resolve",
+                         reason_code="artifact_missing")
+    full = real_write_report(issues=[x, y_full], warnings=[], path=path,
+                             registry_path=registry_path)
+    assert len(full["notified_fingerprints"]) == 1
+    assert len(plugin_health.new_fingerprints(full)) == 1
+
+    # The converse, in the same sequence: an AUTHORITATIVE write that no longer
+    # carries X must still clear its mark, and a recurrence is newly
+    # announceable. Without this half, "never prune" would also pass.
+    cleared = real_write_report(issues=[], warnings=[], path=path,
+                                registry_path=registry_path)
+    assert len(cleared["notified_fingerprints"]) == 0
+    recurred = real_write_report(issues=[x], warnings=[], path=path,
+                                 registry_path=registry_path)
+    assert len(plugin_health.new_fingerprints(recurred)) == 1

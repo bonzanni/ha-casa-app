@@ -51,6 +51,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import plugin_callbacks
+# Aliased: the reconcile functions take a `trigger_registry` INSTANCE
+# parameter that shadows the module name (#606).
+import trigger_registry as trigger_registry_mod
 # ONE shape for both halves of the setup gate (#457): the gate reads a trigger
 # state and a callback state and must apply the identical rule to each, so they
 # share the type rather than each declaring their own. Safe at module level —
@@ -186,6 +189,8 @@ class DesiredCallbacks:
     # ``trigger_reconcile.DesiredTriggers.observed``, which carries the full
     # reasoning. Empty under an invalid registry.
     observed: set[str] = field(default_factory=set)
+    # #606: the mirror of ``DesiredTriggers.registry_valid`` — see there.
+    registry_valid: bool = False
 
 
 def compute_desired(
@@ -210,6 +215,7 @@ def compute_desired(
         # nothing is pruned — a membership set derived from a failed load
         # would drop every consent.
         return out
+    out.registry_valid = True
     out.observed = {rp.name for rp in all_res.plugins}
     # Opportunistic prune only on a CLEAN pass: an artifact checksum hiccup or
     # an unreadable manifest drops that plugin from the resolution, and
@@ -706,7 +712,8 @@ async def reconcile_plugin_callbacks(
         return (computed, union, union_ok, candidates, peer_unknown,
                 _tr.one_generation(pinned))
 
-    async with _RECONCILE_LOCK:
+    try:
+      async with _RECONCILE_LOCK:
         try:
             (desired, union_pending, union_ok, setup_cands,
              peer_unknown, one_gen) = await asyncio.to_thread(_compute)
@@ -718,7 +725,11 @@ async def reconcile_plugin_callbacks(
             # reconcile restores the valid set. The spool files are left
             # untouched — they are advisory and the closed overlay already
             # 404s every deposit.
-            trigger_registry.replace_callback_overlay({})
+            #
+            # #606: the sentinel, not `{}` — see the trigger mirror. Both close
+            # ingress; only `{}` claims that nothing SHOULD route.
+            trigger_registry.replace_callback_overlay(
+                trigger_registry_mod.ROUTING_UNAVAILABLE)
             raise
 
         # One paired marker transaction driven by DURABLE on-disk truth: the
@@ -729,7 +740,10 @@ async def reconcile_plugin_callbacks(
         # stale marker (the r2/r3 finding this replaces).
         republish = await asyncio.to_thread(
             _reconcile_markers_pre_swap, spool, desired)
-        trigger_registry.replace_callback_overlay(desired.overlay)
+        # #606: only an authoritative computation may publish a map.
+        trigger_registry.replace_callback_overlay(
+            desired.overlay if desired.registry_valid
+            else trigger_registry_mod.ROUTING_UNAVAILABLE)
         await asyncio.to_thread(
             _publish_markers_post_swap, spool, desired, republish)
 
@@ -779,8 +793,12 @@ async def reconcile_plugin_callbacks(
                 channel_manager=channel_manager,
                 acks=acks, spool=spool, resolver=resolver,
                 entries=entries, nonce_by_identity=nonce_by_identity)
-    if regen_health:
-        await _regen_health_safe()
+    finally:
+        # #606: on BOTH exits, and OUTSIDE the `async with` so the lock order
+        # (_RECONCILE_LOCK released before tools._plugin_tools_guard) is
+        # preserved. See the trigger mirror for the full reasoning.
+        if regen_health:
+            await _regen_health_safe()
     return desired.issues
 
 
@@ -1046,5 +1064,83 @@ def current_issues() -> list:
     """Fresh, side-effect-free callback issues for health regeneration —
     recomputed on EVERY ``_regenerate_plugin_health`` pass so they survive
     unrelated refreshes. Never raises (health must always regenerate). The
-    setup gate uses :func:`issue_state` instead — see its docstring."""
-    return issue_state()[1]
+    setup gate uses :func:`issue_state` instead — see its docstring.
+
+    #606: an ``ok=False`` degradation used to reach here as ``[]`` — "nothing is
+    wrong" — while ingress was shut. It now carries the two unavailable rows.
+    """
+    # ONE issue_state() call, and its result feeds BOTH the state-row decision
+    # and the returned issues. Computing it twice let the guard pass on a first
+    # call that succeeded while the second silently failed to [] — zero rows,
+    # from a runtime whose computation had just failed (review r1 S2).
+    state = issue_state()
+    return _unavailable_rows(state) + list(state.issues)
+
+
+def _live_registry():
+    """The registry the running system actually routes through, or None. The
+    tests that pin the health rows below MUST install it here — a registry
+    handed only to a reconciler is not the one this consumer reads, and a test
+    that does that reports green while measuring nothing."""
+    import agent as agent_mod
+    runtime = getattr(agent_mod, "active_runtime", None)
+    return getattr(runtime, "trigger_registry", None) if runtime else None
+
+
+def _unavailable_rows(state=None) -> "list[dict]":
+    """#606: the two independent honesty rows, as plain PluginIssue-shaped
+    dicts — never PluginIssue instances, so they are concatenated DIRECTLY into
+    write_report's issues= and never routed through the attribute-only
+    _add()/_rediscoverable() helpers, which would degrade a dict row's fields to
+    None instead of raising. Same contract as the event sibling.
+
+    They are separate rows because their clearing predicates are independent.
+    ``callback_routing_unavailable`` is an APPLIED-state fact: the live overlay carries no
+    authoritative computation, so plugin ingress is shut. ``callback_state_unavailable`` is a
+    RECOMPUTATION fact: a fresh compute for this health pass could not run. One
+    can be true without the other — a one-shot failure publishes the sentinel
+    and then recomputes fine, which is one row, not two.
+
+    The state row is gated on a live runtime WITH role configs, because
+    issue_state() legitimately reports ok=False before the runtime is up and
+    crying wolf on every boot is how a real row stops being read. Never raises:
+    a probe that explodes is treated as unavailable, which is the fail-closed
+    direction for a disclosure.
+    """
+    rows: list = []
+    try:
+        import trigger_registry as _treg          # noqa: F401  (identity only)
+        registry = _live_registry()
+        if registry is not None and registry.callback_overlay_unavailable():
+            rows.append(_health_row("callback_routing_unavailable"))
+    except Exception:  # noqa: BLE001
+        logger.exception("callback routing availability probe failed")
+        rows.append(_health_row("callback_routing_unavailable"))
+    try:
+        import agent as agent_mod
+        runtime = getattr(agent_mod, "active_runtime", None)
+        if runtime is not None and getattr(runtime, "role_configs", None):
+            if not (state if state is not None else issue_state()).ok:
+                rows.append(_health_row("callback_state_unavailable"))
+    except Exception:  # noqa: BLE001
+        logger.exception("callback state availability probe failed")
+        rows.append(_health_row("callback_state_unavailable"))
+    return rows
+
+
+def _health_row(reason_code: str):
+    """A registry-GLOBAL health row (``name="*"``, the established spelling for
+    one — see plugin_boot's ``registry_invalid``).
+
+    A ``PluginIssue``, not the plain dict the EVENT sibling emits. That sibling
+    uses dicts because its rows would otherwise pass through
+    ``_regenerate_plugin_health``'s attribute-only ``_add``/``_rediscoverable``
+    helpers, which degrade a dict's fields to None rather than raising. These
+    rows do not: this module's issues are concatenated straight into
+    ``write_report``'s ``issues=``, and every other row this function's callers
+    return is already a ``PluginIssue``. Matching the module's own type keeps a
+    consumer that reads ``.reason_code`` working, which a dict would silently
+    break."""
+    from plugin_registry import PluginIssue
+    return PluginIssue(name="*", target=None, stage="callbacks",
+                       reason_code=reason_code, artifact_id=None)

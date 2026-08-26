@@ -10815,9 +10815,11 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
     res = plugin_registry.resolve_all()
     reg = load_registry()
     entry_targets: dict = {}
+    entry_artifacts: dict = {}
     if reg.valid:
         for e in reg.entries:
             entry_targets[e.get("name")] = list(e.get("targets") or [])
+            entry_artifacts[e.get("name")] = e.get("artifact_id")
 
     def _rediscoverable(issue) -> bool:
         if getattr(issue, "stage", None) != "verify":
@@ -10915,6 +10917,39 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
     try:
         import plugin_setup_episodes
         for row in plugin_setup_episodes.health_issues():
+            # #653: a removed plugin's failed episode is durable state, and
+            # merging it unfiltered left it standing as a LIVE health issue —
+            # and a notification — for a plugin no longer installed, until the
+            # 72h decay. Filter to registered names.
+            #
+            # The filter is gated on the SAME `reg.valid` that already gated
+            # `entry_targets` above, and reuses that very map. That is the
+            # fail-open guarantee, structurally rather than as a second
+            # condition that could drift: when the registry read is torn or
+            # invalid, entry_targets is empty AND this branch does not run, so
+            # a bad read can never erase every setup row. The membership test
+            # is only ever applied to a set a valid registry produced. Nothing
+            # else here is filtered — not the resolver issues, the extras, the
+            # runtime rows, the trigger/callback/event rows, nor the episode
+            # HISTORY the status tool reads separately.
+            if reg.valid:
+                name = row.get("plugin") or ""
+                if name not in entry_targets:
+                    continue
+                # #653 r1: and it must be THIS artifact's obligation. A
+                # terminal `failed` row survives both removal and reinstall
+                # (supersession only ever restages a pending/dispatched one),
+                # so without this a plugin removed after a failed setup and
+                # reinstalled at a NEW artifact within the decay window had the
+                # OLD artifact's failure re-enter health — and, because removal
+                # pruned its notification mark, announced afresh as though the
+                # new install had failed. Fail open on either side being
+                # unattributable: a row or an entry with no artifact_id cannot
+                # be judged stale, so it stands.
+                want = entry_artifacts.get(name)
+                got = row.get("artifact_id")
+                if want and got and want != got:
+                    continue
             # #554: health_issues() emits the episode's last_error as `detail`
             # and this call site dropped it, so a failed setup reached the
             # operator as a bare reason code while the explanation sat unread.
@@ -12959,11 +12994,20 @@ async def trigger_ack_revoke(args: dict) -> dict:
             # must not depend on resolver health. Match on the entry's OWN
             # plugin attribution (Sol shipB-r2 P1-3), with the name prefix
             # as belt-and-braces for any entry lacking it.
-            registry.replace_plugin_overlay({
-                eff: entry
-                for eff, entry in registry.plugin_overlay_snapshot().items()
-                if entry.get("plugin", "") != name
-                and not eff.startswith(prefix)})
+            #
+            # #606: under the routing sentinel there is nothing to sweep —
+            # plugin ingress is ALREADY closed — and sweeping anyway would be
+            # actively wrong twice over: `.items()` on the sentinel raises, and
+            # deriving `{}` from it would publish an authoritative "nothing
+            # should route" built from state this process never had.
+            import trigger_registry as _treg
+            snapshot = registry.plugin_overlay_snapshot()
+            if snapshot is not _treg.ROUTING_UNAVAILABLE:
+                registry.replace_plugin_overlay({
+                    eff: entry
+                    for eff, entry in snapshot.items()
+                    if entry.get("plugin", "") != name
+                    and not eff.startswith(prefix)})
         try:
             await trigger_reconcile.reconcile_from_runtime(
                 runtime, prompt=False)
@@ -13340,17 +13384,52 @@ def _tool_plugin_status() -> dict:
     broadly, since it holds secrets.
 
     Each half degrades independently: a corrupt report must not cost the
-    operator the episode history that would have explained the failure."""
+    operator the episode history that would have explained the failure.
+
+    #677: damage is DISCLOSED, never presented as health. `load_report` returns
+    None for a report that is absent, unreadable, unparseable, or valid JSON
+    that is not an object — and `or {}` collapsed all four into `standing: []`,
+    byte-identical to a healthy report with no problems. So the agent asserted
+    that nothing was wrong on the strength of a file it could not read. The
+    absent case really is ordinary (a box that has not regenerated health yet),
+    so only that one is silent; every other case adds a conditional
+    `standing_unavailable`. The keys are conditional so the healthy answer stays
+    exactly `{"ok": True, "standing": [], "history": []}` — a genuinely empty
+    report still reads as health.
+
+    `history_unavailable` covers an episode read that RAISES. It does not cover
+    a malformed or wrong-schema store: `plugin_setup_episodes._load()` catches
+    that itself and returns an empty store, so `episodes()` succeeds with zero
+    rows and nothing here can tell it from a box where no setup has ever run.
+    Disclosing that needs an availability-bearing read on the episode store, and
+    is not in this change — so the absence of this marker is not a claim that
+    the history is complete."""
     standing: list = []
     history: list = []
+    unavailable: dict = {}
     try:
         import plugin_health
-        report = plugin_health.load_report(Path(_PLUGIN_HEALTH_PATH)) or {}
+        report = plugin_health.load_report(Path(_PLUGIN_HEALTH_PATH))
+        if report is None:
+            # Absent is ordinary; anything else is damage. A probe that itself
+            # fails is damage too — "cannot tell" must not read as "healthy".
+            try:
+                present = Path(_PLUGIN_HEALTH_PATH).exists()
+            except Exception:  # noqa: BLE001
+                present = True
+            if present:
+                unavailable["standing_unavailable"] = (
+                    "the plugin health report exists but could not be read, so "
+                    "the standing problems below are not the full set")
+            report = {}
         standing = [plugin_health.describe_issue(d)
                     for d in (list(report.get("issues") or [])
                               + list(report.get("warnings") or []))]
     except Exception:  # noqa: BLE001 — a read tool must never raise at a resident
         logger.exception("plugin_status: health report read failed")
+        unavailable["standing_unavailable"] = (
+            "the plugin health report could not be read, so the standing "
+            "problems below are not the full set")
     try:
         import plugin_setup_episodes
         rows = [r for r in plugin_setup_episodes.episodes()
@@ -13359,7 +13438,26 @@ def _tool_plugin_status() -> dict:
         history = [_episode_sentence(r) for r in rows[:_STATUS_HISTORY_LIMIT]]
     except Exception:  # noqa: BLE001
         logger.exception("plugin_status: episode store read failed")
-    return {"ok": True, "standing": standing, "history": history}
+        unavailable["history_unavailable"] = (
+            "the plugin setup history could not be read, so the entries below "
+            "are not the full record")
+    # Best-effort and never raising: while a plugin routing overlay is the
+    # unavailable sentinel, no reconcile has published an authoritative set, so
+    # trigger/callback/pending-approval rows in the report may be stale.
+    try:
+        import agent as agent_mod
+        registry = getattr(getattr(agent_mod, "active_runtime", None),
+                           "trigger_registry", None)
+        if registry is not None and (registry.plugin_overlay_unavailable()
+                                     or registry.callback_overlay_unavailable()):
+            unavailable["routing_unavailable"] = (
+                "plugin webhook/callback routing is not currently established, "
+                "so trigger, callback and pending-approval entries may be stale")
+    except Exception:  # noqa: BLE001
+        logger.debug("plugin_status: routing availability probe skipped",
+                     exc_info=True)
+    return {"ok": True, "standing": standing, "history": history,
+            **unavailable}
 
 
 @tool(

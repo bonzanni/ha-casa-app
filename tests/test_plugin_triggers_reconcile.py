@@ -581,7 +581,11 @@ async def test_current_issues_recomputes_from_active_runtime(
     monkeypatch.setattr(tr, "_default_acks", lambda: acks)
     monkeypatch.setattr(tr, "SECRETS_DIR", tmp_path / "webhook_secrets")
     issues = tr.current_issues()
-    assert [i.reason_code for i in issues] == ["trigger_pending_ack"]
+    # #606: this registry has never had a reconcile publish to it, so its
+    # plugin overlay is the ROUTING_UNAVAILABLE sentinel and the honesty row
+    # leads — the state is now stated rather than silent.
+    assert [i.reason_code for i in issues] == [
+        "trigger_routing_unavailable", "trigger_pending_ack"]
     _ack(acks)
     monkeypatch.setattr(tr, "_default_global_secret_ok", lambda: (lambda: True))
     # #453: the ack alone no longer makes the recomputation clean. The secret
@@ -589,13 +593,16 @@ async def test_current_issues_recomputes_from_active_runtime(
     # dispatched before that mint would provision the provider against a
     # credential Casa is about to write — so it stays a gap until it exists.
     assert [i.reason_code for i in tr.current_issues()] == [
-        "trigger_secret_missing"]
+        "trigger_routing_unavailable", "trigger_secret_missing"]
     desired = tr.compute_desired(
         role_configs=runtime.role_configs, acks=acks, resolver=resolver,
         global_secret_ok=lambda: True)
     tr._mint_secrets(desired, tmp_path / "webhook_secrets")
-    # ...and once it does, the SAME recomputation comes back clean.
-    assert tr.current_issues() == []
+    # ...and once it does, the SAME recomputation comes back clean. The
+    # routing row remains, correctly: nothing here ever ran a reconcile, so the
+    # registry still carries no authoritative plugin overlay.
+    assert [i.reason_code for i in tr.current_issues()] == [
+        "trigger_routing_unavailable"]
 
 
 async def test_current_issues_without_runtime_is_empty(monkeypatch):

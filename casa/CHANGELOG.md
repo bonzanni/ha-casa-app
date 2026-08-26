@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.238.0] - 2026-08-26
+
+### Fixed
+
+- Casa no longer re-announces plugin problems you have already been told
+  about. A restart that could only see part of the picture used to wipe the
+  record of what had already been announced, so the very next report arrived
+  as though it were news. That record is now cleared only by a full health
+  regeneration, which is the one pass that can actually observe a problem
+  resolving.
+- A plugin you removed no longer leaves a standing setup failure behind in the
+  health report, and a plugin reinstalled from a different download is no
+  longer blamed for the previous one's failure.
+- When Casa cannot read its own health data it now says so plainly, instead of
+  answering that nothing is wrong. The plugin status answer marks the parts it
+  could not read rather than presenting an unreadable file as an all-clear.
+- A plugin routing refresh that fails now reports the failure too. Previously
+  it left plugin routing looking simply empty, which reads as healthy; the
+  health report and the status answer now both disclose that the routing
+  picture is unavailable.
+
 ## [0.237.0] - 2026-08-26
 
 ### Fixed

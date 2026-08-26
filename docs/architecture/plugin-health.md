@@ -94,7 +94,18 @@ appears. Two messages carrying the same warning therefore rarely carry the same 
 defeats suppression keyed on the rendered line; and any separate record of "already
 delivered" has a lifetime that must be cleared, which is how a recurrence goes unannounced.
 Filtering per row needs neither: the field it reads is pruned to fingerprints still present
-on every regeneration, so the report's own resolution pruning *is* the lifetime.
+on every *authoritative* regeneration, so the report's own resolution pruning *is* the
+lifetime.
+
+The qualifier is load-bearing, because not every writer is authoritative. Pruning is how
+this report says a row **resolved**, so only a writer that could have observed the
+resolution may do it. Boot's write cannot: it is built from the resolver pass alone and
+carries no runtime, trigger, callback, event or setup row, so pruning against it claimed
+every such row had resolved and erased its mark. The regeneration that follows minutes
+later then found the unchanged problem unmarked and announced it again — once per boot,
+forever. Boot therefore carries the previous marks forward untouched, and the full
+regeneration in the tools layer remains the one writer that clears them. A partial write
+adds no mark either, so a problem that is genuinely new at that boot is still announced.
 
 That filter is only as honest as the mark behind it, so the mark is narrowed on both axes.
 It covers the rows the message actually **named** — a row behind the "and N more" count was
@@ -121,7 +132,14 @@ rather than removing a guarantee.
 
 A consent approval rewrites the stored report too — without a notification pass of
 its own; the reconcile contract that owes that rewrite is
-[`plugin-events.md`](plugin-events.md)'s.
+[`plugin-events.md`](plugin-events.md)'s. That rewrite now happens whether the approve-time
+reconcile succeeded or raised, which is the only way the acked trigger's stale pending row
+ever clears — and it is why the report gained rows saying that routing itself is unknown.
+Each routing half contributes two, because they clear on different things: one reports that
+the applied overlay carries no authoritative computation, the other that a fresh computation
+could not run for this pass. Regenerating on the failure path without them would have
+replaced one false report with a worse one — all-clear, while ingress was shut. See
+[`plugin-triggers.md`](plugin-triggers.md) for the marker they read.
 
 ## Contracts & invariants
 
@@ -138,6 +156,16 @@ that cannot report either way must not be read as having failed, or its notices 
 forever. What holding this costs is a repeated message when a regeneration lands mid-send,
 and a large incident being named five rows at a time.
 
+**INV-PLUG-014**: A health-report write that is not an authoritative full regeneration never clears a notification fingerprint; a standing problem unchanged across a restart is announced at most once across any number of boots, while a problem first seen at that boot is still announced.
+
+Both halves are load-bearing and each fails silently on its own. Dropping the first turns
+every restart into a repeat announcement of everything already known, which is how an
+operator learns to ignore the channel. Dropping the second — by never pruning at all —
+buys that silence with a worse one: a genuinely new problem inherits a mark it never
+earned, and nothing ever tells anyone. So the pin holds the pair, not the parameter: a mark
+must survive the partial write, and the next authoritative write that no longer carries the
+row must still clear it, leaving a later recurrence newly announceable.
+
 ## Failure behavior
 
 **The report cannot be written at boot.** Boot still exits successfully — deliberately,
@@ -146,9 +174,22 @@ persisted by that write. A failure *earlier* in boot still produces a report: th
 appends its own issue row and writes again; it is the write itself failing that leaves
 nothing behind. The write is an atomic regeneration, so what remains on disk is the
 previous boot's report or no file at all. The operator surfaces do not currently
-distinguish that from health: a leftover report keeps being read as the standing set,
-and an absent or unreadable one loads as no report — which the status tool reports as
-an empty standing set.
+distinguish that from health in one respect: a leftover report keeps being read as the
+standing set. What the status tool no longer does is present an unreadable one as health.
+A report that is absent, unreadable, unparseable, or valid JSON that is not an object all
+load as no report, and the tool used to answer all four with an empty standing set —
+indistinguishable from a box where nothing is wrong, so the assistant asserted the absence
+of problems on the strength of a file it could not read. Absence alone is ordinary and
+still says nothing; every other case, including a probe that cannot tell which it is,
+now carries a statement that the standing set is not the full one. The same holds for a
+setup history whose read raises, and for the case where a routing overlay is unavailable
+so the report's trigger and callback rows describe a state no reconcile has confirmed.
+
+Those statements are conditional keys, deliberately: the healthy answer keeps the exact
+shape it always had, because an answer that always carries a caveat is an answer whose
+caveat stops being read. And the history statement covers a read that raises, not a
+store that is malformed — that one is caught below the tool, which sees a successful read
+of zero rows, so the marker's absence is not a claim that the history is complete.
 
 A report is normalized as it is read, and normalization filters rather than rejects. External
 corruption of the report file — a non-object document, a row that is not a mapping, an

@@ -74,10 +74,46 @@ mode, header or tolerance change, does invalidate the approval.
 There is no window in which the overlay is half-updated. Names absent from the new set stop
 routing immediately.
 
+**INV-TRIG-006**: A plugin routing overlay carries an authoritative map only when an authoritative computation produced it; otherwise it carries the unavailable marker, which closes ingress at every accessor and is never coerced into an empty map. While it stands, plugin health says so.
+
+Three separate paths reach a non-authoritative overlay — a reconcile that raised, one that
+ran against a registry it could not read, and one that has not run yet — and all three used
+to be spelled the same way as the honest answer "nothing should route". Each failure the
+invariant forbids is silent. Coercing the marker to `{}` anywhere is the sharpest of them: it
+does not open a route, it manufactures authority, and the next consumer to read it acts on a
+claim nobody made. That is not hypothetical — the revoke tool derives a swept replacement
+from a raw snapshot, so it checks for the marker and does nothing, ingress already being
+shut. And the health half is what makes the state visible at all: without it a stuck marker
+is invisible, because no dispatch happens and no other reason code says "routing is currently
+unknown".
+
+The two health rows are separate deliberately, because they clear on different things. One
+reports the applied overlay, the other reports whether a fresh computation could run for this
+health pass. A one-shot failure produces the first alone: the regeneration happens after the
+failure is consumed, and its recomputation is independent and succeeds. Only a failure that
+persists produces both.
+
 ## Failure behavior
 
-**Reconciliation raises.** The overlay is replaced with an empty one before the exception
-propagates, so a failure removes plugin routing rather than leaving a stale set.
+**Reconciliation raises.** The overlay is replaced before the exception propagates, so a
+failure removes plugin routing rather than leaving a stale set — but not with an empty map.
+An empty overlay is a real compute result: it says *nothing should route*, and it authorises
+every consumer to act on that. A pass that computed nothing is entitled to no such claim, so
+what it publishes is a typed unavailable marker instead. Both close ingress identically —
+every accessor answers as though the name were unregistered, and resident routing is
+untouched — and the difference is only what may be READ off them. It matters because the
+same failure now regenerates health: with the two conflated, that regeneration reported
+all-clear while ingress was shut. The marker is also the overlay's starting state, since
+before the first successful reconcile nothing authoritative has been computed either.
+
+A registry the pass could not read reaches the same marker by a different door. That case
+returns NORMALLY, with an empty overlay and no exception, so publishing what came back would
+have quietly asserted authority no one had. Only a computation that got past the registry
+check may publish a map.
+
+Recovery is unchanged: the next successful reconcile — a boot, a plugin mutation, a reload,
+a later consent action — publishes an authoritative set. Nothing else reopens routing on its
+own, exactly as before.
 
 **A secret cannot be minted.** That plugin's whole set fails closed — every one of its
 routes drops out of the overlay, rather than some routing without a usable credential. One

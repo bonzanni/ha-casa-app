@@ -162,9 +162,10 @@
     - tests/test_plugin_health.py
     - tests/test_plugin_health_notify.py
   related: [architecture/plugins.md, architecture/plugin-setup.md, architecture/plugin-events.md, architecture/telegram.md]
-  defines_invariants: [INV-PLUG-013]
+  defines_invariants: [INV-PLUG-013, INV-PLUG-014]
   invariant_tests:
     INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]
+    INV-PLUG-014: [tests/test_plugin_boot.py::test_boot_partial_health_write_preserves_standing_mark_and_exposes_new_issue, tests/test_plugin_health.py::test_carry_forward_dedup_and_reappearance]
 
 - doc: architecture/plugin-runtime.md
   summary: The environment a plugin's MCP servers need before an agent can use it, plus the env-conf and media side channels.
@@ -221,11 +222,12 @@
     - tests/test_plugin_triggers_manifest.py
     - tests/test_trigger_consent.py
   related: [architecture/triggers.md, architecture/trigger-secrets.md, architecture/plugins.md, architecture/callbacks.md, architecture/plugin-setup.md]
-  defines_invariants: [INV-TRIG-003, INV-TRIG-004, INV-TRIG-005]
+  defines_invariants: [INV-TRIG-003, INV-TRIG-004, INV-TRIG-005, INV-TRIG-006]
   invariant_tests:
     INV-TRIG-003: [tests/test_plugin_triggers_reconcile.py::test_per_plugin_all_or_nothing]
     INV-TRIG-004: [tests/test_plugin_triggers_consent.py::test_tampered_identity_fails_whole_store_closed]
     INV-TRIG-005: [tests/test_plugin_triggers_overlay.py::test_replace_is_atomic_full_swap_stale_swept]
+    INV-TRIG-006: [tests/test_plugin_routing_sentinel.py::test_every_plugin_accessor_closes_ingress_under_the_sentinel, tests/test_plugin_routing_sentinel.py::test_every_callback_accessor_closes_ingress_under_the_sentinel, tests/test_plugin_routing_sentinel.py::test_the_snapshot_returns_the_singleton_by_identity, tests/test_plugin_routing_sentinel.py::test_an_invalid_registry_publishes_the_sentinel_not_an_empty_map, tests/test_plugin_routing_sentinel.py::test_an_authoritative_pass_publishes_a_real_map_and_clears_it, tests/test_plugin_routing_sentinel.py::test_a_compute_failure_publishes_the_sentinel_and_re_raises, tests/test_plugin_routing_sentinel.py::test_revoke_preserves_the_sentinel_instead_of_sweeping_it, tests/test_plugin_routing_sentinel.py::test_a_one_shot_failure_yields_exactly_one_routing_row, tests/test_plugin_routing_sentinel.py::test_a_persistent_failure_yields_two_independent_rows]
 
 - doc: architecture/plugins.md
   summary: How a plugin becomes usable — registry, content-addressed store, artifact identity, and per-call authorization.
