@@ -155,13 +155,23 @@ are both true.
 
 For `in_casa` there is no such instant, because the first thing the engagement sees is an
 awaited call into the SDK client. The admission is therefore taken inside that engagement's own
-per-turn lock, immediately before the hand-off, with only synchronous statements between:
+per-turn lock, immediately before that call, with only synchronous statements between:
 acquiring the lock awaits, but once it is held no other coroutine on Casa's loop — no inbound
-tool call, no terminal transition — runs before the client is handed the prompt. That is a
-weaker claim than the `claude_code` one and is written as one: it fences *Casa's own
-concurrency*, not the transport. Placing it earlier, beside the driver's liveness check, would
-put the awaiting lock acquisition between the decision and the delivery and reopen exactly the
-window it closes.
+tool call, no terminal transition — runs between the decision and the call. Placing it earlier,
+beside the driver's liveness check, would put the awaiting lock acquisition between the two and
+reopen exactly the window it closes.
+
+**That is a weaker claim than the `claude_code` one, and the difference is worth stating
+exactly rather than blurring.** The client call is awaited, and whether it reaches its
+transport write before its first internal suspension is the SDK's business, not Casa's. So a
+terminal transition CAN commit while the hand-off is in progress and the prompt still arrives —
+measured, not supposed. That is the same class of limit the `claude_code` half has always
+carried and states: the admission fences the decision to deliver, not the delivery, and a
+terminal landing once a turn has begun cannot revoke it because there is nothing to revoke it
+with. Stopping an in-flight turn is the driver teardown's job on the finalize path, which is
+why that teardown exists. What the admission buys is that a turn is never *begun* against a
+record already known terminal — which is the reachable case, since the window it closes spans
+a lock acquisition and every await before it, while this one spans a single client call.
 
 A refused follow-up needs no new machinery and gets none. The refusal is raised as a *kind of*
 "this driver has no live client", which every caller on that path already handles: the delivery

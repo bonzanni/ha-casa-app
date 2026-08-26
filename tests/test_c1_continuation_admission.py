@@ -790,3 +790,85 @@ class TestTheReservationCounterHasNoAttachStep:
             assert facts == (1, 0), f"operator-path facts: {facts!r}"
         finally:
             agent_mod.active_engagement_driver = None
+
+
+class TestTheFenceCoversTheDecisionNotTheDelivery:
+    """Diff review r1 (Terra, S2 — reproduced): the in_casa hand-off is an
+    AWAITED client call, so a terminal transition can commit while it is in
+    progress and the prompt still arrives.
+
+    That limit is not closable here and must not be closed by widening the
+    fence: excluding terminal transitions until the SDK write completed would
+    hold a termination out across an unbounded client call, which is exactly
+    what the terminal-hook family must never do. It is the same limit the
+    claude_code half has always carried — ``begin_turn_delivery``'s own
+    docstring says it fences the first byte only and that stopping an in-flight
+    turn is ``driver.cancel``'s job. Pinned here so the documented boundary is
+    a tested statement rather than prose, and so a future widening is a visible
+    test change rather than a silent one.
+    """
+
+    async def test_a_terminal_landing_inside_the_hand_off_is_not_revoked(
+            self, tmp_path):
+        entered = asyncio.Event()
+        gate = asyncio.Event()
+
+        class _SuspendingClient(_ScriptedClient):
+            async def query(self, prompt):
+                # The SDK-internal suspension: everything Casa can observe
+                # happens before this, and the write happens after it.
+                entered.set()
+                await gate.wait()
+                self.query_prompts.append(prompt)
+
+        client = _SuspendingClient()
+        reg, rec, drv = await _mk_driver_rec(tmp_path, client)
+        ticket = drv.admit_inbound(rec.id, "continue")
+        turn = asyncio.create_task(
+            drv.send_user_turn(rec, "continue", inbound_token=ticket))
+        await asyncio.wait_for(entered.wait(), 5)
+
+        # The terminal writer commits WHILE the hand-off is in progress.
+        assert await reg.try_transition_terminal(
+            rec.id, "cancelled", strict=True) is True
+        gate.set()
+        await asyncio.gather(turn, return_exceptions=True)
+
+        facts = (client.query_prompts, reg.get(rec.id).status)
+        assert facts == (["continue"], "cancelled"), (
+            f"hand-off boundary facts: {facts!r}")
+
+    async def test_the_same_terminal_one_step_earlier_is_refused(
+            self, tmp_path):
+        """The boundary's other side, so the pin above cannot be read as "the
+        fence does nothing": a terminal committing one step earlier — while the
+        turn still waits on the per-engagement lock — IS refused, and that is
+        the reachable window, because it spans a lock acquisition and every
+        await before it rather than a single client call."""
+        lock = _ProbeLock()
+        client = _ScriptedClient()
+        reg, rec, drv = await _mk_driver_rec(tmp_path, client, lock=lock)
+
+        held, release = asyncio.Event(), asyncio.Event()
+
+        async def _hold():
+            async with lock:
+                held.set()
+                await release.wait()
+        holder = asyncio.create_task(_hold())
+        await asyncio.wait_for(held.wait(), 5)
+
+        ticket = drv.admit_inbound(rec.id, "continue")
+        turn = asyncio.create_task(
+            drv.send_user_turn(rec, "continue", inbound_token=ticket))
+        await asyncio.wait_for(lock.second_waiting.wait(), 5)
+        assert await reg.try_transition_terminal(
+            rec.id, "cancelled", strict=True) is True
+        release.set()
+        await asyncio.wait_for(holder, 5)
+        results = await asyncio.gather(turn, return_exceptions=True)
+
+        facts = (client.query_prompts,
+                 [type(x).__name__ for x in results])
+        assert facts == ([], ["EngagementTerminalError"]), (
+            f"one-step-earlier facts: {facts!r}")

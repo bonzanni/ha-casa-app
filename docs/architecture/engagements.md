@@ -64,7 +64,7 @@ subject.** The allocation, the ownership it implies, and the boundary built on i
 
 ## Contracts & invariants
 
-**INV-ENG-009**: A turn is admitted by the registry immediately before it reaches the engagement, with no suspension point in between — a record found idle is `active` by then, and a terminal record is not written to at all. For `claude_code` the admission precedes the first BYTE; for `in_casa` it precedes the client HAND-OFF, and covers follow-up turns only — the launch turn is INV-ENG-011's. A refused turn is never reported as delivered and never told twice.
+**INV-ENG-009**: A turn is admitted by the registry immediately before the call that hands it to the engagement, with no suspension point in between — a record found idle is `active` by then, and a terminal record is never handed a turn. For `claude_code` the admission precedes the first BYTE; for `in_casa` it precedes the awaited client hand-off, and covers follow-up turns only — the launch turn is INV-ENG-011's. Neither fences the hand-off itself: a terminal transition landing once a turn has begun cannot revoke it, and stopping an in-flight turn stays `driver.cancel`'s job. A refused turn is never reported as delivered and never told twice.
 
 **One decision, asked at two different instants.** The registry answers it synchronously and
 identically for both drivers — terminal refuses, `idle` delivers and becomes `active` without

@@ -767,13 +767,21 @@ class InCasaDriver(DriverProtocol):
                 # acquisition above, which AWAITS, and reopens exactly the
                 # window this closes.
                 #
-                # The guarantee is stated at its true strength: for
-                # claude_code the admission precedes the first BYTE, because
-                # the byte leaves in a synchronous ``os.write``. Here the
-                # hand-off is ``await client.query(prompt)``, whose internals
-                # may suspend before the SDK transport write — so what this
-                # fences is that no CASA coroutine runs in between, which is
-                # what stops a terminal transition interleaving.
+                # The guarantee is stated at its true strength, because a
+                # reviewer reproduced the difference. For claude_code the
+                # admission precedes the first BYTE, since the byte leaves in
+                # a synchronous ``os.write``. Here the hand-off is
+                # ``await client.query(prompt)``, and whether that reaches its
+                # transport write before its first internal suspension is the
+                # SDK's business: a terminal transition CAN commit while the
+                # call is in progress and the prompt still arrives. So this
+                # fences the DECISION TO DELIVER, not the delivery — the same
+                # limit the claude_code half has always carried and states
+                # (``engagement_registry.begin_turn_delivery``: "it fences the
+                # FIRST byte only … stopping an in-flight turn is
+                # ``driver.cancel``'s job"). Widening it would mean holding a
+                # terminal transition out across an unbounded SDK call, which
+                # is the one thing the terminal hook family must never do.
                 #
                 # Armed by ``inbound_token``, the SAME condition the
                 # ``_accept_inbound`` call below uses, so fence and acceptance
