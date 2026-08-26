@@ -218,3 +218,88 @@ async def test_662_only_a_literal_true_outcome_selects_the_success_edit(
         channel.edits[0][2],
     )
     assert actual == (1, 1, 1, expected), f"consent facts: {actual!r}"
+
+
+async def test_662_a_raising_callback_is_contained_and_selects_the_corrective_edit(
+) -> None:
+    """The callback contract is never-raise, so the hook's own try/except is
+    defence in depth — and defence in depth nobody tests is defence nobody
+    has. A raise must not propagate out of the tap-callback finish hook, and
+    must not be laundered into a success edit."""
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            self.on_commit_sync = kwargs["on_commit_sync"]
+            self.finish_factory = kwargs["finish_factory"]
+            return SimpleNamespace(created=True)
+
+    class _Acks:
+        def __init__(self):
+            self.records = []
+
+        def record(self, **kwargs):
+            self.records.append(kwargs)
+
+    class _Channel:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text):
+            self.edits.append((chat_id, message_id, text))
+
+    coordinator = _Coordinator()
+    acks = _Acks()
+    channel = _Channel()
+
+    async def _reconcile_cb():
+        raise RuntimeError("contract violation")
+
+    prompt_specialist_install_consent(
+        coordinator=coordinator, channel=channel, chat_id=701, operator_id=701,
+        inspection=_inspection(), acks=acks, reconcile_cb=_reconcile_cb,
+    )
+    req = SimpleNamespace(meta={})
+    coordinator.on_commit_sync(0, req.meta)
+    finish = coordinator.finish_factory(88, req)
+    await finish({"outcome": "answered", "option_index": 0})  # must not raise
+
+    actual = (len(acks.records), len(channel.edits), channel.edits[0][2])
+    assert actual == (1, 1, _662_CORRECTIVE), f"raise facts: {actual!r}"
+
+
+async def test_662_an_absent_callback_selects_the_corrective_edit() -> None:
+    """No callback means no continuation was ever requested — the DM must not
+    claim one was."""
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            self.on_commit_sync = kwargs["on_commit_sync"]
+            self.finish_factory = kwargs["finish_factory"]
+            return SimpleNamespace(created=True)
+
+    class _Acks:
+        def __init__(self):
+            self.records = []
+
+        def record(self, **kwargs):
+            self.records.append(kwargs)
+
+    class _Channel:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text):
+            self.edits.append((chat_id, message_id, text))
+
+    coordinator = _Coordinator()
+    acks = _Acks()
+    channel = _Channel()
+    prompt_specialist_install_consent(
+        coordinator=coordinator, channel=channel, chat_id=701, operator_id=701,
+        inspection=_inspection(), acks=acks,
+    )
+    req = SimpleNamespace(meta={})
+    coordinator.on_commit_sync(0, req.meta)
+    finish = coordinator.finish_factory(88, req)
+    await finish({"outcome": "answered", "option_index": 0})
+
+    actual = (len(acks.records), len(channel.edits), channel.edits[0][2])
+    assert actual == (1, 1, _662_CORRECTIVE), f"absent-callback facts: {actual!r}"
