@@ -489,6 +489,19 @@ def test_an_undefined_reference_inside_docs_is_reported_once(tmp_path):
     ]
 
 
+def test_a_python_file_under_docs_is_the_allowlists_problem_only(tmp_path):
+    """The reachable duplicate: a tracked `.py` under docs/ is already refused by the
+    publication allowlist, and the prose pass must not report the same tree twice."""
+    root = _prose_corpus(tmp_path)
+    (root / "docs" / "x.py").write_bytes(b"# INV-X-999\n")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    problems = verify_docs.verify(root)
+    assert problems == [
+        "docs/x.py: extension .py is not admitted",
+        "docs/x.py is tracked but not in the manifest — publication is allowlist-only",
+    ]
+
+
 # --- invariant → pinning-test binding -------------------------------------------------
 
 INV_DOC = {"architecture/turn-loop.md":
