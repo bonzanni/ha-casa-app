@@ -10815,9 +10815,11 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
     res = plugin_registry.resolve_all()
     reg = load_registry()
     entry_targets: dict = {}
+    entry_artifacts: dict = {}
     if reg.valid:
         for e in reg.entries:
             entry_targets[e.get("name")] = list(e.get("targets") or [])
+            entry_artifacts[e.get("name")] = e.get("artifact_id")
 
     def _rediscoverable(issue) -> bool:
         if getattr(issue, "stage", None) != "verify":
@@ -10930,8 +10932,24 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
             # else here is filtered — not the resolver issues, the extras, the
             # runtime rows, the trigger/callback/event rows, nor the episode
             # HISTORY the status tool reads separately.
-            if reg.valid and (row.get("plugin") or "") not in entry_targets:
-                continue
+            if reg.valid:
+                name = row.get("plugin") or ""
+                if name not in entry_targets:
+                    continue
+                # #653 r1: and it must be THIS artifact's obligation. A
+                # terminal `failed` row survives both removal and reinstall
+                # (supersession only ever restages a pending/dispatched one),
+                # so without this a plugin removed after a failed setup and
+                # reinstalled at a NEW artifact within the decay window had the
+                # OLD artifact's failure re-enter health — and, because removal
+                # pruned its notification mark, announced afresh as though the
+                # new install had failed. Fail open on either side being
+                # unattributable: a row or an entry with no artifact_id cannot
+                # be judged stale, so it stands.
+                want = entry_artifacts.get(name)
+                got = row.get("artifact_id")
+                if want and got and want != got:
+                    continue
             # #554: health_issues() emits the episode's last_error as `detail`
             # and this call site dropped it, so a failed setup reached the
             # operator as a bare reason code while the explanation sat unread.

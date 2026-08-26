@@ -1028,7 +1028,12 @@ def current_issues() -> list:
     #606: an ``ok=False`` degradation used to reach here as ``[]`` — "nothing is
     wrong" — while ingress was shut. It now carries the two unavailable rows.
     """
-    return _unavailable_rows() + issue_state()[1]
+    # ONE issue_state() call, and its result feeds BOTH the state-row decision
+    # and the returned issues. Computing it twice let the guard pass on a first
+    # call that succeeded while the second silently failed to [] — zero rows,
+    # from a runtime whose computation had just failed (review r1 S2).
+    state = issue_state()
+    return _unavailable_rows(state) + list(state.issues)
 
 
 def _live_registry():
@@ -1041,7 +1046,7 @@ def _live_registry():
     return getattr(runtime, "trigger_registry", None) if runtime else None
 
 
-def _unavailable_rows() -> "list[dict]":
+def _unavailable_rows(state=None) -> "list[dict]":
     """#606: the two independent honesty rows, as plain PluginIssue-shaped
     dicts — never PluginIssue instances, so they are concatenated DIRECTLY into
     write_report's issues= and never routed through the attribute-only
@@ -1074,7 +1079,7 @@ def _unavailable_rows() -> "list[dict]":
         import agent as agent_mod
         runtime = getattr(agent_mod, "active_runtime", None)
         if runtime is not None and getattr(runtime, "role_configs", None):
-            if not issue_state().ok:
+            if not (state if state is not None else issue_state()).ok:
                 rows.append(_health_row("trigger_state_unavailable"))
     except Exception:  # noqa: BLE001
         logger.exception("trigger state availability probe failed")

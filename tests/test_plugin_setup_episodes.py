@@ -1066,7 +1066,7 @@ async def test_execution_retries_exhaust_to_failed_with_note(wired):
 
 # --- #653: a removed plugin's setup history is not a standing health issue --
 
-def _regen_into(monkeypatch, health, *, registered, extras=()):
+def _regen_into(monkeypatch, health, *, registered, extras=(), artifact="art-1"):
     """Run the real ``tools._regenerate_plugin_health`` against *health*, with
     a registry that lists exactly *registered* (None ⇒ an INVALID registry).
 
@@ -1085,7 +1085,8 @@ def _regen_into(monkeypatch, health, *, registered, extras=()):
         lambda *a, **k: SimpleNamespace(
             raw={"schema_version": 1, "plugins": []},
             valid=registered is not None,
-            entries=[{"name": n, "targets": []} for n in (registered or [])]))
+            entries=[{"name": n, "targets": [], "artifact_id": artifact}
+                     for n in (registered or [])]))
     for mod_name in ("trigger_reconcile", "callback_reconcile",
                      "event_reconcile"):
         monkeypatch.setattr(__import__(mod_name), "current_issues", lambda: [])
@@ -1185,3 +1186,76 @@ async def test_the_filter_touches_only_the_setup_merge(wired, monkeypatch,
     assert len(_setup_rows(report)) == 1
     assert len([d for d in report["issues"]
                 if d["name"] == "gone-plugin"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reinstall_at_a_new_artifact_does_not_resurrect_the_old_failure(
+        wired, monkeypatch, tmp_path):
+    """Review r1 S2, and a defect the #653 filter introduced on its own: a
+    terminal `failed` episode is never superseded (supersession only restages a
+    pending or dispatched one) and `retire_for_removed` leaves it alone, so it
+    outlives both its artifact and the installation.
+
+    Removing the plugin correctly clears the row AND prunes its notification
+    mark. Reinstalling at a NEW artifact inside the 72h decay window then
+    matched on name alone, so the OLD artifact's failure re-entered health —
+    and, its mark having been pruned, announced afresh as though the new
+    install had failed. Name is not enough; the obligation must be this
+    artifact's.
+    """
+    import plugin_health
+    health = tmp_path / "health.json"
+
+    _prompt()
+    await _decide()
+    pse._update_episode(pse.episodes()[0]["id"], status="failed",
+                        last_error="ambiguous server binding")
+
+    r1 = _regen_into(monkeypatch, health, registered=["elevenlabs"],
+                     artifact="art-1")
+    assert len(_setup_rows(r1)) == 1
+    plugin_health.mark_notified([_setup_rows(r1)[0]["fingerprint"]],
+                                path=health, generation=r1["generation"])
+
+    r2 = _regen_into(monkeypatch, health, registered=[])          # removed
+    assert len(_setup_rows(r2)) == 0
+    assert len(r2["notified_fingerprints"]) == 0
+
+    # Reinstalled at a DIFFERENT artifact: the old obligation is not this
+    # installation's, so it neither stands nor announces.
+    r3 = _regen_into(monkeypatch, health, registered=["elevenlabs"],
+                     artifact="art-2")
+    assert len(_setup_rows(r3)) == 0
+    assert len(plugin_health.new_fingerprints(r3)) == 0
+
+    # The SAME artifact reinstalled still does stand — the failure is really
+    # this installation's — which is what keeps the filter from being a mute.
+    r4 = _regen_into(monkeypatch, health, registered=["elevenlabs"],
+                     artifact="art-1")
+    assert len(_setup_rows(r4)) == 1
+    assert len(plugin_health.new_fingerprints(r4)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unattributable_artifact_fails_open_on_either_side(
+        wired, monkeypatch, tmp_path):
+    """Fail open, both directions: a row or a registry entry carrying no
+    artifact_id cannot be judged stale, so it stands rather than being erased
+    on a guess."""
+    health = tmp_path / "health.json"
+    _prompt()
+    await _decide()
+    ep = pse.episodes()[0]
+    pse._update_episode(ep["id"], status="failed", last_error="x")
+
+    # Entry has no artifact_id.
+    assert len(_setup_rows(_regen_into(monkeypatch, health,
+                                       registered=["elevenlabs"],
+                                       artifact=None))) == 1
+    # Row has no artifact_id.
+    data = pse._load()
+    data["episodes"][0]["artifact_id"] = None
+    pse._save(data)
+    assert len(_setup_rows(_regen_into(monkeypatch, health,
+                                       registered=["elevenlabs"],
+                                       artifact="art-9"))) == 1

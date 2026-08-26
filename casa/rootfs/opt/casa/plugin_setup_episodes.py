@@ -355,6 +355,16 @@ def health_issues() -> list[dict]:
             out.append({
                 "kind": f"setup_episode_{st}",
                 "plugin": e.get("plugin"),
+                # #653 r1: which ARTIFACT's obligation this was. A terminal
+                # `failed` row is never superseded and `retire_for_removed`
+                # leaves it alone, so it outlives both the artifact and the
+                # installation; the health merge needs this to tell a current
+                # failure from a previous artifact's. Consumed for FILTERING
+                # only — it is deliberately not carried onto the emitted issue,
+                # because artifact_id is part of the health fingerprint and
+                # adding it there would re-announce every already-notified
+                # setup row exactly once.
+                "artifact_id": e.get("artifact_id"),
                 "episode": e.get("id"),
                 "detail": e.get("last_error") or "",
             })

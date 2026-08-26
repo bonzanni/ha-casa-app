@@ -491,3 +491,35 @@ def test_the_event_twin_already_states_its_own_unavailable_routing(monkeypatch):
                         event_spool.ROUTING_UNAVAILABLE)
     codes = [i["reason_code"] for i in event_reconcile.current_issues()]
     assert "event_routing_unavailable" in codes
+
+
+@pytest.mark.parametrize("module", [tr, cr])
+def test_one_issue_state_call_feeds_both_the_row_and_the_issues(
+        monkeypatch, module):
+    """Review r1 S2. `current_issues()` computed `issue_state()` twice: once to
+    decide the state row, once for the returned issues. Two independent
+    computations of the same thing can disagree — a first that succeeds passes
+    the guard, a second that fails degrades to [] — and the pass then reports a
+    green, empty result produced by a computation that failed. Calling it once
+    is the fix; this pins that it IS once.
+    """
+    import agent as agent_mod
+    from trigger_reconcile import IssueState
+
+    calls = {"n": 0}
+
+    def flaky(resolver=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return IssueState(True, [], set())
+        return IssueState(False, [], set())
+
+    monkeypatch.setattr(module, "issue_state", flaky)
+    monkeypatch.setattr(
+        agent_mod, "active_runtime",
+        SimpleNamespace(trigger_registry=None,
+                        role_configs={"assistant":
+                                      SimpleNamespace(channels=["webhook"])}),
+        raising=False)
+    module.current_issues()
+    assert calls["n"] == 1
