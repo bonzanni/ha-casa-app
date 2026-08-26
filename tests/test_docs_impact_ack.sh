@@ -34,7 +34,8 @@ if start not in src:
     raise SystemExit("harness: waiver block start marker not found — "
                      "scripts/docs_impact.sh was restructured; update this harness")
 block = src[src.index(start):].rstrip()
-for needle in ('"$tmp/missing.txt"', 'acked.txt', '$impacted', 'ack_commit'):
+for needle in ('"$tmp/missing.txt"', 'acked.txt', '$impacted', 'ack_commit',
+               'non_tip', 'contradictory', 'none_claimed', '$base'):
     if needle not in block:
         raise SystemExit(f"harness: extracted block lost {needle!r} — "
                          "the decision moved out of the slice")
@@ -52,6 +53,10 @@ run_block() {  # run_block <impacted> <touched> <deleted>   [ack_commit in env]
     err() { echo "docs-impact: $*" >&2; }
     impacted="$1" touched="$2" deleted="$3"
     ack_commit="${ack_commit-$(git rev-parse HEAD)}"
+    # #685: the block now scans merge-base(base, ack)..ack for waiver lines in
+    # commits other than the ack. `main` is what reset_pr branches from, so it
+    # is the natural base for every case below.
+    base="${base-main}"
     eval "$block" )
 }
 
@@ -83,7 +88,9 @@ D2=architecture/turn-loop.md
 reset_pr; tip "change with no waiver"
 expect "unwaived impacted doc fails" fail "$D1" "" "" "these docs claim it but did not change"
 
-reset_pr; tip "change"
+reset_pr; tip "change
+
+Docs-impact: none — the impacted document is updated in this very change"
 expect "touched doc satisfies the gate" ok "$D1" "$D1" ""
 
 # --- a well-formed waiver -------------------------------------------------
@@ -155,7 +162,7 @@ tip "change
 
 Docs-impact: $D1 — considered at the time"
 tip "a later commit that changed more"
-expect "waiver in an earlier commit does not carry" fail "$D1" "" "" "did not change"
+expect "waiver in an earlier commit does not carry" fail "$D1" "" "" "non_tip=1"
 
 git checkout -q main
 tip "base-side waiver
@@ -187,7 +194,7 @@ case "$SUPER" in *"$SUB"*) ;; *) fail "harness bug: SUPER does not contain SUB";
 reset_pr; tip "change
 
 Docs-impact: $SUPER — written with the wrong path form"
-expect "waiver naming a superstring path does not cover the document" fail "$SUB" "" "" "$SUB"
+expect "waiver naming a superstring path does not cover the document" fail "$SUB" "" "" "irrelevant=1"
 
 reset_pr; tip "change"
 expect "touching a superstring path does not cover the document" fail "$SUB" "$SUPER" "" "$SUB"
@@ -215,6 +222,67 @@ reset_pr; tip "change
 Docs-impact: $D1 — some genuine reason"
 ack_commit="$(git rev-parse HEAD)" expect "tip waiver applies" ok "$D1" "" "" "acknowledged for $D1"
 unset ack_commit || true
+
+# --- the set contract: a waiver names exactly the untouched impacted docs --
+# #685. Each case below PASSES on the pre-fix tree; each asserts the counter
+# that names the predicate, so a mutation that removes one guard changes one
+# named count rather than merely flipping an exit status.
+reset_pr; tip "change
+
+Docs-impact: $D2 — a document this change does not impact at all"
+expect "waiver for a non-impacted document is irrelevant" fail "$D1" "" "" "irrelevant=1"
+
+reset_pr; tip "change
+
+Docs-impact: $D1 — reason one
+Docs-impact: $D1 — reason two, contradicting the first"
+expect "two waivers for one document are ambiguous" fail "$D1" "" "" "duplicate=1"
+
+# --- the reserved `none` token --------------------------------------------
+reset_pr; tip "tests only
+
+Docs-impact: none — adds a test and changes no claimed surface"
+expect "none is accepted when nothing needs a waiver" ok "" "" ""
+
+reset_pr; tip "change
+
+Docs-impact: none — claimed nothing needs a waiver, wrongly"
+expect "none is refused when a document does need a waiver" fail "$D1" "" "" \
+  "claims no document needs a waiver"
+
+# --- a subject line is never a waiver -------------------------------------
+# `%B` puts the subject at column zero, so it parses on the pull-request arm;
+# the squash formatter prefixes every constituent subject with "* ", so the push
+# arm sees nothing. Skipping line one on every commit is what closes that gap.
+reset_pr; tip "Docs-impact: $D1 — written as the subject line"
+expect "a waiver in the subject line is not a waiver" fail "$D1" "" "" "did not change"
+
+# --- an intermediate line is refused as such, never parsed ----------------
+# The #694 shape: a malformed line in a commit that is not the tip. It must be
+# refused for being in the wrong commit, not reported as a grammar error — the
+# grammar error is what the push arm reported, after publication.
+reset_pr
+tip "an earlier commit
+
+Docs-impact: none (tests only)"
+tip "the real change
+
+Docs-impact: $D1 — a perfectly good waiver on the tip"
+expect "a malformed line in an intermediate commit is refused as non-tip" \
+  fail "$D1" "" "" "non_tip=1"
+
+# --- nothing impacted is not an excuse to skip the parse ------------------
+# The early return at scripts/docs_impact.sh:107 used to sit BEFORE this block,
+# so on a diff impacting nothing not one line was ever read and a malformed line
+# rode to `main` unchallenged. Deleting it is what makes this case reachable.
+reset_pr; tip "tests only
+
+Docs-impact: none (tests only)"
+expect "a malformed line is refused even when nothing is impacted" fail "" "" "" "needs"
+
+reset_pr; tip "tests only, and silent about it"
+expect "a tip with no Docs-impact line at all is refused" fail "" "" "" \
+  "carries no Docs-impact line"
 
 # --- the gate is not disabled by deleting the manifest --------------------
 # Terra+Sol: gate.sh used to call this only when docs/manifest.yaml existed at

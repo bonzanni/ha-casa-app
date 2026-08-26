@@ -137,6 +137,18 @@ jobs:
         #
         # `head.sha`, never HEAD, on a pull request: actions/checkout leaves HEAD
         # at GitHub's synthetic MERGE commit, whose message carries no waiver.
+        #
+        # THE TWO ARMS DO NOT READ THE SAME TEXT, and #685 is what that cost.
+        # This arm reads the branch tip's message; the push arm on `main` reads
+        # the squash commit's, which under the repository's `COMMIT_MESSAGES`
+        # default is every branch commit's message concatenated. A branch green
+        # here reddened `main` at the squash twice (#683, #694). What makes them
+        # agree now lives in the script, not here: only the ack commit may carry
+        # a Docs-impact line and a subject line is never one, so the tip's body
+        # lines are the only ones the concatenation can contain. What that does
+        # NOT cover — a squash body edited by hand at merge time keeping the same
+        # documents with different reasons — is stated in full in the script
+        # header, with why it is not chased.
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then

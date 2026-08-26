@@ -158,7 +158,13 @@ mid-2026). Keep it publish-ready at all times:
   waiver that only ever existed on a deleted branch is not the audit trail it claims to
   be. (The repo's squash default is `COMMIT_MESSAGES`, which carries it automatically;
   passing a hand-built `--body` to `gh pr merge` overrides that, so if you do, include
-  the line.) Since 2026-08-02 `main` is PROTECTED: this guard is a required check with
+  the line.) **Put waiver lines in the TIP commit and nowhere else** — the squash
+  concatenates every commit's message, so a line in an intermediate commit reaches
+  `main` waiving a diff it never saw, and the gate refuses one (#685). **Every tip
+  carries a line**, `Docs-impact: none — <reason>` when nothing is affected; the gate
+  refuses a tip with none. And the claim is now checked against the diff: waiving a
+  document the same change edits, or one the change does not impact, or waiving one
+  twice, is refused. Since 2026-08-02 `main` is PROTECTED: this guard is a required check with
   admin enforcement and strict mode, merges must go through a pull request, and force
   pushes and branch deletion are blocked. Disabling protection to get out of a jam is a
   break-glass action — say so when you do it. The gate cannot check that a waiver is sincere, and deliberately does not try;

@@ -22,6 +22,7 @@ SCRIPT = REPO / "scripts" / "docs_impact.sh"
 ANCHOR = ': > "$tmp/acked.txt"'
 
 D1 = "architecture/telegram.md"
+D2 = "architecture/turn-loop.md"
 
 
 def _block() -> str:
@@ -56,8 +57,8 @@ def _commit(repo: Path, message: str) -> None:
     _git(repo, "commit", "-q", "--allow-empty", "-m", message)
 
 
-def _decide(repo: Path, impacted: str, touched: str = "", deleted: str = "",
-            ack: str | None = None) -> tuple[int, str]:
+def _decide(repo: Path, impacted: str, touched: str = "",
+            deleted: str = "") -> tuple[int, str]:
     """Run the shipping decision over a synthetic commit graph."""
     script = "\n".join([
         "set -euo pipefail",
@@ -65,12 +66,11 @@ def _decide(repo: Path, impacted: str, touched: str = "", deleted: str = "",
         'err() { echo "docs-impact: $*" >&2; }',
         'impacted="$1" touched="$2" deleted="$3"',
         'base=main',
-        'ack_commit="${4:-$(git rev-parse HEAD)}"',
+        'ack_commit="$(git rev-parse HEAD)"',
         _block(),
     ])
     proc = subprocess.run(("bash", "-c", script, "decide", impacted, touched,
-                           deleted, ack or ""), cwd=repo, capture_output=True,
-                          text=True)
+                           deleted), cwd=repo, capture_output=True, text=True)
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -80,3 +80,74 @@ def test_inv_doc_008_a_waiver_for_an_updated_document_is_refused(repo: Path) -> 
     rc, out = _decide(repo, impacted=D1, touched=D1)
     assert rc == 1, out
     assert "contradictory=1" in out, out
+
+
+def test_inv_doc_008_a_waiver_for_an_unimpacted_document_is_refused(repo: Path) -> None:
+    _commit(repo, f"change\n\nDocs-impact: {D2} — a document this change does not impact")
+    rc, out = _decide(repo, impacted=D1)
+    assert rc == 1, out
+    assert "irrelevant=1" in out, out
+
+
+def test_inv_doc_008_only_the_tip_commit_may_carry_a_waiver(repo: Path) -> None:
+    """The #694 shape. The intermediate line is MALFORMED on purpose: it must be
+    refused for sitting in the wrong commit, not reported as a grammar error —
+    the grammar error is what the push arm reported, after publication."""
+    _commit(repo, "an earlier commit\n\nDocs-impact: none (tests only)")
+    _commit(repo, f"the real change\n\nDocs-impact: {D1} — a good waiver on the tip")
+    rc, out = _decide(repo, impacted=D1)
+    assert rc == 1, out
+    assert "non_tip=1" in out, out
+
+
+def test_inv_doc_008_the_reserved_none_token_must_be_true(repo: Path) -> None:
+    _commit(repo, "change\n\nDocs-impact: none — claimed nothing needs a waiver, wrongly")
+    rc, out = _decide(repo, impacted=D1)
+    assert rc == 1, out
+    assert "claims no document needs a waiver" in out, out
+
+    # A FRESH branch off main: the commit above carries a waiver line, and
+    # stacking on it would make this a non-tip refusal instead.
+    _git(repo, "checkout", "-q", "-B", "pr", "main")
+    _commit(repo, "tests only\n\nDocs-impact: none — adds a test, no claimed surface moves")
+    rc, out = _decide(repo, impacted="")
+    assert rc == 0, out
+    assert "ack_lines=1" in out, out
+
+
+def test_inv_doc_008_a_subject_line_is_never_a_waiver(repo: Path) -> None:
+    """`%B` exposes the subject at column zero, so it parses on the pull-request
+    arm; the squash formatter prefixes every constituent subject with "* ", so
+    the push arm sees nothing. Skipping line one is what closes that."""
+    _commit(repo, f"Docs-impact: {D1} — written as the subject line")
+    rc, out = _decide(repo, impacted=D1)
+    assert rc == 1, out
+    assert "ack_lines=0" in out and "missing=1" in out, out
+
+
+def test_inv_doc_008_the_waiver_parse_runs_when_nothing_is_impacted(repo: Path) -> None:
+    """An early return used to sit above this block, so on a diff impacting
+    nothing not one line was read: a malformed line rode to `main` and only the
+    push arm's larger cumulative diff ever parsed it."""
+    _commit(repo, "tests only\n\nDocs-impact: none (tests only)")
+    rc, out = _decide(repo, impacted="")
+    assert rc == 1, out
+    assert "needs" in out, out
+
+
+def test_inv_doc_008_every_tip_carries_a_line(repo: Path) -> None:
+    _commit(repo, "tests only, and silent about it")
+    rc, out = _decide(repo, impacted="")
+    assert rc == 1, out
+    assert "carries no Docs-impact line" in out, out
+
+
+def test_the_shipping_script_has_no_early_return_above_the_waiver_block() -> None:
+    """A source-order pin. The harness and the pins above inject `impacted`
+    directly, so an implementation that restored the early return at the old
+    site would keep every one of them green while reopening the hole."""
+    head = SCRIPT.read_text().split(ANCHOR)[0]
+    assert '[ -n "$impacted" ] || exit 0' not in head, (
+        "the empty-impact early return is back above the waiver block: waiver "
+        "lines would again go unparsed on a diff that impacts no document"
+    )
