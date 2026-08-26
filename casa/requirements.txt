@@ -53,7 +53,7 @@ httpx>=0.27,<1
 # Build-time probe (docs/superpowers/specs/2026-05-12-e12-claude_code-channels-A6-findings.md
 # §A.6.1) confirmed FastMCP `instructions=` kwarg + `Server.create_initialization_options(
 # experimental_capabilities={...})` bootstrap path on this version range.
-mcp>=1.28.1,<2
+mcp>=2.0.0,<3
 # Personality Phase A (Task 2): RFC 8785 (JSON Canonicalization Scheme)
 # canonical bytes for the immutable speaker-provenance codec — the
 # `casa-source-v1.` reserved Hindsight tag must encode a byte-stable
