@@ -524,3 +524,103 @@ def test_liveness_prohibition_reaches_a_persona_bound_assistant():
             exclude=("Text projection", "Voice projection",
                      "Restricted webhook projection"))
         assert sentence in _collapse_ws(selected), surface
+
+
+# ---------------------------------------------------------------------------
+# #633 — a memory wipe nobody can perform must be REFUSED, not improvised
+#
+# D31 (operator ruling, #753): the capability is deliberately NOT built. What
+# the operator is owed instead is a clear failure. There is no code surface
+# that can deliver it — the tool is in no shipped agent's MCP server at all, so
+# no handler ever runs — which is why the rule lives in the shipped prompt
+# carriers and is pinned here.
+#
+# Pinned on the PRODUCTION compiler, not on the section selector: a
+# persona-bound resident never reads the composed system prompt (INV-PERS-001),
+# and `test_liveness_prohibition_reaches_a_persona_bound_assistant` above calls
+# `select_markdown_sections` directly — so a compiler that dropped Core would
+# leave it green while every real projection lost the rule.
+# ---------------------------------------------------------------------------
+
+WIPE_REFUSAL_ANCHORS = (
+    "Only claim that you can wipe long-term memory when `wipe_memory` is "
+    "actually present in your tools.",
+    "If it is absent, say that this agent cannot perform the wipe.",
+    "Do not delegate the request, route it through `ask_user`, or say that a "
+    "confirmation is coming.",
+    "Tell the operator to run `casactl memory-wipe --yes` in the add-on "
+    "terminal, and state that the wipe is irreversible.",
+)
+
+_RESIDENT_SLOTS = ("assistant", "butler", "concierge")
+
+
+def _casa_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "casa/rootfs/opt/casa"
+
+
+def _compiled_resident_carriers() -> list[tuple[str, str]]:
+    """Every shipped resident role compiled through the REAL prompt compiler,
+    bound to its image-default persona: three roles x three projections."""
+    from persona_pack import load_persona_pack
+    from personality_binding import IMAGE_DEFAULT_PERSONA_BY_SLOT
+    from prompt_compiler import compile_projection_set
+    from role_artifact import load_role_artifact
+    from role_slot import materialize_role
+
+    root = _casa_root()
+    platform_frame = (root / "defaults/personality/platform-frame.md").read_text(
+        encoding="utf-8")
+    safety_kernel = (root / "defaults/personality/safety-kernel.md").read_text(
+        encoding="utf-8")
+
+    carriers: list[tuple[str, str]] = []
+    for slot in _RESIDENT_SLOTS:
+        role = materialize_role(
+            source=load_role_artifact(root / "defaults/roles/resident" / slot),
+            options={},
+        )
+        persona_id, _, version = IMAGE_DEFAULT_PERSONA_BY_SLOT[slot].partition("@")
+        persona_dir = root / "defaults/personas" / persona_id / version
+        persona = load_persona_pack(
+            persona_dir / "pack", persona_dir / "manifest.json")
+        projections = compile_projection_set(
+            role=role, persona=persona, platform_frame=platform_frame,
+            safety_kernel=safety_kernel,
+        )
+        for surface, compiled in sorted(projections.items()):
+            carriers.append((f"{slot}:{surface}", compiled.system_prompt))
+    return carriers
+
+
+def _legacy_prompt_carriers() -> list[tuple[str, str]]:
+    """The composed-prompt configuration's carriers, one per resident."""
+    root = _casa_root()
+    return [
+        (slot, (root / "defaults/agents" / slot / "prompts/system.md").read_text(
+            encoding="utf-8"))
+        for slot in _RESIDENT_SLOTS
+    ]
+
+
+def test_every_shipped_resident_refuses_an_unavailable_memory_wipe_honestly():
+    """RED pre-fix (#633): asking any shipped resident to wipe long-term memory
+    reaches a resident with no wipe tool and no instruction about it, so what
+    the operator gets is improvised — the stranding the issue reports.
+
+    Counts, and over EVERY carrier: the published claim is "no shipped agent",
+    so a pin scoped to the assistant would let the claim outrun its evidence."""
+    compiled = _compiled_resident_carriers()
+    legacy = _legacy_prompt_carriers()
+    assert len(compiled) == 9
+    assert len(legacy) == 3
+
+    for anchor in WIPE_REFUSAL_ANCHORS:
+        assert sum(_collapse_ws(text).count(_collapse_ws(anchor)) == 1
+                   for _name, text in compiled) == 9
+        assert sum(_collapse_ws(text).count(_collapse_ws(anchor)) != 1
+                   for _name, text in compiled) == 0
+        assert sum(_collapse_ws(text).count(_collapse_ws(anchor)) == 1
+                   for _name, text in legacy) == 3
+        assert sum(_collapse_ws(text).count(_collapse_ws(anchor)) != 1
+                   for _name, text in legacy) == 0

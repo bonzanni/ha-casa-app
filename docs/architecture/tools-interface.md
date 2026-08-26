@@ -115,6 +115,23 @@ rule and is unchanged. Nor does it cover a creator-cancelled row, per the paragr
 It also says nothing about *retries of the run itself* — nothing retries a delegated run;
 the kind is diagnostic, not routing.
 
+**INV-TOOL-008**: `ask_user`'s operator-DM arm and `wipe_memory` report `awaiting_user` only for a request still present in the broker's live map at the moment the tool returns; a request already absent is reported with a non-error settled status that names no outcome the read cannot support.
+
+Enforced by one synchronous sample of that live map, taken after the arm's last await and
+before it returns, in the same no-await block as the delivery check — on the plain arm the
+same boolean also drives the scheduled-question displacement, so the status and the guard
+cannot disagree. The delivery marker is not the oracle and never was: the broker writes it
+after the post await onto the request object the tool still holds, and retirement copies
+the metadata rather than clearing it.
+
+What it does not cover, deliberately: it does not claim that a request reported
+`awaiting_user` will be answered. Retirement in the window between that final sample and
+the caller reading the payload cannot be closed by any read, and a status that claimed
+otherwise would be a worse lie than the one this rule removes. It also does not cover the
+scheduled arm, which has no synchronous oracle that separates a retired question from one
+shutdown deliberately preserved for the boot reconcile; that arm's terminal outcomes reach
+its session through its finish hook instead.
+
 ## Failure behavior
 
 **A malformed request.** Invalid JSON, a missing or unknown name, a non-object request,
@@ -174,6 +191,19 @@ a replacement can never race a tap. It displaces a waiting *machine-timed* quest
 after its own keyboard is confirmed on screen and still live, so a question that never
 arrived, or that was retired while its post was in flight, costs the operator nothing; the
 lane rule itself is in [`jobs-and-delivery.md`](jobs-and-delivery.md).
+
+**A question is over before the tool returns.** The same window that costs the operator
+nothing used to cost the *agent* something: a question the broker had already retired —
+by a `/new`, by a typed answer, by a replacement question, by its own timeout, by an
+operator tap, by shutdown — still came back as an outstanding request id, while the
+keyboard on screen already read expired. It now comes back as settled, with no reply
+pending on that id. Settled is a successful outcome, not an error: every one of those
+retirements is a benign operator or system action, and recording them as tool failures
+would misreport the common case to fix the rare one. The status names no outcome, because
+the single read that produced it cannot tell a cancellation from an answer — which is also
+why the consent keyboard `wipe_memory` posts reports it the same way and neither claims
+nor denies that anything was deleted (an Approve tapped inside that window may already
+have started the wipe, whose result is reported in the keyboard message).
 
 **A specialist context exhausts its media-send budget.** `send_media` in specialist
 context — a specialist engagement, or a delegated turn keyed by its server-stamped

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.243.0] - 2026-08-26
+
+### Fixed
+
+- A question or wipe-confirmation keyboard that was already over by the time
+  the tool finished — you typed the answer, tapped a button, started a new
+  conversation, or it timed out — is now reported as settled instead of as
+  something Casa is still waiting on.
+- Asking your assistant to wipe long-term memory now gets a plain refusal
+  naming the one operation that works, `casactl memory-wipe --yes`, instead of
+  a promise of an approval prompt that never arrives. No shipped agent is
+  granted that tool; the manual described the assistant route as supported and
+  has been corrected.
+
 ## [0.242.0] - 2026-08-26
 
 ### Fixed

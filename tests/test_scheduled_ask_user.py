@@ -436,6 +436,81 @@ class TestTerminalOutcomes:
         assert rec["state"] == scheduled_asks.STATE_LIVE
         assert rec["rid"] == payload["request_id"]
 
+    async def test_shutdown_during_live_state_save_returns_awaiting_and_restores(
+        self, monkeypatch, _fresh_broker, _fresh_store, tmp_path,
+    ):
+        """#682's liveness sample must NOT be extended to this arm.
+
+        GREEN mutation pin, not a red case — the behaviour already holds. The
+        window: the durable `set_state(live)` mutates the record and then
+        awaits its save while holding the store lock. `casa_shutdown` removes
+        the request from the broker's live map in that window, and its finish
+        hook deliberately edits and dispatches NOTHING so the boot reconcile
+        can restore the question. So at return time the broker says "absent"
+        while the question is genuinely alive — and `awaiting_user` is TRUE.
+
+        `test_shutdown_settles_nothing_and_keeps_the_record` cannot see this:
+        it cancels only after `_ask` has already returned, so a mutant that
+        samples the broker before this arm's return stays green there.
+        """
+        release = asyncio.Event()
+        started = asyncio.Event()
+
+        class _BlockingSaveStore(scheduled_asks.ScheduledAskStore):
+            def __init__(self, path):
+                super().__init__(path)
+                self.saves = 0
+
+            async def _save_locked(self):
+                self.saves += 1
+                if self.saves == 2:      # the `posting` -> `live` save
+                    started.set()
+                    await release.wait()
+                return await super()._save_locked()
+
+        store = _BlockingSaveStore(str(tmp_path / "blocking.json"))
+        monkeypatch.setattr(scheduled_asks, "STORE", store)
+
+        channel = _FakeChannel()
+        task = asyncio.create_task(_ask(monkeypatch, channel=channel))
+        await asyncio.wait_for(started.wait(), 5.0)
+
+        assert len(channel.posts) == 1
+        live = _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        assert len(live) == 1
+        original_rid = live[0]
+        assert _fresh_broker.cancel_all(reason="casa_shutdown") == 1
+        await _fresh_broker.drain_hooks()
+        assert len(channel.edits) == 0
+        assert len(channel.scheduled_dispatches) == 0
+
+        release.set()
+        payload, _ch = await asyncio.wait_for(task, 5.0)
+
+        # The broker says absent; the durable record says restorable.
+        assert len(_fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+        assert sum(r.get("state") == scheduled_asks.STATE_LIVE
+                   for r in store.all()) == 1
+        assert sum(p.get("status") == "awaiting_user" for p in [payload]) == 1
+        assert sum(p.get("status") == "settled" for p in [payload]) == 0
+        assert sum(p.get("delivered_to") == "operator_dm"
+                   for p in [payload]) == 1
+        assert sum(p.get("request_id") == original_rid for p in [payload]) == 1
+
+        # …and the next boot proves the question really was still alive.
+        fresh = VerdictBroker()
+        monkeypatch.setattr(verdict_broker, "BROKER", fresh)
+        monkeypatch.setattr(scheduled_asks, "_BOOT_RECONCILED", False)
+        boot_channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(boot_channel, now=0.0)
+        assert counts["restored"] == 1
+        restored = fresh.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        assert len(restored) == 1
+        assert sum(r == original_rid for r in restored) == 1
+
     async def test_a_failed_dispatch_still_drops_the_record(
         self, monkeypatch, _fresh_broker, _fresh_store,
     ):
