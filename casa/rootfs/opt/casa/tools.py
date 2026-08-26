@@ -12114,15 +12114,11 @@ async def specialist_install_inspect(args: dict) -> dict:
                 "the staged values, then finish the recipe (wire delegation, "
                 "config_git_commit, casa_reload, emit_completion).",
             )
-            # What this reports, exactly: the seam returned normally, and the
-            # record SAMPLED immediately afterwards still had active/idle
-            # status. That is NOT deliverability — `_resume_and_ready` can
-            # accept the record and the `_stopping` gate then create no task,
-            # and a first resume failure leaves the record `active` too. The
-            # sample is taken AFTER the await rather than before it because
-            # `registry.get` hands back the registry's own object, so a
-            # terminalisation landing during the await is caught; a pre-check
-            # would have missed it.
+            # Sampled AFTER the await, not before it: `registry.get` hands
+            # back the registry's own object, so a terminalisation landing
+            # during the await is caught, which a pre-check would have missed.
+            # What this result does and does not establish is stated once, in
+            # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
             return getattr(rec, "status", None) in ("active", "idle")
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
@@ -12599,9 +12595,7 @@ async def persona_install_inspect(args: dict) -> dict:
                 "values, then finish the recipe (config_git_commit, casa_reload, "
                 "emit_completion).",
             )
-            # Same as the specialist sibling: this reports that the seam
-            # returned normally and the record sampled afterwards was still
-            # active/idle — not that the turn was deliverable or delivered.
+            # Same as the specialist sibling above; INV-PERS-011.
             return getattr(rec, "status", None) in ("active", "idle")
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(

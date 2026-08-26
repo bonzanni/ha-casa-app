@@ -339,15 +339,16 @@ def prompt_specialist_install_consent(
                     )
                     return
                 # #662: the outcome decides the wording, so the edit happens
-                # AFTER reconciliation, never before it. Only a literal True
-                # selects the success text — the pre-#662 callback returned a
-                # bare None on every failure path, and a truthiness test would
-                # read that as success again the moment anyone forgets a
-                # `return`. What True establishes is narrow and the wording
-                # says no more than that: the continuation was REQUESTED of the
-                # delivery seam, which returned normally with the record still
-                # active. It is neither a delivery receipt nor a deliverability
-                # claim (deliver_system_turn is still `-> None`; INV-SPEC-010).
+                # AFTER reconciliation, never before it, and only a literal
+                # True selects the success text — a truthiness test would
+                # accept any truthy value a future callback returned in place
+                # of the contract's bool.
+                #
+                # What True does and does not establish is stated once, in
+                # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
+                # Three review rounds were spent on restatements of it that
+                # each overclaimed; this comment deliberately does not add a
+                # fourth.
                 outcome: object = False
                 if reconcile_cb is not None:
                     try:

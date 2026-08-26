@@ -83,9 +83,9 @@ def prompt_persona_install_consent(
                     return
                 # #662: sibling of specialist_install_consent — the outcome
                 # decides the wording, so the edit happens AFTER reconciliation
-                # and only a literal True selects the success text. See the
-                # comment there for why a truthiness test is not enough
-                # (INV-PERS-011).
+                # and only a literal True selects the success text. What True
+                # establishes is stated once, in INV-PERS-011 (which defers to
+                # INV-SPEC-010 for the detail).
                 outcome: object = False
                 if reconcile_cb is not None:
                     try:
