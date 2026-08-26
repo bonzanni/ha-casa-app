@@ -1519,3 +1519,74 @@ async def test_fail_compat_cancelled_kind_persists_cancelled_state(tmp_path):
         "job-1", JobFailure("cancelled", "Specialist job was cancelled."))
     assert finished.execution_state is ExecutionState.CANCELLED
     assert finished.delivery_state is DeliveryState.NONE
+
+
+async def test_recovered_orphan_enqueue_without_consumer_stays_durably_owed(
+    tmp_path,
+):
+    """#701 (INV-JOB-010): enqueue is not delivery.
+
+    A recovered Telegram orphan is announced onto a REAL bus whose consumer
+    loop was never started: the message is in the queue, no dispatch task
+    exists, no handler ran and nothing was sent. The process is then lost (the
+    bus instance is discarded and the registry reloaded from disk). The durable
+    obligation must still be owed, so the next boot announces it again.
+
+    Pre-fix, `_notify_recovered_delegations` acknowledges immediately after
+    `bus.notify` returns, and `bus.send_checked` returns the moment the message
+    is put on the queue — so the marker is cleared while nothing has been
+    delivered, and recovery never re-arms it (it converts only live rows).
+    """
+    from bus import MessageBus
+    from casa_core import _notify_recovered_delegations
+
+    jobs_path = tmp_path / "jobs.json"
+    first = JobRegistry(jobs_path, clock=lambda: 120.0)
+    await first.load()
+    await first.create(make_job(
+        creator_peer="telegram",
+        scope_id="chat-1",
+        origin_route_id="route-1",
+        origin_device_id=None,
+        started_at=101.0,
+        execution_state=ExecutionState.RUNNING,
+    ))
+
+    recovered = await first.recover_after_restart()
+    assert len(recovered) == 1
+    assert first.get("job-1").orphan_notification_pending is True
+
+    handler_calls = []
+    channel_sends = []
+
+    async def target_handler(message):
+        handler_calls.append(message)
+        channel_sends.append(message)
+
+    bus = MessageBus()
+    bus.register("concierge", target_handler)
+    # Deliberately NO bus.start_agent_loop("concierge"): the message is
+    # accepted into the queue and consumed by nobody.
+
+    await _notify_recovered_delegations(
+        recovered, first, bus, assistant_role="concierge",
+    )
+
+    assert bus.queues["concierge"].qsize() == 1
+    assert len(bus.dispatch_tasks_for("concierge")) == 0
+    assert len(handler_calls) == 0
+    assert len(channel_sends) == 0
+
+    # The process is lost with the message still in the queue.
+    reloaded = JobRegistry(jobs_path, clock=lambda: 121.0)
+    await reloaded.load()
+    assert sum(
+        job.orphan_notification_pending is True for job in reloaded.all()
+    ) == 1
+
+    # ...and the next boot owes it again. What clears the obligation is a
+    # DELIVERY signal from the consumer, which is pinned separately: this test
+    # is frozen against the pre-fix tree and deliberately names no new symbol.
+
+    reannounced = await reloaded.recover_after_restart()
+    assert len(reannounced) == 1
