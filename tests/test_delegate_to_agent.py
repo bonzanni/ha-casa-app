@@ -2500,11 +2500,11 @@ class TestClusterSAbortMatrix:
         real_fail_compat = reg.job_registry.fail_compat
         fail_attempts = []
 
-        async def _flaky_fail_compat(job_id, failure):
+        async def _flaky_fail_compat(job_id, failure, **kwargs):
             fail_attempts.append(failure)
             if len(fail_attempts) == 1:
                 raise OSError("terminal write failed")
-            return await real_fail_compat(job_id, failure)
+            return await real_fail_compat(job_id, failure, **kwargs)
 
         monkeypatch.setattr(reg.job_registry, "fail_compat", _flaky_fail_compat)
 

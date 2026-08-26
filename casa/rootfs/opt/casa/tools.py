@@ -2120,6 +2120,15 @@ def _build_world_state_summary() -> str:
 # at agent.py:133). Module-level so it persists across delegate_to_agent calls.
 _specialist_bg_tasks: set[asyncio.Task[Any]] = set()
 
+# #701: the delegation SETTLE tails — persist the terminal, announce it, and
+# let the delivery acknowledgement clear the durable obligation. A separate set
+# from `_specialist_bg_tasks` on purpose: that one anchors `retain_delegated`
+# writes downstream of a terminal already told, and its absence from the
+# shutdown drain is a committed contract. These are anchored for the same
+# reason (asyncio may collect an unreferenced task mid-flight) and are likewise
+# not drained — see `_settle_then_announce` for why that is safe.
+_delegation_settle_tasks: set[asyncio.Task[Any]] = set()
+
 
 # The CLI's own terminal verdicts on a run. Everything that is not
 # ``success`` means the CLI ABORTED the turn and no envelope was ever
@@ -3244,7 +3253,9 @@ def _permit_release_callback(permit) -> "callable":
     return _cb
 
 
-async def _fail_delegation_durably(delegation_id: str, failure: JobFailure) -> None:
+async def _fail_delegation_durably(
+    delegation_id: str, failure: JobFailure, *, announce_creator: bool = False,
+) -> VoiceJob | None:
     """Persist a typed FAILED terminal for a delegation, never raising away
     the caller's answerable state.
 
@@ -3256,10 +3267,16 @@ async def _fail_delegation_durably(delegation_id: str, failure: JobFailure) -> N
     through failure reconciliation, CARRYING THE ORIGINAL typed failure — an
     abort or caller fault must never be completed by a background retry, and
     a bare detached ``fail_compat`` task would lose its own write failure
-    silently."""
+    silently.
+
+    #701: ``announce_creator`` arms the durable obligation to announce this
+    terminal, and rides the reconciliation retry with it — only the path that
+    actually posts a notification passes it. The durable row is RETURNED (None
+    when the write failed or the registry does not know the job) so the
+    announcing caller can ask whether the creator cancelled meanwhile."""
     try:
-        await _specialist_registry.job_registry.fail_compat(
-            delegation_id, failure)
+        return await _specialist_registry.job_registry.fail_compat(
+            delegation_id, failure, announce_creator=announce_creator)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -3269,12 +3286,108 @@ async def _fail_delegation_durably(delegation_id: str, failure: JobFailure) -> N
         )
         try:
             (_specialist_registry.job_registry
-             .schedule_failure_reconciliation(delegation_id, failure))
+             .schedule_failure_reconciliation(
+                 delegation_id, failure,
+                 announce_creator=announce_creator))
         except Exception:  # noqa: BLE001 — restart recovery remains authoritative
             logger.error(
                 "Delegation %s failure reconciliation scheduling failed; "
                 "restart recovery required", delegation_id[:8],
             )
+    return None
+
+
+async def _complete_delegation_durably(delegation_id: str) -> VoiceJob | None:
+    """The ok arm's durable terminal, with the announcement obligation armed.
+
+    #321's rule holds unchanged: the specialist's work is DONE and its answer
+    is in the caller's hands, so a failed terminal write must not raise it
+    away — the registry-owned retry completes the row instead. #701 adds only
+    that the retry carries the obligation, since this caller was promised a
+    notification.
+    """
+    try:
+        return await _specialist_registry.complete_delegation(
+            delegation_id, announce_creator=True)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Delegation %s completed but the terminal write failed (%s); "
+            "scheduling completion reconciliation", delegation_id[:8], exc,
+        )
+        try:
+            (_specialist_registry.job_registry
+             .schedule_completion_reconciliation(
+                 delegation_id, announce_creator=True))
+        except Exception:  # noqa: BLE001 — restart recovery remains authoritative
+            logger.error(
+                "Delegation %s completion reconciliation scheduling failed; "
+                "restart recovery required", delegation_id[:8],
+            )
+    return None
+
+
+async def _settle_then_announce(
+    record: DelegationRecord,
+    complete: DelegationComplete,
+    settle: Awaitable[VoiceJob | None],
+) -> None:
+    """Persist the terminal, THEN announce it, THEN acknowledge on delivery.
+
+    #701. Three properties, each of which the previous shape — two independent
+    `create_task` calls — could not hold:
+
+    * **Ordered.** The durable obligation is armed by the terminal write, and
+      the acknowledgement clears it. Racing them lets the acknowledgement run
+      first and find nothing, after which the marker is set forever and the
+      operator is announced to again at every boot.
+    * **Cancellation-aware.** The creator may have cancelled while the
+      specialist was finishing: the registry then writes a CANCELLED terminal,
+      and a creator who cancelled must not be told the job completed. The
+      durable row is the authority, and it is asked before anything is
+      enqueued. A cancellation landing after that question is a genuine tie
+      between "the answer arrived" and "I withdrew the question", which no
+      ordering can settle without the write; every non-racing case is settled.
+    * **Still announced when the write fails.** The caller must be told either
+      way. The acknowledgement is then a durable no-op and the registry-owned
+      retry carries the obligation, which costs at most one repeat at the next
+      boot.
+
+    Deliberately NOT drained at shutdown, and `_specialist_bg_tasks` — whose
+    non-drain is a different, committed contract about `retain_delegated` — is
+    not involved. A settle task killed before its write leaves the row LIVE,
+    and boot recovery converts a live row and announces it: nothing goes
+    silent, only the fidelity of the notice is lost (the operator is told
+    "lost on restart" rather than the real outcome), which is exactly what
+    INV-JOB-009 already publishes about a stop.
+    """
+    row = await settle
+    if row is not None and row.execution_state is ExecutionState.CANCELLED:
+        logger.info(
+            "Delegation %s settled as cancelled — completion not announced",
+            record.id[:8],
+        )
+        return
+    target_role = record.origin.get("role") or "assistant"
+    registry = _specialist_registry.job_registry
+
+    async def _ack() -> None:
+        await registry.ack_terminal_notification(record.id)
+
+    await _bus.notify(BusMessage(
+        type=MessageType.NOTIFICATION,
+        source=record.agent,
+        target=target_role,
+        content=complete,
+        channel=record.origin.get("channel", ""),
+        context={
+            "cid": record.origin.get("cid", "-"),
+            "chat_id": record.origin.get("chat_id", ""),
+            "delegation_id": record.id,
+        },
+        on_delivery=_ack,
+    ))
 
 
 def _run_abort_failure(output: DelegatedOutput) -> JobFailure:
@@ -3308,6 +3421,7 @@ def _attach_completion_callback(
             loop.create_task(_specialist_registry.cancel_delegation(record.id))
             return
         complete: DelegationComplete | None = None
+        settle: Awaitable[VoiceJob | None] | None = None
         try:
             output = t.result()
             if output.run_aborted:
@@ -3325,8 +3439,8 @@ def _attach_completion_callback(
                     origin=record.origin,
                     elapsed_s=time.time() - record.started_at,
                 )
-                loop.create_task(
-                    _fail_delegation_durably(record.id, failure))
+                settle = _fail_delegation_durably(
+                    record.id, failure, announce_creator=True)
             else:
                 text = output.text
                 bounded, output_truncated = (
@@ -3346,8 +3460,7 @@ def _attach_completion_callback(
                     elapsed_s=time.time() - record.started_at,
                     output_truncated=output_truncated,
                 )
-                loop.create_task(
-                    _specialist_registry.complete_delegation(record.id))
+                settle = _complete_delegation_durably(record.id)
         except Exception as exc:
             kind = _classify_error(exc).value
             complete = DelegationComplete(
@@ -3361,24 +3474,22 @@ def _attach_completion_callback(
             )
             # The typed kind the caller was just told is also what the ledger
             # records — never the exception class name (#709).
-            loop.create_task(_fail_delegation_durably(
-                record.id, JobFailure(kind=kind, message=str(exc))))
+            settle = _fail_delegation_durably(
+                record.id, JobFailure(kind=kind, message=str(exc)),
+                announce_creator=True)
 
-        if _bus is None or complete is None:
+        if settle is None:
             return
-        target_role = record.origin.get("role") or "assistant"
-        loop.create_task(_bus.notify(BusMessage(
-            type=MessageType.NOTIFICATION,
-            source=record.agent,
-            target=target_role,
-            content=complete,
-            channel=record.origin.get("channel", ""),
-            context={
-                "cid": record.origin.get("cid", "-"),
-                "chat_id": record.origin.get("chat_id", ""),
-                "delegation_id": record.id,
-            },
-        )))
+        # The durable terminal is written either way: with no bus to announce
+        # on there is still work whose outcome a restart must not ORPHAN.
+        coro = (
+            _settle_then_announce(record, complete, settle)
+            if _bus is not None and complete is not None
+            else settle
+        )
+        bg = loop.create_task(coro)
+        _delegation_settle_tasks.add(bg)
+        bg.add_done_callback(_delegation_settle_tasks.discard)
     task.add_done_callback(_done)
 
 

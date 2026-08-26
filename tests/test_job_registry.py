@@ -1085,6 +1085,15 @@ async def test_recovered_orphan_carries_scheduled_delivery_across_restart(
 async def test_recovered_orphan_failure_isolated_before_later_success(
     tmp_path, caplog, failure_phase,
 ):
+    """One bad recovery must not block the ones behind it.
+
+    #701 moved the acknowledgement off the enqueue and onto the notice's
+    `on_delivery` callback, so the two phases are now measured where they
+    happen: a notify that raises is isolated inside the loop, and an ack that
+    raises does so in the CALLBACK, whose failure the agent's seam absorbs.
+    Both leave the failing row's durable marker set, which is what makes the
+    next boot announce it again.
+    """
     import logging
 
     from casa_core import _notify_recovered_delegations
@@ -1106,6 +1115,7 @@ async def test_recovered_orphan_failure_isolated_before_later_success(
     await registry.create(failed_job)
     await registry.create(next_job)
     events = []
+    acks = []
     secret = "SECRET-notification-detail"
 
     class RegistryProbe:
@@ -1124,17 +1134,39 @@ async def test_recovered_orphan_failure_isolated_before_later_success(
             if (failure_phase == "notify"
                     and message.content.delegation_id == "job-fail"):
                 raise RuntimeError(secret)
+            # Only an ACCEPTED notice can ever be delivered.
+            acks.append((message.content.delegation_id, message.on_delivery))
 
     with caplog.at_level(logging.ERROR, logger="casa_core"):
         await _notify_recovered_delegations(
             registry.all(), RegistryProbe(), BusProbe(),
             assistant_role="concierge",
         )
-    expected = [("notify", "job-fail")]
-    if failure_phase == "ack":
-        expected.append(("ack", "job-fail"))
-    expected.extend([("notify", "job-next"), ("ack", "job-next")])
-    assert events == expected
+
+    # Enqueue acknowledges nothing at all now, for either job.
+    assert events == [("notify", "job-fail"), ("notify", "job-next")]
+    assert registry.get("job-fail").orphan_notification_pending is True
+    assert registry.get("job-next").orphan_notification_pending is True
+
+    # The notices that were accepted are then delivered.
+    for job_id, ack in acks:
+        if failure_phase == "ack" and job_id == "job-fail":
+            with pytest.raises(RuntimeError):
+                await ack()
+        else:
+            await ack()
+
+    if failure_phase == "notify":
+        # job-fail never reached the bus, so it was never delivered.
+        assert events == [
+            ("notify", "job-fail"), ("notify", "job-next"),
+            ("ack", "job-next"),
+        ]
+    else:
+        assert events == [
+            ("notify", "job-fail"), ("notify", "job-next"),
+            ("ack", "job-fail"), ("ack", "job-next"),
+        ]
     assert registry.get("job-fail").orphan_notification_pending is True
     assert registry.get("job-next").orphan_notification_pending is False
     assert secret not in caplog.text

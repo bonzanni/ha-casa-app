@@ -955,6 +955,7 @@ class Agent:
             # (error_kind is None). Error/system text stays plain via the
             # original finalize_stream/send paths.
             outcome = None
+            delivered = False
             try:
                 if on_token is not None and hasattr(channel, "finalize_stream"):
                     if error_kind is None and hasattr(
@@ -971,6 +972,10 @@ class Agent:
                     outcome = await channel.send_response(text, msg.context)
                 else:
                     outcome = await channel.send(text, msg.context)
+                delivered = (
+                    outcome is DeliveryOutcome.DELIVERED
+                    or bool(msg.context.get("_delivery_head_sent"))
+                )
             except BaseException:
                 # #349, preserved through #551's rework and NARROWED by #556: a
                 # delivery that raised having shown NOTHING releases the
@@ -985,6 +990,14 @@ class Agent:
                     import plugin_health
                     plugin_health.forget_notice(
                         self.config.role, health_notice)
+                # #701: the same head-sent rule decides the durable
+                # announcement. A reply whose HEAD reached the transport HAS
+                # announced the delegation, whatever happened to its tail, so
+                # the obligation is discharged before the exception continues
+                # on its way. A raise before the head discharges nothing and
+                # the next boot announces again.
+                if msg.context.get("_delivery_head_sent"):
+                    await self._ack_delivery(msg, error_kind)
                 raise
             # #556: a NORMAL return is not a reliable positive either — every
             # delivery method returns normally when the PTB app is absent,
@@ -995,6 +1008,8 @@ class Agent:
                     and outcome is DeliveryOutcome.NOT_DELIVERED):
                 import plugin_health
                 plugin_health.forget_notice(self.config.role, health_notice)
+            if delivered:
+                await self._ack_delivery(msg, error_kind)
         elif channel is not None and hasattr(channel, "turn_finished"):
             # L7 (v0.52.0): a turn that strips to empty / `<silent/>` never
             # calls send()/finalize_stream(), so give the channel a chance to
@@ -1029,6 +1044,45 @@ class Agent:
             context=msg.context,
         )
 
+    async def _ack_delivery(
+        self, msg: BusMessage, error_kind: Any = None,
+    ) -> None:
+        """#701: discharge a durable announcement obligation, once, on DELIVERY.
+
+        Called only where the channel has reported that output reached the
+        transport (`DeliveryOutcome.DELIVERED`, or a head that landed before a
+        later page raised) — the same seam #556 already uses, and for the same
+        reason: a NORMAL return proves nothing, because every delivery method
+        returns normally when the PTB app is absent, having made zero Bot API
+        calls.
+
+        Two refusals, both in the retain direction:
+
+        * ``error_kind is not None`` — the text that reached the transport is
+          the generic turn-failure reply, not the delegation's narration. The
+          operator was told something went wrong; they were not told what their
+          delegation did. That obligation is still owed.
+        * the callback raising — a failed durable acknowledgement leaves the
+          marker set, so the announcement is repeated at the next boot rather
+          than silently dropped. Logged without any payload text.
+
+        Not acknowledging is always the safe direction: it costs one duplicate
+        announcement, never a lost one.
+        """
+        ack = msg.on_delivery
+        if ack is None or error_kind is not None:
+            return
+        msg.on_delivery = None          # exactly once per message
+        try:
+            await ack()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — never render persistence content
+            logger.error(
+                "delivery acknowledgement failed for role=%s — the "
+                "announcement stays owed", self.config.role,
+            )
+
     def _synthesize_delegation_turn(self, msg: BusMessage) -> BusMessage:
         """Convert a NOTIFICATION+DelegationComplete into a REQUEST turn
         whose content is a synth prompt for the delegating resident."""
@@ -1039,7 +1093,19 @@ class Agent:
         origin = complete.origin or {}
         user_text = origin.get("user_text", "")
 
-        if complete.status == "ok":
+        if complete.status == "ok" and not complete.result_available:
+            # #701/#688: a boot replay of a delegation that really did succeed
+            # during a restart. Its answer text was never retained, so there is
+            # nothing to quote and `complete.text` is empty — narrating that as
+            # the answer would report an empty answer as the specialist's.
+            body = (
+                f"[System notification: your delegation to {complete.agent} "
+                f"(id {short_id}) completed during a Casa restart, but its "
+                "answer text was not retained]\n\n"
+                "The work finished; the answer itself is gone. Tell the user "
+                "it completed and offer to run it again to get the answer.\n"
+            )
+        elif complete.status == "ok":
             body = (
                 f"[System notification: your delegation to {complete.agent} "
                 f"(id {short_id}) has returned with status=ok]\n\n"
@@ -1093,6 +1159,11 @@ class Agent:
             content=body,
             channel=msg.channel,
             context=synth_context,
+            # #701: the durable obligation this notification carries must
+            # survive synthesis — `_process` only ever sees THIS message, and
+            # it is the one whose delivery decides whether the obligation is
+            # discharged.
+            on_delivery=msg.on_delivery,
         )
 
     # ------------------------------------------------------------------

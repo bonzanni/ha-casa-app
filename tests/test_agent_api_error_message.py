@@ -707,9 +707,9 @@ async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
     failed: list = []
     real_fail_compat = reg.job_registry.fail_compat
 
-    async def _recording_fail_compat(did, failure):
+    async def _recording_fail_compat(did, failure, **kwargs):
         failed.append(failure)
-        return await real_fail_compat(did, failure)
+        return await real_fail_compat(did, failure, **kwargs)
 
     # Cluster S (#709): the sync exception arm persists the CLASSIFIED
     # JobFailure through `fail_compat` — not `fail_delegation(id, exc)`,
@@ -752,17 +752,25 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
         # JobFailure through `fail_compat` — `fail_delegation(id, exc)` would
         # durably record the exception class name instead of the kind the
         # caller was told.
-        async def fail_compat(self, did, failure):
-            failed.append((did, failure))
+        async def fail_compat(self, did, failure, *, announce_creator=False):
+            # #701: the announcing arm arms the durable obligation.
+            failed.append((did, failure, announce_creator))
+            return None
 
-        def schedule_failure_reconciliation(self, did, failure=None):
+        def schedule_failure_reconciliation(
+            self, did, failure=None, *, announce_creator=False,
+        ):
             raise AssertionError("write did not fail; no retry expected")
+
+        async def ack_terminal_notification(self, did):
+            raise AssertionError("nothing was delivered in this test")
 
     class _Registry:
         job_registry = _JobRegistry()
 
-        async def complete_delegation(self, did):
+        async def complete_delegation(self, did, *, announce_creator=False):
             completed.append(did)
+            return None
 
         async def cancel_delegation(self, did):
             pass
@@ -781,14 +789,19 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
     task: asyncio.Task = asyncio.create_task(_delegated_api_error_run())
     await asyncio.gather(task, return_exceptions=True)
     tools._attach_completion_callback(task, record)
-    await asyncio.sleep(0)      # let the done-callback's tasks be scheduled
-    await asyncio.sleep(0)
+    # #701: the settle tail is ORDERED — the durable terminal is written first
+    # and only then is the notification enqueued, so this needs more than one
+    # loop turn.
+    for _ in range(10):
+        await asyncio.sleep(0)
 
     assert completed == []
-    assert [d for d, _ in failed] == ["d-1"]
+    assert [d for d, _, _ in failed] == ["d-1"]
     # The durable kind equals the caller-visible kind — never the exception
     # class name (#709).
-    assert [f.kind for _, f in failed] == [ErrorKind.REFUSAL.value]
+    assert [f.kind for _, f, _ in failed] == [ErrorKind.REFUSAL.value]
+    # ...and the terminal that owes an announcement says so durably (#701).
+    assert [announce for _, _, announce in failed] == [True]
     assert len(notified) == 1
     complete = notified[0].content
     assert complete.status == "error"
