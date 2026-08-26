@@ -193,9 +193,10 @@ produces a negative report for a turn that IS handed off. **Do not read the abse
 positive report as a guarantee that the operator learned anything.** Some of these paths
 attempt a topic notice, but the attempt is best-effort, its own send failure is swallowed,
 and some of them (a shutdown with no held inbound ticket, for one) make no attempt at all:
-assume such a path can be entirely silent. The one case that is closed here is #662's own,
-and it is closed because it is decided before the seam is ever consulted: a record already
-terminal or gone at tap time.
+assume such a path can be entirely silent. The one case that is closed here is #662's own —
+a record already terminal or gone at tap time — and it is closed because the answer comes
+from the pre-seam sample, independently of the seam's result. (The seam is still called;
+it owns the inbound admission bookkeeping and makes its own decision under its own lock.)
 
 Reporting an actual hand-off would mean `deliver_system_turn` reporting the outcome it
 already knows locally. That widens a channel contract other work depends on, and is
