@@ -219,6 +219,26 @@ plugin-withholding refusals, and what each payload discloses, are described in
 **A driver fails to start after the record exists.** The engagement is marked errored, topic
 cleanup is attempted, and the caller is told the start failed.
 
+**A launch that aborts rolls back what it provisioned, and finishes doing so.** The
+`claude_code` launch removes, in order, the s6 service directory (recompiling after it), the
+workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group
+identity and its private outbox. Every one of those removals runs once the rollback has been
+entered — including when a cancellation is delivered at one of the rollback's own awaits. Such
+a cancellation is recorded rather than propagated, no further rollback await is attempted after
+it, and it is re-raised once the removals have run, carrying the launch failure it interrupted
+as its context so a reader downstream holds both facts rather than one. The removals being
+synchronous is what makes that cheap: after the last await there is no suspension point at
+which a second cancellation could land, so no drain, shield or detached task is involved and
+the launcher's compile lock is neither released early nor held across a new await. Until this
+release those guards were `except Exception`, and `CancelledError` — a `BaseException` —
+escaped the handler outright, leaving a workspace whose meta already read `UNDERGOING`; the
+sweeper returns past `UNDERGOING` before it reads a retention deadline, and uids are never
+reused (INV-CONT-001), so every such abort leaked a workspace tree, a control directory, an
+identity and an outbox permanently. *Which* removals a rollback is entered to run is a separate
+question this does not answer: a shutdown-caused abort is not yet distinguished from a genuine
+provisioning failure, which is #698's work under the ruling that a stop and a failure are
+different events.
+
 These launch-failure arms — a missing driver, a clearance change during launch, a superseded
 plugin, a missing prompt template, an API-level fault, and a start that raised — deliberately
 do NOT take the launch-death path's bounded topic notice. The reason is not that the death

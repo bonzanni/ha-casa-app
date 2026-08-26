@@ -161,6 +161,15 @@ measurement, not an inference: a member may fork after a snapshot and before its
 and that child is enumerated and killed on the next pass, because a killed process cannot fork
 again. Zombies count as extinct — a `Z` member cannot execute or write.
 
+**What a failed launch leaves of the boundary.** Every artifact this document names — the
+workspace tree, its control directory, the uid's passwd/group identity and that uid's private
+outbox — is removed by the launch's own rollback once that rollback has been entered, and a
+cancellation arriving inside the rollback defers to after those removals rather than
+truncating them. Because the uid is never reused (INV-CONT-001), a removal that did not run
+would leak permanently; what the rollback guarantees, and what it deliberately leaves to a
+later decision, is under "Failure behavior" in
+[`architecture/engagements.md`](engagements.md).
+
 What it does not cover: there is no SIGTERM grace, so a narration tail the CLI had buffered is
 lost (the completion text is unaffected — it arrived through the tool call, and the frames the
 completion post drains are read from the s6 log segments on disk). An unverified down-latch
