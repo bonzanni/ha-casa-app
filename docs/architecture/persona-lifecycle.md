@@ -141,12 +141,12 @@ carries the same condition, which bites harder here: the acknowledgement is writ
 tap-commit only if the revocation-generation check passes, so a tap that lands after a
 `persona_ack_revoke` records nothing and takes the earlier "this approval was not
 recorded" branch, which reconciliation never reaches. When it IS recorded, the hook awaits
-the reconciliation
-callback before it edits, and only a literal `True` selects the success wording. The
-corrective wording names a recovery valid from a terminal engagement — start a new
-configurator engagement and re-run the install — and says the recorded approval is reused
-*if it still applies*, because an explicit revocation legitimately makes a fresh prompt
-correct.
+the reconciliation callback before it edits, and only a literal `True` selects the success
+wording. The corrective wording names a recovery valid from a terminal engagement — start
+a new configurator engagement and re-run the install — and says the recorded approval is
+reused *if it still applies*, because an explicit revocation legitimately makes a fresh
+prompt correct. A contained callback raise takes the same third, weaker wording as the
+specialist sibling.
 
 What it does not cover: `True` is not a delivery receipt. See INV-SPEC-010 in
 `architecture/specialist-lifecycle.md` for exactly what a positive report establishes and

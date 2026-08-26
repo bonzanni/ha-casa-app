@@ -162,20 +162,27 @@ fresh consent.
 The invariant is conditioned on a recorded approval because an approval can legitimately
 fail to record — the persona store refuses a tap whose consent was revoked underneath it —
 and that case takes its own earlier branch, which reconciliation never reaches. When the
-acknowledgement IS written (synchronously, at tap-commit) it is never revoked by a so the recovery the corrective DM names — start a new configurator
-engagement and re-run the install — short-circuits as `pre_authorized` whenever an ack
-for that exact artifact identity is still on file. The finish hook awaits the
-reconciliation callback *before* it edits, and only a literal `True` selects the success
-wording; a bare `None`, a false, an absent callback and a (contract-violating) raise all
-select the corrective wording. The tap-callback never-raise contract is unchanged —
-`CancelledError` stays control flow.
+acknowledgement IS written (synchronously, at tap-commit) a failed continuation never
+revokes it, so the recovery the corrective DM names — start a new configurator engagement
+and re-run the install — short-circuits as `pre_authorized` whenever an ack for that exact
+artifact identity is still on file.
+
+The finish hook awaits the reconciliation callback *before* it edits, and the edit it then
+makes is one of three. A literal `True` selects the success wording. A `False`, a bare
+`None` and an absent callback select the corrective wording, which states that the install
+was not started automatically — true on each of those, because none of them created a
+delivery task. A contained raise selects a third, weaker wording: a raise is a contract
+violation with no production producer, and it is the one branch where the outcome is
+unknown rather than known-negative, so it says the automatic start could not be confirmed
+and that re-running is safe either way. The tap-callback never-raise contract is unchanged
+— `except Exception`, so `CancelledError` stays control flow.
 
 What it does not cover, deliberately: `True` is **not a delivery receipt**, and it is not
 a deliverability claim either. It says exactly two things: the delivery seam returned
 normally, and the record sampled immediately afterwards still had `active`/`idle` status.
 `deliver_system_turn` still returns `None`, so a first resume failure, a failed context
-rebuild or the shutdown gate can abandon delivery after a positive report; those paths surface — best-effort — in the
-engagement topic, and the success wording therefore claims only that a continuation was
+rebuild or the shutdown gate can abandon delivery after a positive report; those paths
+surface only best-effort in the engagement topic (their own send failures are swallowed), and the success wording therefore claims only that a continuation was
 *requested*. Reporting an actual hand-off would widen the channel delivery contract,
 which is separate work.
 
