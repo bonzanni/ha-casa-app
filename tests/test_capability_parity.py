@@ -285,3 +285,63 @@ def test_assistant_denies_bash():
         assert "Agent" in disallowed, f"{src}: Agent not CLI-denied"
         assert "Task" not in allowed, f"{src}: Task still auto-approved"
         assert "Task" in disallowed, f"{src}: Task not CLI-denied"
+
+
+# ---------------------------------------------------------------------------
+# #633 — the wipe door is granted to NOBODY, and the corpus says so
+#
+# `casa/DOCS.md` and `docs/architecture/memory-lifecycle.md` publish the claim
+# "no shipped agent is granted `wipe_memory`". Nothing bound it in either
+# direction before this test, which is how the opposite claim survived four
+# releases. Asserted on the EXPOSURE outcome (`select_casa_tools`), never on a
+# string grep of a YAML file: exposure is what decides whether the tool reaches
+# an agent's MCP server, and the wildcard grant `mcp__casa-framework` would
+# expose it without the name ever appearing.
+#
+# This is a GREEN mutation pin, not a red case: the fact already holds at the
+# base. Its job is to keep holding.
+# ---------------------------------------------------------------------------
+
+GRANT_CARRIERS = ("runtime.yaml", "definition.yaml", "role.yaml")
+
+
+def _grant_carrier_paths() -> dict[str, list[Path]]:
+    defaults = CASA / "defaults"
+    return {
+        "runtime": sorted((defaults / "agents").glob("*/runtime.yaml")),
+        "definition": sorted(
+            (defaults / "agents" / "executors").glob("*/definition.yaml")),
+        "role": sorted((defaults / "roles").glob("*/*/role.yaml")),
+    }
+
+
+def test_no_shipped_agent_artifact_selects_wipe_memory():
+    by_kind = _grant_carrier_paths()
+    assert len(by_kind["runtime"]) == 3
+    assert len(by_kind["definition"]) == 2
+    assert len(by_kind["role"]) == 5
+
+    carriers: list[tuple[Path, frozenset[str]]] = []
+    for paths in by_kind.values():
+        for path in paths:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            allowed = ((doc.get("tools") or {}).get("allowed")) or []
+            if isinstance(allowed, str):
+                allowed = allowed.split()
+            carriers.append((path, frozenset(str(x) for x in allowed)))
+    assert len(carriers) == 10
+
+    selected_wipes = [
+        (path, tool.name)
+        for path, allowed in carriers
+        for tool in tools.select_casa_tools(allowed)
+        if tool.name == "wipe_memory"
+    ]
+    assert len(selected_wipes) == 0, selected_wipes
+
+    # The predicate itself is exercised, so a selector that stopped selecting
+    # anything cannot make the assertion above pass for the wrong reason.
+    assert sum(len(tools.select_casa_tools(allowed)) > 0
+               for _path, allowed in carriers) == 10
+    assert len(tools.select_casa_tools(
+        frozenset({"mcp__casa-framework__wipe_memory"}))) == 1

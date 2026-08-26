@@ -42,6 +42,14 @@ pytestmark = pytest.mark.asyncio
 
 OTHER = 4343
 
+# #682: the literal the tool must answer with. Written out here rather than
+# imported from `tools`, because a test that imports the string it asserts
+# pins nothing — and because importing a not-yet-existing name would make this
+# red case fail with an ImportError instead of for its intended reason.
+SETTLED_ASK_MESSAGE = (
+    "the question settled before ask_user returned; no outcome is reported"
+)
+
 
 # ---------------------------------------------------------------------------
 # fixtures / helpers (local copies — fixtures do not cross test modules)
@@ -114,8 +122,8 @@ def _dm_origin(chat_id=OPERATOR):
     }
 
 
-async def _ask_on(channel, origin, question="Send the invoice?"):
-    """Drive the REAL `tools.ask_user` handler against *channel*."""
+async def _ask_on_raw(channel, origin, question="Send the invoice?"):
+    """Drive the REAL `tools.ask_user` handler against *channel*, raw envelope."""
     import agent as agent_mod
     import tools as tools_mod
     from unittest.mock import MagicMock
@@ -130,7 +138,24 @@ async def _ask_on(channel, origin, question="Send the invoice?"):
             {"question": question, "options": ["Confirm", "Wrong", "Later"]})
     finally:
         agent_mod.origin_var.reset(tok)
-    return _payload(res)
+    return res
+
+
+async def _ask_on(channel, origin, question="Send the invoice?"):
+    """The parsed payload of the same real drive."""
+    return _payload(await _ask_on_raw(channel, origin, question))
+
+
+def _wire(res):
+    """The envelope's payload text with the request id normalised away.
+
+    Compared as TEXT so that an extra key, a dropped key or a reordered
+    rename all show up — a dict comparison after `.pop()` would not.
+    """
+    payload = _payload(res)
+    rid = payload.get("request_id")
+    text = res["content"][0]["text"]
+    return text.replace(rid, "<rid>") if isinstance(rid, str) else text
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +356,7 @@ async def test_plain_text_during_human_post_cancels_replacement_not_scheduled(
     channel = _BlockingSecondPost()
     scheduled_rid = (await _ask_on(channel, _scheduled_origin()))["request_id"]
 
-    task = asyncio.create_task(_ask_on(channel, _dm_origin(), "Celsius?"))
+    task = asyncio.create_task(_ask_on_raw(channel, _dm_origin(), "Celsius?"))
     await asyncio.wait_for(channel.post_started.wait(), 5.0)
 
     bus, bot = _mk_bus(), _FakeBot()
@@ -345,7 +370,8 @@ async def test_plain_text_during_human_post_cancels_replacement_not_scheduled(
     assert len(await _drain_bus(bus)) == 1
 
     channel.release_post.set()
-    await asyncio.wait_for(task, 5.0)
+    raw = await asyncio.wait_for(task, 5.0)
+    human = _payload(raw)
     await _fresh_broker.drain_hooks()
 
     live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
@@ -355,6 +381,40 @@ async def test_plain_text_during_human_post_cancels_replacement_not_scheduled(
     assert len(channel.scheduled_dispatches) == 0
     assert len(channel.edits) == 1
     assert len(_fresh_store.all()) == 1
+
+    # #682 (INV-TOOL-008): the payload this test used to DISCARD. The request
+    # is gone from the live map and its keyboard already reads "expired", so
+    # reporting an outstanding request id to the agent is the defect. Counts,
+    # because a status string is exactly what a wrong fix renames.
+    results = [human]
+    assert sum(p.get("status") == "settled" for p in results) == 1
+    assert sum(p.get("status") == "awaiting_user" for p in results) == 0
+    assert sum(p.get("request_id") == channel.second_request_id
+               for p in results) == 1
+    assert sum(p.get("message") == SETTLED_ASK_MESSAGE for p in results) == 1
+    # The single read cannot tell cancelled from answered, so the payload must
+    # name no outcome at all.
+    assert sum(bool({"outcome", "option_index", "reason", "kind"} & p.keys())
+               for p in results) == 0
+    # INV-TOOL-001: a benign retirement is a SUCCESSFUL outcome, never an
+    # outer MCP error.
+    assert sum("is_error" in envelope for envelope in [raw]) == 0
+
+
+async def test_a_live_plain_ask_still_returns_the_unchanged_awaiting_payload(
+    _fresh_broker, _fresh_store,
+):
+    """The control for the red case above: nothing retires this question, so
+    the happy path's wire payload must stay byte-identical."""
+    channel = _FakeChannel()
+    raw = await _ask_on_raw(channel, _dm_origin(), "Celsius?")
+
+    assert sum(_wire(raw) == '{"status": "awaiting_user", "request_id": "<rid>"}'
+               for _ in [0]) == 1
+    assert sum("is_error" in envelope for envelope in [raw]) == 0
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    assert len(live) == 1
+    assert sum(r == _payload(raw)["request_id"] for r in live) == 1
 
 
 # ---------------------------------------------------------------------------

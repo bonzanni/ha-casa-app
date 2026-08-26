@@ -16,6 +16,16 @@ pytestmark = pytest.mark.asyncio
 
 WIPE_TOOL = "mcp__casa-framework__wipe_memory"
 
+# #682: the literal the tool must answer with when its consent request was
+# already settled while the keyboard was being delivered. Written out rather
+# than imported from `tools` — a test that imports the string it asserts pins
+# nothing, and an import of a not-yet-existing name would make the red case
+# fail with an ImportError instead of for its intended reason.
+SETTLED_WIPE_MESSAGE = (
+    "the consent request settled before wipe_memory returned; "
+    "no outcome is reported"
+)
+
 
 @pytest.fixture(autouse=True)
 def _fresh_broker(monkeypatch):
@@ -64,8 +74,8 @@ def _set_origin(agent_mod, **overrides):
     return agent_mod.origin_var.set(origin)
 
 
-async def _invoke(monkeypatch, *, channel=None, registry=None, sem=None,
-                  origin_overrides=None):
+async def _invoke_raw(monkeypatch, *, channel=None, registry=None, sem=None,
+                      origin_overrides=None):
     import agent as agent_mod
     import tools as tools_mod
 
@@ -90,7 +100,38 @@ async def _invoke(monkeypatch, *, channel=None, registry=None, sem=None,
         result = await tools_mod.wipe_memory.handler({})
     finally:
         agent_mod.origin_var.reset(tok)
+    return result, channel
+
+
+async def _invoke(monkeypatch, **kw):
+    result, channel = await _invoke_raw(monkeypatch, **kw)
     return _payload(result), channel
+
+
+def _wire(res):
+    """The envelope's payload text with the request id normalised away."""
+    payload = _payload(res)
+    rid = payload.get("request_id")
+    text = res["content"][0]["text"]
+    return text.replace(rid, "<rid>") if isinstance(rid, str) else text
+
+
+class _BlockingPostChannel(_FakeChannel):
+    """`_FakeChannel` whose keyboard post blocks until released — the window
+    between `register` and a confirmed post, which is where #682 lives."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.post_started = asyncio.Event()
+        self.release_post = asyncio.Event()
+
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               short_labels=False):
+        self.post_started.set()
+        await self.release_post.wait()
+        return await super().post_dm_keyboard(
+            chat_id=chat_id, request_id=request_id, text=text,
+            options=options, short_labels=short_labels)
 
 
 async def _tap(broker, channel, *, chat_id=500, actor_id=500, idx=0):
@@ -171,6 +212,82 @@ class TestConsentFlow:
         assert payload["status"] == "awaiting_user"
         assert len(channel.posts) == 1
         assert _fresh_broker.pending(namespace="resident_ask", scope="authz:500")
+
+    async def test_cancel_during_post_returns_neutral_settlement(
+        self, monkeypatch, _fresh_broker,
+    ):
+        """RED pre-fix (#682, INV-TOOL-008): `/new` retires the consent request
+        while its keyboard post is still in flight. `_run_setup` then records
+        `message_id` on the request object the tool still holds, so the marker
+        gate passes and the tool reports an outstanding request id for a
+        request the broker has already retired and whose keyboard already reads
+        "cancelled". Counts, not statuses."""
+        calls = []
+
+        async def fake_wipe(**kwargs):
+            calls.append(kwargs)
+            return memory_wipe.WipeReport()
+
+        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
+        channel = _BlockingPostChannel()
+        task = asyncio.create_task(_invoke_raw(monkeypatch, channel=channel))
+        await asyncio.wait_for(channel.post_started.wait(), 5.0)
+
+        live = _fresh_broker.pending(namespace="resident_ask", scope="authz:500")
+        assert len(live) == 1
+        rid = live[0]
+        assert _fresh_broker.cancel_scope(
+            namespace="resident_ask", scope="authz:500",
+            reason="new_session") == 1
+
+        channel.release_post.set()
+        raw, _ch = await asyncio.wait_for(task, 5.0)
+        await _fresh_broker.drain_hooks()
+        payload = _payload(raw)
+
+        results = [payload]
+        assert sum(p.get("status") == "settled" for p in results) == 1
+        assert sum(p.get("status") == "awaiting_user" for p in results) == 0
+        assert sum(p.get("request_id") == rid for p in results) == 1
+        assert sum(p.get("message") == SETTLED_WIPE_MESSAGE
+                   for p in results) == 1
+        # The single read cannot tell a cancel from an Approve that won the
+        # race, so the payload names no outcome — and in particular does not
+        # claim that nothing was deleted.
+        assert sum(bool({"outcome", "option_index", "reason", "kind"} & p.keys())
+                   for p in results) == 0
+        for claim in ("nothing was deleted", "wipe completed", "wipe failed",
+                      "wipe aborted", "deleted"):
+            assert sum(claim in p.get("message", "") for p in results) == 0
+        # INV-TOOL-001: a `/new` is not a tool failure.
+        assert sum("is_error" in envelope for envelope in [raw]) == 0
+
+        assert len(_fresh_broker.pending(
+            namespace="resident_ask", scope="authz:500")) == 0
+        assert len(channel.posts) == 1
+        assert len(channel.edits) == 1
+        assert sum("cancelled — nothing was deleted" in e[2]
+                   for e in channel.edits) == 1
+        assert len(calls) == 0
+
+    async def test_a_live_consent_request_returns_the_unchanged_payload(
+        self, monkeypatch, _fresh_broker,
+    ):
+        """The control: nothing retires this request, so the happy path's wire
+        payload stays byte-identical."""
+        raw, _channel = await _invoke_raw(monkeypatch)
+        expected = json.dumps({
+            "status": "awaiting_user", "request_id": "<rid>",
+            "message": (
+                "consent keyboard posted to the operator; the wipe runs only "
+                "on an explicit Approve tap and reports its result in that "
+                "message"
+            ),
+        })
+        assert sum(_wire(raw) == expected for _ in [0]) == 1
+        assert sum("is_error" in envelope for envelope in [raw]) == 0
+        assert len(_fresh_broker.pending(
+            namespace="resident_ask", scope="authz:500")) == 1
 
     async def test_approve_runs_orchestrator_once_and_reports(
         self, monkeypatch, _fresh_broker,
