@@ -199,7 +199,7 @@ assert each shipped surface carries the prohibition and has not reverted to a
 previously-shipped phrasing, which is not the same as proving no new phrasing can express the
 claim.
 
-**INV-TOOL-006**: Every result envelope describing a plugin removal that has committed and persists discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
+**INV-TOOL-006**: A committed plugin removal reported by `plugin_remove`, by a specialist uninstall's cascade, or by a bundle compensation measured to have left the entry removed, discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
 
 A plugin's persistent data directory belongs to the Claude CLI, not to Casa: it lives on the
 config volume, the CLI injects its path, and it outlives every lifecycle operation Casa
@@ -241,8 +241,11 @@ grant's state, which Casa has no standing to report in either direction.
 What it does not cover: envelopes that describe no persisting removal carry none of it — the
 pre-commit refusals, `plugin_unassign`, `plugin_update`, and the rolled-back arms, where the
 entries are back. Nor does it reach a SUCCESSFUL upgrade or rollback that drops an owned
-plugin: that is a persisting removal by this invariant's own words, and its result says
-nothing about it. Only the failed-compensation arm of those operations discloses today. Nor does it cover a removal path that RAISES after the registry commit — the
+plugin, which is why the invariant names its three envelopes rather than quantifying over
+every persisting removal: that drop IS one, and its result says nothing about it. Only the
+failed-compensation arm of those operations discloses today. Saying so in the statement
+rather than only in this paragraph is the point — an invariant whose exclusions live below
+it is still false as declared, and it is the declaration that gets read. Nor does it cover a removal path that RAISES after the registry commit — the
 uninstall sequencer, where compensation runs and the exception propagates, and equally a
 direct `plugin_remove` whose reload-and-verify tail raises. In both the mutation has
 committed and there is no result envelope to carry the disclosure, so the operator gets a
