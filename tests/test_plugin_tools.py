@@ -1489,6 +1489,14 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
         # removal PERSISTED. All four specialist recipes say so in the same
         # words, and the pin covers the uninstall recipe too.
         assert "on any outcome, including an `ok:false` result" in text
+        # Sol diff-review a3-r3: and the outcome with no envelope AT ALL. A
+        # post-commit raise leaves the swap committed with nothing to carry
+        # the note, so each of these three recipes carries the same raise-path
+        # fallback the uninstall recipe already had — the disclosure the
+        # operator gets when the tool cannot give them one.
+        assert sum(fragment in text for fragment in (
+            "if the call raises instead of returning a result",
+            "may have been removed", "`plugin_list()`")) == 3
         # Sol diff-review r10: the note is emitted on the INDETERMINATE arm too,
         # where the removal is explicitly unknown. A recipe that glosses the
         # field as "a plugin ended up removed" turns that into a confirmed

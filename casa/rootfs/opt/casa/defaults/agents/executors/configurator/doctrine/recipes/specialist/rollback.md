@@ -16,7 +16,12 @@ pinned in CAS from when it was active.
    describes. Do not restate it as a confirmed removal unless the note itself
    says so: the note says which of the three it is — the successful owned-set
    swap dropped those entries, or a failed compensation left them measured
-   still removed, or Casa could not read the registry back and does not know.
+   still removed, or Casa could not read the registry back and does not know. If the call RAISES instead of returning a result,
+   its owned-set swap may already have committed with no envelope to carry
+   that note. Say so: an owned plugin may have been removed, and if it was,
+   the same survival applies — no plugin data was deleted and nothing was
+   revoked at the provider. Run `plugin_list()` to see which entries are
+   gone.
 3. `config_git_commit`, `casa_reload(scope="agents")`, `emit_completion` (canonical
    commit -> reload -> emit order — see `completion.md`).
 

@@ -261,14 +261,17 @@ pre-commit refusals, `plugin_unassign`, `plugin_update`, and the rolled-back arm
 entries are back, and a bundle that never ran its swap, which the paragraph above separates from
 one that did. Saying what the statement covers in the statement rather than only in this paragraph is the point —
 an invariant whose exclusions live below it is still false as declared, and it is the
-declaration that gets read. What it genuinely does not reach is a removal path that RAISES after the registry commit — the
-uninstall sequencer, where compensation runs and the exception propagates, and equally a
+declaration that gets read. What it genuinely does not reach is a removal path that RAISES after the registry commit — any
+bundle whose sequencer raises, where compensation runs and the exception propagates, and equally a
 direct `plugin_remove` whose reload-and-verify tail raises. In both the mutation has
 committed and there is no result envelope to carry the disclosure, so the operator gets a
 hard error where a persisting removal went unstated. That is a bounded, non-silent gap: the
-error is loud, and the removal recipe tells the engager to say the removal may have taken
+error is loud, and every recipe on a removal-capable path — the plugin removal one and all
+four specialist ones — tells the engager to say the removal may have taken
 effect, that the plugin's CLI-managed persistent data was not deleted and no provider
-revocation was performed either way, and to check with `plugin_list()`. Closing it properly means converting exception
+revocation was performed either way, and to check with `plugin_list()`. That fallback is the
+same shape in all five, because the gap is: an invariant about envelopes says nothing where
+there is no envelope. Closing it properly means converting exception
 handling on these paths into structured outcomes — a different change, and one that touches
 every bundle tool rather than the removal ones.
 
