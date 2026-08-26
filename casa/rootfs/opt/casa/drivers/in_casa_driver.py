@@ -19,6 +19,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+from channels import DeliveryOutcome
 from drivers.driver_protocol import DriverProtocol, StaleLaunchError
 from error_kinds import (
     ApiErrorTurn, ErrorKind, api_error_kind, result_api_error_kind,
@@ -36,7 +37,10 @@ TopicStreamFactory = Callable[[int], "TopicStreamHandle"]
 """(topic_id) → TopicStreamHandle — channel-side per-turn streaming primitive.
 
 Returned handle exposes async ``emit(accumulated_text)`` and async
-``finalize(full_text)``. See channels.telegram.TopicStreamHandle."""
+``finalize(full_text) -> DeliveryOutcome`` (#665 — the driver reads the
+outcome to see a wholly undelivered turn; a handle off the contract returns
+``None``, which the driver coerces to ``UNKNOWN``). See
+channels.telegram.TopicStreamHandle."""
 
 ResultObserver = Callable[[EngagementRecord, ResultMessage], None]
 """(engagement, ResultMessage) → None — Task 6 (spec §4.6) per-turn cost/usage
@@ -97,7 +101,10 @@ owners and must not clobber each other.
 There is no follow-up analogue of :data:`LAUNCH_NO_VISIBLE_OUTPUT`. A
 follow-up turn that ran to its end and posted nothing is an ordinary quiet
 turn — the agent may legitimately have done tool work and had nothing to say —
-whereas a LAUNCH turn that posted nothing is an engagement nobody can see."""
+whereas a LAUNCH turn that posted nothing is an engagement nobody can see.
+That covers QUIET turns only: a follow-up turn that PRODUCED text which never
+arrived is not a quiet turn — it gets
+:data:`FOLLOWUP_TEXT_NOT_DELIVERED` (#665)."""
 
 LAUNCH_NO_VISIBLE_OUTPUT = "no_visible_output"
 """#678: the launch turn ran to its end but nothing about it is visible.
@@ -107,6 +114,28 @@ A ``ResultMessage`` arrived, the engagement is not terminal (no
 An interactive engagement that ENDS its launch turn to await the operator has
 posted text and is legitimately unreported; one that posted nothing has left
 the operator with a topic containing no evidence that anything happened."""
+
+LAUNCH_TEXT_NOT_DELIVERED = "text_not_delivered"
+"""#665: the launch turn produced text but none of it reached the topic.
+
+The stream handle's ``finalize`` ESTABLISHED ``NOT_DELIVERED`` — every
+Telegram operation was positively refused (or no bot existed to attempt
+one), so the head of the turn's output is certainly not on the operator's
+screen. The operator-visible situation is identical to
+:data:`LAUNCH_NO_VISIBLE_OUTPUT` — a topic showing nothing — and the launch
+owners react identically. A lost acknowledgement (``UNKNOWN``) records
+NOTHING: the text may be on screen, and reporting a death over it would
+kill a delivered turn."""
+
+FOLLOWUP_TEXT_NOT_DELIVERED = "followup_text_not_delivered"
+"""#665: a ticketed FOLLOW-UP turn's streamed text was wholly undelivered.
+
+Same established-``NOT_DELIVERED`` fact as
+:data:`LAUNCH_TEXT_NOT_DELIVERED`, one turn over, recorded in the
+per-ticket slot because the two arms have different owners. The
+missing-result case keeps its own reason
+(:data:`FOLLOWUP_MISSING_RESULT`) — this one requires the turn to have
+FINISHED (``result_msg`` present) with its text refused."""
 
 
 class EmptyTurnError(RuntimeError):
@@ -180,7 +209,7 @@ class InCasaDriver(DriverProtocol):
         # path commits in memory before awaiting the tombstone write), so
         # adjudication belongs to the registry's own single transactional
         # question, asked by the owner. Values: "" | LAUNCH_MISSING_RESULT |
-        # LAUNCH_NO_VISIBLE_OUTPUT.
+        # LAUNCH_NO_VISIBLE_OUTPUT | LAUNCH_TEXT_NOT_DELIVERED.
         self._launch_incomplete: dict[str, str] = {}
         # #692/#678: the same observation for a ticketed FOLLOW-UP turn,
         # keyed by the exact admission TICKET rather than by engagement.
@@ -396,7 +425,8 @@ class InCasaDriver(DriverProtocol):
     def launch_turn_incomplete(self, engagement_id: str) -> str:
         """SYNCHRONOUS: POP the #678 launch-turn observation.
 
-        Returns ``LAUNCH_MISSING_RESULT``, ``LAUNCH_NO_VISIBLE_OUTPUT`` or
+        Returns ``LAUNCH_MISSING_RESULT``, ``LAUNCH_NO_VISIBLE_OUTPUT``,
+        ``LAUNCH_TEXT_NOT_DELIVERED`` or
         ``""``. Read exactly once, by the launch owner, immediately after
         :meth:`start` returns; popping means a re-read cannot report the same
         death twice. Not part of ``DriverProtocol`` — the launch owners reach
@@ -413,7 +443,8 @@ class InCasaDriver(DriverProtocol):
         """SYNCHRONOUS: POP the #692/#678 FOLLOW-UP turn observation for one
         exact admission ticket.
 
-        Returns ``FOLLOWUP_MISSING_RESULT`` or ``""``. Read once, by the
+        Returns ``FOLLOWUP_MISSING_RESULT``,
+        ``FOLLOWUP_TEXT_NOT_DELIVERED`` or ``""``. Read once, by the
         delivery task that owns that ticket, immediately after its
         ``send_user_turn`` returns; popping means the task-end cleanup
         backstop that runs after it cannot tell the operator a second time.
@@ -782,8 +813,15 @@ class InCasaDriver(DriverProtocol):
         finally:
             engagement_var.reset(token)
         final = accumulated.strip()
+        # #665: UNKNOWN before any finalize — a quiet turn (no text) makes no
+        # delivery claim, and a handle off the contract (returns None, or a
+        # test fake returning a truthy MagicMock) coerces to UNKNOWN by the
+        # enum's own documented rule, hence isinstance and not truthiness.
+        delivery_outcome = DeliveryOutcome.UNKNOWN
         if final:
-            await stream.finalize(final)
+            res = await stream.finalize(final)
+            if isinstance(res, DeliveryOutcome):
+                delivery_outcome = res
 
         # #595: the result's own stop_reason is the second carrier — read so a
         # refusal reported ONLY there (no synthesized assistant message) still
@@ -859,6 +897,19 @@ class InCasaDriver(DriverProtocol):
                 "(frames=%d) — its delivery task reports it",
                 engagement.id[:8], idx,
             )
+        elif (inbound_token is not None
+                and delivery_outcome is DeliveryOutcome.NOT_DELIVERED):
+            # #665: the turn FINISHED (result_msg present — the elif keeps
+            # the cut-off fact as the stronger reason) but its streamed text
+            # was wholly refused. Recorded only on established NOT_DELIVERED;
+            # an UNKNOWN lost-ack may be on the operator's screen.
+            self._followup_incomplete.setdefault(
+                engagement.id, {})[inbound_token] = FOLLOWUP_TEXT_NOT_DELIVERED
+            logger.warning(
+                "Engagement %s follow-up turn's streamed text was not "
+                "delivered (frames=%d) — its delivery task reports it",
+                engagement.id[:8], idx,
+            )
 
         # #678: OBSERVE whether this LAUNCH turn left a terminal artifact.
         # Launch turns only (``inbound_token is None``); the ticketed arm is
@@ -888,6 +939,11 @@ class InCasaDriver(DriverProtocol):
                 reason = LAUNCH_MISSING_RESULT
             elif not final:
                 reason = LAUNCH_NO_VISIBLE_OUTPUT
+            elif delivery_outcome is DeliveryOutcome.NOT_DELIVERED:
+                # #665: strongest-known-first — a cut-off turn keeps its
+                # cut-off reason and a quiet turn its no-output reason; this
+                # arm is a turn that finished WITH text, all of it refused.
+                reason = LAUNCH_TEXT_NOT_DELIVERED
             if reason:
                 self._launch_incomplete[engagement.id] = reason
                 logger.warning(

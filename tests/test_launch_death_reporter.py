@@ -1797,3 +1797,91 @@ class TestTheProductionSeamIsTheOneUnderTest:
 def _mk_assistant_frame():
     from claude_agent_sdk import AssistantMessage, TextBlock
     return AssistantMessage(content=[TextBlock(text="working")], model="m")
+
+
+_EXPECTED_NOT_DELIVERED_NOTICE = (
+    "This turn finished, but Casa could not deliver its response to this "
+    "topic."
+)
+"""#665: the delivery-failure sentence, duplicated ON PURPOSE rather than
+imported (a reworded production string must fail a test). It asserts only what
+the site observed: the turn finished (its result frame arrived — the cut-off
+sentence would be false here) and finalization established that no part of the
+response reached the topic. It names NO cause: a ``bot is None`` outcome never
+reached Telegram at all, so "refused by Telegram" would be a claim the reason
+string cannot support (seam round, Sol)."""
+
+
+class TestNotDeliveredFollowUpNotice:
+    """#665: a follow-up turn that FINISHED but whose streamed text was wholly
+    undelivered gets the delivery-failure notice — not the cut-off one — and
+    the confirmed-terminal-telling suppression still applies."""
+
+    @staticmethod
+    def _completed_frames(text="I finished the task."):
+        from claude_agent_sdk import AssistantMessage, TextBlock
+        return [
+            AssistantMessage(content=[TextBlock(text=text)],
+                             model="claude-sonnet-4-6"),
+            _mk_result(),
+        ]
+
+    @staticmethod
+    def _refused_factory():
+        from channels import DeliveryOutcome
+
+        class _RefusedStream:
+            async def emit(self, text):
+                pass
+
+            async def finalize(self, text):
+                return DeliveryOutcome.NOT_DELIVERED
+
+        return lambda tid: _RefusedStream()
+
+    async def test_a_wholly_undelivered_follow_up_gets_the_delivery_notice(
+        self, tmp_path, fake_telegram_bot,
+    ):
+        client = _ScriptedClient(scripts=[self._completed_frames()])
+        ch, reg, rec, drv = await _mk_channel(
+            tmp_path, fake_telegram_bot, client)
+        ch._driver_turn_incomplete = _seam(drv)
+        drv._topic_stream_factory = self._refused_factory()
+
+        await ch.deliver_system_turn(rec, "finish the work")
+        await _drain(ch)
+        await asyncio.sleep(0)
+
+        # EXACTLY one notice, the whole delivery-failure sentence — and not
+        # either of its siblings, whose claims would be false here: the turn
+        # DID finish (cut-off) and the engagement has NOT ended (unconfirmed).
+        assert ch._post_engagement_notice.await_count == 1
+        notice = ch._post_engagement_notice.await_args.args[1]
+        assert notice == _EXPECTED_NOT_DELIVERED_NOTICE
+        assert notice != _EXPECTED_CUT_OFF_NOTICE
+        assert notice != _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE
+        # The record is still live.
+        assert reg.get(rec.id).status == "active"
+
+    async def test_a_confirmed_terminal_telling_still_suppresses(
+        self, tmp_path, fake_telegram_bot, monkeypatch,
+    ):
+        """The suppression predicate is untouched by #665: an engagement whose
+        terminal path CONFIRMED its telling owns the telling, whatever the
+        follow-up turn's delivery outcome was."""
+        client = _ScriptedClient(scripts=[self._completed_frames()])
+        ch, reg, rec, drv = await _mk_channel(
+            tmp_path, fake_telegram_bot, client)
+        ch._driver_turn_incomplete = _seam(drv)
+        drv._topic_stream_factory = self._refused_factory()
+
+        async def _settled(engagement_id):
+            return "completed", True
+        monkeypatch.setattr(reg, "settled_terminal_state", _settled,
+                            raising=True)
+
+        await ch.deliver_system_turn(rec, "finish the work")
+        await _drain(ch)
+        await asyncio.sleep(0)
+
+        assert ch._post_engagement_notice.await_count == 0

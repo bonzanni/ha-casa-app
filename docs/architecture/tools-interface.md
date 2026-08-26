@@ -210,7 +210,11 @@ when the first turn had been cut off mid-flight — the record then sat active w
 posted. The `in_casa` launch branches now ask the driver what the turn left behind and, when
 it left nothing, hand the death to one owner that records a distinct `launch_turn_incomplete`
 error kind, tells the operator in the topic before closing it, and reports the failure in the
-envelope. Only that outcome changes: a launch whose turn ran to its end still answers
+envelope. "Left nothing" includes text that never arrived: a launch turn whose streamed text
+was wholly refused by Telegram (the stream handle's finalize established `not delivered` —
+INV-TG-006 in [`telegram.md`](telegram.md)) is a topic showing nothing, and takes the same
+owner; an ambiguous delivery records nothing, since the text may be on screen. Only that
+outcome changes: a launch whose turn ran to its end still answers
 `pending`, and so does one that lost the terminal race to its own completion, because the
 engagement really did report itself. The kind is deliberately its own rather than the generic
 driver-start failure — a reader who cannot tell "the driver never got going" from "the turn

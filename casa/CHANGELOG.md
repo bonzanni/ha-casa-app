@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.236.0] - 2026-08-26
+
+### Fixed
+
+- A streamed reply in an engagement topic that Telegram refuses outright is
+  now reported instead of being silently lost. If the refused reply was the
+  engagement's launch, the launch-death report names it; if it was a
+  follow-up, the topic gets a notice saying that reply did not arrive.
+  Previously such a refusal went to the log and nowhere else, leaving an
+  engagement nobody could see and nobody was told about.
+
+### Notes
+
+- The report is only made when the refusal is established - every attempted
+  piece of output was positively refused, or provably never left the app.
+  When Telegram's answer is ambiguous and the text may well be on screen,
+  no claim is made either way.
+
+
 ## [0.235.0] - 2026-08-26
 
 ### Fixed

@@ -20,6 +20,8 @@ import hashlib
 import logging
 import os
 import time
+
+import httpx
 from io import BytesIO
 from typing import Any, Awaitable, Callable
 
@@ -560,6 +562,27 @@ blacklist that tried to encode it was bypassed three times by respelling the sam
 false claims. So if you are editing this string, the rule above is the control,
 and it is on you. See `architecture/engagement-finalization.md`.
 """
+
+
+_FOLLOWUP_TEXT_NOT_DELIVERED = "followup_text_not_delivered"
+"""#665: the reason value ``drivers.in_casa_driver.FOLLOWUP_TEXT_NOT_DELIVERED``
+writes. A local literal rather than an import — the channel does not depend on
+a driver module — pinned equal to the driver's constant by test."""
+
+_TURN_NOT_DELIVERED_NOTICE = (
+    "This turn finished, but Casa could not deliver its response to this "
+    "topic."
+)
+"""#665: what a follow-up turn whose streamed text was wholly undelivered
+tells the operator, over a LIVE record.
+
+Obeys the same rule as its two siblings above — assert ONLY what the site
+observed. The site knows (a) the turn FINISHED (its result frame arrived; the
+cut-off sentence would be false) and (b) finalization ESTABLISHED that no part
+of the response reached the topic. It does NOT know why: a ``bot is None``
+outcome never reached Telegram at all, so naming a Telegram refusal here would
+attribute a cause the reason string does not carry (seam review, Sol). Pinned
+by whole-sentence equality like its siblings."""
 
 
 _TURN_CUT_OFF_NOTICE = (
@@ -2108,7 +2131,8 @@ class TelegramChannel(Channel):
 
     async def _report_incomplete_turn(self, rec, token) -> None:
         """#692/#678: tell the operator when THEIR turn ended without the
-        turn's own terminal artifact and the engagement is still live.
+        turn's own terminal artifact — or, #665, finished with its streamed
+        text wholly undelivered — and the engagement is still live.
 
         Called on ``_deliver_turn_bg``'s SUCCESS path only. Every exception
         path already has an owner — the "Turn failed" notice, the terminal
@@ -2178,31 +2202,39 @@ class TelegramChannel(Channel):
                     "telling the operator anyway", rec.id[:8], exc_info=True)
         if status in ("completed", "cancelled", "error") and told:
             logger.info(
-                "turn %s ended without its result frame on an already-terminal "
+                "turn %s ended incompletely on an already-terminal "
                 "engagement (%s) whose terminal path DID tell this topic — it "
                 "owns the telling", rec.id[:8], status)
             return
         terminal_untold = status in ("completed", "cancelled", "error")
         if terminal_untold:
             logger.warning(
-                "turn %s ended without its result frame on a terminal "
+                "turn %s ended incompletely on a terminal "
                 "engagement (%s) whose terminal path told this topic nothing "
                 "— telling the operator", rec.id[:8], status)
         logger.warning(
-            "engagement %s: a follow-up turn ended without its result frame "
-            "over a live record (reason=%s) — telling the operator",
+            "engagement %s: a follow-up turn ended incompletely over a live "
+            "record (reason=%s) — telling the operator",
             rec.id[:8], reason)
         # WHICH telling depends on the state, and the two are not
         # interchangeable: over a LIVE record the turn really was cut off, and
         # over a TERMINAL one it ended because it completed the engagement,
         # whose account may in fact be on the operator's screen already (a lost
         # acknowledgement is indistinguishable from a failed send from here).
+        # #665: a live-record delivery failure gets its own sentence — the
+        # cut-off one ("stopped without ResultMessage") is false for a turn
+        # that finished. The terminal-untold arm keeps the unconfirmed notice:
+        # "could not confirm that its account ... reached this topic" is still
+        # true of a response that never arrived.
+        if terminal_untold:
+            notice = _TURN_ENDED_UNCONFIRMED_NOTICE
+        elif reason == _FOLLOWUP_TEXT_NOT_DELIVERED:
+            notice = _TURN_NOT_DELIVERED_NOTICE
+        else:
+            notice = _TURN_CUT_OFF_NOTICE
         try:
             await asyncio.wait_for(
-                self._post_engagement_notice(
-                    rec,
-                    _TURN_ENDED_UNCONFIRMED_NOTICE if terminal_untold
-                    else _TURN_CUT_OFF_NOTICE),
+                self._post_engagement_notice(rec, notice),
                 _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
         except BaseException:  # noqa: BLE001 — one bounded best-effort attempt
             logger.warning("incomplete-turn notice failed for %s",
@@ -4730,6 +4762,26 @@ _SERVER_REFUSALS = (
 )
 
 
+def _established_unsent(exc: TelegramError) -> bool:
+    """#665 (diff r2, Sol): the transport failure's CAUSE proves the request
+    never reached Telegram.
+
+    PTB 22.7 wraps httpx errors with ``raise ... from err``, so the cause
+    survives: a ``ConnectTimeout`` or ``ConnectError`` failed before a
+    connection existed, and a ``PoolTimeout``'s own PTB message says the
+    request "was *not* sent to Telegram". All three establish absence exactly
+    as a refusal does, even though PTB surfaces the first and third as
+    ``TimedOut`` — which is otherwise ambiguous (a read/write timeout can lose
+    the acknowledgement of a request Telegram accepted, and stays ``UNKNOWN``).
+    Scoped to the topic stream on purpose: the DM paths' shared
+    ``_edit_failure_outcome`` taxonomy is not widened by this cluster.
+    """
+    return isinstance(
+        exc.__cause__,
+        (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout),
+    )
+
+
 def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
     """Classify a failed edit: established negative, or merely ambiguous?
 
@@ -4775,6 +4827,13 @@ class TopicStreamHandle:
         self._topic_id = topic_id
         self._message_id: int | None = None
         self._last_edit: float = 0.0
+        # #665 (diff r1, Sol+Terra): a first send that failed AMBIGUOUSLY
+        # (non-refusal — e.g. TimedOut, where Telegram may have accepted the
+        # message with only the acknowledgement lost) leaves ``_message_id``
+        # unset, but the text may be on the operator's screen. A later refusal
+        # therefore cannot establish that the turn was wholly invisible, so
+        # this latch downgrades every would-be NOT_DELIVERED to UNKNOWN.
+        self._maybe_delivered: bool = False
 
     async def emit(self, accumulated_text: str) -> None:
         """Throttled cumulative-text emit. First call sends a new
@@ -4803,6 +4862,9 @@ class TopicStreamHandle:
                 self._message_id = result.message_id
                 self._last_edit = now
             except TelegramError as exc:
+                if (not isinstance(exc, _SERVER_REFUSALS)
+                        and not _established_unsent(exc)):
+                    self._maybe_delivered = True
                 logger.warning("Stream send failed: %s", exc)
             return
 
@@ -4824,16 +4886,33 @@ class TopicStreamHandle:
             if "not modified" not in str(exc).lower():
                 logger.warning("Stream edit failed: %s", exc)
 
-    async def finalize(self, full_text: str) -> None:
+    async def finalize(self, full_text: str) -> DeliveryOutcome:
         """Final edit (or send) once the SDK loop has drained. Handles
         overflow by editing the first chunk and sending subsequent
-        chunks as fresh topic messages."""
+        chunks as fresh topic messages.
+
+        #665: returns a :class:`DeliveryOutcome` so the driver can see a
+        wholly undelivered streamed turn. The outcome keys on the FIRST
+        unit of output (INV-TG-006): a prior successful emit latches
+        ``DELIVERED`` whatever the final edit and the overflow pages then
+        do — a later failure cannot un-show the head, and their failures
+        keep today's WARNs. The DM "final edit decides" rule does NOT
+        apply here because no one-shot notice rides this path; the
+        consumer's question is "was the turn wholly invisible".
+        """
         bot = (
             getattr(self._channel._app, "bot", None)
             if self._channel._app else None
         )
         if bot is None:
-            return
+            # No API call possible. A landed emit still means the head is
+            # on the operator's screen — NOT_DELIVERED is a CLAIM that
+            # nothing reached them, and here it would be false. An
+            # ambiguously-failed emit weakens the claim the same way.
+            if self._message_id is not None:
+                return DeliveryOutcome.DELIVERED
+            return (DeliveryOutcome.UNKNOWN if self._maybe_delivered
+                    else DeliveryOutcome.NOT_DELIVERED)
 
         if self._message_id is None:
             # No prior emit: fresh message(s). v2 (RC3): send_response_to_topic
@@ -4844,7 +4923,21 @@ class TopicStreamHandle:
                 )
             except TelegramError as exc:
                 logger.warning("Stream finalize rich send failed: %s", exc)
-            return
+                if len(render_paged(full_text)) == 1:
+                    # A single rendered page performs only its head send, so
+                    # the raise is necessarily the head's — but a prior
+                    # ambiguously-failed emit may already be on screen, and
+                    # then a refusal here cannot claim the turn invisible.
+                    if self._maybe_delivered:
+                        return DeliveryOutcome.UNKNOWN
+                    if _established_unsent(exc):
+                        return DeliveryOutcome.NOT_DELIVERED
+                    return _edit_failure_outcome(exc)
+                # Multi-page: the raise cannot say whether page 1 landed, and
+                # claiming NOT_DELIVERED for a partially-visible turn would
+                # hand a false kill to its owner (#665, declared residual).
+                return DeliveryOutcome.UNKNOWN
+            return DeliveryOutcome.DELIVERED
 
         # v2 (RC3): page 1 rich-edits the streamed message; the rest are rich
         # sends. Entity BadRequest degrades to that page's DISPLAY plain (the
@@ -4900,6 +4993,10 @@ class TopicStreamHandle:
                 logger.warning(
                     "Stream finalize overflow send failed: %s", exc,
                 )
+        # An emit landed (this branch requires ``_message_id``), so the head
+        # of the turn's output reached the topic: DELIVERED by the latch,
+        # whatever the final edit and the overflow pages did above.
+        return DeliveryOutcome.DELIVERED
 
 
 def _split_message(text: str) -> list[str]:

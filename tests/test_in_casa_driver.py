@@ -1156,3 +1156,206 @@ class TestInCasaApiFaultCarriesItsKind:
             await drv.send_user_turn(rec, "please do the thing")
         assert drv.is_alive(rec) is True, (
             "a refused turn must not tear the engagement's client down")
+
+
+class TestLaunchStreamedTextDelivery:
+    """#665 red case (specified by Terra, accepted separately).
+
+    A launch turn whose only output is streamed topic text, with every
+    Telegram send positively refused (persistent ``Forbidden``), currently
+    leaves ``launch_turn_incomplete`` EMPTY: emit and finalize swallow the
+    refusals into WARN logs and return None, and the #678 observation keys on
+    ``final`` being non-empty (text existing), not on text arriving. The loss
+    is silent — the operator has a topic with no evidence anything happened
+    and no launch owner ever fires."""
+
+    async def test_wholly_refused_launch_turn_is_observable(self, monkeypatch):
+        from telegram.error import Forbidden
+        from channels.telegram import TelegramChannel
+        from drivers.in_casa_driver import InCasaDriver
+
+        fake_bot = MagicMock()
+        fake_bot.send_message = AsyncMock(
+            side_effect=Forbidden("bot was blocked by the user"))
+        fake_bot.edit_message_text = AsyncMock()
+        fake_app = MagicMock()
+        fake_app.bot = fake_bot
+        ch = TelegramChannel(
+            bot_token="x:y", chat_id=100, default_agent="assistant",
+            engagement_supergroup_id=-1001,
+        )
+        ch._app = fake_app
+
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("launch text"), _mk_result_msg()))
+        # The REAL factory and handle: the swallow under test lives in
+        # TopicStreamHandle, so a fake handle would prove nothing.
+        drv = InCasaDriver(topic_stream_factory=ch.create_topic_stream)
+        rec = _make_record()
+
+        await drv.start(rec, prompt="launch prompt",
+                        options=ClaudeAgentOptions(model="sonnet"))
+
+        # The arrangement reached both refused sends: one from emit's first
+        # send, one from finalize's no-prior-message fresh send.
+        assert fake_bot.send_message.await_count == 2
+        assert fake_bot.edit_message_text.await_count == 0
+        # The invariant: a turn that produced text, none of which reached the
+        # topic, must be observable to the launch-incomplete machinery.
+        assert drv.launch_turn_incomplete(rec.id) != ""
+
+
+def _handle_returning(outcome):
+    """A stream handle whose finalize reports ``outcome`` (#665)."""
+    handle = MagicMock()
+    handle.emit = AsyncMock()
+    handle.finalize = AsyncMock(return_value=outcome)
+    return handle
+
+
+class TestDeliveryOutcomeObservation:
+    """#665: _deliver_turn records established NOT_DELIVERED — and ONLY that —
+    into the existing #678/#692 slots."""
+
+    async def _launch(self, monkeypatch, outcome, *messages):
+        from drivers.in_casa_driver import InCasaDriver
+        if not messages:
+            messages = (_mk_assistant("streamed text"), _mk_result_msg())
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient", _client_of(*messages))
+        handle = _handle_returning(outcome)
+        drv = InCasaDriver(topic_stream_factory=lambda t: handle)
+        rec = _make_record()
+        await drv.start(rec, prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+        return drv, rec, handle
+
+    async def test_launch_not_delivered_pops_text_not_delivered_once(
+            self, monkeypatch):
+        from channels import DeliveryOutcome
+        from drivers.in_casa_driver import LAUNCH_TEXT_NOT_DELIVERED
+        drv, rec, handle = await self._launch(
+            monkeypatch, DeliveryOutcome.NOT_DELIVERED)
+
+        assert handle.finalize.await_count == 1
+        assert drv.launch_turn_incomplete(rec.id) == LAUNCH_TEXT_NOT_DELIVERED
+        # Popping is a pop.
+        assert drv.launch_turn_incomplete(rec.id) == ""
+
+    async def test_delivered_and_unknown_and_off_contract_record_nothing(
+            self, monkeypatch):
+        from channels import DeliveryOutcome
+        for outcome in (DeliveryOutcome.DELIVERED, DeliveryOutcome.UNKNOWN,
+                        None, MagicMock()):
+            drv, rec, _h = await self._launch(monkeypatch, outcome)
+            assert drv.launch_turn_incomplete(rec.id) == "", (
+                f"outcome {outcome!r} must record nothing: a lost ack may be "
+                "on screen, and an off-contract handle coerces to UNKNOWN")
+
+    async def test_missing_result_beats_not_delivered(self, monkeypatch):
+        """Strongest-known-first: a cut-off turn keeps its cut-off owner even
+        when delivery also failed."""
+        from channels import DeliveryOutcome
+        from drivers.in_casa_driver import LAUNCH_MISSING_RESULT
+        drv, rec, _h = await self._launch(
+            monkeypatch, DeliveryOutcome.NOT_DELIVERED,
+            _mk_assistant("streamed text"))  # no ResultMessage
+
+        assert drv.launch_turn_incomplete(rec.id) == LAUNCH_MISSING_RESULT
+
+    async def test_api_fault_still_raises_with_no_delivery_observation(
+            self, monkeypatch):
+        from error_kinds import ApiErrorTurn
+        from channels import DeliveryOutcome
+        from drivers.in_casa_driver import InCasaDriver
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_parsed(_refusal_envelope())))
+        handle = _handle_returning(DeliveryOutcome.NOT_DELIVERED)
+        drv = InCasaDriver(topic_stream_factory=lambda t: handle)
+        rec = _make_record()
+
+        with pytest.raises(ApiErrorTurn):
+            await drv.start(rec, prompt="hi",
+                            options=ClaudeAgentOptions(model="sonnet"))
+        assert drv.launch_turn_incomplete(rec.id) == ""
+
+    async def test_followup_not_delivered_records_per_exact_ticket(
+            self, monkeypatch):
+        from channels import DeliveryOutcome
+        from drivers.in_casa_driver import (
+            InCasaDriver, FOLLOWUP_TEXT_NOT_DELIVERED,
+        )
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("streamed text"), _mk_result_msg()))
+        outcomes = [DeliveryOutcome.DELIVERED]  # launch delivers fine
+
+        def _factory(topic_id):
+            h = MagicMock()
+            h.emit = AsyncMock()
+            h.finalize = AsyncMock(side_effect=lambda t: outcomes[-1])
+            return h
+
+        drv = InCasaDriver(topic_stream_factory=_factory)
+        rec = _make_record()
+        await drv.start(rec, prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+        assert drv.launch_turn_incomplete(rec.id) == ""
+
+        outcomes.append(DeliveryOutcome.NOT_DELIVERED)
+        token = drv.admit_inbound(rec.id, "again")
+        await drv.send_user_turn(rec, "again", inbound_token=token)
+
+        # The launch slot is untouched; the follow-up slot is keyed by the
+        # exact ticket and popped once.
+        assert drv.launch_turn_incomplete(rec.id) == ""
+        assert (drv.followup_turn_incomplete(rec.id, token)
+                == FOLLOWUP_TEXT_NOT_DELIVERED)
+        assert drv.followup_turn_incomplete(rec.id, token) == ""
+        # A different ticket reads nothing.
+        assert drv.followup_turn_incomplete(rec.id, object()) == ""
+
+    async def test_quiet_ticketed_turn_never_finalizes_and_records_nothing(
+            self, monkeypatch):
+        """Seam round (Terra): a ResultMessage-only follow-up turn produces no
+        text, so finalize never runs and the UNKNOWN initialization must keep
+        it a quiet success — zero emits, zero finalizes, zero observations."""
+        from channels import DeliveryOutcome
+        from drivers.in_casa_driver import InCasaDriver
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("launch ok"), _mk_result_msg()))
+        handles = []
+
+        def _factory(topic_id):
+            h = _handle_returning(DeliveryOutcome.DELIVERED)
+            handles.append(h)
+            return h
+
+        drv = InCasaDriver(topic_stream_factory=_factory)
+        rec = _make_record()
+        await drv.start(rec, prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+
+        async def _result_only(self):
+            yield _mk_result_msg()
+
+        monkeypatch.setattr(
+            type(drv._clients[rec.id]), "receive_response", _result_only)
+        token = drv.admit_inbound(rec.id, "quiet work")
+        await drv.send_user_turn(rec, "quiet work", inbound_token=token)
+
+        follow_handle = handles[-1]
+        assert follow_handle.emit.await_count == 0
+        assert follow_handle.finalize.await_count == 0
+        assert drv.followup_turn_incomplete(rec.id, token) == ""
+        assert drv.launch_turn_incomplete(rec.id) == ""
+
+    async def test_notice_reason_constant_matches_the_channel_literal(self):
+        """The channel selects the #665 notice by a LOCAL literal (it must not
+        import a driver module); pin the two spellings together."""
+        from channels.telegram import _FOLLOWUP_TEXT_NOT_DELIVERED
+        from drivers.in_casa_driver import FOLLOWUP_TEXT_NOT_DELIVERED
+        assert _FOLLOWUP_TEXT_NOT_DELIVERED == FOLLOWUP_TEXT_NOT_DELIVERED
