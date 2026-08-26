@@ -156,8 +156,9 @@ inspect-time gate refuses a callback whose scoped effective name would overflow 
 `(plugin, effective)` callback across any declaration digest and reconciles, darkening that
 route until the operator re-consents.
 
-**An expired consent DM is recovered on demand by `consent_reprompt`** (see the tool
-interface); a consent relayed through any ask surface commits nothing.
+**An expired consent DM is recovered on demand by `consent_reprompt`** (see
+[`plugin-mutation-tools.md`](plugin-mutation-tools.md)); a consent relayed through any ask
+surface commits nothing.
 
 **Registering a redirect URI with a provider** uses `redirect_uri`, joining the validated base
 with `callback/<effective>` — the exact string the provider must be given, matched byte-for-byte

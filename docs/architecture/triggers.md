@@ -298,8 +298,9 @@ their own schema rails: v2 forbids a webhook `path` (the wildcard route provides
 while legacy v1 required one, and a scheduled trigger takes exactly one of an inline
 prompt or a prompt file.
 An expired consent DM is re-issued on demand by the `consent_reprompt` tool — the
-prompt-only re-issue shared by all three consent kinds (documented with the tool
-interface), which skips triggers the operator explicitly denied.
+prompt-only re-issue shared by all three consent kinds (its contract is in
+[`plugin-mutation-tools.md`](plugin-mutation-tools.md)), which skips triggers the operator
+explicitly denied.
 Reconciliation is hooked at boot, at plugin lifecycle changes, at consent and revocation,
 and at exactly four reload scopes: triggers, agent, agents, and full. The policies and
 config-sync reloads refresh agent configuration without reconciling the plugin overlay, so

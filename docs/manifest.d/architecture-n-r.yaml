@@ -172,7 +172,7 @@
 
 - doc: architecture/plugin-mutation-tools.md
   summary: What the plugin and specialist mutation tools guarantee — the commit-then-converge ordering, what an envelope may claim about an integration, and what a committed removal discloses.
-  when_changing: plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, or the removal disclosure
+  when_changing: plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, the removal disclosure, or re-issuing a plugin-consent DM on demand
   covers:
     - casa/rootfs/opt/casa/tools.py::plugin_add
     - casa/rootfs/opt/casa/consent_denials.py

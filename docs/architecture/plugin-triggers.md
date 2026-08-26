@@ -134,8 +134,9 @@ directory, while body-HMAC rides the one global webhook secret — provisioning 
 leaves the plugin unroutable.
 
 **Re-issuing an expired consent DM** is the `consent_reprompt` tool's job — the prompt-only
-re-issue shared by all three consent kinds (documented with the tool interface), which skips
-triggers the operator explicitly denied.
+re-issue shared by all three consent kinds (its contract is in
+[`plugin-mutation-tools.md`](plugin-mutation-tools.md)), which skips triggers the operator
+explicitly denied.
 
 **Changing when reconciliation runs** changes what a stale overlay can survive. It is hooked
 at boot, at plugin lifecycle changes, at consent and revocation, and at exactly four reload
