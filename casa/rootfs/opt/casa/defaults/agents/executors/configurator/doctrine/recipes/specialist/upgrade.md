@@ -24,7 +24,11 @@
    (canonical commit -> reload -> emit order — see `completion.md`). The new version's owned plugin
    set REPLACES the old one atomically as part of `specialist_upgrade` itself (a plugin the old
    version owned but the new one no longer declares is removed; anything newly declared is
-   activated) — no separate plugin step here.
+   activated) — no separate plugin step here. If the result carries
+   `plugin_data_note` — it does when an owned plugin ended up removed and the
+   rollback could not undo it — relay it verbatim with the names in
+   `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
+   describes.
 
 ## Common mistakes
 

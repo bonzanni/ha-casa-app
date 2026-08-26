@@ -1466,6 +1466,16 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     assert sum(fragment in text for text, fragment in (
         (remove, "not reported in the result"),
         (uninstall, "this result does not report it"))) == 2
+
+    # Sol diff-review r8: an upgrade and a rollback swap the owned set
+    # wholesale, so either can leave a plugin removed when its compensation
+    # fails. Their recipes owe the same conditional relay — unpinned recipe
+    # prose is exactly the seam round 3 measured open.
+    for name in ("specialist/upgrade.md", "specialist/rollback.md"):
+        text = _flat(name)
+        assert sum(fragment in text for fragment in (
+            "if the result carries `plugin_data_note`",
+            "relay it verbatim with the names in `plugin_data_plugins`")) == 2
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (

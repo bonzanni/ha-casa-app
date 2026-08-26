@@ -220,10 +220,13 @@ the disclosure into its ok payload — so a committed-but-not-ready outcome (INV
 carries it too, since the survival fact is settled the moment the registry saves — and
 `specialist_uninstall` adds it, naming the cascaded plugins, whenever its bundle swapped owned
 entries out. The one `ok:false` envelope whose registry mutation can persist, the
-`compensation_failed` arm of a failed uninstall sequencer, discloses on measurement rather
+`compensation_failed` arm of a failed bundle sequencer, discloses on measurement rather
 than on the flag: a failed compensation does not establish that the removal survived, because
 the rollback restores the registry in its first step and then does fallible work, so the arm
-reads the registry back and names only the entries actually still absent. A read that fails
+reads the registry back and names only the entries actually still absent. That measurement
+is the whole gate, and the operation is not part of it: an upgrade or a rollback swaps the
+owned set wholesale and can drop a plugin the previous set had, which is the same persisting
+removal reached by a third door. A read that fails
 establishes nothing either way and the envelope says so, while still stating the two facts
 that hold regardless — the plugin's CLI-managed persistent data was not deleted, and no
 provider revocation was performed. The shipped surfaces say the same thing: the tool's own description, the plugin
@@ -237,7 +240,9 @@ grant's state, which Casa has no standing to report in either direction.
 
 What it does not cover: envelopes that describe no persisting removal carry none of it — the
 pre-commit refusals, `plugin_unassign`, `plugin_update`, and the rolled-back arms, where the
-entries are back. Nor does it cover a removal path that RAISES after the registry commit — the
+entries are back. Nor does it reach a SUCCESSFUL upgrade or rollback that drops an owned
+plugin: that is a persisting removal by this invariant's own words, and its result says
+nothing about it. Only the failed-compensation arm of those operations discloses today. Nor does it cover a removal path that RAISES after the registry commit — the
 uninstall sequencer, where compensation runs and the exception propagates, and equally a
 direct `plugin_remove` whose reload-and-verify tail raises. In both the mutation has
 committed and there is no result envelope to carry the disclosure, so the operator gets a

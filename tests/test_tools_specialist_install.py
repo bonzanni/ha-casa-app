@@ -1988,6 +1988,13 @@ async def test_rolled_back_and_non_uninstall_arms_disclose_nothing(
         return SimpleNamespace(slug="mtg", op=op, before_entries=[
             {"name": "mtg.gmail", "artifact_id": "a" * 64}])
 
+    import plugin_registry
+    from plugin_registry import RegistryData
+
+    # Whatever the arm, the entries are back in the registry.
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
     seq = {"ok": False, "kind": "bundle_sequence_failed"}
     counts = []
     for comp, op, expect_flag in ((_comp_ok, "uninstall", "rolled_back"),
@@ -2000,6 +2007,41 @@ async def test_rolled_back_and_non_uninstall_arms_disclose_nothing(
         assert env[expect_flag] is True
         counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
     assert counts == [0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_every_bundle_op_discloses_a_drop_its_rollback_could_not_undo(
+        monkeypatch) -> None:
+    """Sol diff-review r8: an upgrade and a rollback swap the owned set
+    wholesale, so either can drop a plugin the previous set had. When
+    compensation then fails with that entry still gone, it is a persisting
+    committed removal — the measurement is the whole gate, and the op is not
+    part of it. Each op measured separately."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    # mtg.gmail came back; mtg.dropped did not.
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    counts, named = [], []
+    for op in ("upgrade", "rollback", "install", "uninstall"):
+        txn = SimpleNamespace(slug="mtg", op=op, before_entries=[
+            {"name": "mtg.gmail", "artifact_id": "a" * 64},
+            {"name": "mtg.dropped", "artifact_id": "b" * 64}])
+        env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+        named.append(env.get("plugin_data_plugins"))
+    assert counts == [4, 4, 4, 4]
+    assert named == [["mtg.dropped"]] * 4
 
 
 @pytest.mark.asyncio

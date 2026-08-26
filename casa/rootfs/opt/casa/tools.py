@@ -11601,7 +11601,7 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         # PRE-SWAP owned set, not a removal.
         owned = [e.get("name") for e in (getattr(txn, "before_entries", None) or [])
                  if isinstance(e, dict) and e.get("name")]
-        if getattr(txn, "op", "") == "uninstall" and owned:
+        if owned:
             # Sol diff-review r1: `compensation_failed` does NOT establish that
             # the removal persisted. rollback_disk() restores the registry in
             # its FIRST step and then does fallible work (tuple/sidecar writes,
@@ -11612,6 +11612,15 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
             # invariant. So MEASURE it: read the registry back and disclose only
             # for the names actually still absent. A read that fails establishes
             # nothing either way, and says so.
+            #
+            # Sol diff-review r8: and the measurement is the WHOLE gate — an
+            # earlier `op == "uninstall"` test was wrong in the other direction.
+            # An upgrade or a rollback swaps the owned set wholesale, so either
+            # can drop a plugin the previous set had; when compensation then
+            # fails with that entry still gone, it is a persisting committed
+            # removal reached by a third door and owes the same disclosure. On
+            # an install whose swap replaced nothing, or any op whose entries
+            # came back, `still_absent` is empty and nothing is said.
             still_absent, readable = await asyncio.to_thread(
                 _absent_owned_names, txn, owned)
             if not readable:
