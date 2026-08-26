@@ -28,14 +28,14 @@ once, and only its absence makes filtering per-tool. The SDK server also loads e
 (`alwaysLoad`), so every added tool's schema lands in every SDK session's up-front context
 — adding a tool is a prompt-cost decision, not just a dispatch one.
 
-
+**A result has two layers, and the outer one is inferred.** A tool returns a payload
 serialized into one text content block; the wrapper marks the outer result as an error only
 when the payload says `status: "error"` or `ok: false`. Statuses like *unavailable*,
 *pending* and *acknowledged* deliberately ride as successes — they are outcomes, not
 failures. And the wrapper is a convention, not a law: at least one tool returns raw
 envelopes without it, so "every error becomes `is_error`" is not a property of the surface.
 
-
+**Argument-schema validation depends on the transport.** The SDK path registers the
 decorated tools with their schemas, and MCP validation there rejects a missing required
 argument or a bad enum before the handler runs — code and tests rely on it. The internal
 bridge route checks only that the name is known and passes the arguments through, so a
