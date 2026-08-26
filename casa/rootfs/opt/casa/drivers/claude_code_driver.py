@@ -1025,6 +1025,56 @@ def _check_plugin_dirs_readable(uid: int, plugin_artifacts) -> None:
             )
 
 
+async def _rollback_await(
+    coro: Awaitable[Any], *, what: str, engagement_id: str,
+) -> asyncio.CancelledError | None:
+    """Run ONE of a launch rollback's awaits. Return a cancellation to DEFER.
+
+    #755. Every step of ``ClaudeCodeDriver.start``'s rollback was already
+    guarded so that one step's failure could not skip its successors — but the
+    guards caught ``Exception``, and ``asyncio.CancelledError`` is a
+    ``BaseException``. A cancellation delivered at one of the rollback's three
+    awaits therefore escaped its own guard AND the enclosing
+    ``except BaseException`` handler (an exception raised inside a handler body
+    is not caught by that handler), abandoning every step below it: the
+    workspace tree, the control directory that holds ``.casa-meta.json``, the
+    uid's passwd/group identity and its private outbox. ``.casa-meta.json`` is
+    already ``UNDERGOING`` by then and ``workspace._sweep_one_workspace``
+    returns on ``UNDERGOING`` before it reads ``retention_until``, so nothing
+    ever reaps the residue — and uids are never reused (INV-CONT-001), so it is
+    one permanent leak per failed attempt.
+
+    The cancellation is RECORDED, never swallowed: the caller re-raises it once
+    the removals below have run. Two properties make that sufficient without any
+    drain, shield, detach or anchor:
+
+    * every remaining removal is SYNCHRONOUS, so it has no suspension point at
+      which a further cancellation could be delivered; and
+    * the caller attempts no further rollback await once one has been recorded,
+      so at most one await is ever entered after a cancellation is known.
+
+    Retrying the cancelled await instead was measured and rejected: a task
+    absorbing successive ``cancel()`` deliveries in a retry loop has no
+    termination property (1,000 deliveries absorbed, task never done), and
+    nothing caps how many cancellations a counterparty may deliver.
+
+    Ordinary failures keep today's best-effort behaviour — logged, swallowed, so
+    a rollback step's failure never masks the original launch failure.
+    """
+    try:
+        await coro
+    except asyncio.CancelledError as rb_exc:
+        logger.warning(
+            "rollback %s for engagement %s was CANCELLED — the rollback's "
+            "remaining awaits are skipped; its synchronous removals still run",
+            what, engagement_id[:8],
+        )
+        return rb_exc
+    except Exception as rb_exc:  # noqa: BLE001 — best-effort rollback step
+        logger.warning("rollback %s failed: %s", what, rb_exc)
+    return None
+
+
 class ClaudeCodeDriver(DriverProtocol):
     """s6-rc orchestrator. Does not manage subprocesses directly."""
 
@@ -1484,26 +1534,30 @@ class ClaudeCodeDriver(DriverProtocol):
                 # planted (this raises before write_service_dir), so
                 # ensure_service_down is best-effort/likely a no-op — kept
                 # anyway in case a prior partial state lingers.
+                # #755: a cancellation delivered at one of this handler's
+                # three awaits used to escape the handler itself and abandon
+                # every removal below it. Each await now runs through
+                # ``_rollback_await``, which RECORDS a cancellation instead of
+                # propagating it; ``rb_cancelled`` then suppresses the awaits
+                # after it and is re-raised at the end, once the synchronous
+                # removals have run.
+                rb_cancelled: asyncio.CancelledError | None = None
                 if isinstance(start_exc, UidDropRefused):
-                    try:
-                        await s6_rc.ensure_service_down(
-                            engagement_id=engagement.id)
-                    except Exception:  # noqa: BLE001 — best-effort teardown
-                        logger.warning(
-                            "uid-drop refusal: ensure_service_down failed "
-                            "for %s", engagement.id[:8], exc_info=True,
-                        )
-                    if self._registry is not None:
-                        try:
-                            await self._registry.mark_error(
+                    # The first await: nothing can have been recorded yet, so
+                    # this one is unguarded by construction.
+                    rb_cancelled = await _rollback_await(
+                        s6_rc.ensure_service_down(engagement_id=engagement.id),
+                        what="ensure_service_down",
+                        engagement_id=engagement.id,
+                    )
+                    if rb_cancelled is None and self._registry is not None:
+                        rb_cancelled = await _rollback_await(
+                            self._registry.mark_error(
                                 engagement.id, kind="refuse_uid_drop_failed",
                                 message=str(start_exc),
-                            )
-                        except Exception:  # noqa: BLE001 — best-effort mark
-                            logger.warning(
-                                "uid-drop refusal: mark_error failed for "
-                                "%s", engagement.id[:8], exc_info=True,
-                            )
+                            ),
+                            what="mark_error", engagement_id=engagement.id,
+                        )
                 # Best-effort rollback. Each step swallows its own errors so
                 # one rollback failure doesn't mask the original cause.
                 # v0.64.0: ALWAYS attempt dir removal — write_service_dir can
@@ -1519,13 +1573,21 @@ class ClaudeCodeDriver(DriverProtocol):
                     logger.warning(
                         "rollback remove_service_dir failed: %s", rb_exc,
                     )
-                if service_dir_written:
-                    try:
-                        await s6_rc._compile_and_update_locked()
-                    except Exception as rb_exc:  # noqa: BLE001
-                        logger.warning(
-                            "rollback compile_and_update failed: %s", rb_exc,
-                        )
+                if service_dir_written and rb_cancelled is None:
+                    # The ``rb_cancelled`` half is defence in depth rather than
+                    # a reachable guard TODAY: ``UidDropRefused`` is raised only
+                    # by ``_preflight_uid_drop`` and ``_check_plugin_dirs_readable``,
+                    # both strictly before ``write_service_dir`` sets
+                    # ``service_dir_written``, so the two arms are mutually
+                    # exclusive and nothing can have been recorded here yet. It
+                    # is written anyway so that any await a later change adds
+                    # ahead of this one inherits the property rather than
+                    # reopening #755.
+                    rb_cancelled = await _rollback_await(
+                        s6_rc._compile_and_update_locked(),
+                        what="compile_and_update",
+                        engagement_id=engagement.id,
+                    )
                 # Always attempt to remove the workspace tree at the
                 # deterministic path — provision_workspace may have raised
                 # AFTER creating partial state.
@@ -1576,6 +1638,18 @@ class ClaudeCodeDriver(DriverProtocol):
                             "rollback engagement outbox teardown(%s) "
                             "failed: %s", real_uid, rb_exc,
                         )
+                if rb_cancelled is not None:
+                    # #755: deferred, never swallowed. The task really was
+                    # cancelled, so a cancellation is what leaves this frame —
+                    # anything else would corrupt ``wait_for``/``TaskGroup``
+                    # cancel bookkeeping and hand the loop a task that declined
+                    # its own cancellation at shutdown. Nothing is lost by it:
+                    # this cancellation was raised while ``start_exc`` was being
+                    # handled, so ``rb_cancelled.__context__`` is already
+                    # ``start_exc`` and BOTH facts leave ``start()`` on one
+                    # exception object — the launch's own failure, and the
+                    # cancellation that arrived during its unwind.
+                    raise rb_cancelled
                 raise
 
         # #369 (Sol design r2): LAST-instant gate — a clearance clamp landing

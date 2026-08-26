@@ -4237,3 +4237,551 @@ class TestLargeTurnIsWrittenWhole:
         assert ok is False, (
             "a partially written turn must be reported as not delivered")
         assert elapsed < 5.0, "the deadline must still bound the write"
+
+
+# ---------------------------------------------------------------------------
+# #755 — the launch rollback is not cancellation-complete
+# ---------------------------------------------------------------------------
+
+
+class _RollbackProbe:
+    """Records every synchronous rollback effect, by exact target, in order.
+
+    ``TestStartRollback`` asserts paths are absent afterwards. Absence cannot
+    tell "the removal ran" from "the removal ran twice", and it cannot see
+    ORDER at all — Sol reproduced a mutant that recompiles BEFORE
+    ``remove_service_dir`` and leaves the failed service in the live db while
+    every path/count assertion still passes. So this probe keeps one ordered
+    trace and the tests assert on indices in it.
+    """
+
+    def __init__(self, monkeypatch, *, svc_root, ws_path, ctl_path, uid,
+                 outbox_path):
+        import shutil as _real_shutil
+
+        from drivers import claude_code_driver as ccd
+        from drivers import s6_rc
+        import plugin_outbox
+
+        self.trace: list[tuple] = []
+        self.svc_root = svc_root
+        self.ws_path = ws_path
+        self.ctl_path = ctl_path
+        self.uid = uid
+        self.outbox_path = outbox_path
+
+        real_remove_dir = s6_rc.remove_service_dir
+
+        def _remove_service_dir(*, svc_root, engagement_id):
+            self.trace.append(("remove_service_dir", engagement_id))
+            return real_remove_dir(svc_root=svc_root,
+                                   engagement_id=engagement_id)
+
+        monkeypatch.setattr(s6_rc, "remove_service_dir", _remove_service_dir)
+
+        class _ShutilShim:
+            """Only ``rmtree`` is observed; everything else delegates.
+
+            Patched onto the DRIVER module's ``shutil`` name, never onto the
+            shared ``shutil`` module object — a global patch would follow every
+            other importer of it into the same test.
+            """
+
+            def __getattr__(_self, name):
+                return getattr(_real_shutil, name)
+
+            @staticmethod
+            def rmtree(path, *a, **kw):
+                self.trace.append(("rmtree", str(path)))
+                return _real_shutil.rmtree(path, *a, **kw)
+
+        monkeypatch.setattr(ccd, "shutil", _ShutilShim())
+
+        def _prune_identity(u):
+            self.trace.append(("prune_identity", u))
+
+        monkeypatch.setattr(ccd, "prune_identity", _prune_identity)
+
+        real_teardown = plugin_outbox.teardown_engagement_outbox
+
+        def _teardown(u, *, root=None):
+            self.trace.append(("teardown_outbox", u))
+            return real_teardown(u, root=root)
+
+        monkeypatch.setattr(plugin_outbox, "teardown_engagement_outbox",
+                            _teardown)
+
+    # -- the assertion vocabulary -------------------------------------------
+
+    def counts(self) -> dict:
+        return {
+            "remove_service_dir": sum(
+                1 for e in self.trace if e[0] == "remove_service_dir"),
+            "rmtree_workspace": sum(
+                1 for e in self.trace
+                if e == ("rmtree", str(self.ws_path))),
+            "rmtree_control": sum(
+                1 for e in self.trace if e == ("rmtree", str(self.ctl_path))),
+            "prune_identity": sum(
+                1 for e in self.trace
+                if e == ("prune_identity", self.uid)),
+            "teardown_outbox": sum(
+                1 for e in self.trace if e == ("teardown_outbox", self.uid)),
+        }
+
+    @staticmethod
+    def each_once() -> dict:
+        return {
+            "remove_service_dir": 1,
+            "rmtree_workspace": 1,
+            "rmtree_control": 1,
+            "prune_identity": 1,
+            "teardown_outbox": 1,
+        }
+
+    def paths_absent(self) -> dict:
+        return {
+            "workspace": os.path.exists(self.ws_path),
+            "control": os.path.exists(self.ctl_path),
+            "outbox": os.path.isdir(self.outbox_path),
+        }
+
+
+async def _spin_until(predicate, *, what: str, limit: int = 2000):
+    """Yield to the loop until ``predicate()`` — no sleeps, no wall clock.
+
+    A bound on ITERATIONS is not an elapsed allowance: it fires when the loop
+    has run ``limit`` times without the awaited state appearing, which is a
+    no-output condition, and it fails the test loudly instead of hanging the
+    suite forever.
+    """
+    for _ in range(limit):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"never observed: {what}")
+
+
+class _RollbackHarness:
+    """One shared fixture for every #755 case.
+
+    Provisioning is REAL — the workspace, its control directory and the uid's
+    private outbox are actually created — so their survival after a truncated
+    rollback is the defect itself and not a fixture artefact.
+    """
+
+    def __init__(self, monkeypatch, tmp_path):
+        from drivers import s6_rc
+        from drivers import workspace as ws_mod
+        import plugin_outbox
+
+        _patch_uid_drop_ok(monkeypatch)
+
+        self.uid = 200005
+        self.rec = _make_record(allocated_uid=self.uid)
+        self.defn = _make_defn(tmp_path)
+
+        (tmp_path / "engagements").mkdir()
+        (tmp_path / "svc-root").mkdir()
+        (tmp_path / "base-plugins").mkdir()
+        monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT",
+                            str(tmp_path / "svc-root"))
+
+        # A FRESH compile lock per test. The module-level one is created at
+        # import and caches its loop the first time it is CONTENDED, so the
+        # competing-acquirer case would otherwise bind it to one test's loop
+        # for the rest of the worker process.
+        monkeypatch.setattr(s6_rc, "_compile_lock", asyncio.Lock())
+
+        self.ws_path = tmp_path / "engagements" / self.rec.id
+        self.ctl_path = ws_mod.control_dir(self.rec.id)
+        self.outbox_path = plugin_outbox.engagement_outbox_dir(self.uid)
+
+        self.compile_entries: list[int] = []
+        self.ensure_down_entries: list[int] = []
+        self.mark_error_entries: list[int] = []
+        self.rollback_gate = asyncio.Event()
+
+        self.probe = _RollbackProbe(
+            monkeypatch, svc_root=str(tmp_path / "svc-root"),
+            ws_path=self.ws_path, ctl_path=self.ctl_path, uid=self.uid,
+            outbox_path=self.outbox_path)
+
+        from drivers.claude_code_driver import ClaudeCodeDriver
+        self.drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "engagements"),
+            send_to_topic=AsyncMock(),
+            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
+        )
+
+    # -- fakes ---------------------------------------------------------------
+
+    def compile_fake(self, *, suspend_on_call: int | None):
+        """``_compile_and_update_locked`` that can genuinely SUSPEND.
+
+        ``tests/test_claude_code_driver.py``'s existing cancellation test uses
+        a fake that raises SYNCHRONOUSLY, so the rollback's own awaits never
+        suspend and no cancellation can be delivered inside the rollback —
+        which is exactly why it stays green with #755 live.
+        """
+        async def _fake():
+            self.compile_entries.append(len(self.compile_entries) + 1)
+            if suspend_on_call is not None \
+                    and len(self.compile_entries) == suspend_on_call:
+                await self.rollback_gate.wait()
+        return _fake
+
+    async def launch(self):
+        return await self.drv.start(self.rec, prompt="hi", options=self.defn)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
+)
+class TestRollbackCancellationCompleteness:
+    """#755 (INV-ENG-014): a cancellation delivered at one of the rollback's
+    own awaits must not skip the removals below it.
+
+    ``ClaudeCodeDriver.start``'s rollback guards each of its three awaits with
+    ``except Exception``. ``asyncio.CancelledError`` is a ``BaseException``, so
+    a cancellation delivered at one of them escapes the whole
+    ``except BaseException`` handler and abandons the workspace ``rmtree``, the
+    control-directory ``rmtree`` (which is also ``.casa-meta.json``'s removal),
+    ``prune_identity`` and the outbox teardown. The meta is already
+    ``UNDERGOING`` by then and ``workspace._sweep_one_workspace`` returns on
+    ``UNDERGOING`` before it reads ``retention_until``, so nothing ever reaps
+    the residue — and uids are never reused (INV-CONT-001), so it is one
+    permanent leak per failed attempt.
+
+    Every case here delivers a REAL ``task.cancel()`` against a genuinely
+    suspended await. The pre-existing
+    ``test_cancellation_mid_launch_rolls_back_like_a_failure`` raises
+    ``CancelledError`` synchronously, so ``Task.cancelling()`` stays 0 under it
+    and nothing lands inside the rollback: it pins "a cancellation ENTERS the
+    rollback", not "a cancellation lands INSIDE it".
+    """
+
+    async def test_runtime_failure_cancelled_inside_rollback_compile_runs_sync_tail(
+            self, monkeypatch, tmp_path):
+        """Case 1 — the SINGLE-cancellation shape #755's own text misses.
+
+        An ordinary provisioning failure enters the rollback, and then ONE
+        cancellation lands in the rollback's compile. Kills: ``except
+        Exception`` on the rollback compile; re-raising the interrupted
+        ``RuntimeError`` instead of the delivered cancellation; losing the
+        interrupted failure from the cancellation's ``__context__``; skipping
+        any synchronous removal.
+        """
+        from drivers import s6_rc
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        start_failure = RuntimeError("simulated s6-rc start failure")
+
+        async def fake_start_fail(*, engagement_id):
+            raise start_failure
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            h.compile_fake(suspend_on_call=2))
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+
+        task = asyncio.ensure_future(h.launch())
+        await _spin_until(lambda: len(h.compile_entries) == 2,
+                          what="the rollback's compile to be entered")
+        task.cancel()
+        h.rollback_gate.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await task
+
+        assert h.compile_entries == [1, 2]
+        assert task.cancelling() == 1
+        assert raised.value.__context__ is start_failure, (
+            "the cancellation must carry the launch failure it interrupted — "
+            "both signals leave start() on one exception object")
+        assert h.probe.counts() == _RollbackProbe.each_once(), (
+            "#755: a cancellation at the rollback's compile await skipped the "
+            "durable removals below it")
+        assert h.probe.paths_absent() == {
+            "workspace": False, "control": False, "outbox": False}
+
+    async def test_second_cancel_inside_rollback_compile_runs_sync_tail(
+            self, monkeypatch, tmp_path):
+        """Case 2 — the shape #755's text names: cancel the launch, then cancel
+        again inside the rollback it entered.
+
+        Kills: handling only a single cancellation; using ``Task.cancelling()``
+        as a boolean that conflates the first and second deliveries; swallowing
+        the second cancellation; re-raising the FIRST cancellation instead of
+        the one delivered at the rollback.
+        """
+        from drivers import s6_rc
+        from drivers.claude_code_driver import ClaudeCodeDriver
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        launch_gate = asyncio.Event()
+        launch_cancel_seen: list[BaseException] = []
+
+        async def suspending_summary(self, engagement):
+            try:
+                await launch_gate.wait()
+            except asyncio.CancelledError as exc:
+                launch_cancel_seen.append(exc)
+                raise
+
+        monkeypatch.setattr(ClaudeCodeDriver, "_post_initial_summary",
+                            suspending_summary)
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            h.compile_fake(suspend_on_call=2))
+
+        task = asyncio.ensure_future(h.launch())
+        await _spin_until(lambda: len(h.compile_entries) == 1,
+                          what="the forward compile")
+        task.cancel()
+        await _spin_until(lambda: len(h.compile_entries) == 2,
+                          what="the rollback's compile to be entered")
+        task.cancel()
+        h.rollback_gate.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await task
+
+        assert h.compile_entries == [1, 2]
+        assert task.cancelling() == 2
+        assert len(launch_cancel_seen) == 1
+        assert raised.value is not launch_cancel_seen[0], (
+            "the cancellation delivered INSIDE the rollback is the one that "
+            "propagates, not the one that entered it")
+        assert raised.value.__context__ is launch_cancel_seen[0]
+        assert h.probe.counts() == _RollbackProbe.each_once()
+        assert h.probe.paths_absent() == {
+            "workspace": False, "control": False, "outbox": False}
+
+    async def test_rollback_compile_without_cancellation_preserves_the_failure(
+            self, monkeypatch, tmp_path):
+        """Case 3 — the mutation CONTROL. Same fakes, same suspension, no
+        cancellation: all five effects run and the original failure is the one
+        re-raised. Without it a green result could come from a broken fixture.
+
+        Also pins the ORDER Sol reproduced a mutant against: the service pair
+        must already be gone when the rollback's compile is entered, or the
+        compile publishes a live db that still contains the failed service
+        while every count and path assertion passes.
+        """
+        from drivers import s6_rc
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        start_failure = RuntimeError("simulated s6-rc start failure")
+        svc_gone_at_compile: list[bool] = []
+        svc_pair = tmp_path / "svc-root" / f"engagement-{h.rec.id}"
+
+        async def fake_start_fail(*, engagement_id):
+            raise start_failure
+
+        base_compile = h.compile_fake(suspend_on_call=2)
+
+        async def compile_watching_order():
+            svc_gone_at_compile.append(not svc_pair.exists())
+            await base_compile()
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            compile_watching_order)
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+
+        task = asyncio.ensure_future(h.launch())
+        await _spin_until(lambda: len(h.compile_entries) == 2,
+                          what="the rollback's compile to be entered")
+        h.rollback_gate.set()
+        with pytest.raises(RuntimeError) as raised:
+            await task
+
+        assert raised.value is start_failure
+        assert task.cancelling() == 0
+        assert h.compile_entries == [1, 2]
+        assert svc_gone_at_compile == [False, True], (
+            "remove_service_dir must precede the rollback's recompile — "
+            "otherwise the recompile republishes the failed service")
+        assert h.probe.counts() == _RollbackProbe.each_once()
+        assert h.probe.paths_absent() == {
+            "workspace": False, "control": False, "outbox": False}
+
+    async def test_uid_drop_refusal_cancelled_inside_ensure_down_runs_sync_tail(
+            self, monkeypatch, tmp_path):
+        """Case 4 — the ``UidDropRefused`` pre-branch's FIRST await.
+
+        ``ensure_service_down`` (`:1489`) carries the identical
+        ``except Exception`` mismatch. Kills: ``except Exception`` there;
+        attempting ``mark_error`` after a cancellation was recorded; replacing
+        the delivered cancellation with the ``UidDropRefused``; skipping any
+        synchronous removal.
+        """
+        from drivers import s6_rc
+        from drivers import claude_code_driver as ccd
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        uid_failure = ccd.UidDropRefused("simulated uid-drop refusal")
+        ensure_gate = asyncio.Event()
+
+        def refuse(rec, ws):
+            raise uid_failure
+
+        async def suspending_ensure_down(*, engagement_id, attempts=3):
+            h.ensure_down_entries.append(1)
+            await ensure_gate.wait()
+            return True
+
+        async def fake_mark_error(*a, **kw):
+            h.mark_error_entries.append(1)
+
+        monkeypatch.setattr(ccd, "_preflight_uid_drop", refuse)
+        monkeypatch.setattr(s6_rc, "ensure_service_down",
+                            suspending_ensure_down)
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            h.compile_fake(suspend_on_call=None))
+        h.drv._registry = MagicMock(mark_error=fake_mark_error)
+
+        task = asyncio.ensure_future(h.launch())
+        await _spin_until(lambda: len(h.ensure_down_entries) == 1,
+                          what="ensure_service_down to be entered")
+        task.cancel()
+        ensure_gate.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await task
+
+        assert task.cancelling() == 1
+        assert h.ensure_down_entries == [1]
+        assert h.mark_error_entries == [], (
+            "no rollback await may be attempted after a cancellation was "
+            "recorded")
+        assert h.compile_entries == [], (
+            "UidDropRefused is raised before write_service_dir, so no compile "
+            "runs on this path")
+        assert raised.value.__context__ is uid_failure
+        assert h.probe.counts() == _RollbackProbe.each_once()
+        assert h.probe.paths_absent() == {
+            "workspace": False, "control": False, "outbox": False}
+
+    async def test_uid_drop_refusal_cancelled_inside_mark_error_runs_sync_tail(
+            self, monkeypatch, tmp_path):
+        """Case 6 — the ``UidDropRefused`` pre-branch's SECOND await.
+
+        Sol's seam finding: with no case cancelling here, a mutant that
+        narrows only ``mark_error``'s catch back to ``Exception`` ships green
+        while skipping the entire synchronous tail (measured 0/500 removals
+        against 500/500 for the correct catch).
+        """
+        from drivers import s6_rc
+        from drivers import claude_code_driver as ccd
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        uid_failure = ccd.UidDropRefused("simulated uid-drop refusal")
+        mark_gate = asyncio.Event()
+
+        def refuse(rec, ws):
+            raise uid_failure
+
+        async def ok_ensure_down(*, engagement_id, attempts=3):
+            h.ensure_down_entries.append(1)
+            return True
+
+        async def suspending_mark_error(*a, **kw):
+            h.mark_error_entries.append(1)
+            await mark_gate.wait()
+
+        monkeypatch.setattr(ccd, "_preflight_uid_drop", refuse)
+        monkeypatch.setattr(s6_rc, "ensure_service_down", ok_ensure_down)
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            h.compile_fake(suspend_on_call=None))
+        h.drv._registry = MagicMock(mark_error=suspending_mark_error)
+
+        task = asyncio.ensure_future(h.launch())
+        await _spin_until(lambda: len(h.mark_error_entries) == 1,
+                          what="mark_error to be entered")
+        task.cancel()
+        mark_gate.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await task
+
+        assert task.cancelling() == 1
+        assert h.ensure_down_entries == [1]
+        assert h.mark_error_entries == [1]
+        assert h.compile_entries == []
+        assert raised.value.__context__ is uid_failure
+        assert h.probe.counts() == _RollbackProbe.each_once()
+        assert h.probe.paths_absent() == {
+            "workspace": False, "control": False, "outbox": False}
+
+    async def test_compile_lock_is_not_released_before_the_sync_tail_finishes(
+            self, monkeypatch, tmp_path):
+        """Case 5 — the rollback keeps its launcher's ``_compile_lock`` across
+        the synchronous tail, so a queued competitor cannot compile while the
+        workspace/identity/outbox removals are still running.
+
+        Sol's seam finding: a naive version of this test cannot tell held from
+        released. The tail contains no await, so a competitor's coroutine body
+        cannot run before the tail finishes EITHER WAY — measured identical
+        across 1,000 trials of both shapes. What discriminates is the release
+        itself, so the lock is instrumented and its release is recorded into
+        the same ordered trace as the removals.
+
+        Kills: moving the synchronous tail outside ``async with
+        s6_rc._compile_lock``; releasing the lock right after the cancelled
+        rollback compile; handing the lock to a queued compiler before the
+        identity/outbox cleanup finishes.
+        """
+        from drivers import s6_rc
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        trace = h.probe.trace
+
+        class _ProbeLock(asyncio.Lock):
+            def release(self):
+                super().release()
+                trace.append(("lock_released", None))
+
+        monkeypatch.setattr(s6_rc, "_compile_lock", _ProbeLock())
+
+        start_failure = RuntimeError("simulated s6-rc start failure")
+        competitor_entries: list[int] = []
+
+        async def fake_start_fail(*, engagement_id):
+            raise start_failure
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            h.compile_fake(suspend_on_call=2))
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+
+        async def competitor():
+            async with s6_rc._compile_lock:
+                competitor_entries.append(1)
+                trace.append(("competitor_entered", None))
+
+        task = asyncio.ensure_future(h.launch())
+        await _spin_until(lambda: len(h.compile_entries) == 2,
+                          what="the rollback's compile to be entered")
+        rival = asyncio.ensure_future(competitor())
+        await _spin_until(lambda: s6_rc._compile_lock._waiters,
+                          what="the competitor to queue on the compile lock")
+        task.cancel()
+        h.rollback_gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await rival
+
+        assert competitor_entries == [1]
+        assert h.probe.counts() == _RollbackProbe.each_once()
+        # TWO releases: the launcher's ``async with`` and then the
+        # competitor's own. Only the FIRST is the launcher's, and it is the one
+        # the ordering is asserted against.
+        released_at = [i for i, e in enumerate(trace)
+                       if e[0] == "lock_released"]
+        assert len(released_at) == 2, trace
+        for effect in (("rmtree", str(h.ws_path)),
+                       ("rmtree", str(h.ctl_path)),
+                       ("prune_identity", h.uid),
+                       ("teardown_outbox", h.uid)):
+            assert trace.index(effect) < released_at[0], (
+                f"{effect} ran after the compile lock was released: a queued "
+                f"compiler could have taken it mid-teardown")
+            assert trace.index(effect) < trace.index(
+                ("competitor_entered", None)), (
+                f"a queued compiler held the lock while {effect} was still "
+                f"running")
