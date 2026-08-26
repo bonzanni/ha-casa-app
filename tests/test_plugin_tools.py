@@ -1236,3 +1236,65 @@ async def test_plugin_unassign_absent_path_still_dispatches(
     assert payload["ok"] is True
     assert payload["pending_targets"] == []
     assert "dispatch:mtg" in st.log             # absent path unchanged
+
+
+# --- #676 INV-TOOL-006: a persisting committed removal discloses what survives -
+
+
+async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not(
+        monkeypatch, tmp_path):
+    """Red case for INV-TOOL-006 (issue #676, option 2 — honest disclosure).
+
+    A COMMITTED plugin removal — here the committed-but-not-ready arm, the
+    weakest ok payload the operator can be handed — must disclose that the
+    CLI-managed per-plugin persistent data directory was NOT deleted, that no
+    provider revocation was performed, and that a reinstall re-attaches. A
+    NON-persisting envelope (a no-op plugin_unassign) must carry none of it, so
+    an unconditional implementation cannot satisfy this pin.
+    """
+    disclosure_keys = {
+        "plugin_data_may_remain",
+        "provider_revocation_performed",
+        "plugin_data_note",
+        "plugin_data_plugins",
+    }
+
+    st = _State()
+    _registered(st, name="probe", targets=["resident:assistant"])
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+
+    async def stub_seq(name, targets, *, expect):
+        return {"ok": False, "kind": "postcondition_failed",
+                "activation_committed": True, "runtime_ready": False,
+                "reloaded": [], "reload_errors": [], "pending_targets": [],
+                "verify": {}}
+
+    monkeypatch.setattr(tools_mod, "_reload_and_verify_targets", stub_seq)
+    r = await tools_mod.plugin_remove.handler({"name": "probe"})
+    removed = json.loads(r["content"][0]["text"])
+
+    # The two predicates that establish this IS the committed-but-not-ready
+    # removal path (INV-TOOL-004), so the pin cannot drift onto another arm.
+    assert sum((removed["activation_committed"] is True,
+                removed["runtime_ready"] is False)) == 2
+    # Exactly the three removal disclosures: plugin_data_plugins belongs to the
+    # cascaded specialist path and must be absent for an ordinary removal.
+    assert sum(key in removed for key in disclosure_keys) == 3
+    # The mandated VALUES — a present-but-false "may remain", or a claimed
+    # provider revocation, is worse than silence.
+    assert sum((removed.get("plugin_data_may_remain") is True,
+                removed.get("provider_revocation_performed") is False)) == 2
+    note = removed.get("plugin_data_note", "").lower()
+    assert sum(fragment in note for fragment in (
+        "cli-managed", "persistent", "not deleted", "reinstall")) == 4
+
+    # The negative arm: a no-op unassign commits nothing that survives, so it
+    # discloses nothing.
+    st2 = _State()
+    _registered(st2, name="probe", targets=["resident:butler"])
+    tools_mod2 = _wire(monkeypatch, tmp_path, st2, publish=_pr())
+    r2 = await tools_mod2.plugin_unassign.handler({
+        "name": "probe", "target": "specialist:finance"})
+    unassigned = json.loads(r2["content"][0]["text"])
+    assert unassigned["ok"] is True
+    assert sum(key in unassigned for key in disclosure_keys) == 0
