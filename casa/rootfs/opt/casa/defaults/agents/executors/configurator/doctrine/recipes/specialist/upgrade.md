@@ -14,7 +14,14 @@
 3. `specialist_upgrade(slug=..., component_id=..., version=..., root_digest=..., staged_dir=...,
    receipt_id=..., config={...}, secret_names_provided=[...])` using the EXACT `root_digest` and
    `receipt_id` `specialist_install_inspect` returned. Omitting `receipt_id` (or passing a stale
-   one) refuses with `kind: "receipt_required"`.
+   one) refuses with `kind: "receipt_required"`. If the result carries
+   `plugin_data_note` — on ANY outcome, including an `ok:false` result that
+   carries no `state` at all — relay it verbatim with the names in
+   `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
+   describes. Do not restate it as a confirmed removal unless the note itself
+   says so: the note says which of the three it is — the successful owned-set
+   swap dropped those entries, or a failed compensation left them measured
+   still removed, or Casa could not read the registry back and does not know.
 4. If `state == "pending-configuration"`: the OLD version — and its OLD owned plugin set — is still
    live and answering delegations; tell the operator exactly which new config/secret names the new
    version needs. Nothing broke.
@@ -24,13 +31,7 @@
    (canonical commit -> reload -> emit order — see `completion.md`). The new version's owned plugin
    set REPLACES the old one atomically as part of `specialist_upgrade` itself (a plugin the old
    version owned but the new one no longer declares is removed; anything newly declared is
-   activated) — no separate plugin step here. If the result carries
-   `plugin_data_note`, relay it verbatim with the names in
-   `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
-   describes. Do not restate it as a confirmed removal unless the note itself
-   says so: the note says which of the three it is — the successful owned-set
-   swap dropped those entries, or a failed compensation left them measured
-   still removed, or Casa could not read the registry back and does not know.
+   activated) — no separate plugin step here.
 
 ## Common mistakes
 

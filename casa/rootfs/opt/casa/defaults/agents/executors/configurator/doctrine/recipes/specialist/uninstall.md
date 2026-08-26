@@ -12,7 +12,8 @@
    removed, just left with a target nothing currently answers (surfaces as `pending_targets` the
    next time it is reloaded/verified).
 3. If the result carries `plugin_data_note` (it does whenever step 2 cascaded
-   owned plugins out), report it to the operator verbatim with the list in
+   owned plugins out) — on ANY outcome, including an `ok:false` result that
+   carries no `state` at all — report it to the operator verbatim with the list in
    `plugin_data_plugins`: those plugins' CLI-managed persistent data
    (`CLAUDE_PLUGIN_DATA` — possibly stored OAuth authorizations) was NOT
    deleted and no revocation was performed AT THE PROVIDER, so a reinstall

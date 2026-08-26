@@ -10814,6 +10814,27 @@ def _plugin_data_disclosure(note: str, plugins: "list[str] | None" = None) -> di
     return fields
 
 
+def _swap_dropped_names(txn) -> "list[str]":
+    """The owned-plugin names this transaction's registry swap DROPPED, or []
+    when it never swapped. The single definition of a removal candidate: the
+    success payloads disclose exactly these, and the failed-compensation arm
+    measures exactly these.
+
+    Sol diff-review a3-r2: `before_entries` is not that set on any op but an
+    uninstall. An upgrade with pre-swap {kept, dropped} and post-swap {kept,
+    new} whose compensation then fails on an UNREADABLE registry disclosed
+    both names, telling the operator a plugin the upgrade had just
+    re-published may be gone — and inviting a provider revocation for an
+    unrelated grant. The readable arm hid it because the read-back filtered
+    the surplus out; the indeterminate arm has nothing to filter with, which
+    is precisely why the candidate set has to be right before it is measured.
+    """
+    if not getattr(txn, "owned_swap_committed", False):
+        return []
+    return [n for n in (getattr(txn, "removed_owned_names", None) or ())
+            if isinstance(n, str) and n]
+
+
 def _swap_removal_disclosure(txn) -> dict:
     """#676 (INV-TOOL-006): the disclosure a SUCCESSFUL bundle owed for the
     owned plugins its registry swap dropped, or `{}` when it dropped none.
@@ -10831,10 +10852,7 @@ def _swap_removal_disclosure(txn) -> dict:
     as an uninstall's cascade does, and returned ok with nothing said — the
     same persisting removal, reached by a door this disclosure did not cover.
     """
-    if not getattr(txn, "owned_swap_committed", False):
-        return {}
-    names = [n for n in (getattr(txn, "removed_owned_names", None) or ())
-             if isinstance(n, str) and n]
+    names = _swap_dropped_names(txn)
     if not names:
         return {}
     return _plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED, names)
@@ -11625,15 +11643,19 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         # so the same fields there would be false. An install/upgrade/rollback
         # reaching this arm removed nothing: its `before_entries` is the
         # PRE-SWAP owned set, not a removal.
-        # Terra diff-review r11: `before_entries` is only a removal candidate
-        # when the transaction actually swapped the owned set. A pending/error
-        # upgrade leaves that set UNCHANGED and hands the same field through, so
-        # reading it as a removal warns about surviving plugin data after an
+        # Terra diff-review r11: the candidate set is what the swap DROPPED,
+        # not what the transaction captured. A pending/error upgrade leaves the
+        # owned set UNCHANGED and hands it through in `before_entries`, so
+        # reading that as a removal warns about surviving plugin data after an
         # operation that removed nothing — and the indeterminate arm cannot
         # measure its way out of that, because there is nothing to measure.
-        owned = [e.get("name") for e in (getattr(txn, "before_entries", None) or [])
-                 if isinstance(e, dict) and e.get("name")]
-        if owned and getattr(txn, "owned_swap_committed", False):
+        # Sol diff-review a3-r2: the same is true one step finer. Even a
+        # transaction that DID swap kept most of `before_entries`, so the
+        # indeterminate arm named plugins the operation had re-published. One
+        # accessor now answers "what did this swap drop" for the success
+        # payloads and for this arm alike.
+        owned = _swap_dropped_names(txn)
+        if owned:
             # Sol diff-review r1: `compensation_failed` does NOT establish that
             # the removal persisted. rollback_disk() restores the registry in
             # its FIRST step and then does fallible work (tuple/sidecar writes,

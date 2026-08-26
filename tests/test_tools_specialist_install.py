@@ -1964,6 +1964,7 @@ async def test_failed_compensation_on_uninstall_discloses_the_persisting_removal
 
     monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
     txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          removed_owned_names=("mtg.gmail",),
                           before_entries=[
                               {"name": "mtg.gmail", "artifact_id": "a" * 64}])
     env = await tools_mod._bundle_seq_failure(
@@ -1995,6 +1996,7 @@ async def test_rolled_back_and_non_uninstall_arms_disclose_nothing(
 
     def _txn(op):
         return SimpleNamespace(slug="mtg", op=op, owned_swap_committed=True,
+                               removed_owned_names=("mtg.gmail",),
                                before_entries=[
                                    {"name": "mtg.gmail", "artifact_id": "a" * 64}])
 
@@ -2044,7 +2046,15 @@ async def test_every_bundle_op_discloses_a_drop_its_rollback_could_not_undo(
 
     counts, named = [], []
     for op in ("upgrade", "rollback", "install", "uninstall"):
+        # Faithful to the producers: an uninstall's swap drops BOTH names (it
+        # publishes an empty owned set); the other three publish a new set that
+        # still carries mtg.gmail, so only mtg.dropped is a candidate. Either
+        # way the read-back finds mtg.gmail present, so only mtg.dropped is
+        # disclosed — the assertion below is the same for all four.
+        dropped = (("mtg.gmail", "mtg.dropped") if op == "uninstall"
+                   else ("mtg.dropped",))
         txn = SimpleNamespace(slug="mtg", op=op, owned_swap_committed=True,
+                              removed_owned_names=dropped,
                               before_entries=[
                                   {"name": "mtg.gmail", "artifact_id": "a" * 64},
                                   {"name": "mtg.dropped", "artifact_id": "b" * 64}])
@@ -2102,6 +2112,7 @@ async def test_failed_compensation_discloses_only_the_names_still_absent(
         raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
         valid=True))
     txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          removed_owned_names=("mtg.gmail", "mtg.calendar"),
                           before_entries=[
                               {"name": "mtg.gmail", "artifact_id": "a" * 64},
                               {"name": "mtg.calendar", "artifact_id": "b" * 64}])
@@ -2128,6 +2139,7 @@ async def test_unreadable_registry_after_failed_compensation_says_unknown(
 
     monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
     txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          removed_owned_names=("mtg.gmail",),
                           before_entries=[
                               {"name": "mtg.gmail", "artifact_id": "a" * 64}])
     seq = {"ok": False, "kind": "bundle_sequence_failed"}
@@ -2353,3 +2365,40 @@ async def test_a_successful_install_commit_discloses_a_stale_entry_its_swap_drop
     assert payload["ok"] is True
     assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
     assert payload["plugin_data_plugins"] == ["mtg.stale"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_registry_names_only_what_the_swap_dropped(
+        monkeypatch) -> None:
+    """Sol diff-review a3-r2. The readable arm hid this: the read-back filtered
+    a too-wide candidate set down to the truth. The INDETERMINATE arm has
+    nothing to filter with, so a candidate set taken from `before_entries`
+    told the operator that a plugin the upgrade had just RE-PUBLISHED might be
+    gone — a false survival warning, and an invitation to revoke an unrelated
+    provider grant. Both arms now take the same set: what the swap dropped."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    # Pre-swap {mtg.kept, mtg.dropped}; the new generation carries mtg.kept and
+    # mtg.new, so exactly one name was dropped.
+    txn = SimpleNamespace(slug="mtg", op="upgrade", owned_swap_committed=True,
+                          removed_owned_names=("mtg.dropped",),
+                          before_entries=[
+                              {"name": "mtg.kept", "artifact_id": "a" * 64},
+                              {"name": "mtg.dropped", "artifact_id": "b" * 64}])
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={}, entries=[], entry_issues=[], valid=False))
+    env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 4
+    assert "unknown" in env["plugin_data_note"]
+    assert env["plugin_data_plugins"] == ["mtg.dropped"]
+    assert "mtg.kept" not in env["plugin_data_plugins"]

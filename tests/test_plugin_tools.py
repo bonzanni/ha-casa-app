@@ -1482,10 +1482,13 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
         assert sum(fragment in text for fragment in (
             "if the result carries `plugin_data_note`",
             "relay it verbatim with the names in `plugin_data_plugins`")) == 2
-        # …and the install arm says it applies whichever state came back: a
-        # pending-configuration commit swapped the owned set too.
-        assert ("whichever `state` came back" in text) == (
-            name == "specialist/install.md")
+        # Sol diff-review a3-r2: the relay must sit OUTSIDE the state
+        # branches. The failed-compensation arm returns ok:false with no
+        # `state` field at all, so an instruction living under
+        # `state == "active"` is never reached on exactly the outcome whose
+        # removal PERSISTED. All four specialist recipes say so in the same
+        # words, and the pin covers the uninstall recipe too.
+        assert "on any outcome, including an `ok:false` result" in text
         # Sol diff-review r10: the note is emitted on the INDETERMINATE arm too,
         # where the removal is explicitly unknown. A recipe that glosses the
         # field as "a plugin ended up removed" turns that into a confirmed
@@ -1509,6 +1512,7 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     assert sum(fragment in uninstall for fragment in (
         "plugin_data_note", "plugin_data_plugins", "claude_plugin_data",
         "not deleted", "no revocation was performed at the provider")) == 5
+    assert "on any outcome, including an `ok:false` result" in uninstall
     assert sum(fragment in uninstall for fragment in (
         "report it to the operator verbatim",
         "do not restate it as a deletion or a revocation")) == 2

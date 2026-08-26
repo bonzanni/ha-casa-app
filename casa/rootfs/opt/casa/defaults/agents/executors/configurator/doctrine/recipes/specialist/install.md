@@ -45,9 +45,10 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    passing a stale one from an earlier inspect) refuses with `kind: "receipt_required"` — re-run
    inspect and retry with the fresh id; never fabricate one. If the result carries
    `plugin_data_note` — the commit's owned-set swap replaced a stale owned entry, which
-   is rare but is a removal — relay it verbatim with the names in `plugin_data_plugins`,
-   exactly as `recipes/plugin/remove.md` step 4 describes, whichever `state` came back.
-   Do not restate it as a confirmed removal unless the note itself
+   is rare but is a removal — on ANY outcome, including an `ok:false` result that
+   carries no `state` at all, relay it verbatim with the names in
+   `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
+   describes. Do not restate it as a confirmed removal unless the note itself
    says so: the note says which of the three it is — the successful owned-set
    swap dropped those entries, or a failed compensation left them measured
    still removed, or Casa could not read the registry back and does not know.

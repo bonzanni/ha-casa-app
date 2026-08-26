@@ -230,7 +230,11 @@ inside the plugin-tools mutation lock. The one `ok:false` envelope whose registr
 `compensation_failed` arm of a failed bundle sequencer, discloses on measurement rather
 than on the flag: a failed compensation does not establish that the removal survived, because
 the rollback restores the registry in its first step and then does fallible work, so the arm
-reads the registry back and names only the entries actually still absent. That measurement decides
+reads the registry back and names only the entries actually still absent. It measures the SAME
+set the success payloads disclose — what the swap dropped, not what the transaction captured —
+because a read-back can only narrow a candidate set, and the arm that cannot read gets no
+narrowing at all: fed the captured set, it would name plugins the operation had just
+re-published. That measurement decides
 WHICH names are disclosed, and the operation is not part of that decision — any of the four can
 reach this arm with an entry still gone. What the measurement cannot decide is whether there was
 anything to measure: a pending-configuration or error upgrade never swaps the owned set and
