@@ -1236,3 +1236,291 @@ async def test_plugin_unassign_absent_path_still_dispatches(
     assert payload["ok"] is True
     assert payload["pending_targets"] == []
     assert "dispatch:mtg" in st.log             # absent path unchanged
+
+
+# --- #676 INV-TOOL-007: a persisting committed removal discloses what survives -
+
+
+async def test_plugin_remove_discloses_persisting_cli_data_but_unassign_does_not_v2(
+        monkeypatch, tmp_path):
+    """Red case for INV-TOOL-007 (issue #676, option 2 — honest disclosure).
+
+    A COMMITTED plugin removal — here the committed-but-not-ready arm, the
+    weakest ok payload the operator can be handed — must disclose that the
+    CLI-managed per-plugin persistent data directory was NOT deleted, that no
+    provider revocation was performed, and that a reinstall re-attaches. A
+    NON-persisting envelope (a no-op plugin_unassign) carries none of it, so an
+    unconditional implementation cannot satisfy this pin.
+
+    (v2: the first specification stubbed the sequencer on the shared module
+    attribute and never restored it, so its own negative arm could not reach a
+    successful no-op unassign. Re-specified and re-accepted; the superseded
+    version is gone rather than edited.)
+    """
+    disclosure_keys = {
+        "plugin_data_may_remain",
+        "provider_revocation_performed",
+        "plugin_data_note",
+        "plugin_data_plugins",
+    }
+
+    # Positive: removal has committed, but runtime convergence failed.
+    st = _State()
+    _registered(st, name="probe", targets=["resident:assistant"])
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    real_seq = tools_mod._reload_and_verify_targets
+
+    async def stub_seq(name, targets, *, expect):
+        return {"ok": False, "kind": "postcondition_failed",
+                "activation_committed": True, "runtime_ready": False,
+                "reloaded": [], "reload_errors": [], "pending_targets": [],
+                "verify": {}}
+
+    monkeypatch.setattr(tools_mod, "_reload_and_verify_targets", stub_seq)
+    r = await tools_mod.plugin_remove.handler({"name": "probe"})
+    removed = json.loads(r["content"][0]["text"])
+
+    # Both predicates establish the committed-but-not-ready removal arm.
+    assert sum((removed["activation_committed"] is True,
+                removed["runtime_ready"] is False)) == 2
+    # Exactly the three ordinary-removal disclosures; the cascaded-removal
+    # plugin-list field belongs to specialist_uninstall and is absent here.
+    assert sum(key in removed for key in disclosure_keys) == 3
+    # Both required boolean values are exact — a present-but-false "may remain"
+    # or a claimed provider revocation is worse than silence.
+    assert sum((removed.get("plugin_data_may_remain") is True,
+                removed.get("provider_revocation_performed") is False)) == 2
+    note = removed.get("plugin_data_note", "").lower()
+    assert sum(fragment in note for fragment in (
+        "cli-managed", "persistent", "not deleted", "reinstall")) == 4
+
+    # Restore the real module function before the separate negative operation.
+    monkeypatch.setattr(tools_mod, "_reload_and_verify_targets", real_seq)
+
+    # Negative: a no-op unassignment is not a committed plugin removal.
+    st2 = _State()
+    _registered(st2, name="probe", targets=["resident:butler"])
+    tools_mod2 = _wire(monkeypatch, tmp_path, st2, publish=_pr())
+    r2 = await tools_mod2.plugin_unassign.handler({
+        "name": "probe", "target": "specialist:finance"})
+    unassigned = json.loads(r2["content"][0]["text"])
+
+    assert unassigned["ok"] is True
+    assert sum(key in unassigned for key in disclosure_keys) == 0
+
+
+def _disclosure_keys():
+    return {"plugin_data_may_remain", "provider_revocation_performed",
+            "plugin_data_note", "plugin_data_plugins"}
+
+
+async def test_plugin_remove_refusals_disclose_nothing(monkeypatch, tmp_path):
+    """#676: a refusal precedes the registry write — nothing committed, so
+    nothing survived, and a survival warning there would be a claim about state
+    the operator still has. All three pre-commit refusals carry zero fields."""
+    import plugin_registry as preg
+    from plugin_registry import RegistryData
+
+    st = _State()
+    _registered(st, name="probe", targets=["resident:assistant"])
+    st.raw["plugins"].append({
+        "name": "fin.owned", "owner": "specialist:finance",
+        "artifact_id": "d" * 64,
+        "version": "1.0.0", "targets": [],
+        "source": {"type": "github", "repo": "o/r", "ref": "v1",
+                   "revision": "git:" + "d" * 40, "subdir": ""}})
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+
+    kinds = []
+    for name in ("ghost", "fin.owned"):
+        r = await tools_mod.plugin_remove.handler({"name": name})
+        payload = json.loads(r["content"][0]["text"])
+        kinds.append(payload["kind"])
+        assert sum(k in payload for k in _disclosure_keys()) == 0
+
+    monkeypatch.setattr(preg, "load_registry", lambda path=None: RegistryData(
+        raw={}, entries=[], entry_issues=[], valid=False))
+    r = await tools_mod.plugin_remove.handler({"name": "probe"})
+    payload = json.loads(r["content"][0]["text"])
+    kinds.append(payload["kind"])
+    assert sum(k in payload for k in _disclosure_keys()) == 0
+    assert kinds == ["not_registered", "owned_by_specialist", "registry_invalid"]
+
+
+async def test_plugin_update_discloses_nothing(monkeypatch, tmp_path):
+    """#676 negative arm: an update replaces the artifact and keeps the entry —
+    the data surviving it is by design and is not a removal."""
+    st = _State()
+    st.raw["plugins"].append(_entry())
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(version="2.0.0"))
+    r = await tools_mod.plugin_update.handler({"name": "probe", "new_ref": "v2"})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _disclosure_keys()) == 0
+
+
+def test_the_disclosure_notes_claim_only_what_they_can():
+    """Terra diff-review r6: the note is relayed VERBATIM to the operator, so
+    its own opening is an operator-facing claim. "Casa removed the registry
+    entry only" was false — a removal also purges the artifact grants, cancels
+    the challenges and revokes the trigger consents. Third occurrence of one
+    shape (an operator-facing claim overstating what Casa did), so the clause
+    is cut rather than qualified: each note states the two facts it can
+    establish and nothing about Casa's internal teardown."""
+    import tools as tools_mod
+
+    notes = (tools_mod._PLUGIN_DATA_NOTE_COMMITTED,
+             tools_mod._PLUGIN_DATA_NOTE_ATTEMPTED,
+             tools_mod._PLUGIN_DATA_NOTE_INDETERMINATE)
+    assert sum("registry entr" in n.lower() and "only" in n.lower()
+               for n in notes) == 0
+    # Every revocation statement names the provider side.
+    for n in notes:
+        low = n.lower()
+        assert low.count("revocation") == low.count("provider revocation")
+        assert "revoked" not in low or "revoke at the provider" in low
+    assert sum("not deleted" in n.lower() for n in notes) == 3
+
+
+async def test_plugin_remove_description_discloses_survival_without_claiming_more(
+        monkeypatch, tmp_path):
+    """#676: the description is the only surface an agent reads BEFORE calling.
+    It must state the survival — and must not claim a deletion or revocation."""
+    import tools as tools_mod
+    desc = tools_mod.plugin_remove.description.lower()
+    assert sum(fragment in desc for fragment in (
+        "cli-managed", "persistent", "not delete", "reinstall",
+        "no provider-side revocation")) == 5
+    for claim in ("revokes the", "deletes the plugin's data",
+                  "authorization is revoked", "credentials are deleted"):
+        assert claim not in desc
+
+
+def test_removal_recipes_instruct_the_engager_to_surface_the_note():
+    """#676: the payload-to-operator seam. Every disclosure field can be
+    present and correct while the shipped doctrine never tells the engager to
+    relay it — in which case the operator learns nothing, which is the outcome
+    the change exists to prevent."""
+    from pathlib import Path
+    import tools as tools_mod
+
+    root = (Path(tools_mod.__file__).parent / "defaults/agents/executors"
+            / "configurator/doctrine/recipes")
+    # Whitespace-normalized: a fragment assertion that a line rewrap can break
+    # is pinning the prose's layout, not its instruction.
+    def _flat(p):
+        return " ".join((root / p).read_text().lower().split())
+
+    remove = _flat("plugin/remove.md")
+    uninstall = _flat("specialist/uninstall.md")
+
+    assert sum(fragment in remove for fragment in (
+        "claude_plugin_data", "not deleted", "re-attaches",
+        "no provider-side revocation", "plugin_data_note")) == 5
+    # Naming the field is not instructing the engager to relay it: the
+    # disclosure paragraph names it too, so a mutation deleting the reporting
+    # step survived a mention-only assertion.
+    assert sum(fragment in remove for fragment in (
+        "report `plugin_data_note` to the operator verbatim",
+        "restate it as a deletion or a revocation")) == 2
+    # Sol/Terra diff-review r1: the recipe covers unassign TOO, and
+    # plugin_unassign never carries the note — an unconditional reporting step
+    # invites a survival warning after an operation that removed nothing.
+    assert "only when the result carries `plugin_data_note`" in remove
+    # Sol diff-review r2: the payload says "may remain" because Casa cannot see
+    # whether the plugin ever stored anything. A recipe that tells the engager
+    # the operator will learn authorizations SURVIVED converts that into a
+    # confident claim about credentials Casa never observed. Both recipes must
+    # carry the qualifier, and neither may make the categorical claim.
+    assert sum(fragment in text for text, fragment in (
+        (remove, "may have survived"), (uninstall, "may have survived"))) == 2
+    for text in (remove, uninstall):
+        assert "authorizations survived" not in text
+    # Sol diff-review r3: both removal recipes must carry the raise-path
+    # guidance, not just the direct one — a raised uninstall can persist
+    # cascaded removals with no envelope to carry the caveat, and an asymmetry
+    # here leaves that seam open on the path that removes MORE.
+    assert sum("may have taken effect" in text for text in (remove, uninstall)) == 2
+    assert sum("`plugin_list()`" in text for text in (remove, uninstall)) == 2
+    # Terra diff-review r4: a removal DOES revoke Casa's own authorizations —
+    # _invalidate_lifecycle purges the artifact grants and trigger consents,
+    # _remove_plugin_callbacks revokes the persisted callback consents. An
+    # unqualified "Casa revoked nothing" contradicts the code; every no-
+    # revocation statement is provider-scoped, and both recipes say which side
+    # of Casa each fact lives on.
+    assert sum("at the provider" in text for text in (remove, uninstall)) == 2
+    for text in (remove, uninstall):
+        assert "nothing was revoked. " not in text
+        assert "casa performed neither. " not in text
+    # Rounds 4 and 5, same shape twice: an operator-facing claim about
+    # revocation that overstates what Casa did. Round 4 killed the unqualified
+    # "Casa revoked nothing" (false — a removal DOES tear down Casa's own
+    # grants and consents). Round 5 found the replacement equally wrong in two
+    # ways: `specialist_uninstall` never calls _remove_plugin_callbacks at all,
+    # and even on the direct path the revoke is best-effort and swallows its
+    # own failure. So the affirmative claim is CUT, not sharpened — neither
+    # recipe asserts a Casa-side revocation in either direction.
+    for text in (remove, uninstall):
+        assert "consents for the plugin are revoked" not in text
+        assert "consents for those plugins are revoked" not in text
+    assert sum(fragment in text for text, fragment in (
+        (remove, "not reported in the result"),
+        (uninstall, "this result does not report it"))) == 2
+
+    # Sol diff-review r8: an upgrade and a rollback swap the owned set
+    # wholesale, so either can leave a plugin removed when its compensation
+    # fails. Their recipes owe the same conditional relay — unpinned recipe
+    # prose is exactly the seam round 3 measured open.
+    # Sol diff-review a3-r1: the install recipe owes the same relay. The
+    # install commit's swap runs unconditionally, so it can drop a stale owned
+    # entry and return the disclosure — and a payload no recipe tells the
+    # engager to relay is a disclosure the operator never sees, which is the
+    # outcome this change exists to prevent.
+    for name in ("specialist/upgrade.md", "specialist/rollback.md",
+                 "specialist/install.md"):
+        text = _flat(name)
+        assert sum(fragment in text for fragment in (
+            "if the result carries `plugin_data_note`",
+            "relay it verbatim with the names in `plugin_data_plugins`")) == 2
+        # Sol diff-review a3-r2: the relay must sit OUTSIDE the state
+        # branches. The failed-compensation arm returns ok:false with no
+        # `state` field at all, so an instruction living under
+        # `state == "active"` is never reached on exactly the outcome whose
+        # removal PERSISTED. All four specialist recipes say so in the same
+        # words, and the pin covers the uninstall recipe too.
+        assert "on any outcome, including an `ok:false` result" in text
+        # Sol diff-review a3-r3: and the outcome with no envelope AT ALL. A
+        # post-commit raise leaves the swap committed with nothing to carry
+        # the note, so each of these three recipes carries the same raise-path
+        # fallback the uninstall recipe already had — the disclosure the
+        # operator gets when the tool cannot give them one.
+        assert sum(fragment in text for fragment in (
+            "if the call raises instead of returning a result",
+            "may have been removed", "`plugin_list()`")) == 3
+        # Sol diff-review r10: the note is emitted on the INDETERMINATE arm too,
+        # where the removal is explicitly unknown. A recipe that glosses the
+        # field as "a plugin ended up removed" turns that into a confirmed
+        # removal in the operator's report.
+        assert "do not restate it as a confirmed removal" in text
+        assert "ended up removed" not in text
+        # Terra handback review (attempt 2): the note now also reaches these
+        # two recipes from the SUCCESS path — an upgrade or a rollback whose
+        # owned-set swap dropped a plugin — where it IS a confirmed removal.
+        # The relay instruction has to admit that arm, or an engager told only
+        # about the compensation/indeterminate cases hedges a removal that
+        # actually happened.
+        assert sum(fragment in text for fragment in (
+            "the successful owned-set swap dropped those entries",
+            "unless the note itself says so")) == 2
+    # The plugin-env clarification: clearing an entry needs its OWN reload, and
+    # is not credential deletion.
+    assert sum(fragment in remove for fragment in (
+        'casa_reload(scope="plugin_env")',
+        "neither credential deletion nor provider revocation")) == 2
+    assert sum(fragment in uninstall for fragment in (
+        "plugin_data_note", "plugin_data_plugins", "claude_plugin_data",
+        "not deleted", "no revocation was performed at the provider")) == 5
+    assert "on any outcome, including an `ok:false` result" in uninstall
+    assert sum(fragment in uninstall for fragment in (
+        "report it to the operator verbatim",
+        "do not restate it as a deletion or a revocation")) == 2

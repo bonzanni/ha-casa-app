@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.240.0] - 2026-08-26
+
+### Fixed
+
+- Removing a plugin now tells you what it left behind. Any operation that
+  removes one — removing it directly, or a specialist install, upgrade,
+  rollback or uninstall whose plugin set drops it — now reports that the
+  plugin's stored data, which may include an OAuth authorization, is not
+  deleted and that nothing is revoked at the provider. Reinstalling the same
+  plugin therefore re-attaches to that data, and access ends only when you
+  revoke it at the provider. Previously a removal reported only that its
+  downloaded artifact was retained, so a surviving authorization was silent.
+
 ## [0.239.0] - 2026-08-26
 
 ### Fixed

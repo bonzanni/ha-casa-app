@@ -10763,6 +10763,123 @@ async def _plugin_tools_reload_guard(scope: str):
 _PLUGIN_HEALTH_PATH = "/data/plugin-health.json"
 
 
+# #676 (INV-TOOL-007): a removal that COMMITS says what survives it. No Casa
+# code path touches the Claude CLI's per-plugin persistent data directory
+# (CLAUDE_PLUGIN_DATA) — the plugin-developer doctrine establishes that it
+# lives on the config volume and outlives every lifecycle operation — so a
+# stored authorization survives a remove and a same-name reinstall silently
+# re-adopts it. Casa does not derive or delete that path (a wrong derivation
+# is data loss, and deleting it still could not revoke the grant at the
+# provider); it DISCLOSES instead, which is the operator-delegated choice on
+# #676. The wording is operation-scoped on purpose: `may remain` because Casa
+# cannot see whether the plugin ever stored anything, and
+# `provider_revocation_performed: False` names an operation Casa did not
+# perform rather than the grant's state, which INV-TOOL-005 forbids it to
+# claim either way.
+_PLUGIN_DATA_NOTE_COMMITTED = (
+    "The plugin's CLI-managed persistent data directory (CLAUDE_PLUGIN_DATA — "
+    "it may hold stored authorizations such as OAuth tokens) was not deleted, "
+    "and a reinstall of the same plugin re-attaches to it. No provider "
+    "revocation was performed; revoke at the provider if that access should "
+    "end.")
+_PLUGIN_DATA_NOTE_ATTEMPTED = (
+    "The rollback did not complete and these registry entries are still "
+    "removed. Their plugins' CLI-managed "
+    "persistent data directories (CLAUDE_PLUGIN_DATA — they may hold stored "
+    "authorizations such as OAuth tokens) were not deleted, and a reinstall "
+    "re-attaches to them. No provider revocation was performed; revoke at the "
+    "provider if that access should end.")
+# Sol diff-review r1: the registry could not be read back, so whether these
+# entries are still removed is UNKNOWN — and the envelope says so rather than
+# picking a side. The two facts that do not depend on the answer are stated
+# flatly; they are true either way.
+_PLUGIN_DATA_NOTE_INDETERMINATE = (
+    "The rollback did not complete and Casa could not read the registry back, "
+    "so whether these entries are still removed is unknown. Either way Casa "
+    "deleted no plugin data: their CLI-managed persistent data directories "
+    "(CLAUDE_PLUGIN_DATA — they may hold stored authorizations such as OAuth "
+    "tokens) were not deleted, and no provider revocation was performed.")
+
+
+def _plugin_data_disclosure(note: str, plugins: "list[str] | None" = None) -> dict:
+    """The three (or four) disclosure fields for a PERSISTING committed
+    removal. Callers add them AFTER the registry commit, never before: a
+    pre-commit refusal changed nothing, so disclosing survival there would be
+    a claim about state the operator still has."""
+    fields = {"plugin_data_may_remain": True,
+              "provider_revocation_performed": False,
+              "plugin_data_note": note}
+    if plugins is not None:
+        fields["plugin_data_plugins"] = list(plugins)
+    return fields
+
+
+def _swap_dropped_names(txn) -> "list[str]":
+    """The owned-plugin names this transaction's registry swap DROPPED, or []
+    when it never swapped. The single definition of a removal candidate: the
+    success payloads disclose exactly these, and the failed-compensation arm
+    measures exactly these.
+
+    Sol diff-review a3-r2: `before_entries` is not that set on any op but an
+    uninstall. An upgrade with pre-swap {kept, dropped} and post-swap {kept,
+    new} whose compensation then fails on an UNREADABLE registry disclosed
+    both names, telling the operator a plugin the upgrade had just
+    re-published may be gone — and inviting a provider revocation for an
+    unrelated grant. The readable arm hid it because the read-back filtered
+    the surplus out; the indeterminate arm has nothing to filter with, which
+    is precisely why the candidate set has to be right before it is measured.
+    """
+    if not getattr(txn, "owned_swap_committed", False):
+        return []
+    return [n for n in (getattr(txn, "removed_owned_names", None) or ())
+            if isinstance(n, str) and n]
+
+
+def _swap_removal_disclosure(txn) -> dict:
+    """#676 (INV-TOOL-007): the disclosure a SUCCESSFUL bundle owed for the
+    owned plugins its registry swap dropped, or `{}` when it dropped none.
+
+    A successful swap is the strongest evidence there is that the removal
+    persisted — it is atomic, it saved, the sequencer then succeeded and the
+    journal completed, and the whole window is inside `_PLUGIN_TOOLS_LOCK`, so
+    unlike the failed-compensation arm there is nothing a read-back could
+    correct. `removed_owned_names` is the swap's own answer, recorded at that
+    moment; `before_entries` is NOT a substitute, because for an upgrade or a
+    rollback it is the pre-swap set and most of it was re-published.
+
+    Terra handback review (attempt 2): an upgrade or a rollback whose new owned
+    generation omits an old plugin removes that plugin's registry entry exactly
+    as an uninstall's cascade does, and returned ok with nothing said — the
+    same persisting removal, reached by a door this disclosure did not cover.
+    """
+    names = _swap_dropped_names(txn)
+    if not names:
+        return {}
+    return _plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED, names)
+
+
+def _absent_owned_names(txn, names: "list[str]") -> "tuple[list[str], bool]":
+    """Which of `names` are absent from the registry NOW, and whether the
+    registry could be read at all. Sync — callers on the loop use to_thread.
+
+    `(_, False)` means unreadable or invalid: it is not evidence of absence and
+    must never be reported as any. Never raises; an unexpected read failure is
+    the same answer as an invalid document."""
+    try:
+        data = plugin_registry.load_registry(
+            getattr(txn, "registry_path", None) or plugin_registry.REGISTRY_PATH)
+        if not data.valid:
+            return [], False
+        present = {e.get("name") for e in (data.raw.get("plugins") or [])
+                   if isinstance(e, dict)}
+    except Exception:  # noqa: BLE001 — an unreadable registry is "unknown"
+        logger.warning("could not read the registry back after a failed bundle "
+                       "compensation; plugin-data disclosure is indeterminate",
+                       exc_info=True)
+        return [], False
+    return [n for n in names if n not in present], True
+
+
 # #554: the variable NAMES are the one actionable fact in an env-shaped health
 # row, and nothing else carries them to the operator. The detail was attached to
 # `env_unresolved` only, so a `setup_env_unprovisioned` row — the commonest
@@ -11518,6 +11635,54 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
            "verify": seq.get("verify")}
     if not compensated["disk_ok"]:
         env["compensation_failed"] = True
+        # #676: this arm is the one ok:false envelope whose registry mutation
+        # PERSISTS. On an uninstall that cascaded owned plugins out, that is a
+        # committed removal the operator is being told about — so it owes the
+        # same disclosure, in attempted-removal wording. The other two arms
+        # (rolled_back, runtime_compensation_incomplete) restored the entries,
+        # so the same fields there would be false. An install/upgrade/rollback
+        # reaching this arm removed nothing: its `before_entries` is the
+        # PRE-SWAP owned set, not a removal.
+        # Terra diff-review r11: the candidate set is what the swap DROPPED,
+        # not what the transaction captured. A pending/error upgrade leaves the
+        # owned set UNCHANGED and hands it through in `before_entries`, so
+        # reading that as a removal warns about surviving plugin data after an
+        # operation that removed nothing — and the indeterminate arm cannot
+        # measure its way out of that, because there is nothing to measure.
+        # Sol diff-review a3-r2: the same is true one step finer. Even a
+        # transaction that DID swap kept most of `before_entries`, so the
+        # indeterminate arm named plugins the operation had re-published. One
+        # accessor now answers "what did this swap drop" for the success
+        # payloads and for this arm alike.
+        owned = _swap_dropped_names(txn)
+        if owned:
+            # Sol diff-review r1: `compensation_failed` does NOT establish that
+            # the removal persisted. rollback_disk() restores the registry in
+            # its FIRST step and then does fallible work (tuple/sidecar writes,
+            # the fresh-install symlink GC, the ack re-insert), any of which can
+            # raise after the entries are already back. Disclosing on the flag
+            # alone would tell an operator their plugin data survived a removal
+            # that had just been undone — the false-warning half of this
+            # invariant. So MEASURE it: read the registry back and disclose only
+            # for the names actually still absent. A read that fails establishes
+            # nothing either way, and says so.
+            #
+            # Sol diff-review r8: and the measurement is the WHOLE gate — an
+            # earlier `op == "uninstall"` test was wrong in the other direction.
+            # An upgrade or a rollback swaps the owned set wholesale, so either
+            # can drop a plugin the previous set had; when compensation then
+            # fails with that entry still gone, it is a persisting committed
+            # removal reached by a third door and owes the same disclosure. On
+            # an install whose swap replaced nothing, or any op whose entries
+            # came back, `still_absent` is empty and nothing is said.
+            still_absent, readable = await asyncio.to_thread(
+                _absent_owned_names, txn, owned)
+            if not readable:
+                env.update(_plugin_data_disclosure(
+                    _PLUGIN_DATA_NOTE_INDETERMINATE, owned))
+            elif still_absent:
+                env.update(_plugin_data_disclosure(
+                    _PLUGIN_DATA_NOTE_ATTEMPTED, still_absent))
         return env
     env["rolled_back"] = True
     if compensated["runtime_ok"]:
@@ -12319,7 +12484,17 @@ async def specialist_install_commit(args: dict) -> dict:
                      "required_env_vars": {
                          row.scoped_name: list(row.env_names)
                          for row in receipt.plugins if row.env_names
-                     }})
+                     },
+                     # #676: an install's swap normally replaces an EMPTY owned
+                     # set and drops nothing, so this adds no fields. It is not
+                     # decoration: the swap runs unconditionally here, and a
+                     # slug carrying stale owned entries (a crash between a
+                     # bundle's registry save and its journal completing, then
+                     # reconciled away from the tuple side) has those entries
+                     # dropped by it. Every successful owned-set swap answers
+                     # for what it dropped — the class, not three of its four
+                     # doors.
+                     **_swap_removal_disclosure(txn)})
 
 
 @tool(
@@ -12423,7 +12598,11 @@ async def specialist_upgrade(args: dict) -> dict:
             _prune_bundle_receipt(receipt.receipt_id)
             specialist_install_mod.reclaim_staging_tree(staged_dir)
     return _result({"ok": True, "slug": instance.slug, "state": instance.state,
-                     "reloaded": seq["reloaded"], "verify": seq["verify"]})
+                     "reloaded": seq["reloaded"], "verify": seq["verify"],
+                     # #676: an upgrade whose new owned generation omits an old
+                     # plugin removed that plugin's registry entry. Same
+                     # persisting removal, same disclosure.
+                     **_swap_removal_disclosure(txn)})
 
 
 @tool(
@@ -12456,7 +12635,11 @@ async def specialist_rollback(args: dict) -> dict:
             return _result(await _bundle_seq_failure(txn, seq, slug=txn.slug))
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
     return _result({"ok": True, "slug": instance.slug, "state": instance.state,
-                     "reloaded": seq["reloaded"], "verify": seq["verify"]})
+                     "reloaded": seq["reloaded"], "verify": seq["verify"],
+                     # #676: a rollback republishes the RETAINED prior owned
+                     # set, so a plugin the current generation added and the
+                     # prior one never had is dropped by the swap.
+                     **_swap_removal_disclosure(txn)})
 
 
 @tool(
@@ -12492,8 +12675,18 @@ async def specialist_uninstall(args: dict) -> dict:
         if not seq.get("ok", True):
             return _result(await _bundle_seq_failure(txn, seq, slug=slug))
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
-    return _result({"ok": True, "slug": slug, "reloaded": seq["reloaded"],
-                     "verify": seq["verify"]})
+    # #676: the uninstall CASCADED these owned plugins out of the registry —
+    # the same persisting committed removal, reached by another door, so the
+    # same disclosure is owed. Zero owned plugins removes nothing and discloses
+    # nothing. One gate serves every successful bundle now (Terra handback
+    # review, attempt 2): an uninstall's swap publishes an EMPTY owned set, so
+    # `removed_owned_names` is exactly the entries this slug owned — the same
+    # answer the hand-rolled `before_entries` read gave here, now derived the
+    # one way an upgrade and a rollback can share.
+    payload = {"ok": True, "slug": slug, "reloaded": seq["reloaded"],
+               "verify": seq["verify"]}
+    payload.update(_swap_removal_disclosure(txn))
+    return _result(payload)
 
 
 @tool(
@@ -12867,8 +13060,13 @@ def _plugin_remove_sync(*, name: str) -> dict:
     _safe_remove_manifest(name)
     for stale in removed_bins:
         retire_stale_bin(stale, name, Path("/config/tools"))
+    # #676: the disclosure rides the sync core's payload, added AFTER
+    # save_registry — the survival fact is true the moment the registry commits,
+    # so a committed-but-not-ready outcome (INV-TOOL-004) must carry it too, and
+    # `core.update(seq)` in the async wrapper cannot drop it.
     return {"ok": True, "name": name, "targets": targets,
-            "artifact_retained": True, "artifact_id": artifact_id}
+            "artifact_retained": True, "artifact_id": artifact_id,
+            **_plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED)}
 
 
 def _tool_plugin_list() -> dict:
@@ -12946,7 +13144,10 @@ async def plugin_unassign(args: dict) -> dict:
 
 @tool(
     "plugin_remove",
-    "Remove a plugin from the registry entirely (artifact retained for GC).",
+    "Remove a plugin from the registry entirely (artifact retained for GC). Does NOT delete the "
+    "plugin's CLI-managed persistent data directory (CLAUDE_PLUGIN_DATA), which may hold stored "
+    "authorizations such as OAuth tokens: that data survives and a reinstall re-attaches to it. "
+    "Performs no provider-side revocation.",
     {"name": str},
 )
 async def plugin_remove(args: dict) -> dict:

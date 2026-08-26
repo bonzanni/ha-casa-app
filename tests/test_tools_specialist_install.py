@@ -1883,3 +1883,522 @@ async def test_662_a_handed_off_turn_is_not_reported_as_a_failure(
 
     actual = (await cap["reconcile_cb"](), len(delivered), rec.status)
     assert actual == (True, 1, "completed"), f"hand-off facts: {actual!r}"
+
+
+# ---------------------------------------------------------------------------
+# #676 (INV-TOOL-007): an uninstall that cascades owned plugins out is a
+# committed plugin removal reached by another door, and owes the same
+# disclosure. The rolled-back arms do not — the entries are back.
+# ---------------------------------------------------------------------------
+
+_DISCLOSURE_KEYS = {"plugin_data_may_remain", "provider_revocation_performed",
+                    "plugin_data_note", "plugin_data_plugins"}
+
+
+def _uninstall_txn(monkeypatch, owned_names, *, op="uninstall"):
+    """Patch uninstall_specialist to hand back a txn whose before_entries are
+    exactly the owned rows the swap removed.
+
+    `removed_owned_names` mirrors what the REAL uninstall records: its swap
+    publishes an empty owned set, so every pre-swap name is dropped. The
+    double is only as good as that claim, which
+    test_specialist_bundle_commit.py::test_a_real_uninstall_records_every_owned_name_it_dropped
+    pins against the real `uninstall_specialist`."""
+    import specialist_install
+    from types import SimpleNamespace
+
+    txn = SimpleNamespace(
+        slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
+        journal_path="/tmp/does-not-matter.json", op=op,
+        owned_swap_committed=True,
+        removed_owned_names=tuple(owned_names),
+        before_entries=[{"name": n, "artifact_id": "a" * 64} for n in owned_names])
+    monkeypatch.setattr(specialist_install, "uninstall_specialist",
+                        lambda *, slug, **kw: txn)
+    return txn
+
+
+@pytest.mark.asyncio
+async def test_uninstall_discloses_exactly_the_cascaded_plugins(monkeypatch) -> None:
+    from tools import specialist_uninstall
+
+    _uninstall_txn(monkeypatch, ["mtg.gmail", "mtg.calendar"])
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_uninstall.handler({"slug": "mtg"}))
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    assert payload["plugin_data_plugins"] == ["mtg.gmail", "mtg.calendar"]
+    assert sum((payload["plugin_data_may_remain"] is True,
+                payload["provider_revocation_performed"] is False)) == 2
+    note = payload["plugin_data_note"].lower()
+    assert sum(f in note for f in ("cli-managed", "persistent", "not deleted",
+                                   "reinstall")) == 4
+
+
+@pytest.mark.asyncio
+async def test_uninstall_with_no_owned_plugins_discloses_nothing(monkeypatch) -> None:
+    """A warning about nothing is noise: zero cascaded plugins removed no
+    plugin data, so the envelope carries zero disclosure fields."""
+    from tools import specialist_uninstall
+
+    _uninstall_txn(monkeypatch, [])
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_uninstall.handler({"slug": "mtg"}))
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_compensation_on_uninstall_discloses_the_persisting_removal(
+        monkeypatch) -> None:
+    """The one ok:false envelope whose registry mutation PERSISTS. The
+    operator is told the removal did not roll back — they must also be told
+    what it did not delete."""
+    import tools as tools_mod
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          removed_owned_names=("mtg.gmail",),
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
+    assert env["compensation_failed"] is True
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 4
+    assert env["plugin_data_plugins"] == ["mtg.gmail"]
+    assert "rollback did not complete" in env["plugin_data_note"]
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_and_non_uninstall_arms_disclose_nothing(
+        monkeypatch) -> None:
+    """Three separate negatives, each measured on its own: a rollback that
+    restored the entries; a rollback whose runtime did not converge; and an
+    INSTALL reaching the failed-compensation arm, where before_entries is the
+    PRE-SWAP owned set and nothing was removed."""
+    import tools as tools_mod
+    from types import SimpleNamespace
+
+    async def _comp_ok(txn):
+        return {"disk_ok": True, "runtime_ok": True}
+
+    async def _comp_partial(txn):
+        return {"disk_ok": True, "runtime_ok": False}
+
+    async def _comp_failed(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    def _txn(op):
+        return SimpleNamespace(slug="mtg", op=op, owned_swap_committed=True,
+                               removed_owned_names=("mtg.gmail",),
+                               before_entries=[
+                                   {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+
+    import plugin_registry
+    from plugin_registry import RegistryData
+
+    # Whatever the arm, the entries are back in the registry.
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+    counts = []
+    for comp, op, expect_flag in ((_comp_ok, "uninstall", "rolled_back"),
+                                  (_comp_partial, "uninstall",
+                                   "runtime_compensation_incomplete"),
+                                  (_comp_failed, "install",
+                                   "compensation_failed")):
+        monkeypatch.setattr(tools_mod, "_bundle_compensate", comp)
+        env = await tools_mod._bundle_seq_failure(_txn(op), seq, slug="mtg")
+        assert env[expect_flag] is True
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+    assert counts == [0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_every_bundle_op_discloses_a_drop_its_rollback_could_not_undo(
+        monkeypatch) -> None:
+    """Sol diff-review r8: an upgrade and a rollback swap the owned set
+    wholesale, so either can drop a plugin the previous set had. When
+    compensation then fails with that entry still gone, it is a persisting
+    committed removal — the measurement is the whole gate, and the op is not
+    part of it. Each op measured separately."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    # mtg.gmail came back; mtg.dropped did not.
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    counts, named = [], []
+    for op in ("upgrade", "rollback", "install", "uninstall"):
+        # Faithful to the producers: an uninstall's swap drops BOTH names (it
+        # publishes an empty owned set); the other three publish a new set that
+        # still carries mtg.gmail, so only mtg.dropped is a candidate. Either
+        # way the read-back finds mtg.gmail present, so only mtg.dropped is
+        # disclosed — the assertion below is the same for all four.
+        dropped = (("mtg.gmail", "mtg.dropped") if op == "uninstall"
+                   else ("mtg.dropped",))
+        txn = SimpleNamespace(slug="mtg", op=op, owned_swap_committed=True,
+                              removed_owned_names=dropped,
+                              before_entries=[
+                                  {"name": "mtg.gmail", "artifact_id": "a" * 64},
+                                  {"name": "mtg.dropped", "artifact_id": "b" * 64}])
+        env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+        named.append(env.get("plugin_data_plugins"))
+    assert counts == [4, 4, 4, 4]
+    assert named == [["mtg.dropped"]] * 4
+
+
+@pytest.mark.asyncio
+async def test_failed_compensation_that_restored_the_registry_discloses_nothing(
+        monkeypatch) -> None:
+    """Sol diff-review r1: `compensation_failed` does not prove the removal
+    persisted — rollback_disk() restores the registry FIRST and then does
+    fallible work. When the entries are back, a survival warning would be the
+    false half of the invariant."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    # The registry read-back finds the entry restored.
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
+    assert env["compensation_failed"] is True
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_compensation_discloses_only_the_names_still_absent(
+        monkeypatch) -> None:
+    """A partial restore is the interesting case: one entry back, one still
+    removed. Only the one still removed is named."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[], entry_issues=[],
+        valid=True))
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          removed_owned_names=("mtg.gmail", "mtg.calendar"),
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64},
+                              {"name": "mtg.calendar", "artifact_id": "b" * 64}])
+    env = await tools_mod._bundle_seq_failure(
+        txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg")
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 4
+    assert env["plugin_data_plugins"] == ["mtg.calendar"]
+    assert "still removed" in env["plugin_data_note"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_registry_after_failed_compensation_says_unknown(
+        monkeypatch) -> None:
+    """A read that fails establishes nothing either way. Both arms — an
+    invalid document and a raising loader — say so rather than picking a side,
+    and still state the two facts that hold regardless."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    txn = SimpleNamespace(slug="mtg", op="uninstall", owned_swap_committed=True,
+                          removed_owned_names=("mtg.gmail",),
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    def _raise(path=None):
+        raise OSError("registry unreadable")
+
+    counts = []
+    for loader in (lambda path=None: RegistryData(
+            raw={}, entries=[], entry_issues=[], valid=False), _raise):
+        monkeypatch.setattr(plugin_registry, "load_registry", loader)
+        env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+        assert "unknown" in env["plugin_data_note"]
+        assert env["plugin_data_plugins"] == ["mtg.gmail"]
+        assert env["provider_revocation_performed"] is False
+    assert counts == [4, 4]
+
+
+@pytest.mark.asyncio
+async def test_a_transaction_that_never_swapped_discloses_nothing(monkeypatch) -> None:
+    """Terra diff-review r11: a pending/error upgrade leaves the owned set
+    UNCHANGED and hands the same `before_entries` through. Reading that as a
+    removal warns about surviving plugin data after an operation that removed
+    nothing — and the indeterminate arm cannot measure its way out, because
+    there is nothing to measure. Both read-back outcomes are checked."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    txn = SimpleNamespace(slug="mtg", op="upgrade", owned_swap_committed=False,
+                          before_entries=[
+                              {"name": "mtg.gmail", "artifact_id": "a" * 64}])
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    counts = []
+    for loader in (lambda path=None: RegistryData(raw={}, entries=[],
+                                                  entry_issues=[], valid=False),
+                   lambda path=None: RegistryData(
+                       raw={"plugins": [{"name": "mtg.gmail"}]}, entries=[],
+                       entry_issues=[], valid=True)):
+        monkeypatch.setattr(plugin_registry, "load_registry", loader)
+        env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+        assert env["compensation_failed"] is True
+        counts.append(sum(k in env for k in _DISCLOSURE_KEYS))
+    assert counts == [0, 0]
+
+
+def test_only_a_committed_owned_swap_declares_itself() -> None:
+    """The flag is fail-closed by construction: the default is False, so a
+    BundleTxn built without saying it swapped can only UNDER-claim. Measured
+    against the real dataclass, not a double."""
+    from specialist_bundle_journal import BundleTxn
+
+    txn = BundleTxn(journal_path="/tmp/x.json", slug="mtg", before_entries=[],
+                    before_tuple_files={}, ack_records=[])
+    assert txn.owned_swap_committed is False
+
+
+# ---------------------------------------------------------------------------
+# #676 (INV-TOOL-007), Terra handback review: a SUCCESSFUL upgrade or rollback
+# whose owned-set swap dropped a plugin is a persisting committed removal and
+# owes the same disclosure its uninstall sibling already carried. The txn field
+# these doubles set is pinned against the real producers in
+# tests/test_specialist_bundle_commit.py (the _prep_multi tests).
+# ---------------------------------------------------------------------------
+
+def _swap_txn(dropped, *, op, swapped=True):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
+        journal_path="/tmp/does-not-matter.json", op=op,
+        owned_swap_committed=swapped, removed_owned_names=tuple(dropped),
+        before_entries=[{"name": "mtg.mtg", "artifact_id": "a" * 64}]
+        + [{"name": n, "artifact_id": "b" * 64} for n in dropped])
+
+
+async def _run_upgrade(monkeypatch, tmp_path, txn):
+    """Drive the real specialist_upgrade handler to its success return with
+    `upgrade_specialist` stubbed to hand back `txn`."""
+    from test_specialist_install import _write_component
+    from specialist_component import load_specialist_component
+    from specialist_install import compute_install_root_digest, resolve_dependency_closure
+    import specialist_install
+    import tools as tools_mod
+    from tools import specialist_upgrade
+    from types import SimpleNamespace
+
+    staged = _write_component(tmp_path / "staged", slug="mtg")
+    component = load_specialist_component(staged, staged / "manifest.json")
+    deps = resolve_dependency_closure(component, staged)
+    digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+
+    instance = SimpleNamespace(slug="mtg", state="active")
+    monkeypatch.setattr(specialist_install, "upgrade_specialist",
+                        lambda **kw: (instance, txn))
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
+    _inject_fake_receipt(monkeypatch)
+    _stub_bundle_sequencer(monkeypatch)
+
+    return _payload(await specialist_upgrade.handler({
+        "slug": "mtg", "component_id": component.component_id,
+        "version": component.version, "staged_dir": str(staged),
+        "receipt_id": "a" * 32, "root_digest": digest}))
+
+
+async def _run_rollback(monkeypatch, txn):
+    import specialist_install
+    from tools import specialist_rollback
+    from types import SimpleNamespace
+
+    instance = SimpleNamespace(slug="mtg", state="active")
+    monkeypatch.setattr(specialist_install, "rollback_specialist",
+                        lambda **kw: (instance, txn))
+    _stub_bundle_sequencer(monkeypatch)
+    return _payload(await specialist_rollback.handler({"slug": "mtg"}))
+
+
+@pytest.mark.asyncio
+async def test_a_successful_upgrade_discloses_the_plugin_its_swap_dropped(
+        monkeypatch, tmp_path) -> None:
+    payload = await _run_upgrade(
+        monkeypatch, tmp_path, _swap_txn(["mtg.extra"], op="upgrade"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    # ONLY the dropped plugin — not the whole pre-swap owned set, which still
+    # carries mtg.mtg, re-published by this very upgrade.
+    assert payload["plugin_data_plugins"] == ["mtg.extra"]
+    assert sum((payload["plugin_data_may_remain"] is True,
+                payload["provider_revocation_performed"] is False)) == 2
+    note = payload["plugin_data_note"].lower()
+    assert sum(f in note for f in ("cli-managed", "persistent", "not deleted",
+                                   "reinstall")) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_successful_upgrade_that_dropped_nothing_discloses_nothing(
+        monkeypatch, tmp_path) -> None:
+    """The false-warning half, measured on its own: an upgrade that
+    re-published its whole owned set removed nothing."""
+    payload = await _run_upgrade(monkeypatch, tmp_path, _swap_txn([], op="upgrade"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_an_upgrade_that_never_swapped_discloses_nothing(
+        monkeypatch, tmp_path) -> None:
+    """The swap gate is independent of the dropped list: a transaction that
+    did not swap has no removal to report even if a caller handed it names."""
+    payload = await _run_upgrade(
+        monkeypatch, tmp_path,
+        _swap_txn(["mtg.extra"], op="upgrade", swapped=False))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_successful_rollback_discloses_the_plugin_its_swap_dropped(
+        monkeypatch) -> None:
+    payload = await _run_rollback(
+        monkeypatch, _swap_txn(["mtg.extra"], op="rollback"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    assert payload["plugin_data_plugins"] == ["mtg.extra"]
+    assert payload["plugin_data_may_remain"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_successful_rollback_that_dropped_nothing_discloses_nothing(
+        monkeypatch) -> None:
+    payload = await _run_rollback(monkeypatch, _swap_txn([], op="rollback"))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_successful_install_commit_discloses_a_stale_entry_its_swap_dropped(
+        monkeypatch, tmp_path) -> None:
+    """The fourth door. An install's swap normally replaces an EMPTY owned set
+    and this adds nothing — but the swap runs unconditionally, so a slug
+    carrying stale owned entries has them dropped by it, and the gate is the
+    dropped list rather than the operation."""
+    from test_specialist_install import _write_component
+    from specialist_component import load_specialist_component
+    from specialist_install import compute_install_root_digest, resolve_dependency_closure
+    import specialist_install
+    import tools as tools_mod
+    from tools import specialist_install_commit
+    from types import SimpleNamespace
+
+    staged = _write_component(tmp_path / "staged", slug="mtg")
+    component = load_specialist_component(staged, staged / "manifest.json")
+    deps = resolve_dependency_closure(component, staged)
+    root_digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+
+    txn = _swap_txn(["mtg.stale"], op="install")
+    monkeypatch.setattr(specialist_install, "commit_specialist_install",
+                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active"), txn))
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
+    _inject_fake_receipt(monkeypatch)
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_install_commit.handler({
+        "component_id": component.component_id, "version": component.version,
+        "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
+        "receipt_id": "a" * 32}))
+
+    assert payload["ok"] is True
+    assert sum(k in payload for k in _DISCLOSURE_KEYS) == 4
+    assert payload["plugin_data_plugins"] == ["mtg.stale"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_registry_names_only_what_the_swap_dropped(
+        monkeypatch) -> None:
+    """Sol diff-review a3-r2. The readable arm hid this: the read-back filtered
+    a too-wide candidate set down to the truth. The INDETERMINATE arm has
+    nothing to filter with, so a candidate set taken from `before_entries`
+    told the operator that a plugin the upgrade had just RE-PUBLISHED might be
+    gone — a false survival warning, and an invitation to revoke an unrelated
+    provider grant. Both arms now take the same set: what the swap dropped."""
+    import tools as tools_mod
+    import plugin_registry
+    from plugin_registry import RegistryData
+    from types import SimpleNamespace
+
+    async def _comp(txn):
+        return {"disk_ok": False, "runtime_ok": False}
+
+    monkeypatch.setattr(tools_mod, "_bundle_compensate", _comp)
+    # Pre-swap {mtg.kept, mtg.dropped}; the new generation carries mtg.kept and
+    # mtg.new, so exactly one name was dropped.
+    txn = SimpleNamespace(slug="mtg", op="upgrade", owned_swap_committed=True,
+                          removed_owned_names=("mtg.dropped",),
+                          before_entries=[
+                              {"name": "mtg.kept", "artifact_id": "a" * 64},
+                              {"name": "mtg.dropped", "artifact_id": "b" * 64}])
+    seq = {"ok": False, "kind": "bundle_sequence_failed"}
+
+    monkeypatch.setattr(plugin_registry, "load_registry", lambda path=None: RegistryData(
+        raw={}, entries=[], entry_issues=[], valid=False))
+    env = await tools_mod._bundle_seq_failure(txn, seq, slug="mtg")
+
+    assert sum(k in env for k in _DISCLOSURE_KEYS) == 4
+    assert "unknown" in env["plugin_data_note"]
+    assert env["plugin_data_plugins"] == ["mtg.dropped"]
+    assert "mtg.kept" not in env["plugin_data_plugins"]
