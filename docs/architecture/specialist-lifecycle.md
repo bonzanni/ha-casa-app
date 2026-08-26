@@ -170,8 +170,9 @@ artifact identity is still on file.
 The finish hook awaits the reconciliation callback *before* it edits, and the edit it then
 makes is one of three. A literal `True` selects the success wording. A `False`, a bare
 `None` and an absent callback select the corrective wording, which states that the install
-was not started automatically — true on each of those, because none of them created a
-delivery task. A contained raise selects a third, weaker wording: a raise is a contract
+was not started automatically. That is the callback's report, not a proof: see the
+both-directions caveat below, under which a `False` can accompany a real hand-off. A
+contained raise selects a third, weaker wording: a raise is a contract
 violation with no production producer, and it is the one branch where the outcome is
 unknown rather than known-negative, so it says the automatic start could not be confirmed
 and that re-running is safe either way. The tap-callback never-raise contract is unchanged
