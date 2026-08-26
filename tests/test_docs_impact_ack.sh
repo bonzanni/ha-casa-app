@@ -248,7 +248,15 @@ reset_pr; tip "change
 
 Docs-impact: none — claimed nothing needs a waiver, wrongly"
 expect "none is refused when a document does need a waiver" fail "$D1" "" "" \
-  "claims no document needs a waiver"
+  "These do:"
+
+# `none` beside a real waiver: every document IS waived, so `missing` is zero
+# and only the reserved token's own truth check can refuse this.
+reset_pr; tip "change
+
+Docs-impact: none — nothing needs a waiver
+Docs-impact: $D1 — except this one, apparently"
+expect "none is refused while another document is waived" fail "$D1" "" "" "These do:"
 
 # --- a subject line is never a waiver -------------------------------------
 # `%B` puts the subject at column zero, so it parses on the pull-request arm;

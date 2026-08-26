@@ -100,11 +100,24 @@ def test_inv_doc_008_only_the_tip_commit_may_carry_a_waiver(repo: Path) -> None:
     assert "non_tip=1" in out, out
 
 
-def test_inv_doc_008_the_reserved_none_token_must_be_true(repo: Path) -> None:
-    _commit(repo, "change\n\nDocs-impact: none — claimed nothing needs a waiver, wrongly")
+def test_inv_doc_008_a_document_waived_twice_is_refused(repo: Path) -> None:
+    _commit(repo, f"change\n\nDocs-impact: {D1} — reason one"
+                  f"\nDocs-impact: {D1} — reason two, contradicting the first")
     rc, out = _decide(repo, impacted=D1)
     assert rc == 1, out
-    assert "claims no document needs a waiver" in out, out
+    assert "duplicate=1" in out, out
+
+
+def test_inv_doc_008_the_reserved_none_token_must_be_true(repo: Path) -> None:
+    """`none` BESIDE a real waiver is the case that makes this guard
+    load-bearing: every impacted document is waived, so `missing` is zero and
+    nothing else in the contract refuses the contradiction."""
+    _commit(repo, f"change\n\nDocs-impact: none — nothing needs a waiver"
+                  f"\nDocs-impact: {D1} — except this one, apparently")
+    rc, out = _decide(repo, impacted=D1)
+    assert rc == 1, out
+    assert "missing=0" in out, out
+    assert "These do:" in out, out
 
     # A FRESH branch off main: the commit above carries a waiver line, and
     # stacking on it would make this a non-tip refusal instead.

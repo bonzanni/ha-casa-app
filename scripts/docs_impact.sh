@@ -254,7 +254,7 @@ while IFS= read -r ack; do
   # tests-only change as an irrelevant waiver and refuse every one of them.
   if [ "$ack_doc" = "none" ]; then
     none_claimed=1
-    echo "note: docs-impact claims no document needs a waiver — $ack_reason"
+    echo "note: docs-impact reserved token 'none' — $ack_reason"
     continue
   fi
   printf '%s\n' "$ack_doc" >> "$tmp/acked.txt"
@@ -354,7 +354,7 @@ fi
 
 if [ "$none_claimed" = 1 ] && [ "$untouched_n" -gt 0 ]; then
   summary
-  err "'Docs-impact: none' claims no document needs a waiver, but these do:"
+  err "'Docs-impact: none' says no document needs a waiver. These do:"
   while IFS= read -r doc; do err "  $doc"; done < "$tmp/missing.txt"
   exit 1
 fi
