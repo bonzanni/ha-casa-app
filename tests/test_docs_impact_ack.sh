@@ -137,6 +137,18 @@ Docs-impact: $D2 — reason two"
 expect "per-document waivers cover both" ok "$D1
 $D2" "" ""
 
+# --- a waiver may not contradict the diff it ships with -------------------
+# RED CASE for #685 / INV-DOC-008 (specified by Terra, drive run 2026-08-25).
+# With impacted == touched == {D1}, `I - T` is empty, so ANY waiver is
+# necessarily contradictory. Before the fix this passes: the waiver parses,
+# then the per-document loop finds D1 in `touched` and short-circuits before
+# ever consulting acked.txt, so the claim is compared to no diff at all.
+reset_pr; tip "change
+
+Docs-impact: $D1 — prose reviewed, but document is updated"
+expect "waiver for a touched impacted document is contradictory" \
+  fail "$D1" "$D1" "" "contradictory=1"
+
 # --- the waiver is a statement about the FINAL diff -----------------------
 reset_pr
 tip "change
