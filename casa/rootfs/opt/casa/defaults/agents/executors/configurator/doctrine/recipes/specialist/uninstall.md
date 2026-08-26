@@ -19,6 +19,11 @@
    Say "may have survived", never "survived": Casa cannot see whether those
    plugins stored anything.
    Do not restate it as a deletion or a revocation.
+   If the uninstall RAISES instead of returning a result, the cascaded
+   registry removals may already have committed with no envelope to carry that
+   caveat. Say so: the removals may have taken effect, and if they did, the
+   same survival applies — nothing was deleted and nothing was revoked. Run
+   `plugin_list()` to see which entries are gone.
 4. `config_git_commit(message="uninstall specialist <slug>")`.
 5. `casa_reload(scope="agents")` — evicts the removed agent from the live
    registry (canonical commit → reload → emit order, see `completion.md`).

@@ -1413,6 +1413,12 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
         (remove, "may have survived"), (uninstall, "may have survived"))) == 2
     for text in (remove, uninstall):
         assert "authorizations survived" not in text
+    # Sol diff-review r3: both removal recipes must carry the raise-path
+    # guidance, not just the direct one — a raised uninstall can persist
+    # cascaded removals with no envelope to carry the caveat, and an asymmetry
+    # here leaves that seam open on the path that removes MORE.
+    assert sum("may have taken effect" in text for text in (remove, uninstall)) == 2
+    assert sum("`plugin_list()`" in text for text in (remove, uninstall)) == 2
     # The plugin-env clarification: clearing an entry needs its OWN reload, and
     # is not credential deletion.
     assert sum(fragment in remove for fragment in (
