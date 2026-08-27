@@ -161,6 +161,18 @@ measurement, not an inference: a member may fork after a snapshot and before its
 and that child is enumerated and killed on the next pass, because a killed process cannot fork
 again. Zombies count as extinct — a `Z` member cannot execute or write.
 
+**What a failed launch leaves of the boundary.** Every artifact this document names — the
+workspace tree, its control directory, the uid's passwd/group identity and that uid's private
+outbox — is one of the removals INV-ENG-014 covers, and that invariant, its scope and its
+mechanism are in [`architecture/engagements.md`](engagements.md). What belongs here is the
+containment consequence, which is why a skipped attempt is permanent rather than untidy:
+because the uid is never reused (INV-CONT-001), no later launch inherits it and cleans up
+behind it, and the sweeper does not either — the meta already reads `UNDERGOING` by the time
+the rollback runs, and `_sweep_one_workspace` returns on `UNDERGOING` before it reads a
+retention deadline. Nothing revisits the residue, so an abandoned boundary is abandoned for
+the life of the install. An attempt that ran and FAILED is a different and pre-existing
+condition, best-effort in both documents' sense.
+
 What it does not cover: there is no SIGTERM grace, so a narration tail the CLI had buffered is
 lost (the completion text is unaffected — it arrived through the tool call, and the frames the
 completion post drains are read from the s6 log segments on disk). An unverified down-latch

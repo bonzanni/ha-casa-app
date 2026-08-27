@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.245.0] - 2026-08-27
+
+### Fixed
+
+- A launch that fails or is cancelled now finishes cleaning up after itself. A
+  cancellation arriving while Casa was undoing a half-built executor could stop
+  that clean-up part-way, leaving the executor's workspace, control directory,
+  OS identity and plugin outbox behind for good; every removal is now attempted
+  before the cancellation is passed on.
+
 ## [0.244.0] - 2026-08-27
 
 ### Fixed

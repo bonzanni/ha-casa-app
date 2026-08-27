@@ -210,6 +210,15 @@ this: admission decides whether a turn is *delivered*, not where a notice *lands
 the notice would additionally require the finalization's own topic operations to be sequenced
 against it, which is not built here.
 
+**INV-ENG-014**: Once a `claude_code` launch's rollback has been entered, every removal it was entered to run — the s6 service directory, the workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group identity and its private outbox — is attempted; a cancellation delivered at one of the rollback's own awaits skips none of those attempts. That cancellation is never swallowed: it is re-raised once the attempts have run, carrying the failure it interrupted rather than replacing it.
+
+**What it does not cover.** *Attempted* is not *succeeded*: every removal keeps the
+best-effort floor it always had, so an I/O or permission failure leaves that artifact behind,
+and two of the five do not even say that they did — see Failure behavior. And it says nothing
+about **which** removals a rollback is entered to run for which cause: a shutdown-caused abort is not distinguished from a
+provisioning failure, which is #698's work. The removal order, the mechanism, and why the
+removals being synchronous is what makes the guarantee cheap are under Failure behavior.
+
 ## Failure behavior
 
 **A delegation is refused at one of its gates.** The ACL, alias, spawn-cap and
@@ -218,6 +227,38 @@ plugin-withholding refusals, and what each payload discloses, are described in
 
 **A driver fails to start after the record exists.** The engagement is marked errored, topic
 cleanup is attempted, and the caller is told the start failed.
+
+**A launch that aborts rolls back what it provisioned, and finishes doing so.** The
+`claude_code` launch removes, in order, the s6 service directory (recompiling after it), the
+workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group
+identity and its private outbox. That the sequence runs to its end even when a cancellation lands inside it is
+INV-ENG-014. Each attempt keeps the best-effort floor it already had, so that one
+rollback failure cannot mask the launch failure underneath it — but the floor is not uniform,
+and the difference is operationally visible. Removing the service directory, pruning the
+identity and tearing down the outbox each catch their failure and log it. The workspace tree
+and the control directory do not: both run under `shutil.rmtree(..., ignore_errors=True)`,
+which discards the error inside `rmtree` so the enclosing handler never sees one, and a
+permission or I/O failure there leaves the tree in place with **no diagnostic at all**. What
+cannot happen is that an attempt is skipped; a `rmtree` that fails still fails, silently for
+those two. Such
+a cancellation is recorded rather than propagated, no further rollback await is attempted after
+it, and it is re-raised once the removals have run, carrying the launch failure it interrupted
+as its context so a reader downstream holds both facts rather than one. The removals being
+synchronous is what makes that cheap: after the last await there is no suspension point at
+which a second cancellation could land, so no drain, shield or detached task is involved and
+the launcher's compile lock is neither released early nor held across a new await. Until this
+release those guards were `except Exception`, and `CancelledError` — a `BaseException` —
+escaped the handler outright, leaving a workspace whose meta already read `UNDERGOING`; the
+sweeper returns past `UNDERGOING` before it reads a retention deadline, and uids are never
+reused (INV-CONT-001), so every such abort leaked a workspace tree, a control directory, an
+identity and an outbox permanently. *Which* removals a rollback is entered to run is a separate
+question this does not answer: a shutdown-caused abort is not yet distinguished from a genuine
+provisioning failure, which is #698's work under the ruling that a stop and a failure are
+different events. Nor is the *reporting* of the two combined: a launch that failed and was then
+cancelled during its rollback reaches the caller's cancellation arm and is announced as a
+cancellation, the failure surviving only as that exception's context and reaching no operator.
+That routing is unchanged by this release — the escaping cancellation reached the same arm
+before it — and it is the observability half of the same later work.
 
 These launch-failure arms — a missing driver, a clearance change during launch, a superseded
 plugin, a missing prompt template, an API-level fault, and a start that raised — deliberately
