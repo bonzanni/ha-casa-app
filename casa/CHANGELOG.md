@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.244.0] - 2026-08-27
+
+### Fixed
+
+- Approving an install or a tool authorization no longer loses the follow-up
+  turn when the engagement finishes at the same moment — the turn you were
+  granted is reserved the instant you tap, instead of being created after the
+  engagement may already have closed.
+- A turn is never delivered into an engagement that has already ended: a
+  follow-up that arrives too late is refused and reported, rather than sent
+  into a conversation nobody is listening to any more.
+
 ## [0.243.0] - 2026-08-26
 
 ### Fixed
