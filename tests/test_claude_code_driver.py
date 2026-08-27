@@ -4443,11 +4443,12 @@ class TestRollbackCancellationCompleteness:
     """#755: a cancellation delivered at one of the rollback's own awaits
     must not skip the removals below it.
 
-    No corpus invariant id is cited here on purpose. The completeness property
-    this pins is described as prose under "Failure behavior" in
-    ``docs/architecture/engagements.md``; DECLARING it as an ``INV-ENG-*`` is a
-    separate, returned decision (see the cluster's handback) because no bytes
-    predating this change establish the requirement, only the defect.
+    These cases pin ``INV-ENG-014``, declared in
+    ``docs/architecture/engagements.md``: every removal a launch rollback was
+    entered to run is attempted, and a cancellation delivered at one of the
+    rollback's own awaits skips none of them. Its scope is deliberately narrow
+    — it says nothing about *which* removals a rollback is entered to run for
+    which cause, which is #698's question.
 
     ``ClaudeCodeDriver.start``'s rollback guards each of its three awaits with
     ``except Exception``. ``asyncio.CancelledError`` is a ``BaseException``, so

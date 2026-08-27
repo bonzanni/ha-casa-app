@@ -210,6 +210,15 @@ this: admission decides whether a turn is *delivered*, not where a notice *lands
 the notice would additionally require the finalization's own topic operations to be sequenced
 against it, which is not built here.
 
+**INV-ENG-014**: Once a `claude_code` launch's rollback has been entered, every removal it was entered to run — the s6 service directory, the workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group identity and its private outbox — is attempted; a cancellation delivered at one of the rollback's own awaits skips none of those attempts. That cancellation is never swallowed: it is re-raised once the attempts have run, carrying the failure it interrupted rather than replacing it.
+
+**What it does not cover.** *Attempted* is not *succeeded*: every removal keeps the
+best-effort floor it always had, so an I/O or permission failure still leaves that artifact
+behind, logged rather than raised. And it says nothing about **which** removals a rollback
+is entered to run for which cause: a shutdown-caused abort is not distinguished from a
+provisioning failure, which is #698's work. The removal order, the mechanism, and why the
+removals being synchronous is what makes the guarantee cheap are under Failure behavior.
+
 ## Failure behavior
 
 **A delegation is refused at one of its gates.** The ACL, alias, spawn-cap and
@@ -222,9 +231,8 @@ cleanup is attempted, and the caller is told the start failed.
 **A launch that aborts rolls back what it provisioned, and finishes doing so.** The
 `claude_code` launch removes, in order, the s6 service directory (recompiling after it), the
 workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group
-identity and its private outbox. Every one of those removals is *attempted* once the rollback
-has been entered — including when a cancellation is delivered at one of the rollback's own
-awaits. Each attempt keeps the best-effort floor it already had: a removal that raises is
+identity and its private outbox. That the sequence runs to its end even when a cancellation lands inside it is
+INV-ENG-014. Each attempt keeps the best-effort floor it already had: a removal that raises is
 logged and swallowed, so that one rollback failure cannot mask the launch failure underneath
 it. What cannot happen is that an attempt is skipped; a `rmtree` that fails still fails. Such
 a cancellation is recorded rather than propagated, no further rollback await is attempted after
