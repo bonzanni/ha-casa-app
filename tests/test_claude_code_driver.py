@@ -4792,3 +4792,95 @@ class TestRollbackCancellationCompleteness:
                 ("competitor_entered", None)), (
                 f"a queued compiler held the lock while {effect} was still "
                 f"running")
+
+    async def test_ordinary_failure_at_a_rollback_await_still_runs_every_removal(
+            self, monkeypatch, tmp_path):
+        """Case 6 — the NON-cancellation half of the same clause.
+
+        INV-ENG-014 says every removal the rollback was entered to run is
+        attempted, without qualifying the reason a step goes wrong. Cases 1-5
+        pin that against a delivered cancellation; nothing pinned it against
+        an ordinary failure at the same await, and the code paths differ —
+        ``_rollback_await`` RETURNS a cancellation and SWALLOWS an
+        ``Exception``.
+
+        Kills: ``_rollback_await`` re-raising an ordinary rollback-step
+        failure instead of logging it (measured surviving all 11,219 tests
+        before this case existed); the rollback recompile's failure replacing
+        the launch failure that leaves ``start()``.
+        """
+        from drivers import s6_rc
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        start_failure = RuntimeError("simulated s6-rc start failure")
+        rollback_failure = RuntimeError("simulated rollback recompile failure")
+
+        async def fake_start_fail(*, engagement_id):
+            raise start_failure
+
+        async def compile_fails_on_rollback():
+            h.compile_entries.append(len(h.compile_entries) + 1)
+            if len(h.compile_entries) == 2:
+                raise rollback_failure
+
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            compile_fails_on_rollback)
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+
+        with pytest.raises(RuntimeError) as raised:
+            await h.launch()
+
+        assert h.compile_entries == [1, 2], (
+            "the rollback must still enter its recompile")
+        assert raised.value is start_failure, (
+            "a rollback step's own failure must not mask the launch failure "
+            f"underneath it — got {raised.value!r}")
+        assert h.probe.counts() == _RollbackProbe.each_once(), (
+            "a rollback await that FAILED skipped the removals below it — "
+            "the same truncation #755 fixed for cancellation")
+        assert h.probe.paths_absent() == {
+            "workspace": False, "control": False, "outbox": False}
+
+    async def test_a_failed_synchronous_removal_does_not_skip_its_successors(
+            self, monkeypatch, tmp_path):
+        """Case 7 — the same clause, one step earlier and synchronous.
+
+        ``remove_service_dir`` is the rollback's FIRST removal and the only
+        synchronous one that can raise (the two ``rmtree`` calls run under
+        ``ignore_errors=True`` and cannot). If its guard goes, the four
+        removals after it never run and the launch failure is replaced by the
+        rollback's.
+
+        Kills: dropping the ``try``/``except`` around ``remove_service_dir``
+        (measured surviving all 11,219 tests before this case existed).
+        """
+        from drivers import s6_rc
+
+        h = _RollbackHarness(monkeypatch, tmp_path)
+        start_failure = RuntimeError("simulated s6-rc start failure")
+
+        async def fake_start_fail(*, engagement_id):
+            raise start_failure
+
+        def remove_service_dir_fails(*, svc_root, engagement_id):
+            # Recorded THEN raised: the attempt is what the invariant counts,
+            # and the trace has to show it was made before it failed.
+            h.probe.trace.append(("remove_service_dir", engagement_id))
+            raise RuntimeError("simulated remove_service_dir failure")
+
+        monkeypatch.setattr(s6_rc, "remove_service_dir",
+                            remove_service_dir_fails)
+        monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
+                            h.compile_fake(suspend_on_call=None))
+        monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+
+        with pytest.raises(RuntimeError) as raised:
+            await h.launch()
+
+        assert raised.value is start_failure, (
+            "a failed removal must not mask the launch failure underneath it "
+            f"— got {raised.value!r}")
+        assert h.probe.counts() == _RollbackProbe.each_once(), (
+            "the first removal failing skipped the four below it")
+        assert h.probe.paths_absent() == {
+            "workspace": False, "control": False, "outbox": False}
