@@ -4841,46 +4841,97 @@ class TestRollbackCancellationCompleteness:
         assert h.probe.paths_absent() == {
             "workspace": False, "control": False, "outbox": False}
 
+    @pytest.mark.parametrize("failing_step", [
+        "remove_service_dir", "rmtree_workspace", "rmtree_control",
+        "prune_identity", "teardown_outbox",
+    ])
     async def test_a_failed_synchronous_removal_does_not_skip_its_successors(
-            self, monkeypatch, tmp_path):
-        """Case 7 — the same clause, one step earlier and synchronous.
+            self, monkeypatch, tmp_path, failing_step):
+        """Case 7 — every synchronous removal's OWN guard, not a chosen one.
 
-        ``remove_service_dir`` is the rollback's FIRST removal and the only
-        synchronous one that can raise (the two ``rmtree`` calls run under
-        ``ignore_errors=True`` and cannot). If its guard goes, the four
-        removals after it never run and the launch failure is replaced by the
-        rollback's.
+        The parameter set is derived from the code rather than from whichever
+        step someone thought of: the rollback's synchronous tail has FIVE
+        removals and five SEPARATE ``try``/``except`` guards, so a case that
+        fails one of them leaves the other four unpinned. Two review rounds
+        found exactly that shape twice — first ``remove_service_dir``, then
+        ``prune_identity`` — which is the signal to cover the mechanism rather
+        than add a third one-off. The three rollback AWAITS need no equivalent
+        sweep: they share ONE guard, ``_rollback_await``, and case 6 pins it.
 
-        Kills: dropping the ``try``/``except`` around ``remove_service_dir``
-        (measured surviving all 11,219 tests before this case existed).
+        Each parameter records its attempt into the same trace before raising,
+        so the count assertion measures an attempt that was really made and
+        then failed — the distinction INV-ENG-014 turns on.
+
+        Kills, one guard at a time: dropping any of the five
+        ``except Exception`` blocks in the synchronous tail, each of which lets
+        that step's failure both skip every removal after it and replace the
+        launch failure that leaves ``start()``.
         """
         from drivers import s6_rc
+        from drivers import claude_code_driver as ccd
+        import plugin_outbox
 
         h = _RollbackHarness(monkeypatch, tmp_path)
         start_failure = RuntimeError("simulated s6-rc start failure")
+        boom = OSError(f"simulated {failing_step} failure")
 
         async def fake_start_fail(*, engagement_id):
             raise start_failure
 
-        def remove_service_dir_fails(*, svc_root, engagement_id):
-            # Recorded THEN raised: the attempt is what the invariant counts,
-            # and the trace has to show it was made before it failed.
-            h.probe.trace.append(("remove_service_dir", engagement_id))
-            raise RuntimeError("simulated remove_service_dir failure")
-
-        monkeypatch.setattr(s6_rc, "remove_service_dir",
-                            remove_service_dir_fails)
         monkeypatch.setattr(s6_rc, "_compile_and_update_locked",
                             h.compile_fake(suspend_on_call=None))
         monkeypatch.setattr(s6_rc, "start_service", fake_start_fail)
+
+        # Each wrapper sits ON TOP of the probe's own shim rather than
+        # replacing it, so the five cases differ only in which step fails.
+        probe_shutil = ccd.shutil
+        trace = h.probe.trace
+
+        if failing_step == "remove_service_dir":
+            def _fail_remove(*, svc_root, engagement_id):
+                trace.append(("remove_service_dir", engagement_id))
+                raise boom
+            monkeypatch.setattr(s6_rc, "remove_service_dir", _fail_remove)
+        elif failing_step in ("rmtree_workspace", "rmtree_control"):
+            target = str(h.ws_path if failing_step == "rmtree_workspace"
+                         else h.ctl_path)
+
+            class _FailingShutil:
+                def __getattr__(_self, name):
+                    return getattr(probe_shutil, name)
+
+                @staticmethod
+                def rmtree(path, *a, **kw):
+                    if str(path) == target:
+                        trace.append(("rmtree", str(path)))
+                        raise boom
+                    return probe_shutil.rmtree(path, *a, **kw)
+
+            monkeypatch.setattr(ccd, "shutil", _FailingShutil())
+        elif failing_step == "prune_identity":
+            def _fail_prune(uid):
+                trace.append(("prune_identity", uid))
+                raise boom
+            monkeypatch.setattr(ccd, "prune_identity", _fail_prune)
+        else:
+            def _fail_teardown(uid, *, root=None):
+                trace.append(("teardown_outbox", uid))
+                raise boom
+            monkeypatch.setattr(plugin_outbox, "teardown_engagement_outbox",
+                                _fail_teardown)
 
         with pytest.raises(RuntimeError) as raised:
             await h.launch()
 
         assert raised.value is start_failure, (
-            "a failed removal must not mask the launch failure underneath it "
+            f"a failed {failing_step} masked the launch failure underneath it "
             f"— got {raised.value!r}")
         assert h.probe.counts() == _RollbackProbe.each_once(), (
-            "the first removal failing skipped the four below it")
+            f"{failing_step} failing skipped a removal below it")
+        # Only the step that was made to fail leaves its artifact behind; the
+        # others still really removed theirs, which is what proves the
+        # successors ran rather than merely being counted.
         assert h.probe.paths_absent() == {
-            "workspace": False, "control": False, "outbox": False}
+            "workspace": failing_step == "rmtree_workspace",
+            "control": failing_step == "rmtree_control",
+            "outbox": failing_step == "teardown_outbox"}
