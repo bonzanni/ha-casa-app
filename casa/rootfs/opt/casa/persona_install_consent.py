@@ -37,7 +37,11 @@ def prompt_persona_install_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int, inspection: Any,
     acks: "PersonaInstallAckStore",
     reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
+    inbound_reservation: Any | None = None,
 ) -> Any:
+    # #663: sibling of specialist_install_consent — the requesting
+    # engagement's SYNCHRONOUS ingress lease, duck-typed (``take`` /
+    # ``release``) so this module stays ignorant of engagements.
     identity = persona_install_consent_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
     key = PersonaInstallConsentKey(persona_id=inspection.persona_id, identity=identity)
@@ -58,9 +62,26 @@ def prompt_persona_install_consent(
                 identity=identity, persona_id=inspection.persona_id,
                 version=inspection.version, checksum=inspection.checksum,
                 expect_generations=generations)
+            # #663: AFTER ``acks.record`` and after its RETURN VALUE has been
+            # consumed — #543's revocation generations decide whether anything
+            # was written at all, and this step must not reorder around that.
+            # Approve only; Deny dispatches no continuation.
+            if inbound_reservation is not None:
+                inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
+            # #663: release-guarantee — see the specialist sibling. The whole
+            # body is wrapped so every arm that never reaches the delivery
+            # seam still disposes of the reservation; the lease is idempotent
+            # because the seam releases it too on the ordinary path.
+            try:
+                await _finish_inner(outcome)
+            finally:
+                if inbound_reservation is not None:
+                    inbound_reservation.release()
+
+        async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 await channel.edit_dm_message(

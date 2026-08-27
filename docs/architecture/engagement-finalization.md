@@ -80,8 +80,10 @@ the topic left open and empty — recoverable, since nothing was closed and noth
 marked, and the engager is still told from the surviving tail, but the topic carries no
 account of what happened. This is a known open exposure, not an oversight: closing it means
 moving operator-visible effects across a cancellation boundary in the one funnel that four
-other terminal writers race, with no `in_casa` turn-admission fence to order them
-(INV-ENG-009 is `claude_code` only).
+other terminal writers race. `in_casa` turn admission now exists, so half of what that
+sentence used to name as the blocker is gone — but only half, and the exposure is not closed
+by it. Admission decides whether a turn is *delivered*; it orders nothing against a
+finalization's own topic operations, which is what would have to be ordered.
 
 **INV-ENG-013**: A terminal engagement's topic is never marked with an outcome the topic was never told. The completion post counts as delivered only when the wire acknowledged it; an acknowledgement that did not come withholds the outcome mark and produces exactly one bounded plain disclosure in its place. A post that failed part-way is never replayed. The topic is closed exactly once either way, and no topic operation can strand the post-topic tail behind it.
 

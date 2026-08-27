@@ -2503,8 +2503,34 @@ class TelegramChannel(Channel):
             await reg.update_user_turn(rec.id, _time.time())
         return True
 
+    def engagement_inbound_reservation(
+        self, engagement_id: str,
+    ) -> "_InboundReservation":
+        """#663: the SYNCHRONOUS ingress-reservation lease for one broker-driven
+        system continuation.
+
+        A continuation's text does not exist anywhere until
+        :meth:`deliver_system_turn` admits it, so between the operator's tap
+        committing and that admission there is nothing for the completion gate
+        to be vetoed on — and a successful ``emit_completion`` landing in that
+        window commits, the record goes terminal, and the resume turn is
+        dropped at INFO. The lease closes it by taking a reservation at the one
+        SYNCHRONOUS instant inside the window (a challenge's
+        ``on_commit_sync``, which runs with no await after ``BROKER.commit``)
+        and handing it over to the ticket at the seam.
+
+        Deliberately NOT the ``_driver_reserve_inbound`` seam
+        (``casa_core``): that one is consumed by the OPERATOR message path,
+        which already admits a text-bearing ticket three lines earlier, so
+        enabling it for ``in_casa`` would make one operator message hold both a
+        reservation and a ticket — double-counting it in the completion veto
+        and inflating the #664 lost-inbound disclosure.
+        """
+        return _InboundReservation(self, engagement_id)
+
     async def _dispatch_engagement_continuation(
         self, *, engagement_id: str, text: str,
+        inbound_reservation: "_InboundReservation | None" = None,
     ) -> bool:
         """#400: resume a SPECIALIST ENGAGEMENT after an operator authorized (or
         denied) a protected plugin tool over the DM authorization keyboard.
@@ -2521,10 +2547,20 @@ class TelegramChannel(Channel):
 
         Returns ``True`` when the turn was handed off, ``False`` when the
         engagement is unknown (the finish hook then surfaces a delivery-failed
-        note on the DM keyboard). A record that resolves but is non-deliverable
-        is handled inside ``deliver_system_turn`` (it logs + returns), which is
-        still a successful hand-off from this seam's perspective — the grant was
-        minted and the operator saw the approval; a re-nudge resumes it."""
+        note on the DM keyboard).
+
+        #663: a record that RESOLVES but is non-deliverable now returns
+        ``False`` too. It used to return ``True`` — "still a successful hand-off
+        from this seam's perspective", on the ground that the grant was minted
+        and the operator saw the approval. That is a real behaviour change and
+        it is the point of the seam reporting an outcome at all: the finish
+        hook's existing "delivery … failed — say 'retry' in chat" edit is
+        exactly the right thing to show for a continuation that was never
+        spawned, and telling the operator nothing was the defect. What ``True``
+        means is narrow and unchanged: the turn was HANDED OFF to a background
+        delivery task. It is not a delivery receipt and not a turn outcome —
+        the driver's own admission fence runs later, inside the engagement's
+        per-turn lock, long after this returns."""
         reg = self._engagement_registry
         rec = reg.get(engagement_id) if reg is not None else None
         if rec is None:
@@ -2533,10 +2569,13 @@ class TelegramChannel(Channel):
                 str(engagement_id)[:8],
             )
             return False
-        await self.deliver_system_turn(rec, text)
-        return True
+        return await self.deliver_system_turn(
+            rec, text, inbound_reservation=inbound_reservation)
 
-    async def deliver_system_turn(self, rec, text: str) -> None:
+    async def deliver_system_turn(
+        self, rec, text: str,
+        *, inbound_reservation: "_InboundReservation | None" = None,
+    ) -> bool:
         """Resume-if-suspended (under the per-topic lock), then deliver a
         synthetic system-authored turn to engagement ``rec`` — the seam a
         background reconcile callback uses to PROCEED a paused configurator
@@ -2555,12 +2594,44 @@ class TelegramChannel(Channel):
         to carry). The turn is spawned as a tracked background task (in_casa
         turns stream the whole recipe to completion), so the lock is released as
         soon as the resume + dispatch is done — this never blocks the caller (a
-        tap-callback finish hook) for the turn's duration."""
+        tap-callback finish hook) for the turn's duration.
+
+        #663: returns the SYNCHRONOUS HAND-OFF DECISION — ``True`` once the
+        delivery task exists, ``False`` when ``_resume_and_ready`` refused or
+        stop() has begun. It is deliberately NOT the driver's admission-fence
+        result. The fence (#690) runs inside the engagement's per-turn lock,
+        which is held for a whole turn, so waiting for it here would park a
+        Telegram tap-callback finish hook behind an unbounded model turn and
+        leave the approval keyboard unedited for its duration — measured, and
+        the reason this reports a hand-off. The residual that leaves is on the
+        record: an UNGATED terminal writer (``/cancel``, ``/complete``, the
+        reap, a forced delete, a non-``completed`` emit_completion, a direct
+        ``mark_error``) can still terminalize between the hand-off and the
+        fence, after the operator has been told a continuation was requested —
+        which is what "requested" says, and what
+        ``architecture/specialist-lifecycle.md`` records."""
         # #649: admit the continuation SYNCHRONOUSLY at entry, before the
         # topic-lock wait and every _resume_and_ready await — a completion
         # racing any of those suspensions must already see it as unread.
         inbound_token = (self._driver_admit_inbound(rec, text)
                          if self._driver_admit_inbound is not None else None)
+        # #663: hand the tap-commit reservation over to the ticket that now
+        # exists, in the SAME event-loop step and with no await between, so the
+        # completion gate never observes both populations empty. Only once a
+        # ticket was actually admitted: an unwired channel (or a claude_code
+        # record, which keeps its own spool accounting) admits nothing, and
+        # releasing there would leave the gate with nothing at all — so the
+        # lease stays held and its owner's ``finally`` disposes of it.
+        #
+        # Releasing HERE rather than in the finish hook is what keeps the
+        # reservation from outliving the turn it stands for: held to the end of
+        # the hook it would still be vetoing after the delivery task had run the
+        # whole turn and discharged its ticket, for as long as a slow DM edit
+        # takes — and in_casa has neither ``record_completion_refusal`` nor
+        # ``force_completion_turn_boundary``, so the completion gate's
+        # forced-boundary escalation cannot relieve it.
+        if inbound_reservation is not None and inbound_token is not None:
+            inbound_reservation.release()
         handed_off = False
         try:
             lock = self._engagement_handler_locks.setdefault(
@@ -2571,14 +2642,14 @@ class TelegramChannel(Channel):
                         "post-consent auto-resume skipped for engagement %s — "
                         "not deliverable (terminal/unresumable); operator can "
                         "re-nudge", rec.id[:8])
-                    return
+                    return False
                 if self._stopping:
                     # #649 producer-closing stop gate: no new delivery task
                     # after stop() began; the failure owner's settle below
                     # makes the drop visible (bounded, best-effort).
                     await self._settle_lost_inbound(rec, inbound_token)
                     inbound_token = None
-                    return
+                    return False
                 task = asyncio.create_task(self._deliver_turn_bg(
                     rec, text, inbound_token=inbound_token))
                 self._turn_tasks.add(task)
@@ -2588,6 +2659,7 @@ class TelegramChannel(Channel):
                     lambda t, r=rec, tok=inbound_token:
                         self._schedule_inbound_cleanup(r, tok))
                 handed_off = True
+            return True
         except BaseException:
             # Raise/cancellation before hand-off (e.g. inside
             # _resume_and_ready's strict writes): the ticket has no task
@@ -5031,3 +5103,79 @@ def _split_message(text: str) -> list[str]:
             text = text[split_at + 1:]
 
     return [c for c in chunks if c.strip()]
+
+
+class _InboundReservation:
+    """#663: one system continuation's SYNCHRONOUS ingress reservation, from
+    the operator's tap-commit until the seam admits its text-bearing ticket.
+
+    The window it closes is `[BROKER.commit() returns, deliver_system_turn's
+    admit_inbound]`. On the two install-consent arms that is the finish hook's
+    ``loop.create_task`` scheduling gap — one event-loop iteration, and
+    unremovable; on the #400 authorization arm it is a whole Telegram
+    ``edit_dm_message`` round trip, because the approval edit is awaited before
+    the continuation is dispatched. Inside it the continuation's text exists
+    nowhere, so ``emit_completion``'s gate and ``_finalize_engagement``'s
+    terminal hook both read zero and a successful completion commits over a
+    resume the operator has already approved.
+
+    The lease OWNS the held/not-held bit rather than leaving it to its callers,
+    which is what makes "released twice" and "released without taking"
+    impossible by construction: the finish hook wraps its whole body in
+    ``finally: release()`` to cover every arm that never reaches the seam, and
+    the seam releases as soon as the ticket exists — so on the ordinary path
+    ``release`` really is called twice, and the second one must be a no-op
+    rather than a decrement of somebody else's reservation.
+
+    Both methods are SYNCHRONOUS and neither raises: ``take`` is called from a
+    broker ``on_commit_sync`` step, which runs in the Telegram callback with no
+    await after the commit, and a raise there would abort the tap.
+    """
+
+    __slots__ = ("_channel", "_engagement_id", "_held")
+
+    def __init__(self, channel, engagement_id: str) -> None:
+        self._channel = channel
+        self._engagement_id = str(engagement_id or "")
+        self._held = False
+
+    def take(self) -> bool:
+        """Reserve, and say whether anything was reserved.
+
+        ``False`` for an unknown record, a channel with no driver, or a
+        ``claude_code`` record — that driver keeps its own durable spool and
+        ingress accounting, and a second reservation from here would
+        double-count one message in the completion veto and inflate the #664
+        lost-inbound disclosure.
+        """
+        if self._held:
+            return True
+        reg = getattr(self._channel, "_engagement_registry", None)
+        drv = getattr(self._channel, "_engagement_driver", None)
+        if reg is None or drv is None or not self._engagement_id:
+            return False
+        try:
+            rec = reg.get(self._engagement_id)
+            if rec is None or getattr(rec, "driver", "") == "claude_code":
+                return False
+            drv.reserve_inbound(rec.id)
+        except Exception:  # noqa: BLE001 — a tap must never abort on this
+            logger.warning("inbound reservation failed for engagement %s",
+                           self._engagement_id[:8], exc_info=True)
+            return False
+        self._held = True
+        return True
+
+    def release(self) -> None:
+        """Release exactly once, or do nothing. Idempotent by design — see the
+        class docstring for why it is genuinely called twice."""
+        if not self._held:
+            return
+        self._held = False
+        drv = getattr(self._channel, "_engagement_driver", None)
+        if drv is None:
+            return
+        try:
+            drv.release_inbound_reservation(self._engagement_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("inbound reservation release failed", exc_info=True)

@@ -61,7 +61,7 @@ claude-code driver counts its durable spool, its in-flight envelopes and its ing
 reservations. The in-casa driver counts admission tickets: a turn is unread from its
 synchronous admission at the Telegram entry seam until the embedded client takes the prompt,
 then disclosure-only until the first model-evidence frame; the ticket ledger is in-memory
-and dies with the process, and it has no in-flight veto, no reservations and no
+and dies with the process, and it has no in-flight veto and no
 forced-boundary valve — the refusal ending the turn releases the per-turn lock, which is
 what delivers the queued turn, and a ticket whose delivery fails is discharged only after
 one bounded failure notice, never retried into a permanent veto. Accessor failures fail
@@ -95,6 +95,90 @@ consumed by the handler and never delivered to the model. The operator's ungated
 command finalizes past unread input deliberately (above), and it does so *disclosing* —
 the topic post counts what it committed past, including foreign reservations.
 The launch-death reporter folds the same projection into its own disclosure.
+
+**The in-casa driver reserves too, and the reason is a message that does not exist yet.** Its
+other counts are all backed by a text: a ticket carries the exact prompt from the moment it is
+admitted. A broker-driven *system continuation* — the resume turn dispatched after an operator
+approves an install consent or an engagement-origin tool authorization — has no text anywhere
+until the delivery seam admits it, and the interval before that is not short. On the two
+install-consent arms it is the finish hook's task-scheduling gap, one event-loop iteration and
+unremovable; on the authorization arm it is a whole message-edit round trip to Telegram,
+because the approval edit is awaited before the continuation is dispatched. A successful
+completion landing inside it used to read an empty inbox, commit, and take the engagement
+terminal, and the approved continuation was then dropped with only a log line to show for it.
+
+So the reservation is taken at the one *synchronous* instant inside that window — the tap's
+commit step, which runs in the Telegram callback with no await after the answer is committed,
+before the finish hook's task has been scheduled at all — and it is released in the same
+synchronous step in which the seam admits the ticket. Admit first, release second, no await
+between: the gate can never observe both populations empty, and a completion racing the
+hand-over is refused by whichever of the two it happens to read.
+
+Release is guaranteed by an idempotent lease rather than by discipline. The lease owns its own
+held bit, so the seam's release and the finish hook's whole-body release are both correct and
+the second is a no-op — which matters because the arms that never reach the seam (a denial, an
+expiry, an unrecorded approval, a raising edit) have only the hook to dispose of theirs. An
+unreleased reservation would make a successful completion permanently impossible, which is
+exactly what this hook must never do; the in-casa driver has no forced-boundary valve to
+relieve one, so release is the only exit.
+
+Two things it deliberately is not. It is *not* the reservation the operator-message path takes:
+that path already admits a text-bearing ticket at handler entry, so reserving there too would
+count one message twice in the veto and inflate the lost-message disclosure. And its counters
+have no attach step and no detach step — nothing tears them down and nothing but a release
+removes an entry — so an absent key means *nothing is held*, never *the answer is unavailable*.
+That distinction is the whole of a separate known defect on the other driver, where a session
+respawn empties an in-memory spool and every accessor reports zero for messages still durably
+queued; adding a lifecycle teardown here would reproduce it by construction.
+
+**The delivery seam reports its hand-off, and only that.** The seam a continuation goes through
+now returns whether it handed the turn to a delivery task — false when the resume gate refused
+or shutdown had begun — which is what the operator-facing approval message is selected from. It
+is deliberately not the admission decision. The admission happens inside the engagement's
+per-turn lock, and that lock is held for a whole turn; waiting for it would park a tap callback
+behind an unbounded model turn and leave the approval keyboard unedited for its duration, which
+was measured rather than supposed. So one residual stays open and is stated rather than
+implied: an ungated terminal writer can still terminalize between the hand-off and the
+admission, after the operator has been told a continuation was requested. Requested is what the
+message says.
+
+**One decision, asked at two different instants, and the difference is the guarantee's actual
+strength.** The registry answers it synchronously and identically for both drivers — terminal
+refuses, `idle` delivers and becomes `active` without re-stamping the last-turn time, `active`
+delivers, and an unknown record delivers rather than refusing. What differs is where the answer
+can be placed.
+
+For `claude_code` the placement is exact: the FIFO opens only once the agent process is
+reading, and that process observes nothing until a synchronous first write, so there is one
+instant at which "a turn is about to be delivered" and "the engagement has seen nothing of it"
+are both true.
+
+For `in_casa` there is no such instant, because the first thing the engagement sees is an
+awaited call into the SDK client. The admission is therefore taken inside that engagement's own
+per-turn lock, immediately before that call, with only synchronous statements between:
+acquiring the lock awaits, but once it is held no other coroutine on Casa's loop — no inbound
+tool call, no terminal transition — runs between the decision and the call. Placing it earlier,
+beside the driver's liveness check, would put the awaiting lock acquisition between the two and
+reopen exactly the window it closes.
+
+**That is a weaker claim than the `claude_code` one, and the difference is worth stating
+exactly rather than blurring.** The client call is awaited, and whether it reaches its
+transport write before its first internal suspension is the SDK's business, not Casa's. So a
+terminal transition CAN commit while the hand-off is in progress and the prompt still arrives —
+measured, not supposed. That is the same class of limit the `claude_code` half has always
+carried and states: the admission fences the decision to deliver, not the delivery, and a
+terminal landing once a turn has begun cannot revoke it because there is nothing to revoke it
+with. Stopping an in-flight turn is the driver teardown's job on the finalize path, which is
+why that teardown exists. What the admission buys is that a turn is never *begun* against a
+record already known terminal — which is the reachable case, since the window it closes spans
+a lock acquisition and every await before it, while this one spans a single client call.
+
+A refused follow-up needs no new machinery and gets none. The refusal is raised as a *kind of*
+"this driver has no live client", which every caller on that path already handles: the delivery
+task re-reads the record, sees a terminal status, stays quiet rather than announcing a failure
+the terminal writer is already announcing, and settles the turn's admission ticket exactly once
+— one bounded attempt to tell the operator their message was not delivered, then release, never
+a retry. Both halves of the invariant's last sentence are that one path.
 
 ## Failure behavior
 
@@ -133,12 +217,17 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_texts`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_in_flight_texts`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.reserve_inbound`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.release_inbound_reservation`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_reservations`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_message_reservations`
 
 **Tests**
 - `tests/test_emit_completion_tool.py`
 - `tests/test_claude_code_driver.py`
 - `tests/test_answer_reservation.py`
 - `tests/test_in_casa_inbound_admission.py`
+- `tests/test_c1_continuation_admission.py`
 
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)

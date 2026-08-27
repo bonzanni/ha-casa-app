@@ -649,6 +649,19 @@ class ChallengeCoordinator:
             display_name=display_name,
         )
 
+        # #663: an engagement-origin challenge dispatches a continuation on
+        # BOTH taps, so both open the pre-admission window and both take the
+        # ingress reservation. This is the widest instance of that window in
+        # the tree — the approval edit below is AWAITED before the dispatch, so
+        # the window is a whole Telegram round trip rather than one event-loop
+        # iteration. The remedy is ingress, not reordering: the reservation is
+        # born at the synchronous tap-commit, which leaves the observable
+        # edit-before-dispatch order exactly as it was.
+        factory = getattr(channel, "engagement_inbound_reservation", None)
+        inbound_reservation = (
+            factory(engagement_id)
+            if engagement_id and factory is not None else None)
+
         def _on_commit_sync(idx: int, meta: dict, _key: GrantKey = key) -> None:
             # Runs in the Telegram callback IMMEDIATELY after a successful
             # commit (no await between): idx 0 -> mint + record; idx 1 -> no-op.
@@ -659,6 +672,12 @@ class ChallengeCoordinator:
             if idx == 0:
                 grants.mint(_key)
                 meta["minted"] = True
+            # #663: AFTER the mint on the approve tap, never before it (#311's
+            # caller-store write is the authoritative step and nothing may
+            # reorder around it); on the deny tap there is no record step and
+            # the reservation is the whole of the work.
+            if inbound_reservation is not None:
+                inbound_reservation.take()
 
         def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
             # rid comes from the req itself (never an entry lookup — a retry
@@ -669,6 +688,7 @@ class ChallengeCoordinator:
                 tool_name=tool_name, canonical_json=canonical_json,
                 rid=req.request_id, message_id=message_id, req=req,
                 display_name=display_name, engagement_id=engagement_id,
+                inbound_reservation=inbound_reservation,
             )
 
         return self.register_challenge(
@@ -752,6 +772,7 @@ class ChallengeCoordinator:
         target_role: str, enforcement_role: str, tool_name: str,
         canonical_json: str, rid: str, message_id: int, req: Any,
         display_name: "str | None" = None, engagement_id: str = "",
+        inbound_reservation: Any | None = None,
     ) -> Callable[[dict], Any]:
         short = short_tool_name(tool_name)
         # Same render-time guard as the challenge headline (W2): the approved
@@ -765,8 +786,13 @@ class ChallengeCoordinator:
         # GrantKey too, so the retried call consumes only THIS engagement's grant.
         async def _dispatch_continuation(text: str) -> bool:
             if engagement_id:
+                # #663: carry the tap-commit reservation into the seam, which
+                # releases it in the same synchronous step that admits the
+                # continuation's ticket — so the completion gate never sees
+                # both populations empty.
                 return await channel._dispatch_engagement_continuation(
                     engagement_id=engagement_id, text=text,
+                    inbound_reservation=inbound_reservation,
                 )
             return await channel._dispatch_button_continuation(
                 chat_id=chat_id, user_id=operator_id,
@@ -777,7 +803,43 @@ class ChallengeCoordinator:
             f"engagement {engagement_id[:8]}" if engagement_id else target_role
         )
 
+        async def _safe_dispatch(text: str) -> bool:
+            """#663 (seam review): the engagement seam RE-RAISES a pre-hand-off
+            exception — it applies the #649 visibility law to the ticket and
+            then re-raises so the caller learns there is no task owner. Both
+            install-consent arms contain that inside their own reconcile
+            callback's ``except Exception``; this arm had no such guard, so the
+            exception left the finish hook entirely and the operator was left
+            holding the ✅ approval edit for a continuation that was never
+            spawned, with only a broker log to show for it.
+
+            A raise out of the seam is always PRE-hand-off (its except branch
+            runs only while ``handed_off`` is False), so "delivery failed —
+            say 'retry' in chat" is exactly right rather than merely tolerable:
+            nothing was spawned, the grant is already minted, and a retry is
+            idempotent. ``CancelledError`` stays control flow.
+            """
+            try:
+                return await _dispatch_continuation(text)
+            except Exception:  # noqa: BLE001 — never raise into the tap hook
+                logger.exception(
+                    "authz continuation dispatch failed (%s)", _target_desc)
+                return False
+
         async def _finish(outcome: dict) -> None:
+            # #663: release-guarantee. The whole body is wrapped because every
+            # arm that never reaches the delivery seam — expiry, an unrecorded
+            # mint, a raising edit, cancellation — is otherwise the only owner
+            # of a reservation that would make a successful completion
+            # permanently impossible under INV-ENG-003. The lease is
+            # idempotent: on the ordinary path the seam released it already.
+            try:
+                await _finish_inner(outcome)
+            finally:
+                if inbound_reservation is not None:
+                    inbound_reservation.release()
+
+        async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 await channel.edit_dm_message(
@@ -803,7 +865,7 @@ class ChallengeCoordinator:
                     f"✅ Approved — {display} ({enforcement_role}) may run "
                     f"{short} once with exactly these arguments",
                 )
-                ok = await _dispatch_continuation(
+                ok = await _safe_dispatch(
                     "[authorization approved]: have "
                     f"{enforcement_role} call {tool_name} with EXACTLY "
                     f"these arguments:\n{canonical_json}"
@@ -818,7 +880,7 @@ class ChallengeCoordinator:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {short} will not run",
                 )
-                ok = await _dispatch_continuation(
+                ok = await _safe_dispatch(
                     f"[authorization denied]: do not retry {tool_name}"
                 )
                 if not ok:

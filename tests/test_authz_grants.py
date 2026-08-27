@@ -713,6 +713,8 @@ class _FakeChannel:
         self.post_gate: asyncio.Event | None = None
         self.dispatch_result = True
         self.edit_raises = False
+        self.eng_dispatch_raises = False
+        self.leases: list = []
         self.log = log if log is not None else []
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
@@ -740,12 +742,54 @@ class _FakeChannel:
         self.log.append(("dispatch", text))
         return self.dispatch_result
 
-    async def _dispatch_engagement_continuation(self, *, engagement_id, text):
+    async def _dispatch_engagement_continuation(
+        self, *, engagement_id, text, inbound_reservation=None,
+    ):
         # #400: the engagement-resume seam the authz finish hook uses for an
         # engagement-origin challenge (in place of _dispatch_button_continuation).
+        # C1/#663: the seam also carries the tap-commit ingress reservation so
+        # deliver_system_turn can release it the instant the ticket exists;
+        # defaulted so the pre-C1 call shape keeps working unchanged.
         self.eng_dispatches.append(dict(engagement_id=engagement_id, text=text))
         self.log.append(("eng_dispatch", text))
+        if inbound_reservation is not None:
+            self.log.append(("eng_dispatch_reservation", True))
+        if self.eng_dispatch_raises:
+            raise RuntimeError("resume boom")
         return self.dispatch_result
+
+    def engagement_inbound_reservation(self, engagement_id):
+        # C1/#663: the channel-owned lease factory. Present on this fake for
+        # BOTH trees, so a pre-fix run records zero takes because production
+        # never asks for one — not because the fixture cannot supply it.
+        lease = _SpyLease(engagement_id, self.log)
+        self.leases.append(lease)
+        return lease
+
+
+class _SpyLease:
+    """C1/#663: records the production call order of the synchronous
+    tap-commit reservation lease. Idempotent, like the real one."""
+
+    def __init__(self, engagement_id, log):
+        self.engagement_id = engagement_id
+        self.log = log
+        self.takes = 0
+        self.releases = 0
+        self._held = False
+
+    def take(self) -> bool:
+        self.takes += 1
+        self.log.append(("reserve", self.engagement_id))
+        self._held = True
+        return True
+
+    def release(self) -> None:
+        if not self._held:
+            return
+        self._held = False
+        self.releases += 1
+        self.log.append(("release", self.engagement_id))
 
 
 class _SpyGrants:
@@ -1579,3 +1623,87 @@ class TestChallengeTTL:
         # The approval grant stays short-lived and single-use — the raise
         # widens the DECISION window, not the blast radius of an approval.
         assert authz_grants.DEFAULT_GRANT_TTL_S == 300.0
+
+
+class TestC1EngagementContinuationReservation:
+    """C1 red cases for the #400 arm — #663's WIDEST window, and the one no
+    prior survey saw.
+
+    ``_make_finish_hook._finish`` AWAITS the approval ``edit_dm_message``
+    before it dispatches the continuation, and the continuation's admission
+    ticket is only born inside ``deliver_system_turn``. So the whole Telegram
+    edit round-trip is a window in which a successful completion commits
+    un-vetoed and the resume turn is dropped. The remedy is ingress, not
+    reordering: the reservation is taken at the SYNCHRONOUS tap-commit, which
+    leaves the observable edit-before-dispatch order (pinned above) untouched.
+    """
+
+    @pytest.mark.parametrize(
+        ("idx", "expected_events"),
+        [(0, ["mint", "reserve"]), (1, ["reserve"])],
+        ids=["approve", "deny"],
+    )
+    async def test_the_tap_reserves_before_the_finish_hook_can_run(
+        self, monkeypatch, idx, expected_events,
+    ):
+        """Both taps dispatch a continuation, so both must reserve — testing
+        approval alone would let the reservation stay wrongly conditional on
+        ``grants.mint``.
+
+        Pre-fix: approve logs only ``["mint"]`` and deny logs ``[]``; nothing
+        counts as inbound for the racing completion to be refused over.
+        """
+        log: list = []
+        spy = _SpyGrants(log)
+        broker, coord, channel = _fresh_env(monkeypatch, log=log)
+        eng_key = _key(
+            chat_id=100, enforcement_role="finance", tool_name="invoice_reset",
+            args_hash=canonical_args_hash({"x": 1}), engagement_id="eng-c1",
+        )
+        key, handle = _create(
+            coord, channel, eng_key, engagement_id="eng-c1", grants=spy)
+        assert await handle.settled_post() == "posted"
+        ch = coord._entries[key]
+
+        _tap(broker, ch, idx)
+        at_commit = [e[0] for e in log]
+        await _settle()
+
+        facts = (at_commit, sum(l.takes for l in channel.leases),
+                 sum(l.releases for l in channel.leases))
+        assert facts == (expected_events, 1, 1), f"authz tap facts: {facts!r}"
+
+    async def test_a_pre_hand_off_raise_still_warns_on_the_dm(
+        self, monkeypatch,
+    ):
+        """Seam-review finding (Sol, r3). ``deliver_system_turn`` re-raises a
+        pre-hand-off exception (its visibility law settles the ticket, then
+        re-raises so the caller learns there is no task owner). The two
+        install arms contain that inside ``_reconcile_cb``; this arm does not,
+        so the exception leaves ``_finish`` entirely and the operator is left
+        with the ✅ approval edit for a continuation that was never spawned.
+
+        Pre-fix: exactly one edit — the approval — and no warning.
+        """
+        log: list = []
+        spy = _SpyGrants(log)
+        broker, coord, channel = _fresh_env(monkeypatch, log=log)
+        channel.eng_dispatch_raises = True
+        eng_key = _key(
+            chat_id=100, enforcement_role="finance", tool_name="invoice_reset",
+            args_hash=canonical_args_hash({"x": 1}), engagement_id="eng-c1r",
+        )
+        key, handle = _create(
+            coord, channel, eng_key, engagement_id="eng-c1r", grants=spy)
+        assert await handle.settled_post() == "posted"
+        ch = coord._entries[key]
+
+        _tap(broker, ch, 0)
+        await _settle()
+
+        texts = [e[2] for e in channel.edits]
+        facts = (len(texts),
+                 "approved" in texts[0].lower() if texts else None,
+                 "failed" in texts[-1].lower() if len(texts) > 1 else False,
+                 sum(l.releases for l in channel.leases))
+        assert facts == (2, True, True, 1), f"authz raise facts: {facts!r}"
