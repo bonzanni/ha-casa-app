@@ -213,9 +213,9 @@ against it, which is not built here.
 **INV-ENG-014**: Once a `claude_code` launch's rollback has been entered, every removal it was entered to run — the s6 service directory, the workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group identity and its private outbox — is attempted; a cancellation delivered at one of the rollback's own awaits skips none of those attempts. That cancellation is never swallowed: it is re-raised once the attempts have run, carrying the failure it interrupted rather than replacing it.
 
 **What it does not cover.** *Attempted* is not *succeeded*: every removal keeps the
-best-effort floor it always had, so an I/O or permission failure still leaves that artifact
-behind, logged rather than raised. And it says nothing about **which** removals a rollback
-is entered to run for which cause: a shutdown-caused abort is not distinguished from a
+best-effort floor it always had, so an I/O or permission failure leaves that artifact behind,
+and two of the five do not even say that they did — see Failure behavior. And it says nothing
+about **which** removals a rollback is entered to run for which cause: a shutdown-caused abort is not distinguished from a
 provisioning failure, which is #698's work. The removal order, the mechanism, and why the
 removals being synchronous is what makes the guarantee cheap are under Failure behavior.
 
@@ -232,9 +232,15 @@ cleanup is attempted, and the caller is told the start failed.
 `claude_code` launch removes, in order, the s6 service directory (recompiling after it), the
 workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group
 identity and its private outbox. That the sequence runs to its end even when a cancellation lands inside it is
-INV-ENG-014. Each attempt keeps the best-effort floor it already had: a removal that raises is
-logged and swallowed, so that one rollback failure cannot mask the launch failure underneath
-it. What cannot happen is that an attempt is skipped; a `rmtree` that fails still fails. Such
+INV-ENG-014. Each attempt keeps the best-effort floor it already had, so that one
+rollback failure cannot mask the launch failure underneath it — but the floor is not uniform,
+and the difference is operationally visible. Removing the service directory, pruning the
+identity and tearing down the outbox each catch their failure and log it. The workspace tree
+and the control directory do not: both run under `shutil.rmtree(..., ignore_errors=True)`,
+which discards the error inside `rmtree` so the enclosing handler never sees one, and a
+permission or I/O failure there leaves the tree in place with **no diagnostic at all**. What
+cannot happen is that an attempt is skipped; a `rmtree` that fails still fails, silently for
+those two. Such
 a cancellation is recorded rather than propagated, no further rollback await is attempted after
 it, and it is re-raised once the removals have run, carrying the launch failure it interrupted
 as its context so a reader downstream holds both facts rather than one. The removals being
