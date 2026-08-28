@@ -19,6 +19,30 @@ behaviour is measured against. How an engagement *ends* once it is live is
 workspace and uid live inside is
 [`architecture/engagement-containment.md`](engagement-containment.md).
 
+## Mental model
+
+A launch is not an engagement. Between the durable record and a live driver there is a
+stretch of work that can fail, be refused at a gate, or be cancelled — and everything in this
+document is about that stretch, plus the one place it is re-entered later: a restart, which
+finds records whose launch succeeded and whose process did not survive.
+
+Two questions separate the arms below. *Who is owed the answer* — a named fault goes back to
+the calling turn, which still owns the launch and is the one answering for it, while an
+absence goes to the operator's topic, because a topic that says nothing is what needs
+explaining. And *what caused the end* — a provisioning failure and a graceful stop are
+different events, and only one of them is a reason to destroy what the executor produced.
+
+## Contracts & invariants
+
+This document defines no invariants. The behaviour here is measured against three stated in
+[`architecture/engagements.md`](engagements.md): INV-ENG-011, which keeps a launch that ended
+without a terminal artifact on the launch-death path; INV-ENG-014, which says a rollback that
+has been entered attempts every removal it was entered to run; and INV-ENG-015, which says
+which removals a stop-caused abort is entered to run, and what it records instead of a
+cancelled tool call. The containment consequence of a removal that does not happen — and of
+one deliberately not attempted — is in
+[`architecture/engagement-containment.md`](engagement-containment.md).
+
 ## Failure behavior
 
 **A delegation is refused at one of its gates.** The ACL, alias, spawn-cap and
@@ -144,6 +168,20 @@ rebuild (INV-MEM-011) is never *resumed*: replay drops its session pointer and a
 cache and re-renders the workspace at the clamped floor first, refusing the same way if
 that fails. Every one of those decisions sits downstream of preconditions this document does
 not own: INV-CONT-004 and INV-CONT-005.
+
+## Extension points
+
+**A new launch-failure arm** decides one thing first: does it carry a named fault the calling
+turn can act on, or only an absence? The first returns a kind string and aborts the topic
+silently; the second belongs on the launch-death path, with its bounded notice.
+
+**A new rollback removal** joins the synchronous tail and inherits both of that tail's
+properties — it is attempted even when a cancellation has already been recorded, and it must
+not await. It also owes an answer to the per-cause question: whether a stop-caused abort is
+entered to run it, or whether it is one of the removals retention withholds.
+
+**A new replay refusal** marks the record errored and attaches no background machinery, rather
+than admitting operator messages into an engagement with no consumer.
 
 ## Source & test map
 

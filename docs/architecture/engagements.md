@@ -287,6 +287,7 @@ persisting ledger checks it — is answered in the same document.
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRecord`
 - `casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
+- `casa/rootfs/opt/casa/tools.py::engage_executor`
 
 **Tests**
 - `tests/test_delegate_to_agent.py`
