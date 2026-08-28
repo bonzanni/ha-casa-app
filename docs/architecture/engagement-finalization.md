@@ -14,8 +14,9 @@ terminal flip, including the compensation a cancelled creator owes — the final
 effects behind the flip, and the ordering of what an engagement posts to its topic. What a
 *successful* completion is refused over, and what each driver counts to answer that, are in
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). The record
-itself, how one is launched, how a turn is admitted to it, the driver protocol and what a
-restart rewrites are in [`architecture/engagements.md`](engagements.md). The OS boundary a
+itself, how one is launched, how a turn is admitted to it and the driver protocol are in
+[`architecture/engagements.md`](engagements.md); what a restart rewrites is in
+[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). The OS boundary a
 `claude_code` engagement runs inside, and what its teardown does and does not establish
 about the OS process, are in
 [`architecture/engagement-containment.md`](engagement-containment.md).
