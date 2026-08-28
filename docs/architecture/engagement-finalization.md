@@ -252,8 +252,14 @@ cause that means *leave it for boot* on one ledger cannot mean that here, and a 
 once for both would have been wrong on one of them.
 
 This settles the proposed ledger-wide precondition and nothing else. It certifies no existing
-terminal writer as correct, and the one open instance above is being fixed where it stands like
-the other three — which is itself the evidence.
+terminal writer as correct, and the fourth instance has now been fixed where it stood like the
+other three: the graceful stop records `casa_shutdown` against each launch it is about to
+cancel, and the cancellation arm reads that cause and records a reason saying Casa was stopping
+rather than one blaming a tool call nothing cancelled. The site records what it knew. What the
+stop then does differently — a smaller removal set, a retained workspace, a terminal
+`.casa-meta.json` written only after the durable terminal flip — is INV-ENG-015, stated in
+[`architecture/engagements.md`](engagements.md) and described in
+[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md).
 
 ## Failure behavior
 

@@ -40,8 +40,8 @@ and the control directory do not: both run under `shutil.rmtree(..., ignore_erro
 which discards the error inside `rmtree` so the enclosing handler never sees one, and a
 permission or I/O failure there leaves the tree in place with **no diagnostic at all**. What
 cannot happen is that an attempt is skipped; a `rmtree` that fails still fails, silently for
-those two. Such
-a cancellation is recorded rather than propagated, no further rollback await is attempted after
+those two. A cancellation arriving inside the rollback, at one of its own awaits,
+is recorded rather than propagated, no further rollback await is attempted after
 it, and it is re-raised once the removals have run, carrying the launch failure it interrupted
 as its context so a reader downstream holds both facts rather than one. The removals being
 synchronous is what makes that cheap: after the last await there is no suspension point at
@@ -51,14 +51,11 @@ release those guards were `except Exception`, and `CancelledError` — a `BaseEx
 escaped the handler outright, leaving a workspace whose meta already read `UNDERGOING`; the
 sweeper returns past `UNDERGOING` before it reads a retention deadline, and uids are never
 reused (INV-CONT-001), so every such abort leaked a workspace tree, a control directory, an
-identity and an outbox permanently. *Which* removals a rollback is entered to run is a separate
-question this does not answer: a shutdown-caused abort is not yet distinguished from a genuine
-provisioning failure, which is #698's work under the ruling that a stop and a failure are
-different events. Nor is the *reporting* of the two combined: a launch that failed and was then
-cancelled during its rollback reaches the caller's cancellation arm and is announced as a
-cancellation, the failure surviving only as that exception's context and reaching no operator.
-That routing is unchanged by this release — the escaping cancellation reached the same arm
-before it — and it is the observability half of the same later work.
+identity and an outbox permanently. *Which* removals a rollback is entered to run now depends
+on the cause, and only one cause changes it — see below. The *reporting* of a compound failure
+is still not combined: a launch that failed and was then cancelled during its rollback reaches
+the caller's cancellation arm and is announced as a cancellation, the failure surviving only as
+that exception's context and reaching no operator.
 
 These launch-failure arms — a missing driver, a clearance change during launch, a superseded
 plugin, a missing prompt template, an API-level fault, and a start that raised — deliberately
@@ -85,6 +82,54 @@ starting without its terminal artifact, both of which stay on the launch-death p
 (INV-ENG-011). It also does not settle whether the ledger's best-effort mark, whose result
 these arms do not read, may authorize an irreversible topic close; that question is #757 and
 is not answered here.
+
+**A graceful stop cancels a launch.** This is a different event from a launch that failed, and
+it is recorded as one (INV-ENG-015). Casa's graceful-stop cleanup writes `casa_shutdown`
+against each launch it finds registered *before* it cancels that launch, so the cause is
+carried on the row rather than inferred at the cancellation site from the shape of the
+cancellation — the discriminator INV-JOB-009 settled for the job ledger, applied here rather
+than folded into it. Three readers use it and no other carrier exists: the rollback, to decide
+its removal set; the cancellation arm, to record a reason that says Casa was stopping instead
+of blaming a tool call nothing cancelled; and the launch-death reporter, to decide whether the
+retained workspace may be given terminal metadata.
+
+What the rollback then does is *fewer* removals, not abandoned ones. The s6 service source is
+still removed and the live database still recompiled — a service source is not the executor's
+work, and leaving one planted with no workspace under it is its own defect. The workspace tree,
+the control directory, the uid's identity and its private outbox are retained: an engagement's
+workspace is the executor's only copy of what it produced, uids are never reused
+(INV-CONT-001), and a stop Casa itself initiated is not a reason to destroy any of it.
+
+Retention that does not end is not retention. A workspace kept with untouched metadata reads
+`UNDERGOING`, and the sweeper returns on `UNDERGOING` before it reads any deadline, so it would
+leak forever. The launch-death reporter therefore rewrites `.casa-meta.json` with a terminal
+status and a retention deadline — but only once its own strict terminal transition has
+committed, which is what makes the metadata safe: metadata saying *terminal, reap after seven
+days* written while the record is still live would have boot replay resume the engagement into
+that workspace, and one post-deadline sweep then delete it underneath the resumed CLI. Written
+after the durable flip, "the metadata is terminal" implies "the record is terminal", and replay
+never selects it. The operator's notice names the retention window if and only if that write
+actually happened; when it did not, the notice says the launch was stopped and claims nothing
+about expiry, because a promised window the sweep will not honour is a durable false statement
+about state the operator will go looking for.
+
+**What it does not cover**, and each exclusion is a place the change deliberately claims
+nothing. A launch that becomes durable but is not yet enrolled when the stop latches carries
+no cause: it is still enrolled, tagged and cancelled when it does enrol, but the cleanup has
+already looked, so its death report is best-effort — which is what every death report is
+today, so the window is a case this does not improve rather than one it makes worse. The
+notice is *attempted*, never guaranteed: a wedged or failing transport still loses it,
+bounded and logged. The stamp is *ordered*, not complete — a terminal write that commits
+before the stop records the cause carries only the failure it was made for, which is the
+primary fact and is not made false by the missing modifier. And the metadata clause is a
+safety claim, not a liveness one: it says such metadata never precedes its durable record and
+never authorizes a reap under a live one, not that every retained workspace is eventually
+reaped. Three paths leave one `UNDERGOING` and therefore unreaped — the reporter loses the
+terminal race to a `mark_error` inside the rollback, its strict transition fails to persist,
+or it is destroyed after committing and before the write. All three are fail-safe, all three
+are logged at `error`, and all three are strictly better than deleting the work outright. An
+ordinary abort and a creator or barge-in cancellation are outside this entirely: both keep
+the full five-removal set, unchanged.
 
 **A restart interrupts an engagement.** Persisted records load with `active` rewritten to
 `idle`. Replay is attempted only for the driver kind that supports it. A record whose

@@ -216,10 +216,22 @@ against it, which is not built here.
 
 **What it does not cover.** *Attempted* is not *succeeded*: every removal keeps the
 best-effort floor it always had, so an I/O or permission failure leaves that artifact behind,
-and two of the five do not even say that they did — see Failure behavior. And it says nothing
-about **which** removals a rollback is entered to run for which cause: a shutdown-caused abort is not distinguished from a
-provisioning failure, which is #698's work. The removal order, the mechanism, and why the
-removals being synchronous is what makes the guarantee cheap are under Failure behavior.
+and two of the five do not even say that they did — see
+[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). It says
+nothing about **which** removals a rollback is entered to run for which cause; that is
+INV-ENG-015 below, which extends this one through the *entered to run* clause rather than
+qualifying it. A rollback entered for a stop-caused abort is entered to run fewer removals
+and still skips none of them. The removal order, the mechanism, and why the removals being
+synchronous is what makes the guarantee cheap are in the same document.
+
+**INV-ENG-015**: A `claude_code` launch that Casa's graceful-stop cleanup finds registered is cancelled by a stop that recorded its cause against that launch first, so the cause is carried rather than inferred from the cancellation: a terminal write that observes that cause carries `origin.shutdown_reason = "casa_shutdown"` as a signal separate from the outcome, which it never replaces, and the reason it records states that Casa was stopping rather than attributing the end to a cancelled tool call; a rollback that observes that cause before its removals removes the s6 service source and recompiles but retains the workspace tree, the control directory, the uid's identity and its private outbox; the operator-facing notice claims retention only where that retention was actually recorded; the cleanup does not return until each such launch and its death report have run to completion; and a terminal `.casa-meta.json` carrying a retention deadline is written for that retained workspace only after a strict terminal transition has durably committed that engagement's record, and exactly once for that workspace, so such metadata never precedes the durable terminal record it describes and a retained workspace is never reaped while a live record still owns it.
+
+**What it does not cover** is stated where the behaviour is: the enrolment window, the
+attempted-not-guaranteed notice, the ordered-not-complete stamp, and the three paths that
+leave a retained workspace unreaped are under *A graceful stop cancels a launch* in
+[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). An
+ordinary abort and a creator or barge-in cancellation are outside this invariant entirely:
+both keep the full five-removal set, unchanged.
 
 ## Failure behavior
 
