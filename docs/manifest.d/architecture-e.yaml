@@ -107,15 +107,25 @@
     INV-ENG-010: [tests/test_emit_completion_tool.py::TestEmitCompletionCancellation::test_in_casa_teardown_cannot_cancel_finalize_tail]
     INV-ENG-013: [tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_raising_direct_post_leaves_the_topic_unmarked, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_an_unconfirmed_sequencer_post_falls_back_to_the_direct_send, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_an_unconfirmed_sequencer_and_a_failing_direct_send, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_confirmed_sequencer_post_paints_and_closes_once, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_confirmed_direct_post_paints_and_closes_once, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_partway_sequencer_failure_is_not_replayed, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_wedged_disclosure_is_bounded, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_an_unconfirmed_cancel_also_stays_unmarked, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_wedged_close_cannot_strand_the_tail]
 
+- doc: architecture/engagement-failure-and-restart.md
+  summary: A launch that does not become a live engagement — which gate refused it, what its rollback removes, which arms answer the caller rather than the topic, and what a restart replays or refuses.
+  when_changing: a launch failure or abort, what a launch rollback removes, or restart replay
+  covers:
+    - casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements
+    - casa/rootfs/opt/casa/tools.py::_abort_engagement_topic
+  tests:
+    - tests/test_claude_code_driver.py
+    - tests/test_boot_replay.py
+    - tests/test_engage_executor_tool.py
+  related: [architecture/engagements.md, architecture/engagement-containment.md, architecture/engagement-finalization.md, architecture/delegation.md]
+
 - doc: architecture/engagements.md
-  summary: Durable engagements — their records, how one is launched, turn admission, the driver protocol, and what survives a restart.
-  when_changing: engagement lifecycle, engagement launch, turn admission, the driver protocol, or restart replay
+  summary: Durable engagements — their records, how one is launched, turn admission, and the driver protocol.
+  when_changing: engagement lifecycle, engagement launch, turn admission, or the driver protocol
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRecord
     - casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol
     - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
-    - casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements
-    - casa/rootfs/opt/casa/tools.py::_abort_engagement_topic
   tests:
     - tests/test_delegate_to_agent.py
     - tests/test_delegate_to_agent_interactive.py
