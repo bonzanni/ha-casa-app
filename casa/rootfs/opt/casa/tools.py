@@ -75,6 +75,7 @@ import sdk_logging
 import specialist_limits
 from tokens import extract_usage
 from drivers.brief import normalize_brief, render_brief_task, validate_brief
+from drivers.workspace import WORKSPACE_RETENTION_DAYS as _ws_retention_days
 from engagement_registry import TerminalPreconditionFailed, EngagementRecord, EngagementRegistry
 from specialist_registry import (
     DelegationComplete,
@@ -102,7 +103,10 @@ logger = logging.getLogger(__name__)
 
 # Plan 4a.1 §8: workspace retention for claude_code driver engagements.
 _ENGAGEMENTS_ROOT = "/data/engagements"
-_WORKSPACE_RETENTION_DAYS = 7
+# #698: ALIASED, not re-declared. The finalize funnel writes this deadline, the
+# launch-death path writes it, and ``_sweep_one_workspace`` enforces it; three
+# copies of "7" is three numbers that can drift apart.
+_WORKSPACE_RETENTION_DAYS = _ws_retention_days
 
 # Module-level references, initialized via init_tools()
 _channel_manager: ChannelManager | None = None
@@ -5338,6 +5342,9 @@ async def delegate_to_agent(args: dict) -> dict:
             # answer — the first round of this finding named driver.start()
             # alone and the second named two more awaits, so the interval is
             # covered once rather than a third handler added.
+            # #698: enrol this launch with the graceful stop, before the
+            # interval's first await, exactly as engage_executor does.
+            _launch_handle = _register_launch_safe(rec.id)
             try:
                 # #369 (Sol diff-gate r3): capture the context generation at
                 # prompt-source time, exactly as engage_executor does — this
@@ -5473,6 +5480,8 @@ async def delegate_to_agent(args: dict) -> dict:
             except asyncio.CancelledError:
                 _abort_launch_on_cancel(channel, rec, topic_id)
                 raise
+            finally:
+                _unregister_launch_safe(_launch_handle)
 
         is_voice = str(origin.get("channel", "")) == "voice"
         if is_voice and mode == "async":
@@ -7664,6 +7673,12 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         _abort_topic_on_cancel(channel, "engage-abort", topic_id)
         raise
 
+    # #698: the record is durable, so the graceful stop can be told about this
+    # launch — and the FIRST thing after create() returns, with no await in
+    # between, because a launch the stop does not know about gets no cause and
+    # therefore the ordinary destructive rollback.
+    _launch_handle = _register_launch_safe(rec.id)
+
     # Sol r1 (#363 family): the record now EXISTS — a cancellation anywhere
     # from here until the driver is live (state persist, prompt read, memory
     # fetch, options build, driver.start) used to unwind through no handler,
@@ -7921,6 +7936,8 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
     except asyncio.CancelledError:
         _abort_launch_on_cancel(channel, rec, topic_id)
         raise
+    finally:
+        _unregister_launch_safe(_launch_handle)
     return _result({
         "status": "pending",
         "engagement_id": rec.id,
@@ -7973,6 +7990,91 @@ def _abort_topic_on_cancel(channel: Any, engagement_id: str,
     task.add_done_callback(_ABORT_BG_TASKS.discard)
 
 
+def _launch_cause_of(engagement_id: str) -> str:
+    """#698: the cause the stop recorded against this launch, or ``""``."""
+    if _engagement_registry is None:
+        return ""
+    try:
+        cause = _engagement_registry.launch_cause(engagement_id)
+    except Exception:  # noqa: BLE001 — a missing seam is simply no cause
+        return ""
+    # A non-string is not a cause (a test double's auto-attribute, a corrupt
+    # value): resolve toward "no stop", which is the arm that keeps today's
+    # behaviour rather than the arm that claims retention.
+    return cause if isinstance(cause, str) else ""
+
+
+def _register_launch_safe(engagement_id: str) -> Any:
+    """#698: enrol an in-flight launch with the engagement registry.
+
+    Never raises and never blocks a launch: an enrolment failure costs this
+    launch its shutdown cause, which is strictly the behaviour every launch has
+    today, whereas raising here would abort a launch that was about to succeed.
+    """
+    if _engagement_registry is None:
+        return None
+    try:
+        return _engagement_registry.register_launch(
+            engagement_id, asyncio.current_task())
+    except Exception:  # noqa: BLE001 — enrolment is never worth a launch
+        logger.warning("register_launch(%s) failed", engagement_id[:8],
+                       exc_info=True)
+        return None
+
+
+def _unregister_launch_safe(handle: Any) -> None:
+    """#698: drop the handle by identity. The CAUSE is deliberately kept."""
+    if handle is None or _engagement_registry is None:
+        return
+    try:
+        _engagement_registry.unregister_launch(handle)
+    except Exception:  # noqa: BLE001 — an unwind must complete
+        logger.warning("unregister_launch failed", exc_info=True)
+
+
+async def stop_engagement_launches(registry: Any) -> None:
+    """#698: the graceful stop's engagement-launch step, as ONE production
+    helper so that `casa_core`'s stop block holds a call rather than a copy.
+
+    Cause first, then the cancellation it explains, then wait: the launches
+    unwind while Telegram, the bus, the drivers and the registry are all still
+    up, which is what gives each dying launch's notice a live transport. Every
+    bound here is a no-output condition on a counterparty, never an elapsed
+    budget (D21).
+
+    Never raises: a stop that cannot complete this step still completes.
+    """
+    try:
+        issued = registry.begin_launch_shutdown()
+        if issued:
+            logger.info("graceful stop: cancelled %d in-flight engagement "
+                        "launch(es) with a recorded cause", issued)
+        await registry.drain_launches()
+    except Exception:  # noqa: BLE001 — shutdown must complete
+        logger.warning("graceful stop: draining engagement launches failed",
+                       exc_info=True)
+    await drain_launch_death_reports()
+
+
+async def drain_launch_death_reports() -> None:
+    """#698: wait for every anchored launch-death reporter to finish.
+
+    Without this the reporters are cancelled by ``asyncio.run``'s final sweep
+    mid-notice — measured: the reporter dies inside its notice ``wait_for`` and
+    the operator is told nothing at all. Each reporter is internally bounded
+    (the topic-op timeout, the driver-cancel timeout, the quiesce timeout), a
+    completed task never re-enters a later snapshot, and a launch's unwind
+    spawns at most two reporters, of which one takes the zero-side-effect
+    ``ALREADY_TERMINAL`` arm — so the loop terminates by construction rather
+    than by a clock.
+    """
+    while True:
+        pending = [t for t in list(_LAUNCH_DEATH_TASKS) if not t.done()]
+        if not pending:
+            return
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
                             topic_id: int | None) -> None:
     """Sol r1 (#363 family): background compensation for a launch cancelled
@@ -8007,9 +8109,19 @@ def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
     driver = (getattr(agent_mod, "active_claude_code_driver", None)
               if rec.driver == "claude_code"
               else getattr(agent_mod, "active_engagement_driver", None))
+    # #698: the cause is READ, never inferred from the cancellation's shape.
+    # A stop wrote it against this exact row before it cancelled it; anything
+    # else — a creator cancel, a barge-in, a role eviction — carries none and
+    # keeps today's byte-identical sentence. The KIND is unchanged on both
+    # arms: `launch_cancelled` is the outcome, and the stop is a separate
+    # signal the registry stamps beside it (D32 — both facts travel, neither
+    # overwrites the other).
+    detail = ("Casa was stopping when this launch was cancelled"
+              if _launch_cause_of(rec.id)
+              else "the tool call was cancelled during launch")
     task = _spawn_launch_death_report(
         channel, rec, topic_id, kind="launch_cancelled",
-        detail="the tool call was cancelled during launch", driver=driver)
+        detail=detail, driver=driver)
     _ABORT_BG_TASKS.add(task)
     task.add_done_callback(_ABORT_BG_TASKS.discard)
 
@@ -8170,6 +8282,27 @@ async def _report_launch_death(
                 "launch-death report %s: awaiting the uid quiesce failed: %s",
                 rec.id[:8], exc)
 
+    # #698: this call WON the strict flip, so the record is durably terminal —
+    # and only now may the retained workspace be given terminal metadata. The
+    # ordering is the whole safety property: metadata saying "terminal, reap
+    # after seven days" written while the record is still live would have boot
+    # replay resume the engagement into that workspace (replay selects every
+    # active/idle claude_code row and never reads .casa-meta.json) and the
+    # sweep delete it underneath the resumed CLI. Written here it can only ever
+    # follow the durable record it describes.
+    #
+    # Only for a launch the stop cancelled: that is the only launch whose
+    # workspace the rollback retained. For every other death the rollback has
+    # already removed it, and the writer would find nothing to rewrite.
+    #
+    # Synchronous, so the reporter acquires no await it did not have.
+    retained = False
+    if _launch_cause_of(rec.id) and rec.driver == "claude_code":
+        from drivers import workspace as _ws_mod
+        retained = _ws_mod.write_terminal_casa_meta(
+            engagement_id=rec.id, status="ERROR",
+            allocated_uid=rec.allocated_uid)
+
     # ONE bounded notice, while the topic is STILL OPEN.
     if topic_id is not None and channel is not None:
         text = (
@@ -8177,6 +8310,19 @@ async def _report_launch_death(
             f"({detail}). Its task may be incomplete \u2014 inspect any "
             "partial changes before retrying."
         )
+        if retained:
+            # #698: claimed IF AND ONLY IF the retention was actually
+            # recorded. Naming a window is a claim about what the sweep will
+            # do, and the sweep returns on UNDERGOING before it reads any
+            # deadline — so a workspace kept without terminal metadata has no
+            # window at all, and promising one is a durable false statement
+            # about state the operator will go looking for. The writer's own
+            # boolean is the only honest source.
+            text += (
+                f"\n\nIts workspace is retained for "
+                f"{_WORKSPACE_RETENTION_DAYS} days so its work can be "
+                "recovered; after that it is deleted."
+            )
         if lost_texts or lost_reservations:
             _budget, _parts = 2800, []
             for _t in lost_texts:
