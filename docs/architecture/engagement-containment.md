@@ -14,8 +14,11 @@ being redirected out of it, where the run-state root alone touches lives, the pr
 refuses a launch whose privilege drop could not succeed, and the confirmed-down sweep boot
 replay runs before it migrates or resumes a service.
 
-The engagement *record* — its creation, turn admission, what a restart rewrites — is
-[`architecture/engagements.md`](engagements.md); the terminal transition, its side effects
+The engagement *record* — its creation and turn admission — is
+[`architecture/engagements.md`](engagements.md); what a restart rewrites, and what a launch
+abort rolls back, are
+[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md); the
+terminal transition, its side effects
 and the finalize path's driver teardown, the one stop path that is not
 a boot path, are [`architecture/engagement-finalization.md`](engagement-finalization.md), and
 the completion gate is
@@ -172,6 +175,31 @@ the rollback runs, and `_sweep_one_workspace` returns on `UNDERGOING` before it 
 retention deadline. Nothing revisits the residue, so an abandoned boundary is abandoned for
 the life of the install. An attempt that ran and FAILED is a different and pre-existing
 condition, best-effort in both documents' sense.
+
+**A boundary that is kept on purpose, and how it is reaped.** A launch that Casa's own
+graceful stop cancelled keeps its whole boundary — the workspace tree, the control directory,
+the uid's identity and the private outbox — instead of having it removed (INV-ENG-015, stated
+in [`architecture/engagements.md`](engagements.md)). Only the s6 service source is removed, and
+the live database recompiled, because a service source is not the executor's work. That
+retention is a deliberate exception to the paragraph above and it is the only one.
+
+Retention is bounded by the same sweeper that would otherwise never look. `.casa-meta.json` in
+the control directory is the sweeper's only source of truth about a workspace: it returns on
+`status == "UNDERGOING"` before it reads any deadline, and warn-skips a terminal status whose
+`retention_until` is not an ISO string. So a workspace kept without a terminal rewrite is
+kept *forever*, which is a leak wearing retention's clothes. The launch-death reporter
+therefore rewrites that file with a terminal status and a `retention_until` seven days out,
+after — never before — the record's own strict terminal transition has durably committed. One
+post-deadline sweep then reaps the whole boundary in a single decision: the workspace tree, its
+log directory, the control directory, the uid's passwd/group identity and its private outbox.
+That is the same reaping path an ordinary terminal engagement takes, and the uid is retired by
+it exactly once, which is what keeps INV-CONT-001 true of a retained boundary as well.
+
+The rewrite is best-effort and the failure direction is chosen: if it does not happen, the
+workspace stays `UNDERGOING` — never reaped, but also never deleted under a record that may
+still be live. An operator finds the tree still on disk under `/data/engagements` with its
+control directory beside it, and the reporter's `error` log naming the engagement is the record
+that it will not expire on its own.
 
 What it does not cover: there is no SIGTERM grace, so a narration tail the CLI had buffered is
 lost (the completion text is unaffected — it arrived through the tool call, and the frames the

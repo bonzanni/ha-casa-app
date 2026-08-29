@@ -5351,8 +5351,66 @@ async def main() -> None:
     # measurably worse than a crash. First statement of the block on purpose:
     # the bounded Agent.aclose() loop, the agent-loop cancels, job_registry.
     # close()'s voice arm and asyncio.run()'s final _cancel_all_tasks all come
-    # after it, and that last one runs after this coroutine has returned.
+    # after it, and that last one runs after this coroutine has returned. It
+    # stays HERE rather than moving into the cleanup coroutine below: two
+    # committed cases pin it as the statement immediately following the stop
+    # wait, in main's own body.
     job_registry.begin_shutdown()
+    await _shutdown_cleanup(
+        job_registry=job_registry,
+        engagement_registry=engagement_registry,
+        scheduler=scheduler,
+        session_sweeper=session_sweeper,
+        freshness_reaper=freshness_reaper,
+        runtime=runtime,
+        ha_facade=ha_facade,
+        bus=bus,
+        loop_tasks=loop_tasks,
+        channel_manager=channel_manager,
+        runners=runners,
+        semantic_memory=semantic_memory,
+    )
+
+
+async def _shutdown_cleanup(
+    *,
+    job_registry: Any,
+    engagement_registry: Any,
+    scheduler: Any,
+    session_sweeper: Any,
+    freshness_reaper: Any,
+    runtime: Any,
+    ha_facade: Any,
+    bus: Any,
+    loop_tasks: Any,
+    channel_manager: Any,
+    runners: Any,
+    semantic_memory: Any,
+) -> None:
+    """Casa's graceful stop, from the stop signal to "shutdown complete".
+
+    Extracted from ``main`` under #698, and the extraction is a gain rather
+    than a refactor for its own sake: this block was executed by no test in the
+    repository — ``job_registry.begin_shutdown()``'s call site has been unpinned
+    since #671 — so every claim any invariant made about "a graceful stop"
+    rested on a sequence nothing ran. It is now a production coroutine a red
+    case can drive end to end, which is what lets INV-ENG-015 say "a launch
+    that Casa's graceful-stop cleanup finds registered" and mean it.
+
+    The statement ORDER is unchanged from the block it replaces, with exactly
+    one addition: the engagement-launch step, at the top, beside the job
+    ledger's own declaration.
+    """
+    # #698: the ENGAGEMENT ledger's twin of the line above, and in the same
+    # place for the same reason. It records `casa_shutdown` against every
+    # in-flight launch BEFORE cancelling it — cause carried, never inferred
+    # from the shape of a cancellation — then waits for those launches and
+    # their death reports. Here, at the top, because everything a dying launch
+    # needs is still up: Telegram, the bus, the drivers and the registry. Left
+    # to `asyncio.run`'s final sweep instead, the launch is cancelled with no
+    # cause (its workspace destroyed) and its reporter is killed mid-notice.
+    import tools as _tools_mod
+    await _tools_mod.stop_engagement_launches(engagement_registry)
 
     # 17. Cleanup
     logger.info("Shutting down...")

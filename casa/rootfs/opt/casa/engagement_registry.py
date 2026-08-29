@@ -28,6 +28,7 @@ from typing import Any
 
 from atomic_io import atomic_write_json
 from engagement_uids import UID_BASE, UNALLOCATED_UID
+from job_registry import CASA_SHUTDOWN_REASON
 from sensitivity import TIERS
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,18 @@ _TERMINAL_RETENTION_DAYS = 30
 # snapshot — distinguishes "origin had no such key" from "key was None" so the
 # rollback can DELETE a key the transition added rather than leaving it None.
 _FIELD_MISSING = object()
+
+
+@dataclass(eq=False)
+class LaunchCancellation:
+    """#698: a handle on one in-flight launch, held by the registry.
+
+    Identity-keyed (``eq=False``): ``unregister_launch`` removes THIS handle,
+    never "a handle for this engagement id", so a late unregister from an
+    unwound launcher cannot drop a successor's registration."""
+
+    engagement_id: str
+    task: Any
 
 
 _STALE_KIND_DEFAULT = "plain"
@@ -360,6 +373,13 @@ class EngagementRegistry:
         # raising, and downstream containment code is expected to fail closed
         # on the sentinel rather than render a root/unallocated uid.
         self._uid_allocator = uid_allocator
+        # #698: the launch-cancellation ledger. All three are process-local,
+        # synchronous and I/O-free — the shape ``JobRegistry.begin_shutdown``
+        # already uses on the job ledger, which is the ledger this one is a
+        # sibling of and deliberately not coupled to.
+        self._launch_handles: dict[int, LaunchCancellation] = {}
+        self._launch_causes: dict[str, str] = {}
+        self._launch_shutdown: str = ""
         # #283: injected specialist_limits.AgentSpawnLimiter. Optional (None
         # keeps every existing construction site and test working); when
         # present, ``load()`` restores one occupancy token per live marked
@@ -990,6 +1010,109 @@ class EngagementRegistry:
                 self._quiesce_tasks.pop(eid, None)
         task.add_done_callback(_retire)
 
+    # ------------------------------------------------------------------
+    # #698 — the launch-cancellation ledger
+    # ------------------------------------------------------------------
+    #
+    # INV-JOB-009's doctrine, applied to this ledger rather than folded into
+    # it: *the discriminator is the cause of the settling, and cause is
+    # carried, not inferred*. The stop writes the cause onto the exact row it
+    # is about BEFORE issuing that row's cancellation, and the terminal writers
+    # below stamp it inside the registry — never at a call site, and never by
+    # classifying the shape of a cancellation. A global "we are stopping" flag
+    # read at the cancellation arms is the shape that doctrine rejects by name:
+    # it misattributes a creator/barge-in cancel that lands in the same window.
+    #
+    # Synchronous, no I/O, idempotent — ``JobRegistry.begin_shutdown``'s shape,
+    # not a coupling to it. The two ledgers stay separate (#689 declined to
+    # mint that cross-ledger read); only the reason STRING is shared, imported
+    # rather than re-minted.
+
+    def register_launch(self, engagement_id: str, task: Any) -> LaunchCancellation:
+        """Enrol an in-flight launch. Returns the handle to unregister with.
+
+        Latch-aware: when the stop has already begun, this performs the
+        canceller's own step for the launch it is enrolling — write the cause
+        FIRST, then cancel, synchronously, in that order — because a launch
+        that becomes durable after the latch would otherwise get no cause and
+        therefore the ordinary destructive rollback.
+        """
+        handle = LaunchCancellation(engagement_id=engagement_id, task=task)
+        self._launch_handles[id(handle)] = handle
+        if self._launch_shutdown:
+            self._launch_causes[engagement_id] = self._launch_shutdown
+            try:
+                task.cancel()
+            except Exception:  # noqa: BLE001 — enrolment must never raise
+                logger.warning("register_launch: cancel of %s failed",
+                               engagement_id[:8], exc_info=True)
+        return handle
+
+    def unregister_launch(self, handle: LaunchCancellation | None) -> None:
+        """Drop a handle by IDENTITY. Does NOT clear the cause.
+
+        The reporter's strict flip runs in a separate task that can outlive the
+        launcher's ``finally``, so a cause forgotten between the two is an
+        annotation lost from the durable row. The map is written only by the
+        stop, only for rows the stop cancelled, and the process ends
+        immediately afterwards, so it cannot go stale.
+        """
+        if handle is not None:
+            self._launch_handles.pop(id(handle), None)
+
+    def launch_cause(self, engagement_id: str) -> str:
+        """The carried cause for this launch, or ``""`` when it carries none."""
+        return self._launch_causes.get(engagement_id, "")
+
+    def begin_launch_shutdown(self, reason: str = CASA_SHUTDOWN_REASON) -> int:
+        """Latch the stop, then cause-then-cancel every enrolled launch.
+
+        Returns the number of cancellations ISSUED — a count, not a status, so
+        a caller can log what it actually did.
+
+        A task already done, or already cancelling, is neither relabelled nor
+        re-cancelled: that is what keeps a concurrent creator/barge-in cancel
+        from ever being recorded as a stop, and it is why this needs no
+        argument about a race window. ``Task.cancelling()`` is read ONLY here,
+        to decide whether this is the first cancellation; nothing downstream
+        ever classifies by it.
+        """
+        self._launch_shutdown = reason or CASA_SHUTDOWN_REASON
+        issued = 0
+        for handle in list(self._launch_handles.values()):
+            task = handle.task
+            try:
+                if task.done() or task.cancelling():
+                    continue
+            except Exception:  # noqa: BLE001 — a foreign task-like object
+                continue
+            # Cause FIRST, then the cancellation it explains.
+            self._launch_causes[handle.engagement_id] = self._launch_shutdown
+            try:
+                task.cancel()
+            except Exception:  # noqa: BLE001 — the stop must complete
+                logger.warning("begin_launch_shutdown: cancel of %s failed",
+                               handle.engagement_id[:8], exc_info=True)
+                continue
+            issued += 1
+        return issued
+
+    async def drain_launches(self) -> None:
+        """Wait for every enrolled launch to finish unwinding.
+
+        Bounded by a NO-OUTPUT condition, never by an elapsed budget (D21):
+        it loops snapshot-then-gather until a snapshot is empty. Termination is
+        by construction — a launch's unwind is bounded by the driver's own
+        rollback and each handle is dropped by its launcher's ``finally``, so a
+        completed launch never re-enters a later snapshot.
+        """
+        while True:
+            tasks = [h.task for h in self._launch_handles.values()
+                     if not h.task.done()]
+            if not tasks:
+                return
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def await_quiesce(self, engagement_id: str, timeout: float) -> bool:
         """Wait for a scheduled discharge, bounded — the finalize funnel uses it
         so the operator-visible effects follow the kill.
@@ -1072,6 +1195,25 @@ class EngagementRegistry:
             finally:
                 self._schedule_quiesce_locked(rec)
 
+    def _stamp_shutdown_reason(self, rec: EngagementRecord) -> None:
+        """#698: the ONE stamper. Every terminal write inside this registry
+        carries the launch's recorded cause, at flip time.
+
+        No call site passes it, which is INV-JOB-009's placement — *enforced
+        inside the registry, never at the call sites* — and it is what makes a
+        ``mark_error`` that wins the row inside a rollback carry the stop signal
+        beside its own kind. D32: both facts travel, and neither overwrites the
+        other, so ``error_kind`` is never substituted.
+
+        ORDERED, not COMPLETE, and the invariant says so: a terminal write that
+        commits before the stop records its cause carries only the failure it
+        was made for. Closing that would mean reconciling a cause that arrives
+        mid-persist, which is a third mechanism for one hazard.
+        """
+        cause = self._launch_causes.get(rec.id, "")
+        if cause:
+            rec.origin["shutdown_reason"] = cause
+
     async def mark_error(self, engagement_id: str, kind: str, message: str) -> bool:
         """Returns True when THIS call flipped the record to ``error`` — like
         ``try_transition_terminal``, only the winner may run terminal side
@@ -1087,6 +1229,7 @@ class EngagementRegistry:
             rec.completed_at = time.time()
             rec.origin["error_kind"] = kind
             rec.origin["error_message"] = message
+            self._stamp_shutdown_reason(rec)
             rec.quiesce_pending = self._owes_quiesce(rec)
             self._release_permit(rec)
             try:
@@ -1164,6 +1307,7 @@ class EngagementRegistry:
                 if new_status == "error":
                     rec.origin["error_kind"] = error_kind or "emit_completion_error"
                     rec.origin["error_message"] = error_message
+                self._stamp_shutdown_reason(rec)
                 # Task 6 (spec §4.6): release the interactive delegation's
                 # concurrency permit on this terminal transition (no-op for
                 # executor engagements, permit=None). Safe before the write:
@@ -1182,6 +1326,7 @@ class EngagementRegistry:
             snap_completed = rec.completed_at
             snap_error_kind = rec.origin.get("error_kind", _FIELD_MISSING)
             snap_error_message = rec.origin.get("error_message", _FIELD_MISSING)
+            snap_shutdown = rec.origin.get("shutdown_reason", _FIELD_MISSING)
             snap_quiesce_pending = rec.quiesce_pending
 
             def _restore() -> None:
@@ -1189,6 +1334,9 @@ class EngagementRegistry:
                 rec.completed_at = snap_completed
                 _restore_origin_field(rec, "error_kind", snap_error_kind)
                 _restore_origin_field(rec, "error_message", snap_error_message)
+                # #698: a rolled-back persist leaves NO partial annotation —
+                # the stop signal goes back with the rest of the snapshot.
+                _restore_origin_field(rec, "shutdown_reason", snap_shutdown)
                 # #599: a rolled-back transition leaves the record LIVE, and a
                 # live record owes nothing — restoring this with the rest is
                 # what keeps "terminal" and "owes a quiesce" inseparable.
@@ -1215,6 +1363,7 @@ class EngagementRegistry:
             if new_status == "error":
                 rec.origin["error_kind"] = error_kind or "emit_completion_error"
                 rec.origin["error_message"] = error_message
+            self._stamp_shutdown_reason(rec)
 
             async def _mutate_and_persist() -> bool:
                 try:

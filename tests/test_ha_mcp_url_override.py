@@ -369,11 +369,25 @@ async def test_tina_facade_initial_discovery_failure_is_sanitized_degraded(
 
 
 def test_main_owns_tina_facade_boot_and_shutdown_lifecycle():
-    from casa_core import main
+    """#698: the CLOSE half now lives in the graceful-stop cleanup coroutine.
+
+    ``main``'s stop block was extracted into ``casa_core._shutdown_cleanup`` so
+    a red case could execute the whole stop sequence rather than re-implement
+    it. The facade's lifecycle is unchanged — it is still booted by ``main``
+    after the agents are built, and still closed exactly once on the way down,
+    in the same position in the same statement order — so this case follows the
+    close to where it now stands rather than claiming a lifecycle that moved.
+    ``main`` awaits that coroutine, so "main owns the lifecycle" is still what
+    is asserted; it now spans the two functions the sequence spans."""
+    from casa_core import _shutdown_cleanup, main
 
     source = inspect.getsource(main)
     assert "ha_facade = await _start_tina_ha_facade(" in source
-    assert "await _close_tina_ha_facade(ha_facade)" in source
+    assert "await _shutdown_cleanup(" in source
+    assert "ha_facade=ha_facade," in source
     assert source.index("agents[role] = agent") < source.index(
         "ha_facade = await _start_tina_ha_facade(",
+    )
+    assert "await _close_tina_ha_facade(ha_facade)" in inspect.getsource(
+        _shutdown_cleanup,
     )

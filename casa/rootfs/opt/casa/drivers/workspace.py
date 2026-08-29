@@ -875,6 +875,83 @@ def write_casa_meta(
     path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
+WORKSPACE_RETENTION_DAYS = 7
+"""#698: the ONE definition of how long a terminal workspace is kept.
+
+``tools._WORKSPACE_RETENTION_DAYS`` aliases this, so the seven days the sweeper
+enforces, the finalize funnel writes and the launch-death path writes cannot
+drift apart into three numbers."""
+
+
+def write_terminal_casa_meta(
+    *, engagement_id: str, status: str, allocated_uid: int,
+    now: float | None = None,
+) -> bool:
+    """#698: give a RETAINED workspace a terminal status and a deadline.
+
+    Returns True only when it actually rewrote the metadata. Retention that
+    does not end is not retention: ``_sweep_one_workspace`` returns on
+    ``status == "UNDERGOING"`` BEFORE it reads ``retention_until``, and
+    warn-skips a terminal status whose ``retention_until`` is not an ISO
+    string, so a workspace kept with untouched metadata leaks forever. With
+    both written, one post-deadline sweep reaps the workspace tree, the log
+    dir, the control dir, the uid's identity and its private outbox in a single
+    decision.
+
+    Refuses — returning False, having written nothing — unless the metadata
+    exists and still reads ``UNDERGOING``. That keeps it EXACTLY ONCE for a
+    workspace, by construction rather than by a caller's discipline: the second
+    call finds a terminal status and declines.
+
+    Synchronous, never raises, no await: its one caller is the launch-death
+    reporter, and the rollback's tail must stay await-free (#755).
+
+    ``write_casa_meta`` rebuilds its dict from scratch, so ``executor_type``,
+    ``created_at`` and ``plugin_artifacts`` are re-passed from the metadata
+    itself and ``allocated_uid`` from the record — the sweeper has no registry
+    access and reads that uid back from this field to prune the identity.
+    """
+    try:
+        path = Path(casa_meta_path(engagement_id))
+        if not path.exists():
+            logger.warning(
+                "terminal workspace metadata for %s: no .casa-meta.json to "
+                "rewrite; the workspace cannot be reaped on a deadline",
+                engagement_id[:8])
+            return False
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict) or meta.get("status") != "UNDERGOING":
+            logger.warning(
+                "terminal workspace metadata for %s: status is %r, not "
+                "UNDERGOING; leaving it alone",
+                engagement_id[:8],
+                meta.get("status") if isinstance(meta, dict) else meta)
+            return False
+        when = time.time() if now is None else now
+        finished_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when))
+        retention_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(when + WORKSPACE_RETENTION_DAYS * 24 * 3600))
+        write_casa_meta(
+            workspace_path="",
+            engagement_id=engagement_id,
+            executor_type=meta.get("executor_type") or "",
+            status=status,
+            created_at=meta.get("created_at") or finished_iso,
+            finished_at=finished_iso,
+            retention_until=retention_iso,
+            plugin_artifacts=meta.get("plugin_artifacts"),
+            allocated_uid=allocated_uid,
+        )
+        return True
+    except Exception:  # noqa: BLE001 — best effort; the caller believes False
+        logger.error(
+            "terminal workspace metadata for %s could not be written — the "
+            "workspace is retained but will not be reaped on a deadline",
+            engagement_id[:8], exc_info=True)
+        return False
+
+
 def _migrate_legacy_casa_meta(engagement_id: str, legacy_text: str) -> None:
     """Best-effort forward-copy of a pre-Task-4 ``.casa-meta.json`` (written
     under the workspace, back when that was the only location) into the

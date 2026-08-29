@@ -1588,26 +1588,76 @@ class ClaudeCodeDriver(DriverProtocol):
                         what="compile_and_update",
                         engagement_id=engagement.id,
                     )
+                # #698: WHICH removals this rollback was entered to run.
+                #
+                # Read ONCE, synchronously, here — after the last rollback
+                # await and immediately before the destructive tail — not at
+                # handler entry. A stop that latches while this rollback is
+                # suspended in its own recompile would otherwise be missed by a
+                # value sampled before that await, and the ordinary five-removal
+                # tail would destroy the workspace of a launch Casa itself had
+                # just cancelled. Reading it once keeps the tail's decision
+                # consistent with itself.
+                #
+                # The key is the CAUSE the stop recorded against this exact
+                # engagement before it issued the cancellation — never the
+                # cancellation itself. Keying on the cancellation would rewrite
+                # two committed pins that say a cancelled launch rolls back like
+                # a failure, and would misread a creator/barge-in cancel as a
+                # stop; keying on a carried cause leaves both untouched, because
+                # neither of them registers a launch.
+                #
+                # This EXTENDS INV-ENG-014 through its "entered to run" clause
+                # rather than contradicting it: a rollback entered for a
+                # stop-caused abort is entered to run FEWER removals, and skips
+                # none of the ones it was entered to run. D32 forbids destroying
+                # the executor's work on a shutdown; uids are never reused
+                # (INV-CONT-001), so a pruned identity is permanent.
+                stop_cause = ""
+                if self._registry is not None:
+                    try:
+                        _cause = self._registry.launch_cause(engagement.id)
+                    except Exception:  # noqa: BLE001 — no seam, no cause
+                        _cause = ""
+                    # A cause is a non-empty STRING or it is not a cause. The
+                    # unreadable case resolves toward the ordinary rollback
+                    # rather than toward retention: retaining on a value nobody
+                    # can read would leak a workspace, an identity and an outbox
+                    # for every genuine provisioning failure, permanently and
+                    # invisibly, which is the worse of the two failures.
+                    stop_cause = _cause if isinstance(_cause, str) else ""
+                if stop_cause:
+                    logger.warning(
+                        "claude_code rollback for engagement %s: %s — the s6 "
+                        "service source is removed, the workspace, control "
+                        "dir, identity and outbox are RETAINED",
+                        engagement.id[:8], stop_cause,
+                    )
                 # Always attempt to remove the workspace tree at the
                 # deterministic path — provision_workspace may have raised
                 # AFTER creating partial state.
-                try:
-                    shutil.rmtree(ws_path, ignore_errors=True)
-                except Exception as rb_exc:  # noqa: BLE001
-                    logger.warning(
-                        "rollback rmtree(%s) failed: %s", ws_path, rb_exc,
-                    )
+                if not stop_cause:
+                    try:
+                        shutil.rmtree(ws_path, ignore_errors=True)
+                    except Exception as rb_exc:  # noqa: BLE001
+                        logger.warning(
+                            "rollback rmtree(%s) failed: %s", ws_path, rb_exc,
+                        )
                 # Task 4: the control dir is provisioned alongside the
                 # workspace (provision_control_dir, called from within
                 # provision_workspace) — remove it on the same rollback so a
                 # failed launch never leaves an orphaned root-only directory.
+                # #698: retained WITH the workspace on a stop — it holds
+                # ``.casa-meta.json``, which is the only thing that can give
+                # the retained workspace a deadline to be reaped on.
                 ctl_path = control_dir(engagement.id)
-                try:
-                    shutil.rmtree(ctl_path, ignore_errors=True)
-                except Exception as rb_exc:  # noqa: BLE001
-                    logger.warning(
-                        "rollback rmtree(%s) failed: %s", ctl_path, rb_exc,
-                    )
+                if not stop_cause:
+                    try:
+                        shutil.rmtree(ctl_path, ignore_errors=True)
+                    except Exception as rb_exc:  # noqa: BLE001
+                        logger.warning(
+                            "rollback rmtree(%s) failed: %s", ctl_path, rb_exc,
+                        )
                 # Task 8 (containment stage 2): a failed launch may still
                 # have gotten far enough for provision_workspace to call
                 # ensure_identity() before whatever raised — best-effort
@@ -1617,7 +1667,7 @@ class ClaudeCodeDriver(DriverProtocol):
                 # about to be deleted above. A no-op if identity was never
                 # created.
                 real_uid = owner_uid_or_none(engagement.allocated_uid)
-                if real_uid is not None:
+                if real_uid is not None and not stop_cause:
                     try:
                         prune_identity(real_uid)
                     except Exception as rb_exc:  # noqa: BLE001

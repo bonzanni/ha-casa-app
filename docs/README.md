@@ -21,6 +21,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | When you are changing… | Read |
 |---|---|
 | Telegram transport, callback namespaces, topic output ordering, or message rendering | [`architecture/telegram.md`](architecture/telegram.md) |
+| a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, the question lifecycle, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
@@ -35,7 +36,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | anything structural, or when you need to find which document owns an area | [`architecture/overview.md`](architecture/overview.md) |
 | anything that must serialize, a new lock, bus dispatch, or blocking I/O placement | [`architecture/concurrency-model.md`](architecture/concurrency-model.md) |
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
-| engagement lifecycle, engagement launch, turn admission, the driver protocol, or restart replay | [`architecture/engagements.md`](architecture/engagements.md) |
+| engagement lifecycle, engagement launch, turn admission, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep | [`architecture/persona-lifecycle.md`](architecture/persona-lifecycle.md) |
 | job persistence, restart recovery, or how a deferred answer reaches a device | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
