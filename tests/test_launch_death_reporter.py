@@ -1885,3 +1885,38 @@ class TestNotDeliveredFollowUpNotice:
         await asyncio.sleep(0)
 
         assert ch._post_engagement_notice.await_count == 0
+
+
+class TestC4LaunchDeathQuotesAReservation:
+    """C4 RED CASE — INV-ENG-017 on the OTHER terminal renderer.
+
+    Specified by sol (round `redcase-specify`), accepted by terra. The
+    launch-death notice must quote a reservation whose text Casa knows, while
+    its count and its "up to" hedge stay exactly as the text-less case
+    produced them — and its paragraph shape, emission condition and order are
+    untouched (INV-ENG-015's whole-text pins).
+    """
+
+    async def test_a_known_reservation_text_is_quoted_at_the_same_count(
+        self, tmp_path, monkeypatch,
+    ):
+        probe = _Probe()
+        engage_executor, registry, channel, driver = _build(
+            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
+        )
+        monkeypatch.setattr(
+            driver, "inbound_message_reservations", lambda eng_id: 1,
+            raising=False)
+        monkeypatch.setattr(
+            driver, "inbound_reservations", lambda eng_id: 1, raising=False)
+        monkeypatch.setattr(
+            driver, "inbound_reservation_texts",
+            lambda eng_id: ["did you also restart the relay?"], raising=False)
+
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "error"
+
+        assert len(probe.notice_texts) == 1
+        notice = probe.notice_texts[0]
+        assert notice.count("• did you also restart the relay?") == 1, notice
+        assert notice.count("up to 1 inbound message(s)") == 1, notice

@@ -510,7 +510,7 @@ class _FakeInboundDriver:
     """
     def __init__(self, depth=0, reservations=0, texts=(),
                  in_flight=(), in_flight_blocking=None,
-                 command_reservations=0):
+                 command_reservations=0, reservation_texts=()):
         self._depth = depth
         self._resv = reservations
         self._cmd_resv = command_reservations
@@ -519,6 +519,9 @@ class _FakeInboundDriver:
         self._in_flight_blocking = (
             len(self._in_flight) if in_flight_blocking is None
             else in_flight_blocking)
+        # C4/#691: OPT-IN and default-empty, so every fixture written for the
+        # count-only ceiling stays genuinely count-only.
+        self._reservation_texts = list(reservation_texts)
         self.refusals: list[str] = []
         self.cancelled_intents: list[tuple] = []
         self.forced_boundaries: list[str] = []
@@ -532,6 +535,8 @@ class _FakeInboundDriver:
     def inbound_unread_texts(self, eng_id): return list(self._texts)
     def inbound_in_flight_texts(self, eng_id): return list(self._in_flight)
     def inbound_in_flight_blocking(self, eng_id): return self._in_flight_blocking
+    def inbound_reservation_texts(self, eng_id):
+        return list(self._reservation_texts)
 
     async def force_completion_turn_boundary(self, engagement):
         self.forced_boundaries.append(engagement.id)
@@ -1559,3 +1564,76 @@ class TestFinalizeTailObservability:
         assert payload["status"] == "acknowledged"
         assert seen["task"] is host
         assert seen["anchored"] == 0
+
+
+class TestC4DisclosureWithoutVeto:
+    """C4 RED CASES at the terminal renderer — #740 / #691.
+
+    Specified by sol (round `redcase-specify`), accepted by terra.
+
+    INV-ENG-016's second clause: a population sourced from the durable spool
+    FILE — texts with no attached incarnation, so the veto accessors answer 0 —
+    is DISCLOSED at the terminal and never refuses the completion, because
+    nothing the gate can force could ever clear it.
+
+    INV-ENG-017's clause: a reservation's text is QUOTED, while the count and
+    the "up to" hedge stay exactly as a text-less reservation would have made
+    them.
+    """
+
+    _emit = TestCompletionInboundGate._emit
+    _setup = TestReservationDisclosure._setup
+
+    async def test_file_only_population_is_disclosed_without_refusing(
+            self, tmp_path):
+        import agent as agent_mod
+        # depth/blocking 0 is what the file tier answers; the texts are what it
+        # reads through. Today the terminal hook vetoes off `texts`, so this
+        # completion is REFUSED and the operator is told nothing.
+        drv = _FakeInboundDriver(
+            depth=0, reservations=0,
+            texts=["queued file text"],
+            in_flight=["in-flight file text"], in_flight_blocking=0,
+        )
+        reg, rec, tch, _bus = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="ok")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        assert len(drv.refusals) == 0
+        assert rec.status == "completed"
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert posted.count("• queued file text") == 1
+        assert posted.count("• in-flight file text") == 1
+        assert posted.count("2 inbound message(s)") == 1
+        assert posted.count("up to") == 0
+
+    async def test_reservation_texts_are_quoted_without_moving_the_count(
+            self, tmp_path):
+        import agent as agent_mod
+        # One spooled message plus two held reservations, one of which Casa
+        # knows the text of. The count arithmetic is exactly what it is today
+        # (1 + 2 = 3, hedged because reservations are counted); what changes is
+        # that the known text is QUOTED instead of merely counted.
+        drv = _FakeInboundDriver(
+            depth=0, reservations=2,
+            texts=["spooled text"],
+            reservation_texts=["reserved but never spooled"],
+        )
+        reg, rec, tch, _bus = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status="error")
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        assert rec.status == "error"
+        posted = "".join(str(c.args) + str(c.kwargs)
+                         for c in (list(tch.send_to_topic.call_args_list)
+                                   + list(tch.send_response_to_topic.call_args_list)))
+        assert posted.count("• spooled text") == 1
+        assert posted.count("• reserved but never spooled") == 1
+        assert posted.count("up to 3 inbound message(s)") == 1
+        assert posted.count("up to 4 inbound message(s)") == 0

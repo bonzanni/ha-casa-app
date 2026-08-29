@@ -4935,3 +4935,348 @@ class TestRollbackCancellationCompleteness:
             "workspace": failing_step == "rmtree_workspace",
             "control": failing_step == "rmtree_control",
             "outbox": failing_step == "teardown_outbox"}
+
+
+# ---------------------------------------------------------------------------
+# C4 RED CASES — #740 / #691.
+#
+# INV-ENG-016: a claude_code engagement's inbound LEDGER outlives the CLI
+# INCARNATION that serves it, and where no incarnation of this process ever
+# attached, the disclosure accessors still answer from the durable spool file
+# they can read — disclosing, never vetoing.
+#
+# INV-ENG-017: an ingress reservation carries its message's TEXT from
+# acceptance until the message becomes durable in the spool (or is known not
+# to have), on the ledger that survives a session teardown.
+#
+# Specified by sol (round `redcase-specify`); accepted by terra.
+# ---------------------------------------------------------------------------
+
+
+def _ccd_driver(tmp_path):
+    import drivers.claude_code_driver as ccd
+
+    return ccd.ClaudeCodeDriver(
+        engagements_root=str(tmp_path / "eng"),
+        send_to_topic=AsyncMock(),
+        casa_framework_mcp_url="http://x",
+    )
+
+
+def _write_spool_file(eid, rows):
+    """Write a durable spool file for `eid` at the production path, with no
+    in-memory spool anywhere. `rows` are already-serialised JSON lines."""
+    import json
+    import os
+    from drivers.workspace import control_dir, inbound_spool_path
+
+    os.makedirs(control_dir(eid), exist_ok=True)
+    path = inbound_spool_path(eid)
+    with open(path, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
+    return path
+
+
+def _row(text, *, state="queued", seq=0, mid=None, **over):
+    row = {"text": text, "tg_message_id": mid, "priority": False,
+           "receipt": "not_required", "notice": "none", "notice_text": None,
+           "enqueued_at": 1.0, "delivery_epoch": None, "state": state,
+           "seq": seq, "is_initial": False, "answer_anchor_mid": None}
+    row.update(over)
+    return row
+
+
+class TestInboundLedgerOutlivesTheIncarnation:
+    """INV-ENG-016, arm 1 — the retained ledger."""
+
+    async def test_invalidation_detaches_the_runtime_and_keeps_the_ledger(
+            self, tmp_path, monkeypatch):
+        import drivers.claude_code_driver as ccd
+
+        async def _down(*, engagement_id, attempts=3):
+            return True
+        monkeypatch.setattr(ccd.s6_rc, "ensure_service_down", _down)
+
+        from types import SimpleNamespace
+        d = _ccd_driver(tmp_path)
+        rec = SimpleNamespace(id="e-740-a", allocated_uid=0)
+        writer = AsyncMock(return_value=False)
+        spool = ccd._InboundSpool(
+            engagement_id=rec.id,
+            spool_path=str(tmp_path / "s.jsonl"),
+            write_fifo=writer,
+            send_notice=AsyncMock(return_value=True),
+        )
+        d._inbound[rec.id] = spool
+        assert await spool.enqueue("op msg") == "queued"
+        spool.reader_ready = True
+
+        # Pre-teardown truth, as counts.
+        assert d.inbound_unread_depth(rec.id) == 1
+        assert len(d.inbound_unread_texts(rec.id)) == 1
+        assert d.inbound_generation(rec.id) == 1
+
+        await d.invalidate_session(rec)
+
+        # The LEDGER survives: same object, same counts, same generation.
+        assert len(d._inbound) == 1
+        assert d._inbound.get(rec.id) is spool
+        assert d.inbound_unread_depth(rec.id) == 1
+        assert len(d.inbound_unread_texts(rec.id)) == 1
+        assert d.inbound_unread_texts(rec.id) == ["op msg"]
+        assert d.inbound_generation(rec.id) == 1
+        # The RUNTIME does not: the old incarnation's writer is disarmed and
+        # can no longer be reached by a pump.
+        assert spool.reader_ready is False
+        writer.reset_mock()
+        assert await spool.enqueue("second op msg") == "queued"
+        assert writer.await_count == 0
+        assert len(d.inbound_unread_texts(rec.id)) == 2
+        assert d.inbound_generation(rec.id) == 2
+
+    async def test_reattach_keeps_the_same_ledger_object(self, tmp_path):
+        """A replacement incarnation REBINDS the runtime onto the surviving
+        ledger; it never constructs a second one over the same file."""
+        import drivers.claude_code_driver as ccd
+
+        spool = ccd._InboundSpool(
+            engagement_id="e-740-b",
+            spool_path=str(tmp_path / "s.jsonl"),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True),
+        )
+        assert await spool.enqueue("op msg") == "queued"
+        lock = spool._pump_lock
+        spool.detach_runtime()
+        assert spool.reader_ready is False
+
+        new_writer = AsyncMock(return_value=False)
+        spool.attach_runtime(
+            write_fifo=new_writer,
+            send_notice=AsyncMock(return_value=True),
+            is_turn_running=lambda: False,
+            current_epoch=lambda: 7,
+        )
+        # Ledger identity and values are preserved across the rebind.
+        assert spool._pump_lock is lock
+        assert len(spool.unread_texts()) == 1
+        assert spool.generation() == 1
+        # The runtime is the NEW one.
+        assert spool._write_fifo is new_writer
+        assert spool.reader_ready is False
+        assert spool._current_epoch() == 7
+
+
+class TestDetachedInboundView:
+    """INV-ENG-016, arm 2 — the durable file answers when nothing is attached,
+    for DISCLOSURE only."""
+
+    async def test_file_only_population_discloses_and_never_vetoes(
+            self, tmp_path):
+        d = _ccd_driver(tmp_path)
+        eid = "e-740-file"
+        _write_spool_file(eid, [
+            _row("queued file text", state="queued", seq=0, mid=11),
+            _row("in-flight file text", state="delivered", seq=1, mid=12),
+        ])
+        assert len(d._inbound) == 0
+
+        assert d.inbound_unread_texts(eid) == ["queued file text"]
+        assert d.inbound_in_flight_texts(eid) == ["in-flight file text"]
+        # The veto side stays silent: a population nothing can pump must not
+        # be able to refuse a completion it has no machinery to clear.
+        assert d.inbound_unread_depth(eid) == 0
+        assert d.inbound_in_flight_blocking(eid) == 0
+        assert d.inbound_generation(eid) == 0
+        # And reading through must not ATTACH anything.
+        assert len(d._inbound) == 0
+
+    async def test_no_attached_spool_and_no_file_answers_empty(self, tmp_path):
+        d = _ccd_driver(tmp_path)
+        assert d.inbound_unread_texts("nothing-here") == []
+        assert d.inbound_in_flight_texts("nothing-here") == []
+        assert d.inbound_unread_depth("nothing-here") == 0
+        assert d.inbound_in_flight_blocking("nothing-here") == 0
+        assert d.inbound_generation("nothing-here") == 0
+        assert len(d._inbound) == 0
+
+    async def test_malformed_middle_row_drops_only_that_row(self, tmp_path):
+        """The PARSER boundary first (terra, accepting round): a row whose
+        typed conversion fails must return None from ``_Envelope.from_line``
+        rather than escaping ``_load`` and taking its valid neighbours with
+        it. Asserted directly on ``_InboundSpool`` so the failure is the
+        parser's, not the detached view's; the view is then checked over the
+        same rows."""
+        import json
+        import drivers.claude_code_driver as ccd
+        rows = [
+            json.dumps(_row("left", seq=0)),
+            json.dumps(_row("bad", seq=1, enqueued_at="not-a-float")),
+            json.dumps(_row("right", seq=2)),
+        ]
+        direct_path = tmp_path / "direct.jsonl"
+        direct_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        spool = ccd._InboundSpool(
+            engagement_id="e-740-badrow-direct",
+            spool_path=str(direct_path),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True),
+        )
+        assert spool.unread_texts() == ["left", "right"]
+
+        d = _ccd_driver(tmp_path)
+        eid = "e-740-badrow"
+        _write_spool_file(eid, rows)
+        texts = d.inbound_unread_texts(eid)
+        assert len(texts) == 2
+        assert texts.count("left") == 1
+        assert texts.count("right") == 1
+        assert texts.count("bad") == 0
+
+    async def test_a_non_os_read_failure_reads_as_empty_not_as_a_raise(
+            self, tmp_path, monkeypatch):
+        """A spool file that is not valid UTF-8 raises UnicodeDecodeError —
+        a ValueError, not an OSError. It must read as an empty view rather
+        than escaping the loader."""
+        import os
+        from drivers.workspace import control_dir, inbound_spool_path
+        d = _ccd_driver(tmp_path)
+        eid = "e-740-binary"
+        os.makedirs(control_dir(eid), exist_ok=True)
+        with open(inbound_spool_path(eid), "wb") as fh:
+            fh.write(b'{"text": "\xff\xfe not utf-8", "seq": 0}\n')
+        assert d.inbound_unread_texts(eid) == []
+        assert d.inbound_unread_depth(eid) == 0
+
+
+class TestReservationCarriesItsText:
+    """INV-ENG-017 — the ingress reservation carries the operator's text,
+    keyed by the Telegram message id, on the ledger that survives a teardown."""
+
+    def _driver(self, tmp_path):
+        return _ccd_driver(tmp_path)
+
+    async def test_text_is_message_keyed_and_survives_invalidation(
+            self, tmp_path, monkeypatch):
+        import drivers.claude_code_driver as ccd
+        from types import SimpleNamespace
+
+        async def _down(*, engagement_id, attempts=3):
+            return True
+        monkeypatch.setattr(ccd.s6_rc, "ensure_service_down", _down)
+
+        d = self._driver(tmp_path)
+        rec = SimpleNamespace(id="e-691-a", allocated_uid=0)
+        d.reserve_inbound(rec.id, text="alpha", message_id=101)
+        d.reserve_inbound(rec.id, text="beta", message_id=102)
+
+        assert d.inbound_reservations(rec.id) == 2
+        assert d.inbound_message_reservations(rec.id) == 2
+        assert d.inbound_reservation_texts(rec.id) == ["alpha", "beta"]
+
+        # T10's shape, for the new map: a session teardown is not a release.
+        await d.invalidate_session(rec)
+        assert d.inbound_reservations(rec.id) == 2
+        assert d.inbound_reservation_texts(rec.id) == ["alpha", "beta"]
+
+        # An exact-id release removes exactly that message's text.
+        d.release_inbound_reservation(rec.id, message_id=101)
+        assert d.inbound_reservations(rec.id) == 1
+        texts = d.inbound_reservation_texts(rec.id)
+        assert texts.count("alpha") == 0
+        assert texts.count("beta") == 1
+
+        # Terminal teardown is the wholesale remover, as for the counters.
+        await d.cancel(rec)
+        assert d.inbound_reservations(rec.id) == 0
+        assert d.inbound_reservation_texts(rec.id) == []
+
+    async def test_a_command_reservation_records_no_text(self, tmp_path):
+        d = self._driver(tmp_path)
+        d.reserve_inbound("e-691-b", command=True, text="/silent",
+                          message_id=998)
+        d.reserve_inbound("e-691-b", text="keep me", message_id=999)
+        assert d.inbound_reservations("e-691-b") == 2
+        assert d.inbound_message_reservations("e-691-b") == 1
+        assert d.inbound_reservation_texts("e-691-b") == ["keep me"]
+        # And a command's release cannot consume an ordinary message's text.
+        d.release_inbound_reservation("e-691-b", command=True, message_id=998)
+        assert d.inbound_reservation_texts("e-691-b") == ["keep me"]
+
+    async def test_texts_are_clamped_to_the_disclosure_count(self, tmp_path):
+        """The clamp direction is under-disclosure, and a zero count discloses
+        nothing at all (a `[-0:]` slice would disclose everything)."""
+        d = self._driver(tmp_path)
+        d.reserve_inbound("e-691-c", text="only", message_id=1)
+        d._inbound_reservations.pop("e-691-c", None)
+        assert d.inbound_message_reservations("e-691-c") == 0
+        assert d.inbound_reservation_texts("e-691-c") == []
+
+    async def test_durable_enqueue_drops_the_text_before_the_next_await(
+            self, tmp_path):
+        """The reservation exists to name a message with no text anywhere. The
+        instant `_persist` succeeds the text IS somewhere, so the reservation's
+        copy is dropped THERE — synchronously, before enqueue's next await —
+        and the message is quoted once, from the spool."""
+        import asyncio
+        import drivers.claude_code_driver as ccd
+
+        d = self._driver(tmp_path)
+        eid = "e-691-d"
+        d.reserve_inbound(eid, text="promoted", message_id=101)
+
+        gate = asyncio.Event()
+        seen: list = []
+
+        async def _blocking_supersede():
+            seen.append(("at-first-await",
+                         list(d.inbound_reservation_texts(eid)),
+                         d.inbound_reservations(eid)))
+            await gate.wait()
+
+        spool = ccd._InboundSpool(
+            engagement_id=eid,
+            spool_path=str(tmp_path / "s.jsonl"),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True),
+            supersede_pending_asks=_blocking_supersede,
+            on_durable_enqueue=lambda mid: d.drop_reservation_text(eid, mid),
+        )
+        task = asyncio.create_task(spool.enqueue("promoted", tg_message_id=101))
+        for _ in range(50):
+            if seen:
+                break
+            await asyncio.sleep(0)
+        assert len(seen) == 1
+        # At the FIRST await after the successful persist the text is already
+        # gone, and the COUNT is untouched (telegram still owns the release).
+        assert seen[0][1] == []
+        assert seen[0][2] == 1
+        gate.set()
+        assert await task == "queued"
+        assert d.inbound_reservation_texts(eid) == []
+
+    async def test_a_failed_persist_keeps_the_text(self, tmp_path):
+        """A message that never became durable keeps its text — that is the
+        population the disclosure exists for."""
+        import drivers.claude_code_driver as ccd
+
+        d = self._driver(tmp_path)
+        eid = "e-691-e"
+        d.reserve_inbound(eid, text="never durable", message_id=77)
+        fired: list = []
+
+        spool = ccd._InboundSpool(
+            engagement_id=eid,
+            spool_path=str(tmp_path / "nodir" / "s.jsonl"),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True),
+            on_durable_enqueue=lambda mid: (fired.append(mid),
+                                            d.drop_reservation_text(eid, mid)),
+        )
+        assert await spool.enqueue("never durable", tg_message_id=77) == "error"
+        assert len(fired) == 0
+        assert d.inbound_reservation_texts(eid) == ["never durable"]
+        d.release_inbound_reservation(eid, message_id=77)
+        assert d.inbound_reservation_texts(eid) == []
