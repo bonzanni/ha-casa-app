@@ -339,26 +339,35 @@ class _Envelope:
 
     @classmethod
     def from_line(cls, line: str) -> "_Envelope | None":
+        # #740: the CONSTRUCTION is inside the guard, and the guard is
+        # ``Exception``. It used to cover only ``json.loads``, so the typed
+        # conversions below — ``float(...)``, ``int(...)`` on values straight
+        # out of the JSON — escaped ``_load``'s loop and took every valid row
+        # in the file with them. Enumerating the classes was tried and missed
+        # one twice running (``OverflowError`` from ``"seq": 1e400``, then
+        # ``RecursionError`` from a deeply nested value), so the property is
+        # stated instead of the list: a row that cannot be decoded is not a
+        # row, and its neighbours are unaffected.
         try:
             data = json.loads(line)
-        except (ValueError, TypeError):
+            if not isinstance(data, dict) or "text" not in data:
+                return None
+            return cls(
+                text=data.get("text", ""),
+                tg_message_id=data.get("tg_message_id"),
+                priority=bool(data.get("priority", False)),
+                receipt=data.get("receipt", "not_required"),
+                notice=data.get("notice", "none"),
+                notice_text=data.get("notice_text"),
+                enqueued_at=float(data.get("enqueued_at", 0.0)),
+                delivery_epoch=data.get("delivery_epoch"),
+                state=data.get("state", "queued"),
+                seq=int(data.get("seq", 0)),
+                is_initial=bool(data.get("is_initial", False)),
+                answer_anchor_mid=data.get("answer_anchor_mid"),
+            )
+        except Exception:  # noqa: BLE001 — an undecodable row is not a row
             return None
-        if not isinstance(data, dict) or "text" not in data:
-            return None
-        return cls(
-            text=data.get("text", ""),
-            tg_message_id=data.get("tg_message_id"),
-            priority=bool(data.get("priority", False)),
-            receipt=data.get("receipt", "not_required"),
-            notice=data.get("notice", "none"),
-            notice_text=data.get("notice_text"),
-            enqueued_at=float(data.get("enqueued_at", 0.0)),
-            delivery_epoch=data.get("delivery_epoch"),
-            state=data.get("state", "queued"),
-            seq=int(data.get("seq", 0)),
-            is_initial=bool(data.get("is_initial", False)),
-            answer_anchor_mid=data.get("answer_anchor_mid"),
-        )
 
 
 class _InboundSpool:
@@ -403,9 +412,77 @@ class _InboundSpool:
         on_operator_enqueued: Callable[[], Awaitable[None]] | None = None,
         promote_answer_on_enqueue: (
             Callable[[], Awaitable[int | None]] | None) = None,
+        on_durable_enqueue: Callable[["int | None"], None] | None = None,
     ) -> None:
+        # #740 — TWO LIFETIMES IN ONE OBJECT, and this is where they are
+        # separated. The LEDGER (the fields set here) belongs to the
+        # ENGAGEMENT: envelopes, the sequence counter, the operator-message
+        # generation, the unpersisted-changes flag and the pump lock. The
+        # RUNTIME (everything ``attach_runtime`` sets) belongs to ONE CLI
+        # INCARNATION: the FIFO writer, the notice sender, the epoch/turn
+        # probes, the sequencer, the registry and ``reader_ready``.
+        #
+        # ``invalidate_session`` used to pop the whole object, which is what
+        # made five accessors answer 0/[] for messages still durably queued.
+        # It now calls ``detach_runtime`` and keeps the ledger; a replacement
+        # incarnation calls ``attach_runtime`` on the SAME object. ``__init__``
+        # delegates to it so no runtime field can be bound in one path and
+        # forgotten in the other.
         self._engagement_id = engagement_id
         self._spool_path = spool_path
+        self._envelopes: list[_Envelope] = []
+        self.reader_ready = False
+        self._pump_lock = asyncio.Lock()
+        self._next_seq = 0
+        # #341: True while the in-memory envelope state has changes the last
+        # persist failed to commit — the touchpoint flush retries the write
+        # even when no send outcome changed (a recorded-but-unpersisted
+        # capacity-drop notice must not wait for a successful send to become
+        # durable).
+        self._persist_dirty = False
+        # v0.79.0 (§4): monotonic operator-message generation — the ask inbound
+        # gate reserves this before BROKER.register and re-checks it after
+        # posting to close the arrival race.
+        self._generation = 0
+        self.attach_runtime(
+            write_fifo=write_fifo,
+            send_notice=send_notice,
+            is_turn_running=is_turn_running,
+            current_epoch=current_epoch,
+            sequencer=sequencer,
+            registry=registry,
+            supersede_pending_asks=supersede_pending_asks,
+            settle_anchor_on_delivery=settle_anchor_on_delivery,
+            on_operator_enqueued=on_operator_enqueued,
+            promote_answer_on_enqueue=promote_answer_on_enqueue,
+            on_durable_enqueue=on_durable_enqueue,
+        )
+        self._load()
+
+    # -- #740: the incarnation seam ----------------------------------------
+
+    def attach_runtime(
+        self,
+        *,
+        write_fifo: Callable[[str], Awaitable[bool]],
+        send_notice: NoticeSender,
+        is_turn_running: Callable[[], bool] = lambda: False,
+        current_epoch: Callable[[], int | None] = lambda: None,
+        sequencer: Any = None,
+        registry: Any = None,
+        supersede_pending_asks: Callable[[], Awaitable[None]] | None = None,
+        settle_anchor_on_delivery: (
+            Callable[[int | None], Awaitable[int | None]] | None) = None,
+        on_operator_enqueued: Callable[[], Awaitable[None]] | None = None,
+        promote_answer_on_enqueue: (
+            Callable[[], Awaitable[int | None]] | None) = None,
+        on_durable_enqueue: Callable[["int | None"], None] | None = None,
+    ) -> None:
+        """Bind this ledger to a CLI incarnation. Called by ``__init__`` and
+        again by ``_spawn_background_tasks`` when a replacement process comes
+        up, so the closures a retained ledger holds are never the dead
+        incarnation's. ``reader_ready`` is always reset: readiness is a fact
+        about a process, and the new one has not spawned yet."""
         self._write_fifo = write_fifo
         self._send_notice = send_notice
         self._is_turn_running = is_turn_running
@@ -433,31 +510,58 @@ class _InboundSpool:
         # tg_message_id (recorded on the envelope so delivery only THREADS),
         # or None when no anchor is open.
         self._promote_answer_on_enqueue = promote_answer_on_enqueue
-        self._envelopes: list[_Envelope] = []
+        # #691: fired SYNCHRONOUSLY, immediately after a successful persist and
+        # before the first await that follows it, with the envelope's
+        # ``tg_message_id``. The driver uses it to drop that message's ingress
+        # RESERVATION TEXT: the reservation exists to name a message whose text
+        # is nowhere, and at this instant the text is somewhere durable.
+        self._on_durable_enqueue = on_durable_enqueue
         self.reader_ready = False
-        self._pump_lock = asyncio.Lock()
-        self._next_seq = 0
-        # #341: True while the in-memory envelope state has changes the last
-        # persist failed to commit — the touchpoint flush retries the write
-        # even when no send outcome changed (a recorded-but-unpersisted
-        # capacity-drop notice must not wait for a successful send to become
-        # durable).
-        self._persist_dirty = False
-        # v0.79.0 (§4): monotonic operator-message generation — the ask inbound
-        # gate reserves this before BROKER.register and re-checks it after
-        # posting to close the arrival race.
-        self._generation = 0
-        self._load()
+
+    def detach_runtime(self) -> None:
+        """Retire the incarnation without touching the ledger (#740).
+
+        ``invalidate_session`` calls this instead of dropping the object. The
+        writer and the notice sender are replaced with inert ones so nothing
+        the dying incarnation may still be running can deliver an envelope or
+        post in its name; the inert writer returns ``False``, which is the
+        RETAIN signal the pump already understands, so an envelope is kept for
+        the replacement rather than promoted to ``delivered``."""
+        self._write_fifo = lambda text: _never_deliver()
+        self._send_notice = lambda text, reply_to: _never_deliver()
+        self.reader_ready = False
 
     # -- persistence -------------------------------------------------------
 
     def _load(self) -> None:
+        # #740: read BYTES and decode PER ROW. The file used to be decoded
+        # whole, so one row that is not valid UTF-8 raised ``UnicodeDecodeError``
+        # — a ``ValueError``, not an ``OSError`` — out of the constructor, which
+        # at boot aborted ``_spawn_background_tasks`` for the whole process
+        # lifetime and left a LIVE CLI with no spool.
+        #
+        # Catching that whole-file failure is NOT the fix, and the diff review
+        # reproduced why: an empty ledger over a non-empty file is destructive,
+        # because the next ``_persist`` atomically replaces the file from the
+        # in-memory list and every valid row is gone (measured: three rows,
+        # valid/undecodable/valid, became one). Per-row decoding loses only the
+        # row that cannot be decoded, which is the same rule ``from_line``
+        # already applies to a row that cannot be parsed — so the read guard
+        # stays exactly what it always was.
         try:
-            raw = Path(self._spool_path).read_text(encoding="utf-8")
+            raw = Path(self._spool_path).read_bytes()
         except OSError:
             return
-        for line in raw.splitlines():
-            if not line.strip():
+        for chunk in raw.splitlines():
+            if not chunk.strip():
+                continue
+            try:
+                line = chunk.decode("utf-8")
+            except UnicodeDecodeError:
+                logger.warning(
+                    "engagement %s: undecodable row in the inbound spool — "
+                    "dropped, its neighbours are kept",
+                    self._engagement_id[:8])
                 continue
             env = _Envelope.from_line(line)
             if env is not None:
@@ -690,6 +794,18 @@ class _InboundSpool:
         # keyboard still waiting for a tap (it must not dead-wait behind a
         # message the operator has already sent).
         self._generation += 1
+        # #691: the message is DURABLE as of the persist above, so its ingress
+        # reservation's copy of the text has stopped being the only copy — drop
+        # it HERE, synchronously, before the first await below, so no terminal
+        # can observe the same message as both a spooled envelope and a
+        # text-bearing reservation. Deliberately after ``_persist`` and never
+        # before it: a rejected or raised enqueue keeps the text, which is the
+        # population the disclosure exists for.
+        if self._on_durable_enqueue is not None:
+            try:
+                self._on_durable_enqueue(tg_message_id)
+            except Exception:  # noqa: BLE001 — never fail an accepted enqueue
+                logger.debug("on_durable_enqueue failed", exc_info=True)
         if not is_initial and self._supersede_pending_asks is not None:
             try:
                 await self._supersede_pending_asks()
@@ -1201,6 +1317,17 @@ class ClaudeCodeDriver(DriverProtocol):
         # the model, so it is excluded from the lost-inbound DISCLOSURE while
         # still counting toward the completion VETO (total above).
         self._inbound_command_reservations: dict[str, int] = {}
+        # #691: {engagement_id: {tg_message_id: text}} — the text of each
+        # ordinary ingress reservation still held, so a terminal can QUOTE a
+        # message that was accepted and never reached the spool instead of only
+        # counting it. It lives BESIDE the counters above and shares their
+        # lifetime exactly: written at ``reserve_inbound``, dropped by the
+        # matching release, dropped by the durable-enqueue callback the moment
+        # the message becomes a spooled envelope, and removed wholesale ONLY by
+        # ``cancel``. It is never touched by ``invalidate_session`` and never
+        # attached to ``_InboundSpool`` — either would give it the CLI
+        # incarnation's lifetime, which is #740's defect by construction.
+        self._inbound_reservation_texts: dict[str, dict[int, str]] = {}
         # v0.83.0 (§A3, Sol r6-4 + r7-2): in-memory ANSWERED overlay. When
         # ``mark_question_answered``'s STRICT persist raises (the durable envelope
         # is already spooled, so the agent WILL get the answer — the question must
@@ -1811,7 +1938,19 @@ class ClaudeCodeDriver(DriverProtocol):
         # In-memory spool/task state for the old process.
         for t in self._tasks.pop(engagement.id, []):
             t.cancel()
-        self._inbound.pop(engagement.id, None)
+        # #740: DETACH the incarnation, KEEP the ledger. This line used to pop
+        # the spool outright while its durable ``.inbound_spool.jsonl`` was
+        # left on disk untouched — so every spool-backed accessor answered
+        # 0/[] for messages that were still queued, the completion gate did not
+        # refuse, and both terminal renderers (which gate their inbound
+        # paragraph on a non-empty population) said NOTHING AT ALL. The
+        # envelopes, the sequence counter and the operator-message generation
+        # belong to the ENGAGEMENT; only the FIFO writer, the notice sender and
+        # the epoch/turn probes belonged to the process that just died.
+        # ``cancel`` remains the sole wholesale remover.
+        _spool = self._inbound.get(engagement.id)
+        if _spool is not None:
+            _spool.detach_runtime()
         self._epoch_pending.pop(engagement.id, None)
         self._turn_running.pop(engagement.id, None)
         mem_path = Path(executor_memory_path(engagement.id))
@@ -1961,6 +2100,9 @@ class ClaudeCodeDriver(DriverProtocol):
         self._completion_refusals.pop(engagement.id, None)
         self._inbound_reservations.pop(engagement.id, None)
         self._inbound_command_reservations.pop(engagement.id, None)
+        # #691: the text map shares the counters' lifetime exactly — terminal
+        # teardown is its only wholesale remover, as it is theirs.
+        self._inbound_reservation_texts.pop(engagement.id, None)
         self._reply_texts.pop(engagement.id, None)
         self._epoch_pending.pop(engagement.id, None)
         self._turn_running.pop(engagement.id, None)
@@ -2276,6 +2418,29 @@ class ClaudeCodeDriver(DriverProtocol):
         self._last_turn_ts[engagement.id] = time.time()
         return True
 
+    def _attach_inbound_spool(self, engagement: EngagementRecord,
+                              **runtime: Any) -> "_InboundSpool":
+        """#740: bind this incarnation to the engagement's inbound ledger —
+        RE-BINDING a ledger that survived a session teardown rather than
+        replacing it, and constructing one only when this engagement has none.
+
+        Replacing it would rebuild from the FILE, which does not carry the
+        operator-message generation (memory-only, so a respawn would re-issue
+        values ``note_operator_away``'s equality CAS compares) or
+        ``delivered_monotonic``; and it would leave two objects writing one
+        file. Its own method so the choice is directly exercisable."""
+        existing = self._inbound.get(engagement.id)
+        if existing is not None:
+            existing.attach_runtime(**runtime)
+            return existing
+        spool = _InboundSpool(
+            engagement_id=engagement.id,
+            spool_path=inbound_spool_path(engagement.id),
+            **runtime,
+        )
+        self._inbound[engagement.id] = spool
+        return spool
+
     def _spawn_background_tasks(
         self, engagement: EngagementRecord, *,
         reconcile_snapshot: list[dict] | None = None,
@@ -2302,9 +2467,15 @@ class ClaudeCodeDriver(DriverProtocol):
         # v0.79.0 (§3): the durable inbound envelope spool. Loads any surviving
         # spool file so undelivered turns redeliver and pending receipts/notices
         # retry (recovery scheduled below).
-        self._inbound[engagement.id] = _InboundSpool(
-            engagement_id=engagement.id,
-            spool_path=inbound_spool_path(engagement.id),
+        #
+        # #740: a ledger RETAINED across ``invalidate_session`` is re-bound to
+        # this incarnation rather than replaced. Constructing a second object
+        # over the same file would work from the FILE alone, and the file does
+        # not carry the operator-message generation (memory-only, so a respawn
+        # would re-issue values ``note_operator_away``'s equality CAS compares)
+        # or ``delivered_monotonic`` (deliberately unpersisted). Re-binding
+        # keeps both, and keeps one writer for one file.
+        _runtime = dict(
             # #322: the spool RETAINS on a False return (auto-redelivery on
             # the next spawn) — its no-reader notice promises the retry.
             write_fifo=lambda text: self._write_to_fifo(
@@ -2323,7 +2494,10 @@ class ClaudeCodeDriver(DriverProtocol):
                 engagement.id),
             promote_answer_on_enqueue=lambda: self._promote_answer_on_enqueue(
                 engagement),
+            on_durable_enqueue=lambda mid: self.drop_reservation_text(
+                engagement.id, mid),
         )
+        self._attach_inbound_spool(engagement, **_runtime)
 
         tasks = [
             asyncio.create_task(self._poll_respawns(engagement)),
@@ -3441,35 +3615,106 @@ class ClaudeCodeDriver(DriverProtocol):
 
     # -- v0.79.0 (§4) ask inbound-gate reads + refusal escalation ----------
 
+    def _inbound_view(self, engagement_id: str) -> "_InboundSpool | None":
+        """#740: the spool that ANSWERS for this engagement, for DISCLOSURE.
+
+        Tier 1 is the attached ledger, which since #740 survives
+        ``invalidate_session``. Tier 2 exists for the case retention cannot
+        reach — THIS PROCESS never attached an incarnation at all (a boot
+        replay that refused, an attach that failed, a rebuild that never
+        completed) — and is a DETACHED, read-only ``_InboundSpool`` over the
+        durable file, the construction ``reconcile_terminal_spool`` already
+        uses. It never attaches, never delivers and never persists.
+
+        A file that does not exist is a POSITIVE empty answer: the file is
+        created only by ``_InboundSpool._persist``, never by provisioning, so
+        "no file" means nothing was ever enqueued for this engagement — which
+        is exactly the right answer for a launch that was cancelled before it
+        spawned background tasks, and for an id that never existed.
+
+        Reads no instance attribute but ``self._inbound``: ``inbound_spool_path``
+        resolves against the module-level control root, not against the driver.
+        """
+        spool = self._inbound.get(engagement_id)
+        if spool is not None:
+            return spool
+        try:
+            path = inbound_spool_path(engagement_id)
+            if not os.path.exists(path):
+                return None
+            view = _InboundSpool(
+                engagement_id=engagement_id,
+                spool_path=path,
+                write_fifo=lambda text: _never_deliver(),
+                send_notice=lambda text, reply_to: _never_deliver(),
+            )
+            if not view._envelopes and os.path.getsize(path) > 0:
+                # Unreadable is not empty — but this accessor family is
+                # strictly typed as list/int by every reader, so there is no
+                # shape in which to say "I could not read it". Say it in the
+                # log instead of fabricating or raising.
+                logger.warning(
+                    "engagement %s: durable inbound spool exists but loaded no "
+                    "envelopes — a terminal disclosure will report nothing for "
+                    "it", engagement_id[:8])
+            return view
+        except Exception:  # noqa: BLE001 — a disclosure read never raises
+            logger.warning(
+                "engagement %s: detached inbound view failed",
+                engagement_id[:8], exc_info=True)
+            return None
+
     def inbound_generation(self, engagement_id: str) -> int:
         """§4 gate: the current operator-message generation for the ask
-        race-close re-check. 0 when no spool exists (degraded / no driver)."""
+        race-close re-check. 0 when no spool exists (degraded / no driver).
+
+        #740: attached-only, deliberately. The generation is memory-only
+        (never in ``_ENVELOPE_PERSIST_FIELDS``), so a file-sourced answer could
+        only ever be 0 — reading through would change nothing here while
+        dragging ``note_operator_away``'s equality CAS into scope. What DID
+        change is that the ledger now survives a respawn, so the counter is
+        continuous and a value can no longer be re-issued across one."""
         spool = self._inbound.get(engagement_id)
         return spool.generation() if spool is not None else 0
 
     def inbound_unread_texts(self, engagement_id: str) -> list[str]:
-        """G4 D4: queued-unseen operator texts ([] when no spool)."""
-        spool = self._inbound.get(engagement_id)
+        """G4 D4: queued-unseen operator texts.
+
+        #740: reads THROUGH to the durable file when no incarnation is
+        attached — this is a DISCLOSURE population, and "no incarnation
+        attached" is not "nothing queued"."""
+        spool = self._inbound_view(engagement_id)
         return spool.unread_texts() if spool is not None else []
 
     def inbound_in_flight_texts(self, engagement_id: str) -> list[str]:
         """#591: texts of operator envelopes already handed to the CLI that no
-        turn has taken up ([] when no spool). Disclosure population — every
-        age. See ``_InboundSpool._in_flight``."""
-        spool = self._inbound.get(engagement_id)
+        turn has taken up. Disclosure population — every age, and (#740) read
+        through the durable file when no incarnation is attached. See
+        ``_InboundSpool._in_flight``."""
+        spool = self._inbound_view(engagement_id)
         return spool.in_flight_texts() if spool is not None else []
 
     def inbound_in_flight_blocking(self, engagement_id: str) -> int:
         """#591: how many in-flight envelopes are young enough to veto a
         completion (0 when no spool). Bounded by ``_IN_FLIGHT_VETO_WINDOW_S``
-        so a turn that never starts cannot make completion impossible."""
+        so a turn that never starts cannot make completion impossible.
+
+        #740: attached-only. This is a VETO input, and a veto sourced from the
+        durable file could not be cleared by anything the gate can do — the
+        escalation exists to make a queued envelope pump, and a file-only view
+        has no pump, no delivery task and no reader. It would turn a
+        silent-loss defect into a permanent inability to complete, which also
+        suppresses the very disclosure this change exists for (the disclosure
+        happens AT a terminal). The file tier discloses; it never vetoes."""
         spool = self._inbound.get(engagement_id)
         if spool is None:
             return 0
         return spool.in_flight_blocking_depth(_IN_FLIGHT_VETO_WINDOW_S)
 
     def reserve_inbound(self, engagement_id: str, *,
-                        command: bool = False) -> None:
+                        command: bool = False,
+                        text: str | None = None,
+                        message_id: int | None = None) -> None:
         """G4 D2: SYNCHRONOUS ingress reservation — taken by the trusted
         Telegram handler under the topic lock BEFORE the background
         delivery task exists, so an accepted-but-not-yet-spooled message
@@ -3479,15 +3724,48 @@ class ClaudeCodeDriver(DriverProtocol):
         command the handler consumes itself. It still counts toward the
         completion veto (the total) but never toward the lost-inbound
         disclosure (:meth:`inbound_message_reservations`) — under EVERY
-        terminal winner, not only the command's own finalize."""
+        terminal winner, not only the command's own finalize.
+
+        #691: ``text`` and ``message_id`` are the message this reservation is
+        FOR. Recording them is what lets a terminal quote what was lost instead
+        of saying "up to N" about it — between the synchronous reserve here and
+        the background ``spool.enqueue`` the operator's message exists nowhere
+        else. Keyed by the Telegram message id, which is the identity the
+        release sites and the persisted envelope already carry; a message with
+        no id is counted and not quoted, which under-discloses rather than
+        guessing. A COMMAND records nothing: #664 excludes it from every
+        disclosure and classifies at birth, so the exclusion stays structural.
+        The map is popped exactly where the counters are (``cancel`` and the
+        release below) and NEVER by ``invalidate_session`` — a lifecycle pop on
+        a reservation ledger is #740's shape by construction."""
         self._inbound_reservations[engagement_id] = (
             self._inbound_reservations.get(engagement_id, 0) + 1)
         if command:
             self._inbound_command_reservations[engagement_id] = (
                 self._inbound_command_reservations.get(engagement_id, 0) + 1)
+            return
+        if isinstance(text, str) and text and isinstance(message_id, int) \
+                and not isinstance(message_id, bool):
+            self._inbound_reservation_texts.setdefault(
+                engagement_id, {})[message_id] = text
 
     def release_inbound_reservation(self, engagement_id: str, *,
-                                    command: bool = False) -> None:
+                                    command: bool = False,
+                                    message_id: int | None = None) -> None:
+        """#691: releases the count as before, and drops EXACTLY the text of
+        ``message_id`` — no fallback, no text comparison. Earlier designs
+        matched by text and fell back to the oldest entry; every one of those
+        heuristics was measured removing a text that was still held. A release
+        with no id removes no text, and a COMMAND release touches the text map
+        not at all (a command never wrote to it). It is one of two removers —
+        the other is the durable-enqueue drop — and both are idempotent."""
+        if not command:
+            _held = self._inbound_reservation_texts.get(engagement_id)
+            if _held is not None and isinstance(message_id, int) \
+                    and not isinstance(message_id, bool):
+                _held.pop(message_id, None)
+                if not _held:
+                    self._inbound_reservation_texts.pop(engagement_id, None)
         n = self._inbound_reservations.get(engagement_id, 0) - 1
         if n <= 0:
             self._inbound_reservations.pop(engagement_id, None)
@@ -3499,6 +3777,38 @@ class ClaudeCodeDriver(DriverProtocol):
                 self._inbound_command_reservations.pop(engagement_id, None)
             else:
                 self._inbound_command_reservations[engagement_id] = c
+
+    def drop_reservation_text(self, engagement_id: str,
+                              message_id: "int | None") -> None:
+        """#691: the message just became DURABLE in the spool, so the
+        reservation's copy of its text has stopped being the only copy. Wired
+        as ``_InboundSpool``'s ``on_durable_enqueue`` and called synchronously
+        from inside ``enqueue``, immediately after a successful persist — so no
+        terminal can ever see one message as both a spooled envelope and a
+        text-bearing reservation. The COUNT is untouched: the channel still
+        owns the release."""
+        if not isinstance(message_id, int) or isinstance(message_id, bool):
+            return
+        held = self._inbound_reservation_texts.get(engagement_id)
+        if held is None:
+            return
+        held.pop(message_id, None)
+        if not held:
+            self._inbound_reservation_texts.pop(engagement_id, None)
+
+    def inbound_reservation_texts(self, engagement_id: str) -> list[str]:
+        """#691: the texts of ingress reservations still held for messages that
+        never became durable — the population that could only ever be COUNTED
+        before. Clamped to the disclosure projection so a bookkeeping mismatch
+        under-discloses rather than fabricating, and explicitly empty at a zero
+        count (a ``[-0:]`` slice is the whole list)."""
+        held = self._inbound_reservation_texts.get(engagement_id)
+        if not held:
+            return []
+        n = self.inbound_message_reservations(engagement_id)
+        if n <= 0:
+            return []
+        return list(held.values())[-n:]
 
     def inbound_reservations(self, engagement_id: str) -> int:
         return self._inbound_reservations.get(engagement_id, 0)
@@ -3607,7 +3917,12 @@ class ClaudeCodeDriver(DriverProtocol):
 
     def inbound_unread_depth(self, engagement_id: str) -> int:
         """§4 gate: number of unseen queued operator messages. ``> 0`` refuses
-        the ask. 0 when no spool exists."""
+        the ask. 0 when no spool exists.
+
+        #740: attached-only, for the reason given on
+        ``inbound_in_flight_blocking`` — this is the VETO input, and since the
+        ledger now survives ``invalidate_session`` it answers truthfully across
+        a respawn, which is where a refusal has a path to being cleared."""
         spool = self._inbound.get(engagement_id)
         return spool.unread_depth() if spool is not None else 0
 

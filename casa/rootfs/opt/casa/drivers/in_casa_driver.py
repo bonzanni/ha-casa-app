@@ -466,7 +466,9 @@ class InCasaDriver(DriverProtocol):
     # -- #663 ingress reservations ----------------------------------------
 
     def reserve_inbound(self, engagement_id: str, *,
-                        command: bool = False) -> None:
+                        command: bool = False,
+                        text: str | None = None,
+                        message_id: int | None = None) -> None:
         """SYNCHRONOUS ingress reservation for a system continuation whose
         text does not exist anywhere yet.
 
@@ -483,6 +485,15 @@ class InCasaDriver(DriverProtocol):
         command the handler consumes itself — but the counter is maintained so
         :meth:`inbound_message_reservations` cannot become a fabricated
         disclosure the day one appears.
+
+        #691: ``text`` and ``message_id`` mirror the claude_code signature for
+        the same reason ``command`` does, and are IGNORED here — deliberately,
+        not by omission. This driver's reservation is taken for a system
+        continuation whose text does not exist anywhere yet (the sentence at
+        the top of this docstring is the whole reason), so there is nothing to
+        record and :meth:`inbound_reservation_texts` is permanently empty. The
+        claude_code case is the achievable one because its handler is holding
+        the operator's exact text when it reserves.
         """
         self._inbound_reservations[engagement_id] = (
             self._inbound_reservations.get(engagement_id, 0) + 1)
@@ -491,7 +502,8 @@ class InCasaDriver(DriverProtocol):
                 self._inbound_command_reservations.get(engagement_id, 0) + 1)
 
     def release_inbound_reservation(self, engagement_id: str, *,
-                                    command: bool = False) -> None:
+                                    command: bool = False,
+                                    message_id: int | None = None) -> None:
         """Release one reservation, clamped at zero.
 
         Release-guaranteed by its owner on EVERY exit — deny, TTL expiry,
@@ -512,6 +524,14 @@ class InCasaDriver(DriverProtocol):
                 self._inbound_command_reservations.pop(engagement_id, None)
             else:
                 self._inbound_command_reservations[engagement_id] = c
+
+    def inbound_reservation_texts(self, engagement_id: str) -> list[str]:
+        """#691: always empty on this driver, and that is a statement about
+        the mechanism rather than a stub. An in_casa ingress reservation is
+        taken for text that does not exist yet, so there is nothing to quote
+        and its disclosure stays a count. Present so the three gate sites and
+        the two terminal renderers read ONE contract across both drivers."""
+        return []
 
     def inbound_reservations(self, engagement_id: str) -> int:
         """The GATE read: a reservation vetoes a successful completion exactly

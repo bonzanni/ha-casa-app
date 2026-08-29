@@ -3349,6 +3349,9 @@ class TestCompletionGateDriverSurface:
         d._completion_refusals = {}
         d._inbound_reservations = {}
         d._inbound_command_reservations = {}
+        # #691: the text ledger sits beside the counters and shares their
+        # lifetime, so a fixture that hand-builds the counters builds it too.
+        d._inbound_reservation_texts = {}
         return d
 
     def test_message_reservation_projection_bookkeeping(self):
@@ -5280,3 +5283,125 @@ class TestReservationCarriesItsText:
         assert d.inbound_reservation_texts(eid) == ["never durable"]
         d.release_inbound_reservation(eid, message_id=77)
         assert d.inbound_reservation_texts(eid) == []
+
+
+class TestC4GuardsThatTheRedCasesDoNotReach:
+    """Mutation-found coverage for #740/#691 guards the accepted red cases
+    leave standing. Each of these was written because a mutant survived.
+
+    Not red cases and not modifications of any — added afterwards, each named
+    for the mutant it kills.
+    """
+
+    async def test_reattach_reuses_the_ledger_rather_than_replacing_it(
+            self, tmp_path):
+        """Kills: `_attach_inbound_spool` constructing unconditionally.
+
+        A replacement built from the FILE would silently reset the
+        operator-message generation, which is memory-only — and a re-issued
+        generation is exactly what `note_operator_away`'s equality CAS cannot
+        tell from "nothing arrived"."""
+        import os
+        from types import SimpleNamespace
+        from drivers.workspace import control_dir
+        d = _ccd_driver(tmp_path)
+        rec = SimpleNamespace(id="e-740-reattach", allocated_uid=0)
+        os.makedirs(control_dir(rec.id), exist_ok=True)
+        runtime = dict(write_fifo=AsyncMock(return_value=False),
+                       send_notice=AsyncMock(return_value=True))
+        first = d._attach_inbound_spool(rec, **runtime)
+        assert await first.enqueue("op msg") == "queued"
+        assert first.generation() == 1
+        first.detach_runtime()
+
+        second = d._attach_inbound_spool(
+            rec, write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True))
+        assert second is first
+        assert len(d._inbound) == 1
+        assert second.generation() == 1
+        assert len(second.unread_texts()) == 1
+
+    async def test_a_row_whose_conversion_overflows_drops_only_that_row(
+            self, tmp_path):
+        """Kills: narrowing `_Envelope.from_line`'s guard to an ENUMERATED set
+        of exception classes. `int(1e400)` raises OverflowError, which is
+        neither ValueError nor TypeError — the list was wrong twice before the
+        property replaced it."""
+        import json
+        import drivers.claude_code_driver as ccd
+        path = tmp_path / "overflow.jsonl"
+        path.write_text(
+            json.dumps(_row("left", seq=0)) + "\n"
+            + '{"text": "boom", "tg_message_id": null, "priority": false, '
+              '"receipt": "not_required", "notice": "none", '
+              '"enqueued_at": 1.0, "delivery_epoch": null, '
+              '"state": "queued", "seq": 1e400, "is_initial": false}\n'
+            + json.dumps(_row("right", seq=2)) + "\n",
+            encoding="utf-8")
+        spool = ccd._InboundSpool(
+            engagement_id="e-740-overflow", spool_path=str(path),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True))
+        assert spool.unread_texts() == ["left", "right"]
+
+    async def test_a_spool_file_that_is_not_utf8_constructs_an_empty_ledger(
+            self, tmp_path):
+        """Kills: narrowing `_InboundSpool._load`'s guard back to OSError.
+
+        A non-UTF-8 file raises UnicodeDecodeError — a ValueError — out of the
+        constructor, and at boot that aborted `_spawn_background_tasks` for the
+        whole process lifetime, leaving a LIVE CLI with no spool. Asserted on a
+        DIRECT construction: the detached view catches everything, so a test
+        that only goes through the accessors passes either way."""
+        import drivers.claude_code_driver as ccd
+        path = tmp_path / "binary.jsonl"
+        path.write_bytes(b'{"text": "\xff\xfe not utf-8", "seq": 0}\n')
+        spool = ccd._InboundSpool(
+            engagement_id="e-740-binary-direct", spool_path=str(path),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True))
+        assert spool.unread_texts() == []
+        assert len(spool._envelopes) == 0
+
+    async def test_a_command_records_no_text_in_the_ledger_itself(
+            self, tmp_path):
+        """Kills: letting a recognized command's text reach the map.
+
+        Asserted on the map rather than on the accessor, because the
+        disclosure clamp would mask it: with one command and one ordinary
+        reservation the projection is 1, so the accessor returns the last one
+        either way. The exclusion is meant to be structural — classified at
+        the reservation's BIRTH — so that is where it is pinned."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-cmdmap"
+        d.reserve_inbound(eid, command=True, text="/silent", message_id=998)
+        d.reserve_inbound(eid, text="keep me", message_id=999)
+        assert d._inbound_reservation_texts.get(eid) == {999: "keep me"}
+
+    async def test_an_undecodable_row_never_erases_its_valid_neighbours(
+            self, tmp_path):
+        """Diff review, both reviewers: catching a WHOLE-FILE decode failure is
+        destructive, not tolerant. An empty ledger over a non-empty file means
+        the next enqueue's atomic replace writes the valid rows out of
+        existence. Decoding per ROW is what makes the tolerance safe — asserted
+        through a real enqueue, on the file, not on the in-memory list."""
+        import json
+        import drivers.claude_code_driver as ccd
+        path = tmp_path / "mixed.jsonl"
+        with open(path, "wb") as fh:
+            fh.write(json.dumps(_row("valuable-left", seq=0)).encode() + b"\n")
+            fh.write(b'{"text": "\xff\xfe", "seq": 1}\n')
+            fh.write(json.dumps(_row("valuable-right", seq=2)).encode() + b"\n")
+
+        spool = ccd._InboundSpool(
+            engagement_id="e-740-mixed", spool_path=str(path),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True))
+        assert spool.unread_texts() == ["valuable-left", "valuable-right"]
+
+        assert await spool.enqueue("new") == "queued"
+        on_disk = path.read_text(encoding="utf-8")
+        assert on_disk.count("valuable-left") == 1
+        assert on_disk.count("valuable-right") == 1
+        assert on_disk.count("new") == 1

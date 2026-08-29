@@ -980,12 +980,16 @@ class TestInboundIngressReservation:
     async def _ctx(self, tmp_path, fake_telegram_bot):
         ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
         ch._observer = MagicMock()
+        # #691: the double mirrors casa_core's adapter, which now forwards the
+        # message this reservation is FOR as well as its kind.
         ch._driver_reserve_inbound = (
-            lambda r, command=False: (
-                drv.reserve_inbound(r.id, command=command), True)[1])
+            lambda r, command=False, text=None, message_id=None: (
+                drv.reserve_inbound(r.id, command=command, text=text,
+                                    message_id=message_id), True)[1])
         ch._driver_release_inbound = (
-            lambda r, command=False: drv.release_inbound_reservation(
-                r.id, command=command))
+            lambda r, command=False, message_id=None:
+                drv.release_inbound_reservation(
+                    r.id, command=command, message_id=message_id))
         return ch, reg, rec, drv
 
     async def test_reservation_visible_at_first_await(
@@ -1008,6 +1012,53 @@ class TestInboundIngressReservation:
         assert seen and seen[0] >= 1
         # enqueue resolved → released; unread accounting lives in the spool.
         assert drv.inbound_reservations(rec.id) == 0
+
+    async def test_the_reservation_carries_the_text_keyed_by_message_id(
+        self, tmp_path, fake_telegram_bot,
+    ):
+        """#691, and the mutant it kills: the Telegram seam forwarding no
+        message id at reserve. Until the background enqueue resolves, the
+        handler's local `text` is the only copy of what the operator said —
+        so the reservation must be holding it, keyed by the update's own
+        message id, at the handler's FIRST await."""
+        ch, reg, rec, drv = await self._ctx(tmp_path, fake_telegram_bot)
+        seen: list[dict] = []
+
+        async def spying_high_water(r, mid):
+            seen.append(dict(drv._inbound_reservation_texts.get(rec.id, {})))
+        ch._driver_advance_high_water = spying_high_water
+
+        u = _mk_update(chat_id=-1001, text="please reconsider the design",
+                       thread_id=555, user_id=77)
+        await ch.handle_update(u)
+        assert len(seen) == 1
+        assert seen[0] == {999: "please reconsider the design"}
+
+        await _drain_turns(ch)
+        # Durable now, so the reservation's copy is gone and the count with it.
+        assert drv.inbound_reservation_texts(rec.id) == []
+        assert drv.inbound_reservations(rec.id) == 0
+
+    async def test_a_recognized_command_carries_no_text_through_the_seam(
+        self, tmp_path, fake_telegram_bot,
+    ):
+        """The birth classification survives the seam: a recognized command
+        reserves (it still vetoes a racing completion) and records nothing."""
+        ch, reg, rec, drv = await self._ctx(tmp_path, fake_telegram_bot)
+        seen: list[tuple] = []
+
+        async def spying_high_water(r, mid):
+            seen.append((drv.inbound_reservations(rec.id),
+                         dict(drv._inbound_reservation_texts.get(rec.id, {}))))
+        ch._driver_advance_high_water = spying_high_water
+
+        u = _mk_update(chat_id=-1001, text="/silent", thread_id=555,
+                       user_id=77)
+        await ch.handle_update(u)
+        await _drain_turns(ch)
+        assert len(seen) == 1
+        assert seen[0][0] >= 1
+        assert seen[0][1] == {}
 
     async def test_command_path_takes_then_releases(
         self, tmp_path, fake_telegram_bot,
@@ -1303,14 +1354,16 @@ class TestReservationKindThreading:
         ch._observer = MagicMock()
         calls: list[tuple[str, bool]] = []
 
-        def _res(r, command=False):
+        def _res(r, command=False, text=None, message_id=None):
             calls.append(("reserve", command))
-            drv.reserve_inbound(r.id, command=command)
+            drv.reserve_inbound(r.id, command=command, text=text,
+                                message_id=message_id)
             return True
 
-        def _rel(r, command=False):
+        def _rel(r, command=False, message_id=None):
             calls.append(("release", command))
-            drv.release_inbound_reservation(r.id, command=command)
+            drv.release_inbound_reservation(r.id, command=command,
+                                            message_id=message_id)
 
         ch._driver_reserve_inbound = _res
         ch._driver_release_inbound = _rel
