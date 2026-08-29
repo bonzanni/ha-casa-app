@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.246.0] - 2026-08-29
+
+### Fixed
+
+- Stopping Casa no longer destroys an executor's work or blames a tool call for
+  it. A stop while an executor was starting up was recorded as if the tool call
+  had been cancelled, and the clean-up that followed deleted the executor's
+  workspace, its control directory, its OS identity and its plugin outbox. A
+  stop is now recorded as a stop, the executor's files are kept for seven days,
+  and the engagement's topic says both.
+
 ## [0.245.0] - 2026-08-27
 
 ### Fixed
