@@ -5397,10 +5397,17 @@ class TestReservationReadTimeExclusion:
         consumed by a real `on_turn_start`, which prunes its envelope. B is
         still held and its words must still be quotable.
 
-        Red at `3bb55f2e` for exactly one reason: A's successful persist fires
-        `on_durable_enqueue`, which deletes the single id-41 entry that is also
-        B's only copy. Measured there as
-        `count=1 texts=[] unread=[] in_flight=[] spool_rows=0`."""
+        Red at `3bb55f2e`, measured there as
+        `count=1 texts=[] unread=[] in_flight=[] spool_rows=0`. The proximate
+        cause in THIS construction is the ledger's shape rather than the
+        callback: `_spool` deliberately omits the production
+        `on_durable_enqueue` wiring (see the class docstring), so what loses B's
+        text here is `dict[int, str]` keeping one entry for two reservations
+        plus a release that pops the whole key. In production at that commit the
+        callback reaches the same state one step earlier, at A's persist. Either
+        route, the held second occurrence is gone and the operator's words exist
+        in no population; `test_no_write_time_text_remover_exists` is what pins
+        the callback's deletion."""
         d = _ccd_driver(tmp_path)
         eid = "e-691-redeliver"
         spool = self._spool(d, eid, tmp_path)
