@@ -5807,8 +5807,11 @@ class TestReservationReadTimeExclusion:
         population because the legitimate newer one was excluded — fabricating
         a text the operator never lost.
 
-        Red at `3bb55f2e`: the accessor performs no exclusion at all, so it
-        returns the stale `"stale"`."""
+        Red at `3bb55f2e`: the accessor clamps to the tail exactly as it does
+        here but performs no exclusion at all, so it returns `["live"]` — the
+        live, already-spooled text, quoted a second time from the reservation
+        ledger. The stale entry is not what leaks; the clamp already excludes
+        it, and keeping that order is the whole point."""
         d = _ccd_driver(tmp_path)
         eid = "e-691-clamp"
         spool = self._spool(d, eid, tmp_path)
