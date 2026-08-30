@@ -431,3 +431,50 @@ class TestTheReplayOwnerCannotStopBootOrLie:
         # Still tells the engager the work finished and quotes the request.
         assert "finished" in body
         assert "tidy the plugins please" in body
+
+
+    async def test_a_malformed_persisted_id_cannot_escape_the_guard(
+        self, tmp_path,
+    ):
+        """The guard must not raise while reporting a failure.
+
+        `rec.id` is a string by convention only. A hand-edited or corrupt row
+        carrying an integer made `rec.id[:8]` raise — and the per-record
+        handler sliced the same id again, so the TypeError escaped the
+        unguarded await in `main` and stopped boot for every record after it.
+        """
+        import casa_core
+
+        reg, tombstone, a_id, b_id, c_id, _told = await _owing_records(tmp_path)
+        broken = reg.get(a_id)
+        broken.id = 12345                      # a corrupt row, as loaded
+        bus = _RecordingBus()
+
+        await casa_core._notify_recovered_engagement_outcomes(
+            reg, bus, assistant_role="assistant")
+
+        # Boot survived; the malformed row was retained, not announced; and the
+        # records after it in the walk were still told.
+        assert {m.content.delegation_id for m in bus.sent} == {b_id, c_id}
+        assert broken.terminal_notification_pending is True
+
+    async def test_the_recovery_narration_promises_no_lookup(self, tmp_path):
+        """The shared branch also serves the DELEGATION replay, where #688
+        decided nothing is retained — so offering to "look it up" sends the
+        resident after something that provably does not exist."""
+        from types import SimpleNamespace
+
+        import casa_core
+        from agent import Agent
+
+        reg, tombstone, a_id, _b, _c, _told = await _owing_records(tmp_path)
+        bus = _RecordingBus()
+        await casa_core._notify_recovered_engagement_outcomes(
+            reg, bus, assistant_role="assistant")
+        msg = [m for m in bus.sent if m.content.delegation_id == a_id][0]
+
+        stub = SimpleNamespace(config=SimpleNamespace(role="concierge"))
+        body = Agent._synthesize_delegation_turn(stub, msg).content
+
+        assert "look it up" not in body.split("do NOT promise")[0], body
+        assert "offer to run it again" in body, body

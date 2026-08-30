@@ -3405,6 +3405,19 @@ def _recovery_delivery_ack(job_registry, job):
     return _ack
 
 
+def _short_engagement_id(rec) -> str:
+    """A log-safe short id for a record that came off disk.
+
+    `rec.id` is a string by convention only: a hand-edited or corrupt tombstone
+    row can carry an integer, and `rec.id[:8]` then raises `TypeError`. That
+    matters most in the one place it must never raise — the replay owner's own
+    per-record GUARD, whose whole job is to keep one bad row from stopping a
+    boot. A guard that raises while reporting a failure is not a guard.
+    """
+    rid = getattr(rec, "id", None)
+    return rid[:8] if isinstance(rid, str) else repr(rid)[:16]
+
+
 def _engagement_delivery_ack(registry, engagement_id: str):
     """#766: the delivery acknowledgement a replayed engagement outcome carries.
 
@@ -3476,7 +3489,7 @@ async def _notify_recovered_engagement_outcomes(
             # retains enough state for the next boot to retry.
             logger.error(
                 "Engagement outcome replay failed: id=%s — retained",
-                rec.id[:8],
+                _short_engagement_id(rec),
             )
 
 
@@ -3485,6 +3498,16 @@ async def _replay_one_engagement_outcome(
 ) -> None:
     """#766: announce ONE owed engagement outcome. Raises; the caller retains."""
     from specialist_registry import DelegationComplete
+
+    if not isinstance(rec.id, str) or not rec.id:
+        # Every downstream consumer treats the id as a string — the ack keys
+        # off it, the notice carries it, and the logs slice it. A row that does
+        # not have one cannot be announced or acknowledged coherently.
+        logger.error(
+            "Engagement row owes an outcome but has no usable id (%s) — "
+            "retained, not announced", _short_engagement_id(rec),
+        )
+        return
 
     origin = dict(getattr(rec, "origin", None) or {})
 
@@ -3497,7 +3520,7 @@ async def _replay_one_engagement_outcome(
     if rec.status not in ("completed", "cancelled", "error"):
         logger.error(
             "Engagement %s owes an outcome but is not terminal (status=%r) — "
-            "retained, not announced", rec.id[:8], rec.status,
+            "retained, not announced", _short_engagement_id(rec), rec.status,
         )
         return
 

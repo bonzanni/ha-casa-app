@@ -196,8 +196,11 @@ for the next boot rather than dropped.
 
 What such a notice can say is bounded by what the tombstone keeps, which is less than the live
 path has. There is no completion text, no artifacts and no next steps on the record — no such
-fields exist — so the replay reports the FACT of the outcome and says the report itself is
-gone. It never reconstructs an answer from the task or from a stale summary message id.
+fields exist — so the replay reports the FACT of the outcome and says plainly that the notice
+does not carry the report. It does not say the report is GONE, which would be a claim about
+storage this path cannot make: a finished engagement's structured summary may well have been
+retained on the shared bank. It never reconstructs an answer from the task or from a stale
+summary message id.
 
 ## Extension points
 

@@ -1112,8 +1112,10 @@ class Agent:
                 f"(id {short_id}) finished, and this recovery notice does not "
                 "carry its answer]\n\n"
                 "The work finished. This notice carries the outcome only, not "
-                "the result text. Tell the user it completed, and offer to "
-                "look it up or run it again if they want the detail.\n"
+                "the result text. Tell the user it completed, and offer to run "
+                "it again if they want the detail — do NOT promise to look the "
+                "answer up, because on the delegation arm nothing was retained "
+                "to look up.\n"
             )
         elif complete.status == "ok":
             body = (
