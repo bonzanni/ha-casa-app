@@ -259,7 +259,8 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_message_reservations`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservation_texts`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.drop_reservation_text`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver._disclosed_spool_message_ids`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::_InboundSpool.disclosed_message_ids`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.record_completion_refusal`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.force_completion_turn_boundary`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth`

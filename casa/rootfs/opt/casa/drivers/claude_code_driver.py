@@ -412,7 +412,6 @@ class _InboundSpool:
         on_operator_enqueued: Callable[[], Awaitable[None]] | None = None,
         promote_answer_on_enqueue: (
             Callable[[], Awaitable[int | None]] | None) = None,
-        on_durable_enqueue: Callable[["int | None"], None] | None = None,
     ) -> None:
         # #740 — TWO LIFETIMES IN ONE OBJECT, and this is where they are
         # separated. The LEDGER (the fields set here) belongs to the
@@ -455,7 +454,6 @@ class _InboundSpool:
             settle_anchor_on_delivery=settle_anchor_on_delivery,
             on_operator_enqueued=on_operator_enqueued,
             promote_answer_on_enqueue=promote_answer_on_enqueue,
-            on_durable_enqueue=on_durable_enqueue,
         )
         self._load()
 
@@ -476,7 +474,6 @@ class _InboundSpool:
         on_operator_enqueued: Callable[[], Awaitable[None]] | None = None,
         promote_answer_on_enqueue: (
             Callable[[], Awaitable[int | None]] | None) = None,
-        on_durable_enqueue: Callable[["int | None"], None] | None = None,
     ) -> None:
         """Bind this ledger to a CLI incarnation. Called by ``__init__`` and
         again by ``_spawn_background_tasks`` when a replacement process comes
@@ -510,12 +507,6 @@ class _InboundSpool:
         # tg_message_id (recorded on the envelope so delivery only THREADS),
         # or None when no anchor is open.
         self._promote_answer_on_enqueue = promote_answer_on_enqueue
-        # #691: fired SYNCHRONOUSLY, immediately after a successful persist and
-        # before the first await that follows it, with the envelope's
-        # ``tg_message_id``. The driver uses it to drop that message's ingress
-        # RESERVATION TEXT: the reservation exists to name a message whose text
-        # is nowhere, and at this instant the text is somewhere durable.
-        self._on_durable_enqueue = on_durable_enqueue
         self.reader_ready = False
 
     def detach_runtime(self) -> None:
@@ -695,6 +686,34 @@ class _InboundSpool:
         exactly the silence #591 is about."""
         return [e.text for e in self._in_flight()]
 
+    def disclosed_message_ids(self) -> frozenset:
+        """#691: the ``tg_message_id`` of every envelope ``unread_texts()`` and
+        ``in_flight_texts()`` quote AND a terminal renderer will actually
+        print.
+
+        Derived from the same two populations those accessors use, so the three
+        cannot drift apart, and then narrowed by the renderers' own filters:
+        both terminal paths keep only ``isinstance(text, str)`` values, so an
+        envelope whose text is not a string is quoted by NOBODY and must
+        therefore suppress nobody — otherwise a malformed row would silence a
+        real held reservation, which is this cluster's own defect re-created by
+        its fix. ``type(mid) is int`` for the same reason with a sharper edge:
+        ``True == 1`` and ``hash(True) == hash(1)``, so an envelope carrying
+        ``tg_message_id: True`` would suppress an unrelated reservation for
+        message 1.
+
+        The predicate is therefore "ids of envelopes a renderer will print",
+        never "ids present in the spool". Synchronous, no await, and it raises
+        nothing the caller's guard has to catch on its behalf.
+        """
+        ids = set()
+        for e in ([x for x in self._lane_members() if not x.is_initial]
+                  + self._in_flight()):
+            mid = e.tg_message_id
+            if type(mid) is int and isinstance(e.text, str):
+                ids.add(mid)
+        return frozenset(ids)
+
     def in_flight_blocking_depth(self, max_age_s: float) -> int:
         """Count of in-flight envelopes YOUNG enough to veto a completion.
 
@@ -794,18 +813,17 @@ class _InboundSpool:
         # keyboard still waiting for a tap (it must not dead-wait behind a
         # message the operator has already sent).
         self._generation += 1
-        # #691: the message is DURABLE as of the persist above, so its ingress
-        # reservation's copy of the text has stopped being the only copy — drop
-        # it HERE, synchronously, before the first await below, so no terminal
-        # can observe the same message as both a spooled envelope and a
-        # text-bearing reservation. Deliberately after ``_persist`` and never
-        # before it: a rejected or raised enqueue keeps the text, which is the
-        # population the disclosure exists for.
-        if self._on_durable_enqueue is not None:
-            try:
-                self._on_durable_enqueue(tg_message_id)
-            except Exception:  # noqa: BLE001 — never fail an accepted enqueue
-                logger.debug("on_durable_enqueue failed", exc_info=True)
+        # #691: a successful persist removes NOTHING from the ingress
+        # reservation ledger, and that is the whole correction here. An earlier
+        # design dropped the reservation's text at this instant, keyed by
+        # ``tg_message_id`` — but that id names the MESSAGE, not the ingress
+        # ATTEMPT, so two deliveries of one redelivered message shared one slot
+        # and the first delivery's persist deleted the second's only copy
+        # (reproduced by both reviewers). A persist is also evidence that
+        # EXPIRES: the envelope it records can be delivered, consumed and pruned
+        # before this call even returns, so a permanent decision taken here can
+        # outlive the fact it was taken from. Identity is resolved at READ time
+        # instead, in ``ClaudeCodeDriver.inbound_reservation_texts``.
         if not is_initial and self._supersede_pending_asks is not None:
             try:
                 await self._supersede_pending_asks()
@@ -1317,17 +1335,23 @@ class ClaudeCodeDriver(DriverProtocol):
         # the model, so it is excluded from the lost-inbound DISCLOSURE while
         # still counting toward the completion VETO (total above).
         self._inbound_command_reservations: dict[str, int] = {}
-        # #691: {engagement_id: {tg_message_id: text}} — the text of each
-        # ordinary ingress reservation still held, so a terminal can QUOTE a
-        # message that was accepted and never reached the spool instead of only
-        # counting it. It lives BESIDE the counters above and shares their
-        # lifetime exactly: written at ``reserve_inbound``, dropped by the
-        # matching release, dropped by the durable-enqueue callback the moment
-        # the message becomes a spooled envelope, and removed wholesale ONLY by
-        # ``cancel``. It is never touched by ``invalidate_session`` and never
-        # attached to ``_InboundSpool`` — either would give it the CLI
-        # incarnation's lifetime, which is #740's defect by construction.
-        self._inbound_reservation_texts: dict[str, dict[int, str]] = {}
+        # #691: {engagement_id: [(tg_message_id, text), ...]} — an ORDERED
+        # MULTISET, one entry per ordinary ingress reservation still held, so a
+        # terminal can QUOTE a message that was accepted and never reached the
+        # spool instead of only counting it. One entry per RESERVATION and not
+        # per message id: Telegram redelivers a message, two deliveries can
+        # each hold a reservation, and a map keyed by the id gave them one slot
+        # between them.
+        #
+        # It lives BESIDE the counters above and shares their lifetime exactly:
+        # appended at ``reserve_inbound``, reduced by ONE occurrence at the
+        # matching release, and removed wholesale ONLY by ``cancel``. Nothing
+        # else removes from it — in particular a successful spool persist does
+        # not, which is the correction #691's first design needed. It is never
+        # touched by ``invalidate_session`` and never attached to
+        # ``_InboundSpool`` — either would give it the CLI incarnation's
+        # lifetime, which is #740's defect by construction.
+        self._inbound_reservation_texts: dict[str, list[tuple[int, str]]] = {}
         # v0.83.0 (§A3, Sol r6-4 + r7-2): in-memory ANSWERED overlay. When
         # ``mark_question_answered``'s STRICT persist raises (the durable envelope
         # is already spooled, so the agent WILL get the answer — the question must
@@ -2494,8 +2518,6 @@ class ClaudeCodeDriver(DriverProtocol):
                 engagement.id),
             promote_answer_on_enqueue=lambda: self._promote_answer_on_enqueue(
                 engagement),
-            on_durable_enqueue=lambda mid: self.drop_reservation_text(
-                engagement.id, mid),
         )
         self._attach_inbound_spool(engagement, **_runtime)
 
@@ -3730,12 +3752,23 @@ class ClaudeCodeDriver(DriverProtocol):
         FOR. Recording them is what lets a terminal quote what was lost instead
         of saying "up to N" about it — between the synchronous reserve here and
         the background ``spool.enqueue`` the operator's message exists nowhere
-        else. Keyed by the Telegram message id, which is the identity the
-        release sites and the persisted envelope already carry; a message with
-        no id is counted and not quoted, which under-discloses rather than
-        guessing. A COMMAND records nothing: #664 excludes it from every
-        disclosure and classifies at birth, so the exclusion stays structural.
-        The map is popped exactly where the counters are (``cancel`` and the
+        else. A message with no id is counted and not quoted, which
+        under-discloses rather than guessing. A COMMAND records nothing: #664
+        excludes it from every disclosure and classifies at birth, so the
+        exclusion stays structural.
+
+        An ORDERED MULTISET, one entry per reservation, not a map keyed by the
+        message id. The id names the MESSAGE; this ledger has to name the
+        ingress ATTEMPT. Telegram redelivers a message — PTB's polling mode has
+        no durable update-id dedupe, and Casa's LRU is webhook-only — so two
+        deliveries of one message can each hold a reservation, and a map gave
+        them one slot between them: the first release, or the first successful
+        persist under the design this replaced, took the second delivery's only
+        copy of the text with it. One entry per reservation makes a release
+        balanced. A single list rather than a list per id, because a per-id map
+        loses cross-message arrival order when ids interleave.
+
+        The ledger is popped exactly where the counters are (``cancel`` and the
         release below) and NEVER by ``invalidate_session`` — a lifecycle pop on
         a reservation ledger is #740's shape by construction."""
         self._inbound_reservations[engagement_id] = (
@@ -3747,23 +3780,33 @@ class ClaudeCodeDriver(DriverProtocol):
         if isinstance(text, str) and text and isinstance(message_id, int) \
                 and not isinstance(message_id, bool):
             self._inbound_reservation_texts.setdefault(
-                engagement_id, {})[message_id] = text
+                engagement_id, []).append((message_id, text))
 
     def release_inbound_reservation(self, engagement_id: str, *,
                                     command: bool = False,
                                     message_id: int | None = None) -> None:
-        """#691: releases the count as before, and drops EXACTLY the text of
-        ``message_id`` — no fallback, no text comparison. Earlier designs
-        matched by text and fell back to the oldest entry; every one of those
-        heuristics was measured removing a text that was still held. A release
-        with no id removes no text, and a COMMAND release touches the text map
-        not at all (a command never wrote to it). It is one of two removers —
-        the other is the durable-enqueue drop — and both are idempotent."""
+        """#691: releases the count as before, and removes EXACTLY ONE
+        occurrence of ``message_id`` — no fallback, no text comparison. Earlier
+        designs matched by text and fell back to the oldest entry; every one of
+        those heuristics was measured removing a text that was still held. One
+        occurrence and not the id's whole entry, because two deliveries of one
+        redelivered message hold two reservations and this release owns exactly
+        one of them.
+
+        A release with no id removes no occurrence, and a COMMAND release
+        touches the ledger not at all (a command never wrote to it). It is now
+        the ONLY per-entry remover: the durable-enqueue drop that used to share
+        the job is gone, so a persist can no longer retire a text a second
+        reservation is still the only carrier of. ``cancel`` remains the
+        wholesale remover; ``invalidate_session`` remains a non-remover."""
         if not command:
             _held = self._inbound_reservation_texts.get(engagement_id)
             if _held is not None and isinstance(message_id, int) \
                     and not isinstance(message_id, bool):
-                _held.pop(message_id, None)
+                for _i, (_mid, _t) in enumerate(_held):
+                    if _mid == message_id:
+                        del _held[_i]
+                        break
                 if not _held:
                     self._inbound_reservation_texts.pop(engagement_id, None)
         n = self._inbound_reservations.get(engagement_id, 0) - 1
@@ -3778,37 +3821,74 @@ class ClaudeCodeDriver(DriverProtocol):
             else:
                 self._inbound_command_reservations[engagement_id] = c
 
-    def drop_reservation_text(self, engagement_id: str,
-                              message_id: "int | None") -> None:
-        """#691: the message just became DURABLE in the spool, so the
-        reservation's copy of its text has stopped being the only copy. Wired
-        as ``_InboundSpool``'s ``on_durable_enqueue`` and called synchronously
-        from inside ``enqueue``, immediately after a successful persist — so no
-        terminal can ever see one message as both a spooled envelope and a
-        text-bearing reservation. The COUNT is untouched: the channel still
-        owns the release."""
-        if not isinstance(message_id, int) or isinstance(message_id, bool):
-            return
-        held = self._inbound_reservation_texts.get(engagement_id)
-        if held is None:
-            return
-        held.pop(message_id, None)
-        if not held:
-            self._inbound_reservation_texts.pop(engagement_id, None)
+    def _disclosed_spool_message_ids(self, engagement_id: str) -> frozenset:
+        """#691: the message ids a terminal disclosure is ALREADY PRINTING for
+        this engagement, from the same view the renderers quote through.
+
+        Sourced from ``_inbound_view`` rather than from ``_inbound``, because
+        both text renderers read through it (#740) — an attached-only source
+        would let a detached, file-sourced envelope AND its aliasing
+        reservation both be printed, which is the duplicate the exclusion
+        exists to prevent. This does not weaken #740's rule that the file tier
+        never VETOES: the veto inputs (``inbound_unread_depth``,
+        ``inbound_in_flight_blocking``, ``inbound_reservations``) stay
+        attached-only, and this set can only ever REMOVE a reservation bullet
+        that the spool population is already supplying.
+
+        Absence and failure both yield an EMPTY set, so they can only ever ADD
+        a bullet. A duplicate bullet is a far smaller harm than a silent one,
+        and silence is what this cluster exists for."""
+        try:
+            spool = self._inbound_view(engagement_id)
+            if spool is None:
+                return frozenset()
+            return spool.disclosed_message_ids()
+        except Exception:  # noqa: BLE001 — a disclosure read never raises
+            logger.warning(
+                "engagement %s: disclosed inbound message ids unreadable — "
+                "no reservation text will be suppressed",
+                engagement_id[:8], exc_info=True)
+            return frozenset()
 
     def inbound_reservation_texts(self, engagement_id: str) -> list[str]:
-        """#691: the texts of ingress reservations still held for messages that
-        never became durable — the population that could only ever be COUNTED
-        before. Clamped to the disclosure projection so a bookkeeping mismatch
-        under-discloses rather than fabricating, and explicitly empty at a zero
-        count (a ``[-0:]`` slice is the whole list)."""
+        """#691: the texts of ingress reservations still held for messages a
+        terminal disclosure is not already printing — the population that could
+        only ever be COUNTED before.
+
+        Three steps, and the ORDER of the first two is load-bearing.
+
+        1. DEDUPE by message id. The ledger holds one occurrence per
+           reservation, but the disclosure emits at most one text per Telegram
+           MESSAGE: two identical bullets would claim two messages were lost. A
+           dict keeps the position of the first occurrence and the value of the
+           last, so a same-id edit discloses the latest text.
+        2. CLAMP to the disclosure projection, tail-first, so a bookkeeping
+           mismatch under-discloses rather than fabricating — explicitly empty
+           at a zero count (a ``[-0:]`` slice is the whole list). Clamping
+           BEFORE excluding matters: with a stale surplus entry followed by a
+           live, already-spooled one and a count of 1, excluding first leaves
+           the stale entry and emits a text the operator never lost, while
+           clamping first selects the live one and then excludes it. This order
+           can omit a known text; it cannot invent one.
+        3. EXCLUDE ids the spool is already printing. A message is quoted once,
+           from wherever it currently lives — and the moment its envelope is
+           consumed, pruned or evicted, the id leaves the set and the held
+           reservation's words come back. That recovery is the whole reason the
+           decision is taken here instead of at the persist that used to take
+           it: an envelope can be gone while the reservation naming it is still
+           held, and a decision recorded at persist time has no way to notice.
+        """
         held = self._inbound_reservation_texts.get(engagement_id)
         if not held:
             return []
         n = self.inbound_message_reservations(engagement_id)
         if n <= 0:
             return []
-        return list(held.values())[-n:]
+        by_id: dict = {}
+        for _mid, _text in held:
+            by_id[_mid] = _text
+        live = self._disclosed_spool_message_ids(engagement_id)
+        return [t for mid, t in list(by_id.items())[-n:] if mid not in live]
 
     def inbound_reservations(self, engagement_id: str) -> int:
         return self._inbound_reservations.get(engagement_id, 0)
