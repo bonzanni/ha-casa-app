@@ -164,6 +164,12 @@ class TestBootReplaysOnlyWhatIsStillOwed:
         assert (b_msg.target, b_msg.channel,
                 b_msg.context["chat_id"], b_msg.context["cid"]) == (
                     "assistant", "telegram", "chat-B", "route-B")
+        # The error arm is addressed from ITS OWN origin: a replay routed to
+        # another record's chat tells the wrong person about the wrong work.
+        assert (c_msg.target, c_msg.channel,
+                c_msg.context["chat_id"], c_msg.context["cid"]) == (
+                    "assistant", "telegram", "chat-D", "route-D")
+        assert c_msg.content.origin["user_text"] == "reconcile the ledger please"
 
         # The FACT of the outcome, never a retained answer.
         assert a_msg.content.status == "ok"
@@ -213,6 +219,15 @@ class TestBootReplaysOnlyWhatIsStillOwed:
 
         await by_id[b_id].on_delivery()
         assert _row(tombstone, b_id)["terminal_notification_pending"] is False
+        # C is still owed. Asserting an EMPTY set here would admit an
+        # implementation in which B's callback also clears C — an outcome that
+        # never reached the transport, discarded.
+        assert _row(tombstone, c_id)["terminal_notification_pending"] is True
+        assert {r.id for r in reg.records_owing_terminal_notification()} == {
+            c_id}
+
+        await by_id[c_id].on_delivery()
+        assert _row(tombstone, c_id)["terminal_notification_pending"] is False
         assert reg.records_owing_terminal_notification() == []
 
     async def test_an_unroutable_role_retains_the_obligation_for_the_next_boot(

@@ -9,14 +9,32 @@ announcement obligation on this registry to cite):
 
     An engagement outcome committed by the finalization funnel carries, in the
     same durable write as its terminal status, the obligation to tell the party
-    that asked for the work. That obligation is discharged only when the
-    consuming resident's own reply reaches the transport — the same head-sent
-    boundary every durable announcement uses — and never by the bus accepting
-    the message; a record still carrying it is exempt from terminal-retention
-    expiry, so a restart replays it, addressed from the record's own persisted
-    origin, reporting the FACT of the outcome and never a retained answer the
-    record does not hold. A rolled-back transition owes nothing, a row written
-    before the field existed owes nothing, and no other terminal writer arms it.
+    that asked for the work. That obligation is cleared only by the delivery
+    acknowledgement of the notice that carries it — the same head-sent boundary
+    every durable announcement uses — never by the bus accepting the message,
+    and never by another record's acknowledgement; a record still carrying it
+    is exempt from terminal-retention expiry, so the obligation outlives the
+    process. Casa's boot owner replays every record still owing one, addressed
+    from that record's own persisted origin and reporting the FACT of the
+    outcome, never a retained answer the record does not hold; startup awaits
+    that owner unguarded, once the channels and the resident loops are running.
+    A rolled-back transition owes nothing, a row written before the field
+    existed owes nothing, and no other terminal writer arms it.
+
+    NARROWED at acceptance round 3, on both reviewers' prescription (sol:
+    ``VERDICT: CUT``). Two clauses claimed more than a test can pin:
+
+      * "discharged only when the resident's own reply reaches the transport"
+        was contradicted by this module's own sibling, which allowed one
+        record's acknowledgement to clear another's. The assertion is fixed AND
+        the text now says "never by another record's acknowledgement", which is
+        the property actually pinned.
+      * "a restart replays it" was an integration claim about BOOT, and sol
+        defeated every pin for it — including argument-name identity, by
+        rebinding the name to an empty registry around the call. Pinning it
+        would mean booting the application. The text now claims exactly the two
+        things that ARE pinned: what the boot owner does, and that startup
+        awaits it unguarded after the channels and loops start.
 
 Pre-fix terminus, read at ``f414c4c6``:
 
