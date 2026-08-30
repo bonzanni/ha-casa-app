@@ -85,11 +85,28 @@ def _origin(role="assistant", chat="12345", cid="route-1"):
 
 
 async def _build(tmp_path, *, bus=None):
+    """Real registry on a real tombstone, with EVERY snapshot recorded.
+
+    ``snapshots`` is what makes the "same durable write" clause testable: a
+    two-write implementation (commit the terminal, then persist the obligation)
+    leaves a snapshot in which the record is terminal and owes nothing, and a
+    crash there loses the obligation permanently.
+    """
     from engagement_registry import EngagementRegistry
     from tools import init_tools
 
     tombstone = tmp_path / "engagements.json"
     reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+
+    snapshots: list[list[dict]] = []
+    _real_write = reg._write_tombstone
+
+    def _recording_write(snapshot):
+        snapshots.append([dict(r) for r in snapshot])
+        return _real_write(snapshot)
+
+    reg._write_tombstone = _recording_write
+    reg.snapshots = snapshots
     bus = bus if bus is not None else _CapturingBus()
 
     channel = MagicMock()
@@ -106,6 +123,23 @@ async def _build(tmp_path, *, bus=None):
         trigger_registry=MagicMock(), engagement_registry=reg,
     )
     return reg, bus, tombstone
+
+
+async def _ack_through_the_real_seam(msg, *, error_kind=None):
+    """Drive ``Agent._ack_delivery`` — the production discharge seam.
+
+    Called with the minimum ``self`` the method actually reads (its role, for
+    one log line), so the code under test is the shipped method and not a
+    re-implementation. ``error_kind is not None`` is the refusal arm: the text
+    that reached the transport was the generic turn-failure reply, so the
+    engager was told something went wrong, not what their engagement did.
+    """
+    from types import SimpleNamespace
+
+    from agent import Agent
+
+    stub = SimpleNamespace(config=SimpleNamespace(role="assistant"))
+    await Agent._ack_delivery(stub, msg, error_kind)
 
 
 class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
@@ -142,9 +176,24 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         assert "text" not in row and "artifacts" not in row
         assert "next_steps" not in row
 
-        # Only the resident reporting delivery discharges it.
-        assert bus.sent[0].on_delivery is not None
-        await bus.sent[0].on_delivery()
+        # ONE durable write carried both facts. A two-write implementation
+        # leaves a snapshot that is terminal and owes nothing.
+        terminal_snaps = [
+            [r for r in snap if r["id"] == rec.id][0]
+            for snap in reg.snapshots
+            if any(r["id"] == rec.id and r["status"] == "completed"
+                   for r in snap)
+        ]
+        assert terminal_snaps, reg.snapshots
+        assert terminal_snaps[0]["terminal_notification_pending"] is True, (
+            terminal_snaps[0])
+
+        # Only the resident reporting delivery discharges it — through the
+        # REAL seam (agent.Agent._ack_delivery), not a hand-called callback.
+        await _ack_through_the_real_seam(bus.sent[0], error_kind="turn_failed")
+        assert _row(tombstone, rec.id)["terminal_notification_pending"] is True
+
+        await _ack_through_the_real_seam(bus.sent[0])
         assert _row(tombstone, rec.id)["terminal_notification_pending"] is False
         assert reg.records_owing_terminal_notification() == []
 
@@ -212,11 +261,12 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
     ):
         """The over-arming pin.
 
-        A predicate that arms on any terminal ``error`` — the shape #599's
-        record-derived ``_owes_quiesce`` would suggest — makes both of the
-        other two records owe a telling they were explicitly designed not to
-        owe. ``_report_launch_death`` writes a strict ``error`` terminal and is
-        documented never to touch the bus.
+        The announcement obligation follows the WRITER, not the record, so
+        EVERY other terminal writer in the registry is checked — not only
+        ``_report_launch_death``. A predicate over the record (the shape #599's
+        ``_owes_quiesce`` would suggest) cannot distinguish them: the funnel and
+        the launch-death reporter call the same method, with the same outcome,
+        on the same kind of record, and only the first announces.
         """
         import tools as tools_mod
         from tools import _finalize_engagement, _report_launch_death
@@ -230,16 +280,41 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t2", origin=_origin(), topic_id=None)
 
+        marked_error = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t3", origin=_origin(), topic_id=None)
+        marked_cancelled = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t4", origin=_origin(), topic_id=None)
+        marked_completed = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t5", origin=_origin(), topic_id=None)
+        bare_transition = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t6", origin=_origin(), topic_id=None)
+
         await _finalize_engagement(
             funnel, outcome="error", text="it broke", artifacts=[],
             next_steps=[], driver=_driver_double())
         await _report_launch_death(
             None, reported, None, kind="launch_turn_incomplete",
             detail="the turn left nothing", driver=None)
+        await reg.mark_error(marked_error.id, kind="no_driver", message="x")
+        await reg.mark_cancelled(marked_cancelled.id)
+        await reg.mark_completed(marked_completed.id, time.time())
+        await reg.try_transition_terminal(
+            bare_transition.id, "completed", strict=True)
 
         pending = {r["id"]: r.get("terminal_notification_pending", False)
                    for r in _rows(tombstone)}
-        assert pending == {funnel.id: True, reported.id: False}, pending
+        assert pending == {
+            funnel.id: True,
+            reported.id: False,
+            marked_error.id: False,
+            marked_cancelled.id: False,
+            marked_completed.id: False,
+            bare_transition.id: False,
+        }, pending
         assert [r.id for r in reg.records_owing_terminal_notification()] == [
             funnel.id]
 

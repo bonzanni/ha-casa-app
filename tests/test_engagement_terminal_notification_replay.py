@@ -102,7 +102,10 @@ async def _two_owing_records(tmp_path):
         b, outcome="cancelled", text="", artifacts=[], next_steps=[],
         driver=_driver_double())
 
-    # A third row that was told, and so owes nothing.
+    # A third row that was already told, and so owes nothing. Written into
+    # the file directly rather than through the ack, so this fixture does not
+    # depend on the very machinery the replay owner is being tested against —
+    # a pre-fix failure must land in the OWNER, not in the setup.
     told = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="already told",
@@ -112,7 +115,12 @@ async def _two_owing_records(tmp_path):
     await _finalize_engagement(
         told, outcome="completed", text="done", artifacts=[], next_steps=[],
         driver=_driver_double())
-    await reg.ack_terminal_notification(told.id)
+
+    rows = _rows(tombstone)
+    for r in rows:
+        if r["id"] == told.id:
+            r["terminal_notification_pending"] = False
+    tombstone.write_text(json.dumps(rows))
 
     reloaded = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
     await reloaded.load()
@@ -225,3 +233,41 @@ class TestBootReplaysOnlyWhatIsStillOwed:
         await casa_core._notify_recovered_engagement_outcomes(
             restarted, second, assistant_role="assistant")
         assert {m.content.delegation_id for m in second.sent} == {a_id, b_id}
+
+
+class TestBootActuallyInvokesTheReplayOwner:
+    """A replay owner boot never calls is not a replay.
+
+    The obligation is only discharged by a resident that can actually run and
+    deliver, so the call has to sit after the channels start and after the
+    agent loops start — where the existing delegation replay already sits.
+    This asserts the wiring itself, in `casa_core.main`'s own body, because
+    every assertion in the module above would pass with the owner unwired.
+    """
+
+    async def test_main_replays_owed_outcomes_after_the_agent_loops_start(self):
+        import ast
+        import inspect
+        import textwrap
+
+        import casa_core
+
+        src = textwrap.dedent(inspect.getsource(casa_core.main))
+        tree = ast.parse(src)
+
+        calls: dict[str, int] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = (fn.id if isinstance(fn, ast.Name)
+                    else fn.attr if isinstance(fn, ast.Attribute) else "")
+            if name in ("start_all", "start_agent_loop",
+                        "_notify_recovered_delegations",
+                        "_notify_recovered_engagement_outcomes"):
+                calls.setdefault(name, node.lineno)
+
+        assert "_notify_recovered_engagement_outcomes" in calls, sorted(calls)
+        assert calls["start_all"] < calls["_notify_recovered_engagement_outcomes"]
+        assert (calls["start_agent_loop"]
+                < calls["_notify_recovered_engagement_outcomes"])

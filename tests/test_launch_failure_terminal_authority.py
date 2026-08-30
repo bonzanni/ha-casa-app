@@ -148,7 +148,9 @@ def _cancel_on_create(registry):
         rec = await real_create(*a, **kw)
         won = await registry.try_transition_terminal(
             rec.id, "cancelled", strict=True)
-        assert won, "the concurrent writer must win the terminal"
+        if not won:                     # arrangement, not an outcome
+            raise AssertionError(
+                "harness precondition: the concurrent writer must win")
         return rec
 
     registry.create = _create
@@ -471,17 +473,35 @@ class TestTheAuthorityOutlivesItsLauncher:
     async def test_cancelling_the_awaiter_does_not_cancel_the_abort(
         self, tmp_path, monkeypatch,
     ):
+        """The launcher is cancelled after the durable commit and after the
+        ledger append, while the paint is still in flight.
+
+        Deterministic, not timed: the ledger spy SETS an event, and the paint
+        blocks on a second event, so the cancellation is delivered at a known
+        point rather than after a fixed number of scheduler yields.
+        """
         import tools as tools_mod
 
         effects = _Effects()
-        gate = asyncio.Event()
-
-        async def _slow_paint(*, engagement_id, new_state):
-            await gate.wait()
-            effects.painted.append((engagement_id, new_state))
+        reached_ledger = asyncio.Event()
+        release_paint = asyncio.Event()
 
         handler, registry, tombstone, channel = _build_executor(
             tmp_path, monkeypatch, effects, arm="start_failed")
+
+        import topic_ledger
+
+        async def _append(*, engagement_id, chat_id, topic_id, outcome,
+                          closed_at=None, path=None):
+            effects.ledger.append((engagement_id, topic_id, outcome))
+            reached_ledger.set()
+
+        monkeypatch.setattr(topic_ledger, "append", _append)
+
+        async def _slow_paint(*, engagement_id, new_state):
+            await release_paint.wait()
+            effects.painted.append((engagement_id, new_state))
+
         channel.update_topic_state = AsyncMock(side_effect=_slow_paint)
 
         import agent as agent_mod
@@ -494,22 +514,23 @@ class TestTheAuthorityOutlivesItsLauncher:
                 "executor_type": "configurator", "task": "do it",
                 "context": "",
             }))
-            # Let the launch reach the blocked paint, i.e. past the durable
-            # terminal commit and the ledger append.
-            for _ in range(200):
-                await asyncio.sleep(0)
-                if effects.ledger:
-                    break
-            assert effects.ledger, "the abort never reached the ledger append"
+            await asyncio.wait_for(reached_ledger.wait(), 10)
 
+            # Past the durable terminal commit and the ledger append, blocked
+            # in the paint. The topic is NOT yet closed.
+            assert effects.closed == []
             caller.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await caller
-            gate.set()
-            await tools_mod.drain_launch_death_reports()
+
+            release_paint.set()
+            await asyncio.wait_for(
+                tools_mod.drain_launch_death_reports(), 30)
         finally:
+            release_paint.set()
             agent_mod.origin_var.reset(token)
 
+        # The abort outlived its launcher: the topic is painted and CLOSED.
         assert len(effects.painted) == 1, effects.painted
         assert len(effects.closed) == 1, effects.closed
         assert effects.notices == 0
