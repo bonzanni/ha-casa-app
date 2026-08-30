@@ -260,7 +260,7 @@
 - item: casa/rootfs/opt/casa/resident_trigger_secrets.py
   doc: architecture/trigger-secrets.md
 - item: casa/rootfs/opt/casa/trigger_consent.py
-  doc: architecture/triggers.md
+  doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/trigger_reconcile.py
   doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/trigger_registry.py
