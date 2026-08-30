@@ -5445,11 +5445,12 @@ class TestReservationReadTimeExclusion:
 
         gate = asyncio.Event()
         seen: list = []
+        spool = None
 
         async def _blocking_supersede():
-            seen.append((list(d._inbound_reservation_texts.get(eid, [])),
-                         d.inbound_message_reservations(eid),
-                         list(d.inbound_reservation_texts(eid))))
+            seen.append((d.inbound_message_reservations(eid),
+                         list(d.inbound_reservation_texts(eid)),
+                         list(spool.unread_texts())))
             await gate.wait()
 
         spool = self._spool(d, eid, tmp_path,
@@ -5460,18 +5461,29 @@ class TestReservationReadTimeExclusion:
                 break
             await asyncio.sleep(0)
         assert len(seen) == 1
-        raw, count, projected = seen[0]
-        assert raw == [(101, "promoted"), (101, "promoted")]
+        count, projected, unread = seen[0]
+        # At the first await after a SUCCESSFUL persist: the count is
+        # untouched, the message is quoted once from the spool, and the
+        # reservation contributes nothing — because the envelope is live, not
+        # because anything was removed.
         assert count == 2
         assert projected == []
+        assert unread == ["promoted"]
         gate.set()
         assert await task == "queued"
-
-        assert d._inbound_reservation_texts[eid] == [
-            (101, "promoted"), (101, "promoted")]
         assert d.inbound_message_reservations(eid) == 2
         assert d.inbound_reservation_texts(eid) == []
         assert spool.unread_texts() == ["promoted"]
+
+        # RETENTION, stated observably: consume the envelope and the words come
+        # back. Under the withdrawn write-time mechanism they could not — the
+        # persist had already deleted them.
+        for e in spool._envelopes:
+            e.state = "delivered"
+        await spool.on_turn_start()
+        assert len(spool._envelopes) == 0
+        assert d.inbound_message_reservations(eid) == 2
+        assert d.inbound_reservation_texts(eid) == ["promoted"]
 
     async def test_a_failed_persist_keeps_the_occurrence(self, tmp_path):
         """Re-specification of `test_a_failed_persist_keeps_the_text`: the
@@ -5490,9 +5502,12 @@ class TestReservationReadTimeExclusion:
         d._inbound[eid] = spool
         assert await spool.enqueue("never durable", tg_message_id=77) == "error"
 
-        assert d._inbound_reservation_texts[eid] == [(77, "never durable")]
+        # Observable only: the projecting accessor and the count, never the
+        # ledger's private shape — a case that fails because the storage
+        # changed rather than because the behaviour did is not a red case.
         assert d.inbound_message_reservations(eid) == 1
         assert d.inbound_reservation_texts(eid) == ["never durable"]
+        assert d.inbound_unread_texts(eid) == []
 
         d.release_inbound_reservation(eid, message_id=77)
         assert d.inbound_message_reservations(eid) == 0
@@ -5512,12 +5527,13 @@ class TestReservationReadTimeExclusion:
         eid = "e-691-balanced"
         d.reserve_inbound(eid, text="hello", message_id=41)
         d.reserve_inbound(eid, text="hello", message_id=41)
-        assert d._inbound_reservation_texts[eid] == [(41, "hello"),
-                                                     (41, "hello")]
+        assert d.inbound_message_reservations(eid) == 2
+        assert d.inbound_reservation_texts(eid) == ["hello"]
 
+        # Multiplicity is observable exactly here: one release must leave the
+        # text standing, because a second reservation still holds it.
         d.release_inbound_reservation(eid, message_id=41)
         assert d.inbound_message_reservations(eid) == 1
-        assert d._inbound_reservation_texts[eid] == [(41, "hello")]
         assert d.inbound_reservation_texts(eid) == ["hello"]
 
         d.release_inbound_reservation(eid, message_id=41)
@@ -5536,7 +5552,6 @@ class TestReservationReadTimeExclusion:
         eid = "e-691-onebullet"
         d.reserve_inbound(eid, text="hello", message_id=41)
         d.reserve_inbound(eid, text="hello", message_id=41)
-        assert len(d._inbound_reservation_texts[eid]) == 2
         assert d.inbound_message_reservations(eid) == 2
         assert d.inbound_reservation_texts(eid) == ["hello"]
 
@@ -5561,10 +5576,17 @@ class TestReservationReadTimeExclusion:
         eid = "e-691-cmd2"
         d.reserve_inbound(eid, text="hello", message_id=41)
         d.reserve_inbound(eid, command=True, text="/silent", message_id=42)
-        assert d._inbound_reservation_texts[eid] == [(41, "hello")]
-        d.release_inbound_reservation(eid, command=True, message_id=42)
-        assert d._inbound_reservation_texts[eid] == [(41, "hello")]
+        # Observable throughout: the command's words never appear, its release
+        # consumes no occurrence, and the ordinary one's own release empties
+        # the population — which a lingering command occurrence would not.
+        assert d.inbound_message_reservations(eid) == 1
         assert d.inbound_reservation_texts(eid) == ["hello"]
+        d.release_inbound_reservation(eid, command=True, message_id=42)
+        assert d.inbound_message_reservations(eid) == 1
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+        d.release_inbound_reservation(eid, message_id=41)
+        assert d.inbound_message_reservations(eid) == 0
+        assert d.inbound_reservation_texts(eid) == []
 
     async def test_invalidation_keeps_occurrences_and_cancel_clears_them(
             self, tmp_path, monkeypatch):
@@ -5583,13 +5605,12 @@ class TestReservationReadTimeExclusion:
         d.reserve_inbound(rec.id, text="beta", message_id=102)
 
         await d.invalidate_session(rec)
-        assert d._inbound_reservation_texts[rec.id] == [(101, "alpha"),
-                                                        (102, "beta")]
         assert d.inbound_message_reservations(rec.id) == 2
+        assert d.inbound_reservation_texts(rec.id) == ["alpha", "beta"]
 
         await d.cancel(rec)
-        assert rec.id not in d._inbound_reservation_texts
         assert d.inbound_reservations(rec.id) == 0
+        assert d.inbound_message_reservations(rec.id) == 0
         assert d.inbound_reservation_texts(rec.id) == []
 
     # -- the exclusion set ----------------------------------------------------
