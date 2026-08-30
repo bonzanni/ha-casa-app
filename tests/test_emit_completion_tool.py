@@ -510,7 +510,14 @@ class _FakeInboundDriver:
     """
     def __init__(self, depth=0, reservations=0, texts=(),
                  in_flight=(), in_flight_blocking=None,
-                 command_reservations=0, reservation_texts=()):
+                 command_reservations=0, reservation_texts=(),
+                 real=None, real_eid=None):
+        # C4 round 2: `real` delegates EVERY inbound accessor to a real
+        # `ClaudeCodeDriver` holding real ledger and real spool state, so a
+        # renderer case exercises the actual read-time exclusion instead of a
+        # canned list. The terminal machinery around it stays cheap.
+        self._real = real
+        self._real_eid = real_eid
         self._depth = depth
         self._resv = reservations
         self._cmd_resv = command_reservations
@@ -526,17 +533,30 @@ class _FakeInboundDriver:
         self.cancelled_intents: list[tuple] = []
         self.forced_boundaries: list[str] = []
 
-    def inbound_unread_depth(self, eng_id): return self._depth
-    def inbound_reservations(self, eng_id): return self._resv
+    def _r(self, name, fallback):
+        if self._real is None:
+            return fallback()
+        return getattr(self._real, name)(self._real_eid)
+
+    def inbound_unread_depth(self, eng_id):
+        return self._r("inbound_unread_depth", lambda: self._depth)
+    def inbound_reservations(self, eng_id):
+        return self._r("inbound_reservations", lambda: self._resv)
     def inbound_message_reservations(self, eng_id):
         # #664: the disclosure projection — reservations minus the ones a
         # recognized command holds for itself (mirrors the real driver).
-        return max(0, self._resv - self._cmd_resv)
-    def inbound_unread_texts(self, eng_id): return list(self._texts)
-    def inbound_in_flight_texts(self, eng_id): return list(self._in_flight)
-    def inbound_in_flight_blocking(self, eng_id): return self._in_flight_blocking
+        return self._r("inbound_message_reservations",
+                       lambda: max(0, self._resv - self._cmd_resv))
+    def inbound_unread_texts(self, eng_id):
+        return self._r("inbound_unread_texts", lambda: list(self._texts))
+    def inbound_in_flight_texts(self, eng_id):
+        return self._r("inbound_in_flight_texts", lambda: list(self._in_flight))
+    def inbound_in_flight_blocking(self, eng_id):
+        return self._r("inbound_in_flight_blocking",
+                       lambda: self._in_flight_blocking)
     def inbound_reservation_texts(self, eng_id):
-        return list(self._reservation_texts)
+        return self._r("inbound_reservation_texts",
+                       lambda: list(self._reservation_texts))
 
     async def force_completion_turn_boundary(self, engagement):
         self.forced_boundaries.append(engagement.id)
@@ -1637,3 +1657,146 @@ class TestC4DisclosureWithoutVeto:
         assert posted.count("• reserved but never spooled") == 1
         assert posted.count("up to 3 inbound message(s)") == 1
         assert posted.count("up to 4 inbound message(s)") == 0
+
+
+class TestReservationReadTimeExclusion:
+    """C4 RED CASES, ROUND 2 — INV-ENG-017 (re-declared) at the emit_completion
+    terminal, through a REAL `ClaudeCodeDriver` and a REAL `_InboundSpool`.
+
+    Every assertion here is on the notice the terminal actually posted, never
+    on a population reconstructed inside the test. `_FakeInboundDriver(real=…)`
+    delegates every inbound accessor to the real driver, so what is exercised
+    is the real read-time exclusion; only the terminal machinery around it is
+    a stand-in.
+
+    Specified by sol (round `redcase2-specify`); accepted by terra.
+    """
+
+    _emit = TestCompletionInboundGate._emit
+    _setup = TestReservationDisclosure._setup
+
+    @staticmethod
+    async def _real(tmp_path, eid):
+        """A real driver with a real spool attached at the production path."""
+        import os
+        from unittest.mock import AsyncMock as _AM
+        import drivers.claude_code_driver as ccd
+        from drivers.workspace import control_dir, inbound_spool_path
+        d = ccd.ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "eng"),
+            send_to_topic=_AM(), casa_framework_mcp_url="http://x")
+        os.makedirs(control_dir(eid), exist_ok=True)
+        spool = ccd._InboundSpool(
+            engagement_id=eid, spool_path=inbound_spool_path(eid),
+            write_fifo=_AM(return_value=False),
+            send_notice=_AM(return_value=True))
+        d._inbound[eid] = spool
+        return d, spool
+
+    async def _render(self, tmp_path, real, eid, status="error"):
+        import agent as agent_mod
+        drv = _FakeInboundDriver(real=real, real_eid=eid)
+        reg, rec, tch, _bus = await self._setup(tmp_path, drv)
+        try:
+            payload = await self._emit(rec, status=status)
+        finally:
+            agent_mod.active_claude_code_driver = None
+        assert payload["status"] == "acknowledged"
+        return TestReservationDisclosure._posted(tch)
+
+    async def test_redelivered_message_is_quoted_once_after_its_envelope_is_consumed(
+            self, tmp_path):
+        """THE red case at the renderer. Telegram redelivers message 41; both
+        deliveries reserve; delivery A persists, releases, is delivered and is
+        consumed by a real `on_turn_start`, which prunes its envelope. B is
+        still held.
+
+        Red at `3bb55f2e`: the terminal posts `up to 1 inbound message(s)` with
+        no bullet at all — the operator's words exist in no population."""
+        eid = "e-render-redeliver"
+        d, spool = await self._real(tmp_path, eid)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+        d.release_inbound_reservation(eid, message_id=41)
+        for e in spool._envelopes:
+            e.state = "delivered"
+        await spool.on_turn_start()
+
+        posted = await self._render(tmp_path, d, eid)
+        assert posted.count("• hello") == 1, posted
+        assert posted.count("up to 1 inbound message(s)") == 1, posted
+
+    async def test_a_live_envelope_and_its_alias_reservation_produce_one_bullet(
+            self, tmp_path):
+        """While A's envelope is QUEUED the message is quoted once, from the
+        spool, and the count still says two because two reservations are held.
+        The hedge and the arithmetic are exactly what a text-less pair of
+        reservations would have produced."""
+        eid = "e-render-queued"
+        d, spool = await self._real(tmp_path, eid)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+
+        posted = await self._render(tmp_path, d, eid)
+        assert posted.count("• hello") == 1, posted
+        assert posted.count("up to 3 inbound message(s)") == 1, posted
+
+    async def test_a_delivered_envelope_and_its_alias_reservation_produce_one_bullet(
+            self, tmp_path):
+        """Stopped in the DELIVERED state, before any turn_start. Kills the
+        mutant that omits the in-flight arm of the exclusion union — Sol
+        measured that one at two bullets for one message."""
+        eid = "e-render-inflight"
+        d, spool = await self._real(tmp_path, eid)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+        for e in spool._envelopes:
+            e.state = "delivered"
+
+        posted = await self._render(tmp_path, d, eid)
+        assert posted.count("• hello") == 1, posted
+        assert posted.count("up to 3 inbound message(s)") == 1, posted
+
+    async def test_two_held_reservations_for_one_message_render_one_bullet(
+            self, tmp_path):
+        """No spool population at all: two occurrences of one message id, one
+        bullet, and a count that still says two."""
+        eid = "e-render-onebullet"
+        d, _spool = await self._real(tmp_path, eid)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+
+        posted = await self._render(tmp_path, d, eid)
+        assert posted.count("• hello") == 1, posted
+        assert posted.count("up to 2 inbound message(s)") == 1, posted
+
+    async def test_identical_text_under_distinct_ids_renders_two_bullets(
+            self, tmp_path):
+        """Kills dedupe-by-text at the renderer: two different messages with
+        identical words were both lost and both must be shown."""
+        eid = "e-render-twoids"
+        d, _spool = await self._real(tmp_path, eid)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=42)
+
+        posted = await self._render(tmp_path, d, eid)
+        assert posted.count("• hello") == 2, posted
+        assert posted.count("up to 2 inbound message(s)") == 1, posted
+
+    async def test_a_boolean_envelope_id_does_not_suppress_message_one(
+            self, tmp_path):
+        """`True == 1`: a malformed envelope must not silence an unrelated
+        reservation. Both texts are rendered."""
+        eid = "e-render-boolid"
+        d, spool = await self._real(tmp_path, eid)
+        assert await spool.enqueue("spooled", tg_message_id=41) == "queued"
+        spool._envelopes[0].tg_message_id = True
+        d.reserve_inbound(eid, text="held", message_id=1)
+
+        posted = await self._render(tmp_path, d, eid)
+        assert posted.count("• spooled") == 1, posted
+        assert posted.count("• held") == 1, posted
+        assert posted.count("up to 2 inbound message(s)") == 1, posted

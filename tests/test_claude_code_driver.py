@@ -5216,74 +5216,6 @@ class TestReservationCarriesItsText:
         assert d.inbound_message_reservations("e-691-c") == 0
         assert d.inbound_reservation_texts("e-691-c") == []
 
-    async def test_durable_enqueue_drops_the_text_before_the_next_await(
-            self, tmp_path):
-        """The reservation exists to name a message with no text anywhere. The
-        instant `_persist` succeeds the text IS somewhere, so the reservation's
-        copy is dropped THERE — synchronously, before enqueue's next await —
-        and the message is quoted once, from the spool."""
-        import asyncio
-        import drivers.claude_code_driver as ccd
-
-        d = self._driver(tmp_path)
-        eid = "e-691-d"
-        d.reserve_inbound(eid, text="promoted", message_id=101)
-
-        gate = asyncio.Event()
-        seen: list = []
-
-        async def _blocking_supersede():
-            seen.append(("at-first-await",
-                         list(d.inbound_reservation_texts(eid)),
-                         d.inbound_reservations(eid)))
-            await gate.wait()
-
-        spool = ccd._InboundSpool(
-            engagement_id=eid,
-            spool_path=str(tmp_path / "s.jsonl"),
-            write_fifo=AsyncMock(return_value=False),
-            send_notice=AsyncMock(return_value=True),
-            supersede_pending_asks=_blocking_supersede,
-            on_durable_enqueue=lambda mid: d.drop_reservation_text(eid, mid),
-        )
-        task = asyncio.create_task(spool.enqueue("promoted", tg_message_id=101))
-        for _ in range(50):
-            if seen:
-                break
-            await asyncio.sleep(0)
-        assert len(seen) == 1
-        # At the FIRST await after the successful persist the text is already
-        # gone, and the COUNT is untouched (telegram still owns the release).
-        assert seen[0][1] == []
-        assert seen[0][2] == 1
-        gate.set()
-        assert await task == "queued"
-        assert d.inbound_reservation_texts(eid) == []
-
-    async def test_a_failed_persist_keeps_the_text(self, tmp_path):
-        """A message that never became durable keeps its text — that is the
-        population the disclosure exists for."""
-        import drivers.claude_code_driver as ccd
-
-        d = self._driver(tmp_path)
-        eid = "e-691-e"
-        d.reserve_inbound(eid, text="never durable", message_id=77)
-        fired: list = []
-
-        spool = ccd._InboundSpool(
-            engagement_id=eid,
-            spool_path=str(tmp_path / "nodir" / "s.jsonl"),
-            write_fifo=AsyncMock(return_value=False),
-            send_notice=AsyncMock(return_value=True),
-            on_durable_enqueue=lambda mid: (fired.append(mid),
-                                            d.drop_reservation_text(eid, mid)),
-        )
-        assert await spool.enqueue("never durable", tg_message_id=77) == "error"
-        assert len(fired) == 0
-        assert d.inbound_reservation_texts(eid) == ["never durable"]
-        d.release_inbound_reservation(eid, message_id=77)
-        assert d.inbound_reservation_texts(eid) == []
-
 
 class TestC4GuardsThatTheRedCasesDoNotReach:
     """Mutation-found coverage for #740/#691 guards the accepted red cases
@@ -5377,7 +5309,7 @@ class TestC4GuardsThatTheRedCasesDoNotReach:
         eid = "e-691-cmdmap"
         d.reserve_inbound(eid, command=True, text="/silent", message_id=998)
         d.reserve_inbound(eid, text="keep me", message_id=999)
-        assert d._inbound_reservation_texts.get(eid) == {999: "keep me"}
+        assert d._inbound_reservation_texts.get(eid) == [(999, "keep me")]
 
     async def test_an_undecodable_row_never_erases_its_valid_neighbours(
             self, tmp_path):
@@ -5405,3 +5337,477 @@ class TestC4GuardsThatTheRedCasesDoNotReach:
         assert on_disk.count("valuable-left") == 1
         assert on_disk.count("valuable-right") == 1
         assert on_disk.count("new") == 1
+
+
+# ---------------------------------------------------------------------------
+# C4 RED CASES, ROUND 2 — read-time exclusion (#691).
+#
+# The first round's mechanism (a synchronous `on_durable_enqueue` callback that
+# deleted the reservation's text the instant `_persist` succeeded, keyed by
+# `tg_message_id`) was reproduced REACHABLY WRONG by both reviewers in round
+# `refute1`: `tg_message_id` names the MESSAGE, not the ingress ATTEMPT, so two
+# deliveries of one redelivered message share one text slot and delivery A's
+# persist deletes delivery B's only copy.
+#
+# INV-ENG-017 is re-declared: the occurrence lives until its own RELEASE or the
+# engagement's terminal `cancel()`, and the disclosure suppresses it at READ
+# time only while an envelope the same disclosure is already printing carries
+# the same message id.
+#
+# Specified by sol (round `redcase2-specify`); accepted by terra.
+# ---------------------------------------------------------------------------
+
+
+class TestReservationReadTimeExclusion:
+    """INV-ENG-017 (re-declared) at the driver's accessors.
+
+    `_spool` below builds the real `_InboundSpool` over the real production
+    spool path and attaches it to the real driver, with the runtime
+    `_spawn_background_tasks` builds MINUS the write-time
+    `on_durable_enqueue` callback — because after this change that callback
+    does not exist, and a frozen case may not branch on which tree it is
+    running against. `test_no_write_time_text_remover_exists` is what pins the
+    deletion itself; every pre-fix redness reported for this class was measured
+    against this same construction.
+    """
+
+    @staticmethod
+    def _spool(d, eid, tmp_path, **kw):
+        """A real `_InboundSpool` over a real file, attached to the real
+        driver — never a double."""
+        import os
+        import drivers.claude_code_driver as ccd
+        from drivers.workspace import control_dir, inbound_spool_path
+        os.makedirs(control_dir(eid), exist_ok=True)
+        spool = ccd._InboundSpool(
+            engagement_id=eid,
+            spool_path=inbound_spool_path(eid),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True),
+            **kw)
+        d._inbound[eid] = spool
+        return spool
+
+    # -- the refuted sequence ------------------------------------------------
+
+    async def test_redelivery_consumption_leaves_the_other_occurrence_disclosable(
+            self, tmp_path):
+        """THE red case. Telegram redelivers message 41; deliveries A and B
+        both reserve `"hello"`; A persists, releases, is delivered and is
+        consumed by a real `on_turn_start`, which prunes its envelope. B is
+        still held and its words must still be quotable.
+
+        Red at `3bb55f2e` for exactly one reason: A's successful persist fires
+        `on_durable_enqueue`, which deletes the single id-41 entry that is also
+        B's only copy. Measured there as
+        `count=1 texts=[] unread=[] in_flight=[] spool_rows=0`."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-redeliver"
+        spool = self._spool(d, eid, tmp_path)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert d.inbound_message_reservations(eid) == 2
+
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+        d.release_inbound_reservation(eid, message_id=41)
+        for e in spool._envelopes:
+            e.state = "delivered"
+        await spool.on_turn_start()
+
+        assert len(spool._envelopes) == 0
+        assert d.inbound_message_reservations(eid) == 1
+        assert d.inbound_unread_texts(eid) == []
+        assert d.inbound_in_flight_texts(eid) == []
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_durable_enqueue_retains_the_occurrence_and_excludes_it_at_read_time(
+            self, tmp_path):
+        """Re-specification of the withdrawn
+        `test_durable_enqueue_drops_the_text_before_the_next_await`, which
+        pinned the deleted mechanism as a requirement. The opposite is now
+        required: a successful persist leaves the occurrence ALONE, and the
+        disclosure suppresses it only because the envelope is live.
+
+        Asserted at the first await after the persist AND after the enqueue
+        returns, because the withdrawn case's whole point was the instant."""
+        import asyncio
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-retain"
+        d.reserve_inbound(eid, text="promoted", message_id=101)
+        d.reserve_inbound(eid, text="promoted", message_id=101)
+
+        gate = asyncio.Event()
+        seen: list = []
+
+        async def _blocking_supersede():
+            seen.append((list(d._inbound_reservation_texts.get(eid, [])),
+                         d.inbound_message_reservations(eid),
+                         list(d.inbound_reservation_texts(eid))))
+            await gate.wait()
+
+        spool = self._spool(d, eid, tmp_path,
+                            supersede_pending_asks=_blocking_supersede)
+        task = asyncio.create_task(spool.enqueue("promoted", tg_message_id=101))
+        for _ in range(50):
+            if seen:
+                break
+            await asyncio.sleep(0)
+        assert len(seen) == 1
+        raw, count, projected = seen[0]
+        assert raw == [(101, "promoted"), (101, "promoted")]
+        assert count == 2
+        assert projected == []
+        gate.set()
+        assert await task == "queued"
+
+        assert d._inbound_reservation_texts[eid] == [
+            (101, "promoted"), (101, "promoted")]
+        assert d.inbound_message_reservations(eid) == 2
+        assert d.inbound_reservation_texts(eid) == []
+        assert spool.unread_texts() == ["promoted"]
+
+    async def test_a_failed_persist_keeps_the_occurrence(self, tmp_path):
+        """Re-specification of `test_a_failed_persist_keeps_the_text`: the
+        invariant survives whole, only the deleted constructor argument goes.
+        A message that never became durable is the population the disclosure
+        exists for."""
+        import drivers.claude_code_driver as ccd
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-nopersist"
+        d.reserve_inbound(eid, text="never durable", message_id=77)
+        spool = ccd._InboundSpool(
+            engagement_id=eid,
+            spool_path=str(tmp_path / "nodir" / "s.jsonl"),
+            write_fifo=AsyncMock(return_value=False),
+            send_notice=AsyncMock(return_value=True))
+        d._inbound[eid] = spool
+        assert await spool.enqueue("never durable", tg_message_id=77) == "error"
+
+        assert d._inbound_reservation_texts[eid] == [(77, "never durable")]
+        assert d.inbound_message_reservations(eid) == 1
+        assert d.inbound_reservation_texts(eid) == ["never durable"]
+
+        d.release_inbound_reservation(eid, message_id=77)
+        assert d.inbound_message_reservations(eid) == 0
+        assert d.inbound_reservation_texts(eid) == []
+
+    # -- the multiset ---------------------------------------------------------
+
+    async def test_release_removes_exactly_one_matching_occurrence(
+            self, tmp_path):
+        """Two ingress reservations for one redelivered message are two
+        OCCURRENCES. One release consumes one of them.
+
+        Red at `3bb55f2e`: the ledger is `dict[int, str]`, so the second
+        reserve overwrites the first and the single release empties it —
+        measured there as `count=1 texts=[]`."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-balanced"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert d._inbound_reservation_texts[eid] == [(41, "hello"),
+                                                     (41, "hello")]
+
+        d.release_inbound_reservation(eid, message_id=41)
+        assert d.inbound_message_reservations(eid) == 1
+        assert d._inbound_reservation_texts[eid] == [(41, "hello")]
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+        d.release_inbound_reservation(eid, message_id=41)
+        assert d.inbound_message_reservations(eid) == 0
+        assert d.inbound_reservation_texts(eid) == []
+
+    async def test_two_held_occurrences_of_one_message_id_disclose_one_text(
+            self, tmp_path):
+        """The multiset retains one entry per RESERVATION, but the disclosure
+        emits at most one text per Telegram MESSAGE — two identical bullets for
+        one message would imply two distinct messages were lost. The COUNT is
+        untouched and still says two.
+
+        Kills: emitting the multiset without deduplicating by message id."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-onebullet"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert len(d._inbound_reservation_texts[eid]) == 2
+        assert d.inbound_message_reservations(eid) == 2
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_distinct_message_ids_with_identical_text_both_disclose(
+            self, tmp_path):
+        """Kills: deduplicating by TEXT. Two different messages may carry
+        identical words and both were lost."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-twoids"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=42)
+        assert d.inbound_reservation_texts(eid) == ["hello", "hello"]
+
+    async def test_command_reservation_neither_records_nor_releases_an_occurrence(
+            self, tmp_path):
+        """#664's exclusion is structural at BIRTH, and a command's release
+        must not consume an ordinary message's occurrence.
+
+        Kills: appending on a command; removing an occurrence on a command
+        release."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-cmd2"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, command=True, text="/silent", message_id=42)
+        assert d._inbound_reservation_texts[eid] == [(41, "hello")]
+        d.release_inbound_reservation(eid, command=True, message_id=42)
+        assert d._inbound_reservation_texts[eid] == [(41, "hello")]
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_invalidation_keeps_occurrences_and_cancel_clears_them(
+            self, tmp_path, monkeypatch):
+        """T10, on the multiset. `invalidate_session` is not a release;
+        `cancel` is the sole wholesale remover, as it is for the counters."""
+        import drivers.claude_code_driver as ccd
+        from types import SimpleNamespace
+
+        async def _down(*, engagement_id, attempts=3):
+            return True
+        monkeypatch.setattr(ccd.s6_rc, "ensure_service_down", _down)
+
+        d = _ccd_driver(tmp_path)
+        rec = SimpleNamespace(id="e-691-t10", allocated_uid=0)
+        d.reserve_inbound(rec.id, text="alpha", message_id=101)
+        d.reserve_inbound(rec.id, text="beta", message_id=102)
+
+        await d.invalidate_session(rec)
+        assert d._inbound_reservation_texts[rec.id] == [(101, "alpha"),
+                                                        (102, "beta")]
+        assert d.inbound_message_reservations(rec.id) == 2
+
+        await d.cancel(rec)
+        assert rec.id not in d._inbound_reservation_texts
+        assert d.inbound_reservations(rec.id) == 0
+        assert d.inbound_reservation_texts(rec.id) == []
+
+    # -- the exclusion set ----------------------------------------------------
+
+    async def test_queued_envelope_suppresses_the_matching_reservation_text(
+            self, tmp_path):
+        """The message is quoted ONCE, from the spool, while its envelope is
+        queued and the aliasing reservation is still held.
+
+        Kills: omitting the QUEUED (`_lane_members`) arm of the exclusion
+        union — without it the same words appear as two bullets."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-queued"
+        spool = self._spool(d, eid, tmp_path)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+
+        assert d.inbound_unread_texts(eid) == ["hello"]
+        assert d.inbound_in_flight_texts(eid) == []
+        assert d.inbound_reservation_texts(eid) == []
+
+    async def test_delivered_envelope_suppresses_the_matching_reservation_text(
+            self, tmp_path):
+        """Stopped in the DELIVERED state, before any `turn_start`: the
+        envelope has left `unread` and entered `in_flight`, and it is still the
+        thing the terminal will quote.
+
+        Kills: omitting the IN-FLIGHT (`_in_flight`) arm of the exclusion
+        union. Sol measured that mutant at unread 0 / in-flight 1 /
+        reservation 1 / bullets 2."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-inflight"
+        spool = self._spool(d, eid, tmp_path)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+        for e in spool._envelopes:
+            e.state = "delivered"
+
+        assert d.inbound_unread_texts(eid) == []
+        assert d.inbound_in_flight_texts(eid) == ["hello"]
+        assert d.inbound_reservation_texts(eid) == []
+
+    async def test_evicted_envelope_does_not_suppress_the_held_reservation(
+            self, tmp_path):
+        """An EVICTED envelope (`notice != "none"`) is in neither quoted
+        population, so it must leave the exclusion set and the held
+        reservation's words must come back.
+
+        Red at `3bb55f2e`: the write-time drop already happened at persist and
+        nothing restores it, so the message is reported by NOBODY."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-evicted"
+        spool = self._spool(d, eid, tmp_path)
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+        for e in spool._envelopes:
+            e.notice = "pending"
+
+        assert d.inbound_unread_texts(eid) == []
+        assert d.inbound_in_flight_texts(eid) == []
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_initial_envelope_does_not_suppress_an_operator_reservation(
+            self, tmp_path):
+        """An `is_initial` envelope is excluded from both quoted populations,
+        so its id must not enter the exclusion set.
+
+        Kills: building the union from every queued envelope instead of from
+        exactly `_lane_members() non-initial` ∪ `_in_flight()`."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-initial"
+        spool = self._spool(d, eid, tmp_path)
+        assert await spool.enqueue("the task", tg_message_id=41,
+                                   is_initial=True) == "queued"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+
+        assert d.inbound_unread_texts(eid) == []
+        assert d.inbound_in_flight_texts(eid) == []
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_consumed_envelope_owing_a_receipt_does_not_suppress_a_reservation(
+            self, tmp_path):
+        """A CONSUMED envelope retained only because it still owes a receipt
+        is quoted by neither population.
+
+        Kills: building the union from every RETAINED envelope."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-consumed"
+        spool = self._spool(d, eid, tmp_path)
+        assert await spool.enqueue("hello", tg_message_id=41) == "queued"
+        for e in spool._envelopes:
+            e.state = "consumed"
+            e.receipt = "pending"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+
+        assert len(spool._envelopes) == 1
+        assert d.inbound_unread_texts(eid) == []
+        assert d.inbound_in_flight_texts(eid) == []
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    # -- the exclusion SOURCE, and its failure directions ---------------------
+
+    async def test_detached_file_envelope_suppresses_the_matching_reservation(
+            self, tmp_path):
+        """The exclusion set comes from `_inbound_view`, not from `_inbound`.
+        Both terminal renderers quote through `_inbound_view`, so an
+        attached-only source would quote the FILE's envelope and the
+        reservation both — the very duplicate the exclusion exists to prevent.
+
+        Red at `3bb55f2e`: the accessor consults no spool at all, so the file
+        envelope and the reservation are both disclosed (measured there as
+        unread `["hello"]` and reservation `["hello"]`)."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-detached"
+        _write_spool_file(eid, [_row("hello", state="queued", seq=0, mid=41)])
+        d.reserve_inbound(eid, text="hello", message_id=41)
+
+        assert len(d._inbound) == 0
+        assert d.inbound_unread_texts(eid) == ["hello"]
+        assert d.inbound_reservation_texts(eid) == []
+        # Reading through must still not ATTACH anything (INV-ENG-016).
+        assert len(d._inbound) == 0
+
+    async def test_absent_spool_excludes_nothing(self, tmp_path):
+        """No attached ledger and no durable file: the exclusion set is empty
+        and the held text is DISCLOSED. Absence fails toward disclosure.
+
+        Kills: treating an absent view as grounds to hide reservation text."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-absent"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+        assert d.inbound_unread_texts(eid) == []
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_failed_exclusion_read_excludes_nothing(self, tmp_path):
+        """FAILURE is a different case from ABSENCE, and the guard that makes
+        them behave alike is its own mutant. If the exclusion read raises out
+        of `inbound_reservation_texts`, both renderers catch the accessor
+        failure and substitute `[]` — the operator gets the count with no
+        words, which is this cluster's own defect.
+
+        Kills: removing or narrowing the exclusion read's `except`."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-raises"
+        d.reserve_inbound(eid, text="hello", message_id=41)
+
+        def _boom(engagement_id):
+            raise RuntimeError("view exploded")
+        d._inbound_view = _boom
+
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_non_string_envelope_text_suppresses_nothing(self, tmp_path):
+        """The exclusion set is "ids a renderer will PRINT", never "ids present
+        in the spool". Both terminal paths discard non-`str` spool values, so
+        an envelope whose text is not a string is quoted by nobody — and must
+        therefore suppress nobody.
+
+        Kills: collecting ids without the `type(text) is str` clause. Sol
+        reproduced that mutant as `raw_unread=[123] renderer_spool=[]
+        reservation=[] count=1 bullet_count=0`."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-badtext"
+        spool = self._spool(d, eid, tmp_path)
+        assert await spool.enqueue("placeholder", tg_message_id=41) == "queued"
+        spool._envelopes[0].text = 123
+        d.reserve_inbound(eid, text="hello", message_id=41)
+
+        assert [t for t in d.inbound_unread_texts(eid)
+                if isinstance(t, str)] == []
+        assert d.inbound_reservation_texts(eid) == ["hello"]
+
+    async def test_boolean_envelope_id_suppresses_nothing(self, tmp_path):
+        """`True == 1` and `hash(True) == hash(1)`, so a malformed envelope
+        carrying `tg_message_id: True` would suppress an UNRELATED reservation
+        for message 1.
+
+        Kills: `isinstance(mid, int)` where `type(mid) is int` is required."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-boolid"
+        spool = self._spool(d, eid, tmp_path)
+        assert await spool.enqueue("spooled", tg_message_id=41) == "queued"
+        spool._envelopes[0].tg_message_id = True
+        d.reserve_inbound(eid, text="held", message_id=1)
+
+        assert d.inbound_unread_texts(eid) == ["spooled"]
+        assert d.inbound_reservation_texts(eid) == ["held"]
+
+    async def test_disclosure_clamps_before_excluding_live_ids(self, tmp_path):
+        """Order: dedupe, then CLAMP to the disclosure count, then EXCLUDE.
+        Excluding first would let a stale surplus entry move into the returned
+        population because the legitimate newer one was excluded — fabricating
+        a text the operator never lost.
+
+        Red at `3bb55f2e`: the accessor performs no exclusion at all, so it
+        returns the stale `"stale"`."""
+        d = _ccd_driver(tmp_path)
+        eid = "e-691-clamp"
+        spool = self._spool(d, eid, tmp_path)
+        d.reserve_inbound(eid, text="stale", message_id=1)
+        d.reserve_inbound(eid, text="live", message_id=2)
+        assert await spool.enqueue("live", tg_message_id=2) == "queued"
+        # An id-less release drops the disclosure count to 1 without removing
+        # any occurrence — the bookkeeping mismatch the clamp exists for.
+        d.release_inbound_reservation(eid)
+        assert d.inbound_message_reservations(eid) == 1
+        assert len(d._inbound_reservation_texts[eid]) == 2
+
+        assert d.inbound_unread_texts(eid) == ["live"]
+        assert d.inbound_reservation_texts(eid) == []
+
+    async def test_no_write_time_text_remover_exists(self):
+        """The write-time decision is DELETED, not merely unused. A persist is
+        evidence that expires: the envelope it records can be delivered,
+        consumed and pruned while the enqueue that wrote it has not yet
+        returned, so any permanent decision taken at persist time can outlive
+        the fact it was taken from.
+
+        Kills: reinstating `on_durable_enqueue` / `drop_reservation_text`,
+        which every other case in this class would tolerate as long as nothing
+        wired it."""
+        import inspect
+        import drivers.claude_code_driver as ccd
+        assert not hasattr(ccd.ClaudeCodeDriver, "drop_reservation_text")
+        for fn in (ccd._InboundSpool.__init__, ccd._InboundSpool.attach_runtime):
+            assert "on_durable_enqueue" not in inspect.signature(fn).parameters
