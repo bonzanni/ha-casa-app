@@ -208,3 +208,120 @@ def test_every_document_naming_consent_reprompt_links_to_its_contract():
         assert link.search(body), doc
         checked += 1
     assert checked >= 4, checked
+
+
+# #668: `architecture/triggers.md` restated the plugin-declared-trigger rules
+# while its own Scope disclaimed the subject.
+#
+# WHAT IS DELIBERATELY NOT PINNED, and why. Four review rounds tried to express
+# "this document does not restate that one" mechanically — an enumerated
+# passage list (twice found incomplete), then word-shingle overlap between the
+# two `## Extension points` sections at several window sizes, with and without
+# the shared bolded lead-ins excluded. Every variant either refused a correct
+# routing sentence or missed a short residual, because a pointer that NAMES the
+# subjects it routes away from is lexically indistinguishable from a copy that
+# STATES them. That is not a tuning problem, and the corpus already says so:
+# `docs/contributing/doc-contract.md:122-129` puts "whether the same rule has
+# been restated in different words somewhere else" among the REVIEWER's
+# obligations, "deliberately not by machine, because a machine test ... would
+# prescribe the shape of the fix". So the general property stays a review
+# obligation and this pin asserts strictly less than the change guarantees: the
+# resident-schema rules survive, the route out is a path, and the one
+# plugin-owned FACILITY NAME the resident document has no business carrying is
+# gone. A facility name is an exact token, not a matter of degree.
+DEDUPLICATED_SECTION = "Extension points"
+RESIDENT_DOC = "architecture/triggers.md"
+PLUGIN_DOC = "architecture/plugin-triggers.md"
+
+# The resident-schema rules, which are properly `triggers.md`'s. Asserted so
+# that a de-duplication cannot quietly delete corpus content along with the
+# duplication — the risk in the opposite direction from restatement.
+RESIDENT_SCHEMA_PASSAGES = [
+    "v2 forbids a webhook `path` (the wildcard route provides it), while legacy "
+    "v1 required one",
+    "a scheduled trigger takes exactly one of an inline prompt or a prompt file",
+]
+
+TRIGGER_CONSENT_MODULE = "casa/rootfs/opt/casa/trigger_consent.py"
+TRIGGER_CONSENT_OWNER = PLUGIN_DOC
+
+
+def _normalized(text):
+    """`text` with every run of whitespace collapsed to one space.
+
+    Required, not cosmetic: the documents wrap at different columns, so a raw
+    substring comparison finds a passage in one and MISSES it in the other. A
+    pin without this passes on the pre-fix tree for the wrong reason.
+    """
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _section(doc, heading):
+    """`doc`'s `## <heading>` section, up to the next `## ` heading."""
+    text = (DOCS / doc).read_text()
+    match = re.search(r"\n## " + re.escape(heading) + r"\n(.*?)(?=\n## )", text, re.S)
+    assert match, (doc, heading)
+    return match.group(1)
+
+
+def test_the_resident_trigger_document_routes_plugin_consent_away():
+    """#668: `architecture/triggers.md` carried the `consent_reprompt` re-issue
+    rule its own Scope assigns to `architecture/plugin-triggers.md`, and its
+    Extension points offered no route there at all.
+
+    Identical wording in two documents is the shape that silently diverges: the
+    owning document is updated, the copy is not, and a reader routed to the
+    resident document reads stale plugin requirements. `consent_reprompt` is
+    the plugin-consent facility; naming it is precisely what this document's
+    Scope disclaims.
+
+    The resident-schema rules are asserted here on purpose, in the opposite
+    direction: a de-duplication that deleted the whole block would lose corpus
+    content that belongs to this document, and nothing else would notice.
+
+    Red case demonstrated at f414c4c6: `architecture/triggers.md` contains one
+    `consent_reprompt` occurrence, and its Extension points section contains no
+    `](plugin-triggers.md)` link — the base tree links that path from Scope
+    only, so a whole-document check would pass while the section a reader
+    arrived at offered nothing.
+    """
+    assert "consent_reprompt" not in (DOCS / RESIDENT_DOC).read_text()
+    assert "](%s)" % Path(PLUGIN_DOC).name in _section(RESIDENT_DOC, DEDUPLICATED_SECTION)
+
+    documents = _documents()
+    normalized = {doc: _normalized((DOCS / doc).read_text()) for doc in documents}
+    for passage in RESIDENT_SCHEMA_PASSAGES:
+        owners = [doc for doc in documents if normalized[doc].count(passage)]
+        total = sum(normalized[doc].count(passage) for doc in documents)
+        assert (owners, total) == ([RESIDENT_DOC], 1), passage
+
+
+def test_trigger_consent_ownership_agrees_with_plugin_triggers():
+    """#668: the ledger, the manifest `covers` map and the routing table name
+    the SAME document for a plugin-declared module.
+
+    `trigger_consent.py`'s own docstring says "Operator-consent DM prompts for
+    plugin-declared webhook triggers … A plugin trigger routes ONLY after the
+    operator taps Approve", and `docs/README.md`'s routing table sends "trigger
+    consent" to `architecture/plugin-triggers.md`, while the coverage ledger
+    assigned the module to `architecture/triggers.md`. A reader arriving by the
+    ledger landed on a document describing none of it.
+
+    The expected owner is the LITERAL path, deliberately not derived from
+    either map under test: an oracle that reads the ledger and then compares
+    the manifest to it passes when BOTH maps are moved to the wrong document
+    together — and `coverage_ledger.check` passes then too, since the ledger's
+    owner is among the claimants. The `when_changing` assertion is the third,
+    independent anchor: it is the phrase the README routing table renders.
+
+    Red case demonstrated at f414c4c6: the ledger owner is
+    `architecture/triggers.md`, and NO manifest entry covers the module at all,
+    so the claimant list is empty.
+    """
+    assert _ledger_owner(TRIGGER_CONSENT_MODULE) == TRIGGER_CONSENT_OWNER
+    claimants = [e["doc"] for e in _entries()
+                 if TRIGGER_CONSENT_MODULE in (e.get("covers") or [])]
+    assert claimants == [TRIGGER_CONSENT_OWNER]
+    routed = [e["doc"] for e in _entries()
+              if "trigger consent" in (e.get("when_changing") or "").lower()]
+    assert routed == [TRIGGER_CONSENT_OWNER]
