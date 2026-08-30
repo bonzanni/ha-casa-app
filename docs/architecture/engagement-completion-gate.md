@@ -89,7 +89,7 @@ could destroy a message a turn had just consumed.
 
 **INV-ENG-016**: A `claude_code` engagement's inbound ledger — its durable envelopes and its message generation — outlives the CLI incarnation that serves it: a session teardown retires the delivery runtime and keeps the ledger, so unread and in-flight state stays visible to the completion gate and to every terminal disclosure across a respawn. Where no incarnation of this process ever attached, a terminal disclosure hook still answers from the durable spool file it can read, and that file-sourced answer discloses without ever refusing a completion. An engagement for which nothing was ever enqueued answers empty.
 
-**INV-ENG-017**: An ingress reservation taken for an operator message carries that message's text from the moment the message is accepted until the moment it becomes durable in the engagement's spool — or is known not to have — on a ledger that survives a session teardown and never on the spool; so a terminal disclosure quotes the text of every accepted message that never became durable, quotes a message that did become durable from the spool population alone, and keeps its count and its "up to" hedge exactly as a text-less reservation would have produced them.
+**INV-ENG-017**: An ingress reservation taken for an operator message carries that message's text from the moment the message is accepted until that reservation is released or the engagement is terminally cancelled, on a ledger that survives a session teardown and never on the spool; a terminal disclosure quotes that text unless an envelope the same disclosure is already printing carries the same Telegram message id; the reservation-ledger contribution to a terminal disclosure quotes at most one text per Telegram message id, and it does not deduplicate the unread or in-flight spool populations; and the count and its "up to" hedge stay exactly as a text-less reservation would have produced them.
 
 **A message that dies with the engagement is disclosed, not swallowed.** Every terminal
 outcome posts the messages no turn ever took up into the topic — both text populations, at
@@ -104,10 +104,21 @@ something false about a message the agent did see.
 claude-code side the handler is holding the operator's exact words when it reserves, so the
 reservation carries them — keyed by the Telegram message id, on the same engagement-lifetime
 ledger as the counter, never on the spool — and a terminal quotes what was accepted and never
-reached the spool rather than only counting it. The text is dropped the instant the message
-becomes durable, at the enqueue's own successful write, so one message is quoted once, from
-wherever it currently lives, and a terminal can never see it as both a spooled envelope and a
-text-bearing reservation. A message that arrives with no id, and every in-casa reservation, is
+reached the spool rather than only counting it. Each reservation records its own occurrence,
+so two deliveries of one redelivered message are two entries and one release consumes one of
+them; a successful enqueue removes nothing. Which occurrence a terminal actually prints is
+decided when it prints, not when the message was persisted: an occurrence is suppressed only
+while an envelope that same disclosure is already printing carries the same message id, so
+one message is quoted once, from wherever it currently lives, and the words come back the
+moment that envelope is consumed, pruned or evicted. Deciding at persist time instead was the
+defect this rule replaced — a persist is evidence that expires, and it also cannot tell one
+delivery of a message from another, so it removed a text that a second, still-held
+reservation was the only remaining carrier of. Absence decides nothing: where no spool can be
+read, or reading one fails, nothing is suppressed, because a duplicate bullet is a far
+smaller harm than a silent one. Two occurrences of one message id still print one text,
+because two identical bullets would claim two messages were lost; the spool's own
+populations are not deduplicated, so two genuine envelopes sharing an id still print twice.
+A message that arrives with no id, and every in-casa reservation, is
 counted and not quoted: the in-casa reservation is taken for a system continuation whose text
 does not exist anywhere yet, which is the contrast that makes the claude-code case the
 achievable one. The count itself is unchanged, and so is its hedge. Because a reservation is
