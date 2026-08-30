@@ -6,6 +6,7 @@ nothing on its own — the point of these is that each check demonstrably bites.
 import importlib.util
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -1296,3 +1297,126 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 
     assert impact.count("architecture/engagement-finalization.md") == 1, impact
     assert impact.count("architecture/jobs-and-delivery.md") == 1, impact
+
+
+# --- #707 + #646: a document's declared ownership expressed as a `covers` claim ------
+#
+# Both issues are one mechanism at different sites: `_claimants` reads `covers` and
+# NOTHING else, so ownership recorded in `docs/coverage.yaml`, in `defines_invariants`
+# or in prose is invisible to `--impact`. A module its owning document genuinely rules
+# on could change with `--impact` naming no document at all and both corpus gates
+# green. These tests are REAL-CORPUS on purpose: a synthetic `tmp_path` manifest passes
+# at every base and pins nothing, because the defect is missing data in the published
+# corpus rather than a fault in the verifier.
+#
+# Scope, stated so it is not over-read: the tables below claim exactly the eleven
+# (source file, owning document) pairs this change creates. They assert nothing about
+# any other anchor anywhere in the corpus — see `notes-I.md` on why a corpus-wide
+# "no undeclared anchor" pin was attempted and cut.
+
+# (source file, owning document, the enforcement points that document claims IN it)
+_DECLARED_OWNERSHIP = [
+    ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory.md",
+     ["delegated_recall"]),
+    ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-lifecycle.md",
+     ["retain_delegated"]),
+    ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-scoping.md",
+     ["delegated_recall"]),
+    ("casa/rootfs/opt/casa/config.py", "architecture/configuration.md",
+     ["AgentConfig"]),
+    ("casa/rootfs/opt/casa/config.py", "architecture/config-reconciliation.md",
+     ["_EnvSafeLoader", "_construct_env_scalar", "load_yaml_with_env",
+      "text_has_lone_placeholder", "load_yaml_declared_text",
+      "dump_yaml_declared_text"]),
+    ("casa/rootfs/opt/casa/agent_loader.py", "architecture/config-reconciliation.md",
+     ["parse_yaml_text"]),
+    ("casa/rootfs/opt/casa/reminders.py", "architecture/config-reconciliation.md",
+     ["remove_entry"]),
+    ("casa/rootfs/opt/casa/tools.py", "architecture/memory-scoping.md",
+     ["_origin_clearance_markers", "inherit_origin_markers",
+      "_engagement_rebuild_fence"]),
+    ("casa/rootfs/opt/casa/engagement_registry.py", "architecture/memory-scoping.md",
+     ["EngagementRegistry.lower_origin_clearance",
+      "EngagementRegistry.clear_context_rebuild_pending"]),
+    ("casa/rootfs/opt/casa/channels/telegram.py", "architecture/memory-scoping.md",
+     ["TelegramChannel.handle_update", "TelegramChannel._resume_and_ready"]),
+    ("casa/rootfs/opt/casa/internal_handlers.py", "architecture/memory-scoping.md",
+     ["_make_internal_tools_call_handler.handler"]),
+]
+
+# INV-MEM-011's last-instant launch gates and the resume core / boot replay. Real
+# enforcement points, deliberately NOT claimed by `memory-scoping.md`: impact is
+# file-grained (`_claimants` matches `parse_anchor(anchor)[0]`), so claiming them
+# would put a read-clearance document on the impact set of every edit to the two
+# busiest files in the tree, for every author, forever. Each is already claimed by
+# the document that rules on it — `engagements.md`, `engagement-completion-gate.md`,
+# `overview.md`. Widening this is a deliberate edit to this list, not a drift.
+_RULED_OUT_OF_MEMORY_SCOPING = [
+    "casa/rootfs/opt/casa/drivers/in_casa_driver.py",
+    "casa/rootfs/opt/casa/drivers/claude_code_driver.py",
+    "casa/rootfs/opt/casa/casa_core.py",
+]
+
+
+def _covers_by_doc():
+    """The real corpus's `covers` lists, through the verifier's own shard-aware
+    loader — never a hand-rolled YAML read, which would test a different map from
+    the one `--impact` and the coverage ledger consult."""
+    entries, problems = verify_docs._load_entries(REPO_ROOT / "docs")
+    assert problems == [], problems
+    return {e["doc"]: (e.get("covers") or []) for e in entries
+            if isinstance(e, dict) and isinstance(e.get("doc"), str)}
+
+
+@pytest.mark.parametrize("source,doc,symbols", _DECLARED_OWNERSHIP,
+                         ids=[f"{s.rsplit('/', 1)[-1]}->{d.rsplit('/', 1)[-1]}"
+                              for s, d, _ in _DECLARED_OWNERSHIP])
+def test_a_changed_enforcement_module_names_its_owning_document(source, doc, symbols):
+    """#707/#646, the defect itself: today `--impact` names no document for
+    `delegated_memory.py` or `config.py` at all, and names neither
+    `memory-scoping.md` nor `config-reconciliation.md` for any module enforcing
+    the six invariants those two documents declare.
+
+    `count(doc) == 1` and not an exact set: `impacted_docs` returns a growing
+    collection — `tools.py` names twelve documents before this change — and an
+    exact-set assertion would fail the moment any unrelated change anchors one of
+    these files, turning this pin into everyone's blocker.
+    """
+    impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
+
+    assert impact.count(doc) == 1, impact
+
+
+@pytest.mark.parametrize("source,doc,symbols", _DECLARED_OWNERSHIP,
+                         ids=[f"{s.rsplit('/', 1)[-1]}->{d.rsplit('/', 1)[-1]}"
+                              for s, d, _ in _DECLARED_OWNERSHIP])
+def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, symbols):
+    """The edge above is file-grained, so ONE anchor anywhere in the file satisfies
+    it — which would let the enforcement points drift silently underneath a green
+    impact test. This pins which symbols each document claims in each file it owns.
+
+    `Counter` equality rather than set equality: it rejects a missing anchor, a
+    substituted one, an extra one and a duplicated one, and a duplicate `covers`
+    entry is the one of those four that a set comparison hides.
+    """
+    covers = _covers_by_doc()[doc]
+    actual = Counter(a for a in covers if verify_docs.parse_anchor(a)[0] == source)
+    expected = Counter(f"{source}::{sym}" for sym in symbols)
+
+    assert actual == expected, actual
+
+
+@pytest.mark.parametrize("source", _RULED_OUT_OF_MEMORY_SCOPING)
+def test_memory_scoping_does_not_claim_a_last_instant_launch_gate(source):
+    """The other half of the ruling, pinned at both levels it can be violated at:
+    the manifest, and the impact map the gate actually consults. Green before this
+    change and after it — it is not part of the red case; it exists so that
+    widening the claimed surface is a visible edit to `_RULED_OUT_OF_MEMORY_SCOPING`
+    rather than something that happens to a later author.
+    """
+    covers = _covers_by_doc()["architecture/memory-scoping.md"]
+    claimed = [a for a in covers if verify_docs.parse_anchor(a)[0] == source]
+
+    assert claimed == [], claimed
+    assert "architecture/memory-scoping.md" not in verify_docs.impacted_docs(
+        REPO_ROOT, [source])
