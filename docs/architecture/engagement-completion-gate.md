@@ -65,11 +65,31 @@ and dies with the process, and it has no in-flight veto and no
 forced-boundary valve — the refusal ending the turn releases the per-turn lock, which is
 what delivers the queued turn, and a ticket whose delivery fails is discharged only after
 one bounded failure notice, never retried into a permanent veto. Accessor failures fail
-open with a warning rather than wedging termination. The claude-code-only
+open with a warning rather than wedging termination.
+
+**A driver that cannot see its inbound state must not answer as if there were none.** The
+claude-code driver's inbound knowledge and its delivery machinery have different lifetimes,
+and conflating them is how a terminal came to report nothing about messages that were still
+on disk. The durable envelopes, the sequence counter and the operator-message generation
+belong to the *engagement*; the FIFO writer, the notice sender and the epoch and turn probes
+belong to *one CLI process*. A session teardown ends the process, so it retires the delivery
+runtime and keeps the ledger — the accessors keep answering across a respawn, and a message
+queued before the teardown still refuses a completion after it. Where this process never
+attached an incarnation at all — a replay that refused, an attach that failed, a rebuild that
+did not finish — the two *text* accessors answer from the durable spool file instead, so a
+terminal path still has something to disclose. That file-sourced answer never refuses
+anything: the refusal would depend on machinery whose absence created the state, so nothing
+could clear it, and a completion that can never happen also never reaches the disclosure it
+was refused for. An engagement nothing was ever enqueued for answers empty, because the spool
+file does not exist until the first message is written to it. The claude-code-only
 escalation that forces a turn boundary after repeated refusals stays scoped to the queued
 population: a queued message cannot move until a respawn re-arms delivery, which is what the
 escalation forces, while an in-flight one is already past that boundary and killing its epoch
 could destroy a message a turn had just consumed.
+
+**INV-ENG-016**: A `claude_code` engagement's inbound ledger — its durable envelopes and its message generation — outlives the CLI incarnation that serves it: a session teardown retires the delivery runtime and keeps the ledger, so unread and in-flight state stays visible to the completion gate and to every terminal disclosure across a respawn. Where no incarnation of this process ever attached, a terminal disclosure hook still answers from the durable spool file it can read, and that file-sourced answer discloses without ever refusing a completion. An engagement for which nothing was ever enqueued answers empty.
+
+**INV-ENG-017**: An ingress reservation taken for an operator message carries that message's text from the moment the message is accepted until that reservation is released or the engagement is terminally cancelled, on a ledger that survives a session teardown and never on the spool; the reservation-ledger contribution to a terminal disclosure is deduplicated by message id, limited by the same disclosure-count clamp as text-less reservations, then excludes ids whose printable spool envelope is in that disclosure, so it quotes at most one text per id; it does not deduplicate the unread or in-flight spool populations; and the count and its "up to" hedge stay exactly as a text-less reservation would have produced them.
 
 **A message that dies with the engagement is disclosed, not swallowed.** Every terminal
 outcome posts the messages no turn ever took up into the topic — both text populations, at
@@ -80,13 +100,35 @@ message already handed to the CLI — the CLI can read the line and emit its ini
 the relay processes it, and a cancellation landing in that interval would otherwise assert
 something false about a message the agent did see.
 
-**A reservation contributes a count, and the count is an upper bound.** A message still
-inside its ingress-reservation window has no text anywhere — the reservation is a bare
-counter — so it cannot be excerpted, only counted. And because the reservation is anonymous,
-it can alias a text the disclosure already excerpts: a message is durably spooled before its
-reservation is released, and a terminal landing inside that window sees the same message in
-both populations. A total that includes reservations therefore reads "up to N", which is
-true in that window; a text-only total keeps the exact claim. One reservation is excluded
+**A reservation carries its message's text, and its count stays an upper bound.** On the
+claude-code side the handler is holding the operator's exact words when it reserves, so the
+reservation carries them — keyed by the Telegram message id, on the same engagement-lifetime
+ledger as the counter, never on the spool — and a terminal quotes what was accepted and never
+reached the spool rather than only counting it. Each reservation records its own occurrence,
+so two deliveries of one redelivered message are two entries and one release consumes one of
+them; a successful enqueue removes nothing. Which occurrence a terminal actually prints is
+decided when it prints, not when the message was persisted: the occurrences are collapsed to
+one per message id, clamped to the same disclosure count a text-less reservation would have
+produced, and then suppressed while an envelope that same disclosure is already printing
+carries the same message id — so
+one message is quoted once, from wherever it currently lives, and the words come back the
+moment that envelope is consumed, pruned or evicted. Deciding at persist time instead was the
+defect this rule replaced — a persist is evidence that expires, and it also cannot tell one
+delivery of a message from another, so it removed a text that a second, still-held
+reservation was the only remaining carrier of. Absence decides nothing: where no spool can be
+read, or reading one fails, nothing is suppressed, because a duplicate bullet is a far
+smaller harm than a silent one. Two occurrences of one message id still print one text,
+because two identical bullets would claim two messages were lost; the spool's own
+populations are not deduplicated, so two genuine envelopes sharing an id still print twice.
+A message that arrives with no id, and every in-casa reservation, is
+counted and not quoted: the in-casa reservation is taken for a system continuation whose text
+does not exist anywhere yet, which is the contrast that makes the claude-code case the
+achievable one. The count itself is unchanged, and so is its hedge. Because a reservation is
+still anonymous to the count, it can alias a text the disclosure already excerpts: a message
+is durably spooled before its reservation is released, and a terminal landing inside that
+window sees the same message in both populations. A total that includes reservations
+therefore reads "up to N", which is true in that window; a text-only total keeps the exact
+claim. One reservation is excluded
 by construction: the one a recognized command (`/cancel`, `/complete`, `/silent`) holds for
 itself while the handler processes it — classified at the reservation's birth, so the
 exclusion holds under *every* terminal winner, not only the command's own finalize — still
@@ -127,9 +169,13 @@ that path already admits a text-bearing ticket at handler entry, so reserving th
 count one message twice in the veto and inflate the lost-message disclosure. And its counters
 have no attach step and no detach step — nothing tears them down and nothing but a release
 removes an entry — so an absent key means *nothing is held*, never *the answer is unavailable*.
-That distinction is the whole of a separate known defect on the other driver, where a session
-respawn empties an in-memory spool and every accessor reports zero for messages still durably
-queued; adding a lifecycle teardown here would reproduce it by construction.
+That distinction was for a while the whole of a defect on the other driver, where a session
+respawn dropped an in-memory spool and its *spool-backed* accessors then reported zero for
+messages still durably queued — never its reservation counters, which had no teardown to
+zero them, which is exactly why they were the only arm still working. That driver's ledger now
+survives the respawn too (above), so the defect is closed; the rule this paragraph states is
+not, and adding a lifecycle teardown to a reservation counter would reintroduce the shape by
+construction.
 
 **The delivery seam reports its hand-off, and only that.** The seam a continuation goes through
 now returns whether it handed the turn to a delivery task — false when the resume gate refused
@@ -212,6 +258,9 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_blocking`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_message_reservations`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservation_texts`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver._disclosed_spool_message_ids`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::_InboundSpool.disclosed_message_ids`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.record_completion_refusal`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.force_completion_turn_boundary`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth`
@@ -221,6 +270,7 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.release_inbound_reservation`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_reservations`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_message_reservations`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_reservation_texts`
 
 **Tests**
 - `tests/test_emit_completion_tool.py`
@@ -228,6 +278,7 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `tests/test_answer_reservation.py`
 - `tests/test_in_casa_inbound_admission.py`
 - `tests/test_c1_continuation_admission.py`
+- `tests/test_launch_death_reporter.py`
 
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)

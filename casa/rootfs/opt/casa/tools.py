@@ -8204,6 +8204,7 @@ async def _report_launch_death(
     # could wedge the death report forever, and something going wrong must
     # always be able to end.
     lost_texts: list[str] = []
+    lost_reservation_texts: list[str] = []
     lost_reservations = 0
 
     def _snapshot_hook():
@@ -8238,6 +8239,16 @@ async def _report_launch_death(
             lost_reservations = _r if type(_r) is int else 0
         except Exception:  # noqa: BLE001 — fail open
             lost_reservations = 0
+        # #691: and the TEXTS of those reservations, where Casa knows them —
+        # its own try, so a new accessor's failure costs only the new coverage.
+        try:
+            _rt = (driver.inbound_reservation_texts(rec.id)
+                   if hasattr(driver, "inbound_reservation_texts") else [])
+            lost_reservation_texts[:] = (
+                [t for t in _rt if isinstance(t, str)]
+                if type(_rt) is list else [])
+        except Exception:  # noqa: BLE001 — fail open
+            lost_reservation_texts[:] = []
         lost_texts[:] = list(in_flight) + list(queued)
         return None
 
@@ -8325,13 +8336,19 @@ async def _report_launch_death(
             )
         if lost_texts or lost_reservations:
             _budget, _parts = 2800, []
-            for _t in lost_texts:
+            # #691: the spool population, then the texts of reservations whose
+            # message never became durable. The paragraph's emission condition,
+            # the base sentence above and this paragraph's position after the
+            # retention one are all UNCHANGED — INV-ENG-015's red cases assert
+            # this notice by whole-text equality.
+            _bullets = list(lost_texts) + list(lost_reservation_texts)
+            for _t in _bullets:
                 _ex = _t if len(_t) <= 400 else _t[:400] + "\u2026"
                 if _budget - len(_ex) < 0:
                     break
                 _budget -= len(_ex)
                 _parts.append(f"\u2022 {_ex}")
-            _more = len(lost_texts) - len(_parts)
+            _more = len(_bullets) - len(_parts)
             _total = len(lost_texts) + lost_reservations
             # #664: reservation counts are an upper bound (see the
             # _finalize_engagement rendering); text-only totals stay exact.
@@ -8694,6 +8711,7 @@ async def _finalize_engagement(
     # after the flip). Accessor failures fail OPEN with a warning: a driver
     # bug must not wedge termination forever.
     unread_snapshot: list[str] = []
+    reservation_texts: list[str] = []
     lost_reservations = 0
 
     def _terminal_hook():
@@ -8703,14 +8721,53 @@ async def _finalize_engagement(
         try:
             texts = list(driver.inbound_unread_texts(engagement.id))
             texts = [t for t in texts if isinstance(t, str)]
-            _hr = (driver.inbound_reservations(engagement.id)
-                   if hasattr(driver, "inbound_reservations") else 0)
-            resv = _hr if type(_hr) is int else 0
         except Exception:  # noqa: BLE001 — fail open
             logger.warning(
                 "finalize engagement %s: inbound accessors failed — "
                 "gate skipped", engagement.id[:8], exc_info=True)
             return None
+        # #740: the RAW reservation count is read in its OWN try. It used to
+        # share the one above, so an unread-accessor failure returned before it
+        # and the reservation arm of the gate — the arm that survives a session
+        # teardown, and the only one still standing in that window — was skipped
+        # with it. That coupling was survivable while the unread read was a dict
+        # lookup; it now reads a file when no incarnation is attached, so the
+        # isolation is owed.
+        try:
+            _hr = (driver.inbound_reservations(engagement.id)
+                   if hasattr(driver, "inbound_reservations") else 0)
+            resv = _hr if type(_hr) is int else 0
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "finalize engagement %s: reservation accessor failed — the "
+                "unread gate below still stands", engagement.id[:8],
+                exc_info=True)
+            resv = 0
+        # #740: the VETO reads the DEPTH, not len(texts). The two are the same
+        # population whenever an incarnation is attached (both enumerate the
+        # spool's queued, non-initial envelopes), but ``inbound_unread_texts``
+        # now also answers from the durable FILE when none is — and a file-only
+        # population must never refuse a completion, because nothing the gate
+        # can force could clear it: the escalation exists to make a queued
+        # envelope pump, and there is no pump. It discloses instead, below.
+        # Its own try, and its failure contributes ZERO rather than falling
+        # back to len(texts) — a fallback would let a file-sourced population
+        # veto by the back door, which is the one thing this split exists to
+        # prevent. Nothing already read is discarded: the reservation and
+        # in-flight arms still veto and the texts still reach the disclosure.
+        # An ABSENT depth accessor keeps the previous behaviour (a duck driver
+        # exposing only texts has no file tier for the split to protect it
+        # from); a PRESENT one that raises contributes zero, per above.
+        try:
+            _du = (driver.inbound_unread_depth(engagement.id)
+                   if hasattr(driver, "inbound_unread_depth") else len(texts))
+            depth = _du if type(_du) is int else 0
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "finalize engagement %s: unread-depth accessor failed — the "
+                "reservation and in-flight arms still stand",
+                engagement.id[:8], exc_info=True)
+            depth = 0
         # #591: the accessors above answer "is the operator still waiting to be
         # answered?", which deliberately excludes an envelope already written
         # into the CLI's stdin FIFO. That is the right answer for the ask gate
@@ -8768,9 +8825,26 @@ async def _finalize_engagement(
         # cross-population order is NOT a guarantee (a system turn admitted
         # pre-lock can be older than an accepted manual one) and the rendered
         # copy claims counts and texts, never chronology.
+        # #691: the TEXTS of reservations still held for messages that never
+        # reached the spool — the population that could previously only be
+        # counted. Its OWN try, like every accessor beside it: this read is new
+        # and its failure must cost only the new coverage. It contributes
+        # nothing to the veto (the raw count above already does) and nothing to
+        # the totals (below) — only bullets.
+        try:
+            _rt = (driver.inbound_reservation_texts(engagement.id)
+                   if hasattr(driver, "inbound_reservation_texts") else [])
+            reservation_texts[:] = ([t for t in _rt if isinstance(t, str)]
+                                    if type(_rt) is list else [])
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "finalize engagement %s: reservation-text accessor failed — "
+                "the counts below still stand", engagement.id[:8],
+                exc_info=True)
+            reservation_texts[:] = []
         unread_snapshot[:] = list(in_flight) + list(texts)
-        if inbound_gate and (texts or blocking or resv):
-            return (f"unread_inbound depth={len(texts)} "
+        if inbound_gate and (depth or blocking or resv):
+            return (f"unread_inbound depth={depth} "
                     f"in_flight={blocking} reservations={resv}")
         return None
 
@@ -8990,21 +9064,37 @@ async def _finalize_engagement(
                 if unread_snapshot or lost_reservations:
                     _budget = 2800
                     _parts = []
-                    for _t in unread_snapshot:
+                    # #691: the spool population first, in its existing order
+                    # and with its duplicates intact (two distinct queued
+                    # messages carrying the same text are two messages), then
+                    # the texts of reservations whose message never became
+                    # durable. No de-duplication happens here and no aliasing
+                    # policy lives here: the driver drops a reservation's text
+                    # the instant its message is persisted, so a message is
+                    # quoted once, from wherever it currently lives.
+                    _bullets = list(unread_snapshot) + list(reservation_texts)
+                    for _t in _bullets:
                         _ex = _t if len(_t) <= 400 else _t[:400] + "…"
                         if _budget - len(_ex) < 0:
                             break
                         _budget -= len(_ex)
                         _parts.append(f"• {_ex}")
-                    _more = len(unread_snapshot) - len(_parts)
+                    _more = len(_bullets) - len(_parts)
                     # #649: "inbound", not "operator" — deliver_system_turn
                     # continuations are Casa-authored; and the spool-file
                     # recoverability claim is made only for drivers that
                     # actually HAVE a durable spool (the in_casa ticket
                     # ledger is non-durable by design — the count is always
                     # stated, the overflow text is not recoverable).
-                    _spooled = driver is not None and hasattr(
-                        driver, "drain_inbound_spool")
+                    # #691: and only while every bullet in the overflow IS a
+                    # spool envelope. A reservation text is by definition NOT
+                    # in the spool file, so claiming it is recoverable there
+                    # would be a false statement about state the operator would
+                    # go looking for. With no reservation texts this is exactly
+                    # the previous predicate.
+                    _spooled = (driver is not None
+                                and hasattr(driver, "drain_inbound_spool")
+                                and not reservation_texts)
                     # #664: reservations contribute a COUNT only — no text
                     # exists for a message that never reached the spool. An
                     # anonymous reservation can alias an already-spooled text

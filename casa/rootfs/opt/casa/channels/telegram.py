@@ -1756,9 +1756,18 @@ class TelegramChannel(Channel):
                         # reservation still vetoes a racing completion but is
                         # excluded from every lost-inbound disclosure (the
                         # command is consumed here, never delivered).
+                        # #691: hand the driver the message this reservation
+                        # is FOR. Until the background task's spool enqueue
+                        # resolves, this local `text` is the only copy of what
+                        # the operator said — recording it here is what lets a
+                        # terminal QUOTE the message instead of reporting
+                        # "up to N" about it. A recognized command's text is
+                        # not recorded (the driver drops it at birth).
                         inbound_reserved = bool(
                             self._driver_reserve_inbound(
-                                rec, command=recognized is not None))
+                                rec, command=recognized is not None,
+                                text=text,
+                                message_id=getattr(msg, "message_id", None)))
                     except Exception:  # noqa: BLE001
                         logger.debug("reserve_inbound failed", exc_info=True)
                 answer_token = None
@@ -2014,8 +2023,12 @@ class TelegramChannel(Channel):
                             try:
                                 # #664: release with the kind it was born
                                 # with, so the command sub-counter pairs.
+                                # #691: and with the id it was born with, so it
+                                # drops exactly this message's recorded text.
                                 self._driver_release_inbound(
-                                    rec, command=recognized is not None)
+                                    rec, command=recognized is not None,
+                                    message_id=getattr(
+                                        msg, "message_id", None))
                             except Exception:  # noqa: BLE001
                                 logger.debug(
                                     "release_inbound failed", exc_info=True)
@@ -2280,7 +2293,11 @@ class TelegramChannel(Channel):
             if inbound_reserved and self._driver_release_inbound is not None:
                 inbound_reserved = False
                 try:
-                    self._driver_release_inbound(rec)
+                    # #691: the same message id the reservation was born with
+                    # (this task's own parameter), so the release drops exactly
+                    # this message's recorded text and no other's.
+                    self._driver_release_inbound(
+                        rec, message_id=tg_message_id)
                 except Exception:  # noqa: BLE001
                     logger.debug("release_inbound failed", exc_info=True)
 

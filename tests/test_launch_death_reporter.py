@@ -1885,3 +1885,146 @@ class TestNotDeliveredFollowUpNotice:
         await asyncio.sleep(0)
 
         assert ch._post_engagement_notice.await_count == 0
+
+
+class TestC4LaunchDeathQuotesAReservation:
+    """C4 RED CASE — INV-ENG-017 on the OTHER terminal renderer.
+
+    Specified by sol (round `redcase-specify`), accepted by terra. The
+    launch-death notice must quote a reservation whose text Casa knows, while
+    its count and its "up to" hedge stay exactly as the text-less case
+    produced them — and its paragraph shape, emission condition and order are
+    untouched (INV-ENG-015's whole-text pins).
+    """
+
+    async def test_a_known_reservation_text_is_quoted_at_the_same_count(
+        self, tmp_path, monkeypatch,
+    ):
+        probe = _Probe()
+        engage_executor, registry, channel, driver = _build(
+            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
+        )
+        monkeypatch.setattr(
+            driver, "inbound_message_reservations", lambda eng_id: 1,
+            raising=False)
+        monkeypatch.setattr(
+            driver, "inbound_reservations", lambda eng_id: 1, raising=False)
+        monkeypatch.setattr(
+            driver, "inbound_reservation_texts",
+            lambda eng_id: ["did you also restart the relay?"], raising=False)
+
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "error"
+
+        assert len(probe.notice_texts) == 1
+        notice = probe.notice_texts[0]
+        assert notice.count("• did you also restart the relay?") == 1, notice
+        assert notice.count("up to 1 inbound message(s)") == 1, notice
+
+
+class TestLaunchDeathReadTimeExclusion:
+    """C4 RED CASES, ROUND 2 — INV-ENG-017 (re-declared) on the OTHER terminal
+    renderer, through a REAL `ClaudeCodeDriver`.
+
+    The accessors are delegated to a real driver holding real ledger and real
+    spool state, so the read-time exclusion actually runs; every assertion is
+    on the notice the reporter posted.
+
+    Specified by sol (round `redcase2-specify`); accepted by terra.
+    """
+
+    @staticmethod
+    async def _real(tmp_path, eid, *, attach=True):
+        import os
+        from unittest.mock import AsyncMock
+        import drivers.claude_code_driver as ccd
+        from drivers.workspace import control_dir, inbound_spool_path
+        d = ccd.ClaudeCodeDriver(
+            engagements_root=str(tmp_path / "ccd-eng"),
+            send_to_topic=AsyncMock(), casa_framework_mcp_url="http://x")
+        os.makedirs(control_dir(eid), exist_ok=True)
+        spool = None
+        if attach:
+            spool = ccd._InboundSpool(
+                engagement_id=eid, spool_path=inbound_spool_path(eid),
+                write_fifo=AsyncMock(return_value=False),
+                send_notice=AsyncMock(return_value=True))
+            d._inbound[eid] = spool
+        return d, spool
+
+    @staticmethod
+    def _delegate(monkeypatch, driver, real, eid):
+        for name in ("inbound_reservations", "inbound_message_reservations",
+                     "inbound_unread_texts", "inbound_in_flight_texts",
+                     "inbound_reservation_texts"):
+            monkeypatch.setattr(
+                driver, name,
+                (lambda _eng_id, _n=name: getattr(real, _n)(eid)),
+                raising=False)
+
+    async def _notice(self, tmp_path, monkeypatch, real, eid):
+        probe = _Probe()
+        engage_executor, _registry, _channel, driver = _build(
+            tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+        self._delegate(monkeypatch, driver, real, eid)
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "error"
+        assert len(probe.notice_texts) == 1
+        return probe.notice_texts[0]
+
+    async def test_a_detached_file_envelope_suppresses_its_alias_reservation(
+            self, tmp_path, monkeypatch):
+        """The exclusion set is sourced from `_inbound_view`, so it covers the
+        durable-FILE tier the renderer itself quotes through. Attached-only
+        sourcing would print the file's envelope and the reservation both.
+
+        Red at `3bb55f2e`: the accessor consults no spool, so `hello` is
+        printed twice for one message."""
+        import json
+        import os
+        from drivers.workspace import control_dir, inbound_spool_path
+        eid = "e-ld-detached"
+        real, _ = await self._real(tmp_path, eid, attach=False)
+        os.makedirs(control_dir(eid), exist_ok=True)
+        row = {"text": "hello", "tg_message_id": 41, "priority": False,
+               "receipt": "not_required", "notice": "none",
+               "notice_text": None, "enqueued_at": 1.0,
+               "delivery_epoch": None, "state": "queued", "seq": 0,
+               "is_initial": False, "answer_anchor_mid": None}
+        with open(inbound_spool_path(eid), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+        real.reserve_inbound(eid, text="hello", message_id=41)
+
+        notice = await self._notice(tmp_path, monkeypatch, real, eid)
+        assert notice.count("• hello") == 1, notice
+        assert notice.count("up to 2 inbound message(s)") == 1, notice
+
+    async def test_an_absent_spool_excludes_nothing(
+            self, tmp_path, monkeypatch):
+        """No attached ledger and no durable file: absence fails toward
+        DISCLOSURE. Kills treating an absent view as grounds to hide text."""
+        eid = "e-ld-absent"
+        real, _ = await self._real(tmp_path, eid, attach=False)
+        real.reserve_inbound(eid, text="hello", message_id=41)
+
+        notice = await self._notice(tmp_path, monkeypatch, real, eid)
+        assert notice.count("• hello") == 1, notice
+        assert notice.count("up to 1 inbound message(s)") == 1, notice
+
+    async def test_a_failing_exclusion_read_excludes_nothing(
+            self, tmp_path, monkeypatch):
+        """FAILURE is not ABSENCE, and the guard that makes them behave alike
+        needs its own case: without it the accessor raises, the reporter
+        substitutes an empty list for it, and the operator gets the count with
+        no words — this cluster's own defect, re-created by its fix."""
+        eid = "e-ld-raises"
+        real, _ = await self._real(tmp_path, eid, attach=False)
+        real.reserve_inbound(eid, text="hello", message_id=41)
+
+        def _boom(engagement_id):
+            raise RuntimeError("view exploded")
+        real._inbound_view = _boom
+
+        notice = await self._notice(tmp_path, monkeypatch, real, eid)
+        assert notice.count("• hello") == 1, notice
+        assert notice.count("up to 1 inbound message(s)") == 1, notice

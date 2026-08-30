@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.247.0] - 2026-08-30
+
+### Fixed
+
+- When an engagement ends, Casa now tells you what was said in the messages it
+  never got to. It used to be able to give you only a count — and after the
+  assistant's session was restarted it said nothing at all, reporting zero
+  unread while your messages were still queued on disk. Each message is now
+  quoted once, from wherever it currently lives.
+
 ## [0.246.0] - 2026-08-29
 
 ### Fixed
