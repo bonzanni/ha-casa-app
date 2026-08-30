@@ -176,22 +176,45 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         assert "text" not in row and "artifacts" not in row
         assert "next_steps" not in row
 
-        # ONE durable write carried both facts. A two-write implementation
-        # leaves a snapshot that is terminal and owes nothing.
-        terminal_snaps = [
-            [r for r in snap if r["id"] == rec.id][0]
+        # ONE durable write carried both facts, and the whole persisted
+        # HISTORY says so — not merely the final row.
+        #
+        # Three mutations this defeats, each of which leaves a crash window
+        # that permanently loses the obligation, and each of which a
+        # final-row assertion admits:
+        #   * terminal first, obligation second  (terminal owing nothing);
+        #   * obligation first, terminal second  (a LIVE record owing a
+        #     terminal outcome that does not exist);
+        #   * clear on acceptance and re-arm     (a window after the bus took
+        #     the message in which nothing is owed).
+        mine = [
+            ([r for r in snap if r["id"] == rec.id] or [None])[0]
             for snap in reg.snapshots
-            if any(r["id"] == rec.id and r["status"] == "completed"
-                   for r in snap)
         ]
-        assert terminal_snaps, reg.snapshots
-        assert terminal_snaps[0]["terminal_notification_pending"] is True, (
-            terminal_snaps[0])
+        mine = [r for r in mine if r is not None]
+        first_terminal = next(
+            (i for i, r in enumerate(mine) if r["status"] == "completed"), None)
+        assert first_terminal is not None, mine
+
+        assert not any(
+            r.get("terminal_notification_pending")
+            for r in mine[:first_terminal]), mine[:first_terminal]
+        assert all(
+            r["terminal_notification_pending"] is True
+            for r in mine[first_terminal:]), mine[first_terminal:]
+
+        acked_from = len(reg.snapshots)
 
         # Only the resident reporting delivery discharges it — through the
         # REAL seam (agent.Agent._ack_delivery), not a hand-called callback.
         await _ack_through_the_real_seam(bus.sent[0], error_kind="turn_failed")
         assert _row(tombstone, rec.id)["terminal_notification_pending"] is True
+        # Still owed across every write since the terminal.
+        assert all(
+            [r for r in snap if r["id"] == rec.id][0][
+                "terminal_notification_pending"] is True
+            for snap in reg.snapshots[first_terminal:acked_from]
+            if any(r["id"] == rec.id for r in snap))
 
         await _ack_through_the_real_seam(bus.sent[0])
         assert _row(tombstone, rec.id)["terminal_notification_pending"] is False

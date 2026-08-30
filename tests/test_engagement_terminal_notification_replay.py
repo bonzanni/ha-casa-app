@@ -53,7 +53,7 @@ def _row(tombstone, engagement_id: str) -> dict:
     return hits[0]
 
 
-async def _two_owing_records(tmp_path):
+async def _owing_records(tmp_path):
     """Persist two outcomes that were never told, then RELOAD from disk.
 
     The reload is the point: everything the replay may say has to have
@@ -102,6 +102,17 @@ async def _two_owing_records(tmp_path):
         b, outcome="cancelled", text="", artifacts=[], next_steps=[],
         driver=_driver_double())
 
+    c = await reg.create(
+        kind="specialist", role_or_type="finance", driver="in_casa",
+        task="reconcile the ledger",
+        origin={"role": "assistant", "channel": "telegram",
+                "chat_id": "chat-D", "cid": "route-D",
+                "user_text": "reconcile the ledger please"},
+        topic_id=None)
+    await _finalize_engagement(
+        c, outcome="error", text="", artifacts=[], next_steps=[],
+        driver=_driver_double())
+
     # A third row that was already told, and so owes nothing. Written into
     # the file directly rather than through the ack, so this fixture does not
     # depend on the very machinery the replay owner is being tested against —
@@ -124,7 +135,7 @@ async def _two_owing_records(tmp_path):
 
     reloaded = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
     await reloaded.load()
-    return reloaded, tombstone, a.id, b.id, told.id
+    return reloaded, tombstone, a.id, b.id, c.id, told.id
 
 
 class TestBootReplaysOnlyWhatIsStillOwed:
@@ -134,17 +145,17 @@ class TestBootReplaysOnlyWhatIsStillOwed:
     ):
         import casa_core
 
-        reg, tombstone, a_id, b_id, told_id = await _two_owing_records(tmp_path)
+        reg, tombstone, a_id, b_id, c_id, told_id = await _owing_records(tmp_path)
         bus = _RecordingBus()
 
         await casa_core._notify_recovered_engagement_outcomes(
             reg, bus, assistant_role="assistant")
 
         by_id = {m.content.delegation_id: m for m in bus.sent}
-        assert set(by_id) == {a_id, b_id}, sorted(by_id)
+        assert set(by_id) == {a_id, b_id, c_id}, sorted(by_id)
         assert told_id not in by_id
 
-        a_msg, b_msg = by_id[a_id], by_id[b_id]
+        a_msg, b_msg, c_msg = by_id[a_id], by_id[b_id], by_id[c_id]
 
         # Addressed from the record's own persisted origin.
         assert (a_msg.target, a_msg.channel,
@@ -158,12 +169,24 @@ class TestBootReplaysOnlyWhatIsStillOwed:
         assert a_msg.content.status == "ok"
         assert a_msg.content.result_available is False
         assert a_msg.content.text == ""
+        assert a_msg.content.kind == ""
+
+        # The EXACT outcome, not merely "something went wrong". A replay
+        # reporting a cancellation as `restart_orphan`, or an error as a
+        # cancellation, misstates what happened to the engager's work — and a
+        # status-only assertion admits both.
         assert b_msg.content.status == "error"
+        assert b_msg.content.kind == "cancelled"
         assert b_msg.content.result_available is False
         assert b_msg.content.text == ""
-        # The cancelled arm renders `message`, so an empty one would tell the
-        # engager nothing at all.
+        assert c_msg.content.status == "error"
+        assert c_msg.content.kind == "error"
+        assert c_msg.content.result_available is False
+        assert c_msg.content.text == ""
+        # Both non-ok arms render `message`; an empty one tells the engager
+        # nothing at all (`Delegation failed (cancelled): `).
         assert b_msg.content.message.strip() != ""
+        assert c_msg.content.message.strip() != ""
 
     async def test_each_callback_acknowledges_the_id_it_owns(self, tmp_path):
         """The late-binding pin.
@@ -174,7 +197,7 @@ class TestBootReplaysOnlyWhatIsStillOwed:
         """
         import casa_core
 
-        reg, tombstone, a_id, b_id, _told = await _two_owing_records(tmp_path)
+        reg, tombstone, a_id, b_id, c_id, _told = await _owing_records(tmp_path)
         bus = _RecordingBus()
 
         await casa_core._notify_recovered_engagement_outcomes(
@@ -185,8 +208,8 @@ class TestBootReplaysOnlyWhatIsStillOwed:
 
         assert _row(tombstone, a_id)["terminal_notification_pending"] is False
         assert _row(tombstone, b_id)["terminal_notification_pending"] is True
-        assert [r.id for r in reg.records_owing_terminal_notification()] == [
-            b_id]
+        assert {r.id for r in reg.records_owing_terminal_notification()} == {
+            b_id, c_id}
 
         await by_id[b_id].on_delivery()
         assert _row(tombstone, b_id)["terminal_notification_pending"] is False
@@ -198,13 +221,14 @@ class TestBootReplaysOnlyWhatIsStillOwed:
         """Enqueue is not delivery, and a missing consumer is not a discharge."""
         import casa_core
 
-        reg, tombstone, a_id, b_id, _told = await _two_owing_records(tmp_path)
+        reg, tombstone, a_id, b_id, c_id, _told = await _owing_records(tmp_path)
         bus = _RecordingBus(roles=("assistant",))     # no `concierge` queue
 
         await casa_core._notify_recovered_engagement_outcomes(
             reg, bus, assistant_role="assistant")
 
-        assert [m.content.delegation_id for m in bus.sent] == [b_id]
+        assert sorted(m.content.delegation_id for m in bus.sent) == sorted(
+            [b_id, c_id])
         assert _row(tombstone, a_id)["terminal_notification_pending"] is True
         assert a_id in [r.id for r in reg.records_owing_terminal_notification()]
 
@@ -216,33 +240,36 @@ class TestBootReplaysOnlyWhatIsStillOwed:
         import casa_core
         from engagement_registry import EngagementRegistry
 
-        reg, tombstone, a_id, b_id, _told = await _two_owing_records(tmp_path)
+        reg, tombstone, a_id, b_id, c_id, _told = await _owing_records(tmp_path)
         first = _RecordingBus()
         await casa_core._notify_recovered_engagement_outcomes(
             reg, first, assistant_role="assistant")
-        assert len(first.sent) == 2
+        assert len(first.sent) == 3
 
         # The process dies. Nothing was delivered; nothing was acknowledged.
         restarted = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
         await restarted.load()
         assert {r.id for r in
                 restarted.records_owing_terminal_notification()} == {
-                    a_id, b_id}
+                    a_id, b_id, c_id}
 
         second = _RecordingBus()
         await casa_core._notify_recovered_engagement_outcomes(
             restarted, second, assistant_role="assistant")
-        assert {m.content.delegation_id for m in second.sent} == {a_id, b_id}
+        assert {m.content.delegation_id for m in second.sent} == {
+            a_id, b_id, c_id}
 
 
 class TestBootActuallyInvokesTheReplayOwner:
     """A replay owner boot never calls is not a replay.
 
-    The obligation is only discharged by a resident that can actually run and
-    deliver, so the call has to sit after the channels start and after the
-    agent loops start — where the existing delegation replay already sits.
-    This asserts the wiring itself, in `casa_core.main`'s own body, because
-    every assertion in the module above would pass with the owner unwired.
+    An earlier version of this walked the whole AST, and sol defeated it with a
+    compilable mutation — wrapping the call in ``if False:`` left every
+    assertion green while no owed row was ever replayed. So the call must be a
+    TOP-LEVEL awaited statement in ``main``'s own body, unguarded, carrying the
+    production registry and bus, and positioned after the top-level statements
+    that start the channels and the agent loops. A replay enqueued before a
+    consumer can run is not a replay, and one behind a guard is not a call.
     """
 
     async def test_main_replays_owed_outcomes_after_the_agent_loops_start(self):
@@ -252,22 +279,54 @@ class TestBootActuallyInvokesTheReplayOwner:
 
         import casa_core
 
-        src = textwrap.dedent(inspect.getsource(casa_core.main))
-        tree = ast.parse(src)
+        tree = ast.parse(textwrap.dedent(inspect.getsource(casa_core.main)))
+        body = tree.body[0].body
 
-        calls: dict[str, int] = {}
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+        def _first_top_level(name: str):
+            """Index of the first TOP-LEVEL statement mentioning `name`."""
+            for i, stmt in enumerate(body):
+                for node in ast.walk(stmt):
+                    fn = getattr(node, "func", None)
+                    if fn is None:
+                        continue
+                    got = (fn.id if isinstance(fn, ast.Name)
+                           else fn.attr if isinstance(fn, ast.Attribute) else "")
+                    if got == name:
+                        return i
+            return None
+
+        replay = None
+        for i, stmt in enumerate(body):
+            # Expr(Await(Call)) at the TOP level of main — not nested inside an
+            # `if`, a `try`, a `with` or a loop.
+            if not isinstance(stmt, ast.Expr):
                 continue
-            fn = node.func
-            name = (fn.id if isinstance(fn, ast.Name)
-                    else fn.attr if isinstance(fn, ast.Attribute) else "")
-            if name in ("start_all", "start_agent_loop",
-                        "_notify_recovered_delegations",
-                        "_notify_recovered_engagement_outcomes"):
-                calls.setdefault(name, node.lineno)
+            if not isinstance(stmt.value, ast.Await):
+                continue
+            call = stmt.value.value
+            if not isinstance(call, ast.Call):
+                continue
+            fn = call.func
+            got = (fn.id if isinstance(fn, ast.Name)
+                   else fn.attr if isinstance(fn, ast.Attribute) else "")
+            if got == "_notify_recovered_engagement_outcomes":
+                replay = (i, call)
+                break
 
-        assert "_notify_recovered_engagement_outcomes" in calls, sorted(calls)
-        assert calls["start_all"] < calls["_notify_recovered_engagement_outcomes"]
-        assert (calls["start_agent_loop"]
-                < calls["_notify_recovered_engagement_outcomes"])
+        assert replay is not None, (
+            "main must AWAIT _notify_recovered_engagement_outcomes as an "
+            "unguarded top-level statement")
+        index, call = replay
+
+        # The production collaborators, not stand-ins.
+        passed = {a.id for a in call.args if isinstance(a, ast.Name)}
+        passed |= {kw.value.id for kw in call.keywords
+                   if isinstance(kw.value, ast.Name)}
+        assert "engagement_registry" in passed, sorted(passed)
+        assert "bus" in passed, sorted(passed)
+
+        started_channels = _first_top_level("start_all")
+        started_loops = _first_top_level("start_agent_loop")
+        assert started_channels is not None and started_loops is not None
+        assert index > started_channels, (index, started_channels)
+        assert index > started_loops, (index, started_loops)
