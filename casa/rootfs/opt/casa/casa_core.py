@@ -3461,71 +3461,100 @@ async def _notify_recovered_engagement_outcomes(
     telling — the obligation is cleared by ``on_delivery`` alone, so a message
     this boot never delivers is replayed by the next one.
     """
-    from specialist_registry import DelegationComplete
-
     for rec in list(registry.records_owing_terminal_notification()):
-        origin = dict(getattr(rec, "origin", None) or {})
-        target_role = origin.get("role") or assistant_role
-        if target_role not in bus.queues:
-            logger.error(
-                "Engagement %s owes its outcome to unknown role %r — retained "
-                "for retry", rec.id[:8], target_role,
-            )
-            continue
-
-        succeeded = rec.status == "completed"
-        if succeeded:
-            message = ""
-        elif rec.status == "cancelled":
-            message = ("The engagement was cancelled; Casa restarted before "
-                       "its report could be delivered, and the report itself "
-                       "was not retained.")
-        else:
-            message = (origin.get("error_message")
-                       or "The engagement ended in an error.")
-        synthetic = DelegationComplete(
-            delegation_id=rec.id,
-            agent=rec.role_or_type,
-            status="ok" if succeeded else "error",
-            # The EXACT outcome. Reporting a cancellation as a generic failure
-            # misstates what happened to the engager's work.
-            kind="" if succeeded else rec.status,
-            message=message,
-            # Nothing was retained to carry, on any arm.
-            result_available=False,
-            origin=origin,
-            elapsed_s=0.0,
-        )
         try:
-            await bus.notify(BusMessage(
-                type=MessageType.NOTIFICATION,
-                source=rec.role_or_type,
-                target=target_role,
-                content=synthetic,
-                channel=origin.get("channel", ""),
-                context={
-                    "cid": origin.get("cid", "-"),
-                    "chat_id": origin.get("chat_id", ""),
-                    "engagement_id": rec.id,
-                },
-                on_delivery=_engagement_delivery_ack(registry, rec.id),
-            ))
+            await _replay_one_engagement_outcome(
+                registry, bus, rec, assistant_role=assistant_role)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — one bad row must not block later ones
-            # No exception text: a connector failure can include payload or
-            # credential material. The durable bit retains enough state for the
-            # next boot to retry.
+        except Exception:  # noqa: BLE001 — one bad row must not block boot
+            # The guard covers the WHOLE per-record body, not only the send:
+            # this owner is awaited UNGUARDED from `main`, and a payload built
+            # out of a tombstone row is exactly where an unexpected type
+            # surfaces. No exception text is logged — a connector failure can
+            # include payload or credential material — and the durable bit
+            # retains enough state for the next boot to retry.
             logger.error(
-                "Engagement outcome replay failed: id=%s phase=notify — "
-                "retained", rec.id[:8],
+                "Engagement outcome replay failed: id=%s — retained",
+                rec.id[:8],
             )
-            continue
 
-        logger.warning(
-            "Engagement outcome recovered: id=%s status=%s — NOTIFICATION "
-            "posted", rec.id[:8], rec.status,
+
+async def _replay_one_engagement_outcome(
+    registry, bus, rec, *, assistant_role: str,
+) -> None:
+    """#766: announce ONE owed engagement outcome. Raises; the caller retains."""
+    from specialist_registry import DelegationComplete
+
+    origin = dict(getattr(rec, "origin", None) or {})
+
+    # The obligation is only ever armed WITH a terminal status, so a row
+    # carrying it over a live status is a corrupt or hand-edited tombstone —
+    # and boot rewrites `active` to `idle` at load, so `idle` is the shape it
+    # would take. Announcing it would tell the engager that an engagement which
+    # is still resumable ended in an error, and the delivery would then
+    # discharge the obligation. Fail CLOSED: retain it and say so.
+    if rec.status not in ("completed", "cancelled", "error"):
+        logger.error(
+            "Engagement %s owes an outcome but is not terminal (status=%r) — "
+            "retained, not announced", rec.id[:8], rec.status,
         )
+        return
+
+    # `origin` came off disk as JSON, so `role` is only a string by convention.
+    # An unhashable value — a list, say — raises out of the membership test
+    # below, and this owner is awaited unguarded from `main`.
+    _role = origin.get("role")
+    target_role = _role if isinstance(_role, str) and _role else assistant_role
+    if target_role not in bus.queues:
+        logger.error(
+            "Engagement %s owes its outcome to unknown role %r — retained for "
+            "retry", rec.id[:8], target_role,
+        )
+        return
+
+    succeeded = rec.status == "completed"
+    if succeeded:
+        message = ""
+    elif rec.status == "cancelled":
+        message = ("The engagement was cancelled, and this recovery notice "
+                   "does not carry its report.")
+    else:
+        _err = origin.get("error_message")
+        message = (_err if isinstance(_err, str) and _err
+                   else "The engagement ended in an error.")
+    synthetic = DelegationComplete(
+        delegation_id=rec.id,
+        agent=rec.role_or_type,
+        status="ok" if succeeded else "error",
+        # The EXACT outcome. Reporting a cancellation as a generic failure
+        # misstates what happened to the engager's work.
+        kind="" if succeeded else rec.status,
+        message=message,
+        # Nothing was retained on the record to carry, on any arm.
+        result_available=False,
+        origin=origin,
+        elapsed_s=0.0,
+    )
+    _channel = origin.get("channel")
+    await bus.notify(BusMessage(
+        type=MessageType.NOTIFICATION,
+        source=rec.role_or_type,
+        target=target_role,
+        content=synthetic,
+        channel=_channel if isinstance(_channel, str) else "",
+        context={
+            "cid": origin.get("cid", "-"),
+            "chat_id": origin.get("chat_id", ""),
+            "engagement_id": rec.id,
+        },
+        on_delivery=_engagement_delivery_ack(registry, rec.id),
+    ))
+
+    logger.warning(
+        "Engagement outcome recovered: id=%s status=%s — NOTIFICATION posted",
+        rec.id[:8], rec.status,
+    )
 
 
 async def _notify_recovered_delegations(

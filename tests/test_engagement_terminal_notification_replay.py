@@ -345,3 +345,89 @@ class TestBootActuallyInvokesTheReplayOwner:
         assert started_channels is not None and started_loops is not None
         assert index > started_channels, (index, started_channels)
         assert index > started_loops, (index, started_loops)
+
+
+class TestTheReplayOwnerCannotStopBootOrLie:
+    """Diff-review round 1 (sol S2, terra S2 x2). This owner is awaited
+    UNGUARDED from `main`, and every value it reads came off disk as JSON."""
+
+    async def test_an_unhashable_persisted_role_does_not_raise_out_of_boot(
+        self, tmp_path,
+    ):
+        """`origin["role"]` is a string only by convention.
+
+        A list reaches the `in bus.queues` membership test and raises
+        `TypeError: unhashable type`, which — from an unguarded `await` in
+        `main` — stops boot for every other record too.
+        """
+        import casa_core
+
+        reg, tombstone, a_id, b_id, c_id, _told = await _owing_records(tmp_path)
+        reg.get(a_id).origin["role"] = ["assistant"]     # a corrupt row
+        bus = _RecordingBus()
+
+        await casa_core._notify_recovered_engagement_outcomes(
+            reg, bus, assistant_role="assistant")
+
+        # Boot survived and no record was lost. The corrupt role falls back to
+        # the assistant — the same shape the delegation replay uses for a row
+        # with no creating role — rather than raising or being dropped.
+        assert {m.content.delegation_id for m in bus.sent} == {
+            a_id, b_id, c_id}
+        assert [m.target for m in bus.sent
+                if m.content.delegation_id == a_id] == ["assistant"]
+        # Still owed until its notice is actually delivered.
+        assert _row(tombstone, a_id)["terminal_notification_pending"] is True
+
+    async def test_an_owed_row_that_is_not_terminal_is_retained_not_announced(
+        self, tmp_path,
+    ):
+        """The obligation is only ever armed WITH a terminal status, so this
+        shape means a corrupt tombstone. Announcing it would tell the engager
+        that a still-resumable engagement ended in an error — and the delivery
+        would then discharge the obligation for good."""
+        import casa_core
+
+        reg, tombstone, a_id, b_id, c_id, _told = await _owing_records(tmp_path)
+        reg.get(a_id).status = "idle"
+        bus = _RecordingBus()
+
+        await casa_core._notify_recovered_engagement_outcomes(
+            reg, bus, assistant_role="assistant")
+
+        assert {m.content.delegation_id for m in bus.sent} == {b_id, c_id}
+        assert a_id in [
+            r.id for r in reg.records_owing_terminal_notification()]
+
+    async def test_a_recovered_success_is_not_narrated_as_a_restart_casualty(
+        self, tmp_path,
+    ):
+        """The shared recovery prose must be true of BOTH producers.
+
+        A delegation row really did finish during the restart. An ENGAGEMENT
+        outcome may have finished long before it, and its summary may well have
+        been retained elsewhere — so "completed during a Casa restart" and "the
+        answer itself is gone" told the operator something false about durable
+        state, and invited a needless re-run. What is true of both is only that
+        THIS NOTICE does not carry the answer.
+        """
+        from types import SimpleNamespace
+
+        import casa_core
+        from agent import Agent
+
+        reg, tombstone, a_id, _b, _c, _told = await _owing_records(tmp_path)
+        bus = _RecordingBus()
+        await casa_core._notify_recovered_engagement_outcomes(
+            reg, bus, assistant_role="assistant")
+        msg = [m for m in bus.sent if m.content.delegation_id == a_id][0]
+
+        stub = SimpleNamespace(config=SimpleNamespace(role="concierge"))
+        body = Agent._synthesize_delegation_turn(stub, msg).content
+
+        assert "during a Casa restart" not in body, body
+        assert "the answer itself is gone" not in body, body
+        assert "this recovery notice does not carry its answer" in body, body
+        # Still tells the engager the work finished and quotes the request.
+        assert "finished" in body
+        assert "tidy the plugins please" in body
