@@ -119,6 +119,14 @@
   when_changing: config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution
   covers:
     - casa/rootfs/opt/casa/config_sync.py::reconcile
+    - casa/rootfs/opt/casa/config.py::_EnvSafeLoader
+    - casa/rootfs/opt/casa/config.py::_construct_env_scalar
+    - casa/rootfs/opt/casa/config.py::load_yaml_with_env
+    - casa/rootfs/opt/casa/config.py::text_has_lone_placeholder
+    - casa/rootfs/opt/casa/config.py::load_yaml_declared_text
+    - casa/rootfs/opt/casa/config.py::dump_yaml_declared_text
+    - casa/rootfs/opt/casa/agent_loader.py::parse_yaml_text
+    - casa/rootfs/opt/casa/reminders.py::remove_entry
   tests:
     - tests/test_config_sync_backstop.py
   related: [architecture/configuration.md, architecture/reminders.md]
@@ -142,6 +150,7 @@
     - casa/rootfs/opt/casa/secrets_resolver.py::resolve
     - casa/config.yaml::schema
     - casa/rootfs/etc/s6-overlay/scripts/setup-configs.sh
+    - casa/rootfs/opt/casa/config.py::AgentConfig
   tests:
     - tests/test_casa_reload_tool.py
     - tests/test_config_git.py

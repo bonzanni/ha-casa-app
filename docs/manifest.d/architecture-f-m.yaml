@@ -142,6 +142,7 @@
     - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items
     - casa/rootfs/opt/casa/recall_renderer.py::render_recall
     - casa/rootfs/opt/casa/recall_health.py::observed_recall
+    - casa/rootfs/opt/casa/delegated_memory.py::delegated_recall
   tests:
     - tests/test_recall_absence_invariant.py
     - tests/test_recall_health.py::test_breaker_opens_after_threshold_failures
@@ -164,6 +165,15 @@
     - casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch
     - casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag
     - casa/rootfs/opt/casa/executor_epoch.py::make_archive_epoch_filter
+    - casa/rootfs/opt/casa/delegated_memory.py::delegated_recall
+    - casa/rootfs/opt/casa/tools.py::_origin_clearance_markers
+    - casa/rootfs/opt/casa/tools.py::inherit_origin_markers
+    - casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.lower_origin_clearance
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.clear_context_rebuild_pending
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.handle_update
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._resume_and_ready
+    - casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler.handler
   tests:
     - tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below
     - tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction
@@ -203,6 +213,7 @@
     - casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory.delete_bank
     - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.delete_bank
     - casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once
+    - casa/rootfs/opt/casa/delegated_memory.py::retain_delegated
   tests:
     - tests/test_session_saver.py
     - tests/test_channel_policy.py

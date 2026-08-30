@@ -207,6 +207,7 @@ since what may be disclosed is decided per surface.
 - `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items`
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
+- `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
 
 **Tests**
 - `tests/test_recall_absence_invariant.py`

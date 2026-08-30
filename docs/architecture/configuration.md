@@ -189,6 +189,7 @@ None of those are inferred.
 - `casa/rootfs/opt/casa/secrets_resolver.py::resolve`
 - `casa/config.yaml::schema`
 - `casa/rootfs/etc/s6-overlay/scripts/setup-configs.sh`
+- `casa/rootfs/opt/casa/config.py::AgentConfig`
 
 **Tests**
 - `tests/test_casa_reload_tool.py`
