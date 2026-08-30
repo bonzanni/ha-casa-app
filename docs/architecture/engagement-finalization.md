@@ -42,6 +42,26 @@ different questions, and how a message that dies with the engagement is disclose
 
 ## Contracts & invariants
 
+**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work. That obligation is cleared only by the delivery acknowledgement of the notice that carries it, never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record still owing one, addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it.
+
+The obligation follows the WRITER, not the record. This funnel and the launch-death reporter
+reach the same registry method with the same outcome on the same kind of record, and only the
+first announces over the bus — so no predicate over a record could tell them apart, and the
+one caller that announces opts in explicitly while every other terminal writer is correct by
+default. Arming it inside the transition rather than after it is the whole safety property:
+one durable write carries both facts, so there is no window in which the outcome is committed
+and nobody owes the telling. The strict rollback restores it with the rest of the snapshot,
+because a transition that did not reach disk announced nothing.
+
+Clearing it is deliberately harder than sending it. `bus.notify` reports only that a message
+was ACCEPTED onto a queue: an unregistered target role is dropped with no exception and no log
+line, an enqueued message dies with the process at shutdown, and a dispatched turn can still
+fail to reach the transport. None of those is a telling. The discharge is the same
+delivery-acknowledgement seam every durable announcement uses, and it is deliberately
+generous in the retain direction — a turn that reported a generic failure rather than the
+engagement's news leaves the obligation owed, and so does an acknowledgement that itself
+raises. The cost of not clearing is one duplicate; the cost of clearing early is silence.
+
 **INV-ENG-001**: A terminal transition has exactly one winner, and only the winner performs the finalization side effects.
 
 Enforced by the registry's terminal transition, which refuses a missing or already-terminal
@@ -281,11 +301,18 @@ retryable outcome from the precondition failure matters where it is surfaced: on
 **Two callers race.** The loser is absorbed as already-terminal. No duplicate topic closure
 and no duplicate notification.
 
-**Topic sends, driver teardown, notification and retention fail after the transition.** All
-are caught and logged. **The terminal state stays committed** — so an engagement can be
-genuinely finished while no completion message ever reached its topic and no notification
-reached the resident. These are best-effort effects *after* the authoritative state change,
-by design. What the topic then SAYS about it is INV-ENG-013's subject: the outcome mark is
+**Topic sends, driver teardown and retention fail after the transition.** All are caught and
+logged. **The terminal state stays committed** — so an engagement can be genuinely finished
+while no completion message ever reached its topic. Those are best-effort effects *after* the
+authoritative state change, by design.
+
+**The notification is no longer among them.** It used to be: the outcome went to the bus
+fire-and-forget, so a resident that was never told stayed never told, across every restart,
+with no record anywhere that anything was owed. The outcome now carries INV-ENG-018's durable
+obligation, so a notification that does not reach the transport is not lost but outstanding,
+and the next boot replays it — at lower fidelity, because the record keeps no completion text.
+What is guaranteed is that the party who asked is told THAT their work ended and how; what is
+not guaranteed is that they are told it in the words the engagement used. What the topic then SAYS about it is INV-ENG-013's subject: the outcome mark is
 withheld and a plain disclosure is attempted, so a closed topic with no outcome mark is the
 signal that a terminal engagement's summary did not land. Read it as a prompt to check, not
 as proof: the mark and the close are independent best-effort operations, so a confirmed
