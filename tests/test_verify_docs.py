@@ -1311,8 +1311,12 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 #
 # Scope, stated so it is not over-read: the tables below claim exactly the eleven
 # (source file, owning document) pairs this change creates. They assert nothing about
-# any other anchor anywhere in the corpus — see `notes-I.md` on why a corpus-wide
-# "no undeclared anchor" pin was attempted and cut.
+# any other anchor anywhere in the corpus. A corpus-wide "no undeclared anchor" pin
+# was tried and cut: closing that class means pinning all 63 `covers` anchors of the
+# five documents edited here, 43 of which this change does not own, so a later
+# author's legitimate anchor on an unrelated file would fail THESE tests. The general
+# gap behind that — the corpus has nothing preventing a document from claiming any
+# resolvable symbol in any file — is #787, and is not introduced here.
 
 # (source file, owning document, the enforcement points that document claims IN it)
 _DECLARED_OWNERSHIP = [
