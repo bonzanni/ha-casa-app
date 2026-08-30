@@ -241,6 +241,14 @@ and any writer that emits a version literal has to move with it.
 
 **Source**
 - `casa/rootfs/opt/casa/config_sync.py::reconcile`
+- `casa/rootfs/opt/casa/config.py::_EnvSafeLoader`
+- `casa/rootfs/opt/casa/config.py::_construct_env_scalar`
+- `casa/rootfs/opt/casa/config.py::load_yaml_with_env`
+- `casa/rootfs/opt/casa/config.py::text_has_lone_placeholder`
+- `casa/rootfs/opt/casa/config.py::load_yaml_declared_text`
+- `casa/rootfs/opt/casa/config.py::dump_yaml_declared_text`
+- `casa/rootfs/opt/casa/agent_loader.py::parse_yaml_text`
+- `casa/rootfs/opt/casa/reminders.py::remove_entry`
 
 **Tests**
 - `tests/test_config_sync_backstop.py`
