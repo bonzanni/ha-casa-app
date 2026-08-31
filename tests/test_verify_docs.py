@@ -1309,14 +1309,16 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 # at every base and pins nothing, because the defect is missing data in the published
 # corpus rather than a fault in the verifier.
 #
-# Scope, stated so it is not over-read: the tables below claim exactly the eleven
-# (source file, owning document) pairs this change creates. They assert nothing about
-# any other anchor anywhere in the corpus. A corpus-wide "no undeclared anchor" pin
-# was tried and cut: closing that class means pinning all 63 `covers` anchors of the
-# five documents edited here, 43 of which this change does not own, so a later
-# author's legitimate anchor on an unrelated file would fail THESE tests. The general
-# gap behind that — the corpus has nothing preventing a document from claiming any
-# resolvable symbol in any file — is #787, and is not introduced here.
+# Scope, stated so it is not over-read: this table claims exactly the ELEVEN
+# (source file, owning document) pairs below, and a second table further down claims
+# the three INV-MEM-011 enforcement pairs — fourteen for the change as a whole. They
+# assert nothing about any other anchor anywhere in the corpus. A corpus-wide "no
+# undeclared anchor" pin was tried and cut: closing that class means pinning all 66
+# `covers` anchors of the five documents edited here, 43 of which this change does not
+# own, so a later author's legitimate anchor on an unrelated file would fail THESE
+# tests. The general gap behind that — the corpus has nothing preventing a document
+# from claiming any resolvable symbol in any file — is #787, and is not introduced
+# here.
 
 # (source file, owning document, the enforcement points that document claims IN it)
 _DECLARED_OWNERSHIP = [
