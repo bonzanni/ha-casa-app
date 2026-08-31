@@ -79,11 +79,13 @@ def _reminder_entry(name: str) -> dict:
     }
 
 
-def test_reminder_mutator_takes_the_pass_lock() -> None:
+def test_reminder_mutator_takes_the_pass_lock(tmp_path: Path) -> None:
     """Deterministic: while PASS_LOCK is held, a mutator on another thread
     cannot complete; it proceeds only once the lock is released."""
-    tmp = Path(pytest.importorskip("tempfile").mkdtemp())
-    path = tmp / "triggers.yaml"
+    # #778: a managed path. This used to be
+    # `pytest.importorskip("tempfile").mkdtemp()` — an importorskip on a stdlib
+    # module — whose directory was never removed.
+    path = tmp_path / "triggers.yaml"
     path.write_text(_TRIGGERS_V1, encoding="utf-8")
 
     done = threading.Event()
@@ -105,6 +107,8 @@ def test_reminder_mutator_takes_the_pass_lock() -> None:
     t.join(timeout=5.0)
     doc = reminders._read_doc(str(path))[1]
     assert [e["name"] for e in doc["triggers"]] == ["reminder-aaaaaa"]
+    # #778: the one file this test wrote is inside the managed root.
+    assert [q.name for q in tmp_path.iterdir()] == ["triggers.yaml"]
 
 
 def test_reminder_survives_concurrent_reconcile_clobber(tmp_path: Path) -> None:

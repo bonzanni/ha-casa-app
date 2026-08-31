@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import tempfile
@@ -18,6 +19,53 @@ except ImportError:
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
+# #778: the helpers below create throwaway counter/passwd/group directories and
+# tombstone files. They used to create them in the SYSTEM temp directory and
+# never remove them — 66 directories (6 inodes each) and 52 files per run of
+# this file, unbounded, with nothing anywhere that reclaims them. They now
+# create them under the running test's ``tmp_path``, which pytest reclaims
+# (``tmp_path_retention_count=3``), exactly as the already-correct siblings in
+# ``tests/test_engagement_registry.py`` and ``tests/test_anchor_reanchor.py``
+# have always done.
+#
+# The root travels in a ContextVar rather than through the helpers' signatures
+# because ``_make_registry`` has 51 call sites and ``_tmp_allocator`` 14: an
+# autouse fixture reaches all of them, and reaches the two
+# ``TestReconcileTerminalSpools`` methods that take no ``tmp_path`` of their own
+# WITHOUT widening their signatures. What each call still gets is a FRESH,
+# uniquely-named directory from ``mkdtemp`` itself — two allocators in one test
+# sharing a directory would share ``counter.json`` and the ``.initialized``
+# markers, so the second ``reconstruct()`` would conclude a uid was already
+# allocated, and the test would still pass.
+_HELPER_TMP: contextvars.ContextVar[Path] = contextvars.ContextVar(
+    "boot_replay_helper_tmp")
+
+
+@pytest.fixture(autouse=True)
+def _helper_tmp_root(tmp_path):
+    """Publish this test's ``tmp_path`` as the root for the helpers below."""
+    token = _HELPER_TMP.set(tmp_path)
+    try:
+        yield tmp_path
+    finally:
+        _HELPER_TMP.reset(token)
+
+
+def _helper_tmp() -> str:
+    """The current test's managed root, or a loud failure.
+
+    Deliberately NOT a fall back to the system temp directory: a silent
+    fallback would reintroduce #778's leak in the shape of a safety feature.
+    """
+    try:
+        return str(_HELPER_TMP.get())
+    except LookupError:
+        raise RuntimeError(
+            "a boot-replay temp helper was called outside a test — the "
+            "_helper_tmp_root autouse fixture is what keeps its artifacts out "
+            "of the system temp directory (#778)") from None
+
+
 def _tmp_allocator():
     """A reconstructed ``UidAllocator`` bound to throwaway tmp counter/passwd/
     group files, so backfill (and the NSS-identity regeneration) in boot replay
@@ -25,7 +73,7 @@ def _tmp_allocator():
     touching the container's real ``/etc``. Containment Stage 2 (Task 10)."""
     from engagement_uids import UidAllocator
 
-    d = tempfile.mkdtemp(prefix="uidalloc-")
+    d = tempfile.mkdtemp(prefix="uidalloc-", dir=_helper_tmp())
     passwd = os.path.join(d, "passwd")
     group = os.path.join(d, "group")
     open(passwd, "w").close()          # ensure_identity reads these
@@ -84,7 +132,15 @@ def _boot_driver():
 async def _make_registry(records, *, uid_allocator=None):
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(
-        tombstone_path=tempfile.mkstemp(prefix="tomb-", suffix=".json")[1],
+        # #778: a fresh managed directory per registry, so two registries built
+        # in one test cannot collide on one tombstone. No ``mkstemp``: this line
+        # used to discard the open descriptor it returns (a file AND an fd per
+        # call, 51 call sites), and ``EngagementRegistry`` only STORES the path
+        # — 12 constructions in this very file already pass a path to a file
+        # that does not exist.
+        tombstone_path=str(
+            Path(tempfile.mkdtemp(prefix="tomb-", dir=_helper_tmp()))
+            / "tomb.json"),
         bus=None,
         # Containment Stage 2 (Task 10): boot replay backfills a real uid for
         # each legacy (UNALLOCATED_UID) record via this allocator before it
@@ -2551,7 +2607,8 @@ def _refold_allocator(tmp_path, proc_scanner):
     the scanner returns THEN; the test mutates the scanner's backing state
     before replay so the post-sweep refold sees a different live-uid set."""
     from engagement_uids import UidAllocator
-    d = tempfile.mkdtemp(prefix="uidalloc-r3-")
+    # #778: use the tmp_path this helper already accepts (it was ignored).
+    d = tempfile.mkdtemp(prefix="uidalloc-r3-", dir=tmp_path)
     open(os.path.join(d, "passwd"), "w").close()
     open(os.path.join(d, "group"), "w").close()
     alloc = UidAllocator(

@@ -55,16 +55,24 @@ class _RecordingHaApp:
 
 
 class TestMockSdkToolInvoke(AioHTTPTestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """#778: pytest injects no `tmp_path` into a `unittest.TestCase` test
+        METHOD — and `AioHTTPTestCase` is one — but a class-local AUTOUSE
+        fixture may request one, which is what this is. The test below used to
+        call `tempfile.mkdtemp()` and leak the directory on every run."""
+        self.tmp_root = tmp_path
+
     async def get_application(self):
         self.recorder = _RecordingHaApp()
         app = web.Application()
         app.router.add_post("/", self.recorder.handle)
         return app
 
-    async def test_invokes_http_tool_when_file_present(self, tmp_path=None):
-        # AioHTTPTestCase doesn't expose tmp_path; use a per-test file.
-        import tempfile
-        invoke_file = Path(tempfile.mkdtemp()) / "mock_sdk_tool_invoke.json"
+    async def test_invokes_http_tool_when_file_present(self):
+        # The dead `tmp_path=None` parameter this method used to carry could
+        # never be filled (see `_tmp_root`); the fixture supplies the root.
+        invoke_file = self.tmp_root / "mock_sdk_tool_invoke.json"
         invoke_file.write_text(json.dumps([{
             "server": "homeassistant",
             "tool": "HassTurnOff",
@@ -96,6 +104,11 @@ class TestMockSdkToolInvoke(AioHTTPTestCase):
         # Entry was popped from the file.
         remaining = json.loads(invoke_file.read_text())
         assert remaining == []
+
+        # #778: the invoke file is the ONLY thing this test created, and it is
+        # inside the managed root — nothing is left in the system tmpdir.
+        assert [q.name for q in self.tmp_root.iterdir()] == [
+            "mock_sdk_tool_invoke.json"]
 
     async def test_no_op_when_file_missing(self):
         mock_sdk = _load_mock_sdk()

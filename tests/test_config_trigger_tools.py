@@ -208,7 +208,7 @@ class TestDelete:
         assert out["kind"] == "not_authorized"
 
 
-async def test_configurator_writers_serialize_under_the_pass_lock():
+async def test_configurator_writers_serialize_under_the_pass_lock(tmp_path):
     """The serialization IS the fix. #403 got it by keeping the whole
     read-modify-write a single synchronous step on the loop, so nothing could
     land between the read and the write. #458 replaced that with
@@ -219,21 +219,23 @@ async def test_configurator_writers_serialize_under_the_pass_lock():
     protected — no other writer can land between this one's read and write —
     against the mechanism now responsible for it.
     """
-    import os
-    import tempfile
     import threading
 
     import reminders
     import trigger_write_lock
 
-    for fn, arg in (
+    for i, (fn, arg) in enumerate((
         (reminders.upsert_entry, {"name": "reminder-cccccc", "type": "date",
                                   "at": "2099-01-01T08:00:00+00:00",
                                   "one_shot": True, "channel": "telegram",
                                   "prompt": "x", "managed_by": "agent"}),
         (reminders.delete_entry, "reminder-cccccc"),
-    ):
-        tmp = os.path.join(tempfile.mkdtemp(), "triggers.yaml")
+    )):
+        # #778: a managed path, and a DISTINCT one per iteration — this used to
+        # be a leaked `tempfile.mkdtemp()`, and the second iteration must not
+        # see the first's mutation. `tmp_path` is a real filesystem path, so the
+        # worker thread below is handed exactly what it was before.
+        tmp = str(tmp_path / f"triggers-{i}.yaml")
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write("schema_version: 2\ntriggers: []\n")
         done = threading.Event()
@@ -254,6 +256,10 @@ async def test_configurator_writers_serialize_under_the_pass_lock():
             )
         assert done.wait(timeout=5.0)
         t.join(timeout=5.0)
+
+    # #778: both iterations wrote inside the managed root, and nowhere else.
+    assert sorted(q.name for q in tmp_path.iterdir()) == [
+        "triggers-0.yaml", "triggers-1.yaml"]
 
 
 class TestLegacySchemaV1:
