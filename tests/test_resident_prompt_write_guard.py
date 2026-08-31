@@ -1,30 +1,39 @@
-"""#631 red case — INV-PERS-012.
+"""#631 red case — INV-PERS-012 (re-specified under D36).
 
 `agents/<role>/prompts/system.md` is a committed, schema-pointed,
 reload-documented config file that is an input to nothing a persona-bound
 resident is ever served: `character.yaml`'s `prompt_file:` pointer feeds
 `agent_loader._compose_prompt`, whose output is `cfg.system_prompt`, which
 `Agent._build_options` uses only on the no-bundle arm — and every resident is
-bundle-bound from its first boot. Meanwhile five configurator doctrine sites and
-`casa/DOCS.md` route behavioural instructions into it and assert the edit is
-live on the next turn.
+bundle-bound from its first boot. The file IS read at load (`_resolve_prose`
+opens it unconditionally); what is true is that its bytes reach only the
+COMPOSED fallback prompt, which is not what a bundle-bound resident is served.
+Meanwhile five configurator doctrine sites and `casa/DOCS.md` used to route
+behavioural instructions into it and assert the edit was live on the next turn.
 
 This is `response_shape.yaml`/#610 one file over, and this suite is that suite's
 argument one file over. It asserts COUNTS, because the failure it exists to
 catch is silent: an edit that is written, committed and reported live while the
 served prompt is byte-identical.
 
-Specified by the red-case reviewer (Terra), 2026-08-30, before any production
-change. Two deliberate departures from the specification, both stated so the
-acceptor can rule on them:
+The invariant is NARROWED to the four file primitives — `Write`, `Edit`,
+`MultiEdit`, `NotebookEdit`. `Bash` is deliberately NOT routed to this guard
+and its callback classifies no command text: a text predicate over an
+unexecuted shell command was measured wrong in both directions (it refused
+reads the invariant promises to allow, and missed writes), and the operator
+ruled it out (D36). A shell-capable agent can therefore still make the edit;
+it is inert for a bundle-bound resident, and no shipped resident holds `Bash`.
+
+Re-specified by the red-case reviewer (Terra), 2026-09-01, before any production
+change; the previous accepted version of this file routed `Bash` as a fifth
+primitive. Two deliberate departures from the ORIGINAL specification are kept,
+both stated so the acceptor can rule on them:
 
   1. The builder-wiring assertions invoke the built option stack and count
      DENIALS rather than monkeypatching a counting sentinel over the matcher
      factory. It yields the same counts, it cannot drift from the real callback,
      and it still fails for the specified reason pre-fix (nothing in the stack
-     denies) rather than on an absent symbol — the sentinel's `raising=False`
-     was there to prevent exactly that, and referencing no new symbol prevents
-     it outright.
+     denies) rather than on an absent symbol.
   2. `_guard_callbacks` returns `[]` when the policy is unregistered, for the
      same reason.
 """
@@ -32,6 +41,7 @@ acceptor can rule on them:
 from __future__ import annotations
 
 import asyncio
+import builtins
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,7 +50,9 @@ import pytest
 import yaml
 
 GUARD = "resident_prompt_write_guard"
-PRIMITIVES = ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash")
+# The four file-writing primitives, and ONLY those: the guard's whole contract.
+PRIMITIVES = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+BASH = "Bash"
 ROLES = ("assistant", "butler", "concierge")
 
 
@@ -150,48 +162,66 @@ def _target_spellings(role: str) -> list[tuple[str, str]]:
 
 
 def _calls_for(role: str) -> list[dict]:
-    """Every (write primitive x equivalent spelling) pair for one resident,
-    plus the shell spellings."""
-    home = f"/config/agents/{role}"
-    target = f"{home}/prompts/system.md"
-    calls = [
+    """Every (file primitive x equivalent spelling) pair for one resident.
+
+    File primitives ONLY. The shell forms that used to be appended here are
+    the mechanism D36 cut; they now live in `_bash_calls_for`, where the
+    assertion on them is that they are ALLOWED.
+    """
+    return [
         {"tool_name": tool, "cwd": cwd, "tool_input": {arg: raw}}
         for tool, arg in FILE_PRIMITIVES
         for cwd, raw in _target_spellings(role)
     ]
-    calls += [
-        # A resident's shell form carries its evidence in the cwd rather than
-        # in the command text — and the quote splice is the spelling #610's
-        # Bash half reduces to one case.
-        {"tool_name": "Bash", "cwd": home,
+
+
+def _bash_calls_for(role: str) -> list[dict]:
+    """The three canonical shell spellings the CUT Bash half used to deny.
+
+    Kept verbatim from the previous accepted version of this file, so that the
+    assertion that they are now allowed is made against the very payloads that
+    were denied before — a resident's redirect with the evidence in the cwd,
+    the quote splice, a `sed -i`, and an executor's absolute form.
+    """
+    home = f"/config/agents/{role}"
+    target = f"{home}/prompts/system.md"
+    return [
+        {"tool_name": BASH, "cwd": home,
          "tool_input": {"command": 'printf x > prompts/"system.md"'}},
-        {"tool_name": "Bash", "cwd": home,
+        {"tool_name": BASH, "cwd": home,
          "tool_input": {"command": "sed -i s/a/b/ ./prompts/system.md"}},
-        # An executor's shell form: absolute path, cwd=/config.
-        {"tool_name": "Bash", "cwd": "/config",
+        {"tool_name": BASH, "cwd": "/config",
          "tool_input": {"command": f"printf x > {target}"}},
     ]
-    return calls
 
 
 PER_RESIDENT_CALLS = len(_calls_for("assistant"))
 ALL_CALLS = PER_RESIDENT_CALLS * len(ROLES)
+BASH_CALLS = sum(len(_bash_calls_for(r)) for r in ROLES)
 
 
 class TestTheGuardIsRegisteredAndRefuses:
 
     def test_registry_primitives_and_denial_counts(self):
-        """(registry_entries, routed_primitives, denied_calls) == (1, 5, 15).
+        """(registry_entries, routed_primitives, denied_calls) == (1, 4, 384).
 
-        Pre-fix this is (0, 0, 0): no resident-prompt policy is registered, so
-        every one of the fifteen writes goes unrefused. That — not an import
-        error — is the intended failure.
+        Four routed primitives — and `routed_primitives` is counted over the
+        four file tools PLUS `Bash`, so a matcher that routes the shell reads
+        5 here and fails. 384 = 4 primitives x 32 generated spellings x 3
+        residents.
+
+        At this file's parent (the Bash half present) the tuple is
+        (1, 5, 384): Bash is routed as a fifth primitive. At the base
+        `418c2e59` it is (0, 0, 0): no resident-prompt policy is registered,
+        so every write goes unrefused. Neither is an import error; both are
+        the intended failures.
         """
         cbs = _guard_callbacks()
         matcher = _registry_matcher()
 
         registry_entries = 1 if cbs else 0
-        routed_primitives = sum(1 for p in PRIMITIVES if _routes(matcher, p))
+        routed_primitives = sum(
+            1 for p in PRIMITIVES + (BASH,) if _routes(matcher, p))
 
         async def run() -> int:
             denied = 0
@@ -202,7 +232,41 @@ class TestTheGuardIsRegisteredAndRefuses:
             return denied
 
         denied_calls = asyncio.run(run())
-        assert (registry_entries, routed_primitives, denied_calls) == (1, 5, ALL_CALLS)
+        assert (registry_entries, routed_primitives, denied_calls) == (1, 4, ALL_CALLS)
+        assert ALL_CALLS == 384
+
+    def test_the_shell_is_not_classified_at_all(self):
+        """(registry_entries, bash_denials, bash_allows) == (1, 0, 9).
+
+        The callback is invoked DIRECTLY, bypassing matcher routing on purpose:
+        a narrowed matcher would hide a Bash branch that is still in the
+        callback, and the invariant says the shell is not classified, not
+        merely not routed. Every one of the nine canonical spellings the cut
+        half used to deny must come back as an allow (`{}`), including the
+        redirect and `sed -i` forms.
+
+        At this file's parent the tuple is (1, 9, 0): the `elif tool_name ==
+        "Bash"` branch still denies each spelling. At the base it is
+        (0, 0, 0): nothing is registered.
+        """
+        cbs = _guard_callbacks()
+
+        async def run() -> tuple[int, int]:
+            denied = allowed = 0
+            for role in ROLES:
+                for payload in _bash_calls_for(role):
+                    for cb in cbs:
+                        out = await cb(dict(payload), None, {})
+                        if out and _decision(out) == "deny":
+                            denied += 1
+                        else:
+                            allowed += 1
+            return denied, allowed
+
+        bash_denials, bash_allows = asyncio.run(run())
+        assert (1 if cbs else 0, bash_denials, bash_allows) == (1, 0, BASH_CALLS)
+        assert BASH_CALLS == 9
+
 
     @pytest.mark.parametrize("tool,arg", FILE_PRIMITIVES)
     def test_the_decision_follows_the_resolved_path_not_the_spelling(
@@ -249,10 +313,9 @@ class TestTheGuardIsRegisteredAndRefuses:
         two simultaneous rewrites, which the one-rewrite-at-a-time grammar
         does not generate.
 
-        The clause is deliberately about the FILE tools. The shell half of
-        this guard decides on command text, as INV-PERS-008's does, and is a
-        backstop that recognises the accidental spelling rather than every
-        possible one; the invariant says so rather than claiming otherwise.
+        The clause is about the FILE tools because those are the only tools
+        this guard is routed; a `Bash` call never reaches it, by ruling (D36),
+        and `test_the_shell_is_not_classified_at_all` pins that separately.
         """
         import hooks as hooks_mod
 
@@ -304,8 +367,6 @@ class TestTheGuardIsRegisteredAndRefuses:
         allowed = [
             {"tool_name": "Read", "cwd": "/config",
              "tool_input": {"file_path": "/config/agents/butler/prompts/system.md"}},
-            {"tool_name": "Bash", "cwd": "/config",
-             "tool_input": {"command": "cat /config/agents/butler/prompts/system.md"}},
             {"tool_name": "Write", "cwd": "/config",
              "tool_input": {"file_path": "/config/agents/specialists/x/prompts/system.md"}},
             {"tool_name": "Write", "cwd": "/config",
@@ -314,12 +375,9 @@ class TestTheGuardIsRegisteredAndRefuses:
              "tool_input": {"file_path": "/config/agents/assistant/prompts/morning-briefing.md"}},
             {"tool_name": "Write", "cwd": "/config",
              "tool_input": {"file_path": "/config/agents/assistant/response_shape.yaml"}},
-            # The plugin-developer's own workspace, which is where a two-segment
-            # basename needle without resident-tree evidence would false-refuse.
-            {"tool_name": "Bash", "cwd": "/data/engagements/" + "a" * 32,
-             "tool_input": {"command":
-                            "printf x > /data/engagements/" + "a" * 32
-                            + "/prompts/system.md"}},
+            # The plugin-developer's own workspace: a relative
+            # `prompts/system.md` there resolves under /data, not under the
+            # resident tree, so it must not be claimed.
             {"tool_name": "Write", "cwd": "/data/engagements/" + "a" * 32,
              "tool_input": {"file_path": "prompts/system.md"}},
         ]
@@ -359,8 +417,8 @@ class TestTheGuardIsRegisteredAndRefuses:
 # Wiring. The guard must be CODE-MANDATORY on every session Casa builds hooks
 # for. `hooks_file:` / `hooks.yaml` is a config-editable pointer, so a
 # yaml-only policy can be shed by an edit the configurator is entitled to make.
-#
-# The third builder is the one the two existing guards never reached:
+
+
 # `_build_specialist_options` appends only the agent-home settings guard, and
 # its own comment records that `delegate_to_agent` routes RESIDENTS through it.
 # It is also why the wiring must be TIER-AWARE — the coarse Bash halves of the
@@ -473,23 +531,28 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
 
     def test_the_claude_code_transport_carries_it_on_both_halves(self):
         """(settings_proxy_entries, resolved_callbacks, http_denials)
-        == (1, 1, PER_RESIDENT_CALLS).
+        == (1, 1, 128).
 
         Each of the first two counts requires the emitted/resolved matcher to
-        ROUTE every write primitive, not merely to exist.
+        ROUTE every file primitive AND NOT route `Bash` — not merely to exist.
+        128 = 4 file primitives x 32 generated spellings for one resident.
 
-        Pre-fix (0, 0, 0). Both halves are required and neither is sufficient:
+        Both halves are required and neither is sufficient:
         `translate_hooks_to_settings` emits the settings.json entry that makes
         Claude Code invoke `hook_proxy.sh <policy>`, and
         `build_policy_callbacks_from_hooks_yaml` is what resolves that policy
         NAME to a callback server-side. An entry for a policy the resolver does
         not know resolves to nothing.
 
-        This path is reachable and is refused by nothing at the base: the five
-        registry-backed policies the shipped plugin-developer declares returned
-        `{}` — 0 of 5 — for
-        `printf 'x' > /config/agents/assistant/prompts/system.md`, because
-        `path_scope`'s matcher is `Read|Write|Edit` and never routes Bash.
+        Why the transport is wired at all, given `path_scope`: `path_scope`'s
+        PRESENCE is load-enforced on a claude_code executor, but its
+        `writable:` prefixes are declared by that executor's own hooks.yaml —
+        an executor whose declaration admits `/config/agents` would be refused
+        by nothing else, and the refusal here names the corrective recipe where
+        a scope denial cannot.
+
+        At this file's parent the tuple is (0, 0, 128): both halves still
+        route `Bash`, so neither counts. At the base it is (0, 0, 0).
         """
         from drivers.hook_bridge import translate_hooks_to_settings
         from hooks import build_policy_callbacks_from_hooks_yaml
@@ -498,24 +561,25 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
             "casa/rootfs/opt/casa/defaults/agents/executors/plugin-developer"
             "/hooks.yaml").read_text(encoding="utf-8")) or {}
 
+        def _routes_exactly_the_file_tools(matcher) -> bool:
+            return (all(_routes(matcher, p) for p in PRIMITIVES)
+                    and not _routes(matcher, BASH))
+
         settings = translate_hooks_to_settings(
             pd_hooks, proxy_script_path="/proxy")
-        # The emitted entry counts only if its own matcher ROUTES every write
-        # primitive: an entry under matcher `Read` invokes the proxy for
-        # nothing this invariant is about.
         settings_proxy_entries = sum(
             1
             for entry in settings["hooks"].get("PreToolUse", [])
             for hook in entry.get("hooks", [])
             if hook.get("command") == f"/proxy {GUARD}"
-            and all(_routes(entry.get("matcher"), p) for p in PRIMITIVES)
+            and _routes_exactly_the_file_tools(entry.get("matcher"))
         )
 
         resolved = build_policy_callbacks_from_hooks_yaml(pd_hooks)
         resolved_matcher = resolved[GUARD][0] if GUARD in resolved else None
         resolved_callbacks = (
             1 if GUARD in resolved
-            and all(_routes(resolved_matcher, p) for p in PRIMITIVES) else 0
+            and _routes_exactly_the_file_tools(resolved_matcher) else 0
         )
 
         async def run() -> int:
@@ -533,19 +597,61 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
 
         assert (settings_proxy_entries, resolved_callbacks,
                 asyncio.run(run())) == (1, 1, PER_RESIDENT_CALLS)
+        assert PER_RESIDENT_CALLS == 128
 
 
-class TestTheFileIsActuallyDead:
-    """The premise INV-PERS-012 rests on, pinned separately.
+
+class TestTheFileIsReadButNotServed:
+    """The premise INV-PERS-012's first clause rests on, pinned in both halves.
 
     Green at the base — deliberately. INV-PERS-012's RED half is the unrefused
     write above; this is the reason the refusal is honest rather than merely
-    restrictive, and it is the assertion a future change to the serve seam
-    would break. Mutation: return `cfg.system_prompt` instead of the bundle
-    projection and the marker count becomes 3.
+    restrictive. Clause 1 says the file "is read only into the composed
+    fallback prompt and is not served when its compiled bundle is active", and
+    that is TWO facts: the loader really does open the file (an earlier
+    wording, "is not read", was false — `_resolve_prose` opens it
+    unconditionally and `LoadError`s if it is missing), and the bytes it reads
+    reach no served projection. Each half has its own count.
     """
 
+    def test_the_loader_opens_the_file_into_the_composed_prompt(
+        self, tmp_path, monkeypatch,
+    ):
+        """(open_calls, returned_marker_count) == (1, 1).
+
+        Mutation: a loader that stopped reading the file (returning "" for a
+        `prompt_file:` pointer) gives (0, 0); one that read it twice gives
+        (2, 1).
+        """
+        from agent_loader import _resolve_prose
+
+        marker = "ZZ-RESIDENT-PROMPT-FILE-MARKER-ZZ"
+        agent_dir = tmp_path / "assistant"
+        (agent_dir / "prompts").mkdir(parents=True)
+        (agent_dir / "prompts" / "system.md").write_text(
+            f"You are helpful. {marker}\n", encoding="utf-8")
+
+        real_open = builtins.open
+        opened: list[str] = []
+
+        def counting_open(file, *args, **kwargs):
+            if str(file).endswith("prompts/system.md"):
+                opened.append(str(file))
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", counting_open)
+        prose = _resolve_prose(
+            {"prompt_file": "prompts/system.md"}, field="prompt",
+            agent_dir=str(agent_dir), source_label="character.yaml",
+        )
+        assert (len(opened), prose.count(marker)) == (1, 1)
+
     def test_no_served_projection_carries_the_composed_prompt(self, tmp_path):
+        """served_marker_count == 0 over the three surfaces.
+
+        Mutation: return `cfg.system_prompt` instead of the bundle projection
+        and the marker count becomes 3.
+        """
         marker = "ZZ-COMPOSED-PROMPT-MARKER-ZZ"
         from prompt_compiler import CompiledProjection, CompiledPromptBundle
         from test_agent_plugin_binding import _make_agent
