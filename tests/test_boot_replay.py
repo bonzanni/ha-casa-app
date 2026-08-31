@@ -3233,3 +3233,79 @@ async def test_healthy_modes_do_not_refuse_resumes(monkeypatch, tmp_path):
         "a healthy install must resume its engagement; the gate fired wrongly")
     assert reg.get("keep1").origin.get("error_kind") != (
         "refuse_private_state_exposed")
+
+
+async def test_boot_replay_helpers_keep_temps_under_tmp_path_without_fd_leaks(
+    tmp_path,
+):
+    """#778: the three helpers above are called 51 (`_make_registry`), 14
+    (`_tmp_allocator`) and 3 (`_refold_allocator`) times from this file. Each
+    used to create its throwaway counter/passwd/group directory — and its
+    tombstone — in the SYSTEM temp directory and never remove it, and
+    `_make_registry` additionally discarded the descriptor `mkstemp` returns: a
+    directory (6 inodes), a file and an fd per call, with nothing that reclaims
+    them. One targeted run of this file left 66 directories and 52 files behind.
+
+    Counts, not statuses, and every count here has a mutation that makes it
+    fire on its own. Note especially what this pins BESIDES cleanliness: the
+    roots must be DISTINCT (two allocators sharing one directory would share
+    `counter.json` and the `.initialized` markers, so the second
+    ``reconstruct()`` would conclude a uid was already allocated — and the
+    tests would still pass), each allocator directory must hold exactly the
+    five files ``reconstruct()`` writes, and the injected ``proc_scanner`` must
+    actually be the one used (the host's live uids folded in would poison the
+    allocator).
+    """
+    scanner_calls: list[int] = []
+
+    def _scanner():
+        scanner_calls.append(1)
+        return set()
+
+    refold = _refold_allocator(tmp_path, _scanner)
+    reg1 = await _make_registry([_rec("a" * 16)])
+    # Warm-up first: the FIRST construction pays for lazy imports and their own
+    # descriptors, which is not the leak under test.
+    fds_before = len(os.listdir("/proc/self/fd"))
+    reg2 = await _make_registry([_rec("b" * 16)])
+    fds_after = len(os.listdir("/proc/self/fd"))
+
+    assert scanner_calls, (
+        "the injected proc_scanner was never called — reconstruct() fell back "
+        "to scanning the host's real /proc, and any host uid >= UID_BASE reads "
+        "as 'a uid was already allocated'")
+
+    alloc_roots = [Path(a._path).parent
+                   for a in (refold, reg1._uid_allocator, reg2._uid_allocator)]
+    tomb_paths = [Path(r._tombstone_path) for r in (reg1, reg2)]
+    roots = alloc_roots + [p.parent for p in tomb_paths]
+
+    outside = [str(r) for r in roots if tmp_path not in r.parents and r != tmp_path]
+    assert outside == [], (
+        f"{len(outside)} of {len(roots)} helper temp roots are outside the "
+        f"test's tmp_path, so nothing reclaims them: {outside}")
+
+    assert len(set(roots)) == 5, (
+        f"expected 5 distinct roots (3 allocator dirs + 2 tombstone parents), "
+        f"got {len(set(roots))} distinct of {len(roots)}: "
+        f"{[str(r) for r in roots]} — a shared allocator directory changes what "
+        f"reconstruct() concludes, and a shared tombstone makes two registries "
+        f"one")
+
+    expected = {"passwd", "group", "counter.json", "counter.json.initialized",
+                ".engagement-uids-initialized"}
+    for root in alloc_roots:
+        assert set(os.listdir(root)) == expected, (
+            f"allocator root {root} holds {sorted(os.listdir(root))}, not the "
+            f"{len(expected)} files reconstruct() writes — the move changed "
+            f"what the allocator was constructed from")
+
+    existing = [str(p) for p in tomb_paths if p.exists()]
+    assert existing == [], (
+        f"{len(existing)} tombstone path(s) already exist right after "
+        f"construction: {existing} — the helper is pre-creating the file (a "
+        f"discarded mkstemp descriptor is how that happens)")
+
+    assert fds_after - fds_before == 0, (
+        f"registry construction leaked file descriptors: "
+        f"before={fds_before}, after={fds_after}")
