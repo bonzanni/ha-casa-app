@@ -14,6 +14,8 @@ can never settle the round (and run the plugin's setup tool) while the other
 consent is still open.
 """
 import asyncio
+
+from broker_helpers import wait_until
 from types import SimpleNamespace
 
 import pytest
@@ -418,10 +420,12 @@ async def test_one_union_round_settles_only_after_both_approvals(
     cb_key = next(k for k, ch in coord._entries.items()
                   if ch.req.meta.get("kind") == "callback_consent")
     _tap(broker, coord, cb_key, 0)
-    for _ in range(100):
-        await asyncio.sleep(0.01)
-        if _released():
-            break
+    # Wait on the OBSERVABLE settle, not a 1 s poll cap that loses under the
+    # loaded parallel gate (#794). This is a POSITIVE wait — the union must
+    # settle here — so wait_until (raises on genuine non-settle) is right; the
+    # step-2 adversarial poll above stays a bounded poll because it asserts
+    # that nothing happens.
+    await wait_until(lambda: bool(_released()))
     assert [e["status"] for e in _released()] == ["pending"]
     await pse._worker_pass()
     assert len(dispatched) == 1
