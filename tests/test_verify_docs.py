@@ -1348,18 +1348,6 @@ _DECLARED_OWNERSHIP = [
      ["_make_internal_tools_call_handler.handler"]),
 ]
 
-# INV-MEM-011's last-instant launch gates and the resume core / boot replay. Real
-# enforcement points, deliberately NOT claimed by `memory-scoping.md`: impact is
-# file-grained (`_claimants` matches `parse_anchor(anchor)[0]`), so claiming them
-# would put a read-clearance document on the impact set of every edit to the two
-# busiest files in the tree, for every author, forever. Each is already claimed by
-# the document that rules on it — `engagements.md`, `engagement-completion-gate.md`,
-# `overview.md`. Widening this is a deliberate edit to this list, not a drift.
-_RULED_OUT_OF_MEMORY_SCOPING = [
-    "casa/rootfs/opt/casa/drivers/in_casa_driver.py",
-    "casa/rootfs/opt/casa/drivers/claude_code_driver.py",
-    "casa/rootfs/opt/casa/casa_core.py",
-]
 
 
 def _covers_by_doc():
@@ -1410,17 +1398,77 @@ def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, s
     assert actual == expected, actual
 
 
-@pytest.mark.parametrize("source", _RULED_OUT_OF_MEMORY_SCOPING)
-def test_memory_scoping_does_not_claim_a_last_instant_launch_gate(source):
-    """The other half of the ruling, pinned at both levels it can be violated at:
-    the manifest, and the impact map the gate actually consults. Green before this
-    change and after it — it is not part of the red case; it exists so that
-    widening the claimed surface is a visible edit to `_RULED_OUT_OF_MEMORY_SCOPING`
-    rather than something that happens to a later author.
-    """
-    covers = _covers_by_doc()["architecture/memory-scoping.md"]
-    claimed = [a for a in covers if verify_docs.parse_anchor(a)[0] == source]
+# --- #707 + #646: INV-MEM-011's own enforcement points ------------------------------
+#
+# The three sites `architecture/memory-scoping.md` names in its INV-MEM-011 prose
+# (`docs/architecture/memory-scoping.md:106-112` at this change's base) and that no
+# document claimed: "the drivers' last-instant launch gates" — the `#369` gate inside
+# `InCasaDriver.start` and the one inside `ClaudeCodeDriver.start` — and "the resume
+# core and boot replay", whose boot-replay half is `replay_undergoing_engagements`.
+#
+# An earlier attempt of this cluster EXCLUDED these three and pinned the exclusion
+# negatively, on the ground that impact is file-grained (`_claimants` matches
+# `parse_anchor(anchor)[0]`, not the symbol), so claiming them adds a read-clearance
+# document to the impact set of every edit to three of the busiest files in the tree.
+# That cost is real and was measured rather than argued: the ownership sets go 1->2,
+# 4->5 and 10->11, and in the 99 commits on `main` before this change's base the three
+# files were touched 8, 10 and 22 times. The exclusion was reversed anyway, because a
+# cheaper guard that is silent where the invariant is enforced is not a cheaper guard.
+#
+# Their own table, deliberately not merged into `_DECLARED_OWNERSHIP`: that table and
+# the two tests parametrized over it are the earlier attempt's ACCEPTED red case, and
+# re-parametrizing an accepted red case is not a thing this may do.
 
-    assert claimed == [], claimed
-    assert "architecture/memory-scoping.md" not in verify_docs.impacted_docs(
-        REPO_ROOT, [source])
+# (source file, owning document, the one enforcement point that document claims IN it)
+_INV_MEM_011_ENFORCEMENT_OWNERSHIP = [
+    ("casa/rootfs/opt/casa/drivers/in_casa_driver.py",
+     "architecture/memory-scoping.md", "InCasaDriver.start"),
+    ("casa/rootfs/opt/casa/drivers/claude_code_driver.py",
+     "architecture/memory-scoping.md", "ClaudeCodeDriver.start"),
+    ("casa/rootfs/opt/casa/casa_core.py",
+     "architecture/memory-scoping.md", "replay_undergoing_engagements"),
+]
+
+_ENFORCEMENT_IDS = [s.rsplit("/", 1)[-1] for s, _, _ in _INV_MEM_011_ENFORCEMENT_OWNERSHIP]
+
+
+@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
+                         ids=_ENFORCEMENT_IDS)
+def test_an_inv_mem_011_enforcement_point_names_memory_scoping(source, doc, symbol):
+    """The impact level — the one the shipping gate actually consults. Before this
+    change `impacted_docs` returns 1, 4 and 10 documents for these three files and
+    `memory-scoping.md` is in none of them, so a change that weakens one of
+    INV-MEM-011's launch gates satisfies `docs_impact.sh` without the document that
+    asserts the invariant ever being named.
+
+    `count(doc) == 1` rather than an exact set, for the reason
+    `_DECLARED_OWNERSHIP`'s tests give: these files carry up to ten other claimants
+    and gain more over time, and an exact-set assertion would turn this pin into an
+    unrelated author's blocker.
+    """
+    impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
+
+    assert impact.count(doc) == 1, impact
+
+
+@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
+                         ids=_ENFORCEMENT_IDS)
+def test_memory_scoping_claims_exactly_the_enforcement_point(source, doc, symbol):
+    """The manifest level, as a SEPARATELY COLLECTED test rather than a second
+    assertion in the one above. Measured: substituting an anchor for another
+    resolvable symbol in the same file (`InCasaDriver.start` ->
+    `InCasaDriver.inbound_unread_depth`) leaves the impact count at 1, so the impact
+    assertion still passes and only this `Counter` equality fails. Were the two
+    assertions in one test the impact one would fire first on a deletion mutant and
+    stop execution, and the mutation evidence could claim both levels were checked
+    while only one was.
+
+    `Counter` equality on the file's slice of `covers` rejects an absent anchor, a
+    substituted one, an extra one and a duplicated one — a set comparison hides the
+    last.
+    """
+    covers = _covers_by_doc()[doc]
+    actual = Counter(a for a in covers if verify_docs.parse_anchor(a)[0] == source)
+    expected = Counter([f"{source}::{symbol}"])
+
+    assert actual == expected, actual
