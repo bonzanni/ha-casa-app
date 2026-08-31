@@ -1743,6 +1743,33 @@ def managed_component_guard_matcher():
 # unless the quotes come off first.
 _SHELL_QUOTE_CHARS = str.maketrans("", "", "'\"\\")
 
+# Lexically redundant separator noise, collapsed out of a command's text before
+# it is searched for a filename needle. `prompts/./system.md` and
+# `prompts//system.md` name exactly the file `prompts/system.md` names, and the
+# kernel resolves all three identically — but a substring search sees three
+# different strings. Collapsing them is a GENERALISATION rather than a list of
+# spellings: it retires the whole lexical-equivalence class at once, which is
+# what the escalation rule asks for on a second finding in one mechanism.
+_REDUNDANT_SLASHES = re.compile(r"/{2,}")
+_DOT_SEGMENTS = re.compile(r"(?:/\.)+/")
+
+
+def _collapse_lexical_path_noise(text: str) -> str:
+    """Collapse ``//`` runs and ``/./`` segments in *text*.
+
+    Text-level and deliberately not a path parse: a command is not a path, and
+    splitting one into paths correctly means implementing shell word splitting.
+    Both rewrites are equivalence-preserving for the only question asked of the
+    result — whether it contains a filename needle — because the collapsed
+    spelling and the original name the same file. Neither can manufacture a
+    needle that no spelling of the command named: ``//`` and ``/./`` only ever
+    stand between segments the original already had, so a match after
+    collapsing implies the command really did name that file. ``..`` is not
+    handled and does not need to be: a ``..`` spelling that reaches the file
+    still contains the needle literally.
+    """
+    return _DOT_SEGMENTS.sub("/", _REDUNDANT_SLASHES.sub("/", text))
+
 def _command_mentions_a_trigger_file(command: str) -> bool:
     """True iff *command*'s text names ``triggers.yaml``, with shell quoting
     removed from the WHOLE command first.
@@ -2244,9 +2271,14 @@ def _command_targets_a_resident_prompt_file(command: str, cwd: str) -> bool:
 
     Shell quoting is stripped from the command text first, so
     ``prompts/"system".md`` and friends reduce to one case rather than many
-    spellings.
+    spellings, and redundant separators are collapsed for the same reason —
+    ``prompts/./system.md`` and ``prompts//system.md`` were both allowed while
+    the canonical spelling was denied, reproduced in a review round. That was
+    the SECOND finding against this text predicate, so the answer is the
+    normalizing one rather than another recognised spelling: see
+    :func:`_collapse_lexical_path_noise`.
     """
-    text = command.translate(_SHELL_QUOTE_CHARS)
+    text = _collapse_lexical_path_noise(command.translate(_SHELL_QUOTE_CHARS))
     if _RESIDENT_PROMPT_BASH_NEEDLE not in text:
         return False
     if _RESIDENT_ROOT in text:

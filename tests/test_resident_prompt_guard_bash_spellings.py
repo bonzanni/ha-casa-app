@@ -76,3 +76,59 @@ def test_bash_evidence_covers_every_in_config_spelling_and_no_others():
         return denied, leaked
 
     assert asyncio.run(run()) == (4, 0)
+
+
+def test_lexically_equivalent_separator_spellings_are_denied_too():
+    """(denied, leaked) == (7, 0).
+
+    The SECOND finding the gate-owned review reproduced against this text
+    predicate, and the reason the fix normalizes rather than recognising one
+    more spelling. Measured before it, from `cwd=/config`:
+
+        printf x > /config/agents/assistant/prompts/./system.md   -> ALLOW
+        printf x > agents/assistant/prompts/./system.md           -> ALLOW
+        printf x > /config/agents/assistant/prompts//system.md    -> ALLOW
+
+    while the canonical spelling was denied. `//` was not in the finding; it
+    fell out of the same measurement, which is the point of retiring the class
+    instead of the case. Every command below names exactly the file the
+    canonical spelling names, and the kernel resolves them identically.
+
+    The `must_allow` half is load-bearing: collapsing separators must not
+    manufacture a needle. A plugin developer's own workspace copy stays
+    writable in every one of the same spellings.
+    """
+    cb = _guard()
+    must_deny = [
+        ("/config", "printf x > /config/agents/assistant/prompts/./system.md"),
+        ("/config", "printf x > agents/assistant/prompts/./system.md"),
+        ("/config", "printf x > /config/agents/assistant/prompts//system.md"),
+        ("/config", "printf x > /config//agents///assistant/prompts////system.md"),
+        ("/config", "printf x > /config/agents/assistant/prompts/././system.md"),
+        ("/config", "printf x > /config/./agents//assistant/./prompts/.//system.md"),
+        # Quote stripping runs first, so noise may arrive from inside quotes.
+        ("/config/agents/assistant", 'printf x > prompts/"."/system.md'),
+    ]
+    must_allow = [
+        (WORKSPACE, f"printf x > {WORKSPACE}/prompts/./system.md"),
+        (WORKSPACE, f"printf x > {WORKSPACE}/prompts//system.md"),
+        (WORKSPACE, "printf x > prompts/./system.md"),
+        # A dotted basename is a DIFFERENT file, not a noisy spelling of this
+        # one: `prompts/."system".md` is `prompts/.system.md` to the shell.
+        ("/config", 'printf x > /config/agents/assistant/prompts/."system".md'),
+        # Reads stay allowed in the noisy spellings too.
+        ("/config", "cat /config/agents/assistant/prompts/./system.md"),
+    ]
+
+    async def run() -> tuple[int, int]:
+        denied = 0
+        for cwd, cmd in must_deny:
+            if await _denies(cb, cwd, cmd):
+                denied += 1
+        leaked = 0
+        for cwd, cmd in must_allow:
+            if await _denies(cb, cwd, cmd):
+                leaked += 1
+        return denied, leaked
+
+    assert asyncio.run(run()) == (7, 0)
