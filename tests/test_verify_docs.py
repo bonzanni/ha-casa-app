@@ -1309,15 +1309,21 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 # at every base and pins nothing, because the defect is missing data in the published
 # corpus rather than a fault in the verifier.
 #
-# NO CORPUS COUNTS APPEAR IN THIS REGION'S PROSE, deliberately. Three review rounds
-# of this change each found the same defect shape at a different site: a hand-written
-# figure about the corpus — anchors per document, documents per source file,
-# invariants per document — that was true when typed and false by the time it was
-# read. Every one of those figures drifts with any later author's unrelated edit, and
-# nothing checks a comment. So the rule for anything added here is: state the
-# PROPERTY, and let the tables below and the verifier carry the numbers. Measurements
-# of what a change did belong in that change's commit message, which is dated by
-# construction and read by a gate.
+# THIS REGION'S PROSE MAKES NO CLAIM ABOUT CORPUS STATE — no count, and no word
+# stating a quantity, a rate or a trend either. Four review rounds of this change
+# each found the same defect shape at a different site: a hand-written claim about
+# the corpus, true when typed and false by the time it was read. The first three were
+# figures (anchors per document, documents per source file, invariants per document).
+# The fourth was the attempted cure for the first three — "growing", "several",
+# "busiest", "often", "gain more over time" — which is the same claim with the
+# number removed, still unchecked and still falsifiable by an unrelated author
+# adding or removing an anchor.
+#
+# So the rule for anything added here is: state only what is STRUCTURALLY true of
+# the mechanism, never what happens to be true of today's corpus. The tables below
+# carry the pairs, the verifier carries the anchors, and measurements of what a
+# change did belong in that change's commit message, which is dated by construction
+# and read by a gate.
 #
 # Scope, stated so it is not over-read: this table claims exactly the (source file,
 # owning document) pairs listed in it, and a second table further down claims the
@@ -1382,9 +1388,11 @@ def test_a_changed_enforcement_module_names_its_owning_document(source, doc, sym
     scope are the point: this test is green at the head, so a present-tense claim
     here would tell a reader that a gap this range closed is still open.
 
-    `count(doc) == 1` and not an exact set: `impacted_docs` returns a growing
-    collection, and an exact-set assertion would fail the moment any unrelated
-    change anchors one of these files, turning this pin into everyone's blocker.
+    `count(doc) == 1` and not an exact set: this pin's scope is the one pair in its
+    row, and every other claimant of the same file is outside that scope. An
+    exact-set assertion would couple the pin to those other claimants, so any
+    unrelated change that anchored or unanchored one of these files would fail
+    THESE tests — turning the pin into that author's blocker.
     """
     impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
 
@@ -1421,11 +1429,11 @@ def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, s
 # An earlier attempt of this cluster EXCLUDED these three and pinned the exclusion
 # negatively, on the ground that impact is file-grained (`_claimants` matches
 # `parse_anchor(anchor)[0]`, not the symbol), so claiming them adds a read-clearance
-# document to the impact set of every edit to three of the busiest files in the tree.
-# That cost is real, and it was measured rather than argued — each of the three files
-# gains exactly one document, on files that change often; the figures are in the
-# commit that added these anchors. The exclusion was reversed anyway, because a
-# cheaper guard that is silent where the invariant is enforced is not a cheaper guard.
+# document to the impact set of EVERY edit to these files, whatever the edit touched.
+# That cost is real, and it was measured rather than argued at the time; the figures
+# are in the commit that added these anchors, dated by it. The exclusion was reversed
+# anyway, because a cheaper guard that is silent where the invariant is enforced is
+# not a cheaper guard.
 #
 # Their own table, deliberately not merged into `_DECLARED_OWNERSHIP`: that table and
 # the two tests parametrized over it are the earlier attempt's ACCEPTED red case, and
@@ -1454,9 +1462,9 @@ def test_an_inv_mem_011_enforcement_point_names_memory_scoping(source, doc, symb
     asserts the invariant ever being named.
 
     `count(doc) == 1` rather than an exact set, for the reason
-    `_DECLARED_OWNERSHIP`'s tests give: these files already carry several other
-    claimants and gain more over time, and an exact-set assertion would turn this
-    pin into an unrelated author's blocker.
+    `_DECLARED_OWNERSHIP`'s tests give: any other claimant of the same file is
+    outside this pin's scope, and an exact-set assertion would couple the pin to
+    those claimants and turn it into an unrelated author's blocker.
     """
     impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
 
