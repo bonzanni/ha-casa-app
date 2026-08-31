@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.248.0] - 2026-08-31
+
+### Fixed
+
+- An engagement that finished while Casa was down is now told to whoever asked
+  for it, on the next start. The outcome of a completed or cancelled engagement
+  was announced once, in the moment, with nothing recorded about whether that
+  announcement ever reached anyone — so if the assistant that asked for the work
+  was not listening, or Casa restarted first, the outcome was never mentioned
+  again, permanently. Casa now keeps owing that telling until it is actually
+  delivered, and replays it when it comes back up. The replayed notice says
+  exactly what happened — completed, cancelled or failed — and says plainly that
+  it does not carry the report itself.
+- A failed engagement launch no longer closes a topic it does not own. When a
+  launch failed, Casa marked the engagement failed and closed its topic without
+  checking that the mark had stuck. A launch failing at the same moment the
+  engagement was cancelled elsewhere would paint over the real outcome and close
+  the topic out from under its owner; a launch whose failure never reached disk
+  would close the topic for good over an engagement the next start then tried to
+  resume into a topic that no longer existed. All thirteen launch-failure paths
+  now act only when their own mark is the one that durably landed — otherwise
+  the topic is left alone, exactly as its real owner left it. The reply you get
+  back is unchanged either way.
+- The message shown when delegated work ends without a result no longer claims
+  things that may not be true. It said the work had been interrupted by a Casa
+  restart and that its answer was gone, neither of which holds for an engagement
+  that finished long before the restart and whose summary may well have been
+  kept. It now says only that this notice does not carry the answer, and offers
+  to run the work again rather than to look up something that may not exist. A
+  cancelled delegation that used to render as an empty "Delegation failed
+  (cancelled): " now says what actually happened.
+
 ## [0.247.0] - 2026-08-30
 
 ### Fixed
