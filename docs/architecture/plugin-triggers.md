@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-16
+last_reviewed: 2026-08-30
 ---
 
 # Plugin-declared triggers
@@ -152,6 +152,7 @@ those leaves the old overlay live until a covered scope runs.
 **Source**
 - `casa/rootfs/opt/casa/trigger_reconcile.py`
 - `casa/rootfs/opt/casa/trigger_acks.py::TriggerAckStore`
+- `casa/rootfs/opt/casa/trigger_consent.py`
 - `casa/rootfs/opt/casa/plugin_triggers.py::parse_and_validate`
 - `casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry.replace_plugin_overlay`
 

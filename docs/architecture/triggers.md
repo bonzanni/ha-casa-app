@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-25
+last_reviewed: 2026-08-30
 ---
 
 # Triggers and scheduling
@@ -286,26 +286,14 @@ the channel gate is scheduled-only (see INV-TRIG-001). Its secret — minted at
 registration, receipted, reported per slot — is
 [`trigger-secrets.md`](trigger-secrets.md)'s subject.
 
-**A new plugin trigger** needs the manifest declaration, an assigned target that accepts
-webhooks, secret backing, and operator consent — and reconciliation must then run. The
-declaration itself has hard rails a plugin author cannot discover from the routing model:
-at most eight triggers per plugin, effective names capped at 64 characters, and
-provider-owned secrets rejected outright. Secret backing is mode-specific: static-header
-and timestamped modes get a per-trigger secret minted eagerly after consent into the
-webhook-secrets state directory, while body-HMAC rides the one global webhook secret —
-provisioning the wrong kind leaves the plugin unroutable. Resident trigger files have
-their own schema rails: v2 forbids a webhook `path` (the wildcard route provides it),
-while legacy v1 required one, and a scheduled trigger takes exactly one of an inline
-prompt or a prompt file.
-An expired consent DM is re-issued on demand by the `consent_reprompt` tool — the
-prompt-only re-issue shared by all three consent kinds (its contract is in
-[`plugin-mutation-tools.md`](plugin-mutation-tools.md)), which skips triggers the operator
-explicitly denied.
-Reconciliation is hooked at boot, at plugin lifecycle changes, at consent and revocation,
-and at exactly four reload scopes: triggers, agent, agents, and full. The policies and
-config-sync reloads refresh agent configuration without reconciling the plugin overlay, so
-a routing-relevant change arriving through those leaves the old overlay live until a
-covered scope runs.
+**A resident trigger file has its own schema rails**: v2 forbids a webhook `path` (the
+wildcard route provides it), while legacy v1 required one, and a scheduled trigger takes
+exactly one of an inline prompt or a prompt file.
+
+**A new plugin trigger** is not this document's. What such a trigger must declare, the
+rails on that declaration, how its secret is backed, the operator approval that gates it
+and the reconciliation that publishes it are
+[`plugin-triggers.md`](plugin-triggers.md)'s.
 
 **Anything relying on a missed schedule being caught up** needs a persistent job store first;
 there is none today.

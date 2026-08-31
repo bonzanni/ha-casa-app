@@ -234,6 +234,7 @@
   covers:
     - casa/rootfs/opt/casa/trigger_reconcile.py
     - casa/rootfs/opt/casa/trigger_acks.py::TriggerAckStore
+    - casa/rootfs/opt/casa/trigger_consent.py
     - casa/rootfs/opt/casa/plugin_triggers.py::parse_and_validate
     - casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry.replace_plugin_overlay
   tests:
