@@ -495,6 +495,90 @@ def _fresh_operator_notice_lock():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_verdict_broker_and_challenges():
+    """#783: clear the two process-global request registries at every test
+    boundary, so a request one test registers cannot reach the next one.
+
+    ``verdict_broker.BROKER`` (`verdict_broker.py`) and
+    ``authz_grants.CHALLENGES`` (`authz_grants.py`) are module-level singletons
+    created at import. A ``PendingRequest`` registered inside a test holds a
+    future minted by ``asyncio.get_running_loop().create_future()``, i.e. bound
+    to that test's pytest-asyncio loop, and the registries kept it after the
+    loop closed. Two things then happened to later tests in the same worker:
+
+    * a sweep — ``cancel_all`` / ``cancel`` / ``cancel_scope`` /
+      ``cancel_where`` / ``unregister`` — reached ``_finish``, called
+      ``set_result`` on the stale future, and because the future carries a
+      done-callback, ``Future.__schedule_callbacks`` reached ``call_soon`` on
+      the closed loop: ``RuntimeError: Event loop is closed``. That is #783,
+      whose victims were ``test_graceful_shutdown_engagement_launch.py`` and
+      ``test_plugin_triggers_reconcile.py`` — neither of which leaked anything;
+    * more quietly, a leftover ``CHALLENGES._entries`` row deduplicated a later
+      test's registration away (no keyboard posted at all) and a leftover
+      ``BROKER._retired`` tombstone reattached a later same-key registration to
+      the earlier test's outcome.
+
+    Same defect class as ``_fresh_operator_notice_lock`` above, and the same
+    reason the suite stayed green for so long: ``--dist loadfile`` decides which
+    files share a worker, so co-residency — not load — is the die roll. It
+    reproduces serially and deterministically; see
+    ``tests/test_global_broker_isolation.py``, which pins it.
+
+    Test-only. Production has exactly one loop for the process's life, so a
+    broker future is always resolved on the loop that created it, and nothing
+    here relaxes any guarantee the broker or the coordinator makes.
+
+    Three implementation points, each load-bearing:
+
+    * **The containers are CLEARED IN PLACE; the singletons are never rebound.**
+      ``casa_core`` and ``tools`` do ``from authz_grants import CHALLENGES`` at
+      module import, so those aliases would keep pointing at the polluted
+      original — and ``tools``' alias is on the sweep path that produced the
+      second victim. The canonical objects are captured at setup so the
+      teardown reset reaches them whatever a test's own ``monkeypatch`` rebound
+      in between.
+    * **Nothing here resolves a future or cancels a task or a timer.**
+      Resolving the leaked future is precisely the operation that detonates,
+      and ``Task.cancel()`` can reach ``call_soon`` on the same closed loop.
+      Dropping the reference is enough: nothing else holds the entry. (Dead
+      pending tasks may then be reported by the GC as "Task was destroyed but
+      it is pending!" — a stderr note from a task whose loop is already gone.)
+    * **It runs only at the two test boundaries**, never mid-test, so
+      ``drain_hooks``'s 3.12+ eager-gather livelock guard never sees
+      ``_hook_tasks``/``_setup_tasks`` mutated underneath it.
+
+    Imports and attribute access are deliberately UNGUARDED, unlike the
+    ``try/except ImportError`` in the neighbouring fixtures: an isolation guard
+    that silently degraded after a rename would restore this defect invisibly,
+    which is the one failure mode it exists to prevent.
+
+    ``_hook_tasks``, ``_setup_tasks`` and ``_drivers`` are reference hygiene
+    rather than behavioural guards — the owning loop cancels its pending tasks
+    before closing, and ``drain_hooks`` sync-discards done ones — but they are
+    reset with the rest so no container of this class is left accumulating for
+    the life of the worker."""
+    import authz_grants as _ag
+    import verdict_broker as _vb
+
+    broker = _vb.BROKER
+    challenges = _ag.CHALLENGES
+
+    def _reset() -> None:
+        broker._live.clear()
+        broker._retired.clear()
+        broker._hook_tasks.clear()
+        broker._setup_tasks.clear()
+        challenges._entries.clear()
+        challenges._drivers.clear()
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
+@pytest.fixture(autouse=True)
 def _reset_ask_validation_gates():
     try:
         from channels import channel_handlers as _ch
