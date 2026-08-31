@@ -7,7 +7,7 @@ possible at all.** Three kinds, three different answers:
 |---|---|---|
 | an executor's `prompt.md` / `doctrine/*.md` | yes | on that executor's next COLD session, not necessarily the next turn |
 | a resident's `prompts/<trigger>.md` | yes | after `casa_reload_triggers(role=<role>)` — NOT on the next turn |
-| a resident's `prompts/system.md` | **no — the hook denies it** | never; see `recipes/prompt/resident.md` |
+| a resident's `prompts/system.md` | **no — Write/Edit of it are refused** | never — it is not served; see `recipes/prompt/resident.md` |
 
 ## Executor prose
 

@@ -31,9 +31,10 @@ class TestHookBridgeTranslate:
         # containment-floor policies (block_dangerous_bash, path_scope —
         # Task 4 #360), neither of which was declared here.
         # #631: +1 — resident_prompt_write_guard is code-mandatory in this
-        # bridge too (path_scope's matcher is Read|Write|Edit and never routes
-        # Bash, so a claude_code executor's shell write to a resident's inert
-        # prompt file was denied by nothing at all).
+        # bridge too (file tools only; path_scope's writable prefixes are the
+        # executor's own declaration, so a declaration admitting /config/agents
+        # would otherwise leave a resident's inert prompt file refused by
+        # nothing).
         assert len(pre) == 6
 
         first = pre[0]
@@ -66,8 +67,9 @@ class TestHookBridgeTranslate:
         # Task 4 (#360): the empty document also gets both containment-floor
         # policies appended alongside the managed-component guard, and #631's
         # resident_prompt_write_guard — code-mandatory here because
-        # `path_scope` does not route Bash, so a claude_code executor's shell
-        # write to a resident's inert prompt file was denied by nothing.
+        # `path_scope`'s writable prefixes are declared by the executor, so
+        # nothing else refuses a resident's inert prompt file to a declaration
+        # that admits it.
         assert len(pre) == 4
         guard = next(
             e for e in pre

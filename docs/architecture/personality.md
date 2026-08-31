@@ -134,29 +134,37 @@ changing it is not the answer. The shell half of the refusal is a backstop rathe
 boundary — it recognises the accidental spelling, not every possible one — and the
 specialist subtree is denied by the managed-state guard instead, in its own words.
 
-**INV-PERS-012**: A persona-bound resident's `prompts/system.md` is not read, and an agent's write to a resident's copy is refused at every write primitive, on the executor, resident, delegated-resident and claude_code hook paths.
+**INV-PERS-012**: A persona-bound resident's `prompts/system.md` is read only into the composed fallback prompt and is not served when its compiled bundle is active; and an agent's write to a resident's copy through `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is refused on the executor, resident, delegated-resident and claude_code hook paths.
 
 This is INV-PERS-008 one file over, and the file operators actually reach for.
-`character.yaml` points at it, the loader requires it to exist, and it composes
-into a prompt no bundle-bound resident is served — while five configurator
-recipes and the operator documentation used to route behavioural instructions
-into it and promise the edit was live on the next turn. The refusal resolves its
-target before deciding: a relative path against the session's own working
-directory, redundant separators and `.` and `..` segments away, and a symlink
-through to what it points at, rather than comparing the path it was handed.
+`character.yaml` points at it, the loader requires it to exist and opens it on
+every load — the file *is* read — and what it reads composes into a prompt no
+bundle-bound resident is served, because the compiled bundle replaces the
+composed one from the first boot. Five configurator recipes and the operator
+documentation used to route behavioural instructions into it and promise the
+edit was live on the next turn. The refusal resolves its target before deciding:
+a relative path against the session's own working directory, redundant
+separators and `.` and `..` segments away, and a symlink through to what it
+points at, rather than comparing the path it was handed.
 
 What it does not cover. **It is not a claim of completeness over path
 spellings** — an implementation can condition a resolution stage on a spelling
 class no test exercises, so what is asserted is the resolution behaviour that is
 exercised, not that no spelling escapes. Nor reads: an agent may still open the
-file, and should, to explain why changing it is not the answer. The shell half
-decides on command text — a backstop that recognises the accidental spelling,
-not every possible one, so a path assembled across `cd` boundaries is not
-caught. Nor the claude_code transport's fail-open when the hook resolver is
-unreachable, which is a property of that transport that the managed-state guard
-shares. Actual specialist sessions are not claimed: a specialist's copy is
-materialized output under managed state, which the managed-state guard denies in
-its own words.
+file, and should, to explain why changing it is not the answer. **Nor the
+shell.** A `Bash` call is not routed to this guard and its callback classifies
+no command text: a first cut decided the shell from the command's text, the way
+the trigger-file and response-shape guards still do, and was measured wrong in
+both directions — it refused reads the invariant promises to allow and missed
+writes — because what a shell command writes to is not decidable from its text.
+So a shell-capable agent can still make the edit. It is inert for a bundle-bound
+resident; no shipped resident holds `Bash` and the configurator has none, so the
+one shipped path is the plugin-developer's shell, and whether that tree gets an
+execution boundary is a separate decision from this guard. Nor the claude_code
+transport's fail-open when the hook resolver is unreachable, which is a property
+of that transport that the managed-state guard shares. Actual specialist
+sessions are not claimed: a specialist's copy is materialized output under
+managed state, which the managed-state guard denies in its own words.
 
 The half that matters more is not the refusal. A guard alone would leave every
 instruction still pointing at the file, which is the half an operator hits;
@@ -318,7 +326,6 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `tests/test_personality_admin_handlers.py`
 - `tests/test_response_shape_write_guard.py`
 - `tests/test_resident_prompt_write_guard.py`
-- `tests/test_resident_prompt_guard_bash_spellings.py`
 - `tests/test_assistant_prompts.py`
 - `tests/test_prompt_compiler.py`
 - `tests/test_persona_pack.py`

@@ -1,7 +1,7 @@
 # Recipe: change how a resident behaves
 
-**There is no `prompts/system.md` edit to make. Do not attempt one — the hook
-denies it, and it would not have worked.**
+**There is no `prompts/system.md` edit to make. Do not attempt one — Write and
+Edit of it are refused, and it would not have worked: the file is not served.**
 
 `agents/<role>/prompts/system.md` is loaded, is pointed at by `character.yaml`'s
 `prompt_file:`, and is required to exist. It is also read by nothing a resident

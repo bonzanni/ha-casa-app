@@ -659,7 +659,8 @@ as errored and tells you to start a fresh one.
   how to surface it based on the prompt she is actually served — which
   is compiled from her persona and her role, not from any file in her
   agent folder. Editing `prompts/system.md` there does nothing (Casa
-  now refuses the edit rather than letting it look like it worked);
+  refuses the edit through its file tools rather than letting it look
+  like it worked, and an edit made any other way is just as inert);
   how loudly she narrates is part of her persona.
 
 ## Configurator (v0.12.0)
@@ -675,7 +676,7 @@ The `configurator` is the first Tier 3 Executor - knows Casa's configuration sur
 | Resident agents (Tier 1) | rare | yes | yes | blocked by default |
 | Per-agent YAMLs | yes | yes | yes | yes |
 | Per-agent prompts (executor prose, per-trigger prompts) | yes | yes | yes | yes |
-| A resident's `prompts/system.md` | - | yes | **no** (not served; the edit is refused) | - |
+| A resident's `prompts/system.md` | - | yes | **no** (not served; a file-tool edit is refused) | - |
 | Triggers (cron, interval, webhook) | yes | yes | yes | yes |
 | Delegate wiring | yes | yes | yes | yes |
 | Policies (disclosure) | - | yes | yes (but reaches no served prompt today) | - |

@@ -1743,33 +1743,6 @@ def managed_component_guard_matcher():
 # unless the quotes come off first.
 _SHELL_QUOTE_CHARS = str.maketrans("", "", "'\"\\")
 
-# Lexically redundant separator noise, collapsed out of a command's text before
-# it is searched for a filename needle. `prompts/./system.md` and
-# `prompts//system.md` name exactly the file `prompts/system.md` names, and the
-# kernel resolves all three identically — but a substring search sees three
-# different strings. Collapsing them is a GENERALISATION rather than a list of
-# spellings: it retires the whole lexical-equivalence class at once, which is
-# what the escalation rule asks for on a second finding in one mechanism.
-_REDUNDANT_SLASHES = re.compile(r"/{2,}")
-_DOT_SEGMENTS = re.compile(r"(?:/\.)+/")
-
-
-def _collapse_lexical_path_noise(text: str) -> str:
-    """Collapse ``//`` runs and ``/./`` segments in *text*.
-
-    Text-level and deliberately not a path parse: a command is not a path, and
-    splitting one into paths correctly means implementing shell word splitting.
-    Both rewrites are equivalence-preserving for the only question asked of the
-    result — whether it contains a filename needle — because the collapsed
-    spelling and the original name the same file. Neither can manufacture a
-    needle that no spelling of the command named: ``//`` and ``/./`` only ever
-    stand between segments the original already had, so a match after
-    collapsing implies the command really did name that file. ``..`` is not
-    handled and does not need to be: a ``..`` spelling that reaches the file
-    still contains the needle literally.
-    """
-    return _DOT_SEGMENTS.sub("/", _REDUNDANT_SLASHES.sub("/", text))
-
 def _command_mentions_a_trigger_file(command: str) -> bool:
     """True iff *command*'s text names ``triggers.yaml``, with shell quoting
     removed from the WHOLE command first.
@@ -2175,14 +2148,6 @@ def response_shape_write_guard_matcher():
 
 _RESIDENT_PROMPT_FILE_NAME = "system.md"
 _RESIDENT_PROMPTS_DIR_NAME = "prompts"
-# TWO segments, not the bare basename. `system.md` alone collides with a
-# specialist's materialized copy and with the executor doctrine that
-# legitimately sends a model to READ butler's file; a review round measured
-# that the neighbouring guards' bare-basename predicates refuse a delegated
-# agent writing `/data/engagements/<id>/response_shape.yaml` in its own
-# workspace, which is the cost of that spelling.
-_RESIDENT_PROMPT_BASH_NEEDLE = "prompts/system.md"
-
 _RESIDENT_PROMPT_WRITE_DENY = (
     "resident_prompt_write_guard: {tool} blocked — {path!r} is not read for a "
     "persona-bound resident, so editing it would be committed and reported "
@@ -2244,49 +2209,6 @@ def _is_resident_prompt_file(norm: str) -> bool:
             and role.name not in ("", "specialists", "executors"))
 
 
-def _command_targets_a_resident_prompt_file(command: str, cwd: str) -> bool:
-    """True iff *command*'s text names ``prompts/system.md`` AND either the
-    command or the session's own working directory places it in the config
-    tree.
-
-    Both halves are required. The needle alone refuses a plugin-developer
-    writing ``/data/engagements/<id>/prompts/system.md`` inside its own
-    workspace — reproduced, 1 of 1 denied, in a review round — which is the
-    over-claim the two-segment needle exists to avoid.
-
-    The cwd half is a PREDICATE on the working directory, not a substring
-    search over `cwd` glued to the command. Gluing them was the first spelling
-    and it had a hole the gate-owned review reproduced: with ``cwd=/config``,
-    ``printf x > agents/assistant/prompts/system.md`` produces the text
-    ``... agents/assistant/prompts/system.md /config``, in which
-    ``/config/agents`` never appears contiguously — so the executor's own
-    natural relative spelling was allowed while the absolute one was denied.
-    Asking whether the SESSION is under ``/config`` has no such seam, and it
-    also covers the resident's spelling (``sed -i prompts/system.md`` from its
-    agent home), whose evidence lives in the cwd and nowhere else.
-
-    Under ``/config`` the only ``prompts/system.md`` files that exist are agent
-    ones, so the cwd half does not widen the claim in practice; a session whose
-    cwd is outside ``/config`` must still name the tree in the command.
-
-    Shell quoting is stripped from the command text first, so
-    ``prompts/"system".md`` and friends reduce to one case rather than many
-    spellings, and redundant separators are collapsed for the same reason —
-    ``prompts/./system.md`` and ``prompts//system.md`` were both allowed while
-    the canonical spelling was denied, reproduced in a review round. That was
-    the SECOND finding against this text predicate, so the answer is the
-    normalizing one rather than another recognised spelling: see
-    :func:`_collapse_lexical_path_noise`.
-    """
-    text = _collapse_lexical_path_noise(command.translate(_SHELL_QUOTE_CHARS))
-    if _RESIDENT_PROMPT_BASH_NEEDLE not in text:
-        return False
-    if _RESIDENT_ROOT in text:
-        return True
-    norm = _normalize_path(cwd or "/config")
-    return norm == "/config" or norm.startswith("/config/")
-
-
 def make_resident_prompt_write_guard() -> HookCallback:
     """Deny an agent's write of a resident's ``prompts/system.md``.
 
@@ -2299,13 +2221,21 @@ def make_resident_prompt_write_guard() -> HookCallback:
     ``realpath`` only for absolute inputs and let ``alias.md`` through from
     inside the prompts directory.
 
-    The Bash half is the same coarse, decidable pair the two guards above use,
-    and carries the same caveat in the same words: it is a BACKSTOP, not a
-    boundary. It catches the accidental form — a `sed -i` from a model
-    following the old recipe — which is the entire threat model here. This
-    guard exists to stop an honest agent reporting an inert edit as done, not
-    to contain a hostile one. A path assembled across a `cd`, or built from
-    parts, does not name the file at all and is not caught.
+    There is NO Bash half, and that is a ruling rather than an omission (D36,
+    2026-08-31). Its two neighbours decide a shell command by matching text in
+    it; a first cut of this guard did the same and was measured wrong in both
+    directions — it refused reads the invariant promises to allow (`cp` source,
+    `tar -cf` member, `<` redirection, `sed --file=`, `diff` operand) and
+    missed writes (an interior `..`, a `cp` destination composed from a
+    directory operand, `tar -xf -C`, a glob) — because what a shell command
+    writes to, and whether it writes, are not decidable from its text. So the
+    matcher routes the four file primitives only, this callback classifies no
+    command text, and a `Bash` payload that reaches it (it cannot, in
+    production) falls through to allow. The residual is exactly that: a
+    shell-capable agent can still make the edit, which is inert for a
+    bundle-bound resident. No shipped resident holds `Bash` and the
+    configurator has none; the plugin-developer's shell is the shipped path,
+    and an execution boundary over that tree is a separate decision.
     """
     async def _hook(
         input_data: dict[str, Any],
@@ -2338,12 +2268,6 @@ def make_resident_prompt_write_guard() -> HookCallback:
                 if _is_resident_prompt_file(_normalize_path(real)):
                     return _deny(_RESIDENT_PROMPT_WRITE_DENY.format(
                         tool=tool_name, path=raw))
-            elif tool_name == "Bash":
-                command = input_data.get("tool_input", {}).get("command", "")
-                if (_command_targets_a_resident_prompt_file(command, cwd)
-                        and not _provably_read_only(command)):
-                    return _deny(_RESIDENT_PROMPT_WRITE_DENY.format(
-                        tool="Bash", path=_RESIDENT_PROMPT_BASH_NEEDLE))
             return {}
         except asyncio.CancelledError:
             raise
@@ -3172,10 +3096,11 @@ HOOK_POLICIES: dict[str, dict[str, Any]] = {
         "factory": _response_shape_write_guard_factory,
     },
     "resident_prompt_write_guard": {
-        # #631. Same routing rule as its two neighbours above, for the same
-        # reason: a matcher that does not ROUTE MultiEdit/NotebookEdit lets
-        # those bypass the hook entirely.
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        # #631. The four file primitives, for the same routing reason as its
+        # two neighbours (a matcher that does not ROUTE MultiEdit/NotebookEdit
+        # lets those bypass the hook entirely) — and, unlike them, NOT Bash:
+        # the shell half was cut by ruling (D36); see the guard's docstring.
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
         "factory": _resident_prompt_write_guard_factory,
     },
     "self_containment_guard": {
@@ -3389,17 +3314,19 @@ def build_policy_callbacks_from_hooks_yaml(
     # invoke the proxy, and this resolves that policy NAME to a callback. An
     # entry for a policy the resolver does not know resolves to nothing.
     #
-    # It is here, and its two neighbours are not, deliberately. Reproduced on
-    # the shipped plugin-developer at this SHA: `printf 'x' >
-    # /config/agents/assistant/prompts/system.md` was denied by 0 of the 5
-    # policies its hooks.yaml declares, because `path_scope`'s matcher is
-    # `Read|Write|Edit` and never routes Bash at all — so the executor could
-    # write a resident's inert prompt and report it live. The trigger-file and
-    # response-shape guards are NOT added here because their Bash halves match
-    # a bare basename anywhere in a command, which would start refusing an
-    # executor writing its own `triggers.yaml`/`response_shape.yaml` inside
-    # /data/engagements (measured: 2 of 2 denied). Symmetry for its own sake
-    # would ship a regression.
+    # It is here, and its two neighbours are not, deliberately. `path_scope`'s
+    # PRESENCE is load-enforced on a claude_code executor, but its `writable:`
+    # prefixes are whatever that executor's own hooks.yaml declares (the
+    # bridge defaults them to empty; the shipped configurator declares
+    # `/config/agents`), so an executor whose declaration admits the resident
+    # tree would be refused by nothing else — and this guard's refusal names
+    # the corrective recipe where a scope denial cannot. On the shipped
+    # plugin-developer (`/data/engagements/` only) it is defence-in-depth. The
+    # trigger-file and response-shape guards are NOT added here because their
+    # Bash halves match a bare basename anywhere in a command, which would
+    # start refusing an executor writing its own `triggers.yaml`/
+    # `response_shape.yaml` inside /data/engagements (measured: 2 of 2
+    # denied). Symmetry for its own sake would ship a regression.
     if "resident_prompt_write_guard" not in out:
         policy = HOOK_POLICIES["resident_prompt_write_guard"]
         out["resident_prompt_write_guard"] = (

@@ -24,7 +24,7 @@ changes, addon options.json mutations, or kernel concerns.
 
 | Change | Reload |
 |---|---|
-| Edit a resident's prompts/system.md | **you cannot** — the hook denies it. Nothing reads it for a bundle-bound resident; see `recipes/prompt/resident.md` |
+| Edit a resident's prompts/system.md | **you cannot** — Write/Edit of it are refused. It is not served to a bundle-bound resident; see `recipes/prompt/resident.md` |
 | Edit a resident's prompts/<trigger>.md | `triggers` — the prose is captured in the scheduled job at load, so an edit is inert until the reload |
 | Edit response_shape.yaml | **you cannot** — the hook denies it. Nothing reads it for a bundle-bound agent; see `recipes/response-shape/edit.md` |
 | Edit executor's doctrine/*.md | none — but effective on that executor's next COLD session, not guaranteed on the next turn |

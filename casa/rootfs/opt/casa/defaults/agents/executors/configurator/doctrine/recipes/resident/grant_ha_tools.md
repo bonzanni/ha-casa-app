@@ -64,7 +64,7 @@ delegated turn that looped on it without ever acting.
 
 The grant is what makes the tools reachable. There is no file in which to
 "teach the resident how": `prompts/system.md` is not an input to anything a
-persona-bound resident is served, the hook denies writing it, and an appended
+persona-bound resident is served, Write/Edit of it are refused, and an appended
 `## Home Assistant tools` section would be committed and reported live while
 changing nothing the model sees. See `recipes/prompt/resident.md`.
 

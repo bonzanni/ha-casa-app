@@ -4,8 +4,8 @@ Residents own channels and are long-lived. Updating prompt/model/voice fields is
 
 ## Low-risk updates
 
-- Persona prompt (`prompts/system.md`) - **you cannot edit it**; the hook denies
-  it and it reaches nothing a resident is served. See
+- Persona prompt (`prompts/system.md`) - **you cannot edit it**; Write/Edit of
+  it are refused and it reaches nothing a resident is served. See
   `recipes/prompt/resident.md` for what to offer instead.
 - Model - `casa_reload(scope='agent', role=<role>)`.
 - Response shape - **you cannot edit it** either, for the same reason; see

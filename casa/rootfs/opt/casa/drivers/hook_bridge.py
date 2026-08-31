@@ -123,13 +123,17 @@ def translate_hooks_to_settings(
     # #631: resident_prompt_write_guard is code-mandatory here too, and this
     # is the OTHER half of the claude_code transport — hooks
     # .build_policy_callbacks_from_hooks_yaml resolves the policy name this
-    # entry names. Reproduced on the shipped plugin-developer: `printf 'x' >
-    # /config/agents/assistant/prompts/system.md` was denied by 0 of the 5
-    # policies its hooks.yaml declares, because `path_scope`'s matcher is
-    # `Read|Write|Edit` and does not route Bash. Its two neighbours are
-    # deliberately NOT added here — their Bash halves match a bare basename
-    # anywhere in a command and would refuse an executor writing its own
-    # `triggers.yaml` under /data/engagements.
+    # entry names. It routes the four file primitives only (no Bash — D36).
+    # Why it is emitted at all, given `path_scope`: the floor guarantees that
+    # `path_scope` is PRESENT, not what it admits — its `writable:` prefixes
+    # are the executor's own declaration (empty by default below; the shipped
+    # configurator declares `/config/agents`), so an executor whose
+    # declaration admits the resident tree would otherwise be refused by
+    # nothing, and this guard's denial names the corrective recipe where a
+    # scope denial cannot. Its two neighbours are deliberately NOT added here
+    # — their Bash halves match a bare basename anywhere in a command and
+    # would refuse an executor writing its own `triggers.yaml` under
+    # /data/engagements.
     prompt_matcher = HOOK_POLICIES["resident_prompt_write_guard"]["matcher"]
     prompt_cmd = f"{proxy_script_path} resident_prompt_write_guard"
     if not any(

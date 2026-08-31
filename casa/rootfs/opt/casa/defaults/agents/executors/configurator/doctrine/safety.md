@@ -28,8 +28,8 @@ You have no shell: Bash is not in your toolset. Edit files with Write/Edit, sear
   until `casa_reload_triggers(role=<role>)`: the prose is captured in the
   scheduled job when the agent loads.
 - (A resident's prompts/system.md is the exception on this list: it is not
-  destructive, it is IMPOSSIBLE - the hook denies it and it reaches nothing the
-  resident is served. See recipes/prompt/resident.md.)
+  destructive, it is IMPOSSIBLE - Write/Edit of it are refused and it reaches
+  nothing the resident is served. See recipes/prompt/resident.md.)
 - Editing doctrine/*.md (your own doctrine) - authorized.
 - Removing a specialist - common, but it goes through `recipes/specialist/uninstall.md` (the typed pipeline). Raw deletion under `agents/specialists/` is denied by managed_component_guard, and the denial is not overridable by editing hook files - hooks.yaml edits are denied too.
 - Deleting an executor (not a resident) - allowed.

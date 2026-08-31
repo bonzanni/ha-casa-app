@@ -122,7 +122,8 @@ def test_template_path_writes_translated_hooks(tmp_path, executor_defaults):
     pre = settings["hooks"]["PreToolUse"]
     commands = [e["hooks"][0]["command"] for e in pre]
     # #631: +1 — resident_prompt_write_guard joined the bridge's
-    # code-mandatory set, because path_scope does not route Bash.
+    # code-mandatory set (file tools only; see hook_bridge.py for why
+    # path_scope alone does not cover the resident tree).
     assert len(pre) == 4
     assert any(c.endswith("hook_proxy.sh managed_component_guard")
                for c in commands)
