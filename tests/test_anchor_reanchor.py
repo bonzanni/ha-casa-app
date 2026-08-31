@@ -23,6 +23,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from broker_helpers import wait_until
+
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
@@ -412,7 +414,15 @@ class TestB2SettleInterleaving:
         reg.update_question_mid = _gated_update
 
         ra = asyncio.ensure_future(drv._reanchor_pass(rec))
-        await asyncio.sleep(0.02)
+        # Wait for step 2's FULL end-state, not a fixed 20 ms wall-clock bet that
+        # loses under the loaded parallel gate (#782). The wait's exit condition
+        # is exactly what the assertions below check — the post is on the wire
+        # AND high-water has advanced to it — so the post landing a hair before
+        # high-water moves (which failed 600 == 1001 under CI load) can no
+        # longer let the test proceed early. Step 3 is held by `gate`, so
+        # exactly one post can land in this window.
+        await wait_until(lambda: len(wire.posts) >= 1
+                         and seq.high_water == wire.posts[0][1])
         # Step 2 accepted: the NEW copy is on the wire (markup), high-water moved.
         assert len(wire.posts) == 1 and wire.posts[0][0] == "markup"
         new_mid = wire.posts[0][1]
