@@ -188,6 +188,9 @@ after the launch recalls again ([`engagements.md`](engagements.md)).
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.handle_update`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._resume_and_ready`
 - `casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler.handler`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.start`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.start`
+- `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
 
 **Tests**
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`
