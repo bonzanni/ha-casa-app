@@ -1309,16 +1309,25 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 # at every base and pins nothing, because the defect is missing data in the published
 # corpus rather than a fault in the verifier.
 #
-# Scope, stated so it is not over-read: this table claims exactly the ELEVEN
-# (source file, owning document) pairs below, and a second table further down claims
-# the three INV-MEM-011 enforcement pairs — fourteen for the change as a whole. They
-# assert nothing about any other anchor anywhere in the corpus. A corpus-wide "no
-# undeclared anchor" pin was tried and cut: closing that class means pinning all 66
-# `covers` anchors of the five documents edited here, 43 of which this change does not
-# own, so a later author's legitimate anchor on an unrelated file would fail THESE
-# tests. The general gap behind that — the corpus has nothing preventing a document
-# from claiming any resolvable symbol in any file — is #787, and is not introduced
-# here.
+# NO CORPUS COUNTS APPEAR IN THIS REGION'S PROSE, deliberately. Three review rounds
+# of this change each found the same defect shape at a different site: a hand-written
+# figure about the corpus — anchors per document, documents per source file,
+# invariants per document — that was true when typed and false by the time it was
+# read. Every one of those figures drifts with any later author's unrelated edit, and
+# nothing checks a comment. So the rule for anything added here is: state the
+# PROPERTY, and let the tables below and the verifier carry the numbers. Measurements
+# of what a change did belong in that change's commit message, which is dated by
+# construction and read by a gate.
+#
+# Scope, stated so it is not over-read: this table claims exactly the (source file,
+# owning document) pairs listed in it, and a second table further down claims the
+# INV-MEM-011 enforcement pairs. Together they assert nothing about any other anchor
+# anywhere in the corpus. A corpus-wide "no undeclared anchor" pin was tried and cut:
+# closing that class means pinning every `covers` anchor of the five documents edited
+# here, most of which this change does not own, so a later author's legitimate anchor
+# on an unrelated file would fail THESE tests. The general gap behind that — the
+# corpus has nothing preventing a document from claiming any resolvable symbol in any
+# file — is #787, and is not introduced here.
 
 # (source file, owning document, the enforcement points that document claims IN it)
 _DECLARED_OWNERSHIP = [
@@ -1366,20 +1375,16 @@ def _covers_by_doc():
                          ids=[f"{s.rsplit('/', 1)[-1]}->{d.rsplit('/', 1)[-1]}"
                               for s, d, _ in _DECLARED_OWNERSHIP])
 def test_a_changed_enforcement_module_names_its_owning_document(source, doc, symbols):
-    """#707/#646, the defect itself. Every claim below about the state this test
-    closes is measured AT THIS CHANGE'S BASE and written in the past tense; the
-    test is green at the head, so a present-tense claim here would tell a reader
-    that a gap this range already closed is still open.
-
-    At the base, `--impact` named no document at all for `delegated_memory.py` or
-    `config.py`, and named neither `memory-scoping.md` nor
-    `config-reconciliation.md` for any module enforcing the six invariants those
-    two documents declare.
+    """#707/#646, the defect itself. At this change's base `--impact` named no
+    document at all for `delegated_memory.py` or `config.py`, and named neither
+    `memory-scoping.md` nor `config-reconciliation.md` for any of the modules
+    enforcing the invariants those two documents declare. Past tense and base
+    scope are the point: this test is green at the head, so a present-tense claim
+    here would tell a reader that a gap this range closed is still open.
 
     `count(doc) == 1` and not an exact set: `impacted_docs` returns a growing
-    collection — `tools.py` named twelve documents at the base — and an
-    exact-set assertion would fail the moment any unrelated change anchors one of
-    these files, turning this pin into everyone's blocker.
+    collection, and an exact-set assertion would fail the moment any unrelated
+    change anchors one of these files, turning this pin into everyone's blocker.
     """
     impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
 
@@ -1417,9 +1422,9 @@ def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, s
 # negatively, on the ground that impact is file-grained (`_claimants` matches
 # `parse_anchor(anchor)[0]`, not the symbol), so claiming them adds a read-clearance
 # document to the impact set of every edit to three of the busiest files in the tree.
-# That cost is real and was measured rather than argued: the ownership sets go 1->2,
-# 4->5 and 10->11, and in the 99 commits on `main` before this change's base the three
-# files were touched 8, 10 and 22 times. The exclusion was reversed anyway, because a
+# That cost is real, and it was measured rather than argued — each of the three files
+# gains exactly one document, on files that change often; the figures are in the
+# commit that added these anchors. The exclusion was reversed anyway, because a
 # cheaper guard that is silent where the invariant is enforced is not a cheaper guard.
 #
 # Their own table, deliberately not merged into `_DECLARED_OWNERSHIP`: that table and
@@ -1442,18 +1447,16 @@ _ENFORCEMENT_IDS = [s.rsplit("/", 1)[-1] for s, _, _ in _INV_MEM_011_ENFORCEMENT
 @pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
                          ids=_ENFORCEMENT_IDS)
 def test_an_inv_mem_011_enforcement_point_names_memory_scoping(source, doc, symbol):
-    """The impact level — the one the shipping gate actually consults. Measured at
-    this change's base and stated in the past tense for the reason
-    `test_a_changed_enforcement_module_names_its_owning_document` gives:
-    `impacted_docs` returned 1, 4 and 10 documents for these three files and
-    `memory-scoping.md` was in none of them, so a change that weakened one of
+    """The impact level — the one the shipping gate actually consults. At this
+    change's base `memory-scoping.md` was among the documents `impacted_docs`
+    returned for none of these three files, so a change that weakened one of
     INV-MEM-011's launch gates satisfied `docs_impact.sh` without the document that
     asserts the invariant ever being named.
 
     `count(doc) == 1` rather than an exact set, for the reason
-    `_DECLARED_OWNERSHIP`'s tests give: these files carry up to ten other claimants
-    and gain more over time, and an exact-set assertion would turn this pin into an
-    unrelated author's blocker.
+    `_DECLARED_OWNERSHIP`'s tests give: these files already carry several other
+    claimants and gain more over time, and an exact-set assertion would turn this
+    pin into an unrelated author's blocker.
     """
     impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
 
