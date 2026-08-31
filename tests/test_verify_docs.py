@@ -1366,13 +1366,18 @@ def _covers_by_doc():
                          ids=[f"{s.rsplit('/', 1)[-1]}->{d.rsplit('/', 1)[-1]}"
                               for s, d, _ in _DECLARED_OWNERSHIP])
 def test_a_changed_enforcement_module_names_its_owning_document(source, doc, symbols):
-    """#707/#646, the defect itself: today `--impact` names no document for
-    `delegated_memory.py` or `config.py` at all, and names neither
-    `memory-scoping.md` nor `config-reconciliation.md` for any module enforcing
-    the six invariants those two documents declare.
+    """#707/#646, the defect itself. Every claim below about the state this test
+    closes is measured AT THIS CHANGE'S BASE and written in the past tense; the
+    test is green at the head, so a present-tense claim here would tell a reader
+    that a gap this range already closed is still open.
+
+    At the base, `--impact` named no document at all for `delegated_memory.py` or
+    `config.py`, and named neither `memory-scoping.md` nor
+    `config-reconciliation.md` for any module enforcing the six invariants those
+    two documents declare.
 
     `count(doc) == 1` and not an exact set: `impacted_docs` returns a growing
-    collection — `tools.py` names twelve documents before this change — and an
+    collection — `tools.py` named twelve documents at the base — and an
     exact-set assertion would fail the moment any unrelated change anchors one of
     these files, turning this pin into everyone's blocker.
     """
@@ -1437,10 +1442,12 @@ _ENFORCEMENT_IDS = [s.rsplit("/", 1)[-1] for s, _, _ in _INV_MEM_011_ENFORCEMENT
 @pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
                          ids=_ENFORCEMENT_IDS)
 def test_an_inv_mem_011_enforcement_point_names_memory_scoping(source, doc, symbol):
-    """The impact level — the one the shipping gate actually consults. Before this
-    change `impacted_docs` returns 1, 4 and 10 documents for these three files and
-    `memory-scoping.md` is in none of them, so a change that weakens one of
-    INV-MEM-011's launch gates satisfies `docs_impact.sh` without the document that
+    """The impact level — the one the shipping gate actually consults. Measured at
+    this change's base and stated in the past tense for the reason
+    `test_a_changed_enforcement_module_names_its_owning_document` gives:
+    `impacted_docs` returned 1, 4 and 10 documents for these three files and
+    `memory-scoping.md` was in none of them, so a change that weakened one of
+    INV-MEM-011's launch gates satisfied `docs_impact.sh` without the document that
     asserts the invariant ever being named.
 
     `count(doc) == 1` rather than an exact set, for the reason
