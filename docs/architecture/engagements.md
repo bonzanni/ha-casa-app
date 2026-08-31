@@ -267,7 +267,18 @@ block the launch cached, and a clearance rebuild *clears* that block rather than
 the rebuild exists to stop.
 
 **A new durable field** must be added to the record, its load path and its write path
-together — otherwise it exists at runtime and silently vanishes across a restart.
+together — otherwise it exists at runtime and silently vanishes across a restart. A field that
+records an OBLIGATION owes three more decisions: what arms it (and, if the answer depends on
+which caller wrote the terminal rather than on any property of the record, it is an explicit
+argument to the transition, not a predicate), whether the strict rollback restores it, and
+whether a record carrying it survives the terminal-retention expiry. Two do so today, for the
+same reason: expiring the row would delete the obligation along with the state needed to
+discharge it. `quiesce_pending` is the kill a terminal `claude_code` record still owes
+(INV-CONT-006); `terminal_notification_pending` is the telling a finalized outcome still owes
+the party that asked for the work (INV-ENG-018, in
+[`architecture/engagement-finalization.md`](engagement-finalization.md)). A legacy row missing
+either key decodes as owing NOTHING — the opposite default would discharge the whole
+tombstone's worth of obligations at the first boot after an upgrade.
 
 **A new origin value that may hold a live object** must be registered as non-persistable, or
 serialization will either fail or persist something meaningless.

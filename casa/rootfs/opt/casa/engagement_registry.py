@@ -331,6 +331,25 @@ class EngagementRecord:
     # carrying it is exempt from the terminal-retention expiry below: dropping
     # it would delete both the obligation and the uid mapping recovery needs.
     quiesce_pending: bool = False
+    # #766: this record's terminal outcome was committed by the FINALIZATION
+    # FUNNEL, which announces it to the party that asked for the work — and
+    # that telling has not yet been acknowledged. Set in the same durable write
+    # as the terminal status (so a record can never be terminal and owe nothing
+    # while the announcement has not happened), and cleared ONLY by the
+    # delivery acknowledgement of the notice that carries it.
+    #
+    # The obligation follows the WRITER, not the record, which is why there is
+    # no ``_owes_*`` predicate for it: ``_finalize_engagement`` and
+    # ``tools._report_launch_death`` call ``try_transition_terminal`` with the
+    # same outcome on the same kind of record, and only the first announces.
+    # So the ONE caller that announces opts in explicitly and every other
+    # terminal writer — including the three legacy mutators below — arms
+    # nothing, by default rather than by remembering a guard.
+    #
+    # Exempt from the terminal-retention expiry for the same reason
+    # ``quiesce_pending`` is: ageing the row out would drop the obligation with
+    # it, leaving the party that asked for the work permanently untold.
+    terminal_notification_pending: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +504,12 @@ class EngagementRegistry:
                     context_rebuild_pending=bool(
                         row.get("context_rebuild_pending", False)),
                     quiesce_pending=bool(row.get("quiesce_pending", False)),
+                    # #766: a row written before this field existed owes
+                    # NOTHING. The opposite default would re-announce every
+                    # terminal engagement inside the 30-day tombstone window at
+                    # the first boot after upgrade.
+                    terminal_notification_pending=bool(
+                        row.get("terminal_notification_pending", False)),
                     context_generation=int(
                         row.get("context_generation", 0) or 0),
                 )
@@ -709,7 +734,13 @@ class EngagementRegistry:
                     # Dropping it would delete the obligation AND the
                     # ``allocated_uid`` boot recovery needs to discharge it, so
                     # an unkillable survivor would become invisible at 30 days.
-                    and not rec.quiesce_pending):
+                    and not rec.quiesce_pending
+                    # #766: nor is a record that still owes its engager the
+                    # telling of this very outcome. Expiring it would discard
+                    # the obligation AND the origin the replay is addressed
+                    # from, so the party that asked for the work would be
+                    # permanently untold — the harm the marker exists to close.
+                    and not rec.terminal_notification_pending):
                 continue
             snapshot.append({
                 "id": rec.id,
@@ -742,6 +773,8 @@ class EngagementRegistry:
                 "allocated_uid": rec.allocated_uid,
                 "context_rebuild_pending": rec.context_rebuild_pending,
                 "quiesce_pending": rec.quiesce_pending,
+                "terminal_notification_pending":
+                    rec.terminal_notification_pending,
                 "context_generation": rec.context_generation,
             })
         write = asyncio.ensure_future(
@@ -1164,6 +1197,34 @@ class EngagementRegistry:
         boot recovery's work list."""
         return [r for r in self._records.values() if r.quiesce_pending]
 
+    def records_owing_terminal_notification(self) -> list["EngagementRecord"]:
+        """#766: every terminal outcome whose engager has not been told yet —
+        the boot replay owner's work list."""
+        return [r for r in self._records.values()
+                if r.terminal_notification_pending]
+
+    async def ack_terminal_notification(self, engagement_id: str) -> None:
+        """#766: discharge the obligation — ONLY once a telling was delivered.
+
+        Called from the announcement's ``on_delivery`` callback, which the
+        consuming resident invokes at its transport-confirmed delivery seam
+        (``agent.Agent._ack_delivery``); never on the bus accepting a message.
+
+        Best-effort persistence, exactly as ``clear_quiesce_pending`` is: a
+        failed write leaves memory not-owed and disk owed, which costs one
+        duplicate announcement at the next boot. The refused direction is a
+        LOST notice, and that is not this one.
+
+        A no-op when this record does not owe, so a retried or duplicated
+        acknowledgement cannot clear an obligation armed by a later terminal.
+        """
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None or not rec.terminal_notification_pending:
+                return
+            rec.terminal_notification_pending = False
+            await self._write_tombstone_locked()
+
     async def mark_completed(self, engagement_id: str, completed_at: float) -> None:
         async with self._lock:
             rec = self._records.get(engagement_id)
@@ -1249,6 +1310,7 @@ class EngagementRegistry:
         stale_before: float | None = None,
         strict: bool = False,
         terminal_hook=None,
+        owes_terminal_notification: bool = False,
     ) -> bool:
         """Atomically move a record to a terminal status. Returns True only
         for the first caller; False if missing or already terminal.
@@ -1265,6 +1327,17 @@ class EngagementRegistry:
         still older than the cutoff. The reap checks staleness before this
         call at a suspension point away; without this guard a user turn that
         revives the record in that window would still be reaped.
+
+        ``owes_terminal_notification`` (#766): arm this record's durable
+        obligation to tell the party that asked for the work, in the SAME write
+        that commits the terminal status. An explicit keyword rather than a
+        predicate over the record, because the obligation follows the WRITER:
+        the finalization funnel and ``tools._report_launch_death`` reach this
+        method with the same outcome on the same kind of record, and only the
+        first announces over the bus. Defaulting to False is what makes every
+        other terminal writer correct without a guard to remember. Never
+        CLEARED here — only ``ack_terminal_notification`` clears it — so a
+        second transition cannot silently discharge an outstanding telling.
 
         ``strict`` (v0.79.0 §3, Sol r6-2/r7-2): the finalize path uses STRICT
         transactional persistence. Non-strict callers keep the historical
@@ -1314,6 +1387,9 @@ class EngagementRegistry:
                 # the non-strict path has no rollback, so the record is
                 # committed-terminal in memory regardless of persist outcome.
                 rec.quiesce_pending = self._owes_quiesce(rec)
+                # #766: same write as the status. Set, never cleared.
+                if owes_terminal_notification:
+                    rec.terminal_notification_pending = True
                 self._release_permit(rec)
                 try:
                     await self._write_tombstone_locked()
@@ -1328,6 +1404,7 @@ class EngagementRegistry:
             snap_error_message = rec.origin.get("error_message", _FIELD_MISSING)
             snap_shutdown = rec.origin.get("shutdown_reason", _FIELD_MISSING)
             snap_quiesce_pending = rec.quiesce_pending
+            snap_owes_notification = rec.terminal_notification_pending
 
             def _restore() -> None:
                 rec.status = snap_status
@@ -1341,6 +1418,11 @@ class EngagementRegistry:
                 # live record owes nothing — restoring this with the rest is
                 # what keeps "terminal" and "owes a quiesce" inseparable.
                 rec.quiesce_pending = snap_quiesce_pending
+                # #766: and the same for the telling. A transition that did not
+                # reach disk announced nothing, so it owes nothing; leaving the
+                # bit set would have boot replay announce an outcome that never
+                # happened, to a record that is still live.
+                rec.terminal_notification_pending = snap_owes_notification
 
             # #588 (Sol, diff review): commit the terminal fields in memory
             # HERE, synchronously, before any suspension point. They used to be
@@ -1360,6 +1442,13 @@ class EngagementRegistry:
             rec.status = new_status
             rec.completed_at = new_completed
             rec.quiesce_pending = self._owes_quiesce(rec)
+            # #766: committed HERE, with the terminal fields and before any
+            # suspension point, so the one durable write below carries both
+            # facts. Arming after the write would leave a crash window in which
+            # the outcome is committed and nobody owes the telling — the exact
+            # window the marker exists to close.
+            if owes_terminal_notification:
+                rec.terminal_notification_pending = True
             if new_status == "error":
                 rec.origin["error_kind"] = error_kind or "emit_completion_error"
                 rec.origin["error_message"] = error_message

@@ -1094,16 +1094,28 @@ class Agent:
         user_text = origin.get("user_text", "")
 
         if complete.status == "ok" and not complete.result_available:
-            # #701/#688: a boot replay of a delegation that really did succeed
-            # during a restart. Its answer text was never retained, so there is
-            # nothing to quote and `complete.text` is empty — narrating that as
-            # the answer would report an empty answer as the specialist's.
+            # #701/#688: a recovery replay of work that really did succeed. Its
+            # answer text is not carried here, so there is nothing to quote and
+            # `complete.text` is empty — narrating that as the answer would
+            # report an empty answer as the specialist's.
+            #
+            # #766: the wording is timing- and storage-NEUTRAL because there is
+            # now a second producer. A delegation row is converted at boot and
+            # really did finish during the restart; an ENGAGEMENT outcome may
+            # have finished long before it, and its summary may well have been
+            # retained elsewhere — so "completed during a Casa restart" and
+            # "the answer itself is gone" were both false on that arm, and told
+            # the operator something untrue about durable state. What is true of
+            # both producers is only that this NOTICE does not carry the answer.
             body = (
                 f"[System notification: your delegation to {complete.agent} "
-                f"(id {short_id}) completed during a Casa restart, but its "
-                "answer text was not retained]\n\n"
-                "The work finished; the answer itself is gone. Tell the user "
-                "it completed and offer to run it again to get the answer.\n"
+                f"(id {short_id}) finished, and this recovery notice does not "
+                "carry its answer]\n\n"
+                "The work finished. This notice carries the outcome only, not "
+                "the result text. Tell the user it completed, and offer to run "
+                "it again if they want the detail — do NOT promise to look the "
+                "answer up, because on the delegation arm nothing was retained "
+                "to look up.\n"
             )
         elif complete.status == "ok":
             body = (

@@ -3405,6 +3405,181 @@ def _recovery_delivery_ack(job_registry, job):
     return _ack
 
 
+def _short_engagement_id(rec) -> str:
+    """A log-safe short id for a record that came off disk.
+
+    `rec.id` is a string by convention only: a hand-edited or corrupt tombstone
+    row can carry an integer, and `rec.id[:8]` then raises `TypeError`. That
+    matters most in the one place it must never raise — the replay owner's own
+    per-record GUARD, whose whole job is to keep one bad row from stopping a
+    boot. A guard that raises while reporting a failure is not a guard.
+    """
+    rid = getattr(rec, "id", None)
+    return rid[:8] if isinstance(rid, str) else repr(rid)[:16]
+
+
+def _engagement_delivery_ack(registry, engagement_id: str):
+    """#766: the delivery acknowledgement a replayed engagement outcome carries.
+
+    A FACTORY, not an inline closure over the loop variable. A closure written
+    in the loop body binds the LAST record, so delivering the first notice
+    acknowledges the last one and every other outcome is discarded unread —
+    reproduced in review, and invisible to any assertion that counts callbacks
+    rather than naming the id each one cleared.
+
+    Deliberately no exception handling here, exactly as
+    ``_recovery_delivery_ack`` has none: the agent's acknowledgement seam owns
+    that, and its rule is that a failed acknowledgement leaves the marker set so
+    the announcement is repeated at the next boot.
+    """
+    async def _ack() -> None:
+        await registry.ack_terminal_notification(engagement_id)
+    return _ack
+
+
+async def _notify_recovered_engagement_outcomes(
+    registry,
+    bus,
+    *,
+    assistant_role: str,
+) -> None:
+    """#766: announce every engagement outcome that still owes its engager one.
+
+    Before this there was NO boot replay of an engagement outcome at all — the
+    only boot walk over ``terminal_records()`` is ``reconcile_terminal_spools``,
+    which drains an inbound spool into the engagement's Telegram topic and
+    enqueues nothing on the bus. So a completed or cancelled engagement could be
+    durably terminal on disk while the party that asked for the work was never
+    told, permanently, across restarts, with no log line on the commonest arm
+    (``MessageBus.send_checked`` returns ``"no_target"`` for an unregistered
+    role and ``send`` discards it).
+
+    What a replay may say is bounded by what the tombstone actually keeps. The
+    record carries NO completion text, artifacts or next_steps — no such fields
+    exist on it — so this reports the FACT of the outcome and says plainly that
+    the report itself is gone. ``result_available=False`` carries that on the
+    success arm; the non-ok arms carry an explicit message, because their
+    rendering interpolates one and the live path feeds it from the non-durable
+    text, which would otherwise render "Delegation failed (cancelled): " with
+    nothing after the colon. Fabricating narration from ``task`` or from a
+    stale ``summary_message_id`` would be the #688 mistake.
+
+    Addressed from the record's own PERSISTED origin, filtered by
+    ``_persistable_origin`` — role, channel, chat_id, cid and the original user
+    text all survive — so the notice reaches the resident that asked, on the
+    channel it asked from.
+
+    Boot does not wait for any of it: a resident turn can take minutes, so this
+    returns as soon as the last message is enqueued. And enqueueing is not
+    telling — the obligation is cleared by ``on_delivery`` alone, so a message
+    this boot never delivers is replayed by the next one.
+    """
+    for rec in list(registry.records_owing_terminal_notification()):
+        try:
+            await _replay_one_engagement_outcome(
+                registry, bus, rec, assistant_role=assistant_role)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — one bad row must not block boot
+            # The guard covers the WHOLE per-record body, not only the send:
+            # this owner is awaited UNGUARDED from `main`, and a payload built
+            # out of a tombstone row is exactly where an unexpected type
+            # surfaces. No exception text is logged — a connector failure can
+            # include payload or credential material — and the durable bit
+            # retains enough state for the next boot to retry.
+            logger.error(
+                "Engagement outcome replay failed: id=%s — retained",
+                _short_engagement_id(rec),
+            )
+
+
+async def _replay_one_engagement_outcome(
+    registry, bus, rec, *, assistant_role: str,
+) -> None:
+    """#766: announce ONE owed engagement outcome. Raises; the caller retains."""
+    from specialist_registry import DelegationComplete
+
+    if not isinstance(rec.id, str) or not rec.id:
+        # Every downstream consumer treats the id as a string — the ack keys
+        # off it, the notice carries it, and the logs slice it. A row that does
+        # not have one cannot be announced or acknowledged coherently.
+        logger.error(
+            "Engagement row owes an outcome but has no usable id (%s) — "
+            "retained, not announced", _short_engagement_id(rec),
+        )
+        return
+
+    origin = dict(getattr(rec, "origin", None) or {})
+
+    # The obligation is only ever armed WITH a terminal status, so a row
+    # carrying it over a live status is a corrupt or hand-edited tombstone —
+    # and boot rewrites `active` to `idle` at load, so `idle` is the shape it
+    # would take. Announcing it would tell the engager that an engagement which
+    # is still resumable ended in an error, and the delivery would then
+    # discharge the obligation. Fail CLOSED: retain it and say so.
+    if rec.status not in ("completed", "cancelled", "error"):
+        logger.error(
+            "Engagement %s owes an outcome but is not terminal (status=%r) — "
+            "retained, not announced", _short_engagement_id(rec), rec.status,
+        )
+        return
+
+    # `origin` came off disk as JSON, so `role` is only a string by convention.
+    # An unhashable value — a list, say — raises out of the membership test
+    # below, and this owner is awaited unguarded from `main`.
+    _role = origin.get("role")
+    target_role = _role if isinstance(_role, str) and _role else assistant_role
+    if target_role not in bus.queues:
+        logger.error(
+            "Engagement %s owes its outcome to unknown role %r — retained for "
+            "retry", rec.id[:8], target_role,
+        )
+        return
+
+    succeeded = rec.status == "completed"
+    if succeeded:
+        message = ""
+    elif rec.status == "cancelled":
+        message = ("The engagement was cancelled, and this recovery notice "
+                   "does not carry its report.")
+    else:
+        _err = origin.get("error_message")
+        message = (_err if isinstance(_err, str) and _err
+                   else "The engagement ended in an error.")
+    synthetic = DelegationComplete(
+        delegation_id=rec.id,
+        agent=rec.role_or_type,
+        status="ok" if succeeded else "error",
+        # The EXACT outcome. Reporting a cancellation as a generic failure
+        # misstates what happened to the engager's work.
+        kind="" if succeeded else rec.status,
+        message=message,
+        # Nothing was retained on the record to carry, on any arm.
+        result_available=False,
+        origin=origin,
+        elapsed_s=0.0,
+    )
+    _channel = origin.get("channel")
+    await bus.notify(BusMessage(
+        type=MessageType.NOTIFICATION,
+        source=rec.role_or_type,
+        target=target_role,
+        content=synthetic,
+        channel=_channel if isinstance(_channel, str) else "",
+        context={
+            "cid": origin.get("cid", "-"),
+            "chat_id": origin.get("chat_id", ""),
+            "engagement_id": rec.id,
+        },
+        on_delivery=_engagement_delivery_ack(registry, rec.id),
+    ))
+
+    logger.warning(
+        "Engagement outcome recovered: id=%s status=%s — NOTIFICATION posted",
+        rec.id[:8], rec.status,
+    )
+
+
 async def _notify_recovered_delegations(
     recovered_jobs,
     job_registry,
@@ -5093,6 +5268,16 @@ async def main() -> None:
     # compatibility notification below is only for the legacy Telegram route.
     await _notify_recovered_delegations(
         recovered_jobs, job_registry, bus, assistant_role=assistant_role,
+    )
+
+    # 13b'. #766: and every ENGAGEMENT outcome that still owes its engager a
+    # telling. Beside the delegation replay for the same reason it sits here:
+    # the obligation is discharged by a resident actually delivering its turn,
+    # so the notice has to be enqueued where a resident can run and deliver —
+    # after start_all() above and after the agent loops were started. Both
+    # existing terminal-record boot walks run far earlier, before either.
+    await _notify_recovered_engagement_outcomes(
+        engagement_registry, bus, assistant_role=assistant_role,
     )
 
     # 13c. Surface any default-sync overwrites to the operator (direct

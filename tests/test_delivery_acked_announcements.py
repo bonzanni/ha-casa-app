@@ -242,7 +242,14 @@ async def test_the_replayed_success_is_narrated_as_a_lost_answer(tmp_path):
     synthesized = Agent._synthesize_delegation_turn(Mock(), bus.sent[0])
     body = synthesized.content
     assert "Result text" not in body
-    assert "was not retained" in body
+    # #766 reworded this branch: it now has a SECOND producer (a replayed
+    # engagement outcome, which may have finished long before the restart and
+    # whose summary may well have been retained elsewhere), so the prose is
+    # timing- and storage-neutral. What it must still refuse to do is present
+    # the empty stored result as the answer, and it must still say plainly that
+    # the answer is not here.
+    assert "does not carry its answer" in body
+    assert "not the result text" in body
     assert "what is my bank balance" in body
     # The obligation rides the synthesis, or the delivery could never clear it.
     assert synthesized.on_delivery is bus.sent[0].on_delivery

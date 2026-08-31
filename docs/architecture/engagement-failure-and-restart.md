@@ -34,7 +34,21 @@ different events, and only one of them is a reason to destroy what the executor 
 
 ## Contracts & invariants
 
-This document defines no invariants. The behaviour here is measured against three stated in
+**INV-ENG-019**: A launch-failure arm aborts its engagement's topic only on the strength of a terminal transition this call both WON and durably persisted. A transition another writer won, and a transition whose persist rolled back leaving the record live, each leave the topic open and the record to its owner. The arm still answers its caller with its own named fault, and still posts no notice.
+
+The two refused cases are the two ways the ledger's best-effort mark used to mislead an arm.
+A LOST race means another writer already committed a terminal, and that writer owns every
+terminal side effect (INV-ENG-001) — so painting `failed` here contradicts the durable record
+and closes a topic its owner is about to close for its own reason. A ROLLED-BACK persist means
+the record is still live and disk agrees: an open topic over a live record is recoverable, a
+closed one is not, and the boot replay that would resume that record would find its topic
+gone. All thirteen named arms route through one owner that asks the transition exactly one
+question and lets its three outcomes decide; that owner is anchored and shielded, so a
+cancellation arriving after the durable commit cannot leave a terminal record behind a
+permanently open topic. The caller is told its own named fault on all three outcomes, because
+that fault is true of this launch whoever won the record.
+
+The behaviour here is also measured against three invariants stated in
 [`architecture/engagements.md`](engagements.md): INV-ENG-011, which keeps a launch that ended
 without a terminal artifact on the launch-death path; INV-ENG-014, which says a rollback that
 has been entered attempts every removal it was entered to run; and INV-ENG-015, which says
@@ -103,9 +117,10 @@ failure kind reaches the live invoking turn. Whether it then reaches the operato
 turn's own business, and nothing here relays it. The exemption is from the notice, and from
 nothing else — it does not extend to a cancellation, nor to a launch turn that ended after
 starting without its terminal artifact, both of which stay on the launch-death path
-(INV-ENG-011). It also does not settle whether the ledger's best-effort mark, whose result
-these arms do not read, may authorize an irreversible topic close; that question is #757 and
-is not answered here.
+(INV-ENG-011). What it never extended to is the *strictness* of the mark behind the abort, and
+that is now settled the other way by INV-ENG-019 above: the exemption buys these arms their
+silence, never the authority to close a topic on a transition they did not win or did not
+persist.
 
 **A graceful stop cancels a launch.** This is a different event from a launch that failed, and
 it is recorded as one (INV-ENG-015). Casa's graceful-stop cleanup writes `casa_shutdown`
@@ -169,6 +184,24 @@ cache and re-renders the workspace at the clamped floor first, refusing the same
 that fails. Every one of those decisions sits downstream of preconditions this document does
 not own: INV-CONT-004 and INV-CONT-005.
 
+**A restart replays an outcome nobody was told.** A terminal record is not only state to be
+tidied: if the finalization funnel committed it, somebody is still owed the news (INV-ENG-018,
+in [`architecture/engagement-finalization.md`](engagement-finalization.md)). Startup walks the
+records still carrying that obligation and enqueues one notice each, addressed from the
+record's own persisted origin — the role that asked, on the channel it asked from, quoting the
+request. It runs once the channels and the resident loops are up, because a notice enqueued
+before a resident can consume it is not a telling; and it does not wait for delivery, because
+a resident turn can take minutes and boot cannot. An unroutable role is logged and RETAINED
+for the next boot rather than dropped.
+
+What such a notice can say is bounded by what the tombstone keeps, which is less than the live
+path has. There is no completion text, no artifacts and no next steps on the record — no such
+fields exist — so the replay reports the FACT of the outcome and says plainly that the notice
+does not carry the report. It does not say the report is GONE, which would be a claim about
+storage this path cannot make: a finished engagement's structured summary may well have been
+retained on the shared bank. It never reconstructs an answer from the task or from a stale
+summary message id.
+
 ## Extension points
 
 **A new launch-failure arm** decides one thing first: does it carry a named fault the calling
@@ -183,6 +216,12 @@ entered to run it, or whether it is one of the removals retention withholds.
 **A new replay refusal** marks the record errored and attaches no background machinery, rather
 than admitting operator messages into an engagement with no consumer.
 
+**A new terminal writer** decides whether it is the one telling the engager. If it announces
+the outcome, it arms the durable obligation in the same transition that commits the terminal;
+if it does not — the launch-failure owner and the launch-death reporter both answer or notify
+by other means — it leaves the default and owes nothing. The obligation follows the writer,
+not the record, so there is no property of a record that can decide it.
+
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
@@ -196,6 +235,7 @@ than admitting operator messages into an engagement with no consumer.
 - `tests/test_claude_code_driver.py`
 - `tests/test_boot_replay.py`
 - `tests/test_engage_executor_tool.py`
+- `tests/test_launch_failure_terminal_authority.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

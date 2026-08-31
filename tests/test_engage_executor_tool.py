@@ -271,6 +271,11 @@ class TestEngageExecutorReal:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
 
         cm = MagicMock()
         cm.get = MagicMock(return_value=channel)
@@ -364,6 +369,11 @@ class TestEngageExecutorReal:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
 
         channel = await _setup(reg, tmp_path=tmp_path)
         cm = MagicMock()
@@ -412,6 +422,11 @@ class TestEngageExecutorReal:
         rec = MagicMock(id="abcd1234" + "0" * 24, topic_id=42)
         er.create = AsyncMock(return_value=rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
         channel = await _setup(reg, tmp_path=tmp_path)
@@ -501,6 +516,11 @@ class TestEngageExecutorReal:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
 
         channel = await _setup(reg, tmp_path=tmp_path)
         cm = MagicMock()
@@ -998,6 +1018,11 @@ class TestExecutorArchiveFetchedOncePerLaunch:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
         er.set_procedural_epoch = AsyncMock()
@@ -1096,6 +1121,11 @@ class TestU3TopicTitle:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
 
@@ -1166,6 +1196,11 @@ class TestU3TopicTitle:
         mock_rec.topic_id = 7
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
 
@@ -1228,6 +1263,11 @@ class TestOriginContextPropagation:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.recent_for_origin = MagicMock(return_value=None)
 
         channel = await _setup(reg, tmp_path=tmp_path)
@@ -1376,6 +1416,11 @@ class TestFailedStartClosesTopic:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
         er.recent_for_origin = MagicMock(return_value=None)
@@ -1411,7 +1456,15 @@ class TestFailedStartClosesTopic:
         payload = json.loads(result["content"][0]["text"])
         assert payload["status"] == "error"
         assert payload["kind"] == "driver_start_failed"
-        er.mark_error.assert_awaited_once()
+        # #757: the record is terminalized by the STRICT transition now, and
+        # what matters is the OUTCOME — a durable `error` carrying this arm's
+        # own named kind, which is what authorizes the close asserted above.
+        er.try_transition_terminal.assert_awaited_once()
+        _call = er.try_transition_terminal.await_args
+        assert _call.args[1] == "error", _call
+        assert _call.kwargs["strict"] is True, _call
+        assert _call.kwargs["error_kind"] == "driver_start_failed", _call
+        er.mark_error.assert_not_awaited()
         # The leak fix: the just-created topic must be flipped to failed and closed.
         channel.update_topic_state.assert_awaited_once_with(
             engagement_id=mock_rec.id, new_state="failed",
@@ -1436,6 +1489,11 @@ class TestFailedStartClosesTopic:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
         er.recent_for_origin = MagicMock(return_value=None)
@@ -1577,6 +1635,11 @@ class TestEngageExecutorPluginGate:
         mock_rec.id = "abcd1234" + "0" * 24
         mock_rec.topic_id = 42
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.recent_for_origin = MagicMock(return_value=None)
 
         async def _create(**kw):
@@ -1612,7 +1675,13 @@ class TestEngageExecutorPluginGate:
             agent_mod.origin_var.reset(token)
         payload = json.loads(r["content"][0]["text"])
         assert payload["kind"] == "plugin_superseded"
-        er.mark_error.assert_awaited()
+        # #757: as above — the strict transition, carrying this arm's kind.
+        er.try_transition_terminal.assert_awaited_once()
+        _call = er.try_transition_terminal.await_args
+        assert _call.args[1] == "error", _call
+        assert _call.kwargs["strict"] is True, _call
+        assert _call.kwargs["error_kind"] == "plugin_superseded", _call
+        er.mark_error.assert_not_awaited()
 
     async def test_reresolves_on_concurrent_update_during_launch(
         self, monkeypatch, tmp_path,
@@ -1635,6 +1704,11 @@ class TestEngageExecutorPluginGate:
         mock_rec.topic_id = 42
         er.create = AsyncMock(return_value=mock_rec)
         er.mark_error = AsyncMock()
+        # #757: the launch-failure arms ask the STRICT transition now, so
+        # the double needs the method the code actually calls. A bare
+        # MagicMock returns a non-awaitable, which the abort owner catches
+        # as a rolled-back persist and correctly declines to close on.
+        er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
         er.recent_for_origin = MagicMock(return_value=None)
