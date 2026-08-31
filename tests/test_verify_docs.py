@@ -1329,9 +1329,10 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 # owning document) pairs listed in it, and a second table further down claims the
 # INV-MEM-011 enforcement pairs. Together they assert nothing about any other anchor
 # anywhere in the corpus. A corpus-wide "no undeclared anchor" pin was tried and cut:
-# closing that class means pinning every `covers` anchor of the five documents edited
-# here, most of which this change does not own, so a later author's legitimate anchor
-# on an unrelated file would fail THESE tests. The general gap behind that — the
+# closing that class would bind these tests to the ENTIRE `covers` list of each of the
+# five documents edited here rather than to the rows declared below, so a later
+# author's legitimate anchor on an unrelated file would fail THESE tests — including
+# anchors this change never owned. The general gap behind that — the
 # corpus has nothing preventing a document from claiming any resolvable symbol in any
 # file — is #787, and is not introduced here.
 
@@ -1420,13 +1421,13 @@ def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, s
 
 # --- #707 + #646: INV-MEM-011's own enforcement points ------------------------------
 #
-# The three sites `architecture/memory-scoping.md` names in its INV-MEM-011 prose
+# The sites `architecture/memory-scoping.md` names in its INV-MEM-011 prose
 # (`docs/architecture/memory-scoping.md:106-112` at this change's base) and that no
 # document claimed: "the drivers' last-instant launch gates" — the `#369` gate inside
 # `InCasaDriver.start` and the one inside `ClaudeCodeDriver.start` — and "the resume
 # core and boot replay", whose boot-replay half is `replay_undergoing_engagements`.
 #
-# An earlier attempt of this cluster EXCLUDED these three and pinned the exclusion
+# An earlier attempt of this cluster EXCLUDED them and pinned the exclusion
 # negatively, on the ground that impact is file-grained (`_claimants` matches
 # `parse_anchor(anchor)[0]`, not the symbol), so claiming them adds a read-clearance
 # document to the impact set of EVERY edit to these files, whatever the edit touched.
