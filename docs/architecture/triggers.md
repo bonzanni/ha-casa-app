@@ -116,8 +116,9 @@ the operator replaces that entry through the typed tool, which rewrites it whole
 **INV-TRIG-011**: An agent's file-tool write whose path *resolves* to a resident's `triggers.yaml` is refused, and every writer of that file — the typed tools, the reminder tools, and the config reconciler's whole pass — serializes its read-modify-write under one process lock.
 
 Two halves, and both are load-bearing. A code-mandatory PreToolUse guard — carried by every
-executor *and* every resident, applied uniformly rather than only to an agent the loader
-knows has `Bash` — refuses the write. No shipped resident carries `Bash` today (#460
+executor, every resident, and, since the resident-prompt guard's wiring made it visible,
+every *delegated* resident too — refuses the write. It is applied uniformly rather than only
+to an agent the loader knows has `Bash`. No shipped resident carries `Bash` today (#460
 removed it from the assistant, the last one that did), but the `plugin-developer` executor
 still does, and the guard's universality is what makes that fact irrelevant to whether it
 runs. The typed replacement then makes the change *inside* Casa, and the read, judgement

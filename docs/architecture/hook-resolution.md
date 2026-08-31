@@ -29,7 +29,18 @@ The hooks document an executor carries is a mutable trust surface, and its trans
 workspace settings treats malformed shapes as absent rather than fatal: a non-mapping
 document root, a non-list hook section, a non-mapping list member, or an unparseable
 per-hook timeout is skipped instead of crashing engagement provisioning, and the
-code-mandatory guard entry is emitted regardless of what the document declares.
+code-mandatory guard entries are emitted regardless of what the document declares.
+
+There are two of them, and the second is there for a reason worth stating: `path_scope`'s
+matcher covers the file tools only, so it never routes `Bash` at all. A shell write is
+therefore bounded by whatever *other* policy happens to name its target — which, for a
+resident's unserved prompt file, was nothing. The guard that refuses that file is emitted
+here, and resolved to a callback by the endpoint half, because either alone resolves to
+nothing: a settings entry naming a policy the resolver does not know invokes a proxy for
+no callback. Its two neighbours, the trigger-file and response-shape guards, are
+deliberately *not* emitted here — their shell halves recognise a bare file name anywhere
+in a command, so an executor writing a file of that name inside its own engagement
+workspace would start being refused.
 
 **For a `claude_code` executor, that mutability stops at the containment floor.**
 `block_dangerous_bash` and `path_scope` are not optional entries a hooks file happens to

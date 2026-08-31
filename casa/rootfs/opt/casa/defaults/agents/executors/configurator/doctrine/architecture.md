@@ -16,7 +16,9 @@ Everything you edit lives under `/config/`:
         triggers.yaml              # optional
         hooks.yaml                 # optional
         prompts/
-          system.md
+          system.md                # REQUIRED to exist, read by NOTHING a
+                                   # bundle-bound resident is served — not
+                                   # editable; see recipes/prompt/resident.md
           <trigger-name>.md        # one per scheduled/webhook trigger
       specialists/
         <slug>/                    # tier 2 (e.g. finance) — MANAGED, do NOT hand-edit:
@@ -75,7 +77,7 @@ Any resident may delegate (`delegate_to_agent`) to any other agent listed in its
 | voice.yaml | required | required | forbidden |
 | triggers.yaml | optional | forbidden | forbidden |
 | hooks.yaml (NOT editable by you — operator/image action) | optional | optional | optional |
-| prompts/system.md | required | required | forbidden (uses prompt.md) |
+| prompts/system.md | required (but inert — see above) | required (materialized output) | forbidden (uses prompt.md) |
 | prompts/<name>.md | per-trigger | - | - |
 | definition.yaml | forbidden | forbidden | required |
 | prompt.md | forbidden | forbidden | required |

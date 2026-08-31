@@ -32,6 +32,16 @@ bundle is compiled when a binding activates. At turn time, if a bundle exists, i
 in the composed prompt is not automatically carried into an activated compiled prompt — it is
 there only if the compilation put it there.
 
+The same rule has a quieter consequence that has already cost one issue a wrong
+turn: the disclosure policy — the global library and the per-resident override —
+is rendered only into the composed prompt, so it reaches no shipped agent's live
+prompt at all. Residents are bundle-bound, and the tier file rules forbid a
+per-agent disclosure file to anyone else, so there is nothing left for the
+rendered section to reach. Tightening a disclosure category is therefore a real,
+committed configuration change that alters no agent's instructions today. The
+role artifact's own `disclosure` block is in the same position: the schema
+requires it and no renderer consumes it.
+
 That is a rule about *declarations* as much as prose. A role artifact's response block —
 register, and the sentence ceilings for confirmations and status — is compiled into its own
 section of each projection, one rendering per surface, so the limits a role declares are the
@@ -123,6 +133,53 @@ What it does not cover: reads. An agent may still open the file, and should, to 
 changing it is not the answer. The shell half of the refusal is a backstop rather than a
 boundary — it recognises the accidental spelling, not every possible one — and the
 specialist subtree is denied by the managed-state guard instead, in its own words.
+
+**INV-PERS-012**: A persona-bound resident's `prompts/system.md` is not read, and an agent's write to a resident's copy is refused at every write primitive, on the executor, resident, delegated-resident and claude_code hook paths.
+
+This is INV-PERS-008 one file over, and the file operators actually reach for.
+`character.yaml` points at it, the loader requires it to exist, and it composes
+into a prompt no bundle-bound resident is served — while five configurator
+recipes and the operator documentation used to route behavioural instructions
+into it and promise the edit was live on the next turn. The refusal resolves its
+target before deciding: a relative path against the session's own working
+directory, redundant separators and `.` and `..` segments away, and a symlink
+through to what it points at, rather than comparing the path it was handed.
+
+What it does not cover. **It is not a claim of completeness over path
+spellings** — an implementation can condition a resolution stage on a spelling
+class no test exercises, so what is asserted is the resolution behaviour that is
+exercised, not that no spelling escapes. Nor reads: an agent may still open the
+file, and should, to explain why changing it is not the answer. The shell half
+decides on command text — a backstop that recognises the accidental spelling,
+not every possible one, so a path assembled across `cd` boundaries is not
+caught. Nor the claude_code transport's fail-open when the hook resolver is
+unreachable, which is a property of that transport that the managed-state guard
+shares. Actual specialist sessions are not claimed: a specialist's copy is
+materialized output under managed state, which the managed-state guard denies in
+its own words.
+
+The half that matters more is not the refusal. A guard alone would leave every
+instruction still pointing at the file, which is the half an operator hits;
+those instructions now name what actually works instead — the persona pack for
+how a resident sounds, a grant for what it can do, and, for a standing
+behavioural rule, the fact that there is no configuration surface at all,
+because a resident's instructions are its role doctrine and that ships inside
+the image.
+
+**INV-PERS-015**: A rule stated in the shipped safety kernel is present in every resident projection on every surface.
+
+The kernel is the only image-owned compilation input carried into every resident
+projection and every bound specialist's, and it is not an input to the role
+checksum — so a rule stated there moves every projection digest without
+invalidating a single persisted binding. That is what makes it the surface for a
+rule that has to bind the agent that fetches something and the agent that
+relays it.
+
+What it does not cover: enforcement. It asserts presence in the served prompt
+and nothing about the model obeying it. There is no taint path, no outbound
+scrubber and no per-value provenance anywhere in Casa; a rule about handling a
+credential-bearing artifact is a judgement instruction, and treating it as a
+boundary would be the same mistake as believing a `response_shape.yaml` edit.
 
 **INV-PERS-009**: Every section body a persona's Markdown declares reaches the text projection exactly once.
 
@@ -251,6 +308,7 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `casa/rootfs/opt/casa/agent_loader.py::_activate_resident_binding`
 - `casa/rootfs/opt/casa/prompt_compiler.py::compile_prompt_bundle`
 - `casa/rootfs/opt/casa/hooks.py::make_response_shape_write_guard`
+- `casa/rootfs/opt/casa/hooks.py::make_resident_prompt_write_guard`
 
 **Tests**
 - `tests/test_personality_binding.py`
@@ -259,6 +317,9 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `tests/test_refusal_observation.py`
 - `tests/test_personality_admin_handlers.py`
 - `tests/test_response_shape_write_guard.py`
+- `tests/test_resident_prompt_write_guard.py`
+- `tests/test_resident_prompt_guard_bash_spellings.py`
+- `tests/test_assistant_prompts.py`
 - `tests/test_prompt_compiler.py`
 - `tests/test_persona_pack.py`
 

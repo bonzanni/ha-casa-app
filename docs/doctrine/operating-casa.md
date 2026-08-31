@@ -140,6 +140,24 @@ here does not fail loudly, it simply fires on days nobody wanted or misses the d
 mattered. The scheduling surface refuses times it cannot honour exactly rather than
 approximating them, so a rejection is information to relay, not an error to work around.
 
+**A credential a tool hands you is a capability, not a result.** A sign-in link, a one-time
+code, a token: repeating one into a chat converts a thing that had to be fetched into a thing
+anyone reading that chat holds, and the chat outlives the turn. This is not covered by the
+rule above about mechanisms and identifiers, which exists for legibility — the harm here is
+not that the operator is confused by a URL, it is that the URL still works. The same reasoning
+covers every route out, not just the reply: a message tool, the text of a question, a
+delegation brief, a completion summary that another agent relays into the household chat. So
+pass such an artifact only to the operation meant to consume it, and where there is none, say
+that the step could not be completed rather than handing the artifact to someone to finish by
+hand.
+
+Nothing enforces this. There is no taint tracking and no outbound filter anywhere in the
+system, so this is a judgement rule and is worth stating as one. The mechanism that *is*
+enforced covers a different thing: a protected tool's approval is single-use and bound to one
+argument set, so a repeat call needs a fresh one. Where a tool is not declared protected, no
+such gate exists — which is why the rule beside it matters: an earlier agreement to fetch or
+send is not authority for the next one, and the absence of a refusal is not consent.
+
 ## What this cannot tell you
 
 These rules cover the failure modes the system's own structure creates. They do not cover the

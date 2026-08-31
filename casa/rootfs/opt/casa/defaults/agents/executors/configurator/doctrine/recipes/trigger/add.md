@@ -86,8 +86,13 @@ Five fields: minute hour day month day_of_week. "0 7 * * 1-5" = 7:00 on weekdays
   webhook: `config_trigger_upsert` fails and writes nothing, rather than
   storing an instruction that would be committed and then discarded at every
   firing. So the agent decides what to do from the payload plus its own
-  doctrine. If an operator wants specific behaviour on a specific hook, that
-  belongs in the resident's own instructions, not on the trigger.
+  doctrine. If an operator wants specific behaviour on a specific hook, there
+  is no file in which to put it: a resident's instructions are its role
+  doctrine, which ships inside the Casa image and is never synced into
+  `/config`, and writing `prompts/system.md` is denied precisely because it
+  would look like the place. Say that plainly — see
+  `recipes/prompt/resident.md` — and shape the request around what the payload
+  itself can carry.
   (An older document may still carry one from before this rule; it loads with
   a warning naming the trigger, and is ignored exactly as it always was.
   Clear it by re-running `config_trigger_upsert` for that trigger without the

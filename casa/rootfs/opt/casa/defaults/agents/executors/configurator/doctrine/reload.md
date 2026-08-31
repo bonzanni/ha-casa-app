@@ -24,20 +24,21 @@ changes, addon options.json mutations, or kernel concerns.
 
 | Change | Reload |
 |---|---|
-| Edit prompts/system.md or prompts/<trigger>.md | none (lazy-read per turn) |
+| Edit a resident's prompts/system.md | **you cannot** — the hook denies it. Nothing reads it for a bundle-bound resident; see `recipes/prompt/resident.md` |
+| Edit a resident's prompts/<trigger>.md | `triggers` — the prose is captured in the scheduled job at load, so an edit is inert until the reload |
 | Edit response_shape.yaml | **you cannot** — the hook denies it. Nothing reads it for a bundle-bound agent; see `recipes/response-shape/edit.md` |
-| Edit executor's doctrine/*.md | none |
+| Edit executor's doctrine/*.md | none — but effective on that executor's next COLD session, not guaranteed on the next turn |
 | Edit existing agent's triggers.yaml (no other change) | `triggers` |
 | Edit character.yaml | `agent` for that role |
 | Edit runtime.yaml | `agent` for that role |
 | Edit delegates.yaml | `agent` for that role |
-| Edit disclosure.yaml | `agent` for that role |
+| Edit disclosure.yaml | `agent` for that role — but it changes no served prompt today; see `recipes/disclosure/edit.md` |
 | Edit voice.yaml | `agent` for that role |
 | hooks.yaml (any agent's) | NOT editable by you — hook-policy files are denied unconditionally; policy changes are an operator/image action |
-| Edit policies/disclosure.yaml | `policies` |
+| Edit policies/disclosure.yaml | `policies` — same caveat as the row above |
 | Edit an executor's `definition.yaml` | `executors` |
 | Create or delete an executor | `executors` |
-| Edit an executor's `prompt.md` / `observer.yaml` / `doctrine/*` | none (lazy-read per turn); `hooks.yaml` is NOT editable by you (see above) |
+| Edit an executor's `prompt.md` / `observer.yaml` / `doctrine/*` | none — effective on that executor's next COLD session; a warm client is reused without rebuilding its options, so do not promise "next turn". `hooks.yaml` is NOT editable by you (see above) |
 | Install a specialist (pipeline) — new `agents/specialists/<slug>/` | `agents` — REQUIRED explicitly after `config_git_commit`; `specialist_install_commit` does NOT reload (see `recipes/specialist/install.md`) |
 | Uninstall a specialist (pipeline) — removed `agents/specialists/<slug>/` | `agents` — REQUIRED explicitly after `config_git_commit`; `specialist_uninstall` does NOT reload (see `recipes/specialist/uninstall.md`) |
 | `plugin_add`/`plugin_update`/`plugin_assign`/`plugin_unassign`/`plugin_remove` | none — the tool self-sequences its own reload + verify (§3.9) |
@@ -66,7 +67,7 @@ call that asked for it. Report promptly after the reload.
 
 ## When in doubt
 
-- Touched only triggers for one agent → `triggers`.
+- Touched only triggers, or a `prompts/<trigger>.md`, for one agent → `triggers`.
 - Touched a single role's other YAMLs → `agent` for that role.
 - Touched policies/*.yaml → `policies`.
 - Installed or uninstalled a specialist via the pipeline → call `casa_reload(scope="agents")` yourself after `config_git_commit` (the install/uninstall tools do NOT reload; only the `plugin_*` tools self-sequence their own reload).

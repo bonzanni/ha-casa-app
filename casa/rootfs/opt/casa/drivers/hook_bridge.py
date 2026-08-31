@@ -120,6 +120,28 @@ def translate_hooks_to_settings(
             "hooks": [{"type": "command", "command": guard_cmd}],
         })
 
+    # #631: resident_prompt_write_guard is code-mandatory here too, and this
+    # is the OTHER half of the claude_code transport — hooks
+    # .build_policy_callbacks_from_hooks_yaml resolves the policy name this
+    # entry names. Reproduced on the shipped plugin-developer: `printf 'x' >
+    # /config/agents/assistant/prompts/system.md` was denied by 0 of the 5
+    # policies its hooks.yaml declares, because `path_scope`'s matcher is
+    # `Read|Write|Edit` and does not route Bash. Its two neighbours are
+    # deliberately NOT added here — their Bash halves match a bare basename
+    # anywhere in a command and would refuse an executor writing its own
+    # `triggers.yaml` under /data/engagements.
+    prompt_matcher = HOOK_POLICIES["resident_prompt_write_guard"]["matcher"]
+    prompt_cmd = f"{proxy_script_path} resident_prompt_write_guard"
+    if not any(
+        e.get("matcher") == prompt_matcher
+        and any(h.get("command") == prompt_cmd for h in e.get("hooks", []))
+        for e in pre
+    ):
+        pre.append({
+            "matcher": prompt_matcher,
+            "hooks": [{"type": "command", "command": prompt_cmd}],
+        })
+
     # Task 4 (#360): both containment-floor policies (block_dangerous_bash,
     # path_scope) must be present in every emitted PreToolUse block, exactly
     # like the mandatory guard above — a hollowed or repointed hooks.yaml

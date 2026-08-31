@@ -861,11 +861,13 @@ class TestGuardIsCodeMandatoryInCasa:
             yaml_mod.safe_load(shipped.read_text(encoding="utf-8"))
             ["pre_tool_use"])
         opts = self._build(str(shipped))
-        # + 3 = agent_home_settings_guard, trigger_file_write_guard (#403) and
-        # response_shape_write_guard (#610) — all code-mandatory and none
-        # declared in the shipped yaml; NO second managed guard, which is what
-        # this test is about.
-        assert len(opts.hooks["PreToolUse"]) == n_declared + 3
+        # + 4 = agent_home_settings_guard, trigger_file_write_guard (#403),
+        # response_shape_write_guard (#610) and resident_prompt_write_guard
+        # (#631) — all code-mandatory and none declared in the shipped yaml;
+        # NO second managed guard, which is what this test is about. The count
+        # moved from 3 to 4 when #631's guard became code-mandatory here; that
+        # is the evidence the wiring took effect, not a regression.
+        assert len(opts.hooks["PreToolUse"]) == n_declared + 4
         assert await _stack_denies_managed(opts)
 
 

@@ -121,7 +121,9 @@ def test_template_path_writes_translated_hooks(tmp_path, executor_defaults):
     # was declared but path_scope was not).
     pre = settings["hooks"]["PreToolUse"]
     commands = [e["hooks"][0]["command"] for e in pre]
-    assert len(pre) == 3
+    # #631: +1 — resident_prompt_write_guard joined the bridge's
+    # code-mandatory set, because path_scope does not route Bash.
+    assert len(pre) == 4
     assert any(c.endswith("hook_proxy.sh managed_component_guard")
                for c in commands)
     assert any(c.endswith("hook_proxy.sh path_scope") for c in commands)

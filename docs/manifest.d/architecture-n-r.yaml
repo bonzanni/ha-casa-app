@@ -86,6 +86,7 @@
     - casa/rootfs/opt/casa/agent_loader.py::_activate_resident_binding
     - casa/rootfs/opt/casa/prompt_compiler.py::compile_prompt_bundle
     - casa/rootfs/opt/casa/hooks.py::make_response_shape_write_guard
+    - casa/rootfs/opt/casa/hooks.py::make_resident_prompt_write_guard
   tests:
     - tests/test_personality_binding.py
     - tests/test_resident_refusal_diagnosis.py
@@ -93,10 +94,13 @@
     - tests/test_refusal_observation.py
     - tests/test_personality_admin_handlers.py
     - tests/test_response_shape_write_guard.py
+    - tests/test_resident_prompt_write_guard.py
+    - tests/test_resident_prompt_guard_bash_spellings.py
+    - tests/test_assistant_prompts.py
     - tests/test_prompt_compiler.py
     - tests/test_persona_pack.py
   related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/persona-lifecycle.md]
-  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-008, INV-PERS-009, INV-PERS-010]
+  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-008, INV-PERS-009, INV-PERS-010, INV-PERS-012, INV-PERS-015]
   invariant_tests:
     INV-PERS-001: [tests/test_tools_specialist_options.py::test_build_specialist_options_prefers_compiled_bundle_when_present]
     INV-PERS-002: [tests/test_persona_pack.py::test_pin_inv_pers_002_capability_claims_are_not_semantically_validated]
@@ -104,6 +108,8 @@
     INV-PERS-004: [tests/test_prompt_compiler.py::test_compiler_order_and_restricted_projection]
     INV-PERS-008: [tests/test_response_shape_write_guard.py::TestResponseShapeWriteGuard::test_denies_every_write_primitive_on_every_resident, tests/test_response_shape_write_guard.py::TestTheFileIsActuallyDead::test_every_resident_role_requires_a_persona]
     INV-PERS-010: [tests/test_refusal_observation.py::test_divergent_damaged_overrides_one_record_carries_both_restore_facts, tests/test_refusal_observation.py::test_active_unreadable_with_staged_readable, tests/test_refusal_observation.py::test_both_unreadable_one_record_active_error_wins, tests/test_refusal_observation.py::test_dangling_symlink_tuple_is_unreadable_never_absent, tests/test_refusal_observation.py::test_staged_image_default_beside_failing_default_shows_null_facts, tests/test_refusal_observation.py::test_commit_failure_after_fresh_stage_reports_the_candidate, tests/test_refusal_observation.py::test_recovery_names_no_runtime_tool_and_only_universal_facts, tests/test_refusal_observation.py::test_fact_rule_component_default_active_gets_facts_staged_does_not, tests/test_refusal_observation.py::test_fresh_install_default_failure_has_no_restore_facts]
+    INV-PERS-012: [tests/test_resident_prompt_write_guard.py::TestTheGuardIsRegisteredAndRefuses::test_registry_primitives_and_denial_counts, tests/test_resident_prompt_write_guard.py::TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks::test_four_builder_paths_deny_or_abstain_exactly, tests/test_resident_prompt_write_guard.py::TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks::test_the_claude_code_transport_carries_it_on_both_halves]
+    INV-PERS-015: [tests/test_assistant_prompts.py::test_every_resident_projection_carries_the_credential_rule_exactly_once]
     INV-PERS-009: [tests/test_prompt_compiler.py::test_a_nested_subsection_reaches_the_text_projection_exactly_once, tests/test_prompt_compiler.py::test_a_second_root_and_its_subsection_each_reach_text_once, tests/test_prompt_compiler.py::test_a_section_authored_above_core_is_emitted_once_and_only_once, tests/test_persona_pack.py::test_root_sections_returns_the_prefix_minimum_rows_in_document_order]
 
 - doc: architecture/plugin-events.md

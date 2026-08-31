@@ -30,7 +30,11 @@ class TestHookBridgeTranslate:
         # (round-4 Terra P0: yaml policies are additive-only) + the two
         # containment-floor policies (block_dangerous_bash, path_scope —
         # Task 4 #360), neither of which was declared here.
-        assert len(pre) == 5
+        # #631: +1 — resident_prompt_write_guard is code-mandatory in this
+        # bridge too (path_scope's matcher is Read|Write|Edit and never routes
+        # Bash, so a claude_code executor's shell write to a resident's inert
+        # prompt file was denied by nothing at all).
+        assert len(pre) == 6
 
         first = pre[0]
         # Task 4 (#360): matcher is forced to the registry's canonical value
@@ -60,8 +64,11 @@ class TestHookBridgeTranslate:
         )
         pre = settings["hooks"]["PreToolUse"]
         # Task 4 (#360): the empty document also gets both containment-floor
-        # policies appended alongside the managed-component guard.
-        assert len(pre) == 3
+        # policies appended alongside the managed-component guard, and #631's
+        # resident_prompt_write_guard — code-mandatory here because
+        # `path_scope` does not route Bash, so a claude_code executor's shell
+        # write to a resident's inert prompt file was denied by nothing.
+        assert len(pre) == 4
         guard = next(
             e for e in pre
             if e["hooks"][0]["command"].endswith(
@@ -95,7 +102,7 @@ class TestHookBridgeTranslate:
         # was declared) alongside the one valid member + managed guard.
         assert f"{PROXY} block_dangerous_bash" in commands
         assert f"{PROXY} path_scope" in commands
-        assert len(pre) == 4   # skipped members emit nothing
+        assert len(pre) == 5   # skipped members emit nothing; +1 = #631
 
     def test_non_mapping_document_root_treated_as_empty(self):
         """#354 (Sol r5-3): a hooks file whose ROOT is valid yaml but not a
@@ -109,7 +116,7 @@ class TestHookBridgeTranslate:
             )
             pre = settings["hooks"]["PreToolUse"]
             # Task 4 (#360): managed guard + both floor policies.
-            assert len(pre) == 3
+            assert len(pre) == 4
             commands = [e["hooks"][0]["command"] for e in pre]
             assert any(c.endswith("managed_component_guard") for c in commands)
             assert any(c.endswith("block_dangerous_bash") for c in commands)
@@ -126,7 +133,7 @@ class TestHookBridgeTranslate:
             )
             pre = settings["hooks"]["PreToolUse"]
             # Task 4 (#360): managed guard + both floor policies.
-            assert len(pre) == 3
+            assert len(pre) == 4
             commands = [e["hooks"][0]["command"] for e in pre]
             assert any(c.endswith("managed_component_guard") for c in commands)
             assert any(c.endswith("block_dangerous_bash") for c in commands)
