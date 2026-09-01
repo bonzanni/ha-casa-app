@@ -224,7 +224,9 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
 #: bytes could not be read (a permission, a directory, an I/O error).
 #: ``malformed``: the bytes were read but are not a valid store (parse, shape
 #: or schema). ``incomplete``: the store was valid but at least one episode
-#: row was not a mapping and was dropped — the readable rows are kept.
+#: row was not a readable episode — not a mapping, or a mapping without the
+#: fields that make it one (:func:`_readable_episode`) — and was dropped; the
+#: readable rows are kept.
 _DAMAGE_CLASSES = ("unreadable", "malformed", "incomplete")
 
 
@@ -374,6 +376,51 @@ def _load() -> dict:
     return _read_store().data
 
 
+#: The statuses an obligation row may carry (the store comment above). A row
+#: whose status is anything else has no readable STATE: every state-reading
+#: consumer misclassifies it — `ensure_obligation` reads it as terminal and
+#: settled (so setup is silently never owed again), `health_issues` and the
+#: worker as nothing.
+_EPISODE_STATUSES = ("pending", "dispatched", "failed", "stale", "refused")
+
+
+def _readable_episode(row: Any) -> bool:
+    """Whether a stored row is an episode the code can identify, classify and
+    write back to (candidate review, sol S2). Three fields are essential, and
+    only three — derived from what the consumers require, not from the row
+    template:
+
+    * ``plugin``, a non-empty string — the row's identity: `_row_for`,
+      `retire_for_removed`, the supersession in `ensure_obligation`, the
+      health merge's registered-name filter on `health_issues()`'s `plugin`,
+      and ``ep["plugin"]`` in `_run_episode`. Without it a row is never
+      matched, superseded or retired, is filtered out of the standing report,
+      renders as "a plugin", and raises in the worker.
+    * ``status``, one of :data:`_EPISODE_STATUSES` — the row's state: the
+      ``pending`` filter, `health_issues`, `ensure_obligation`,
+      `_settle_locked`, `report_dispatch_outcome`.
+    * ``id``, a non-empty string — the handle every write-back is keyed by:
+      `_update_episode`, ``ep["id"]`` throughout `_run_episode`,
+      `report_dispatch_outcome`. A released row without one raises on every
+      kick, and `_worker_pass`'s isolation arm calls
+      ``_update_episode(ep.get("id") or "")``, which matches nothing — it is
+      never repaired and never completes.
+
+    A mapping missing any of them is not an episode: keeping it presented
+    damage as history (``{}`` rendered as "a plugin: setup is unknown" with no
+    disclosure) and the next writer persisted it. Every other field is
+    tolerated or repaired — a malformed ``updated_ts`` reads as oldest
+    (`_stamp`), a missing ``artifact_id`` is superseded by the next sweep, a
+    missing ``gate`` holds — because dropping a valid pending obligation over
+    a non-essential field would lose setup, which the gate review ruled
+    against. Dropping one of the three loses nothing: `ensure_obligation`
+    re-creates the obligation with a handle. Total: never raises."""
+    return (isinstance(row, dict)
+            and isinstance(row.get("plugin"), str) and bool(row["plugin"])
+            and isinstance(row.get("id"), str) and bool(row["id"])
+            and row.get("status") in _EPISODE_STATUSES)
+
+
 def _normalize(data: dict) -> None:
     """Repair a structurally corrupt store in memory (the next :func:`_save`
     persists it). Corruption defense, not version migration — idempotent and
@@ -448,9 +495,16 @@ def _normalize(data: dict) -> None:
     # stranding EVERY plugin's setup and breaking health regeneration, with the
     # "a corrupt store must not brick boot" recovery never reached because the
     # store parsed fine.
+    # A MAPPING that is not an episode (candidate review, sol S2) is the same
+    # class one level down: `{}` raised nowhere, so it was kept, read as an
+    # undamaged store, rendered by the status tool as "a plugin: setup is
+    # unknown" with no disclosure, and written back by the next writer. What
+    # makes a row an episode is decided in ONE place, `_readable_episode`; the
+    # count of dropped rows — mapping or not — is what `_read_store`
+    # classifies as `incomplete`.
     rows = data.get("episodes")
     if isinstance(rows, list):
-        kept = [r for r in rows if isinstance(r, dict)]
+        kept = [r for r in rows if _readable_episode(r)]
         if len(kept) != len(rows):
             logger.warning("dropped %d malformed setup-obligation row(s)",
                            len(rows) - len(kept))
