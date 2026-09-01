@@ -1259,3 +1259,172 @@ async def test_an_unattributable_artifact_fails_open_on_either_side(
     assert len(_setup_rows(_regen_into(monkeypatch, health,
                                        registered=["elevenlabs"],
                                        artifact="art-9"))) == 1
+
+
+# ---------------------------------------------------------------------------
+# #747 / INV-PLUG-015 — a damaged store is DISCLOSED, live, after a writer has
+# replaced it, and until the disclosure decays. Real files, real STORE_PATH,
+# the real status tool; never the ``episodes`` double the status-tool suite
+# installs (it is why the defect shipped).
+# ---------------------------------------------------------------------------
+
+_T0 = 1_700_000_000.0
+
+
+def _valid_row(plugin, *, artifact="art-1", updated=_T0 - 30):
+    return {"id": f"e-{plugin}", "plugin": plugin, "artifact_id": artifact,
+            "gen": 1, "status": "failed", "gate": "released", "attempts": 1,
+            "execution_retries": 0, "resolve_deferrals": 0,
+            "approved_identities": [], "created_ts": updated - 60,
+            "updated_ts": updated, "last_error": f"{plugin} boom"}
+
+
+def _write_store(path, episodes, **extra):
+    doc = {"schema_version": 4, "rounds": {}, "episodes": episodes, **extra}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _global_rows(report):
+    return [d for d in report["issues"] if d["name"] == "*"]
+
+
+@pytest.mark.asyncio
+async def test_damaged_setup_history_is_disclosed_live_after_reset_and_until_decay(
+        tmp_path, monkeypatch):
+    """The store is read by eleven sites and reset to empty on ANY failure; the
+    status tool and the standing report then see a successful read of zero rows
+    and cannot tell damage from a box where no setup ever ran. Every writer
+    then overwrites the damaged file with a valid empty one, so the damage is
+    also erased before anything reports it. Pins: live damage is disclosed on
+    both surfaces; a real writer carries the fact of the reset into the
+    replacement store; the disclosure persists for the health decay window and
+    then clears; readable rows survive a partial read; a directory reads as
+    unreadable, not malformed; a reset record that is not well-formed is
+    ignored and pruned."""
+    import agent as agent_mod
+    import plugin_health
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    clock = {"t": _T0}
+    monkeypatch.setattr(pse, "_now", lambda: clock["t"])
+    health.write_text(json.dumps({"schema_version": 1, "issues": [],
+                                  "warnings": [], "notified_fingerprints": []}),
+                      encoding="utf-8")
+
+    async def _status():
+        out = await tools.plugin_status.handler({})
+        return json.loads(out["content"][0]["text"])
+
+    # 1. Absent: ordinary, silent, exactly three keys.
+    assert not store.exists()
+    assert await _status() == {"ok": True, "standing": [], "history": []}
+    assert pse.health_issues() == []
+
+    # 2. Live malformed store: the status assertion comes FIRST so the base
+    #    fails behaviourally (it answers the healthy-empty envelope).
+    store.write_bytes(b'{"schema_version":4,')
+    status = await _status()
+    assert status["ok"] is True
+    assert status["history"] == []
+    assert status["history_unavailable"] == (
+        "the plugin setup history could not be read (malformed), "
+        "so the entries below are not the full record")
+    assert store.read_bytes() == b'{"schema_version":4,'   # read-only tool
+    read = pse.read_episodes()
+    assert read.rows == []
+    assert read.damage == "malformed"
+    assert read.reset == {"damage": "malformed", "ts": _T0}
+    assert pse.health_issues() == [{
+        "kind": "setup_history_unavailable", "plugin": "*",
+        "artifact_id": None, "episode": None,
+        "detail": ("the plugin setup history could not be read; "
+                   "entries recorded before the damage are lost")}]
+    r_live = _regen_into(monkeypatch, health, registered=[])
+    assert len(r_live["issues"]) == 1
+    live_row = r_live["issues"][0]
+    assert (live_row["name"], live_row["target"], live_row["stage"],
+            live_row["reason_code"], live_row["artifact_id"]) == (
+        "*", None, "setup", "setup_history_unavailable", None)
+
+    # 3. A REAL writer replaces the damaged file and carries the reset with it.
+    assert pse.open_round(plugin="writer", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["schema_version"] == 4
+    assert disk["reset"] == {"damage": "malformed", "ts": _T0}
+    read = pse.read_episodes()
+    assert read.damage == "reset"
+    assert read.reset == {"damage": "malformed", "ts": _T0}
+    status = await _status()
+    assert status["history"] == []
+    assert status["history_unavailable"] == (
+        "the plugin setup history was reset after malformed damage at "
+        "2023-11-14T22:13:20+00:00, so entries recorded before then are lost, "
+        "so the entries below are not the full record")
+    r_reset = _regen_into(monkeypatch, health, registered=[])
+    assert len(r_reset["issues"]) == 1
+    assert r_reset["issues"][0]["fingerprint"] == live_row["fingerprint"]
+    assert r_reset["issues"][0]["detail"] == live_row["detail"]
+
+    # 4. Partial read: readable rows survive, the loss is disclosed ONCE.
+    partial = tmp_path / "partial.json"
+    monkeypatch.setattr(pse, "STORE_PATH", partial)
+    a, b = _valid_row("a"), _valid_row("b")
+    _write_store(partial, [a, "junk", b])
+    read = pse.read_episodes()
+    assert read.rows == [a, b]
+    assert read.damage == "incomplete"
+    assert read.reset["damage"] == "incomplete"
+    assert pse.open_round(plugin="writer", artifact_id="a", identities=[]) == {}
+    disk = json.loads(partial.read_text(encoding="utf-8"))
+    assert disk["episodes"] == [a, b]
+    assert disk["reset"] == {"damage": "incomplete", "ts": _T0}
+    status = await _status()
+    assert len(status["history"]) == 2
+    assert "history_unavailable" in status
+    r_partial = _regen_into(monkeypatch, health, registered=["a", "b"])
+    assert len(_global_rows(r_partial)) == 1
+    assert len([d for d in r_partial["issues"] if d["stage"] == "setup"]) == 3
+
+    # 5. A directory is UNREADABLE, never relabelled malformed.
+    as_dir = tmp_path / "store-is-a-dir"
+    as_dir.mkdir()
+    monkeypatch.setattr(pse, "STORE_PATH", as_dir)
+    assert pse.read_episodes().damage == "unreadable"
+    assert "history_unavailable" in await _status()
+    assert [r["kind"] for r in pse.health_issues()] == [
+        "setup_history_unavailable"]
+
+    # 6. Decay: the persisted reset stops being reported after the health
+    #    window, and the next writer prunes the record.
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    clock["t"] = _T0 + pse._HEALTH_DECAY_S + 1
+    assert pse.read_episodes().damage is None
+    assert await _status() == {"ok": True, "standing": [], "history": []}
+    assert pse.health_issues() == []
+    assert pse.open_round(plugin="writer", artifact_id="a", identities=[]) == {}
+    assert "reset" not in json.loads(store.read_text(encoding="utf-8"))
+
+    # 7. A reset record that is not well-formed is ignored and pruned.
+    clock["t"] = _T0
+    bad = tmp_path / "bad-reset.json"
+    monkeypatch.setattr(pse, "STORE_PATH", bad)
+    for record in ({"damage": "weird", "ts": _T0},
+                   {"damage": "malformed", "ts": True},
+                   {"damage": "malformed", "ts": float("nan")},
+                   {"damage": "malformed", "ts": float("inf")},
+                   {"damage": "malformed", "ts": float("-inf")},
+                   {"damage": "malformed", "ts": 1e18},
+                   "not-a-mapping"):
+        _write_store(bad, [], reset=record)
+        read = pse.read_episodes()
+        assert read.damage is None, record
+        assert read.reset is None, record
+        assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+        assert "reset" not in json.loads(bad.read_text(encoding="utf-8")), record
+    assert clock["t"] == _T0
+    assert plugin_health.load_report(health) is not None
