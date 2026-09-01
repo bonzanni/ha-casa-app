@@ -14254,11 +14254,14 @@ def _status_int(value) -> int:
 
 def _status_sort_key(row: dict) -> float:
     """`updated_ts` as a number, tolerating anything a hand-edited store holds.
-    A malformed stamp sorts oldest rather than raising mid-render."""
+    A malformed stamp sorts oldest rather than raising mid-render — ANY failure
+    (an int too large for a float raises OverflowError) and any non-finite
+    value, the same rule `plugin_setup_episodes._stamp` applies."""
     try:
-        return float(row.get("updated_ts") or 0)
-    except (TypeError, ValueError):
+        stamp = float(row.get("updated_ts") or 0)
+    except Exception:  # noqa: BLE001
         return 0.0
+    return stamp if math.isfinite(stamp) else 0.0
 
 
 def _tool_plugin_status() -> dict:

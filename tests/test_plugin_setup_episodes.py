@@ -1512,3 +1512,30 @@ async def test_a_malformed_timestamp_on_one_row_hides_no_other_row(
     status = json.loads(out["content"][0]["text"])
     assert len(status["history"]) == 2
     assert "history_unavailable" not in status
+
+
+@pytest.mark.parametrize("stamp", [10 ** 400, float("inf"), float("-inf"),
+                                   float("nan"), [1], {"t": 1}])
+def test_any_unconvertible_or_non_finite_timestamp_reads_as_oldest(
+        tmp_path, monkeypatch, stamp):
+    """Gate review round 2 (sol): an int too large for a float raises
+    OverflowError — not ValueError — so a class-list catch was the wrong
+    shape, and infinities compared fine but never decayed. The rule is now
+    total: any conversion failure and any non-finite value is the OLDEST time,
+    so the terminal row decays and the pending row beside it still stands,
+    with no raise reaching the health merge."""
+    store = tmp_path / "plugin-setup-episodes.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    bad = _valid_row("bad")
+    bad["updated_ts"] = stamp
+    pending = _valid_row("good")
+    pending["status"] = "pending"
+    store.write_text(json.dumps({"schema_version": 4, "rounds": {},
+                                 "episodes": [bad, pending]}),
+                     encoding="utf-8")
+    assert pse._stamp(stamp) == 0.0
+    assert [(r["kind"], r["plugin"]) for r in pse.health_issues()] == [
+        ("setup_episode_pending", "good")]
+    import tools
+    assert tools._status_sort_key({"updated_ts": stamp}) == 0.0

@@ -498,9 +498,11 @@ def _stamp(value: Any) -> float:
     the stamp as oldest decays a terminal row and keeps a pending one, which is
     the direction that loses nothing an operator needs."""
     try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
+        stamp = float(value or 0)
+    except Exception:  # noqa: BLE001 — ANY conversion failure reads oldest
+        return 0.0     # (int too large for a float raises OverflowError, not
+    #                    ValueError; the list of classes was the wrong shape)
+    return stamp if math.isfinite(stamp) else 0.0
 
 
 def health_issues() -> list[dict]:
