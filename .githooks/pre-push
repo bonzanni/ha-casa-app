@@ -86,20 +86,29 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
   fi
 
-  if [ "$remote_sha" = "$zero" ]; then
-    # ASK THE DESTINATION what it has. `--not --remotes=<name>` reads local tracking refs,
-    # which describe this clone, not the remote: repoint origin at a fresh repository and
-    # a stale refs/remotes/origin/main makes whole ancestries look already-published.
-    advertised="$(git ls-remote --heads "$destination" 2>/dev/null | cut -f1)" || advertised=""
-    if [ -n "$advertised" ]; then
-      commits="$(git rev-list "$local_sha" --not $advertised 2>/dev/null)" \
-        || commits="$(git rev-list "$local_sha")"
-    else
-      # An empty or unreachable destination publishes the whole ancestry.
-      commits="$(git rev-list "$local_sha")"
-    fi
+  # ASK THE DESTINATION what it has, for a NEW ref and for an update to an EXISTING one
+  # alike. `--not --remotes=<name>` reads local tracking refs, which describe this clone,
+  # not the remote: repoint origin at a fresh repository and a stale refs/remotes/origin/main
+  # makes whole ancestries look already-published. And "what the destination has" is every
+  # branch it advertises, not the one tip being replaced: a candidate rebased onto a `main`
+  # that has since moved carries main's own published commits, which `remote_sha..local_sha`
+  # counted as introduced and the reviewed set (gated against origin/main) can never contain.
+  # The sha git reports for the ref being replaced stays in the subtrahend, so an unreachable
+  # destination degrades to exactly that old range — never to less.
+  advertised="$(git ls-remote --heads "$destination" 2>/dev/null | cut -f1)" || advertised=""
+  [ "$remote_sha" = "$zero" ] || advertised="$remote_sha
+$advertised"
+  # Keep only heads present locally. One advertised but unfetched head made `rev-list --not`
+  # fail outright and the whole ancestry was enumerated instead. Dropping it loses nothing: a
+  # clone holds every ancestor of its own commits, so an absent object is not one of them.
+  known="$(printf '%s\n' $advertised | git cat-file --batch-check='%(objectname) %(objecttype)' 2>/dev/null \
+             | awk '$2 == "commit" { print $1 }')" || known=""
+  if [ -n "$known" ]; then
+    commits="$(git rev-list "$local_sha" --not $known 2>/dev/null)" \
+      || commits="$(git rev-list "$local_sha")"
   else
-    commits="$(git rev-list "$remote_sha..$local_sha")"
+    # An empty or unreachable destination publishes the whole ancestry.
+    commits="$(git rev-list "$local_sha")"
   fi
   [ -n "$commits" ] || continue                   # nothing new to publish
 
@@ -152,7 +161,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "✋ pre-push: $count commit(s) would reach $destination, but these were never in" >&2
     echo "   the reviewed range:" >&2
     printf '%s\n' "$unreviewed" | head -5 | sed 's/^/     /' >&2
-    echo "   Re-run the gate with CASA_GATE_BASE set to what $destination already has." >&2
+    echo "   Re-run the gate with CASA_GATE_BASE set to what $destination already has: a" >&2
+    echo "   commit that is an ancestor of $local_sha — the gate and the docs guard both range" >&2
+    echo "   from that one base. If no such commit exists, rebase onto its branch first." >&2
     exit 1
   fi
 done

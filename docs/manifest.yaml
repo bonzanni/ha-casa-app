@@ -72,11 +72,12 @@
     - tests/test_leak_guard.py
     - tests/test_gate_hook.py
   related: [contributing/doc-contract.md]
-  defines_invariants: [INV-PUB-001, INV-PUB-002, INV-PUB-003]
+  defines_invariants: [INV-PUB-001, INV-PUB-002, INV-PUB-003, INV-PUB-004]
   invariant_tests:
     INV-PUB-001: [tests/test_deny_sweep.py::test_a_denied_literal_is_caught, tests/test_leak_guard.py::test_a_denied_path_is_rejected]
     INV-PUB-002: [tests/test_pin_doc_corpus_shape.py::test_pin_inv_pub_002_doctrine_carries_no_dated_history]
     INV-PUB-003: [tests/test_gate_hook.py::test_a_gated_push_without_an_attestation_is_refused, tests/test_gate_hook.py::test_the_automated_receipt_alone_does_not_authorise_a_push]
+    INV-PUB-004: [tests/test_gate_hook.py::test_a_re_cut_onto_a_moved_main_pushes_over_its_own_ref, tests/test_gate_hook.py::test_a_re_cut_carrying_an_unreviewed_commit_is_still_refused_by_name]
 
 - doc: doctrine/operating-casa.md
   summary: How an agent running inside Casa should behave, and which property of the system each rule follows from.
