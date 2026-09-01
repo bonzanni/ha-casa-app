@@ -420,7 +420,7 @@ async def test_removal_paths_retire_and_recreate_fresh(case, tmp_path, monkeypat
     _patch_construction(monkeypatch)
     old = await _establish(tree)
     path = tree.triggers_path()
-    expected_after = {}
+    expected_after: set[str] = set()
     reg_after = tree.registry
 
     if case == "path1_triggers":
@@ -479,12 +479,14 @@ async def test_removal_paths_retire_and_recreate_fresh(case, tmp_path, monkeypat
     files = _files(tree.secrets)
     assert NAME not in files and f"{NAME}.mint" not in files, (case, sorted(files))
     assert set(files) == expected_after, (case, sorted(files))
-    assert NAME not in _routes(reg_after, ROLE)
+    if case != "path3_hmac":            # an hmac_body declaration keeps its ROUTE; only the slot goes
+        assert NAME not in _routes(reg_after, ROLE)
 
     # Recreate the same declaration; a fresh credential, certified.
     if case == "path10_boot_absent_dir":
         _seed_resident(tree.agents_dir, role=ROLE)
-    tree.declare([_entry()] + ([_interval("heartbeat")] if case in ("path7_sync", "path8_boot_sync") else []))
+    tree.declare([_entry()] + ([_interval("heartbeat")] if case in ("path7_sync", "path8_boot_sync") else [])
+                 + ([_entry("porch")] if case == "path5_rename" else []))
     res2 = await tree.reload("triggers")
     assert res2["status"] == "ok", res2
     files = _files(tree.secrets)
