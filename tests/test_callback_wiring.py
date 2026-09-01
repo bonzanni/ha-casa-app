@@ -239,7 +239,8 @@ def _reconcile_modules_called(func_node: ast.FunctionDef) -> set[str]:
     return found
 
 
-@pytest.mark.parametrize("relpath", ["reload.py", "tools.py"])
+@pytest.mark.parametrize("relpath", ["reload.py", "tools.py",
+                                     "plugin_routing_recovery.py"])
 def test_i3_every_reconcile_from_runtime_site_is_paired(relpath):
     """Any function that calls trigger_reconcile.reconcile_from_runtime must
     also call callback_reconcile.reconcile_from_runtime (and vice-versa) — so a

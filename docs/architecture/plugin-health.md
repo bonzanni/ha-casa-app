@@ -166,6 +166,24 @@ earned, and nothing ever tells anyone. So the pin holds the pair, not the parame
 must survive the partial write, and the next authoritative write that no longer carries the
 row must still clear it, leaving a later recurrence newly announceable.
 
+**INV-PLUG-015**: A plugin setup-episode store that exists but cannot be read as a valid store, or whose episode rows could only partly be read, is reported as unavailable on every surface that reports on it — the status tool's history and the standing health report — both while the damage stands and, once a writer has replaced the store, for as long as a failed setup would stay in health; an absent store is ordinary and stays silent.
+
+The store is reset to empty on any read failure so that a corrupt file never bricks boot,
+and every writer saves what it loaded, so the first write after damage replaces the file
+with a valid empty one. Both facts stand; what the rule adds is that neither erases the
+knowledge. The one read every reader shares reports the damage beside the rows it did read
+— unreadable bytes, a malformed or wrong-schema document, or rows that were only partly
+readable, in which case the readable rows are kept — and the store it hands a writer
+carries a record of the reset, which that writer's own save persists. The status tool reads
+live and names the class and, after a reset, the time; the standing report carries one
+registry-global row whose identity is the same before and after the replacement, so the
+transition announces nothing and a regeneration that lands before the worker's save is as
+right as one that lands after. The record is honoured for the same window a failed setup
+stays in health and pruned by the next write after that. Absence stays silent: a box that
+never ran a plugin setup must not start disclosing damage. What this does not cover: the
+round ledger's own repairs — a round or member that cannot be read is dropped and re-sealed
+from live state — are repair, not history loss, and are logged rather than reported.
+
 ## Failure behavior
 
 **The report cannot be written at boot.** Boot still exits successfully — deliberately,
@@ -182,14 +200,16 @@ indistinguishable from a box where nothing is wrong, so the assistant asserted t
 of problems on the strength of a file it could not read. Absence alone is ordinary and
 still says nothing; every other case, including a probe that cannot tell which it is,
 now carries a statement that the standing set is not the full one. The same holds for a
-setup history whose read raises, and for the case where a routing overlay is unavailable
-so the report's trigger and callback rows describe a state no reconcile has confirmed.
+setup history that cannot be read as a valid store, or was reset after such damage
+(INV-PLUG-015), and for the case where a routing overlay is unavailable so the report's
+trigger and callback rows describe a state no reconcile has confirmed.
 
 Those statements are conditional keys, deliberately: the healthy answer keeps the exact
 shape it always had, because an answer that always carries a caveat is an answer whose
-caveat stops being read. And the history statement covers a read that raises, not a
-store that is malformed — that one is caught below the tool, which sees a successful read
-of zero rows, so the marker's absence is not a claim that the history is complete.
+caveat stops being read. The history statement covers a store that is unreadable,
+malformed or only partly readable, and — because every writer replaces a damaged store
+with a valid empty one — the reset that follows, for as long as a failed setup would stay
+in health; only an absent store is silent, because absence is ordinary.
 
 A report is normalized as it is read, and normalization filters rather than rejects. External
 corruption of the report file — a non-object document, a row that is not a mapping, an

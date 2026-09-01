@@ -46,7 +46,12 @@ def _row(plugin="fx-setup", status="failed", attempts=3, retries=1,
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    """Point BOTH stores at tmp_path and hand back setters for each."""
+    """Point BOTH stores at tmp_path and hand back setters for each.
+
+    The episode setter doubles ``read_episodes`` — the ONE seam the tool reads
+    (#747) — for the rendering cases below. The real-store disclosure cases
+    (damage, reset, decay) drive a real ``STORE_PATH`` and live in
+    ``tests/test_plugin_setup_episodes.py``; a double here cannot pin them."""
     health = tmp_path / "plugin-health.json"
     monkeypatch.setattr(tools_mod, "_PLUGIN_HEALTH_PATH", str(health))
 
@@ -57,8 +62,10 @@ def store(tmp_path, monkeypatch):
             encoding="utf-8")
 
     def set_episodes(rows):
-        monkeypatch.setattr(plugin_setup_episodes, "episodes",
-                            lambda status=None: list(rows))
+        monkeypatch.setattr(
+            plugin_setup_episodes, "read_episodes",
+            lambda status=None: plugin_setup_episodes.EpisodesRead(
+                list(rows), None, None))
 
     set_health()
     set_episodes([])
@@ -149,7 +156,7 @@ async def test_episode_store_failure_degrades_rather_than_raising(
         store, monkeypatch):
     def _boom(status=None):
         raise RuntimeError("store unreadable")
-    monkeypatch.setattr(plugin_setup_episodes, "episodes", _boom)
+    monkeypatch.setattr(plugin_setup_episodes, "read_episodes", _boom)
     set_health, _ = store
     set_health(issues=[_issue()])
     out = await _call()
@@ -285,7 +292,7 @@ async def test_a_raising_history_read_is_disclosed(store, monkeypatch):
     record."""
     set_health, _ = store
     set_health(issues=[_issue()])
-    monkeypatch.setattr(plugin_setup_episodes, "episodes",
+    monkeypatch.setattr(plugin_setup_episodes, "read_episodes",
                         lambda status=None: (_ for _ in ()).throw(OSError("x")))
     out = await _call()
     assert len(out["standing"]) == 1
@@ -297,7 +304,7 @@ async def test_the_tool_never_raises_when_both_halves_are_broken(store,
                                                                  monkeypatch):
     monkeypatch.setattr(plugin_health, "load_report",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
-    monkeypatch.setattr(plugin_setup_episodes, "episodes",
+    monkeypatch.setattr(plugin_setup_episodes, "read_episodes",
                         lambda status=None: (_ for _ in ()).throw(OSError("x")))
     out = await _call()
     assert out["ok"] is True

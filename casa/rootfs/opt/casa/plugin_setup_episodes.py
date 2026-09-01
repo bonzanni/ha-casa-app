@@ -105,11 +105,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, NamedTuple
 
 import plugin_dispatch
 
@@ -217,12 +219,102 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
 # There is at most ONE row per plugin — its CURRENT artifact's obligation.
 # ---------------------------------------------------------------------------
 
-def _load() -> dict:
-    if not STORE_PATH.is_file():
-        return {"schema_version": _SCHEMA_VERSION, "rounds": {},
-                "episodes": []}
+#: The damage classes a read can report, and the only ones a persisted
+#: ``reset`` record may carry (#747). ``unreadable``: the file exists but the
+#: bytes could not be read (a permission, a directory, an I/O error).
+#: ``malformed``: the bytes were read but are not a valid store (parse, shape
+#: or schema). ``incomplete``: the store was valid but at least one episode
+#: row was not a mapping and was dropped — the readable rows are kept.
+_DAMAGE_CLASSES = ("unreadable", "malformed", "incomplete")
+
+
+class StoreRead(NamedTuple):
+    """One point-in-time read of the store (#747, INV-PLUG-015).
+
+    ``data`` is exactly what :func:`_load` returns — the canonical store, reset
+    to empty on ``unreadable``/``malformed`` damage, normalized on
+    ``incomplete``. ``damage`` is ``None`` for a readable store and for an
+    ABSENT one (absence is ordinary — a box that never ran a plugin setup — and
+    must not start disclosing damage), one of :data:`_DAMAGE_CLASSES` while
+    the damage stands, or ``"reset"`` when the store is readable and carries a
+    well-formed, unexpired ``reset`` record. ``reset`` is that record.
+
+    Every writer does ``_load()`` then ``_save()``, so the first writer after
+    damage REPLACES the damaged file with a valid empty one — before any
+    reporting surface may have observed it. The fact of that replacement
+    therefore travels IN ``data``: on damage the returned store carries a
+    ``reset`` record, and the writer's own save persists it as a side effect
+    of its own write. The record is honoured for :data:`_HEALTH_DECAY_S` — the
+    window a failed setup stays in health — and pruned by the next writer after
+    that. No process-global "last load failed" flag: it would race unrelated
+    reads by the worker and the status tool.
+    """
+    data: dict
+    damage: str | None
+    reset: dict | None
+
+
+class EpisodesRead(NamedTuple):
+    """:func:`read_episodes`'s result: the rows plus the read's damage."""
+    rows: list
+    damage: str | None
+    reset: dict | None
+
+
+def _empty(reset: dict | None = None) -> dict:
+    data: dict = {"schema_version": _SCHEMA_VERSION, "rounds": {},
+                  "episodes": []}
+    if reset is not None:
+        data["reset"] = reset
+    return data
+
+
+def _reset_record(damage: str) -> dict:
+    return {"damage": damage, "ts": _now()}
+
+
+def _iso_utc(ts: Any) -> str | None:
+    """A renderable UTC timestamp, or None — never raises."""
     try:
-        data = json.loads(STORE_PATH.read_text(encoding="utf-8"))
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _valid_reset(record: Any) -> dict | None:
+    """The persisted ``reset`` record, normalized, when it is well-formed AND
+    still inside the decay window; None otherwise (the caller drops it, and
+    the next writer prunes it). Well-formed means exactly one of the generated
+    damage classes and a non-boolean, finite, renderable timestamp — a record a
+    hand edit or a partial write left in any other shape is ignored rather than
+    rendered, because a renderer that raises inside the health merge would
+    erase every setup row from the report."""
+    if not isinstance(record, dict):
+        return None
+    damage, ts = record.get("damage"), record.get("ts")
+    if damage not in _DAMAGE_CLASSES:
+        return None
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return None
+    if not math.isfinite(ts) or _iso_utc(ts) is None:
+        return None
+    if ts < _now() - _HEALTH_DECAY_S:
+        return None
+    return {"damage": damage, "ts": ts}
+
+
+def _read_store() -> StoreRead:
+    """The one protected read every reader shares (#747). Never raises."""
+    try:
+        raw = STORE_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return StoreRead(_empty(), None, None)
+    except OSError:
+        logger.exception("plugin-setup-episodes store unreadable — resetting")
+        rec = _reset_record("unreadable")
+        return StoreRead(_empty(rec), "unreadable", rec)
+    try:
+        data = json.loads(raw)
         if (not isinstance(data, dict)
                 or not isinstance(data.get("episodes"), list)):
             raise ValueError("malformed store")
@@ -233,12 +325,35 @@ def _load() -> dict:
             raise ValueError(
                 f"unsupported schema_version {data.get('schema_version')!r}")
         data.setdefault("rounds", {})
+        before = len(data["episodes"])
         _normalize(data)
-        return data
+        dropped = before - len(data["episodes"])
     except Exception:  # noqa: BLE001 — a corrupt store must not brick boot
         logger.exception("plugin-setup-episodes store unreadable — resetting")
-        return {"schema_version": _SCHEMA_VERSION, "rounds": {},
-                "episodes": []}
+        rec = _reset_record("malformed")
+        return StoreRead(_empty(rec), "malformed", rec)
+    if dropped:
+        # Row-level loss: the readable rows stay (exactly as _normalize left
+        # them) and the loss is recorded. Round-ledger repairs are NOT damage:
+        # a dropped round establishes nothing and the reconciler re-seals it
+        # from live state — repair, not history loss — so they stay logged
+        # rather than reported.
+        rec = _reset_record("incomplete")
+        data["reset"] = rec
+        return StoreRead(data, "incomplete", rec)
+    rec = _valid_reset(data.get("reset"))
+    if rec is None:
+        data.pop("reset", None)
+        return StoreRead(data, None, None)
+    data["reset"] = rec
+    return StoreRead(data, "reset", rec)
+
+
+def _load() -> dict:
+    """Compatibility wrapper for the eleven store writers/readers: never
+    raises, always the canonical store (plus the optional ``reset`` record,
+    which every caller ignores and every writer carries forward)."""
+    return _read_store().data
 
 
 def _normalize(data: dict) -> None:
@@ -333,9 +448,41 @@ def _save(data: dict) -> None:
     atomic_write_json(STORE_PATH, data, indent=1, mode=PRIVATE)
 
 
+def read_episodes(status: str | None = None) -> EpisodesRead:
+    """The rows plus the read's availability (#747). One read; the rows and
+    the damage describe the same bytes."""
+    read = _read_store()
+    rows = [e for e in read.data["episodes"]
+            if status is None or e.get("status") == status]
+    return EpisodesRead(rows, read.damage, read.reset)
+
+
 def episodes(status: str | None = None) -> list[dict]:
-    eps = _load()["episodes"]
-    return [e for e in eps if status is None or e.get("status") == status]
+    return read_episodes(status).rows
+
+
+def damage_sentence(read: "EpisodesRead | StoreRead", *,
+                    precise: bool = True) -> str | None:
+    """One operator-facing sentence for a read's damage, or None when there is
+    none. The ONE renderer both reporting surfaces use. ``precise=False`` is
+    the standing health row's form: identical for live damage and for a
+    persisted reset, so the row a regeneration writes does not depend on
+    whether the kicked worker has persisted the record yet. ``precise=True``
+    is the status tool's form, read live at call time, and alone carries the
+    class and the timestamp. Never raises."""
+    if read.damage is None:
+        return None
+    if not precise:
+        return ("the plugin setup history could not be read; entries recorded "
+                "before the damage are lost")
+    if read.damage == "reset":
+        rec = read.reset or {}
+        cls = rec.get("damage") or "earlier"
+        when = _iso_utc(rec.get("ts"))
+        at = f" at {when}" if when else ""
+        return (f"the plugin setup history was reset after {cls} damage{at}, "
+                "so entries recorded before then are lost")
+    return f"the plugin setup history could not be read ({read.damage})"
 
 
 def health_issues() -> list[dict]:
@@ -347,7 +494,8 @@ def health_issues() -> list[dict]:
     reachable to prompt them)."""
     out = []
     cutoff = _now() - _HEALTH_DECAY_S
-    for e in episodes():
+    read = read_episodes()
+    for e in read.rows:
         st = e.get("status")
         if st == "pending" or (
                 st in ("failed", "stale", "refused")
@@ -368,6 +516,19 @@ def health_issues() -> list[dict]:
                 "episode": e.get("id"),
                 "detail": e.get("last_error") or "",
             })
+    if read.damage is not None:
+        # #747 / INV-PLUG-015: one registry-GLOBAL row (``plugin="*"``, the
+        # established spelling) so the standing report says the history is
+        # unavailable rather than silently erasing every setup row. Its
+        # fingerprint is the same for live damage and for a persisted reset,
+        # so the live->reset transition re-announces nothing.
+        out.append({
+            "kind": "setup_history_unavailable",
+            "plugin": "*",
+            "artifact_id": None,
+            "episode": None,
+            "detail": damage_sentence(read, precise=False),
+        })
     return out
 
 

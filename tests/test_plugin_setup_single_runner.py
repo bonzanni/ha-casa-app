@@ -703,7 +703,11 @@ async def test_a_malformed_row_does_not_strand_every_plugin(env):
         "episodes": [None, "partial write", 7],
     }), encoding="utf-8")
     assert pse.episodes() == []
-    assert pse.health_issues() == []
+    # #747 / INV-PLUG-015: the dropped rows are no longer silent — the standing
+    # report gets exactly ONE registry-global row saying the history could not
+    # be read, and nothing else; health regeneration itself still works.
+    assert [(r["kind"], r["plugin"]) for r in pse.health_issues()] == [
+        ("setup_history_unavailable", "*")]
     env.plugin = _plugin()
     await _reconcile(env)
     assert len(env.dispatched) == 1
