@@ -123,6 +123,32 @@ whole rule, with no exception: an authorization challenge — and every other ch
 coordinator raises — displaces on delivery too, from its own driver, rather than clearing
 the lane at admission.
 
+## Failure behavior
+
+**The keyboard's post fails, or the process dies while a question is still `posting`.** The
+record exists before the keyboard does (INV-JOB-006), so a post that never lands is settled
+by the next boot's reconcile rather than restored, and a keyboard that did land for a record
+the process lost is answered at a tap with "expired" — the crash window resolves toward
+at-most-once, deliberately.
+
+**A human question's post fails while a scheduled one is waiting.** The scheduled question
+is untouched: displacement happens on delivery, not admission (INV-JOB-008), so a
+replacement that never reached the screen has cost nothing.
+
+**The process is stopping.** The shutdown cancel settles nothing, edits nothing and leaves
+the record for the next boot (INV-JOB-007's stated exclusion); the keyboard stays on screen
+and the question stays honest.
+
+## Extension points
+
+**A new terminal outcome** belongs in the finish hook — the single owner of the keyboard
+edit, the continuation and the record — so that every ending still reaches the session
+that asked, machine-authored (INV-JOB-007).
+
+**A new lane rule** belongs in the broker's synchronous admission and its predicate cancel,
+never in the record file: live decisions read the broker, and the file is written after an
+await (INV-JOB-008).
+
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
