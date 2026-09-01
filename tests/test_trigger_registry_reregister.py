@@ -77,12 +77,19 @@ class TestReregisterFor:
             name="bad", type="cron", schedule="not-a-cron",
             channel="telegram", prompt="q",
         )
+        scheduler.add_job.reset_mock()
+        scheduler.remove_job.reset_mock()
         with pytest.raises(TriggerError):
             reg.reregister_for("assistant", [good, bad], channels=["telegram"])
         # NO triggers survive: not the old one, not the partial new ones.
         assert reg._seen_job_ids == set()
         assert reg._specs_by_job_id == {}
-        scheduler.remove_job.assert_any_call("assistant:good")
+        # #620 (S33): the whole list is VALIDATED before anything is installed,
+        # so the good replacement is never added — nothing to remove but the
+        # old job. (Pre-#620 this asserted remove_job("assistant:good"), i.e.
+        # that the good job had been installed and then torn down.)
+        assert scheduler.add_job.call_count == 0
+        assert [c.args[0] for c in scheduler.remove_job.call_args_list] == ["assistant:t0"]
 
     def test_reregister_partial_failure_evicts_new_webhooks(self):
         """#307 webhook arm: an installed replacement webhook allowlist entry

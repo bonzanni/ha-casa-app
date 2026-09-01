@@ -12,9 +12,11 @@ are in a slot right now. What is pinned here is that the proof is by VALUE and
 never by presence, and that every other condition is `unproven` — because
 `unproven` is what a later retirement must refuse to act on.
 
-**#620 itself is NOT closed by any of this**, which
-`test_delete_and_recreate_still_inherits_the_credential` states as committed
-behaviour so no release can claim otherwise.
+#620 itself is closed at the ROUTE lifecycle (`tests/test_resident_trigger_retirement.py`,
+INV-TRIG-016), not by the mint: `test_successful_removal_then_recreate_gets_fresh_credential`
+pins the retirement-then-fresh-mint sequence at the primitive level, and
+`test_delete_and_recreate_without_registration_keeps_credential` keeps the narrow
+truth the old characterisation was about — the writer alone never deletes.
 """
 
 from __future__ import annotations
@@ -487,30 +489,66 @@ def test_a_non_readable_row_carries_no_provenance(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# What is NOT fixed
+# #620 — what a successful removal does, and what a mere edit does not
 # ---------------------------------------------------------------------------
 
 
-def test_delete_and_recreate_still_inherits_the_credential(tmp_path: Path):
-    """#620 IS STILL OPEN. This is committed characterization, not a wish.
+def _mint_specs(specs, *, secrets_dir: Path, role: str = "assistant"):
+    """The writer takes the role it mints for; at the base it did not."""
+    try:
+        return rts.mint_for_specs(specs, secrets_dir=secrets_dir, role=role)
+    except TypeError:
+        return rts.mint_for_specs(specs, secrets_dir=secrets_dir)
 
-    No deletion event reaches either permitted module: `triggers.v1.json` is
-    `additionalProperties: false` with no id or created_ts, and `TriggerSpec`
-    carries no role, so a continuously-declared trigger and a
-    deleted-then-identically-recreated one present the SAME specs and the SAME
-    directory. Rekeying the second necessarily rekeys the first.
 
-    If this test ever starts failing, #620 has been fixed elsewhere and the
-    release note must be corrected — it must not be deleted to make a green.
+def _retire_specs(role: str, *, declared, staged, secrets_dir: Path):
+    """`(retired, failed)` counts; the base has no retirement and records none."""
+    fn = getattr(rts, "retire_for_role", None)
+    if fn is None:
+        return 0, 0
+    out = fn(role, declared=list(declared), staged=set(staged), secrets_dir=secrets_dir)
+    return len(out.retired), len(out.failed)
+
+
+def test_successful_removal_then_recreate_gets_fresh_credential(tmp_path: Path):
+    """#620 IS CLOSED by retirement at the route lifecycle, not by the mint.
+
+    Replaces the committed characterisation that asserted inheritance. A slot
+    Casa minted for a role is retired when that role's declaration no longer
+    backs the name; the recreate mints FRESH bytes with a fresh receipt.
+
+    Red at the base: the retirement records nothing and `mint_for_specs`
+    returns the surviving bytes — count 0 where 1 is required, same bytes
+    where different ones are.
     """
     spec = _webhook("doorbell")
-
-    assert rts.mint_for_specs([spec], secrets_dir=tmp_path) == []
+    assert _mint_specs([spec], secrets_dir=tmp_path) == []
     first = (tmp_path / "doorbell").read_bytes()
 
-    assert rts.mint_for_specs([], secrets_dir=tmp_path) == []      # deleted
-    assert rts.mint_for_specs([spec], secrets_dir=tmp_path) == []  # recreated
+    assert _retire_specs("assistant", declared=[], staged=set(), secrets_dir=tmp_path) == (1, 0)
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
 
-    assert (tmp_path / "doorbell").read_bytes() == first, "STILL inherited"
+    assert _mint_specs([spec], secrets_dir=tmp_path) == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["doorbell", "doorbell.mint"]
+    assert (tmp_path / "doorbell").read_bytes() != first
     assert webhook_auth.resident_secret_provenance(
         "doorbell", secrets_dir=tmp_path) == "casa_minted"
+
+
+def test_delete_and_recreate_without_registration_keeps_credential(tmp_path: Path):
+    """The narrow truth the old pin was really about, kept: the MINT alone never
+    deletes, so a name deleted and recreated with no registration in between
+    keeps its bytes — the route never left service (J1). Green at the base and
+    after; it delimits the guarantee rather than establishing it.
+    """
+    spec = _webhook("doorbell")
+    assert _mint_specs([spec], secrets_dir=tmp_path) == []
+    first = (tmp_path / "doorbell").read_bytes()
+    inode = (tmp_path / "doorbell").stat().st_ino
+
+    assert _mint_specs([], secrets_dir=tmp_path) == []      # "deleted", no registration
+    assert _mint_specs([spec], secrets_dir=tmp_path) == []  # recreated
+
+    assert (tmp_path / "doorbell").read_bytes() == first
+    assert (tmp_path / "doorbell").stat().st_ino == inode
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["doorbell", "doorbell.mint"]
