@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-01
+last_reviewed: 2026-09-01
 ---
 
 # Configuration, reload and secrets
@@ -169,8 +169,22 @@ keep the raw reference, which fails loudly where absence would be silent; the we
 secret is blanked rather than used as an HMAC key (a vault path is a predictable string),
 and the discovery publisher withdraws any record it published.
 
+**A specialist's reloaded config is disabled.** A `scope=agent` reload that reads a
+specialist's `enabled: false` tears the role down rather than swapping it: that reload
+purges the role's authorization grants, removes its live agent, unregisters its bus
+consumer and cancels every dispatch the role itself has in flight — each waiting caller is
+resolved with `handler error: cancelled: <id>` — revokes its scheduled asks, unwinds its
+triggers and webhook routes, and rebuilds the agent registry without it; the arm itself
+constructs nothing and registers nothing. The role's Casa-minted webhook secrets stay on
+disk through this teardown, so a later reload that reads it enabled re-registers the same
+credentials. This entry describes the `scope=agent` arm only.
+
 **A reload handler raises.** The dispatcher returns an error envelope rather than propagating
-— a failed reload is a reported outcome, not an exception at the caller.
+— a failed reload is a reported outcome, not an exception at the caller. A `config_sync`
+reload that changed a known resident's trigger file re-registers that resident's triggers
+under its own `triggers` lock after the `agents` and `policies` cascades — a file the pass
+could not read on either side counts as changed — and one resident's refusal is reported
+in the envelope without aborting another's.
 
 ## Extension points
 
@@ -209,6 +223,7 @@ None of those are inferred.
 - `tests/test_config_git.py`
 - `tests/test_admin_reload_route.py`
 - `tests/test_reload_live_resident_not_promoted.py`
+- `tests/test_reload.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

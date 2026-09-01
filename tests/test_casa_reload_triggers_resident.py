@@ -145,7 +145,7 @@ class TestCasaReloadTriggersResident:
         recorded: list[tuple[str, list, list]] = []
         fake_registry = MagicMock()
         fake_registry.reregister_for.side_effect = (
-            lambda role, triggers, channels: recorded.append(
+            lambda role, triggers, channels, **kw: recorded.append(
                 (role, list(triggers), list(channels)),
             )
         )
@@ -231,7 +231,7 @@ class TestCasaReloadTriggersResident:
         recorded: list[tuple[str, list, list]] = []
         fake_registry = MagicMock()
         fake_registry.reregister_for.side_effect = (
-            lambda role, triggers, channels: recorded.append(
+            lambda role, triggers, channels, **kw: recorded.append(
                 (role, list(triggers), list(channels)),
             )
         )

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -371,7 +371,7 @@ class TestReloadTriggers:
         result = await dispatch("triggers", runtime=runtime, role="ellen")
         assert result["status"] == "ok"
         runtime.trigger_registry.reregister_for.assert_called_once_with(
-            "ellen", [fake_cfg.triggers[0]], ["telegram"],
+            "ellen", [fake_cfg.triggers[0]], ["telegram"], before_install=ANY,
         )
 
     async def test_updates_runtime_role_configs_for_resident(
@@ -3040,7 +3040,7 @@ class TestReloadIssue327:
         assert result["status"] == "ok"
         assert "newcomer" in runtime.agents
         runtime.trigger_registry.reregister_for.assert_any_call(
-            "newcomer", [trig], ["telegram"],
+            "newcomer", [trig], ["telegram"], before_install=ANY,
         )
         assert any("registered_triggers_newcomer" == a
                    for a in result["actions"])

@@ -30,3 +30,8 @@ IS an ordinary edit.
 Skipping the reload leaves the deleted trigger still registered in the
 live scheduler — it keeps firing until the next addon restart. See
 completion.md.
+
+That reload also retires the webhook secret Casa generated for a deleted
+`static_header` / `timestamped_hmac` trigger. A trigger later created under
+the same name gets a FRESH secret — read it and give it to the caller again;
+the old value no longer authenticates.

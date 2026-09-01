@@ -156,6 +156,7 @@
     - tests/test_config_git.py
     - tests/test_admin_reload_route.py
     - tests/test_reload_live_resident_not_promoted.py
+    - tests/test_reload.py
   related: [architecture/overview.md, architecture/plugins.md, architecture/agent-taxonomy.md, architecture/config-reconciliation.md]
   defines_invariants: [INV-CFG-001, INV-CFG-002, INV-CFG-003, INV-CFG-004, INV-CFG-011]
   invariant_tests:

@@ -65,7 +65,7 @@ def test_the_mint_creates_exactly_the_casa_owned_secret_backed_slots(tmp_path: P
         _webhook("vm"),
         _webhook("el", mode="timestamped_hmac", owner="provider"),
     ]
-    assert rts.mint_for_specs(specs, secrets_dir=tmp_path) == []
+    assert rts.mint_for_specs(specs, secrets_dir=tmp_path, role="assistant") == []
     # #620: a mint now creates TWO artifacts — the secret and its value-bound
     # receipt. Exact equality still catches any slot the filters should have
     # excluded, and now also catches a receipt written for one of them.
@@ -79,7 +79,7 @@ def test_the_mint_registers_the_value_for_log_redaction(tmp_path: Path):
     until its first request — and forever for a trigger never called."""
     import log_redact
 
-    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path)
+    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path, role="assistant")
     value = (tmp_path / "vm").read_text()
     assert log_redact.redact(f"boom name=vm value={value}") == "boom name=vm value=«redacted»"
 
@@ -96,7 +96,7 @@ def test_a_slot_that_is_not_absent_is_never_written_over(tmp_path: Path):
 
     assert rts.mint_for_specs(
         [_webhook("el", mode="timestamped_hmac", owner="provider"), _webhook("vm")],
-        secrets_dir=tmp_path) == []
+        secrets_dir=tmp_path, role="assistant") == []
 
     after = {p.name: (p.read_bytes(), p.stat().st_ino) for p in tmp_path.iterdir()}
     assert after == before
@@ -110,7 +110,7 @@ def test_a_mint_failure_is_reported_and_never_raised(tmp_path: Path):
     os.chmod(tmp_path, 0o555)
     try:
         failures = rts.mint_for_specs([_webhook("vm"), _webhook("other")],
-                                      secrets_dir=tmp_path)
+                                      secrets_dir=tmp_path, role="assistant")
     finally:
         os.chmod(tmp_path, 0o755)
     assert [name for name, _ in failures] == ["vm", "other"], (
@@ -124,7 +124,7 @@ def test_a_stuck_slot_is_a_report_row_not_a_failure(tmp_path: Path):
     for that role on every later call, forever, and the only exit was host
     filesystem access the operator does not have."""
     (tmp_path / "vm").write_bytes(b"not-a-casa-token")
-    assert rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path) == []
+    assert rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path, role="assistant") == []
     assert (tmp_path / "vm").read_bytes() == b"not-a-casa-token"
 
 
@@ -147,7 +147,7 @@ def test_every_state_reports_what_a_request_would_do(tmp_path: Path):
         _webhook("wedged"),
     ]
     registry.register_agent(role="assistant", triggers=specs, channels=["main"])
-    rts.mint_for_specs([s for s in specs if s.name != "gone"], secrets_dir=tmp_path)
+    rts.mint_for_specs([s for s in specs if s.name != "gone"], secrets_dir=tmp_path, role="assistant")
     (tmp_path / "wedged").unlink()
     (tmp_path / "wedged").write_bytes(b"not-a-casa-token")
     (tmp_path / "gone").unlink(missing_ok=True)
@@ -199,7 +199,7 @@ def test_a_route_the_declaration_no_longer_names_is_still_reported(tmp_path: Pat
     disappears entirely."""
     registry = _registry()
     registry.register_agent(role="assistant", triggers=[_webhook("vm")], channels=[])
-    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path)
+    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path, role="assistant")
 
     rows = _rows([], registry, secrets_dir=tmp_path)  # declaration lost it
 
@@ -232,7 +232,7 @@ def test_a_divergence_in_any_value_a_request_reads_is_misrouted(
     green while the divergence stands."""
     registry = _registry()
     registry.register_agent(role="assistant", triggers=[_webhook("vm")], channels=[])
-    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path)
+    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path, role="assistant")
 
     rows = _rows([_webhook("vm", **changed)], registry, secrets_dir=tmp_path)
 
@@ -248,7 +248,7 @@ def test_a_name_routed_by_another_role_is_misrouted_not_readable(tmp_path: Path)
     another role's route serves it."""
     registry = _registry()
     registry.register_agent(role="butler", triggers=[_webhook("vm")], channels=[])
-    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path)
+    rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path, role="assistant")
 
     rows = _rows([_webhook("vm")], registry, role="assistant", secrets_dir=tmp_path)
     assert rows["vm"]["state"] == "misrouted"
@@ -264,7 +264,7 @@ def test_the_summary_counts_states_and_never_claims_readiness(tmp_path: Path):
     registry = _registry()
     specs = [_webhook("vm"), _webhook("el", mode="timestamped_hmac", owner="provider")]
     registry.register_agent(role="assistant", triggers=specs, channels=[])
-    rts.mint_for_specs(specs, secrets_dir=tmp_path)
+    rts.mint_for_specs(specs, secrets_dir=tmp_path, role="assistant")
 
     snapshot = rts.snapshot_rows(specs=specs, registry=registry, role="assistant",
                                  global_secret_usable=True)
@@ -280,7 +280,7 @@ def test_no_row_carries_secret_bytes(tmp_path: Path):
     registry = _registry()
     specs = [_webhook("vm")]
     registry.register_agent(role="assistant", triggers=specs, channels=[])
-    rts.mint_for_specs(specs, secrets_dir=tmp_path)
+    rts.mint_for_specs(specs, secrets_dir=tmp_path, role="assistant")
     value = (tmp_path / "vm").read_text()
 
     rows = _rows(specs, registry, secrets_dir=tmp_path)
@@ -306,7 +306,7 @@ async def test_a_specialists_registered_webhook_is_not_reported_undeclared(tmp_p
     registry = _registry()
     spec = _webhook("special-hook")
     registry.register_agent(role="finance", triggers=[spec], channels=[])
-    rts.mint_for_specs([spec], secrets_dir=tmp_path)
+    rts.mint_for_specs([spec], secrets_dir=tmp_path, role="finance")
 
     class _Specialists:
         def all_configs(self):
@@ -356,7 +356,7 @@ async def test_the_report_probes_the_filesystem_off_the_event_loop(tmp_path: Pat
     registry = _registry()
     spec = _webhook("vm")
     registry.register_agent(role="assistant", triggers=[spec], channels=[])
-    rts.mint_for_specs([spec], secrets_dir=tmp_path)
+    rts.mint_for_specs([spec], secrets_dir=tmp_path, role="assistant")
     runtime = type("RT", (), {
         "role_configs": {"assistant": type("Cfg", (), {"triggers": [spec]})()},
         "specialist_registry": None, "trigger_registry": registry,
@@ -452,7 +452,7 @@ def test_resident_provenance_is_value_bound_not_receipt_presence(
     registry = _registry()
     registry.register_agent(role="assistant", triggers=[spec], channels=[])
 
-    assert rts.mint_for_specs([spec], secrets_dir=tmp_path) == []
+    assert rts.mint_for_specs([spec], secrets_dir=tmp_path, role="assistant") == []
 
     names = sorted(p.name for p in tmp_path.iterdir())
     assert len(names) == 2
@@ -475,5 +475,26 @@ def test_resident_provenance_is_value_bound_not_receipt_presence(
     )
 
     assert len(rows) == 1
-    assert sum(row.get("provenance") == "unproven" for row in rows) == 1
+    # #620 (INV-TRIG-016): a casa-owned resident slot whose bytes the receipt no
+    # longer certifies is REFUSED at the request and reported as such — the
+    # row's state carries the fact, and the value-bound reading is `unproven`.
+    assert rows[0]["state"] == "unproven_blocked"
+    assert webhook_auth.resident_secret_provenance("vm", secrets_dir=tmp_path) == "unproven"
     assert sum(row.get("provenance") == "casa_minted" for row in rows) == 0
+
+
+def test_a_file_at_the_secrets_path_is_an_unavailable_inventory_not_an_empty_one(tmp_path: Path):
+    """#620 (review): a regular file where the secrets directory should be is
+    ENOTDIR on enumeration. Reading it as an EMPTY inventory would let a
+    registration pass retirement and publish routes whose mint skips every
+    slot as `unreadable` — a green reload over a surface that 401s forever.
+    Only ENOENT is empty; ENOTDIR is refused like any other fault."""
+    not_a_dir = tmp_path / "webhook_secrets"
+    not_a_dir.write_bytes(b"")
+    with pytest.raises(rts.InventoryUnavailable):
+        rts.retire_for_role("assistant", declared=[], staged=set(), secrets_dir=not_a_dir)
+    with pytest.raises(rts.InventoryUnavailable):
+        rts.retire_for_roles_without_directory(
+            secrets_dir=not_a_dir, role_dir_exists=lambda role: False)
+    assert rts.retire_for_role("assistant", declared=[], staged=set(),
+                               secrets_dir=tmp_path / "never-made") == ([], [])

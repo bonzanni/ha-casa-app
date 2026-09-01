@@ -2316,7 +2316,8 @@ def _make_webhook_handler(
 
     import log_redact
 
-    def _secret_for(name: str, policy: dict) -> bytes:
+    def _secret_for(name: str, route: dict) -> bytes:
+        policy = route.get("auth") or {"mode": "hmac_body"}
         mode = policy.get("mode", "hmac_body")
         if mode == "hmac_body":
             return webhook_secret.encode() if webhook_secret else b""
@@ -2333,9 +2334,20 @@ def _make_webhook_handler(
         # Sol shipB-r1 P1-6 still applies: a filesystem failure here
         # (unreadable/full secrets dir) must degrade to an EMPTY secret — which
         # never authenticates (401) — not a 500.
+        #
+        # #620 (INV-TRIG-016): a casa-owned RESIDENT route reads only bytes its
+        # mint receipt certifies for the role that routes the name — one read,
+        # no re-read. A slot Casa cannot prove it minted, or minted for another
+        # role, is an empty secret (401) and is reported `unproven_blocked`;
+        # it is never destroyed here. Provider-owned slots and the plugin
+        # overlay (whose backing is the `.ident` binding) keep the plain read.
         try:
-            got = webhook_auth.read_secret(
-                name, owner=owner, secrets_dir=secrets_dir)
+            if route.get("resident") and owner == "casa":
+                got = webhook_auth.read_certified_secret(
+                    name, role=route["role"], secrets_dir=secrets_dir)
+            else:
+                got = webhook_auth.read_secret(
+                    name, owner=owner, secrets_dir=secrets_dir)
         except Exception:  # noqa: BLE001 — fail closed, never fail open/500
             logger.warning("webhook secret read failed (%s)", name,
                            exc_info=True)
@@ -2349,12 +2361,13 @@ def _make_webhook_handler(
                 pass
         return got or b""
 
-    def _verify(request: web.Request, body: bytes, name: str, policy: dict) -> bool:
+    def _verify(request: web.Request, body: bytes, name: str, route: dict) -> bool:
+        policy = route.get("auth") or {"mode": "hmac_body"}
         return webhook_auth.verify(
             policy.get("mode", "hmac_body"),
             body=body,
             headers=request.headers,
-            secret=_secret_for(name, policy),
+            secret=_secret_for(name, route),
             header_name=policy.get("header", "X-Webhook-Signature"),
             tolerance_secs=int(policy.get("tolerance_secs", 300)),
             now=int(time.time()),
@@ -2380,14 +2393,20 @@ def _make_webhook_handler(
         body = b"".join(chunks)
 
         name = request.match_info.get("name", "")
-        target_role = trigger_registry.get_webhook_target(name)
-        if target_role is None:
+        # #620 (seam S1): ONE atomic route record per request — role, auth
+        # policy, both clearance uses and resident/plugin authority all come
+        # from it, never from a second registry read. Three separate getters
+        # could straddle a concurrent re-registration and stamp one message
+        # from two routes (target from the old, clearance from the new).
+        route = trigger_registry.webhook_route(name)
+        if route is None:
             return web.json_response(
                 {"error": "unknown webhook"}, status=404,
             )
+        target_role = route["role"]
+        clearance = route.get("clearance", "public") or "public"
 
-        policy = trigger_registry.get_auth_policy(name) or {"mode": "hmac_body"}
-        if not _verify(request, body, name, policy):
+        if not _verify(request, body, name, route):
             return web.json_response(
                 {"error": "invalid signature"}, status=401,
             )
@@ -2407,7 +2426,7 @@ def _make_webhook_handler(
         try:
             trusted_origin = ingress_identity(
                 "webhook_trigger", webhook_name=name,
-                clearance=trigger_registry.get_clearance(name),
+                clearance=clearance,
             )
         except IngressIdentityError:
             logger.error(
@@ -2434,7 +2453,7 @@ def _make_webhook_handler(
                 # UUID chat_id makes each dispatch a one-shot that can never
                 # resume another session.
                 "_origin_route": "webhook_trigger",
-                "_origin_clearance": trigger_registry.get_clearance(name),
+                "_origin_clearance": clearance,
                 "chat_id": str(uuid.uuid4()),
             },
         )
@@ -2779,43 +2798,112 @@ async def notify_config_sync(
         logger.warning("config_sync notify: could not mark report notified: %s", exc)
 
 
-async def _boot_mint_resident_trigger_secrets(
-    *, role_configs: dict, secrets_dir: Any,
-) -> list[tuple[str, str]]:
-    """Boot seam for #609: create the missing casa-owned per-trigger webhook
-    secrets right after resident triggers register.
+async def _boot_reconcile_resident_trigger_secrets(
+    *, role_configs: dict, secrets_dir: Any, agents_dir: Any,
+    trigger_registry: Any = None,
+) -> dict:
+    """Boot seam for #609 + #620: right after resident triggers register,
+    retire every Casa-minted slot the declarations no longer entitle, create the
+    missing casa-owned slots, then retire the certified slots of any role whose
+    agent directory is gone.
+
+    Per resident, under the route lifecycle lock: ``retire_for_role`` (both
+    arms — the boot `config_sync` oneshot's entry drops and any un-reloaded edit
+    land here), and if it refuses or the inventory is unreadable that role is
+    UNWOUND (``reregister_for(role, [], [])``) so the state a reload would
+    refuse to publish is not served either; otherwise the mint. Then the
+    directory-gone sweep, keyed on Casa's own receipts and the existence of the
+    role's directory of either tier — an `OSError` other than ENOENT there
+    reads as "exists". Returns ``{"retired", "failed", "mint_failures"}`` (plus
+    ``inventory_unavailable`` when the inventory could not be enumerated).
 
     Extracted from ``main()`` so it is unit-testable — ``main()`` has no
     execution coverage past its third statement, and step 13b sits outside
     every ``try`` in it.
 
     NEVER fatal, and that is a measured decision rather than a preference. On
-    a healthy install this is a pure READ: ``ensure_secret`` is only reached
-    for a slot the probe called ``absent``, so the only boot that can fail is
-    one where a secret is missing AND ``/data`` is unwritable. Aborting there
-    would trade Telegram, voice, every reminder and every engagement for one
-    webhook that would 401 either way — and an exception escaping ``main()``
-    does not restart Casa, it STOPS the app (``svc-casa/finish`` calls
-    ``bashio::addon.stop`` for any exit code but 0/256). Every sibling boot
-    degradation in this file does the same. The failure is carried by a WARN
-    and by the report on the next reload, which is also the retry.
+    a healthy install this is a pure READ; the only boot that can fail is one
+    where ``/data`` is unwritable. Aborting there would trade Telegram, voice,
+    every reminder and every engagement for one webhook that would 401 either
+    way — and an exception escaping ``main()`` does not restart Casa, it STOPS
+    the app (``svc-casa/finish`` calls ``bashio::addon.stop`` for any exit code
+    but 0/256). The failure is carried by a WARN and by the report on the next
+    reload, which is also the retry.
     """
+    import stat as _stat
+    result: dict = {"retired": [], "failed": [], "mint_failures": []}
     try:
-        import resident_trigger_secrets
-        failures = await asyncio.to_thread(
-            resident_trigger_secrets.mint_for_specs,
-            [t for cfg in role_configs.values() for t in (cfg.triggers or [])],
-            secrets_dir=secrets_dir,
-        )
-        for name, reason in failures:
-            logger.warning(
-                "boot: webhook trigger %r has no usable secret and could not be "
-                "minted (%s) — requests to it will be refused until the next "
-                "reload or restart succeeds", name, reason)
-        return failures
+        import reload as _reload
+        import resident_trigger_secrets as rts
+
+        def role_dir_exists(role: str) -> bool:
+            for d in (os.path.join(agents_dir, role),
+                      os.path.join(agents_dir, "specialists", role)):
+                try:
+                    st = os.stat(d)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    return True          # fail closed: cannot say it is gone
+                if _stat.S_ISDIR(st.st_mode):
+                    return True
+            return False
+
+        def work() -> None:
+            for role, cfg in role_configs.items():
+                specs = list(cfg.triggers or [])
+                with _reload._ROUTE_LIFECYCLE_LOCK:
+                    try:
+                        out = rts.retire_for_role(
+                            role, declared=specs, staged=rts.webhook_names(specs),
+                            secrets_dir=secrets_dir)
+                    except rts.InventoryUnavailable as exc:
+                        result["inventory_unavailable"] = True
+                        out = rts.RetireOutcome([], [])
+                        logger.warning("boot: %s; role=%s left unrouted", exc, role)
+                        refused = True
+                    else:
+                        refused = bool(out.failed)
+                    result["retired"].extend(out.retired)
+                    result["failed"].extend(out.failed)
+                    if refused:
+                        logger.warning(
+                            "boot: webhook secret retirement refused for role=%s "
+                            "(%s); the role is left with no triggers until a reload "
+                            "retries it", role, out.failed)
+                        if trigger_registry is not None:
+                            trigger_registry.reregister_for(role, [], [])
+                        continue
+                    for name, reason in rts.mint_for_specs(
+                            specs, secrets_dir=secrets_dir, role=role):
+                        result["mint_failures"].append((name, reason))
+                        logger.warning(
+                            "boot: webhook trigger %r has no usable secret and "
+                            "could not be minted (%s) — requests to it will be "
+                            "refused until the next reload or restart succeeds",
+                            name, reason)
+            with _reload._ROUTE_LIFECYCLE_LOCK:
+                try:
+                    out = rts.retire_for_roles_without_directory(
+                        secrets_dir=secrets_dir, role_dir_exists=role_dir_exists)
+                except rts.InventoryUnavailable as exc:
+                    result["inventory_unavailable"] = True
+                    logger.warning("boot: %s; the directory-gone sweep is skipped", exc)
+                    return
+            result["retired"].extend(out.retired)
+            result["failed"].extend(out.failed)
+            for name in out.retired:
+                logger.info("boot: retired the webhook secret of %r — its role has "
+                            "no agent directory", name)
+            for name in out.failed:
+                logger.warning("boot: webhook secret %r could not be read or "
+                               "removed; left in place", name)
+
+        await asyncio.to_thread(work)
+        return result
     except Exception:  # noqa: BLE001 — never fatal; see the docstring
-        logger.warning("boot resident trigger-secret mint failed", exc_info=True)
-        return []
+        logger.warning("boot resident trigger-secret reconcile failed", exc_info=True)
+        return result
 
 
 async def _boot_reconcile_plugin_triggers(
@@ -5017,14 +5105,16 @@ async def main() -> None:
                 len(cfg.triggers), role,
             )
 
-    # 13b'. #609: mint the per-trigger webhook secrets for the triggers just
-    # registered. AFTER registration, so `register_agent`'s cross-role webhook
-    # name collision test has already refused a name this role may not have —
-    # minting first would write a casa token into another role's slot for a
-    # registration that is then rejected.
+    # 13b'. #609/#620: retire the per-trigger webhook secrets the declarations
+    # no longer entitle, mint the missing ones, and sweep the certified slots
+    # of roles whose directory is gone. AFTER registration, so
+    # `register_agent`'s cross-role webhook name collision test has already
+    # refused a name this role may not have.
     import trigger_reconcile as _trigger_reconcile
-    await _boot_mint_resident_trigger_secrets(
+    await _boot_reconcile_resident_trigger_secrets(
         role_configs=role_configs, secrets_dir=_trigger_reconcile.SECRETS_DIR,
+        agents_dir=os.path.join(CONFIG_DIR, "agents"),
+        trigger_registry=trigger_registry,
     )
 
     # 13c. Release B: plugin-declared webhook triggers — reconcile the

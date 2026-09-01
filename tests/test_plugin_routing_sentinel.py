@@ -110,9 +110,7 @@ def test_resident_trigger_routing_is_untouched_by_the_sentinel():
     resident's own webhook because a plugin reconcile failed would be a far
     larger outage than the one being contained."""
     r = _registry()
-    r._webhook_targets["daily"] = "assistant"
-    r._webhook_clearances["daily"] = "private"
-    r._webhook_auth_policies["daily"] = AUTH
+    r._webhook_routes["daily"] = {"role": "assistant", "clearance": "private", "auth": AUTH}
     r.replace_plugin_overlay(ROUTING_UNAVAILABLE)
     assert r.get_webhook_target("daily") == "assistant"
     assert r.get_clearance("daily") == "private"
