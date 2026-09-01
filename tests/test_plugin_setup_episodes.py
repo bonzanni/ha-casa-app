@@ -1430,3 +1430,46 @@ async def test_damaged_setup_history_is_disclosed_live_after_reset_and_until_dec
         assert "reset" not in json.loads(bad.read_text(encoding="utf-8")), record
     assert clock["t"] == _T0
     assert plugin_health.load_report(health) is not None
+
+
+@pytest.mark.asyncio
+async def test_undecodable_store_bytes_are_malformed_never_a_raise(
+        tmp_path, monkeypatch):
+    """Review round 1 (sol): `UnicodeDecodeError` is a `ValueError`, not an
+    `OSError`, so a decode outside the malformed guard let bytes that are not
+    UTF-8 RAISE out of `_load()` — which the base never did — and the health
+    merge's own guard then swallowed the raise, publishing no global row while
+    the writer left the damaged file in place. Pins both surfaces and the
+    writer's replacement for that exact byte shape."""
+    import agent as agent_mod
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    health.write_text(json.dumps({"schema_version": 1, "issues": [],
+                                  "warnings": [], "notified_fingerprints": []}),
+                      encoding="utf-8")
+    store.write_bytes(b"\xff\xfe{\"schema_version\": 4}")
+
+    assert pse._load() == {"schema_version": 4, "rounds": {}, "episodes": [],
+                           "reset": {"damage": "malformed", "ts": _T0}}
+    read = pse.read_episodes()
+    assert (read.rows, read.damage) == ([], "malformed")
+    assert [r["kind"] for r in pse.health_issues()] == [
+        "setup_history_unavailable"]
+    out = await tools.plugin_status.handler({})
+    status = json.loads(out["content"][0]["text"])
+    assert status["history_unavailable"] == (
+        "the plugin setup history could not be read (malformed), "
+        "so the entries below are not the full record")
+    report = _regen_into(monkeypatch, health, registered=[])
+    assert [d["reason_code"] for d in report["issues"]] == [
+        "setup_history_unavailable"]
+    assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["reset"] == {"damage": "malformed", "ts": _T0}
+    assert disk["episodes"] == []

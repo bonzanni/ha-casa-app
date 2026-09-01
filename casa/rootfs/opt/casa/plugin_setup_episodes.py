@@ -306,7 +306,7 @@ def _valid_reset(record: Any) -> dict | None:
 def _read_store() -> StoreRead:
     """The one protected read every reader shares (#747). Never raises."""
     try:
-        raw = STORE_PATH.read_text(encoding="utf-8")
+        raw = STORE_PATH.read_bytes()
     except FileNotFoundError:
         return StoreRead(_empty(), None, None)
     except OSError:
@@ -314,7 +314,10 @@ def _read_store() -> StoreRead:
         rec = _reset_record("unreadable")
         return StoreRead(_empty(rec), "unreadable", rec)
     try:
-        data = json.loads(raw)
+        # Decoding is INSIDE the malformed guard: UnicodeDecodeError is a
+        # ValueError, not an OSError, so bytes that are not UTF-8 are a
+        # malformed store, never a raise out of a reader that must not raise.
+        data = json.loads(raw.decode("utf-8"))
         if (not isinstance(data, dict)
                 or not isinstance(data.get("episodes"), list)):
             raise ValueError("malformed store")
