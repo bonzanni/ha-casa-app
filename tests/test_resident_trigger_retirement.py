@@ -1524,27 +1524,51 @@ async def test_concurrent_roles_one_name_has_one_winner(tmp_path, monkeypatch):
 
 
 async def test_same_role_agent_and_trigger_reload_agree(tmp_path, monkeypatch):
-    """Red at base: the two reloads of one role are not one route lifecycle, so
-    routing and slot state can come from different declarations."""
+    """S11's same-role arm, made deterministic: the `agent` reload LOADS a declaration
+    without `door` and is held inside its loader; the `triggers` reload then loads the
+    declaration WITH `door`, registers it and mints; the `agent` reload is released and
+    registers its older declaration. The two must end consistent — the surviving
+    route set and the surviving slot come from the SAME declaration.
+
+    Red at base: the released `agent` reload unwinds `door`'s route and retires
+    nothing, leaving routes `[]` with the slot present."""
+    import agent_loader
     tree = _Tree(tmp_path, monkeypatch)
     _tolerant_registry_mocks(tree)
     _patch_construction(monkeypatch)
     await _establish(tree)
     _known_resident(tree)
-    for order in ("agent_first", "triggers_first"):
-        tree.declare([_entry()])
-        if order == "agent_first":
-            await tree.reload("agent")
-        a = asyncio.ensure_future(tree.reload("agent"))
-        tree.declare([])            # the agent pass may read either declaration
-        t = asyncio.ensure_future(tree.reload("triggers"))
-        await asyncio.gather(a, t)
-        routes = _routes(tree.registry, ROLE)
-        files = _files(tree.secrets)
-        if routes == [NAME]:
-            assert set(files) == {NAME, f"{NAME}.mint"} and _receipt_role(NAME, tree.secrets) == ROLE, (order, files)
-        else:
-            assert routes == [] and files == {}, (order, routes, sorted(files))
+    tree.declare([_entry()])
+    real_loader = agent_loader.load_agent_from_dir
+    loads: list[int] = []
+    loaded = threading.Event()
+    release = threading.Event()
+
+    def loader(agent_dir, **kw):
+        cfg = real_loader(agent_dir, **kw)
+        loads.append(1)
+        if len(loads) == 1:                     # the agent reload's load: older declaration
+            cfg.triggers = [x for x in cfg.triggers if x.name != NAME]
+            loaded.set()
+            release.wait(timeout=10)
+        return cfg
+    monkeypatch.setattr(agent_loader, "load_agent_from_dir", loader)
+
+    agent_task = asyncio.ensure_future(tree.reload("agent"))
+    await wait_until(lambda: loaded.is_set() or agent_task.done())
+    assert loaded.is_set() and not agent_task.done()
+    rt = await tree.reload("triggers")
+    assert rt["status"] == "ok", rt
+    release.set()
+    ra = await agent_task
+    assert ra["status"] == "ok", ra
+
+    routes = _routes(tree.registry, ROLE)
+    files = _files(tree.secrets)
+    if routes == [NAME]:
+        assert set(files) == {NAME, f"{NAME}.mint"} and _receipt_role(NAME, tree.secrets) == ROLE, sorted(files)
+    else:
+        assert routes == [] and files == {}, (routes, sorted(files))
 
 
 # ---------------------------------------------------------------------------
