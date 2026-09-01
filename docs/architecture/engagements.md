@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-26
+last_reviewed: 2026-09-01
 ---
 
 # Engagements
@@ -8,8 +8,10 @@ last_reviewed: 2026-08-26
 
 ## Scope
 
-Durable engagements: their records, how one is launched, how a turn is admitted to it, and
-the driver protocol. What a launch abort rolls back and what survives a restart are in
+Durable engagements: their records, how one is launched, and the driver protocol. How a
+turn is admitted to a live one is
+[`architecture/engagement-turn-admission.md`](engagement-turn-admission.md). What a launch
+abort rolls back and what survives a restart are in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). How an
 engagement *ends* — the single-winner
 terminal transition, the strictness that keeps creation and the terminal flip from leaving
@@ -66,24 +68,6 @@ subject.** The allocation, the ownership it implies, and the boundary built on i
 
 ## Contracts & invariants
 
-**INV-ENG-009**: A turn is admitted by the registry immediately before the call that hands it to the engagement, with no suspension point in between — a record found idle is `active` by then, and a terminal record is never handed a turn. For `claude_code` the admission precedes the first BYTE; for `in_casa` it precedes the awaited client hand-off, and covers follow-up turns only — the launch turn is INV-ENG-011's. Neither fences the hand-off itself: a terminal transition landing once a turn has begun cannot revoke it, and stopping an in-flight turn stays `driver.cancel`'s job. A refused turn is never reported as delivered and never told twice.
-
-**One decision, asked at two different instants.** The registry answers it synchronously and
-identically for both drivers — terminal refuses, `idle` delivers and becomes `active` without
-re-stamping the last-turn time, `active` delivers, and an unknown record delivers rather than
-refusing. What differs is *where the answer can be placed*, and that placement is what makes
-the invariant's two halves differ in strength: for `claude_code` there is an instant at which
-the engagement has provably seen nothing, and for `in_casa` there is not.
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) carries that
-account, next to the driver inbound surface it belongs to.
-
-The `in_casa` admission covers FOLLOW-UP turns only, which is a decision rather than an
-omission. A refusal on the launch turn would surface through the launch owners' error-marking
-and death-reporting path, telling the operator a launch died for an engagement that a racing
-writer — or their own cancellation — had just deliberately ended, which INV-ENG-013 forbids;
-and the only writer racing that window is the coroutine that created the record moments
-earlier. The launch turn's owner stays INV-ENG-011.
-
 **INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record or operator-visible topic output — or the launch reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never retains to the shared memory bank.
 
 A driver's `start()` returning has always meant *the first turn ran to its end*, never *the
@@ -115,37 +99,6 @@ the transition and do nothing.
 
 The same owner reports a launch *cancelled* before its driver was confirmed live, which
 previously flipped the topic to failed and closed it without posting anything at all.
-
-The admission sits between opening the engagement's stdin FIFO for writing — which succeeds
-only once its CLI is reading — and writing the first byte, which is the first thing that CLI
-can observe. That is the only instant at which the delivery is certain and the engagement
-has seen nothing of it. It is deliberately synchronous: with no suspension point between the
-open, the decision and the first write, no inbound tool call and no terminal transition can
-interleave, which is what makes the ordering a guarantee rather than a race. Durability
-follows behind it — the authority check reads the in-memory record, and a persist that never
-lands costs only that a later restart re-idles the record, after which the same redelivery
-admits it again.
-
-A turn that fits the pipe is written by a single non-blocking write, so in practice the
-admission covers the whole of it rather than only its first byte. That is not luck: a payload
-larger than the pipe's capacity would be written in pieces, and the suspension between them
-is a real scheduling point at which an ungated terminal transition can commit, leaving the
-remainder to be written to a record that is already terminal. Since a delivery cannot be
-revoked, the fix is to remove the suspension rather than guard it — the pipe is grown to fit
-the payload before the first write. The growth is strictly best-effort: a kernel that refuses
-it, or a payload beyond the maximum pipe size, simply falls back to writing in pieces.
-
-What it does not cover: the bytes after the first, when the payload does not fit. A terminal
-transition landing mid-turn cannot revoke a delivery — closing the writer is itself an
-end-of-input the CLI acts on — so a turn already begun runs until the finalize path's driver
-teardown *attempts* to stop it, and what that teardown does and does not establish about the
-OS process is in [`architecture/engagement-containment.md`](engagement-containment.md). A *completion*
-cannot land in that window, because a message is still counted as unread throughout its own
-write and INV-ENG-003 refuses; a cancellation can, and what becomes of the truncated turn it
-produces is teardown's business rather than the write path's — INV-CONT-001 states what that
-does and does not settle. The
-admission also expresses no opinion on a record the registry does not know, which is
-unreachable for a live engagement and where the dispatch gate already fails closed.
 
 **INV-ENG-012**: A ticketed FOLLOW-UP turn to an `in_casa` engagement that ends without the turn's own terminal artifact — or that finishes holding it while finalization has *established* that its streamed text was wholly undelivered — is never answered with silence: exactly one bounded operator-facing notice attempt is made in the engagement's topic, by the owner of that turn's admission ticket, and one turn's observation can never be consumed or lost by another turn's owner. The single thing that excuses the telling is that the engagement's terminal path has already told that topic why the engagement ended; the record merely being terminal is not that fact, and wherever it is not known that the topic was told, the telling is made. A follow-up turn that ends holding its terminal artifact with no established delivery failure produces no observation and no notice; an *ambiguous* delivery (a lost acknowledgement, or a handle off the delivery contract) is not an established failure and records nothing. The driver records, never raises, and never reads the record's status.
 
@@ -276,7 +229,7 @@ same reason: expiring the row would delete the obligation along with the state n
 discharge it. `quiesce_pending` is the kill a terminal `claude_code` record still owes
 (INV-CONT-006); `terminal_notification_pending` is the telling a finalized outcome still owes
 the party that asked for the work (INV-ENG-018, in
-[`architecture/engagement-finalization.md`](engagement-finalization.md)). A legacy row missing
+[`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md)). A legacy row missing
 either key decodes as owing NOTHING — the opposite default would discharge the whole
 tombstone's worth of obligations at the first boot after an upgrade.
 
@@ -319,4 +272,5 @@ persisting ledger checks it — is answered in the same document.
 - [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
+- [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 <!-- END SOURCEMAP -->

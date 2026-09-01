@@ -12,9 +12,11 @@ What happens when a launch does not become a live engagement, and what a restart
 the records left behind: which gate refused a delegation, what a `claude_code` launch abort
 rolls back and how far it gets, which failure arms answer the calling turn rather than the
 operator's topic, and what replay resumes or refuses. The record itself, how a launch is
-admitted, turn admission and the driver protocol are in
+admitted and the driver protocol are in
 [`architecture/engagements.md`](engagements.md), which also states the invariants this
-behaviour is measured against. How an engagement *ends* once it is live is
+behaviour is measured against; how a turn is admitted to a live engagement is
+[`architecture/engagement-turn-admission.md`](engagement-turn-admission.md). How an
+engagement *ends* once it is live is
 [`architecture/engagement-finalization.md`](engagement-finalization.md); the OS boundary its
 workspace and uid live inside is
 [`architecture/engagement-containment.md`](engagement-containment.md).
@@ -186,7 +188,7 @@ not own: INV-CONT-004 and INV-CONT-005.
 
 **A restart replays an outcome nobody was told.** A terminal record is not only state to be
 tidied: if the finalization funnel committed it, somebody is still owed the news (INV-ENG-018,
-in [`architecture/engagement-finalization.md`](engagement-finalization.md)). Startup walks the
+in [`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md)). Startup walks the
 records still carrying that obligation and enqueues one notice each, addressed from the
 record's own persisted origin — the role that asked, on the channel it asked from, quoting the
 request. It runs once the channels and the resident loops are up, because a notice enqueued

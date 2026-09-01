@@ -8323,7 +8323,23 @@ async def _report_launch_death(
                 if type(_rt) is list else [])
         except Exception:  # noqa: BLE001 — fail open
             lost_reservation_texts[:] = []
-        lost_texts[:] = list(in_flight) + list(queued)
+        # #780: the THIRD spool population — envelopes a redirect evicted whose
+        # eviction notice never sent. Durable on disk, in neither population
+        # above, and with its reservation long released it had no carrier at
+        # all. Its own try, like every accessor beside it: a failure costs only
+        # this coverage. Appended last: the copy claims counts and texts,
+        # never chronology.
+        try:
+            _ev = (driver.inbound_evicted_pending_texts(rec.id)
+                   if hasattr(driver, "inbound_evicted_pending_texts") else [])
+            evicted = ([t for t in _ev if isinstance(t, str)]
+                       if type(_ev) is list else [])
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "launch-death report %s: evicted-pending accessor failed — "
+                "evicted disclosure skipped", rec.id[:8], exc_info=True)
+            evicted = []
+        lost_texts[:] = list(in_flight) + list(queued) + list(evicted)
         return None
 
     try:
@@ -9032,7 +9048,26 @@ async def _finalize_engagement(
                 "the counts below still stand", engagement.id[:8],
                 exc_info=True)
             reservation_texts[:] = []
-        unread_snapshot[:] = list(in_flight) + list(texts)
+        # #780: the THIRD spool population — envelopes a redirect evicted whose
+        # eviction notice never sent. The notice was that message's whole
+        # disclosure and it is best-effort; the pre-close drain above retried
+        # it once more, and if it still failed the row is durable on disk and
+        # in neither population above, with its reservation long released. It
+        # contributes bullets and an exact unit of the count, and NOTHING to
+        # the veto: an evicted envelope is cleared by nothing an agent can do,
+        # so a veto sourced from it could never be satisfied. Its own try —
+        # a failure costs only this coverage.
+        try:
+            _ev = (driver.inbound_evicted_pending_texts(engagement.id)
+                   if hasattr(driver, "inbound_evicted_pending_texts") else [])
+            evicted = ([t for t in _ev if isinstance(t, str)]
+                       if type(_ev) is list else [])
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "finalize engagement %s: evicted-pending accessor failed — "
+                "evicted disclosure skipped", engagement.id[:8], exc_info=True)
+            evicted = []
+        unread_snapshot[:] = list(in_flight) + list(texts) + list(evicted)
         if inbound_gate and (depth or blocking or resv):
             return (f"unread_inbound depth={depth} "
                     f"in_flight={blocking} reservations={resv}")

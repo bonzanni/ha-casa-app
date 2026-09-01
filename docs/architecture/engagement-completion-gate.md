@@ -13,9 +13,9 @@ how "unread" and "in flight" differ and why the gate needs both, what each drive
 how a message that dies with the engagement is disclosed rather than swallowed. The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
 finalization side effects behind the flip and topic output ordering are in
-[`architecture/engagement-finalization.md`](engagement-finalization.md). The record, how one is
-launched and how a turn is admitted to it are in
-[`architecture/engagements.md`](engagements.md).
+[`architecture/engagement-finalization.md`](engagement-finalization.md). The record and how one
+is launched are in [`architecture/engagements.md`](engagements.md); how a turn is admitted to
+it is in [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md).
 
 ## Mental model
 
@@ -38,7 +38,7 @@ holds it.
 
 ## Contracts & invariants
 
-**INV-ENG-003**: A successful completion is refused while unread inbound messages, inbound messages in flight to the engagement's CLI, or inbound reservations exist, when the driver exposes its inbound state.
+**INV-ENG-003**: A successful completion requested through the completion tool is refused while unread inbound messages, inbound messages in flight to the engagement's CLI, or inbound reservations exist, when the driver exposes its inbound state.
 
 Enforced both as a pre-check and again as a hook inside the transition itself, so the
 condition is re-evaluated at the moment the state changes rather than only before it. The
@@ -76,7 +76,7 @@ belong to *one CLI process*. A session teardown ends the process, so it retires 
 runtime and keeps the ledger — the accessors keep answering across a respawn, and a message
 queued before the teardown still refuses a completion after it. Where this process never
 attached an incarnation at all — a replay that refused, an attach that failed, a rebuild that
-did not finish — the two *text* accessors answer from the durable spool file instead, so a
+did not finish — the *text* accessors answer from the durable spool file instead, so a
 terminal path still has something to disclose. That file-sourced answer never refuses
 anything: the refusal would depend on machinery whose absence created the state, so nothing
 could clear it, and a completion that can never happen also never reaches the disclosure it
@@ -87,18 +87,36 @@ population: a queued message cannot move until a respawn re-arms delivery, which
 escalation forces, while an in-flight one is already past that boundary and killing its epoch
 could destroy a message a turn had just consumed.
 
-**INV-ENG-016**: A `claude_code` engagement's inbound ledger — its durable envelopes and its message generation — outlives the CLI incarnation that serves it: a session teardown retires the delivery runtime and keeps the ledger, so unread and in-flight state stays visible to the completion gate and to every terminal disclosure across a respawn. Where no incarnation of this process ever attached, a terminal disclosure hook still answers from the durable spool file it can read, and that file-sourced answer discloses without ever refusing a completion. An engagement for which nothing was ever enqueued answers empty.
+**INV-ENG-016**: A `claude_code` engagement's inbound ledger — its durable envelopes and its message generation — outlives the CLI incarnation that serves it: a session teardown retires the delivery runtime and keeps the ledger, so unread and in-flight state stays visible to the completion gate and to every terminal disclosure across a respawn, and so do the evicted envelopes still awaiting their eviction notice, which every terminal disclosure quotes and no veto counts. Where no incarnation of this process ever attached, a terminal disclosure hook still answers from the durable spool file it can read, and that file-sourced answer discloses without ever refusing a completion. An engagement for which nothing was ever enqueued answers empty.
 
-**INV-ENG-017**: An ingress reservation taken for an operator message carries that message's text from the moment the message is accepted until that reservation is released or the engagement is terminally cancelled, on a ledger that survives a session teardown and never on the spool; the reservation-ledger contribution to a terminal disclosure is deduplicated by message id, limited by the same disclosure-count clamp as text-less reservations, then excludes ids whose printable spool envelope is in that disclosure, so it quotes at most one text per id; it does not deduplicate the unread or in-flight spool populations; and the count and its "up to" hedge stay exactly as a text-less reservation would have produced them.
+**INV-ENG-017**: An ingress reservation taken for an operator message carries that message's text from the moment the message is accepted until that reservation is released or the engagement is terminally cancelled, on a ledger that survives a session teardown and never on the spool; the reservation-ledger contribution to a terminal disclosure is deduplicated by message id, limited by the same disclosure-count clamp as text-less reservations, then excludes ids whose printable spool envelope — queued, in flight, or evicted and awaiting its notice — is in that disclosure, so it quotes at most one text per id; it does not deduplicate the unread or in-flight spool populations; and the count and its "up to" hedge stay exactly as a text-less reservation would have produced them.
 
 **A message that dies with the engagement is disclosed, not swallowed.** Every terminal
-outcome posts the messages no turn ever took up into the topic — both text populations, at
-any age, excerpted and counted, plus a count of pending ingress reservations. The claim it
+outcome posts the messages no turn ever took up into the topic — all three spool text
+populations, at any age, excerpted and counted, plus a count of pending ingress reservations. The claim it
 makes is what the system can evidence: that no turn start was *recorded* for them before the
 engagement ended. It does not claim they were never read, because that is not provable for a
 message already handed to the CLI — the CLI can read the line and emit its init frame before
 the relay processes it, and a cancellation landing in that interval would otherwise assert
 something false about a message the agent did see.
+
+**An evicted message is quoted by the terminal when its notice never sent.** A redirect at
+the ordinary lane's cap evicts the newest ordinary message and owes its sender a threaded
+notice; the row stays on disk until that notice is delivered, and it is in neither of the two
+populations above, because both are keyed on an envelope owing no notice. The notice was that
+message's whole disclosure, and it is best-effort — so when it never sent, the message was
+durable on disk and quoted by nobody: its ingress reservation had been released the moment
+its own enqueue resolved, long before the redirect arrived. The claude-code driver therefore
+answers a third, disclosure-only population — queued, awaiting its notice, not the initial
+task — and both terminal renderers quote it after the other two, as an exact unit of the
+count. It reads through the same view as the others, so the file tier answers it too; it
+joins the exclusion set below, so a reservation still held for the same message is not quoted
+twice; and it feeds no veto, because nothing an agent can do clears an evicted envelope — a
+completion refused on it could never be satisfied, and would never reach the disclosure it
+was refused for. The capacity-drop notices the spool also retains are not in it: they are
+notices about messages that were never spooled, and carry no text. A notice that finally
+sends retires the row, and the next boot's reconcile keeps retrying it; that later notice is
+a second telling of a message the terminal already quoted, never a first.
 
 **A reservation carries its message's text, and its count stays an upper bound.** On the
 claude-code side the handler is holding the operator's exact words when it reserves, so the
@@ -112,7 +130,8 @@ one per message id, clamped to the same disclosure count a text-less reservation
 produced, and then suppressed while an envelope that same disclosure is already printing
 carries the same message id — so
 one message is quoted once, from wherever it currently lives, and the words come back the
-moment that envelope is consumed, pruned or evicted. Deciding at persist time instead was the
+moment that envelope is consumed or pruned — an evicted envelope keeps printing, from the
+spool, until its notice sends. Deciding at persist time instead was the
 defect this rule replaced — a persist is evidence that expires, and it also cannot tell one
 delivery of a message from another, so it removed a text that a second, still-held
 reservation was the only remaining carrier of. Absence decides nothing: where no spool can be
@@ -236,6 +255,10 @@ not an error state.
 termination: a driver that cannot answer the question does not get to make an engagement
 unendable.
 
+**An eviction notice never sends.** The evicted message is quoted by the terminal disclosure
+from the spool, at any age, and the notice keeps retrying — through the pre-close drain and
+the next boot's reconcile — until it is delivered or the topic is gone.
+
 ## Extension points
 
 **A new driver that owns inbound state** should implement the inbound accessors to arm this
@@ -261,6 +284,8 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservation_texts`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver._disclosed_spool_message_ids`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::_InboundSpool.disclosed_message_ids`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::_InboundSpool.evicted_pending_texts`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_evicted_pending_texts`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.record_completion_refusal`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.force_completion_turn_boundary`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth`
@@ -279,10 +304,13 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `tests/test_in_casa_inbound_admission.py`
 - `tests/test_c1_continuation_admission.py`
 - `tests/test_launch_death_reporter.py`
+- `tests/test_evicted_inbound_disclosure.py`
+- `tests/test_evicted_inbound_regressions.py`
 
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 <!-- END SOURCEMAP -->

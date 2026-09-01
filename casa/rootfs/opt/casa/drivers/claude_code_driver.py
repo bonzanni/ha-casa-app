@@ -686,13 +686,57 @@ class _InboundSpool:
         exactly the silence #591 is about."""
         return [e.text for e in self._in_flight()]
 
-    def disclosed_message_ids(self) -> frozenset:
-        """#691: the ``tg_message_id`` of every envelope ``unread_texts()`` and
-        ``in_flight_texts()`` quote AND a terminal renderer will actually
-        print.
+    # -- #780 evicted-pending reads (a THIRD disclosure-only population) ---
 
-        Derived from the same two populations those accessors use, so the three
-        cannot drift apart, and then narrowed by the renderers' own filters:
+    def _evicted_pending(self) -> list[_Envelope]:
+        """Operator envelopes a redirect evicted whose eviction notice has not
+        yet been delivered.
+
+        A redirect at ordinary cap sets the victim's ``notice = "pending"``
+        (``enqueue``) and ``_should_retain`` keeps the row on disk for that
+        notice — so the message is durable while it is in NEITHER quoted
+        population above (both require ``notice == "none"``). The notice was
+        the whole disclosure for it, and the notice is best-effort: when it
+        never sends, a terminal used to tell the operator nothing about a
+        message still on disk. This population is what a terminal quotes
+        instead.
+
+        ``state == "queued"`` is the discriminator against the capacity-drop
+        NOTICE-ONLY rows ``_record_drop_notice`` plants (``consumed``,
+        ``text=""``, ``notice="pending"``): those are notices about messages
+        that were never spooled, not lost operator messages, and would print
+        as empty bullets. ``notice == "pending"`` is the state the row is
+        retained FOR; a notice that finally sends flips it to ``"sent"`` and
+        the next ``_prune`` retires the row, and the enqueue rollback restores
+        ``"none"`` by identity, so both exits leave this population on their
+        own. ``not is_initial`` for symmetry with the other two.
+
+        Disclosure only, and deliberately so: it never re-enters
+        ``_lane_members`` (an evicted message stays undeliverable), never
+        ``unread_*`` (which feeds the ask gate and the completion precheck —
+        nothing an agent can do clears an evicted envelope, so a veto sourced
+        here could never be satisfied), and never ``_in_flight``.
+        """
+        return [
+            e for e in self._envelopes
+            if e.state == "queued" and e.notice == "pending"
+            and not e.is_initial
+        ]
+
+    def evicted_pending_texts(self) -> list[str]:
+        """Texts of every evicted envelope still awaiting its notice — the
+        population a terminal renderer quotes so the message is not silently
+        lost when the notice never sends (#780). Unbounded, like
+        ``in_flight_texts``, for the same reason."""
+        return [e.text for e in self._evicted_pending()]
+
+    def disclosed_message_ids(self) -> frozenset:
+        """#691: the ``tg_message_id`` of every envelope ``unread_texts()``,
+        ``in_flight_texts()`` and (#780) ``evicted_pending_texts()`` quote AND
+        a terminal renderer will actually print.
+
+        Derived from the same three populations those accessors use, so the
+        four cannot drift apart, and then narrowed by the renderers' own filters:
         both terminal paths keep only ``isinstance(text, str)`` values, so an
         envelope whose text is not a string is quoted by NOBODY and must
         therefore suppress nobody — otherwise a malformed row would silence a
@@ -708,7 +752,7 @@ class _InboundSpool:
         """
         ids = set()
         for e in ([x for x in self._lane_members() if not x.is_initial]
-                  + self._in_flight()):
+                  + self._in_flight() + self._evicted_pending()):
             mid = e.tg_message_id
             if type(mid) is int and isinstance(e.text, str):
                 ids.add(mid)
@@ -3715,6 +3759,15 @@ class ClaudeCodeDriver(DriverProtocol):
         ``_InboundSpool._in_flight``."""
         spool = self._inbound_view(engagement_id)
         return spool.in_flight_texts() if spool is not None else []
+
+    def inbound_evicted_pending_texts(self, engagement_id: str) -> list[str]:
+        """#780: texts of operator envelopes a redirect evicted whose eviction
+        notice has not been delivered. Disclosure population — every age, no
+        veto counterpart exists, and (#740) read through the durable file when
+        no incarnation is attached, exactly like the two accessors above. See
+        ``_InboundSpool._evicted_pending``."""
+        spool = self._inbound_view(engagement_id)
+        return spool.evicted_pending_texts() if spool is not None else []
 
     def inbound_in_flight_blocking(self, engagement_id: str) -> int:
         """#591: how many in-flight envelopes are young enough to veto a
