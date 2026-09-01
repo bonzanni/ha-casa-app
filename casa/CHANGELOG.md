@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.254.0] - 2026-09-01
+
+### Fixed
+
+- Changing the primary model — or an upgrade of the app image that moves what
+  a model name means — no longer drops every installed specialist until it is
+  re-installed. Until now a specialist's binding was tied to the model it was
+  installed against, so after a model change each installed specialist failed
+  to activate on every start and stayed out of service until the operator
+  re-installed or upgraded it. Each one now comes back on the next start with
+  its binding re-derived for the new model; its persona choice, its rollback
+  target and any pending upgrade are left exactly as they were. A specialist
+  whose persona or identity has actually moved is still refused, as before.
+  The advice in the 0.211.0 entry to re-install or upgrade specialists after
+  that update no longer applies to a model change on its own. One limit
+  remains: rolling a specialist back to a version that was installed before
+  the model change can still be refused on the old model's checksum; that is
+  tracked separately.
+
 ## [0.253.0] - 2026-09-01
 
 ### Fixed
