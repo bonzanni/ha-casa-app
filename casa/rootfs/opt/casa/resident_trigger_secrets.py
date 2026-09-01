@@ -108,10 +108,14 @@ class InventoryUnavailable(OSError):
 def _inventory(secrets_dir: Path) -> list[str]:
     """Receipt-bearing resident names — the ONLY candidates a retirement ever
     considers. A directory that does not exist is an empty inventory (a fresh
-    install has none until its first mint, seam S35)."""
+    install has none until its first mint, seam S35); ENOENT is the ONLY such
+    answer. A regular file at the path (ENOTDIR) is an existing inventory that
+    cannot be enumerated — the mint would skip every slot as `unreadable` and
+    publish routes that 401 forever — so it is refused like any other fault.
+    """
     try:
         entries = os.listdir(secrets_dir)
-    except (FileNotFoundError, NotADirectoryError):
+    except FileNotFoundError:
         return []
     except OSError as exc:
         raise InventoryUnavailable(f"secrets inventory unavailable: {exc}") from exc

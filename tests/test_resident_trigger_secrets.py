@@ -481,3 +481,20 @@ def test_resident_provenance_is_value_bound_not_receipt_presence(
     assert rows[0]["state"] == "unproven_blocked"
     assert webhook_auth.resident_secret_provenance("vm", secrets_dir=tmp_path) == "unproven"
     assert sum(row.get("provenance") == "casa_minted" for row in rows) == 0
+
+
+def test_a_file_at_the_secrets_path_is_an_unavailable_inventory_not_an_empty_one(tmp_path: Path):
+    """#620 (review): a regular file where the secrets directory should be is
+    ENOTDIR on enumeration. Reading it as an EMPTY inventory would let a
+    registration pass retirement and publish routes whose mint skips every
+    slot as `unreadable` — a green reload over a surface that 401s forever.
+    Only ENOENT is empty; ENOTDIR is refused like any other fault."""
+    not_a_dir = tmp_path / "webhook_secrets"
+    not_a_dir.write_bytes(b"")
+    with pytest.raises(rts.InventoryUnavailable):
+        rts.retire_for_role("assistant", declared=[], staged=set(), secrets_dir=not_a_dir)
+    with pytest.raises(rts.InventoryUnavailable):
+        rts.retire_for_roles_without_directory(
+            secrets_dir=not_a_dir, role_dir_exists=lambda role: False)
+    assert rts.retire_for_role("assistant", declared=[], staged=set(),
+                               secrets_dir=tmp_path / "never-made") == ([], [])
