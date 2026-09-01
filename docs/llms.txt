@@ -23,7 +23,7 @@ Code is the source of truth; these files are a map.
 - [architecture/home-assistant-control.md](architecture/home-assistant-control.md): How an agent reads and changes the state of the house — and why the limits on that live in Home Assistant, not here.
 - [architecture/hook-resolution.md](architecture/hook-resolution.md): The hook-resolution path — credential-bound identity, per-executor policy maps and their fail-closed fallbacks, and the claude_code containment floor.
 - [architecture/http-surface.md](architecture/http-surface.md): The two HTTP servers, what each exposes, and how an inbound request is authenticated.
-- [architecture/jobs-and-delivery.md](architecture/jobs-and-delivery.md): Durable background jobs — execution vs delivery state, restart reconciliation, and the leased claim/ack protocol.
+- [architecture/jobs-and-delivery.md](architecture/jobs-and-delivery.md): Durable background jobs — execution vs delivery state, restart reconciliation, what a graceful stop does to a live row, and what a finished delegation owes its creator.
 - [architecture/mcp-and-tools.md](architecture/mcp-and-tools.md): How tools reach an agent, and where authorization for a tool call actually happens.
 - [architecture/memory-lifecycle.md](architecture/memory-lifecycle.md): Retention lifecycle — how a conversation becomes long-term memory, how each item is labelled on the way in, how a reset retires it, and how the operator-consented wipe removes everything.
 - [architecture/memory-scoping.md](architecture/memory-scoping.md): Which stored facts a given reader gets back — read clearance per channel and sender, the engagement clearance clamp, and the executor-archive epoch scoping.
@@ -41,12 +41,14 @@ Code is the source of truth; these files are a map.
 - [architecture/plugin-triggers.md](architecture/plugin-triggers.md): What a plugin's declared webhook must satisfy before it routes — the overlay, its preconditions, and the operator approval gating them.
 - [architecture/plugins.md](architecture/plugins.md): How a plugin becomes usable — registry, content-addressed store, artifact identity, and per-call authorization.
 - [architecture/reminders.md](architecture/reminders.md): How an agent comes to nudge someone later — entry ownership, the narrow writer, delivery, and the sweep that redeems a past-dated one-shot the process was down for.
+- [architecture/scheduled-asks.md](architecture/scheduled-asks.md): A scheduled question as a durable obligation — its record on disk, its terminal delivery back to the session that asked, and its manners in the operator's attention lane.
 - [architecture/specialist-lifecycle.md](architecture/specialist-lifecycle.md): Specialist install/upgrade/rollback — instance tuples, the store, consent receipts, materialization, the crash journal.
 - [architecture/telegram.md](architecture/telegram.md): How Telegram messages become turns — transports, authentication, the per-topic causal log, keyboards, and rendering.
 - [architecture/tools-interface.md](architecture/tools-interface.md): The mutation interface — the one tool registry, result envelopes, the question lifecycle, and which failures roll back versus report.
 - [architecture/trigger-secrets.md](architecture/trigger-secrets.md): The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.
 - [architecture/triggers.md](architecture/triggers.md): What makes an agent act without a person speaking — a resident's scheduled and webhook triggers, and who may write the file they live in.
 - [architecture/turn-loop.md](architecture/turn-loop.md): How one inbound message becomes one agent turn, and what bounds it.
+- [architecture/voice-delivery.md](architecture/voice-delivery.md): The leased claim/acknowledge protocol that gets a deferred voice answer to a device — attempts, leases, per-device ordering, the fixed bounds, and result disclosure.
 - [architecture/voice.md](architecture/voice.md): How speech becomes a turn and the answer gets back — transports, auth, turn budget, deferred delivery.
 
 ## Reference

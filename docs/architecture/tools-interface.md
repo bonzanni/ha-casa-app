@@ -190,7 +190,7 @@ live *human* question in that DM at registration, in the same indivisible step a
 a replacement can never race a tap. It displaces a waiting *machine-timed* question only
 after its own keyboard is confirmed on screen and still live, so a question that never
 arrived, or that was retired while its post was in flight, costs the operator nothing; the
-lane rule itself is in [`jobs-and-delivery.md`](jobs-and-delivery.md).
+lane rule itself is in [`scheduled-asks.md`](scheduled-asks.md).
 
 **A question is over before the tool returns.** The same window that costs the operator
 nothing used to cost the *agent* something: a question the broker had already retired —

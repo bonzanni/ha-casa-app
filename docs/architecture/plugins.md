@@ -125,7 +125,7 @@ Every challenge the coordinator raises — the protected-tool one above and the 
 callback, event, specialist-install and persona-install consents alike — shares the
 operator's attention lane with any machine-timed question already waiting there. The lane
 rule itself lives with the scheduled question in
-[`jobs-and-delivery.md`](jobs-and-delivery.md) (INV-JOB-008), and the part that matters
+[`scheduled-asks.md`](scheduled-asks.md) (INV-JOB-008), and the part that matters
 here is one line: a challenge retires a waiting scheduled question only once its own
 keyboard is on screen, so a challenge that fails to post does not cost the operator the
 question that was waiting. The one window that rule does not reach — a boot reconcile

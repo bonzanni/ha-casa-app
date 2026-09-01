@@ -1,6 +1,25 @@
 # Manifest shard (#367) — architecture documents S-Z. Loaded with the root
 # docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
+- doc: architecture/scheduled-asks.md
+  summary: A scheduled question as a durable obligation — its record on disk, its terminal delivery back to the session that asked, and its manners in the operator's attention lane.
+  when_changing: a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule
+  covers:
+    - casa/rootfs/opt/casa/scheduled_asks.py::ScheduledAskStore
+    - casa/rootfs/opt/casa/scheduled_asks.py::make_finish_hook
+    - casa/rootfs/opt/casa/scheduled_asks.py::reconcile_at_boot
+  tests:
+    - tests/test_scheduled_ask_user.py
+    - tests/test_scheduled_ask_attention_lane.py
+    - tests/test_challenge_delivery_displacement.py
+    - tests/test_scheduled_ask_boot_window_displacement.py
+  related: [architecture/jobs-and-delivery.md, architecture/triggers.md, architecture/plugins.md]
+  defines_invariants: [INV-JOB-006, INV-JOB-007, INV-JOB-008]
+  invariant_tests:
+    INV-JOB-006: [tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_revocation_during_the_boot_window_is_not_undone, tests/test_scheduled_ask_user.py::TestBootReconcile::test_an_untouched_role_is_still_restored, tests/test_scheduled_ask_user.py::TestDurableRecord::test_posting_record_is_written_before_the_keyboard, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_settling_is_persisted_before_the_edit, tests/test_scheduled_ask_user.py::TestBootReconcile::test_settling_record_is_never_replayed, tests/test_scheduled_ask_user.py::TestBootReconcile::test_live_record_is_restored_and_still_answerable]
+    INV-JOB-007: [tests/test_scheduled_ask_attention_lane.py::test_new_retires_scheduled_once_with_new_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_every_cancellation_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_timeout_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_settles_nothing_and_keeps_the_record, tests/test_scheduled_ask_user.py::TestAttribution::test_the_continuation_is_machine_authored]
+    INV-JOB-008: [tests/test_scheduled_ask_attention_lane.py::test_plain_text_cancels_only_same_dm_interactive, tests/test_scheduled_ask_attention_lane.py::test_restored_scheduled_ask_survives_plain_text, tests/test_scheduled_ask_attention_lane.py::test_delivered_human_ask_displaces_scheduled_after_post_once, tests/test_scheduled_ask_attention_lane.py::test_undelivered_human_ask_leaves_scheduled_live, tests/test_scheduled_ask_attention_lane.py::test_plain_text_during_human_post_cancels_replacement_not_scheduled, tests/test_scheduled_ask_attention_lane.py::test_failed_challenge_post_leaves_scheduled_live, tests/test_challenge_delivery_displacement.py::test_delivered_challenge_displaces_exactly_the_scheduled_ask, tests/test_challenge_delivery_displacement.py::test_challenge_cancelled_while_posting_displaces_nothing, tests/test_challenge_delivery_displacement.py::test_a_sibling_challenge_does_not_license_the_displacement, tests/test_challenge_delivery_displacement.py::test_a_duplicate_arrival_posts_once_and_displaces_once, tests/test_challenge_delivery_displacement.py::test_the_liveness_check_and_the_displacement_share_one_loop_turn, tests/test_scheduled_ask_boot_window_displacement.py::test_a_challenge_that_failed_to_post_lets_the_reconciler_restore, tests/test_scheduled_ask_boot_window_displacement.py::test_a_delivered_challenge_lets_the_reconciler_settle_operator_busy, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_a_plain_dm_ask_is_live, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_an_authz_challenge_is_live]
+
 - doc: architecture/specialist-lifecycle.md
   summary: Specialist install/upgrade/rollback — instance tuples, the store, consent receipts, materialization, the crash journal.
   when_changing: specialist install identity, consent, materialization, or bundle-transaction recovery
@@ -193,3 +212,20 @@
     INV-VOICE-005: [tests/test_voice_context_sanitize.py::test_the_delivery_offer_comes_only_from_the_frame, tests/test_voice_context_sanitize.py::test_route_capability_comes_only_from_server_connection]
     INV-VOICE-006: [tests/test_voice_delivery.py::test_an_unknown_modality_is_treated_as_no_endpoint, tests/test_voice_delivery.py::test_a_job_with_no_recorded_endpoint_is_never_offered]
     INV-VOICE-007: [tests/test_voice_channel_sse.py::TestPartialThenFaultIsRetracted::test_the_error_frame_retracts_the_speech_already_voiced, tests/test_voice_channel_sse.py::TestPartialThenFaultIsRetracted::test_a_turn_that_voiced_nothing_is_not_retracted, tests/test_voice_channel_ws.py::TestWSPartialThenFaultIsRetracted::test_the_error_frame_retracts_the_speech_already_voiced]
+
+- doc: architecture/voice-delivery.md
+  summary: The leased claim/acknowledge protocol that gets a deferred voice answer to a device — attempts, leases, per-device ordering, the fixed bounds, and result disclosure.
+  when_changing: how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose
+  covers:
+    - casa/rootfs/opt/casa/channels/voice/delivery.py::VoiceDeliveryCoordinator
+    - casa/rootfs/opt/casa/voice_job_result.py::parse_voice_job_result
+    - casa/rootfs/opt/casa/voice_job_result.py::spoken_text_for
+  tests:
+    - tests/test_voice_delivery.py
+    - tests/test_voice_job_result.py
+  related: [architecture/jobs-and-delivery.md, architecture/voice.md]
+  defines_invariants: [INV-JOB-003, INV-JOB-004, INV-JOB-005]
+  invariant_tests:
+    INV-JOB-003: [tests/test_job_registry.py::test_invalid_compare_and_set_does_not_mutate, tests/test_voice_delivery.py::test_stale_claim_is_denied_without_mutation]
+    INV-JOB-004: [tests/test_job_registry.py::test_playing_lease_lapse_requeues_for_at_least_once_delivery]
+    INV-JOB-005: [tests/test_voice_delivery.py::test_only_device_queue_head_is_offered, tests/test_voice_delivery.py::test_device_fifo_is_stable_across_route_ids]

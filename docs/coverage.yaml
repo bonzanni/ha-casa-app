@@ -54,7 +54,7 @@
 - item: casa/rootfs/opt/casa/channels/voice/channel.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channels/voice/delivery.py
-  doc: architecture/jobs-and-delivery.md
+  doc: architecture/voice-delivery.md
 - item: casa/rootfs/opt/casa/channels/voice/prosodic.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channels/voice/routes.py
@@ -214,7 +214,7 @@
 - item: casa/rootfs/opt/casa/sensitivity.py
   doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/scheduled_asks.py
-  doc: architecture/jobs-and-delivery.md
+  doc: architecture/scheduled-asks.md
 - item: casa/rootfs/opt/casa/session_gate.py
   doc: architecture/concurrency-model.md
 - item: casa/rootfs/opt/casa/session_registry.py
@@ -270,7 +270,7 @@
 - item: casa/rootfs/opt/casa/verdict_broker.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/voice_job_result.py
-  doc: architecture/jobs-and-delivery.md
+  doc: architecture/voice-delivery.md
 - item: casa/rootfs/opt/casa/webhook_auth.py
   doc: architecture/http-surface.md
 - item: option:casa_tz
@@ -576,7 +576,7 @@
 - item: casa/rootfs/opt/casa/trait_renderer.py
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/voice_delivery_config.py
-  doc: architecture/jobs-and-delivery.md
+  doc: architecture/voice-delivery.md
 - item: casa/rootfs/opt/casa/voice_phrases.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/voice_turn_guard.py

@@ -23,6 +23,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | Telegram transport, callback namespaces, topic output ordering, or message rendering | [`architecture/telegram.md`](architecture/telegram.md) |
 | a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
+| a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule | [`architecture/scheduled-asks.md`](architecture/scheduled-asks.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, the question lifecycle, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
@@ -38,8 +39,9 @@ which is keyed on what you are about to do rather than on subsystem names.
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
+| how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose | [`architecture/voice-delivery.md`](architecture/voice-delivery.md) |
 | installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep | [`architecture/persona-lifecycle.md`](architecture/persona-lifecycle.md) |
-| job persistence, restart recovery, or how a deferred answer reaches a device | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
+| job persistence, restart recovery, what a stop does to a delegation, or what a finished delegation still owes its creator | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
 | logging, correlation ids, redaction, or a health surface | [`architecture/observability.md`](architecture/observability.md) |
 | personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest | [`architecture/personality.md`](architecture/personality.md) |
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
