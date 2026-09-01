@@ -1570,3 +1570,174 @@ def test_a_reset_record_with_an_unconvertible_timestamp_is_ignored_not_raised(
     assert "reset" not in disk
     assert disk["episodes"] == [pending]
     assert pse._finite(stamp) is None
+
+
+# ---------------------------------------------------------------------------
+# Candidate review finding (sol, S2): a MAPPING-shaped row that is not an
+# episode. `_normalize` dropped only rows that were not mappings, so `{}` — or
+# any mapping without the fields the code needs to identify, classify or write
+# back to a row — was kept as a readable episode: `dropped` stayed zero, the
+# read was not `incomplete`, both reporting surfaces were silent, and the next
+# writer persisted the row as if it were history. Structurally unusable rows
+# are damage; tolerable field damage stays tolerated (the gate-review ruling on
+# a malformed timestamp).
+# ---------------------------------------------------------------------------
+
+def _without(row, key):
+    return {k: v for k, v in row.items() if k != key}
+
+
+def _both_surfaces(tmp_path, monkeypatch):
+    """A real store at ``tmp_path``, the clock pinned, and a caller for the
+    status tool. Returns ``(store, health, status)``."""
+    import agent as agent_mod
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    health.write_text(json.dumps({"schema_version": 1, "issues": [],
+                                  "warnings": [], "notified_fingerprints": []}),
+                      encoding="utf-8")
+
+    async def status():
+        out = await tools.plugin_status.handler({})
+        return json.loads(out["content"][0]["text"])
+
+    return store, health, status
+
+
+_UNUSABLE_ROWS = [
+    pytest.param({}, id="empty-mapping"),
+    pytest.param({"note": "hand edit", "when": _T0}, id="only-unknown-keys"),
+    pytest.param(_without(_valid_row("x"), "plugin"), id="no-identity"),
+    pytest.param(_without(_valid_row("x"), "status"), id="no-state"),
+    pytest.param(_without(_valid_row("x"), "id"), id="no-handle"),
+    pytest.param(dict(_valid_row("x"), plugin=["x"]),
+                 id="identity-not-a-string"),
+    pytest.param(dict(_valid_row("x"), plugin=""), id="identity-empty"),
+    pytest.param(dict(_valid_row("x"), status="bogus"), id="state-unknown"),
+    pytest.param(dict(_valid_row("x"), status=7), id="state-not-a-string"),
+    pytest.param(dict(_valid_row("x"), id=""), id="handle-empty"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unusable", _UNUSABLE_ROWS)
+async def test_a_mapping_row_that_is_not_an_episode_is_dropped_and_disclosed(
+        tmp_path, monkeypatch, unusable):
+    """A mapping lacking the row's identity (`plugin`), state (`status`) or
+    handle (`id`) cannot be matched, classified or written back to by any
+    consumer, so it is not an episode: it is dropped like a non-mapping, the
+    read is `incomplete`, and the existing incomplete paths carry it — the
+    status tool's arm, the standing report's registry-global row, and the
+    writer's reset record — with the valid row beside it kept."""
+    store, health, status = _both_surfaces(tmp_path, monkeypatch)
+    good = _valid_row("good")
+    good["status"] = "pending"
+    _write_store(store, [unusable, good])
+
+    read = pse.read_episodes()
+    assert read.damage == "incomplete"
+    assert read.rows == [good]
+    assert read.reset == {"damage": "incomplete", "ts": _T0}
+    # A read is read-only: the damaged bytes are still on disk.
+    assert json.loads(store.read_text(encoding="utf-8"))["episodes"] == [
+        unusable, good]
+
+    # Standing surface: the valid pending row AND exactly one global row.
+    assert [(r["kind"], r["plugin"]) for r in pse.health_issues()] == [
+        ("setup_episode_pending", "good"),
+        ("setup_history_unavailable", "*")]
+    report = _regen_into(monkeypatch, health, registered=["good"])
+    assert len(_global_rows(report)) == 1
+    assert sorted((d["name"], d["reason_code"]) for d in report["issues"]) == [
+        ("*", "setup_history_unavailable"), ("good", "setup_episode_pending")]
+
+    # Status tool: the incomplete arm, exactly as any other incomplete read.
+    out = await status()
+    assert len(out["history"]) == 1 and out["history"][0].startswith("good:")
+    assert out["history_unavailable"] == (
+        "the plugin setup history could not be read (incomplete), "
+        "so the entries below are not the full record")
+
+    # The writer's path: the unusable row is NOT persisted, the reset IS, and
+    # the disclosure stands on both surfaces after the replacement.
+    assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["episodes"] == [good]
+    assert disk["reset"] == {"damage": "incomplete", "ts": _T0}
+    assert pse.read_episodes().damage == "reset"
+    assert [r["kind"] for r in pse.health_issues()] == [
+        "setup_episode_pending", "setup_history_unavailable"]
+    assert "history_unavailable" in await status()
+
+
+def test_dropping_an_unusable_row_loses_no_obligation(tmp_path, monkeypatch):
+    """The gate review kept a row whose only defect was its timestamp because
+    dropping it would lose a valid pending obligation. Dropping a row the
+    worker cannot write back to loses nothing: a released pending row with no
+    `id` would raise on every kick and could never be repaired, whereas once
+    dropped the reconciler's level-triggered `ensure_obligation` re-creates
+    the obligation with a handle — and the loss is disclosed."""
+    store = tmp_path / "plugin-setup-episodes.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    headless = _without(_valid_row("x"), "id")
+    headless.update({"status": "pending", "gate": "released"})
+    _write_store(store, [headless])
+
+    assert pse.read_episodes().damage == "incomplete"
+    assert pse.episodes("pending") == []
+    assert pse.ensure_obligation(plugin="x", artifact_id="art-1") is True
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["plugin"] == "x" and rows[0]["status"] == "pending"
+    assert isinstance(rows[0]["id"], str) and rows[0]["id"]
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert [e["id"] for e in disk["episodes"]] == [rows[0]["id"]]
+    assert disk["reset"] == {"damage": "incomplete", "ts": _T0}
+    assert pse.read_episodes().damage == "reset"
+
+
+_TOLERABLE_ROWS = [
+    pytest.param(dict(_valid_row("t"), updated_ts="not-a-number"),
+                 id="garbage-timestamp"),
+    pytest.param(dict(_valid_row("t"), updated_ts=10 ** 400),
+                 id="overflowing-timestamp"),
+    pytest.param({"id": "e-t", "plugin": "t", "status": "pending"},
+                 id="only-the-essential-fields"),
+    pytest.param(dict(_valid_row("t"), unexpected={"nested": [1, 2]}),
+                 id="extra-unknown-field"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tolerable", _TOLERABLE_ROWS)
+async def test_tolerable_field_damage_on_a_row_is_kept_and_not_disclosed(
+        tmp_path, monkeypatch, tolerable):
+    """The guard against over-tightening: a row with a valid identity, state
+    and handle is an episode whatever else it carries or lacks. It is kept,
+    the read is undamaged, neither surface discloses anything, and the writer
+    persists it unchanged with no reset record."""
+    store, health, status = _both_surfaces(tmp_path, monkeypatch)
+    good = _valid_row("good")
+    good["status"] = "pending"
+    _write_store(store, [tolerable, good])
+
+    read = pse.read_episodes()
+    assert (read.rows, read.damage, read.reset) == ([tolerable, good], None,
+                                                    None)
+    assert [r for r in pse.health_issues() if r["plugin"] == "*"] == []
+    report = _regen_into(monkeypatch, health, registered=["t", "good"])
+    assert _global_rows(report) == []
+    out = await status()
+    assert len(out["history"]) == 2
+    assert "history_unavailable" not in out
+    assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["episodes"] == [tolerable, good]
+    assert "reset" not in disk
