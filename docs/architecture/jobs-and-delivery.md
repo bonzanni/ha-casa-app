@@ -154,6 +154,38 @@ its answer unavailable — never as an empty answer, and never laundered into a 
 delegation that *failed* replays its own durable typed kind, exactly as the live path would
 have reported it.
 
+**INV-JOB-011**: At the graceful stop's job-ledger close boundary, every delegation that has already produced a success or non-cancellation verdict has had its completion callback run, its terminal-write attempt made, and every resulting settle tail awaited — so a delegation that finished during the stop reaches the ledger as its real outcome, never as a live row the next boot converts to lost on restart — and a verdict that had already landed when the stop began is written, and its announcement enqueued, before any resident's `aclose()` is entered, while a resident can still tell it. A delegation still running at that boundary, and a terminal write whose registry-owned retry is still pending there (whenever the failed attempt occurred), are outside this guarantee and remain governed by INV-JOB-009's boot reconciliation.
+
+Enforced in the graceful stop's cleanup, at two points, by one drain: immediately after
+the engagement-launch step — while the bus consumers, every resident's SDK pool and the
+channels are still up — and immediately before the job ledger closes, after every ingress
+surface is quiesced. The drain re-snapshots two things until both are empty: the anchored
+settle tails that are still pending, and the delegation runs that are already done but
+whose completion callback is still queued on the loop — a *ripe* producer, whose tail does
+not exist yet and which a snapshot of the tail set alone would miss. It gathers the former
+and yields one loop turn for the latter. It is bounded by a no-output condition, never a
+clock: a settle tail is one shielded registry write and at most one unbounded queue put, no
+tail mints a tail, a completed tail never re-enters, and a queued callback has run by the
+next snapshot. It never cancels, and never waits for, a delegated run.
+
+This exists because the settle tail was the one hop between a verdict and the registry
+that the stop never awaited. The code's own comment justified leaving it to the loop's
+final cancellation sweep by citing INV-JOB-009 — which promises the opposite for exactly
+this case. Measured, the sweep killed the tail before its write: the SUCCEEDED delegation
+booted as a live row, was converted to lost on restart, and the operator was told that a
+delegation had been lost which had in fact completed — the alarming report in place of the
+reassuring one, and a typed failure laundered into the generic one the same way.
+
+What it does not cover, and why each limit is where it is. A delegation still *running*
+when the ledger closes: the stop does not wait on delegated work, and that run is
+INV-JOB-009's crash equivalence at boot — "lost on restart" is then true. A terminal write
+that *failed* and left a registry-owned retry pending, whenever the failed attempt
+happened: the retry is unbounded by design, so a stop that awaited it could never complete,
+and the ledger's close cancels it as it cancels every retry — the row boots as lost, and the
+notice already sent for it is contradicted at the next boot. A *cancelled* run is not a
+verdict: its cancellation is deferred to boot exactly as INV-JOB-009 says, and draining its
+deferred no-op would change nothing.
+
 ## What Casa keeps about a finished delegation
 
 The durable row holds the *caller's* prose — the request as it was made — the specialist's
@@ -198,8 +230,12 @@ the generic persistence fallback. Runtime ownership (the permit) is released eit
 
 **The process is stopping.** A cancellation caused by the stop is not written at all
 (INV-JOB-009): the row stays live, and the retry that would otherwise chase a terminal it
-can never reach stops for the same reason. Read INV-JOB-009 for what that does and does not
-promise — a stop makes a live row recoverable, and nothing more than that.
+can never reach stops for the same reason. A verdict that had already landed is different:
+the stop waits for its settle tail — first while a resident can still announce it, and
+again just before the ledger closes — so a delegation that finished during the stop is
+recorded and told as its real outcome (INV-JOB-011). Read the two invariants for what that
+does and does not promise — a stop makes a live row recoverable and lands every verdict it
+already holds, and nothing more than that.
 
 ## Extension points
 
@@ -222,6 +258,8 @@ compatibility is decided.
 - `tests/test_delivery_acked_announcements.py`
 - `tests/test_graceful_shutdown_jobs.py`
 - `tests/test_graceful_shutdown_cause.py`
+- `tests/test_graceful_shutdown_engagement_launch.py`
+- `tests/test_graceful_shutdown_delegation_settle.py`
 
 **Related**
 - [`architecture/voice-delivery.md`](../architecture/voice-delivery.md)
