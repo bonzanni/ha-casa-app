@@ -1539,3 +1539,34 @@ def test_any_unconvertible_or_non_finite_timestamp_reads_as_oldest(
         ("setup_episode_pending", "good")]
     import tools
     assert tools._status_sort_key({"updated_ts": stamp}) == 0.0
+
+
+@pytest.mark.parametrize("stamp", [10 ** 400, float("inf"), float("nan"),
+                                   True, "1700000000", [1]])
+def test_a_reset_record_with_an_unconvertible_timestamp_is_ignored_not_raised(
+        tmp_path, monkeypatch, stamp):
+    """Gate review round 3 (sol): `math.isfinite(10**400)` itself raises
+    OverflowError, so a hand-edited reset record escaped the never-raising
+    reader, `read_episodes()`/`health_issues()` raised, the merge published no
+    setup row, and `ensure_obligation()` returned False — disclosure AND
+    recovery disabled by one bad number. Every number read from the store now
+    passes through one total conversion: the record is ignored and pruned,
+    the rows stand, and the writer keeps working."""
+    store = tmp_path / "plugin-setup-episodes.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    pending = _valid_row("good")
+    pending["status"] = "pending"
+    _write_store(store, [pending], reset={"damage": "malformed", "ts": stamp})
+    read = pse.read_episodes()
+    assert (read.rows, read.damage, read.reset) == ([pending], None, None)
+    assert [(r["kind"], r["plugin"]) for r in pse.health_issues()] == [
+        ("setup_episode_pending", "good")]
+    assert pse.ensure_obligation(plugin="good", artifact_id="art-1") is True
+    # ensure_obligation returns early for an already-pending row and saves
+    # nothing; a writer that always saves is what prunes the record.
+    assert pse.open_round(plugin="good", artifact_id="art-1", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert "reset" not in disk
+    assert disk["episodes"] == [pending]
+    assert pse._finite(stamp) is None

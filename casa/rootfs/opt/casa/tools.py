@@ -7,7 +7,6 @@ import enum
 import importlib
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -14257,11 +14256,10 @@ def _status_sort_key(row: dict) -> float:
     A malformed stamp sorts oldest rather than raising mid-render — ANY failure
     (an int too large for a float raises OverflowError) and any non-finite
     value, the same rule `plugin_setup_episodes._stamp` applies."""
-    try:
-        stamp = float(row.get("updated_ts") or 0)
-    except Exception:  # noqa: BLE001
-        return 0.0
-    return stamp if math.isfinite(stamp) else 0.0
+    import plugin_setup_episodes
+    value = row.get("updated_ts")
+    stamp = plugin_setup_episodes._finite(value) if value else 0.0
+    return 0.0 if stamp is None else stamp
 
 
 def _tool_plugin_status() -> dict:

@@ -273,6 +273,22 @@ def _reset_record(damage: str) -> dict:
     return {"damage": damage, "ts": _now()}
 
 
+def _finite(value: Any) -> float | None:
+    """A store value as a FINITE float, or None — total: never raises. Every
+    number read out of the store passes through here. Three review rounds each
+    found one more conversion that could raise on a hand-edited value (a
+    `float()` on a non-number, then an int too large for a float, then
+    `math.isfinite()` on that same int), so there is now one conversion, and it
+    accepts only a real int/float (never a bool) that becomes a finite float."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        out = float(value)
+    except Exception:  # noqa: BLE001 — OverflowError on a huge int, anything
+        return None
+    return out if math.isfinite(out) else None
+
+
 def _iso_utc(ts: Any) -> str | None:
     """A renderable UTC timestamp, or None — never raises."""
     try:
@@ -291,12 +307,11 @@ def _valid_reset(record: Any) -> dict | None:
     erase every setup row from the report."""
     if not isinstance(record, dict):
         return None
-    damage, ts = record.get("damage"), record.get("ts")
+    damage = record.get("damage")
     if damage not in _DAMAGE_CLASSES:
         return None
-    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
-        return None
-    if not math.isfinite(ts) or _iso_utc(ts) is None:
+    ts = _finite(record.get("ts"))
+    if ts is None or _iso_utc(ts) is None:
         return None
     if ts < _now() - _HEALTH_DECAY_S:
         return None
@@ -497,12 +512,8 @@ def _stamp(value: Any) -> float:
     is the standing surface's damage disclosure, no global row either. Reading
     the stamp as oldest decays a terminal row and keeps a pending one, which is
     the direction that loses nothing an operator needs."""
-    try:
-        stamp = float(value or 0)
-    except Exception:  # noqa: BLE001 — ANY conversion failure reads oldest
-        return 0.0     # (int too large for a float raises OverflowError, not
-    #                    ValueError; the list of classes was the wrong shape)
-    return stamp if math.isfinite(stamp) else 0.0
+    stamp = _finite(value) if value else 0.0
+    return 0.0 if stamp is None else stamp
 
 
 def health_issues() -> list[dict]:
