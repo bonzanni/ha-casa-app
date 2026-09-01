@@ -1404,8 +1404,10 @@ async def test_damaged_setup_history_is_disclosed_live_after_reset_and_until_dec
     monkeypatch.setattr(pse, "STORE_PATH", store)
     clock["t"] = _T0 + pse._HEALTH_DECAY_S + 1
     assert pse.read_episodes().damage is None
-    assert await _status() == {"ok": True, "standing": [], "history": []}
     assert pse.health_issues() == []
+    r_decayed = _regen_into(monkeypatch, health, registered=[])
+    assert r_decayed["issues"] == []
+    assert await _status() == {"ok": True, "standing": [], "history": []}
     assert pse.open_round(plugin="writer", artifact_id="a", identities=[]) == {}
     assert "reset" not in json.loads(store.read_text(encoding="utf-8"))
 
