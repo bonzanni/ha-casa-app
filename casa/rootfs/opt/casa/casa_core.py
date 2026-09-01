@@ -5614,6 +5614,16 @@ async def _shutdown_cleanup(
     import tools as _tools_mod
     await _tools_mod.stop_engagement_launches(engagement_registry)
 
+    # #767 (INV-JOB-011), first of two: settle every delegation whose verdict
+    # had already landed when the stop began — write its terminal and enqueue
+    # its announcement HERE, while the bus consumers, every resident's SDK
+    # pool and the channels are still up, so a resident can still tell it
+    # rather than leaving it for the next boot's replay. Left un-awaited, the
+    # tail is killed by `asyncio.run`'s final sweep before its write and the
+    # SUCCEEDED delegation boots as "lost on restart" — the opposite of what
+    # INV-JOB-009 publishes. Nothing here waits on a delegated RUN.
+    await _tools_mod.drain_delegation_settlements()
+
     # 17. Cleanup
     logger.info("Shutting down...")
     scheduler.shutdown(wait=False)
@@ -5692,6 +5702,17 @@ async def _shutdown_cleanup(
             await _drain_force()
         except Exception:  # noqa: BLE001 — shutdown must complete
             logger.warning("force-cleanup drain failed", exc_info=True)
+
+    # #767 (INV-JOB-011), second of two — the ledger-close boundary: every
+    # delegation whose verdict landed DURING the stop (in the bounded aclose
+    # window above, or later, from a run that outlived it) is settled now,
+    # after every ingress surface is quiesced and before `close()` cancels
+    # the reconciliation retries a failed write would have relied on. Its
+    # notice lands in a queue whose consumer is gone (the put never blocks)
+    # and rides the durable marker to the next boot (INV-JOB-010). There is no
+    # await between this returning and `close()` being entered. A run still
+    # running here is left live for the boot reconciliation (INV-JOB-009).
+    await _tools_mod.drain_delegation_settlements()
 
     # No new ingress can bind a job now. Cancel/wait process-local ownership;
     # each task's done callback remains the sole concurrency-permit releaser.

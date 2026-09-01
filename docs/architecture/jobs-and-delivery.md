@@ -1,20 +1,21 @@
 ---
-last_reviewed: 2026-08-26
+last_reviewed: 2026-09-01
 ---
 
-# Durable jobs and voice delivery
+# Durable jobs
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-The durable background-job lifecycle behind deferred voice work: what a job persists, how
-execution and delivery are tracked separately, what a restart reconciles, and the leased
-claim/acknowledge protocol that gets an answer to a device — and the other durable
-obligation shaped the same way, a question a resident's schedule asked the operator and is
-waiting on. It does not cover how a job's turn runs (the turn loop), the socket transport
-itself (the voice channel), or what the result may disclose beyond where that decision is
-enforced.
+The durable background-job ledger behind deferred and delegated work: what a job persists,
+how execution and delivery are tracked separately, what a restart reconciles, what a
+graceful stop does and does not do to a live row, and what a finished delegation still owes
+its creator. It does not cover how a job's turn runs (the turn loop), the leased
+claim/acknowledge protocol that gets an answer to a device
+([`architecture/voice-delivery.md`](voice-delivery.md)), or the other durable obligation
+shaped the same way — a question a resident's schedule asked the operator and is waiting
+on ([`architecture/scheduled-asks.md`](scheduled-asks.md)).
 
 ## Mental model
 
@@ -39,38 +40,6 @@ paths would have; every other live job becomes a terminal orphan, and a voice-ro
 orphan becomes ready so its *failure* can be delivered. In-flight delivery leases are
 retained for one fresh lease rather than revoked, so a device mid-playback is not
 stolen from.
-
-**Delivery is leased, attempt-scoped, at-least-once.** An offer is process-local until the
-client claims it; a claim durably records an attempt id and a lease before anything is
-authorized to play. Every subsequent transition must present the same attempt id against
-the expected durable state. "Ready" was offered; among *successful* endings only a matching
-delivered acknowledgement retires the obligation — a lapsed playing lease requeues, so
-audible playback may repeat. Cancellation and TTL expiry also end a delivery obligation,
-as their own terminal states. Exactly-once is deliberately not the contract.
-
-**Ordering is per device, not global.** For each origin device, only the head of the
-durable delivery order is offered, and a non-deliverable head blocks that device's queue
-until it expires. Different devices progress independently, and the same device stays
-serialized even across route reconnects.
-
-**The bounds are fixed and small.** A disconnected route stays fresh for sixty seconds; a
-completed result is retained at most fifteen minutes (a specialist's shorter privacy
-expiry wins); a route holds at most five live-or-ready jobs; a claim leases for fifteen
-seconds with five-second renewals, and a nacked endpoint parks re-offers for thirty. These
-decide admission, expiry and redelivery latency — none is operator-configurable.
-
-**A scheduled question is a durable obligation, not a message.** When a resident's own
-schedule asks the operator something, the question outlives the turn that asked it: the
-broker holding it is in-memory, so a record on disk is what keeps a keyboard on screen
-honest across a restart, and what guarantees the waiting session is eventually told
-*something*. It is the same disk-leads discipline as a job, with the opposite duplicate
-policy (INV-JOB-006), and it is deliberately timid about the operator's attention —
-a machine-timed question yields to a human one in both directions, and only to a human
-one that actually reached the screen (INV-JOB-008).
-
-**Cancellation has a physical boundary.** Ready or claimed work cancels; authorized work
-enters a stopping/revocation handshake; playing or delivered is too late — a cancellation
-request does not promise an already-authorized answer goes unheard.
 
 ## Contracts & invariants
 
@@ -185,124 +154,37 @@ its answer unavailable — never as an empty answer, and never laundered into a 
 delegation that *failed* replays its own durable typed kind, exactly as the live path would
 have reported it.
 
-**INV-JOB-003**: Every delivery transition is a compare-and-set against both the expected durable state and the recorded attempt id; a stale or mismatched frame is denied without mutation.
+**INV-JOB-011**: At the graceful stop's job-ledger close boundary, every delegation that has already produced a success or non-cancellation verdict has had its completion callback run, its terminal-write attempt made, and every resulting settle tail awaited — so a delegation that finished during the stop reaches the ledger as its real outcome, never as a live row the next boot converts to lost on restart — and a verdict that had already landed when the stop began is written, and its announcement enqueued, before any resident's `aclose()` is entered, while a resident can still tell it. A delegation still running at that boundary, and a terminal write whose registry-owned retry is still pending there (whenever the failed attempt occurred), are outside this guarantee and remain governed by INV-JOB-009's boot reconciliation.
 
-Enforced in the registry's transition methods — some through the shared CAS helper, some
-(renew, mark-delivered, nack) with their own equivalent state-and-attempt checks; the
-semantics are uniform even where the helper is not. The delivery coordinator is the only
-production caller, through its frame handler — plus one extra nack site for a revoked
-acknowledgement.
+Enforced in the graceful stop's cleanup, at two points, by one drain: immediately after
+the engagement-launch step — while the bus consumers, every resident's SDK pool and the
+channels are still up — and immediately before the job ledger closes, after every ingress
+surface is quiesced. The drain re-snapshots two things until both are empty: the anchored
+settle tails that are still pending, and the delegation runs that are already done but
+whose completion callback is still queued on the loop — a *ripe* producer, whose tail does
+not exist yet and which a snapshot of the tail set alone would miss. It gathers the former
+and yields one loop turn for the latter. It is bounded by a no-output condition, never a
+clock: a settle tail is one shielded registry write and at most one unbounded queue put, no
+tail mints a tail, a completed tail never re-enters, and a queued callback has run by the
+next snapshot. It never cancels, and never waits for, a delegated run.
 
-What it does not cover: endpoint authenticity. Route and connection matching happen in the
-coordinator before the CAS; the CAS itself trusts the coordinator's identification.
+This exists because the settle tail was the one hop between a verdict and the registry
+that the stop never awaited. The code's own comment justified leaving it to the loop's
+final cancellation sweep by citing INV-JOB-009 — which promises the opposite for exactly
+this case. Measured, the sweep killed the tail before its write: the SUCCEEDED delegation
+booted as a live row, was converted to lost on restart, and the operator was told that a
+delegation had been lost which had in fact completed — the alarming report in place of the
+reassuring one, and a typed failure laundered into the generic one the same way.
 
-**INV-JOB-004**: Delivery is at-least-once — only a matching delivered acknowledgement retires the obligation, and a lapsed playing lease requeues the job.
-
-Enforced by lease expiry (back to ready, new attempt required) and by mark-delivered's
-acceptance of only a matching claimed or playing attempt.
-
-What it does not cover: physical playback. Requeue-after-lapse means a person may hear an
-answer twice; that is the accepted cost of never losing one.
-
-**INV-JOB-005**: Per-device FIFO — only the durable-order head of each device's queue is offered, and devices progress independently.
-
-Enforced in the coordinator's offer pass. A head with no recorded deliverable endpoint or
-modality is never offered and blocks its queue until TTL expiry sweeps it (the
-non-starvation half is INV-VOICE-006's territory).
-
-**INV-JOB-006**: A scheduled question's durable record is written before its keyboard is posted and moved to settling before any terminal action, so a restart restores an unexpired question and never replays a settled one.
-
-Enforced by the record's compare-and-set state machine: `posting` before the post, `live`
-once the message id is known, `settling` before the first terminal edit, dropped after the
-terminal continuation is dispatched. Deletion is not the acknowledgement — `settling` is.
-The boot reconciler restores a `live` record with its remaining timeout and the identical
-broker binding, settles an expired, unconfirmed or operator-changed one, and drops a
-`settling` one in silence.
-
-One asymmetry is worth stating, because it is the seam between the two halves of this
-design. Revocation reads the broker, never the record file (INV-JOB-008) — but from process
-start until this reconcile runs, records exist on disk and the broker is empty, so a
-revocation landing in that window cancels nothing. Each revocation therefore leaves a
-process-local MARKER carrying the selector it used — a role, a role and a trigger's labels,
-or a chat — and the reconciler settles, rather than restores, a record that matches one.
-Not every retirement is a revocation, and only revocations mark. A DISPLACEMENT — a
-human question taking the lane — has nothing to settle: if the live map is empty, the
-previous process's keyboard is still on screen, unedited, and nobody was told anything,
-so marking the record revoked would assert an event that did not happen. Those callers
-deliberately leave no marker and let this reconcile decide from the lane's real
-occupancy. The markers are retired once the pass completes, after which every surviving
-record is in the broker and a revocation's own scan sees it. The rule stays intact — no live decision
-reads the store — and the one state where the broker cannot speak for it is handled where
-the store is legitimately read. The selector has to be the revocation's OWN: keying it on
-the role's lifecycle epoch, which a single-trigger revocation also bumps, discarded every
-other question that role was waiting on.
-
-What it does not cover: exactly-once. The crash window between "decided" and "dispatched"
-resolves toward at-most-once — the opposite of INV-JOB-004's choice, and deliberately so: a
-duplicated answer makes a resident act twice on one confirmation, while a lost one leaves an
-unanswered question in a session that keeps working. A record still `posting` at boot may
-also leave an orphaned keyboard on screen, which a tap answers with "expired".
-
-**INV-JOB-007**: Every terminal outcome of a scheduled question — answered, expired, or cancelled for any reason — is delivered back to the session that asked, as a machine-authored scheduled turn.
-
-Enforced by the scheduled ask's finish hook, the single owner of the keyboard edit, the
-continuation and the record. The continuation reproduces the *firing* turn's shape (the
-session label as chat id, the same scheduled-delivery marker, the epoch the question was
-asked under) and carries no trusted user origin: the operator's tap is reported in the
-turn's content, never as its speaker, so it cannot relabel a machine-authored session.
-
-What it does not cover: the shutdown cancel, which settles nothing, edits nothing and leaves
-the record for the next boot — the keyboard is still on screen and the question is still
-honest. Nor does it cover a bus enqueue that is accepted and then never runs.
-
-**INV-JOB-008**: A scheduled question never displaces a live operator question: it is admitted only into an idle attention lane, and a human question retires a live scheduled one only once that human question is itself delivered and still live.
-
-Enforced synchronously in the broker: registration with an idle requirement across both
-halves of the lane (plain asks and authorization challenges are separate scopes), and a
-predicate cancel run after the keyboard is on screen, guarded by asking the broker's live
-map for that exact request id — in one no-await block, so a tap cannot land between the
-question and the answer. Refused admission, the tool answers `operator_busy` and asks
-nothing. The direction is one-way by design — a human question supersedes a machine one,
-never the reverse.
-
-The delivered-and-still-live half is the whole rule, not a detail of it. Retiring a
-scheduled question cannot be undone: its finish hook has already edited the keyboard to
-expired and delivered the terminal continuation to the session that asked (INV-JOB-007).
-So a question that retires one at ADMISSION and then fails to post leaves the operator
-with neither — the machine one expired, the human one never on screen. Displacing at
-delivery instead makes that state unreachable on the live path rather than rarer (the one
-window it does not reach is named below), and there is nothing to compensate afterwards
-because nothing was spent. A challenge that displaces therefore
-leaves no boot-revocation marker: it has taken the lane in this process, and the marker
-exists only to speak for a revocation the live map could not see.
-
-What it does not cover: a boot reconcile that runs strictly BETWEEN a challenge's
-registration and its post settling. The idle requirement reads scope occupancy and cannot
-tell a posting challenge from a delivered one, so it settles the durable record
-`operator_busy` and a post that then fails leaves neither question. That loss belongs to
-the reconciler's notion of occupancy, not to the challenge's ordering, and no ordering
-change closes it.
-
-What it does not cover: selection from the durable record file. Live decisions read the
-broker, which is synchronous; the record file is written after an await and would miss an
-ask that had just won its lane.
-
-**Ordinary conversation is not a claim on that lane.** The rule that a plain DM message
-resolves a pending question — the text *is* the answer — is true of a question this
-conversation asked and false of a machine-timed one, whose answer routes to the session that
-asked it and can never be carried by a turn of the operator's own session. Since the
-scheduled question moved into the operator's plain-ask scope, a message retired it there
-along with everything else, under an ending the promise made for scheduled questions does
-not contain. Plain text now retires only the human-raised asks in that DM, selected by the
-same `scheduled` marker the boot restore rebuilds — so a restored question is protected by
-exactly the rule a live one gets, with no second mechanism to keep in step. The direction
-above is unchanged: a human question still supersedes a machine one, never the reverse. What
-changed is when — the displacement happens once the replacement is DELIVERED and still live,
-not when it is merely registered, so a keyboard whose post fails, or which is cancelled while
-that post is in flight, no longer takes a waiting question with it. Since #680 that is the
-whole rule, with no exception: an authorization challenge — and every other challenge the
-coordinator raises — displaces on delivery too, from its own driver, rather than clearing
-the lane at admission.
+What it does not cover, and why each limit is where it is. A delegation still *running*
+when the ledger closes: the stop does not wait on delegated work, and that run is
+INV-JOB-009's crash equivalence at boot — "lost on restart" is then true. A terminal write
+that *failed* and left a registry-owned retry pending, whenever the failed attempt
+happened: the retry is unbounded by design, so a stop that awaited it could never complete,
+and the ledger's close cancels it as it cancels every retry — the row boots as lost, and the
+notice already sent for it is contradicted at the next boot. A *cancelled* run is not a
+verdict: its cancellation is deferred to boot exactly as INV-JOB-009 says, and draining its
+deferred no-op would change nothing.
 
 ## What Casa keeps about a finished delegation
 
@@ -348,37 +230,18 @@ the generic persistence fallback. Runtime ownership (the permit) is released eit
 
 **The process is stopping.** A cancellation caused by the stop is not written at all
 (INV-JOB-009): the row stays live, and the retry that would otherwise chase a terminal it
-can never reach stops for the same reason. Read INV-JOB-009 for what that does and does not
-promise — a stop makes a live row recoverable, and nothing more than that.
-
-**A send fails.** Only the local offer is removed; the durable row stays ready and is
-re-offered. A failed revocation stays locally pending for a later sweep.
-
-**A frame is malformed, stale, or races a CAS.** Old-protocol and unknown frames are
-ignored; current-protocol frames that fail validation or the CAS receive a revoke denial,
-and the *requested* transition mutates nothing — though the handler's pre-validation
-reconciliation pass may independently expire or requeue jobs that were already due.
-
-**The result outlives its TTL.** Delivery becomes expired, the attempt and lease are
-cleared, and the audit row is preserved — expiry deletes nothing.
+can never reach stops for the same reason. A verdict that had already landed is different:
+the stop waits for its settle tail — first while a resident can still announce it, and
+again just before the ledger closes — so a delegation that finished during the stop is
+recorded and told as its real outcome (INV-JOB-011). Read the two invariants for what that
+does and does not promise — a stop makes a live row recoverable and lands every verdict it
+already holds, and nothing more than that.
 
 ## Extension points
 
 **A new durable field or state** touches the job dataclass, both snapshot codecs, and the
 transitions and recovery that must understand it — the codecs are where forward
 compatibility is decided.
-
-**A wire-protocol change** touches the protocol constant, the inbound frame set, the
-handler, offer construction and job matching; the voice channel forwards every job frame to
-the coordinator without interpreting it.
-
-**A result-shape or disclosure change** belongs in the result module — the closed schema,
-the parser, and the spoken-text policy — not in the coordinator, which only renders what
-policy selects.
-
-**A scheduling change** belongs in the offer pass; **a lease or TTL change** in the
-registry's expiry methods. They are deliberately separate: what to offer next versus how
-long an attempt may hold.
 
 ## Source & test map
 
@@ -389,29 +252,19 @@ long an attempt may hold.
 - `casa/rootfs/opt/casa/job_registry.py::JobRegistry`
 - `casa/rootfs/opt/casa/job_registry.py::VoiceJob`
 - `casa/rootfs/opt/casa/job_registry.py::JobRegistry.recover_after_restart`
-- `casa/rootfs/opt/casa/channels/voice/delivery.py::VoiceDeliveryCoordinator`
-- `casa/rootfs/opt/casa/voice_job_result.py::parse_voice_job_result`
-- `casa/rootfs/opt/casa/voice_job_result.py::spoken_text_for`
-- `casa/rootfs/opt/casa/scheduled_asks.py::ScheduledAskStore`
-- `casa/rootfs/opt/casa/scheduled_asks.py::make_finish_hook`
-- `casa/rootfs/opt/casa/scheduled_asks.py::reconcile_at_boot`
 
 **Tests**
 - `tests/test_job_registry.py`
 - `tests/test_delivery_acked_announcements.py`
 - `tests/test_graceful_shutdown_jobs.py`
 - `tests/test_graceful_shutdown_cause.py`
-- `tests/test_voice_delivery.py`
-- `tests/test_voice_job_result.py`
-- `tests/test_scheduled_ask_user.py`
-- `tests/test_scheduled_ask_attention_lane.py`
-- `tests/test_challenge_delivery_displacement.py`
-- `tests/test_scheduled_ask_boot_window_displacement.py`
+- `tests/test_graceful_shutdown_engagement_launch.py`
+- `tests/test_graceful_shutdown_delegation_settle.py`
 
 **Related**
-- [`architecture/voice.md`](../architecture/voice.md)
+- [`architecture/voice-delivery.md`](../architecture/voice-delivery.md)
+- [`architecture/scheduled-asks.md`](../architecture/scheduled-asks.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
-- [`architecture/triggers.md`](../architecture/triggers.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 <!-- END SOURCEMAP -->

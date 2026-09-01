@@ -2217,9 +2217,20 @@ _specialist_bg_tasks: set[asyncio.Task[Any]] = set()
 # from `_specialist_bg_tasks` on purpose: that one anchors `retain_delegated`
 # writes downstream of a terminal already told, and its absence from the
 # shutdown drain is a committed contract. These are anchored for the same
-# reason (asyncio may collect an unreferenced task mid-flight) and are likewise
-# not drained — see `_settle_then_announce` for why that is safe.
+# reason (asyncio may collect an unreferenced task mid-flight) and, since #767,
+# they ARE drained at the graceful stop — `drain_delegation_settlements`, called
+# twice from `casa_core._shutdown_cleanup` — because INV-JOB-009 publishes that
+# a success or non-cancellation verdict still commits mid-stop, and this tail is
+# the one hop between such a verdict and the registry (INV-JOB-011).
 _delegation_settle_tasks: set[asyncio.Task[Any]] = set()
+
+# #767: the delegation RUN tasks a completion callback is attached to (the async
+# and degraded-sync origins). Read by the stop's drain for VISIBILITY only: a
+# member that is `done()` is a RIPE producer — its verdict has landed, its
+# `_done` is queued on the loop, its settle tail does not exist yet — and a
+# tail-set snapshot alone would miss it. The stop never cancels or awaits a
+# member that is still running; that run is left for the boot reconciliation.
+_delegation_callback_tasks: set[asyncio.Task[Any]] = set()
 
 
 # The CLI's own terminal verdicts on a run. Everything that is not
@@ -3446,13 +3457,16 @@ async def _settle_then_announce(
       retry carries the obligation, which costs at most one repeat at the next
       boot.
 
-    Deliberately NOT drained at shutdown, and `_specialist_bg_tasks` — whose
-    non-drain is a different, committed contract about `retain_delegated` — is
-    not involved. A settle task killed before its write leaves the row LIVE,
-    and boot recovery converts a live row and announces it: nothing goes
-    silent, only the fidelity of the notice is lost (the operator is told
-    "lost on restart" rather than the real outcome), which is exactly what
-    INV-JOB-009 already publishes about a stop.
+    Drained at the graceful stop (#767, INV-JOB-011): a settle task killed
+    before its write leaves the row LIVE, and boot recovery then converts a
+    delegation that in fact SUCCEEDED — or failed with a specific typed kind —
+    into "lost on restart", which is the opposite of what INV-JOB-009
+    publishes ("every success or non-cancellation verdict still commits
+    mid-stop"). `casa_core._shutdown_cleanup` therefore awaits every anchored
+    tail through `drain_delegation_settlements`, first while the bus
+    consumers and resident pools are still up, and again immediately before
+    the job ledger closes. `_specialist_bg_tasks` — whose non-drain is a
+    different, committed contract about `retain_delegated` — is not involved.
     """
     row = await settle
     if row is not None and row.execution_state is ExecutionState.CANCELLED:
@@ -3509,6 +3523,16 @@ def _attach_completion_callback(
     loop = asyncio.get_running_loop()
 
     def _done(t: asyncio.Task) -> None:
+        # #767: the producer leaves the visibility set only in `finally`, AFTER
+        # its tail (or its cancel operation) has been created and anchored, so
+        # the stop's drain can never observe "no ripe producer, no tail" while
+        # a verdict is in flight between the two.
+        try:
+            _settle_after(t)
+        finally:
+            _delegation_callback_tasks.discard(t)
+
+    def _settle_after(t: asyncio.Task) -> None:
         if t.cancelled():
             loop.create_task(_specialist_registry.cancel_delegation(record.id))
             return
@@ -3582,6 +3606,10 @@ def _attach_completion_callback(
         bg = loop.create_task(coro)
         _delegation_settle_tasks.add(bg)
         bg.add_done_callback(_delegation_settle_tasks.discard)
+    # Registered BEFORE the callback is installed: a task that is already done
+    # gets `_done` scheduled by `add_done_callback` itself, and it must be a
+    # ripe producer from that instant.
+    _delegation_callback_tasks.add(task)
     task.add_done_callback(_done)
 
 
@@ -8147,6 +8175,55 @@ async def drain_launch_death_reports() -> None:
         if not pending:
             return
         await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def drain_delegation_settlements() -> None:
+    """#767: wait for every delegation SETTLE tail whose verdict has landed.
+
+    The job-ledger twin of `drain_launch_death_reports`, with one more thing
+    to look at. A settle tail is minted by a delegation run's done callback
+    (`_attach_completion_callback._done`), which asyncio schedules on the loop
+    when the run completes — so at any instant a verdict can be in one of two
+    places: a PENDING TAIL in `_delegation_settle_tasks`, or a RIPE PRODUCER in
+    `_delegation_callback_tasks` (the run is `done()`, its callback is queued,
+    its tail does not exist yet). A snapshot of the tail set alone returns
+    empty in the second case and the tail is then killed by `asyncio.run`'s
+    final sweep before its first step — measured, and exactly the defect.
+
+    Bounded by a no-output condition, never a clock (D21): each pending tail
+    is one shielded registry write plus at most one unbounded queue put, no
+    tail mints a tail, a completed tail never re-enters, and a ripe producer's
+    queued callback — scheduled before this coroutine's own `sleep(0)`
+    reschedule, and run FIFO — has run and retired it by the next snapshot.
+    A run that is NOT done is deliberately not waited for: the stop never
+    waits on delegated work, and a run still running when the ledger closes is
+    INV-JOB-009's boot-reconciliation case. A terminal write that FAILED and
+    left a registry-owned retry pending is likewise outside this drain: that
+    retry is unbounded by design and `JobRegistry.close` cancels it, as it
+    does every retry (INV-JOB-011 names both limits).
+
+    Never raises: a stop that cannot complete this step still completes, and
+    an exception is a reason to STOP, not to loop on its recurrence.
+    """
+    while True:
+        try:
+            loop = asyncio.get_running_loop()
+            tails = [t for t in list(_delegation_settle_tasks)
+                     if not t.done() and t.get_loop() is loop]
+            ripe = [t for t in list(_delegation_callback_tasks)
+                    if t.done() and t.get_loop() is loop]
+            if not tails and not ripe:
+                return
+            if tails:
+                await asyncio.gather(*tails, return_exceptions=True)
+            else:
+                # One loop turn: the queued done callbacks run, each ripe
+                # producer mints its tail (or its cancel op) and leaves.
+                await asyncio.sleep(0)
+        except Exception:  # noqa: BLE001 — shutdown must complete
+            logger.warning("graceful stop: draining delegation settlements "
+                           "failed", exc_info=True)
+            return
 
 
 def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
