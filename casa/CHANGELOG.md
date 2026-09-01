@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.252.0] - 2026-09-01
+
+### Fixed
+
+- Reloading configuration no longer promotes a resident's staged persona
+  change on disk before the restart that actually activates it. Until now a
+  reload wrote the new persona into the resident's active binding while the
+  resident kept running the old one, so until that restart the persona it was
+  actually serving was named by nothing on disk and could be removed or
+  pruned from under it. The persona a resident is still running now stays
+  pinned until the restart, and removing or pruning personas refuses to
+  delete one that is in use.
+- Applying a persona pack now refuses a pack that does not declare the
+  persona id and version it was asked for, instead of quietly binding
+  whatever the pack says it is.
+
+### Changed
+
+- The configurator's guidance now says that a specialist's first persona
+  override is undone with the specialist rollback tool, and that a second
+  rollback exchanges back; it no longer describes that tool as an operation
+  for version upgrades only. Because undoing an override this way can also
+  drop the specialist's owned plugins, the configurator asks before doing it.
+
 ## [0.251.0] - 2026-09-01
 
 ### Fixed

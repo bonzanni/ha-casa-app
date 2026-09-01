@@ -57,6 +57,9 @@
     - casa/rootfs/opt/casa/persona_install.py::prune_installed_personas
     - casa/rootfs/opt/casa/persona_install.py::list_installed_personas
     - casa/rootfs/opt/casa/persona_install.py::apply_persona_override
+    - casa/rootfs/opt/casa/persona_install.py::validate_persona_path_segments
+    - casa/rootfs/opt/casa/persona_install.py::installed_personas_root
+    - casa/rootfs/opt/casa/persona_install.py::persona_pack_roots
   tests:
     - tests/test_persona_install.py
     - tests/test_persona_removal.py
@@ -64,13 +67,15 @@
     - tests/test_persona_pack.py
     - tests/test_persona_install_consent.py
     - tests/test_tools_persona_install.py
+    - tests/test_wholebranch_security_fixes.py
   related: [architecture/personality.md, architecture/specialist-lifecycle.md]
-  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-011]
+  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-011, INV-PERS-013]
   invariant_tests:
     INV-PERS-005: [tests/test_persona_pack.py::test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to]
     INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
     INV-PERS-007: [tests/test_persona_apply_resident_staging.py::test_resident_apply_stages_and_does_not_promote, tests/test_persona_apply_resident_staging.py::test_resident_apply_writes_nothing_when_the_candidate_cannot_compile]
     INV-PERS-011: [tests/test_persona_install_consent.py::test_662_only_a_literal_true_outcome_selects_the_success_edit, tests/test_tools_persona_install.py::test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement]
+    INV-PERS-013: [tests/test_tools_persona_install.py::test_resolve_local_persona_refuses_traversal_ref, tests/test_tools_persona_install.py::test_resolve_local_persona_refuses_identity_mismatch, tests/test_tools_persona_install.py::test_resolve_local_persona_honors_casa_config_dir, tests/test_tools_persona_install.py::test_persona_apply_refuses_a_pack_that_does_not_declare_the_requested_identity, tests/test_wholebranch_security_fixes.py::test_validate_persona_path_segments_rejects_unsafe, tests/test_persona_removal.py::test_a_traversal_bearing_ref_never_reaches_a_path_join]
 
 - doc: architecture/personality.md
   summary: What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.

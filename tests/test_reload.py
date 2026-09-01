@@ -3319,7 +3319,7 @@ class TestOverlayConsumptionRetry:
 
         monkeypatch.setattr(reload_mod, "_specialist_roles_dir", _fake_roles_dir)
 
-        def _flaky_load(agent_dir, *, policies, roles_dir):
+        def _flaky_load(agent_dir, *, policies, roles_dir, binding_commit=True):
             calls["load"] += 1
             if calls["load"] == 1:
                 raise ValueError("simulated stale-overlay checksum mismatch")
@@ -3348,7 +3348,7 @@ class TestOverlayConsumptionRetry:
         monkeypatch.setattr(reload_mod, "_specialist_roles_dir", _fake_roles_dir)
         calls = {"load": 0}
 
-        def _always_broken(agent_dir, *, policies, roles_dir):
+        def _always_broken(agent_dir, *, policies, roles_dir, binding_commit=True):
             calls["load"] += 1
             raise ValueError("genuinely broken component")
 
@@ -3366,14 +3366,15 @@ class TestOverlayConsumptionRetry:
 
         calls = {"load": 0}
 
-        def _broken(agent_dir, *, policies, roles_dir):
+        def _broken(agent_dir, *, policies, roles_dir, binding_commit=True):
             calls["load"] += 1
             raise ValueError("resident load error")
 
         monkeypatch.setattr(agent_loader, "load_agent_from_dir", _broken)
         with pytest.raises(ValueError, match="resident load error"):
             await reload_mod._load_agent_with_overlay_retry(
-                SimpleNamespace(), "agents/butler", policies=None, tier="resident")
+                SimpleNamespace(role_configs={}), "agents/butler", policies=None,
+                tier="resident")
         assert calls["load"] == 1
 
 

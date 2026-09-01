@@ -20,6 +20,14 @@
 6. `config_git_commit` first, then — if `ok: true` and `restart_required: false` (specialists) —
    `casa_reload(scope="agents")` activates it immediately, then `emit_completion`
    (canonical commit -> reload -> emit order, see `completion.md`).
+   - SPECIALIST only — the way back. A specialist's FIRST override rotated its
+     component-default binding into the retained prior tuple, and `specialist_rollback`
+     restores it: follow `recipes/specialist/rollback.md` (it carries the owned-plugin-set
+     relay the rollback owes; never call the tool inline from here). The retained prior is a
+     single generation — a later override or an upgrade replaces it (an upgrade deliberately
+     preserves an override) — so after either, the bundled persona is no longer one rollback
+     away. There is no `persona_apply` back to a bundled persona (it is not resolvable by
+     ref), and `resident_persona_reset` is residents-only.
 
 ## Common mistakes
 

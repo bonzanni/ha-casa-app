@@ -62,7 +62,9 @@ it is duplicated in the boot script — both must agree.
 
 **Some identity changes cannot be hot-swapped at all.** If a resident's identity changes, the
 reload path returns a restart-required outcome *before* mutating live state rather than
-attempting a swap.
+attempting a swap — and before promoting the staged binding on disk: an already-live resident
+is loaded with the validation-only reconcile, so `active.yaml` keeps naming what the resident
+serves until the restart's boot reconcile promotes and activates the staged binding together.
 
 **A specialist reload consumes the roles overlay after the lock that built it.** The
 overlay rebuild runs under the personality materialize lock, but the agent load that
@@ -109,12 +111,23 @@ executors, config_sync) do take the lock of each scope or role they fan out into
 fixed one-directional order, so a cascade cannot interleave with a directly-dispatched
 reload of the same role or scope.
 
-**INV-CFG-003**: A resident identity change is refused as restart-required rather than hot-swapped.
+**INV-CFG-003**: A live resident identity change is restart-only: an in-process reload neither hot-swaps the resident nor promotes its staged binding on disk before the restart that activates it.
 
-Enforced in the agent and trigger reload paths, checked before any live runtime mutation.
+Enforced by the identity guards in the agent, trigger and policies reload paths, checked
+before any live runtime mutation, and by the shared loader helper those three paths use, which
+loads an already-live resident with the validation-only reconcile — the staged candidate is
+resolved, validated and compiled, so the guards see its digest, but `active.yaml` keeps naming
+the served binding and `desired.yaml` the staged one until boot commits and activates them
+together. Nothing on disk therefore names a persona a resident is not still serving, which is
+what keeps the persona reference scan honest between a reset and its restart.
 
 What it does not cover: the policies cascade skips such a resident quietly rather than
-surfacing the same refusal, so the outcome depends on which scope you asked for.
+surfacing the same refusal, so the outcome depends on which scope you asked for. A staged
+candidate that stops compiling after it was staged is diagnosed and discarded by the boot
+reconcile, not by the reload that first observes it — the reload retains the live identity and
+leaves the staged file in place. And a resident that is not yet live — its first load, or a
+bulk-sweep add — commits its first binding in the same load that activates it; the guarantee is
+about residents that are already serving.
 
 **INV-CFG-004**: Only an explicit whitelist of the config tree is version-controlled.
 
@@ -195,6 +208,7 @@ None of those are inferred.
 - `tests/test_casa_reload_tool.py`
 - `tests/test_config_git.py`
 - `tests/test_admin_reload_route.py`
+- `tests/test_reload_live_resident_not_promoted.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

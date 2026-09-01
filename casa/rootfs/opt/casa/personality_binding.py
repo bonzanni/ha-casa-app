@@ -937,7 +937,11 @@ def reconcile_resident_binding(
     candidate_validator: "Callable[[PersonaPack, BindingRecord], None] | None" = None,
     commit: bool = True,
 ) -> InstanceTuple:
-    """Boot-time reconciliation of a resident's binding (spec §4.1, §4.2, §4.4).
+    """Reconciliation of a resident's binding (spec §4.1, §4.2, §4.4) — committing
+    at boot and at a resident's first load, validation-only (``commit=False``)
+    for the ``validate_config_repo`` replay and for every in-process reload of
+    an already-live resident (#672, INV-CFG-003), which validates the staged
+    candidate without promoting it.
 
     Reads an already-staged ``desired.yaml`` FIRST — the artifact
     ``resident_persona_swap``/``resident_persona_reset`` write BEFORE a restart —

@@ -518,18 +518,39 @@ async def _load_agent_with_overlay_retry(runtime: Any, agent_dir: str, *,
     reflects the full committed tuple state, never a torn mix."""
     import agent_loader
 
+    # #672 (INV-CFG-003): an ALREADY-LIVE resident is loaded with the
+    # validation-only reconcile. The three in-process openers that reach this
+    # helper (reload_agent, reload_triggers, the policies cascade) all refuse
+    # to hot-swap a resident whose identity moved — but the loader's default
+    # `binding_commit=True` had already promoted a staged `desired.yaml` to
+    # `active.yaml` on disk BEFORE that guard fired, so between the reload and
+    # the restart the resident served a persona nothing on disk named any
+    # more, and `persona_remove` deleted it. `binding_commit=False` is the
+    # replay `validate_config_repo` has used since #338 for the same reason:
+    # it resolves, validates and compiles the staged candidate — so the
+    # identity guards below still see its digest — and writes nothing. The
+    # promotion and the activation then land together, at the restart's boot
+    # reconcile. A resident that is NOT live yet (its first load through
+    # reload_agent) keeps committing: a first activation must promote, and
+    # `_resident_identity_changed(candidate, None)` would otherwise activate a
+    # staged candidate in memory that disk never committed. Specialists never
+    # commit through this path (their binding follows disk on reload), so the
+    # explicit `True` is inert there.
+    binding_commit = not (
+        tier == "resident" and os.path.basename(agent_dir) in runtime.role_configs
+    )
     roles_dir = await _specialist_roles_dir(runtime) if tier == "specialist" else None
     try:
         cfg = await asyncio.to_thread(
             agent_loader.load_agent_from_dir, agent_dir,
-            policies=policies, roles_dir=roles_dir)
+            policies=policies, roles_dir=roles_dir, binding_commit=binding_commit)
     except Exception:  # noqa: BLE001 — retried once for specialists, then re-raised
         if tier != "specialist":
             raise
         roles_dir = await _specialist_roles_dir(runtime)
         cfg = await asyncio.to_thread(
             agent_loader.load_agent_from_dir, agent_dir,
-            policies=policies, roles_dir=roles_dir)
+            policies=policies, roles_dir=roles_dir, binding_commit=binding_commit)
     return cfg, roles_dir
 
 
@@ -586,9 +607,11 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
         raise ReloadError("load_error", str(exc)) from exc
 
     # Personality Phase A, Task 14 (round-3 review): restart-to-swap invariant.
-    # The load_agent_from_dir above may have committed a STAGED persona swap
-    # desired->active on disk, yielding a NEW role_checksum/binding_digest on
-    # cfg while the LIVE resident still runs the OLD identity. A trigger reload
+    # The load_agent_from_dir above VALIDATED a staged persona swap without
+    # committing it (#672: an already-live resident loads with
+    # binding_commit=False), yielding a NEW role_checksum/binding_digest on
+    # cfg while the LIVE resident still runs the OLD identity and disk still
+    # names it in active.yaml. A trigger reload
     # must NEVER activate that change — only a supervised restart may. So for a
     # RESIDENT whose personality identity moved, refuse the WHOLE operation here
     # BEFORE anything mutates: no reregister_for, no cache write, no specialist
@@ -602,9 +625,10 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
     # misreported the registered trigger list.) Raising mirrors reload_agent's
     # direct-path contract; dispatch() converts this ReloadError to a structured
     # error, and reload_full does NOT compose this handler, so nothing cascades
-    # through the raise. The on-disk active.yaml commit from load_agent_from_dir
-    # may already have happened — idempotent with the mandatory restart's own
-    # boot-time reconcile (same note reload_agent carries at ~:598).
+    # through the raise. Nothing was written to the InstanceDir on this path
+    # (#672): active.yaml still names the served binding and desired.yaml the
+    # staged one, until the mandatory restart's boot-time reconcile commits and
+    # activates them together (same note reload_agent carries).
     if role in runtime.role_configs and _resident_identity_changed(
         cfg, runtime.role_configs.get(role),
     ):
@@ -991,7 +1015,8 @@ def _resident_identity_changed(new_cfg: Any, live_cfg: Any) -> bool:
     """True iff a resident's personality identity moved between the live config
     and a freshly-loaded one — i.e. its ``role_checksum`` OR ``binding_digest``
     differs (a role.yaml/doctrine edit, or a staged persona swap/reset that
-    ``load_agent_from_dir``'s reconcile committed desired->active).
+    ``load_agent_from_dir``'s reconcile validated — without committing it, for
+    an already-live resident (#672) — as the candidate the restart will activate).
 
     Personality Phase A, Task 8/Task 14: this is the ONE canonical restart-to-swap
     predicate, shared by every reload path that could otherwise hot-swap a live
@@ -1087,11 +1112,12 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
             "reload_agent(%s): personality identity changed (role_checksum or "
             "binding_digest differs) — refusing hot-swap, restart required", role,
         )
-        # Note: the load_agent_from_dir() call above may have already committed a
-        # staged desired->active binding to DISK via reconcile before this guard
-        # fires — harmless, since that's idempotent with the mandatory restart's
-        # own boot-time reconcile and this guard leaves the live in-memory
-        # agent/registries untouched either way.
+        # Note: the load_agent_from_dir() call above did NOT commit the staged
+        # desired->active binding — an already-live resident is loaded with
+        # binding_commit=False (#672, INV-CFG-003), so disk keeps naming the
+        # served binding until the mandatory restart's own boot-time reconcile
+        # promotes and activates it together; this guard leaves the live
+        # in-memory agent/registries untouched, so runtime and disk agree.
         raise ReloadError(
             "restart_required",
             f"role={role} personality identity changed; restart via "
@@ -1279,14 +1305,13 @@ async def _reload_role_after_policies(runtime: Any, role: str) -> None:
     # Personality Phase A, Task 14 (whole-branch review): restart-to-swap must
     # hold on the POLICY cascade too. A resident whose role_checksum OR
     # binding_digest moved (a doctrine edit, or a staged persona swap/reset that
-    # the load above committed desired->active on disk) is restart-to-swap —
+    # the load above validated WITHOUT committing — #672) is restart-to-swap —
     # never hot-reloaded. Unlike reload_agent's single-role path we do NOT raise
     # (that would abort the whole cascade for every OTHER role); we SKIP just
     # this role, leaving its LIVE agent + cfg + registries untouched, so its
-    # deferred policy change lands only on the mandatory supervised restart. The
-    # on-disk desired->active commit is harmless — idempotent with that
-    # restart's own boot-time reconcile. Every identity-UNCHANGED role still
-    # reloads below to pick up the new policy_lib.
+    # deferred policy change lands only on the mandatory supervised restart,
+    # whose boot-time reconcile is what commits desired->active on disk. Every
+    # identity-UNCHANGED role still reloads below to pick up the new policy_lib.
     if tier == "resident" and _resident_identity_changed(
         new_cfg, runtime.role_configs.get(role),
     ):
