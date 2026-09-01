@@ -5655,14 +5655,20 @@ class TestReservationReadTimeExclusion:
         assert d.inbound_in_flight_texts(eid) == ["hello"]
         assert d.inbound_reservation_texts(eid) == []
 
-    async def test_evicted_envelope_does_not_suppress_the_held_reservation(
+    async def test_evicted_envelope_is_quoted_itself_and_suppresses_the_held_reservation(
             self, tmp_path):
-        """An EVICTED envelope (`notice != "none"`) is in neither quoted
-        population, so it must leave the exclusion set and the held
-        reservation's words must come back.
+        """An EVICTED envelope (`queued`, `notice == "pending"`) is in neither
+        of the first two quoted populations — and since #780 it is the THIRD,
+        printed by both terminal renderers, so its id enters the exclusion set
+        and the held reservation's words are suppressed: one message, one
+        bullet, from the spool.
 
         Red at `3bb55f2e`: the write-time drop already happened at persist and
-        nothing restores it, so the message is reported by NOBODY."""
+        nothing restored it, so the message was reported by NOBODY. Until #780
+        the reservation was the carrier of last resort and this test asserted
+        `inbound_reservation_texts == ["hello"]`; the reservation is released
+        the moment the enqueue resolves, so that carrier was gone in the real
+        sequence, which is exactly the defect #780 closes."""
         d = _ccd_driver(tmp_path)
         eid = "e-691-evicted"
         spool = self._spool(d, eid, tmp_path)
@@ -5673,7 +5679,9 @@ class TestReservationReadTimeExclusion:
 
         assert d.inbound_unread_texts(eid) == []
         assert d.inbound_in_flight_texts(eid) == []
-        assert d.inbound_reservation_texts(eid) == ["hello"]
+        assert d.inbound_evicted_pending_texts(eid) == ["hello"]
+        assert d.inbound_reservation_texts(eid) == []
+        assert spool.disclosed_message_ids() == frozenset({41})
 
     async def test_initial_envelope_does_not_suppress_an_operator_reservation(
             self, tmp_path):
