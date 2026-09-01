@@ -85,7 +85,9 @@ skipped, so a stray save does not become a half-parsed agent.
 **INV-AGENT-003**: Specialist and executor loading is isolated per agent and boot-non-fatal; resident loading is not.
 
 Stated as the asymmetry it is. `validate_config_repo` additionally skips the
-pipeline-managed specialists subtree, so it is not a whole-repository gate either.
+pipeline-managed specialists subtree, so it is not a whole-repository gate either. The
+specialist replay it does run is validation-only (`binding_commit=False`): a binding the
+loader would re-derive at boot is re-derived in memory and nothing is written.
 
 What it does not cover: the isolation catches the loader's typed error plus plain
 `ValueError` and `OSError` — the set the load path actually raises on malformed input

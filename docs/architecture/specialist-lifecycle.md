@@ -105,8 +105,10 @@ One identity detail is easy to get wrong at exactly these commit points: a role'
 covers the model it *resolved to*, not just the model policy it declares. Every path here
 that materializes a role while writing or checking a binding — commit, upgrade, rollback,
 the reconcile pass — therefore has to resolve an operator-option model the way the agent
-loader will, or it persists an identity the loader can never re-derive and the specialist
-is dropped at activation. See `architecture/personality.md`.
+loader will, or it persists an identity the loader can only recover by re-deriving the
+binding at the next load — which it does when the resolved model is the only thing that
+moved, rewriting `active.yaml` in place without touching the retained prior or a staged
+candidate (INV-PERS-016), and refuses otherwise. See `architecture/personality.md`.
 
 **INV-SPEC-004**: Operational materialization writes a fresh content directory and atomically retargets the slug symlink, with deletion containment-gated.
 

@@ -65,6 +65,23 @@ specialist is then dropped as a binding-activation failure on a host whose optio
 from the default. Install, upgrade, rollback, persona override and the reconcile pass all
 share one resolution helper for this reason.
 
+**A binding whose role checksum moved for model reasons alone is re-derived, not dropped.**
+The other face of that design: an operator flipping the model option, or an image release
+moving a model alias, moves every installed specialist's role checksum while nothing else
+about the install changed. The specialist loader treats exactly that case as a re-compile
+rather than a broken specialist. It proves the installed component's bytes still hash to
+the tuple's root, proves the role it is loading is that component's role under the current
+option resolution, and then re-derives the binding by carrying every stored field forward —
+the persona identity triple included — and recomputing only the role checksum and the
+digest derived from it. The compile that follows compares the carried persona identity
+against the pack it loaded, so a persona that moved is still refused, never re-bound. On a
+committing load of an enabled specialist the re-derived binding is written back in place,
+same generation: the retained prior and any staged candidate are untouched. A validation-only
+load, and a disabled specialist, re-derive in memory and write nothing. Residents already
+reconcile against the role currently loading; this puts installed specialists on the same
+footing without touching consent, because the component root the approval bound is exactly
+what the re-derivation proves unchanged.
+
 **Projection selection is scoped, not nested.** The shipped doctrines put each surface's
 instructions under the shared core heading, and a Markdown section's body would otherwise run
 through its subsections — so selecting the core would drag every other surface's directives
@@ -189,6 +206,25 @@ scrubber and no per-value provenance anywhere in Casa; a rule about handling a
 credential-bearing artifact is a judgement instruction, and treating it as a
 boundary would be the same mistake as believing a `response_shape.yaml` edit.
 
+**INV-PERS-016**: An installed specialist whose active binding's role checksum differs from the role the loader materialized — with the component root, persona identity triple, configuration and dependency closure unchanged — is activated on a binding re-derived for that role; on a committing load of an enabled specialist the re-derived binding replaces the active tuple in place, leaving the retained prior and any staged candidate untouched, while a validation-only load and a disabled specialist write nothing; and a binding whose persona identity or agent id differs from what the loader resolved is refused, never re-derived.
+
+Three checks gate the re-derivation, in order: the install root digest recomputed from the
+component store equals the tuple root's suffix; the component's role artifact, materialized
+under the current option resolution, is the role being loaded — so a stale roles overlay
+refuses rather than binding a freshly upgraded tuple to an older role; and the stored agent
+id is the role's. The candidate carries every stored binding field and recomputes only the
+role checksum and its derived digest, and it must compile before anything is written. The
+write is a same-generation primitive that re-observes the active tuple under the
+materialize lock, refuses on any concurrent change, and admits no delta but those two
+fields — so it cannot become a way around prior rotation for a real generation change.
+
+What it does not cover: the retained prior. A previous-version prior is preserved, not
+repaired — a rollback into it after a model change refuses on the same checksum mismatch
+until that arm is given the same treatment. Nor the operational files: the marker they
+carry is rewritten by the next reconcile pass, not by the load. Nor engagement resume:
+nothing here compares a suspended engagement's recorded epoch against the definition it
+resumes under.
+
 **INV-PERS-009**: Every section body a persona's Markdown declares reaches the text projection exactly once.
 
 A section's body physically runs through its subsections, so a renderer that also walks the
@@ -226,7 +262,10 @@ binding state, so validating a commit can never activate a staged persona swap.
 specialist is unavailable and the system continues.
 
 **A binding cannot be activated.** Folded into the loading error for that agent, so it is
-reported as a load failure rather than a separate class. An *active* override whose pinned
+reported as a load failure rather than a separate class. For an installed specialist the one
+exception is a role checksum that moved while everything else stayed: that is re-derived on
+load (INV-PERS-016), and the load failure is reserved for a binding whose identity actually
+moved. An *active* override whose pinned
 persona bytes have gone missing, gone unreadable or changed is not re-materialized — the
 altered bytes are never served — but the load of those same bytes then fails, and that
 failure is boot-fatal per INV-PERS-003. The refusal is logged as fields (INV-PERS-010):
@@ -317,9 +356,11 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `casa/rootfs/opt/casa/prompt_compiler.py::compile_prompt_bundle`
 - `casa/rootfs/opt/casa/hooks.py::make_response_shape_write_guard`
 - `casa/rootfs/opt/casa/hooks.py::make_resident_prompt_write_guard`
+- `casa/rootfs/opt/casa/specialist_install.py::activate_binding_for_config`
 
 **Tests**
 - `tests/test_personality_binding.py`
+- `tests/test_specialist_binding_rederive.py`
 - `tests/test_resident_refusal_diagnosis.py`
 - `tests/test_resident_refusal_record_boundaries.py`
 - `tests/test_refusal_observation.py`

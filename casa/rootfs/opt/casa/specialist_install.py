@@ -2034,7 +2034,70 @@ def commit_specialist_install(
     return _instance_out
 
 
-def activate_binding_for_config(cfg, *, specialists_root: Path = Path("/config/specialists")) -> None:
+def _rederive_stale_binding(role, active_tuple, cas_dir: Path):
+    """#597: the binding for *active_tuple* re-derived for *role*, after
+    proving that the resolved model is the ONLY input that can have moved.
+
+    The stored binding carries a checksum and no normalized role, so the old
+    inputs cannot be diffed; the argument is structural and every leg of it
+    is checked here:
+
+    L1 — same closure bytes. The tuple root is content-addressed by the
+    install root digest (component checksum + manifest bytes + dependency
+    digests) and the component store is keyed by it; recompute that digest
+    from the store's bytes and require it, and the component id/version, to
+    match the root. A store whose bytes drifted is refused.
+
+    L2 — the role being loaded IS that component's role under the LIVE
+    option resolution. Re-materialize the store's role artifact with
+    ``_ha_model_options()`` and require its checksum, id and slot to equal
+    *role*'s. Load-bearing for the overlay race ``reload.py``'s
+    ``_load_agent_with_overlay_retry`` documents: a concurrent upgrade can
+    commit a NEW tuple between the overlay build and the load, so the role
+    the loader compiled is the OLD version's — without L2 the re-derivation
+    would bind the new tuple to the old role and WRITE it. With L2 it
+    refuses; the loader rebuilds the overlay once and retries.
+
+    Given L1 and L2 the role's declared bytes and doctrine are fixed, and
+    ``compute_role_checksum`` has exactly one other input: the resolved
+    model. The re-derivation itself (``rederive_binding_for_role``) carries
+    every stored field forward and requires the stored agent id to be the
+    role's (L3); the persona identity it carries is compared against the
+    loaded pack by the compile that follows, before anything is written.
+
+    Raises ``ValueError`` on every refusal — the specialist branch folds it
+    into ``LoadError`` and the specialist is isolated, exactly as a
+    mismatch is today."""
+    from personality_binding import rederive_binding_for_role
+    from role_artifact import load_role_artifact
+    from role_slot import _ha_model_options, materialize_role
+
+    component_id, version, suffix = parse_component_root(active_tuple.root)
+    component = load_specialist_component(cas_dir, cas_dir / "manifest.json")
+    deps = resolve_dependency_closure(component, cas_dir)
+    fresh_root_digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(cas_dir / "manifest.json").read_bytes())
+    if (fresh_root_digest != suffix or component.component_id != component_id
+            or component.version != version):
+        raise ValueError(
+            f"binding for {role.role_id} not re-derived: the installed component in the "
+            f"store ({component.component_id}@{component.version}#{fresh_root_digest}) is "
+            f"not the active tuple's root ({active_tuple.root})")
+    live_role = materialize_role(
+        source=load_role_artifact(cas_dir / "role"), options=_ha_model_options())
+    if (live_role.checksum != role.checksum or live_role.role_id != role.role_id
+            or live_role.slot != role.slot):
+        raise ValueError(
+            f"binding for {role.role_id} not re-derived: the role being loaded "
+            f"({role.checksum}) is not the installed component's role artifact under "
+            f"the current option resolution ({live_role.checksum}) — a stale roles "
+            f"overlay; the load is retried against a rebuilt overlay")
+    return rederive_binding_for_role(binding=active_tuple.binding, role=role)
+
+
+def activate_binding_for_config(
+    cfg, *, specialists_root: Path = Path("/config/specialists"), commit: bool = True,
+) -> None:
     """Mutates *cfg* in place with the compiled binding for its installed
     component, if one has an ACTIVE tuple (spec §4.1: a pending-configuration
     or legacy-bundled specialist has none, and this is a no-op — cfg keeps
@@ -2049,8 +2112,24 @@ def activate_binding_for_config(cfg, *, specialists_root: Path = Path("/config/s
     Path("/config/bindings")), this is a standalone function parameterized
     by ``specialists_root`` — agent_loader.py's specialist branch calls it
     with the real, hard-coded production root; unit tests call it directly
-    with a tmp_path root, no monkeypatching needed."""
-    from personality_binding import InstanceDir
+    with a tmp_path root, no monkeypatching needed.
+
+    #597 (INV-PERS-016): a binding whose ``role_checksum`` no longer matches
+    the role being loaded is RE-DERIVED rather than compiled as-is — the
+    role checksum covers the resolved model by design, so an HA option flip
+    or an alias move moves every installed specialist's checksum with nothing
+    else changing, and compiling the stored binding dropped every one of
+    them until re-installed. ``_rederive_stale_binding`` proves the resolved
+    model is the only moved input and carries the stored identity forward;
+    the compile below is the identity gate (persona triple, renderer
+    version, digest) and runs BEFORE any write. Then, only when ``commit``
+    is true AND the specialist is enabled, the re-derived binding replaces
+    ``active.yaml`` in place through the same-generation primitive — never
+    ``desired.yaml``, never the retained prior. ``commit=False`` is the
+    ``validate_config_repo`` replay (#338): re-derive in memory, write
+    nothing, record nothing. The common path — checksums agree — is
+    byte-for-byte today's and takes no lock."""
+    from personality_binding import InstanceDir, make_instance_tuple
     from persona_pack import load_persona_pack
     from prompt_compiler import compile_prompt_bundle
     from personality_types import SpeakerProvenance
@@ -2084,23 +2163,43 @@ def activate_binding_for_config(cfg, *, specialists_root: Path = Path("/config/s
     else:
         bound_persona = load_persona_pack(
             cas_dir / "persona" / "pack", cas_dir / "persona" / "manifest.json")
+    binding = active_tuple.binding
+    if binding.role_checksum != cfg.role_slot.checksum:
+        binding = _rederive_stale_binding(cfg.role_slot, active_tuple, cas_dir)
     defaults_root = Path(__file__).parent / "defaults"
     bundle = compile_prompt_bundle(
-        role=cfg.role_slot, persona=bound_persona, binding=active_tuple.binding,
+        role=cfg.role_slot, persona=bound_persona, binding=binding,
         platform_frame=(defaults_root / "personality" / "platform-frame.md").read_text(
             encoding="utf-8"),
         safety_kernel=(defaults_root / "personality" / "safety-kernel.md").read_text(
             encoding="utf-8"),
     )
+    # `enabled` is read fail-closed: a cfg that does not carry it (a bare
+    # test double) writes nothing. The loader always sets it
+    # (`_build_runtime_fields`), so production never hits the default.
+    if binding is not active_tuple.binding and commit and getattr(cfg, "enabled", False):
+        written = instance_dir.replace_active_same_generation(
+            active_tuple,
+            make_instance_tuple(root=active_tuple.root, binding=binding,
+                                config_snapshot=active_tuple.config_snapshot))
+        logger.info("specialist_binding_rederived %s", json.dumps({
+            "specialist": cfg.role_slot.role_id,
+            "root": written.root,
+            "role_checksum": {"from": active_tuple.binding.role_checksum,
+                              "to": written.binding.role_checksum},
+            "binding_digest": {"from": active_tuple.binding.binding_digest,
+                               "to": written.binding.binding_digest},
+            "resolved_model": cfg.role_slot.resolved_model.effective,
+        }, sort_keys=True))
     cfg.persona_pack = bound_persona
-    cfg.binding = active_tuple.binding
+    cfg.binding = binding
     cfg.compiled_prompt_bundle = bundle
-    cfg.binding_digest = active_tuple.binding.binding_digest
+    cfg.binding_digest = binding.binding_digest
     cfg.speaker_provenance = SpeakerProvenance(
         speaker_kind="specialist", role_id=cfg.role_slot.role_id,
         persona_id=bound_persona.persona_id, persona_version=bound_persona.version,
         display_name=bound_persona.identity["display_name"],
-        binding_digest=active_tuple.binding.binding_digest,
+        binding_digest=binding.binding_digest,
     )
 
 
