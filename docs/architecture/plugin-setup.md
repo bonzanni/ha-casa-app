@@ -193,6 +193,17 @@ reconcile's mint or marker publish closes it (INV-PLUG-011). The same hold cover
 that keeps failing — an unwritable state directory, say — which is visible as a trigger
 issue rather than as a setup run against a credential that does not exist.
 
+**The episode store on disk cannot be read.** Every reader gets an empty store and every
+writer's next save replaces the damaged file with a valid one: the reconcile, consent and
+worker paths are yield-free and never raise, and they re-derive obligations from live
+registry state, so a regenerable store is never allowed to strand setup. What that
+replacement erases is the setup HISTORY, so the read that resets also records the reset in
+the store it hands the writer, and both reporting surfaces say the history is unavailable
+for as long as a failed setup would stay in health — INV-PLUG-015, in
+[`plugin-health.md`](plugin-health.md). A round the ledger cannot read is dropped and
+re-sealed from live state; that is repair, not history loss, and is logged rather than
+reported.
+
 **A consent round settles with any denial.** The obligation is refused and nothing is
 dispatched; the operator gets one note naming re-consent as the way forward, not a manual
 run they have no tool call for. A later re-prompt for the same artifact re-arms it — via

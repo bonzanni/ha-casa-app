@@ -328,6 +328,9 @@ _REASON_PHRASES = {
     "setup_episode_failed": "could not finish setting up",
     "setup_episode_stale": "started setting up and stopped partway",
     "setup_episode_refused": "was not allowed to finish setting up",
+    # #747: the registry-global row (name "*") the setup-episode store emits
+    # while its history cannot be read or was reset after damage.
+    "setup_history_unavailable": "setup history could not be read",
     "target_pending": "is waiting for the specialist it belongs to",
     "corrupt_artifact": "could not be loaded",
     "artifact_missing": "could not be found",

@@ -19,6 +19,8 @@ that state the two ways routing can be unknown, and only then the `finally`.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -523,3 +525,236 @@ def test_one_issue_state_call_feeds_both_the_row_and_the_issues(
         raising=False)
     module.current_issues()
     assert calls["n"] == 1
+
+
+# --- #746 / INV-TRIG-015: the sentinel is reopened by Casa itself ------------
+
+_RECOVERY_JOB_FIELDS = {
+    "trigger": "interval", "id": "plugin_routing_recovery", "minutes": 5,
+    "replace_existing": True, "coalesce": True, "max_instances": 1,
+    "misfire_grace_time": 600,
+}
+_FOUR_ROWS = {"trigger_routing_unavailable", "trigger_state_unavailable",
+              "callback_routing_unavailable", "callback_state_unavailable"}
+
+
+class _FakeScheduler:
+    def __init__(self):
+        self.jobs: list = []
+
+    def add_job(self, func, **kwargs):
+        self.jobs.append((func, kwargs))
+
+
+async def test_unavailable_plugin_routing_recovers_as_one_scheduled_pair(
+        tmp_path, monkeypatch):
+    """At the base a transient compute failure publishes the sentinel and
+    creates no task and arms no timer (the dossier's measurement), so plugin
+    ingress stays shut until a human or an agent happens to reconcile. Pins the
+    producer: one scheduled, coalesced, prompt-free pair that heals BOTH halves
+    from the live runtime, regenerates health exactly once per attempt, and
+    announces nothing new while the failure persists."""
+    import inspect
+
+    import agent as agent_mod
+    import casa_core
+    import event_reconcile
+    import plugin_health
+    import plugin_registry
+    import plugin_setup_episodes as pse
+    import tools as tools_mod
+    from broker_helpers import wait_until
+    from callback_acks import CallbackAckStore
+    from trigger_acks import TriggerAckStore
+
+    # The seam under test. Absent at the base: no producer exists, which IS the
+    # defect — "creates 0 tasks and arms 0 timers".
+    import plugin_routing_recovery as prr
+
+    # ---- 1. registration ---------------------------------------------------
+    assert inspect.iscoroutinefunction(prr.recovery_job)
+    fake = _FakeScheduler()
+    prr.register(fake)
+    assert len(fake.jobs) == 1
+    func, fields = fake.jobs[0]
+    assert func is prr.recovery_job
+    assert fields == _RECOVERY_JOB_FIELDS
+    src = inspect.getsource(casa_core.main)
+    at = src.find("plugin_routing_recovery.register(scheduler)")
+    assert at != -1
+    assert at < src.find("scheduler.start()")
+
+    # ---- shared harness ----------------------------------------------------
+    health = tmp_path / "health.json"
+    monkeypatch.setattr(tools_mod, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(pse, "STORE_PATH", tmp_path / "episodes.json")
+    monkeypatch.setattr(tr, "SECRETS_DIR", tmp_path / "secrets")
+    monkeypatch.setattr(tr, "_default_acks",
+                        lambda: TriggerAckStore(path=tmp_path / "tacks.json"))
+    monkeypatch.setattr(cr, "_default_acks",
+                        lambda: CallbackAckStore(path=tmp_path / "cacks.json"))
+    monkeypatch.setattr(cr, "_default_spool", lambda: None)
+    monkeypatch.setattr(cr, "_default_entries", lambda: (lambda: []))
+    monkeypatch.setattr(plugin_registry, "resolve_all",
+                        lambda: SimpleNamespace(issues=[], warnings=[]))
+    monkeypatch.setattr(plugin_registry, "load_registry",
+                        lambda *a, **k: SimpleNamespace(
+                            raw={}, valid=False, entries=[]))
+    monkeypatch.setattr(event_reconcile, "current_issues", lambda: [])
+
+    mode = {"trigger": "ok", "callback": "ok"}
+
+    def _resolver_for(half):
+        def resolve(target):
+            if mode[half] == "boom":
+                raise RuntimeError(f"{half} resolver exploded")
+            return SimpleNamespace(registry_valid=True, plugins=[], issues=[])
+        return resolve
+    monkeypatch.setattr(tr, "_default_resolver",
+                        lambda: _resolver_for("trigger"))
+    monkeypatch.setattr(cr, "_default_resolver",
+                        lambda: _resolver_for("callback"))
+
+    counts = {"trigger": 0, "callback": 0}
+    prompts: list = []
+    trace: list = []
+    hold: dict = {"trigger": None}
+    kicks = {"n": 0}
+    notifications = {"n": 0}
+    reports: list = []
+
+    def _wrap(module, half):
+        original = module.reconcile_from_runtime
+
+        async def wrapped(runtime, *, prompt=True):
+            trace.append(f"{half}:start")
+            counts[half] += 1
+            prompts.append(prompt)
+            if hold.get(half) is not None:
+                await hold[half].wait()
+            try:
+                return await original(runtime, prompt=prompt)
+            finally:
+                trace.append(f"{half}:end")
+        monkeypatch.setattr(module, "reconcile_from_runtime", wrapped)
+    _wrap(tr, "trigger")
+    _wrap(cr, "callback")
+
+    real_regen = tools_mod._regenerate_plugin_health
+
+    def regen_spy(extras):
+        trace.append("regenerate")
+        real_regen(extras)
+        reports.append(plugin_health.load_report(health))
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", regen_spy)
+
+    async def _no_notify(*a, **k):
+        notifications["n"] += 1
+    monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible",
+                        _no_notify)
+    monkeypatch.setattr(casa_core, "notify_plugin_health", _no_notify)
+    monkeypatch.setattr(pse, "kick", lambda: kicks.__setitem__("n", kicks["n"] + 1))
+
+    def _reset_counters():
+        counts.update(trigger=0, callback=0)
+        prompts.clear()
+        trace.clear()
+        kicks["n"] = 0
+        notifications["n"] = 0
+        reports.clear()
+
+    def _install(registry):
+        monkeypatch.setattr(
+            agent_mod, "active_runtime",
+            SimpleNamespace(
+                trigger_registry=registry,
+                role_configs={"assistant":
+                              SimpleNamespace(channels=["webhook", "telegram"])},
+                channel_manager=None),
+            raising=False)
+        return agent_mod.active_runtime
+
+    def _both_authoritative(registry):
+        return (not registry.plugin_overlay_unavailable()
+                and not registry.callback_overlay_unavailable())
+
+    # ---- 2. healing, one half at a time -----------------------------------
+    for failing in ("trigger", "callback"):
+        registry = _registry()
+        runtime = _install(registry)
+        mode.update(trigger="ok", callback="ok")
+        await tr.reconcile_from_runtime(runtime, prompt=False)
+        await cr.reconcile_from_runtime(runtime, prompt=False)
+        assert _both_authoritative(registry)
+        mode[failing] = "boom"
+        failing_mod = tr if failing == "trigger" else cr
+        with pytest.raises(RuntimeError, match=f"{failing} resolver exploded"):
+            await failing_mod.reconcile_from_runtime(runtime, prompt=False)
+        if failing == "trigger":
+            assert registry.plugin_overlay_unavailable() is True
+            assert registry.callback_overlay_unavailable() is False
+        else:
+            assert registry.plugin_overlay_unavailable() is False
+            assert registry.callback_overlay_unavailable() is True
+        mode[failing] = "ok"
+        _reset_counters()
+
+        await prr.recovery_job()
+        await wait_until(lambda: _both_authoritative(registry)
+                         and trace.count("regenerate") == 1)
+        await prr._task
+        assert counts == {"trigger": 1, "callback": 1}, failing
+        assert prompts == [False, False], failing
+        assert trace == ["trigger:start", "trigger:end",
+                         "callback:start", "callback:end", "regenerate"], failing
+        assert kicks["n"] == 4, failing          # two existing kick sites per half
+        assert notifications["n"] == 0, failing
+        assert {i["reason_code"] for i in reports[0]["issues"]} == set()
+
+    # ---- 3. a persisting failure ------------------------------------------
+    registry = _registry()                        # both halves at the sentinel
+    _install(registry)
+    mode.update(trigger="boom", callback="boom")
+    _reset_counters()
+    for n in (1, 2, 3):
+        await prr.recovery_job()
+        await wait_until(lambda: counts["trigger"] == n
+                         and counts["callback"] == n
+                         and trace.count("regenerate") == n)
+        await prr._task
+    assert counts == {"trigger": 3, "callback": 3}
+    assert prompts == [False] * 6
+    assert trace.count("regenerate") == 3
+    assert notifications["n"] == 0
+    assert kicks["n"] == 0
+    assert registry.plugin_overlay_snapshot() is ROUTING_UNAVAILABLE
+    assert registry.callback_overlay_unavailable() is True
+    assert len(reports) == 3
+    for report in reports:
+        assert {i["reason_code"] for i in report["issues"]} == _FOUR_ROWS
+    fps = [{i["fingerprint"] for i in r["issues"]} for r in reports]
+    assert fps[0] == fps[1] == fps[2]
+    marks = [json.dumps(r["notified_fingerprints"]) for r in reports]
+    assert marks[0] == marks[1] == marks[2]
+
+    # ---- 4. coalescing: ten kicks while the first pass is blocked ---------
+    registry = _registry()
+    _install(registry)
+    mode.update(trigger="ok", callback="ok")
+    _reset_counters()
+    gate = asyncio.Event()
+    hold["trigger"] = gate
+    for _ in range(10):
+        prr.kick()
+    await wait_until(lambda: counts["trigger"] == 1)
+    live = [t for t in asyncio.all_tasks()
+            if t.get_name() == "plugin-routing-recovery" and not t.done()]
+    assert len(live) == 1
+    assert counts == {"trigger": 1, "callback": 0}
+    gate.set()
+    hold["trigger"] = None
+    await wait_until(lambda: _both_authoritative(registry)
+                     and trace.count("regenerate") == 1)
+    await prr._task
+    assert counts == {"trigger": 1, "callback": 1}
+    assert prompts == [False, False]

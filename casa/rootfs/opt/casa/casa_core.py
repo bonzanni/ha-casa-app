@@ -5485,6 +5485,17 @@ async def main() -> None:
         misfire_grace_time=600,
     )
 
+    # #746 / INV-TRIG-015: the trigger/callback twin of the event self-heal
+    # above. Those two overlays fail closed to their own ROUTING_UNAVAILABLE
+    # sentinel on a transient compute failure, and every path that reconciles
+    # them is human- or agent-initiated — so without this, plugin webhook and
+    # callback ingress (and any released setup episode waiting on its route)
+    # stayed shut until someone happened to touch the system. One coalesced
+    # pass heals BOTH halves from the live runtime, prompt-free; the module
+    # docstring carries the lock-order and regeneration reasoning.
+    import plugin_routing_recovery
+    plugin_routing_recovery.register(scheduler)
+
     # #396 / INV-TRIG-008: the scheduler has NO persistent job store, so a
     # reminder whose fire time fell while the add-on was down was never
     # recorded and is otherwise lost outright. An agent-owned one-shot still

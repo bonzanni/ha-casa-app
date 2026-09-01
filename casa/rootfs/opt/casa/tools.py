@@ -11664,6 +11664,16 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
             # else here is filtered — not the resolver issues, the extras, the
             # runtime rows, the trigger/callback/event rows, nor the episode
             # HISTORY the status tool reads separately.
+            if row.get("plugin") == "*":
+                # #747 / INV-PLUG-015: the registry-GLOBAL "history could not
+                # be read" row. It names no plugin, so the registered-name and
+                # artifact filters below would drop it; it bypasses both, like
+                # the reconcilers' own `name="*"` routing rows.
+                setup_issues.append(PluginIssue(
+                    name="*", target=None, stage="setup",
+                    reason_code=row.get("kind") or "setup_history_unavailable",
+                    artifact_id=None, detail=row.get("detail") or None))
+                continue
             if reg.valid:
                 name = row.get("plugin") or ""
                 if name not in entry_targets:
@@ -14244,11 +14254,13 @@ def _status_int(value) -> int:
 
 def _status_sort_key(row: dict) -> float:
     """`updated_ts` as a number, tolerating anything a hand-edited store holds.
-    A malformed stamp sorts oldest rather than raising mid-render."""
-    try:
-        return float(row.get("updated_ts") or 0)
-    except (TypeError, ValueError):
-        return 0.0
+    A malformed stamp sorts oldest rather than raising mid-render — ANY failure
+    (an int too large for a float raises OverflowError) and any non-finite
+    value, the same rule `plugin_setup_episodes._stamp` applies."""
+    import plugin_setup_episodes
+    value = row.get("updated_ts")
+    stamp = plugin_setup_episodes._finite(value) if value else 0.0
+    return 0.0 if stamp is None else stamp
 
 
 def _tool_plugin_status() -> dict:
@@ -14275,13 +14287,14 @@ def _tool_plugin_status() -> dict:
     exactly `{"ok": True, "standing": [], "history": []}` — a genuinely empty
     report still reads as health.
 
-    `history_unavailable` covers an episode read that RAISES. It does not cover
-    a malformed or wrong-schema store: `plugin_setup_episodes._load()` catches
-    that itself and returns an empty store, so `episodes()` succeeds with zero
-    rows and nothing here can tell it from a box where no setup has ever run.
-    Disclosing that needs an availability-bearing read on the episode store, and
-    is not in this change — so the absence of this marker is not a claim that
-    the history is complete."""
+    `history_unavailable` (#747, INV-PLUG-015) covers an episode store that
+    exists but could not be read as a valid store — unreadable bytes, a
+    malformed or wrong-schema document, or episode rows that were only partly
+    readable — and, once a writer has replaced such a store with a valid empty
+    one, the fact of that reset for as long as a failed setup would stay in
+    health. `plugin_setup_episodes.read_episodes()` reports the damage beside
+    the rows it did read, from ONE read; a read that RAISES is still caught
+    below. An absent store is ordinary and stays silent."""
     standing: list = []
     history: list = []
     unavailable: dict = {}
@@ -14310,10 +14323,14 @@ def _tool_plugin_status() -> dict:
             "problems below are not the full set")
     try:
         import plugin_setup_episodes
-        rows = [r for r in plugin_setup_episodes.episodes()
-                if isinstance(r, dict)]
+        read = plugin_setup_episodes.read_episodes()
+        rows = [r for r in read.rows if isinstance(r, dict)]
         rows.sort(key=_status_sort_key, reverse=True)
         history = [_episode_sentence(r) for r in rows[:_STATUS_HISTORY_LIMIT]]
+        sentence = plugin_setup_episodes.damage_sentence(read)
+        if sentence:
+            unavailable["history_unavailable"] = (
+                f"{sentence}, so the entries below are not the full record")
     except Exception:  # noqa: BLE001
         logger.exception("plugin_status: episode store read failed")
         unavailable["history_unavailable"] = (

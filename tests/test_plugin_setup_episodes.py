@@ -1259,3 +1259,485 @@ async def test_an_unattributable_artifact_fails_open_on_either_side(
     assert len(_setup_rows(_regen_into(monkeypatch, health,
                                        registered=["elevenlabs"],
                                        artifact="art-9"))) == 1
+
+
+# ---------------------------------------------------------------------------
+# #747 / INV-PLUG-015 — a damaged store is DISCLOSED, live, after a writer has
+# replaced it, and until the disclosure decays. Real files, real STORE_PATH,
+# the real status tool; never the ``episodes`` double the status-tool suite
+# installs (it is why the defect shipped).
+# ---------------------------------------------------------------------------
+
+_T0 = 1_700_000_000.0
+
+
+def _valid_row(plugin, *, artifact="art-1", updated=_T0 - 30):
+    return {"id": f"e-{plugin}", "plugin": plugin, "artifact_id": artifact,
+            "gen": 1, "status": "failed", "gate": "released", "attempts": 1,
+            "execution_retries": 0, "resolve_deferrals": 0,
+            "approved_identities": [], "created_ts": updated - 60,
+            "updated_ts": updated, "last_error": f"{plugin} boom"}
+
+
+def _write_store(path, episodes, **extra):
+    doc = {"schema_version": 4, "rounds": {}, "episodes": episodes, **extra}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _global_rows(report):
+    return [d for d in report["issues"] if d["name"] == "*"]
+
+
+@pytest.mark.asyncio
+async def test_damaged_setup_history_is_disclosed_live_after_reset_and_until_decay(
+        tmp_path, monkeypatch):
+    """The store is read by eleven sites and reset to empty on ANY failure; the
+    status tool and the standing report then see a successful read of zero rows
+    and cannot tell damage from a box where no setup ever ran. Every writer
+    then overwrites the damaged file with a valid empty one, so the damage is
+    also erased before anything reports it. Pins: live damage is disclosed on
+    both surfaces; a real writer carries the fact of the reset into the
+    replacement store; the disclosure persists for the health decay window and
+    then clears; readable rows survive a partial read; a directory reads as
+    unreadable, not malformed; a reset record that is not well-formed is
+    ignored and pruned."""
+    import agent as agent_mod
+    import plugin_health
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    clock = {"t": _T0}
+    monkeypatch.setattr(pse, "_now", lambda: clock["t"])
+    health.write_text(json.dumps({"schema_version": 1, "issues": [],
+                                  "warnings": [], "notified_fingerprints": []}),
+                      encoding="utf-8")
+
+    async def _status():
+        out = await tools.plugin_status.handler({})
+        return json.loads(out["content"][0]["text"])
+
+    # 1. Absent: ordinary, silent, exactly three keys.
+    assert not store.exists()
+    assert await _status() == {"ok": True, "standing": [], "history": []}
+    assert pse.health_issues() == []
+
+    # 2. Live malformed store: the status assertion comes FIRST so the base
+    #    fails behaviourally (it answers the healthy-empty envelope).
+    store.write_bytes(b'{"schema_version":4,')
+    status = await _status()
+    assert status["ok"] is True
+    assert status["history"] == []
+    assert status["history_unavailable"] == (
+        "the plugin setup history could not be read (malformed), "
+        "so the entries below are not the full record")
+    assert store.read_bytes() == b'{"schema_version":4,'   # read-only tool
+    read = pse.read_episodes()
+    assert read.rows == []
+    assert read.damage == "malformed"
+    assert read.reset == {"damage": "malformed", "ts": _T0}
+    assert pse.health_issues() == [{
+        "kind": "setup_history_unavailable", "plugin": "*",
+        "artifact_id": None, "episode": None,
+        "detail": ("the plugin setup history could not be read; "
+                   "entries recorded before the damage are lost")}]
+    r_live = _regen_into(monkeypatch, health, registered=[])
+    assert len(r_live["issues"]) == 1
+    live_row = r_live["issues"][0]
+    assert (live_row["name"], live_row["target"], live_row["stage"],
+            live_row["reason_code"], live_row["artifact_id"]) == (
+        "*", None, "setup", "setup_history_unavailable", None)
+
+    # 3. A REAL writer replaces the damaged file and carries the reset with it.
+    assert pse.open_round(plugin="writer", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["schema_version"] == 4
+    assert disk["reset"] == {"damage": "malformed", "ts": _T0}
+    read = pse.read_episodes()
+    assert read.damage == "reset"
+    assert read.reset == {"damage": "malformed", "ts": _T0}
+    status = await _status()
+    assert status["history"] == []
+    assert status["history_unavailable"] == (
+        "the plugin setup history was reset after malformed damage at "
+        "2023-11-14T22:13:20+00:00, so entries recorded before then are lost, "
+        "so the entries below are not the full record")
+    r_reset = _regen_into(monkeypatch, health, registered=[])
+    assert len(r_reset["issues"]) == 1
+    assert r_reset["issues"][0]["fingerprint"] == live_row["fingerprint"]
+    assert r_reset["issues"][0]["detail"] == live_row["detail"]
+
+    # 4. Partial read: readable rows survive, the loss is disclosed ONCE.
+    partial = tmp_path / "partial.json"
+    monkeypatch.setattr(pse, "STORE_PATH", partial)
+    a, b = _valid_row("a"), _valid_row("b")
+    _write_store(partial, [a, "junk", b])
+    read = pse.read_episodes()
+    assert read.rows == [a, b]
+    assert read.damage == "incomplete"
+    assert read.reset["damage"] == "incomplete"
+    assert pse.open_round(plugin="writer", artifact_id="a", identities=[]) == {}
+    disk = json.loads(partial.read_text(encoding="utf-8"))
+    assert disk["episodes"] == [a, b]
+    assert disk["reset"] == {"damage": "incomplete", "ts": _T0}
+    status = await _status()
+    assert len(status["history"]) == 2
+    assert "history_unavailable" in status
+    r_partial = _regen_into(monkeypatch, health, registered=["a", "b"])
+    assert len(_global_rows(r_partial)) == 1
+    assert len([d for d in r_partial["issues"] if d["stage"] == "setup"]) == 3
+
+    # 5. A directory is UNREADABLE, never relabelled malformed.
+    as_dir = tmp_path / "store-is-a-dir"
+    as_dir.mkdir()
+    monkeypatch.setattr(pse, "STORE_PATH", as_dir)
+    assert pse.read_episodes().damage == "unreadable"
+    assert "history_unavailable" in await _status()
+    assert [r["kind"] for r in pse.health_issues()] == [
+        "setup_history_unavailable"]
+
+    # 6. Decay: the persisted reset stops being reported after the health
+    #    window, and the next writer prunes the record.
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    clock["t"] = _T0 + pse._HEALTH_DECAY_S + 1
+    assert pse.read_episodes().damage is None
+    assert pse.health_issues() == []
+    r_decayed = _regen_into(monkeypatch, health, registered=[])
+    assert r_decayed["issues"] == []
+    assert await _status() == {"ok": True, "standing": [], "history": []}
+    assert pse.open_round(plugin="writer", artifact_id="a", identities=[]) == {}
+    assert "reset" not in json.loads(store.read_text(encoding="utf-8"))
+
+    # 7. A reset record that is not well-formed is ignored and pruned.
+    clock["t"] = _T0
+    bad = tmp_path / "bad-reset.json"
+    monkeypatch.setattr(pse, "STORE_PATH", bad)
+    for record in ({"damage": "weird", "ts": _T0},
+                   {"damage": "malformed", "ts": True},
+                   {"damage": "malformed", "ts": float("nan")},
+                   {"damage": "malformed", "ts": float("inf")},
+                   {"damage": "malformed", "ts": float("-inf")},
+                   {"damage": "malformed", "ts": 1e18},
+                   "not-a-mapping"):
+        _write_store(bad, [], reset=record)
+        read = pse.read_episodes()
+        assert read.damage is None, record
+        assert read.reset is None, record
+        assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+        assert "reset" not in json.loads(bad.read_text(encoding="utf-8")), record
+    assert clock["t"] == _T0
+    assert plugin_health.load_report(health) is not None
+
+
+@pytest.mark.asyncio
+async def test_undecodable_store_bytes_are_malformed_never_a_raise(
+        tmp_path, monkeypatch):
+    """Review round 1 (sol): `UnicodeDecodeError` is a `ValueError`, not an
+    `OSError`, so a decode outside the malformed guard let bytes that are not
+    UTF-8 RAISE out of `_load()` — which the base never did — and the health
+    merge's own guard then swallowed the raise, publishing no global row while
+    the writer left the damaged file in place. Pins both surfaces and the
+    writer's replacement for that exact byte shape."""
+    import agent as agent_mod
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    health.write_text(json.dumps({"schema_version": 1, "issues": [],
+                                  "warnings": [], "notified_fingerprints": []}),
+                      encoding="utf-8")
+    store.write_bytes(b"\xff\xfe{\"schema_version\": 4}")
+
+    assert pse._load() == {"schema_version": 4, "rounds": {}, "episodes": [],
+                           "reset": {"damage": "malformed", "ts": _T0}}
+    read = pse.read_episodes()
+    assert (read.rows, read.damage) == ([], "malformed")
+    assert [r["kind"] for r in pse.health_issues()] == [
+        "setup_history_unavailable"]
+    out = await tools.plugin_status.handler({})
+    status = json.loads(out["content"][0]["text"])
+    assert status["history_unavailable"] == (
+        "the plugin setup history could not be read (malformed), "
+        "so the entries below are not the full record")
+    report = _regen_into(monkeypatch, health, registered=[])
+    assert [d["reason_code"] for d in report["issues"]] == [
+        "setup_history_unavailable"]
+    assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["reset"] == {"damage": "malformed", "ts": _T0}
+    assert disk["episodes"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_timestamp_on_one_row_hides_no_other_row(
+        tmp_path, monkeypatch):
+    """Gate review (sol): a mapping-shaped row whose `updated_ts` is not a
+    number raised inside `health_issues()`, the health merge swallowed it, and
+    the report carried NO setup row — the valid pending obligation beside it
+    vanished from the standing surface. Now the bad stamp reads as oldest (the
+    status tool's own rule): the terminal row decays, the pending row stands,
+    nothing raises, and the store is not misreported as damaged (its rows are
+    all readable mappings)."""
+    import agent as agent_mod
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    bad = _valid_row("bad")
+    bad["updated_ts"] = "not-a-number"
+    pending = _valid_row("good")
+    pending["status"] = "pending"
+    _write_store(store, [bad, pending])
+
+    read = pse.read_episodes()
+    assert (len(read.rows), read.damage, read.reset) == (2, None, None)
+    rows = pse.health_issues()
+    assert [(r["kind"], r["plugin"]) for r in rows] == [
+        ("setup_episode_pending", "good")]
+    report = _regen_into(monkeypatch, health, registered=["bad", "good"])
+    assert [(d["name"], d["reason_code"]) for d in report["issues"]] == [
+        ("good", "setup_episode_pending")]
+    out = await tools.plugin_status.handler({})
+    status = json.loads(out["content"][0]["text"])
+    assert len(status["history"]) == 2
+    assert "history_unavailable" not in status
+
+
+@pytest.mark.parametrize("stamp", [10 ** 400, float("inf"), float("-inf"),
+                                   float("nan"), [1], {"t": 1}])
+def test_any_unconvertible_or_non_finite_timestamp_reads_as_oldest(
+        tmp_path, monkeypatch, stamp):
+    """Gate review round 2 (sol): an int too large for a float raises
+    OverflowError — not ValueError — so a class-list catch was the wrong
+    shape, and infinities compared fine but never decayed. The rule is now
+    total: any conversion failure and any non-finite value is the OLDEST time,
+    so the terminal row decays and the pending row beside it still stands,
+    with no raise reaching the health merge."""
+    store = tmp_path / "plugin-setup-episodes.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    bad = _valid_row("bad")
+    bad["updated_ts"] = stamp
+    pending = _valid_row("good")
+    pending["status"] = "pending"
+    store.write_text(json.dumps({"schema_version": 4, "rounds": {},
+                                 "episodes": [bad, pending]}),
+                     encoding="utf-8")
+    assert pse._stamp(stamp) == 0.0
+    assert [(r["kind"], r["plugin"]) for r in pse.health_issues()] == [
+        ("setup_episode_pending", "good")]
+    import tools
+    assert tools._status_sort_key({"updated_ts": stamp}) == 0.0
+
+
+@pytest.mark.parametrize("stamp", [10 ** 400, float("inf"), float("nan"),
+                                   True, "1700000000", [1]])
+def test_a_reset_record_with_an_unconvertible_timestamp_is_ignored_not_raised(
+        tmp_path, monkeypatch, stamp):
+    """Gate review round 3 (sol): `math.isfinite(10**400)` itself raises
+    OverflowError, so a hand-edited reset record escaped the never-raising
+    reader, `read_episodes()`/`health_issues()` raised, the merge published no
+    setup row, and `ensure_obligation()` returned False — disclosure AND
+    recovery disabled by one bad number. Every number read from the store now
+    passes through one total conversion: the record is ignored and pruned,
+    the rows stand, and the writer keeps working."""
+    store = tmp_path / "plugin-setup-episodes.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    pending = _valid_row("good")
+    pending["status"] = "pending"
+    _write_store(store, [pending], reset={"damage": "malformed", "ts": stamp})
+    read = pse.read_episodes()
+    assert (read.rows, read.damage, read.reset) == ([pending], None, None)
+    assert [(r["kind"], r["plugin"]) for r in pse.health_issues()] == [
+        ("setup_episode_pending", "good")]
+    assert pse.ensure_obligation(plugin="good", artifact_id="art-1") is True
+    # ensure_obligation returns early for an already-pending row and saves
+    # nothing; a writer that always saves is what prunes the record.
+    assert pse.open_round(plugin="good", artifact_id="art-1", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert "reset" not in disk
+    assert disk["episodes"] == [pending]
+    assert pse._finite(stamp) is None
+
+
+# ---------------------------------------------------------------------------
+# Candidate review finding (sol, S2): a MAPPING-shaped row that is not an
+# episode. `_normalize` dropped only rows that were not mappings, so `{}` — or
+# any mapping without the fields the code needs to identify, classify or write
+# back to a row — was kept as a readable episode: `dropped` stayed zero, the
+# read was not `incomplete`, both reporting surfaces were silent, and the next
+# writer persisted the row as if it were history. Structurally unusable rows
+# are damage; tolerable field damage stays tolerated (the gate-review ruling on
+# a malformed timestamp).
+# ---------------------------------------------------------------------------
+
+def _without(row, key):
+    return {k: v for k, v in row.items() if k != key}
+
+
+def _both_surfaces(tmp_path, monkeypatch):
+    """A real store at ``tmp_path``, the clock pinned, and a caller for the
+    status tool. Returns ``(store, health, status)``."""
+    import agent as agent_mod
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    health.write_text(json.dumps({"schema_version": 1, "issues": [],
+                                  "warnings": [], "notified_fingerprints": []}),
+                      encoding="utf-8")
+
+    async def status():
+        out = await tools.plugin_status.handler({})
+        return json.loads(out["content"][0]["text"])
+
+    return store, health, status
+
+
+_UNUSABLE_ROWS = [
+    pytest.param({}, id="empty-mapping"),
+    pytest.param({"note": "hand edit", "when": _T0}, id="only-unknown-keys"),
+    pytest.param(_without(_valid_row("x"), "plugin"), id="no-identity"),
+    pytest.param(_without(_valid_row("x"), "status"), id="no-state"),
+    pytest.param(_without(_valid_row("x"), "id"), id="no-handle"),
+    pytest.param(dict(_valid_row("x"), plugin=["x"]),
+                 id="identity-not-a-string"),
+    pytest.param(dict(_valid_row("x"), plugin=""), id="identity-empty"),
+    pytest.param(dict(_valid_row("x"), status="bogus"), id="state-unknown"),
+    pytest.param(dict(_valid_row("x"), status=7), id="state-not-a-string"),
+    pytest.param(dict(_valid_row("x"), id=""), id="handle-empty"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unusable", _UNUSABLE_ROWS)
+async def test_a_mapping_row_that_is_not_an_episode_is_dropped_and_disclosed(
+        tmp_path, monkeypatch, unusable):
+    """A mapping lacking the row's identity (`plugin`), state (`status`) or
+    handle (`id`) cannot be matched, classified or written back to by any
+    consumer, so it is not an episode: it is dropped like a non-mapping, the
+    read is `incomplete`, and the existing incomplete paths carry it — the
+    status tool's arm, the standing report's registry-global row, and the
+    writer's reset record — with the valid row beside it kept."""
+    store, health, status = _both_surfaces(tmp_path, monkeypatch)
+    good = _valid_row("good")
+    good["status"] = "pending"
+    _write_store(store, [unusable, good])
+
+    read = pse.read_episodes()
+    assert read.damage == "incomplete"
+    assert read.rows == [good]
+    assert read.reset == {"damage": "incomplete", "ts": _T0}
+    # A read is read-only: the damaged bytes are still on disk.
+    assert json.loads(store.read_text(encoding="utf-8"))["episodes"] == [
+        unusable, good]
+
+    # Standing surface: the valid pending row AND exactly one global row.
+    assert [(r["kind"], r["plugin"]) for r in pse.health_issues()] == [
+        ("setup_episode_pending", "good"),
+        ("setup_history_unavailable", "*")]
+    report = _regen_into(monkeypatch, health, registered=["good"])
+    assert len(_global_rows(report)) == 1
+    assert sorted((d["name"], d["reason_code"]) for d in report["issues"]) == [
+        ("*", "setup_history_unavailable"), ("good", "setup_episode_pending")]
+
+    # Status tool: the incomplete arm, exactly as any other incomplete read.
+    out = await status()
+    assert len(out["history"]) == 1 and out["history"][0].startswith("good:")
+    assert out["history_unavailable"] == (
+        "the plugin setup history could not be read (incomplete), "
+        "so the entries below are not the full record")
+
+    # The writer's path: the unusable row is NOT persisted, the reset IS, and
+    # the disclosure stands on both surfaces after the replacement.
+    assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["episodes"] == [good]
+    assert disk["reset"] == {"damage": "incomplete", "ts": _T0}
+    assert pse.read_episodes().damage == "reset"
+    assert [r["kind"] for r in pse.health_issues()] == [
+        "setup_episode_pending", "setup_history_unavailable"]
+    assert "history_unavailable" in await status()
+
+
+def test_dropping_an_unusable_row_loses_no_obligation(tmp_path, monkeypatch):
+    """The gate review kept a row whose only defect was its timestamp because
+    dropping it would lose a valid pending obligation. Dropping a row the
+    worker cannot write back to loses nothing: a released pending row with no
+    `id` would raise on every kick and could never be repaired, whereas once
+    dropped the reconciler's level-triggered `ensure_obligation` re-creates
+    the obligation with a handle — and the loss is disclosed."""
+    store = tmp_path / "plugin-setup-episodes.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    headless = _without(_valid_row("x"), "id")
+    headless.update({"status": "pending", "gate": "released"})
+    _write_store(store, [headless])
+
+    assert pse.read_episodes().damage == "incomplete"
+    assert pse.episodes("pending") == []
+    assert pse.ensure_obligation(plugin="x", artifact_id="art-1") is True
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["plugin"] == "x" and rows[0]["status"] == "pending"
+    assert isinstance(rows[0]["id"], str) and rows[0]["id"]
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert [e["id"] for e in disk["episodes"]] == [rows[0]["id"]]
+    assert disk["reset"] == {"damage": "incomplete", "ts": _T0}
+    assert pse.read_episodes().damage == "reset"
+
+
+_TOLERABLE_ROWS = [
+    pytest.param(dict(_valid_row("t"), updated_ts="not-a-number"),
+                 id="garbage-timestamp"),
+    pytest.param(dict(_valid_row("t"), updated_ts=10 ** 400),
+                 id="overflowing-timestamp"),
+    pytest.param({"id": "e-t", "plugin": "t", "status": "pending"},
+                 id="only-the-essential-fields"),
+    pytest.param(dict(_valid_row("t"), unexpected={"nested": [1, 2]}),
+                 id="extra-unknown-field"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tolerable", _TOLERABLE_ROWS)
+async def test_tolerable_field_damage_on_a_row_is_kept_and_not_disclosed(
+        tmp_path, monkeypatch, tolerable):
+    """The guard against over-tightening: a row with a valid identity, state
+    and handle is an episode whatever else it carries or lacks. It is kept,
+    the read is undamaged, neither surface discloses anything, and the writer
+    persists it unchanged with no reset record."""
+    store, health, status = _both_surfaces(tmp_path, monkeypatch)
+    good = _valid_row("good")
+    good["status"] = "pending"
+    _write_store(store, [tolerable, good])
+
+    read = pse.read_episodes()
+    assert (read.rows, read.damage, read.reset) == ([tolerable, good], None,
+                                                    None)
+    assert [r for r in pse.health_issues() if r["plugin"] == "*"] == []
+    report = _regen_into(monkeypatch, health, registered=["t", "good"])
+    assert _global_rows(report) == []
+    out = await status()
+    assert len(out["history"]) == 2
+    assert "history_unavailable" not in out
+    assert pse.open_round(plugin="w", artifact_id="a", identities=[]) == {}
+    disk = json.loads(store.read_text(encoding="utf-8"))
+    assert disk["episodes"] == [tolerable, good]
+    assert "reset" not in disk

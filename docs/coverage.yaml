@@ -167,6 +167,8 @@
   doc: architecture/plugin-runtime.md
 - item: casa/rootfs/opt/casa/plugin_registry.py
   doc: architecture/plugins.md
+- item: casa/rootfs/opt/casa/plugin_routing_recovery.py
+  doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/plugin_setup_episodes.py
   doc: architecture/plugin-setup.md
 - item: casa/rootfs/opt/casa/plugin_store.py

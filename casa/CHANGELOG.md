@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.250.0] - 2026-09-01
+
+### Fixed
+
+- Plugin webhook and callback routing that failed to compute for a transient
+  reason now repairs itself. When either routing table could not be built,
+  Casa closed it — incoming plugin webhooks and callbacks were held back, and
+  an automatic setup waiting on its route kept waiting — and nothing reopened
+  it until a person or an agent happened to reload something. A scheduled
+  check now notices a closed table and recomputes both tables together, from
+  what is actually running, within five minutes, without asking anyone
+  anything. A failure that keeps happening does not turn into a stream of
+  notices: the plugin health report is rewritten with the same rows and
+  nothing new is announced.
+- The plugin status tool and the plugin health report now say when the record
+  of past automatic plugin setups on disk could not be read, or had to be
+  reset, instead of showing an empty history as if nothing had ever happened.
+  Until now a damaged record looked exactly like an empty one on both
+  surfaces, and the first setup that ran afterwards quietly replaced it. A
+  record with one malformed entry no longer hides every other entry, an entry
+  that is not a setup entry at all is treated as damage and disclosed rather
+  than read as history, and a record that was reset says so for as long as a
+  failed setup would stay in the health report. A record that does not exist
+  yet still reads as an empty history.
+
 ## [0.249.0] - 2026-09-01
 
 ### Fixed

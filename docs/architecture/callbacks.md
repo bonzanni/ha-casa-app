@@ -133,7 +133,10 @@ claim that nothing should route, and a pass that computed nothing has not earned
 registry that could not be read reaches the same marker, because that case returns normally
 rather than raising. Ingress is closed identically either way — `/callback/{name}` 404s —
 and both halves of this pair publish the same marker from the same reconcile, since a trigger
-revoke can shift callback assignment too.
+revoke can shift callback assignment too. Reopening is paired the same way: while either
+marker stands, the scheduled recovery pass [`plugin-triggers.md`](plugin-triggers.md)
+describes recomputes both halves together, so a transient failure does not leave this half
+shut until an operator action.
 
 ## Extension points
 

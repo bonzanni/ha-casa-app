@@ -93,6 +93,28 @@ health pass. A one-shot failure produces the first alone: the regeneration happe
 failure is consumed, and its recomputation is independent and succeeds. Only a failure that
 persists produces both.
 
+**INV-TRIG-015**: A plugin routing overlay left carrying the unavailable marker is recomputed by Casa itself on a bounded interval, from the live runtime, for both halves together and without prompting, with no human or agent action; a recomputation that keeps failing republishes the marker and announces nothing new.
+
+The marker is fail-closed for every consumer, and until this rule it had no fail-closed
+producer: every path that reconciles — boot, the plugin mutation tools, the reload entry
+points, the specialist-bundle sequencer, the consent taps — is something a human or an agent
+does, so a transient compute failure left plugin webhook and callback ingress shut, and any
+released setup obligation waiting on its route, until someone happened to touch the system.
+The producer is one scheduled pass every five minutes — the same cadence the event
+half's own recovery job uses — that probes both markers and, while either stands, runs one
+coalesced recovery task. That task heals the two halves together, triggers then callbacks,
+in the order every existing paired producer uses; two independent tasks would run the
+reconciles concurrently, and both seal setup rounds. It takes the plugin-tools guard before
+either reconcile lock — the direction every mutation tool already takes — so it can never
+interleave between a mutation's registry commit and that mutation's own reconcile, and it
+regenerates health once after every attempt, so a heal clears the routing rows at once and
+a half that newly fails gains its row at once. A failure that persists costs one log line
+and one identical report per pass; the report's fingerprints do not change, so nothing is
+announced again. What this does not cover: the setup route gate reads recomputed state and
+durable artifacts, not the applied markers, so a released obligation can pass it while one
+half of the pair is still being recomputed — a pre-existing gap of that gate, tracked in its
+own issue, not of the recovery.
+
 ## Failure behavior
 
 **Reconciliation raises.** The overlay is replaced before the exception propagates, so a
@@ -111,9 +133,11 @@ returns NORMALLY, with an empty overlay and no exception, so publishing what cam
 have quietly asserted authority no one had. Only a computation that got past the registry
 check may publish a map.
 
-Recovery is unchanged: the next successful reconcile — a boot, a plugin mutation, a reload,
-a later consent action — publishes an authoritative set. Nothing else reopens routing on its
-own, exactly as before.
+Recovery has two doors. The next successful reconcile — a boot, a plugin mutation, a
+reload, a later consent action — publishes an authoritative set. And Casa retries on its
+own: while either marker stands, the scheduled recovery pass recomputes both halves from the
+live runtime, prompt-free (INV-TRIG-015), so a failure whose cause has cleared repairs
+itself without anyone touching the system.
 
 **A secret cannot be minted.** That plugin's whole set fails closed — every one of its
 routes drops out of the overlay, rather than some routing without a usable credential. One
@@ -155,6 +179,7 @@ those leaves the old overlay live until a covered scope runs.
 - `casa/rootfs/opt/casa/trigger_consent.py`
 - `casa/rootfs/opt/casa/plugin_triggers.py::parse_and_validate`
 - `casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry.replace_plugin_overlay`
+- `casa/rootfs/opt/casa/plugin_routing_recovery.py`
 
 **Tests**
 - `tests/test_plugin_triggers_reconcile.py`

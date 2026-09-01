@@ -38,8 +38,7 @@ so the tool now adds a conditional statement naming what it could not see —
 `standing_unavailable`, `history_unavailable`, `routing_unavailable`. They are conditional
 rather than always present, so the healthy answer keeps exactly the keys it always had;
 `ok` stays true, because a partial answer honestly labelled is still a successful read.
-See [`plugin-health.md`](plugin-health.md) for which conditions each one covers, and for
-the one it does not.
+See [`plugin-health.md`](plugin-health.md) for which conditions each one covers.
 
 **Plugin mutation is persist-then-converge.** Identity, source and requirement guards run
 before the registry is touched; after the registry commits, reload and verification try to
@@ -226,11 +225,10 @@ success with nothing on screen.
 names the store in the result — `standing_unavailable`, `history_unavailable`,
 `routing_unavailable` — rather than letting it reach the agent as an empty list that reads
 as health; `ok` stays true, because a partial answer honestly labelled is still a successful
-read. Where the failure is absorbed below the tool the marker is simply absent, and its
-absence is not a claim that the answer is complete: a setup-episode store that fails to load
-is reset to an empty one underneath, so the tool reads zero rows successfully and cannot
-tell that from a box where no setup has ever run. Which conditions each marker covers, and
-the one it does not, is in [`plugin-health.md`](plugin-health.md).
+read. Which conditions each marker covers is defined in [`plugin-health.md`](plugin-health.md)
+— for the history, INV-PLUG-015: a setup-episode store that cannot be read as a valid store
+is disclosed, and so is the reset a writer performs on it, while an absent store stays
+silent.
 
 ## Extension points
 
