@@ -751,12 +751,27 @@ def mint_resident_secret(name: str, *, secrets_dir: Path, role: str) -> bytes | 
             # since a readable slot is never re-minted. So: if this attempt's
             # bytes are the live ones, keep the proof and report the
             # durability fault; only a slot that was never linked is unwound.
-            if _read_raw_tri(name, secrets_dir)[0] == value:
+            #
+            # The rule, generalised (review rounds 2-3): proof is removed only
+            # on AFFIRMATIVE evidence that the name is absent or holds other
+            # bytes. An inspection that cannot read the name now proves
+            # nothing either way, so the receipt stands and the fault is
+            # re-raised — a stray receipt certifies nothing without matching
+            # bytes, and the next pass finds either a certified slot or an
+            # absent one to mint into.
+            raw, unavailable = _read_raw_tri(name, secrets_dir)
+            if raw == value:
                 logging.getLogger(__name__).warning(
                     "webhook secret %r was published but its directory could "
                     "not be synced (%s); the slot and its receipt stand",
                     name, exc)
                 return _read_final(name, "casa", secrets_dir)
+            if unavailable:
+                logging.getLogger(__name__).warning(
+                    "webhook secret %r: publish failed (%s) and the slot cannot "
+                    "be read back; its receipt is kept until the next pass can "
+                    "tell", name, exc)
+                raise
             _remove_receipt_if_exactly(name, mine, secrets_dir)
             raise
         if not won:

@@ -399,6 +399,44 @@ def test_a_directory_sync_fault_after_the_link_keeps_the_receipt(tmp_path: Path,
     assert (tmp_path / "vm").read_bytes() == minted
 
 
+def test_an_unreadable_post_link_inspection_keeps_the_receipt(tmp_path: Path, monkeypatch):
+    """#620 (review round 3): after a publish fault the mint inspects the live
+    name to decide whether its bytes were linked. An inspection that cannot
+    READ the name proves nothing either way; removing the receipt on it would
+    leave a live slot uncertified forever once the read recovers. Proof is
+    removed only on affirmative evidence; here the fault is re-raised (one
+    reported mint failure) and the receipt stands."""
+    import stat as _stat
+    real_os = webhook_auth.os
+    linked = []
+
+    def link(src, dst, **kw):
+        r = real_os.link(src, dst, **kw)
+        linked.append(dst)
+        return r
+
+    def fsync(fd):
+        if _stat.S_ISDIR(real_os.fstat(fd).st_mode) and linked:
+            raise OSError(5, "I/O error")          # the post-link directory sync
+        return real_os.fsync(fd)
+
+    def open_(path, *a, **kw):
+        if linked and os.path.basename(str(path)) == "vm":
+            raise OSError(5, "I/O error")          # the inspection cannot read
+        return real_os.open(path, *a, **kw)
+    monkeypatch.setattr(webhook_auth, "os", _ModuleShim(os, link=link, fsync=fsync, open=open_))
+
+    with pytest.raises(OSError):
+        webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path, role="assistant")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["vm", "vm.mint"]
+
+    monkeypatch.setattr(webhook_auth, "os", os)      # the fault clears
+    minted = (tmp_path / "vm").read_bytes()
+    assert webhook_auth.resident_secret_provenance("vm", secrets_dir=tmp_path) == "casa_minted"
+    assert webhook_auth.read_certified_secret("vm", role="assistant", secrets_dir=tmp_path) == minted
+    assert rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path, role="assistant") == []
+
+
 def test_a_repeated_mint_changes_nothing(tmp_path: Path):
     first = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path, role="assistant")
     before = {p.name: (p.read_bytes(), p.stat().st_ino) for p in tmp_path.iterdir()}
