@@ -2182,7 +2182,12 @@ class Agent:
         # it is bundle-bound — every resident is, from first boot. A shell
         # redirect from the CLI child would otherwise be committed and reported
         # live while the prompt digest never moves.
+        # #631: and its own prompts/system.md, for the same reason one file
+        # over — the composed prompt it feeds is not what a bundle-bound
+        # resident is served, so an edit is committed and reported live while
+        # the served prompt's digest never moves.
         from hooks import (
+            resident_prompt_write_guard_matcher,
             response_shape_write_guard_matcher,
             trigger_file_write_guard_matcher,
         )
@@ -2191,6 +2196,7 @@ class Agent:
             agent_home_settings_guard_matcher(),
             trigger_file_write_guard_matcher(),
             response_shape_write_guard_matcher(),
+            resident_prompt_write_guard_matcher(),
         ]
 
         # Unified plugin architecture: the resolver turns this agent's

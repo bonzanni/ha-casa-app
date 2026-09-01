@@ -656,9 +656,12 @@ as errored and tells you to start a fresh one.
   memory.
 - **Ellen doesn't narrate completion in the main chat.**
   Ellen receives the `ENGAGEMENT_COMPLETION` notification but chooses
-  how to surface it based on her system prompt. If you want louder
-  narration, edit `prompts/system.md` in Ellen's agent folder and
-  restart.
+  how to surface it based on the prompt she is actually served — which
+  is compiled from her persona and her role, not from any file in her
+  agent folder. Editing `prompts/system.md` there does nothing (Casa
+  refuses the edit through its file tools rather than letting it look
+  like it worked, and an edit made any other way is just as inert);
+  how loudly she narrates is part of her persona.
 
 ## Configurator (v0.12.0)
 
@@ -672,10 +675,11 @@ The `configurator` is the first Tier 3 Executor - knows Casa's configuration sur
 | Specialists from a repository (install/upgrade/rollback/uninstall) | yes | yes | yes | yes |
 | Resident agents (Tier 1) | rare | yes | yes | blocked by default |
 | Per-agent YAMLs | yes | yes | yes | yes |
-| Per-agent prompts | yes | yes | yes | yes |
+| Per-agent prompts (executor prose, per-trigger prompts) | yes | yes | yes | yes |
+| A resident's `prompts/system.md` | - | yes | **no** (not served; a file-tool edit is refused) | - |
 | Triggers (cron, interval, webhook) | yes | yes | yes | yes |
 | Delegate wiring | yes | yes | yes | yes |
-| Policies (disclosure) | - | yes | yes | - |
+| Policies (disclosure) | - | yes | yes (but reaches no served prompt today) | - |
 | Plugins (registry + store) | yes | yes | yes | yes |
 
 Plugin management uses the registry tools (`plugin_add`, `plugin_update`,
@@ -711,8 +715,11 @@ Ellen opens a topic `#[configurator] <short task>` in your engagement supergroup
 
 - hard - Supervisor app restart (~10-15s). Agent-shape changes, runtime, policy corpus.
 - soft - In-process casa_reload_triggers(role). Trigger-only edits; no downtime.
-- none - Prompt and doctrine edits take effect on the next turn. (How a resident
-  writes or speaks is not a config edit at all — that comes from its persona.)
+- none - An executor's prompt and doctrine edits take effect on that executor's
+  next fresh session, not necessarily the next turn. A resident's per-trigger
+  prompt file needs the soft reload above. (How a resident writes, speaks or
+  behaves is not a config edit at all — that comes from its persona and from
+  the role doctrine Casa ships.)
 
 Hard reload: Ellen verifies the reload landed on her resumed turn, then narrates.
 

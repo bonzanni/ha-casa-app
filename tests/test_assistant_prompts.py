@@ -552,7 +552,14 @@ WIPE_REFUSAL_ANCHORS = (
     "terminal, and state that the wipe is irreversible.",
 )
 
-_RESIDENT_SLOTS = ("assistant", "butler", "concierge")
+def _resident_slots() -> tuple[str, ...]:
+    """Derived, never hand-listed: a fourth resident slot must widen every
+    carrier assertion below automatically, not silently leave it behind."""
+    from role_slot import FIXED_RESIDENT_SLOTS
+    return FIXED_RESIDENT_SLOTS
+
+
+_RESIDENT_SLOTS = _resident_slots()
 
 
 def _casa_root() -> Path:
@@ -624,3 +631,61 @@ def test_every_shipped_resident_refuses_an_unavailable_memory_wipe_honestly():
                    for _name, text in legacy) == 3
         assert sum(_collapse_ws(text).count(_collapse_ws(anchor)) != 1
                    for _name, text in legacy) == 0
+
+
+# ---------------------------------------------------------------------------
+# #652 red case — INV-PERS-015.
+#
+# The resident's live prompt IS the compiled bundle, and at the base that
+# bundle carries no credential-handling rule and no disclosure section at all:
+# `policies.render_disclosure_section` has exactly one caller,
+# `agent_loader._compose_prompt`, whose output no bundle-bound agent is served.
+# That is WHY the disclosure policy's "credentials" category — which in any
+# case sits at `required_trust: authenticated`, i.e. permits the operator's own
+# DM — never constrained the resident.
+#
+# The rule therefore has to live on a surface that is actually compiled.
+# `defaults/personality/safety-kernel.md` is the only image-owned input carried
+# into every resident projection AND every bound specialist's, and it is not an
+# input to `role_slot.compute_role_checksum`, so stating it there moves every
+# projection digest without invalidating a single persisted binding.
+#
+# Specified by the red-case reviewer (Terra), 2026-08-30, before any production
+# change. This DECLARES an invariant (D34) rather than pinning a prior one: it
+# asserts presence in the served prompt, and asserts nothing about enforcement.
+# ---------------------------------------------------------------------------
+
+CREDENTIAL_RULE_ANCHORS = (
+    "A credential-bearing artifact a tool returns is a capability",
+    "An earlier agreement to fetch or send is not authority for the next one",
+)
+
+
+@pytest.mark.parametrize("anchor", CREDENTIAL_RULE_ANCHORS)
+def test_every_resident_projection_carries_the_credential_rule_exactly_once(
+    anchor,
+) -> None:
+    """Pins INV-PERS-015.
+
+    RED pre-fix: both anchors occur zero times in the safety kernel, so the
+    tuple is (0, 0, 9) — the rule is absent from every one of the nine served
+    projections. That, not a fixture or import problem, is the intended
+    failure.
+
+    Exactly-once rather than at-least-once: `compile_projection_set` selects
+    doctrine sections by containment and appends the kernel per surface, so a
+    duplicate would be evidence the assembly changed shape.
+    """
+    compiled = _compiled_resident_carriers()
+    assert len(compiled) == 9
+
+    needle = _collapse_ws(anchor)
+    counts = [_collapse_ws(text).count(needle) for _name, text in compiled]
+    kernel = (_casa_root() / "defaults/personality/safety-kernel.md").read_text(
+        encoding="utf-8")
+
+    assert (
+        _collapse_ws(kernel).count(needle),
+        sum(1 for c in counts if c == 1),
+        sum(1 for c in counts if c != 1),
+    ) == (1, 9, 0)

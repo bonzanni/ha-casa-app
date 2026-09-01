@@ -1727,6 +1727,36 @@ def _build_specialist_options(
         agent_home_settings_guard_matcher(),
     ]
 
+    # #631: this builder routes DELEGATED RESIDENTS as well as specialists —
+    # `delegate_to_agent` sends e.g. butler through here (see the tier
+    # resolution below, and Sol #12's comment on it). A delegated resident with
+    # Bash reaches its own agent home, so it needs the same agent-home write
+    # guards a direct resident turn gets (agent.py step 4) — and this builder
+    # has never carried any of them, which is a hole #403 and #610 left open
+    # here while closing it on the two wired paths.
+    #
+    # TIER-AWARE, and that is load-bearing rather than tidiness: the
+    # trigger-file and response-shape guards decide their Bash half on a BARE
+    # BASENAME anywhere in the command, so an actual specialist that inherited
+    # them would be refused for writing its own `triggers.yaml` or
+    # `response_shape.yaml` inside /data/engagements (measured: 2 of 2 denied,
+    # while the equivalent Write calls were 2 of 2 allowed). An unresolvable
+    # tier falls back to "specialist", i.e. to the behaviour before this
+    # change, which is the conservative direction for a false-refusal risk.
+    _hook_tier = (_agent_registry.tier_for_role(getattr(cfg, "role", "unknown"))
+                  if _agent_registry is not None else None) or "specialist"
+    if _hook_tier == "resident":
+        from hooks import (
+            resident_prompt_write_guard_matcher,
+            response_shape_write_guard_matcher,
+            trigger_file_write_guard_matcher,
+        )
+        resolved_hooks["PreToolUse"] += [
+            trigger_file_write_guard_matcher(),
+            response_shape_write_guard_matcher(),
+            resident_prompt_write_guard_matcher(),
+        ]
+
     # Unified plugin architecture (§3.3): resolve with the CONCRETE tier + role.
     # Sol #12: delegate_to_agent also routes RESIDENTS through this builder
     # (sync/async delegation of e.g. butler), so a hardcoded "specialist:"
@@ -1969,6 +1999,15 @@ def _build_executor_options(
     if not any(e.get("policy") == "response_shape_write_guard"
                for e in (hooks_cfg.pre_tool_use or [])):
         resolved_hooks["PreToolUse"].append(response_shape_write_guard_matcher())
+
+    # #631: agents/<role>/prompts/system.md is the same defect one file over,
+    # with a wider steering surface — five doctrine sites and DOCS.md routed
+    # behavioural instructions into it. Code-side for the same reason.
+    from hooks import resident_prompt_write_guard_matcher
+    if not any(e.get("policy") == "resident_prompt_write_guard"
+               for e in (hooks_cfg.pre_tool_use or [])):
+        resolved_hooks["PreToolUse"].append(
+            resident_prompt_write_guard_matcher())
 
     if plugin_paths is not None:
         sdk_plugins = [{"type": "local", "path": p} for p in plugin_paths]

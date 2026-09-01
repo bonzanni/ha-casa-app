@@ -120,6 +120,32 @@ def translate_hooks_to_settings(
             "hooks": [{"type": "command", "command": guard_cmd}],
         })
 
+    # #631: resident_prompt_write_guard is code-mandatory here too, and this
+    # is the OTHER half of the claude_code transport — hooks
+    # .build_policy_callbacks_from_hooks_yaml resolves the policy name this
+    # entry names. It routes the four file primitives only (no Bash — D36).
+    # Why it is emitted at all, given `path_scope`: the floor guarantees that
+    # `path_scope` is PRESENT, not what it admits — its `writable:` prefixes
+    # are the executor's own declaration (empty by default below; the shipped
+    # configurator declares `/config/agents`), so an executor whose
+    # declaration admits the resident tree would otherwise be refused by
+    # nothing, and this guard's denial names the corrective recipe where a
+    # scope denial cannot. Its two neighbours are deliberately NOT added here
+    # — their Bash halves match a bare basename anywhere in a command and
+    # would refuse an executor writing its own `triggers.yaml` under
+    # /data/engagements.
+    prompt_matcher = HOOK_POLICIES["resident_prompt_write_guard"]["matcher"]
+    prompt_cmd = f"{proxy_script_path} resident_prompt_write_guard"
+    if not any(
+        e.get("matcher") == prompt_matcher
+        and any(h.get("command") == prompt_cmd for h in e.get("hooks", []))
+        for e in pre
+    ):
+        pre.append({
+            "matcher": prompt_matcher,
+            "hooks": [{"type": "command", "command": prompt_cmd}],
+        })
+
     # Task 4 (#360): both containment-floor policies (block_dangerous_bash,
     # path_scope) must be present in every emitted PreToolUse block, exactly
     # like the mandatory guard above — a hollowed or repointed hooks.yaml

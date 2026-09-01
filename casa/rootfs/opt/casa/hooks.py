@@ -2115,6 +2115,195 @@ def response_shape_write_guard_matcher():
     )
 
 
+# ---------------------------------------------------------------------------
+# #631: agents/<role>/prompts/system.md
+#
+# The same defect as response_shape.yaml above, one file over, with a wider
+# steering surface. `character.yaml`'s `prompt_file:` pointer is read once at
+# load (`agent_loader._resolve_prose`), lands in `CharacterConfig.prompt`, and
+# becomes the FIRST part of `_compose_prompt`'s output — which is
+# `cfg.system_prompt`, and which a resident is served only on the no-bundle
+# arm. Every resident is bundle-bound from its first boot, because all three
+# role artifacts declare `persona.policy: required`. So the file is an input
+# to nothing a resident ever receives, and an edit here is committed and
+# reported live while the served prompt's digest is byte-identical.
+#
+# TWO DIRECTORY DEPTHS, not one — and this is the trap a verbatim copy of the
+# guard above falls into. `response_shape.yaml` sits directly in the role
+# directory, so its predicate is `p.parent.parent == _RESIDENT_ROOT`. This file
+# is `/config/agents/<role>/prompts/system.md`: the role directory is
+# `p.parent.parent` and the root is `p.parent.parent.parent`. A copied
+# two-parent predicate matches nothing at all, silently.
+#
+# `prompts/<trigger>.md` is deliberately NOT claimed. A scheduled trigger's
+# prose IS served — `agent_loader._build_triggers` resolves it at load and
+# `trigger_registry` captures it in the job closure — so an edit there is not
+# inert, only stale until `casa_reload_triggers`. Refusing it would be a false
+# claim, and the configurator's reload table now says so instead.
+#
+# Specialists and executors are not claimed either, for the reasons the guard
+# above gives in its own words: `agents/specialists/**` is managed state that
+# `managed_component_guard` already denies, and `TIER_FILES["executor"]`
+# FORBIDS this file outright (an executor's prose is its `prompt.md`).
+
+_RESIDENT_PROMPT_FILE_NAME = "system.md"
+_RESIDENT_PROMPTS_DIR_NAME = "prompts"
+_RESIDENT_PROMPT_WRITE_DENY = (
+    "resident_prompt_write_guard: {tool} blocked — {path!r} is not served to a "
+    "persona-bound resident (the loader reads it only into a composed fallback "
+    "prompt that the compiled bundle replaces), so editing it would be "
+    "committed and reported live while changing nothing the model sees. A "
+    "resident's base prompt is its COMPILED BUNDLE (the persona plus the role "
+    "artifact's doctrine and response block), not the composed prompt this "
+    "file feeds. What to do "
+    "instead depends on what was asked for: how it SOUNDS is its persona "
+    "(doctrine/recipes/persona/install.md then apply.md, then restart it); "
+    "what it can DO is a grant (doctrine/recipes/resident/grant_ha_tools.md, "
+    "recipes/plugin/, recipes/delegate/wire.md); and a standing BEHAVIOURAL "
+    "rule has no configuration surface at all — a resident's instructions are "
+    "its role doctrine, which ships inside the image and is never synced into "
+    "/config. Say that plainly rather than writing this file. Reading it is "
+    "fine — it is only the edit that would be a lie. If you meant a "
+    "SPECIALIST's copy, that tree is managed state and "
+    "managed_component_guard owns it."
+)
+
+_RESIDENT_PROMPT_RESOLVE_DENY = (
+    "resident_prompt_write_guard: {tool} blocked — could not resolve {path!r} "
+    "(realpath error); failing closed. A resident's instructions come from its "
+    "persona pack and its role doctrine; see doctrine/recipes/prompt/resident.md."
+)
+
+_RESIDENT_PROMPT_UNRESOLVABLE_DENY = (
+    "resident_prompt_write_guard: {tool} blocked — {path!r} is a relative path "
+    "and this call reported no working directory, so where it lands cannot be "
+    "established; failing closed. Give an absolute path."
+)
+
+_RESIDENT_PROMPT_INTERNAL_DENY = (
+    "resident_prompt_write_guard: internal error — failing closed; the call "
+    "was not executed."
+)
+
+
+def _is_resident_prompt_file(norm: str) -> bool:
+    """True iff ``norm`` (normalized, absolute) names
+    ``/config/agents/<role>/prompts/system.md`` for a SINGLE ``<role>``
+    segment — the resident tier only.
+
+    THREE parents, not two: ``p.parent`` is the prompts directory,
+    ``p.parent.parent`` is the role directory, and only ``p.parent.parent
+    .parent`` is ``_RESIDENT_ROOT``. The ``specialists``/``executors``
+    exclusion cannot fire at this depth (their layouts put another segment
+    between the root and the role directory, so the root test already fails);
+    it is kept for parity with the two guards above, and stated here as
+    redundant so a later reader does not take it for the thing that excludes
+    them.
+    """
+    p = PurePosixPath(norm)
+    if p.name != _RESIDENT_PROMPT_FILE_NAME:
+        return False
+    prompts = p.parent
+    if prompts.name != _RESIDENT_PROMPTS_DIR_NAME:
+        return False
+    role = prompts.parent
+    return (str(role.parent) == _RESIDENT_ROOT
+            and role.name not in ("", "specialists", "executors"))
+
+
+def make_resident_prompt_write_guard() -> HookCallback:
+    """Deny an agent's write of a resident's ``prompts/system.md``.
+
+    The file-tool half RESOLVES before it decides: the literal path is joined
+    against the session's own working directory (residents run from their agent
+    home, not ``/config``), lexically normalized, and — whatever that produced —
+    re-asked through ``realpath``, so a symlink whose own name is innocent is
+    caught by what it points at. That re-ask runs for a relative path exactly as
+    for an absolute one; a red-case round measured a guard that consulted
+    ``realpath`` only for absolute inputs and let ``alias.md`` through from
+    inside the prompts directory.
+
+    There is NO Bash half, and that is a ruling rather than an omission (D36,
+    2026-08-31). Its two neighbours decide a shell command by matching text in
+    it; a first cut of this guard did the same and was measured wrong in both
+    directions — it refused reads the invariant promises to allow (`cp` source,
+    `tar -cf` member, `<` redirection, `sed --file=`, `diff` operand) and
+    missed writes (an interior `..`, a `cp` destination composed from a
+    directory operand, `tar -xf -C`, a glob) — because what a shell command
+    writes to, and whether it writes, are not decidable from its text. So the
+    matcher routes the four file primitives only, this callback classifies no
+    command text, and a `Bash` payload that reaches it (it cannot, in
+    production) falls through to allow. The residual is exactly that: a
+    shell-capable agent can still make the edit, which is inert for a
+    bundle-bound resident. No shipped resident holds `Bash` and the
+    configurator has none; the plugin-developer's shell is the shipped path,
+    and an execution boundary over that tree is a separate decision.
+    """
+    async def _hook(
+        input_data: dict[str, Any],
+        tool_use_id: str | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            tool_name = input_data.get("tool_name", "")
+            reported_cwd = input_data.get("cwd")
+            cwd = str(reported_cwd or "/config")
+            if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                ti = input_data.get("tool_input", {})
+                raw = ti.get("file_path") or ti.get("notebook_path") or ""
+                if not reported_cwd and not raw.startswith("/"):
+                    return _deny(_RESIDENT_PROMPT_UNRESOLVABLE_DENY.format(
+                        tool=tool_name, path=raw))
+                norm = _normalize_path(
+                    raw if raw.startswith("/") else cwd.rstrip("/") + "/" + raw)
+                if _is_resident_prompt_file(norm):
+                    return _deny(_RESIDENT_PROMPT_WRITE_DENY.format(
+                        tool=tool_name, path=raw))
+                # A symlink whose lexical form is innocent but whose target is
+                # the file: resolve and re-ask. An unresolvable path that could
+                # be it fails closed.
+                try:
+                    real = os.path.realpath(norm)
+                except OSError:
+                    return _deny(_RESIDENT_PROMPT_RESOLVE_DENY.format(
+                        tool=tool_name, path=raw))
+                if _is_resident_prompt_file(_normalize_path(real)):
+                    return _deny(_RESIDENT_PROMPT_WRITE_DENY.format(
+                        tool=tool_name, path=raw))
+            return {}
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — fail closed, never let it escape
+            _logger.exception(
+                "resident_prompt_write_guard internal error — denying")
+            return _deny(_RESIDENT_PROMPT_INTERNAL_DENY)
+
+    return _hook
+
+
+def _resident_prompt_write_guard_factory(**kwargs: Any) -> HookCallback:
+    if kwargs:
+        raise ValueError(
+            f"resident_prompt_write_guard: unknown parameter(s) "
+            f"{list(kwargs)}; this policy takes none"
+        )
+    return make_resident_prompt_write_guard()
+
+
+def resident_prompt_write_guard_matcher():
+    """A ``HookMatcher`` wrapping :func:`make_resident_prompt_write_guard`,
+    injected CODE-SIDE into every executor session, every resident's, and every
+    DELEGATED resident's, for the reason its two neighbours give: ``hooks_file:``
+    is a config-editable pointer, so a yaml-only policy can be shed by an edit
+    the configurator is otherwise entitled to make."""
+    from claude_agent_sdk import HookMatcher
+    policy = HOOK_POLICIES["resident_prompt_write_guard"]
+    return HookMatcher(
+        matcher=policy["matcher"],
+        hooks=[policy["factory"]()],
+    )
+
+
 def _trigger_file_write_guard_factory(**kwargs: Any) -> HookCallback:
     if kwargs:
         raise UnknownPolicyError(
@@ -2908,6 +3097,14 @@ HOOK_POLICIES: dict[str, dict[str, Any]] = {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
         "factory": _response_shape_write_guard_factory,
     },
+    "resident_prompt_write_guard": {
+        # #631. The four file primitives, for the same routing reason as its
+        # two neighbours (a matcher that does not ROUTE MultiEdit/NotebookEdit
+        # lets those bypass the hook entirely) — and, unlike them, NOT Bash:
+        # the shell half was cut by ruling (D36); see the guard's docstring.
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "factory": _resident_prompt_write_guard_factory,
+    },
     "self_containment_guard": {
         "matcher": "Bash",
         "factory": _self_containment_guard_factory,
@@ -3112,6 +3309,29 @@ def build_policy_callbacks_from_hooks_yaml(
     if "managed_component_guard" not in out:
         policy = HOOK_POLICIES["managed_component_guard"]
         out["managed_component_guard"] = (
+            policy["matcher"], policy["factory"]())
+    # #631: so is resident_prompt_write_guard, and this half is only one of
+    # the two the claude_code transport needs — drivers.hook_bridge
+    # .translate_hooks_to_settings emits the settings.json entry that makes CC
+    # invoke the proxy, and this resolves that policy NAME to a callback. An
+    # entry for a policy the resolver does not know resolves to nothing.
+    #
+    # It is here, and its two neighbours are not, deliberately. `path_scope`'s
+    # PRESENCE is load-enforced on a claude_code executor, but its `writable:`
+    # prefixes are whatever that executor's own hooks.yaml declares (the
+    # bridge defaults them to empty; the shipped configurator declares
+    # `/config/agents`), so an executor whose declaration admits the resident
+    # tree would be refused by nothing else — and this guard's refusal names
+    # the corrective recipe where a scope denial cannot. On the shipped
+    # plugin-developer (`/data/engagements/` only) it is defence-in-depth. The
+    # trigger-file and response-shape guards are NOT added here because their
+    # Bash halves match a bare basename anywhere in a command, which would
+    # start refusing an executor writing its own `triggers.yaml`/
+    # `response_shape.yaml` inside /data/engagements (measured: 2 of 2
+    # denied). Symmetry for its own sake would ship a regression.
+    if "resident_prompt_write_guard" not in out:
+        policy = HOOK_POLICIES["resident_prompt_write_guard"]
+        out["resident_prompt_write_guard"] = (
             policy["matcher"], policy["factory"]())
     return out
 
