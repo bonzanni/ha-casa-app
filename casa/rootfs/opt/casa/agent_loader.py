@@ -692,8 +692,12 @@ def validate_config_repo(
         specialist_configs: dict[str, AgentConfig] = {}
         specialists_dir = os.path.join(agents_root, "specialists")
         try:
+            # binding_commit=False (#597, the #338 rule for specialists): this
+            # is a VALIDATION replay — a specialist whose binding's role
+            # checksum moved is re-derived in memory so the gate reports what
+            # boot will find, and nothing is written to its instance tuple.
             spec_found, _spec_failed = load_all_specialists(
-                specialists_dir, roles_dir=roles_dir,
+                specialists_dir, roles_dir=roles_dir, binding_commit=False,
             )
         except LoadError:
             # A collection-level specialist error (non-directory under
@@ -1451,8 +1455,15 @@ def load_agent_from_dir(
         # raises OSError) is folded into LoadError here.
         from specialist_install import activate_binding_for_config
 
+        # #597: ``binding_commit`` now reaches the specialist arm too. The
+        # activation re-derives a binding whose role checksum moved for
+        # model reasons and, on a committing load, writes it back in place —
+        # so the validation replay (``validate_config_repo``,
+        # ``binding_commit=False``) must be told, exactly as the resident
+        # arm above is, or a report path would write binding state.
         try:
-            activate_binding_for_config(cfg)  # production root: the function's own default
+            activate_binding_for_config(  # production root: the function's own default
+                cfg, commit=binding_commit)
         except (ValueError, OSError) as exc:
             raise LoadError(
                 f"agent {role_from_path!r}: specialist binding activation failed: {exc}"
@@ -1718,11 +1729,17 @@ def load_all_agents(
 
 def load_all_specialists(
     specialists_dir: str, *, roles_dir: str | None = None,
+    binding_commit: bool = True,
 ) -> tuple[dict[str, AgentConfig], list[tuple[str, str]]]:
     """Walk *specialists_dir* for specialist directories.
 
     Specialists never reference the policy library (taxonomy §4.4: the
     delegating resident owns the disclosure layer).
+
+    ``binding_commit`` — forwarded to every ``load_agent_from_dir`` (#597):
+    ``False`` is the validation-only replay, which re-derives a stale
+    specialist binding in memory and writes nothing; the registry's boot and
+    reload loads keep the default and let the activation rewrite the tuple.
 
     Returns ``(found, failed)``:
       * ``found`` — ``{role: AgentConfig}`` for valid specialists.
@@ -1754,7 +1771,8 @@ def load_all_specialists(
                 f"supported"
             )
         try:
-            cfg = load_agent_from_dir(path, policies=None, roles_dir=roles_dir)
+            cfg = load_agent_from_dir(
+                path, policies=None, roles_dir=roles_dir, binding_commit=binding_commit)
         except (LoadError, ValueError, OSError) as exc:
             # #338: broader than LoadError by necessity — load_agent_from_dir
             # raises raw ValueError subclasses on schema-valid input too

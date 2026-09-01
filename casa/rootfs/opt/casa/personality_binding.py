@@ -9,6 +9,7 @@ import re
 import stat
 import threading
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Literal, Mapping
@@ -164,6 +165,41 @@ def materialize_component_default_binding(
         role=role, persona=persona, mode="component-default", component_root=component_root,
         dependency_digests=dependency_digests, effective_config_digest=effective_config_digest,
     )
+
+
+def rederive_binding_for_role(*, binding: BindingRecord, role: RoleSlot) -> BindingRecord:
+    """#597: *binding* re-derived for *role* — the SAME stored identity with
+    ONLY ``role_checksum`` and its derived ``binding_digest`` recomputed.
+
+    The role checksum deliberately covers the RESOLVED model
+    (``role_slot.normalize_role_for_checksum``), so an HA option flip or an
+    alias move moves every persisted binding's ``role_checksum`` without any
+    other input changing. This is the one construction path for a binding
+    that follows such a move: every other field — the persona identity
+    triple, ``mode``, the roots, ``override_source``, the renderer version,
+    the dependency and config digests — is the STORED value, never one
+    rebuilt from a pack the caller happened to load, so a mis-parked or
+    changed pack cannot be laundered into a fresh binding under a ref it
+    does not declare (the compile that follows compares the carried triple
+    against the loaded pack, exactly as it always did). A stored agent id
+    that is not the role's is an identity move, not a model move: the
+    binding is returned UNCHANGED so the compile refuses it with its full
+    mismatch list (``stable_agent_id`` named alongside ``role_checksum``),
+    the one message the corpus and its tests pin. Returns *binding*
+    unchanged when nothing moved."""
+    if binding.stable_agent_id != role.role_id:
+        return binding
+    if binding.role_checksum == role.checksum:
+        return binding
+    digest = compute_binding_digest(
+        stable_agent_id=binding.stable_agent_id, role_checksum=role.checksum,
+        persona_id=binding.persona_id, persona_version=binding.persona_version,
+        persona_checksum=binding.persona_checksum,
+        compiler_schema_version=binding.compiler_schema_version,
+        dependency_digests=binding.dependency_digests,
+        effective_config_digest=binding.effective_config_digest,
+    )
+    return _dc_replace(binding, role_checksum=role.checksum, binding_digest=digest)
 
 
 def _raw_from_binding(record: BindingRecord) -> dict[str, object]:
@@ -465,6 +501,29 @@ def atomic_write_instance_tuple(path: Path, tuple_: InstanceTuple) -> None:
     os.replace(temporary, path)
 
 
+def _require_same_generation(observed: InstanceTuple, candidate: InstanceTuple) -> None:
+    """#597: the shape check behind ``replace_active_same_generation`` —
+    *candidate* may differ from *observed* ONLY in ``binding.role_checksum``
+    and the ``binding_digest`` derived from it. Anything else (root,
+    snapshot, config digest, persona identity, mode, roots, override source,
+    renderer version, dependency or config digests, or no delta at all) is
+    refused with ``ValueError``; the caller has written nothing."""
+    if candidate == observed:
+        raise ValueError("same-generation rewrite refused: the candidate is the active tuple")
+    if candidate.root != observed.root:
+        raise ValueError("same-generation rewrite refused: the tuple root differs")
+    if (dict(candidate.config_snapshot) != dict(observed.config_snapshot)
+            or candidate.config_digest != observed.config_digest):
+        raise ValueError("same-generation rewrite refused: the configuration differs")
+    ob, cb = observed.binding, candidate.binding
+    if cb.role_checksum == ob.role_checksum:
+        raise ValueError("same-generation rewrite refused: the role checksum did not move")
+    if _dc_replace(cb, role_checksum=ob.role_checksum, binding_digest=ob.binding_digest) != ob:
+        raise ValueError(
+            "same-generation rewrite refused: the binding differs in more than "
+            "role_checksum and its derived binding_digest")
+
+
 class InstanceDir:
     """One persona-bearing agent instance's on-disk active/desired/prior tuple
     pair (spec §4.1). Residents (Task 8) use
@@ -518,6 +577,47 @@ class InstanceDir:
             return temp
         return self._commit_core(candidate, observed_active,
                                  copy_rollback=copy_rollback)
+
+    def replace_active_same_generation(
+            self, observed: InstanceTuple, candidate: InstanceTuple) -> InstanceTuple:
+        """#597: rewrite ``active.yaml`` in place with a binding re-derived for
+        a moved role checksum — and NOTHING else.
+
+        This is deliberately not a commit. ``_commit_core`` is a GENERATION
+        change: it rotates the outgoing active into ``active.prior.yaml``
+        (destroying the previous version's rollback target, INV-SPEC-003)
+        and ``stage_desired`` overwrites ``desired.yaml`` (destroying a
+        pending-configuration candidate). A model-flip re-derivation changes
+        no generation — same root, same persona, same configuration, same
+        dependency closure — so it must not consume the generation
+        machinery. This primitive touches ``active.yaml`` only; it never
+        reads or writes ``desired.yaml``, ``active.prior.yaml``, a rollback
+        temporary, a sidecar or an operational file.
+
+        It acquires ``MATERIALIZE_LOCK`` itself (the module invariant — no
+        InstanceDir write outside the lock — is then enforced by
+        construction; callers must not hold the non-reentrant lock) and,
+        under it: re-observes ``active.yaml`` bottom-up and refuses unless
+        the tuple read is exactly *observed* (a concurrent install, upgrade,
+        rollback, uninstall or persona override that won while the caller
+        was compiling is never overwritten — the caller's load fails and
+        the next load observes the winner); refuses unless *candidate*
+        differs from *observed* in NOTHING but ``binding.role_checksum``
+        and ``binding.binding_digest`` (so it can never become a way around
+        prior rotation for a real generation change); re-verifies the
+        candidate binding's digest; then writes atomically. A crash leaves
+        either the complete old or the complete new tuple."""
+        with MATERIALIZE_LOCK:
+            active_path = self._path("active.yaml")
+            current = _observe_tuple(active_path)
+            if current.state != "read" or current.tuple != observed:
+                raise ValueError(
+                    f"{self._dir}: active tuple changed under a concurrent mutation "
+                    f"(now {current.state}); not rewritten")
+            _require_same_generation(observed, candidate)
+            verify_binding_record(_raw_from_binding(candidate.binding))
+            atomic_write_instance_tuple(active_path, candidate)
+            return candidate
 
     def _commit_core(self, candidate: InstanceTuple,
                      current_active: "InstanceTuple | None",

@@ -3974,7 +3974,14 @@ async def main() -> None:
         os.path.join(CONFIG_DIR, "agents", "specialists"),
         job_registry=job_registry,
     )
-    specialist_registry.load(roles_dir=str(roles_overlay))
+    # #597: off the loop, like every reload-side refresh (reload.py) and like
+    # current_specialist_roles_dir above. The specialist activation now takes
+    # MATERIALIZE_LOCK (a threading.Lock) when it rewrites a binding whose
+    # role checksum moved for model reasons — and that lock is never acquired
+    # on the event loop, boot included. SpecialistRegistry.load is synchronous
+    # local file work that publishes by rebinding (#439), built for a worker
+    # thread.
+    await asyncio.to_thread(specialist_registry.load, roles_dir=str(roles_overlay))
 
     from engagement_registry import EngagementRegistry
     # Containment Stage 2 (Task 10): the persistent, monotonic, never-reused

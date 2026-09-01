@@ -170,6 +170,9 @@ in-image default constant rather than from a caller — the resident loader's bi
 activation, the specialist loader's activation, upgrade and rollback arms, the specialist
 self-heal rebuild, and the in-lock re-proof before an apply is staged — resolve the approved
 roots but do not re-run the segment validators; their inputs are bytes this system wrote.
+The specialist loader's activation may rewrite its binding for a moved role checksum, but
+it carries the stored persona ref forward and compares it against the pack it loaded, so
+nothing there re-binds under a declared identity either.
 Removal and the sweep act on the directory a validated ref names and never read what the
 pack there declares, so a mis-parked pack is listed, and removable, under its directory's
 ref; the install commit publishes under the pack's own declared identity, so no comparison

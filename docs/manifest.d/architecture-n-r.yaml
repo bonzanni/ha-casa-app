@@ -92,8 +92,10 @@
     - casa/rootfs/opt/casa/prompt_compiler.py::compile_prompt_bundle
     - casa/rootfs/opt/casa/hooks.py::make_response_shape_write_guard
     - casa/rootfs/opt/casa/hooks.py::make_resident_prompt_write_guard
+    - casa/rootfs/opt/casa/specialist_install.py::activate_binding_for_config
   tests:
     - tests/test_personality_binding.py
+    - tests/test_specialist_binding_rederive.py
     - tests/test_resident_refusal_diagnosis.py
     - tests/test_resident_refusal_record_boundaries.py
     - tests/test_refusal_observation.py
@@ -105,8 +107,9 @@
     - tests/test_prompt_compiler.py
     - tests/test_persona_pack.py
   related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/persona-lifecycle.md]
-  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-008, INV-PERS-009, INV-PERS-010, INV-PERS-012, INV-PERS-015]
+  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-008, INV-PERS-009, INV-PERS-010, INV-PERS-012, INV-PERS-015, INV-PERS-016]
   invariant_tests:
+    INV-PERS-016: [tests/test_specialist_binding_rederive.py::test_model_flip_rederives_default_binding_once_and_keeps_specialist_active, tests/test_specialist_binding_rederive.py::test_model_flip_rederives_override_binding_from_stored_override_identity, tests/test_specialist_binding_rederive.py::test_identity_movement_is_refused_without_rederive, tests/test_specialist_binding_rederive.py::test_rederive_rewrites_only_active_and_preserves_pending_and_prior_bytes, tests/test_specialist_binding_rederive.py::test_validate_config_repo_rederives_in_memory_with_zero_writes_or_failure_records, tests/test_specialist_binding_rederive.py::test_disabled_specialist_rederives_only_in_memory]
     INV-PERS-001: [tests/test_tools_specialist_options.py::test_build_specialist_options_prefers_compiled_bundle_when_present]
     INV-PERS-002: [tests/test_persona_pack.py::test_pin_inv_pers_002_capability_claims_are_not_semantically_validated]
     INV-PERS-003: [tests/test_phase_a_compiler_integration.py::test_missing_override_persona_blob_at_reload_raises_load_error]
