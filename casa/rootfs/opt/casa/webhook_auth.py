@@ -24,6 +24,7 @@ import errno
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -742,7 +743,20 @@ def mint_resident_secret(name: str, *, secrets_dir: Path, role: str) -> bytes | 
         mine = _receipt_payload(value, role)
         try:
             won = _publish(name, value, secrets_dir)
-        except BaseException:
+        except BaseException as exc:
+            # A raise from `_publish` can come AFTER the link succeeded (the
+            # directory fsync, say). The receipt then certifies bytes that ARE
+            # live, and removing it would leave a readable slot no certified
+            # read accepts — a permanent 401 the next pass cannot repair,
+            # since a readable slot is never re-minted. So: if this attempt's
+            # bytes are the live ones, keep the proof and report the
+            # durability fault; only a slot that was never linked is unwound.
+            if _read_raw_tri(name, secrets_dir)[0] == value:
+                logging.getLogger(__name__).warning(
+                    "webhook secret %r was published but its directory could "
+                    "not be synced (%s); the slot and its receipt stand",
+                    name, exc)
+                return _read_final(name, "casa", secrets_dir)
             _remove_receipt_if_exactly(name, mine, secrets_dir)
             raise
         if not won:

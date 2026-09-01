@@ -365,6 +365,40 @@ def test_a_receipt_write_failure_publishes_nothing_and_is_one_failure(
         "vm", secrets_dir=tmp_path) == "casa_minted"
 
 
+def test_a_directory_sync_fault_after_the_link_keeps_the_receipt(tmp_path: Path, monkeypatch):
+    """#620 (review round 2): `_publish` can raise AFTER the live name was
+    linked — the directory fsync. Unwinding the receipt then would leave a
+    readable slot no certified read accepts, and a readable slot is never
+    re-minted: a transient durability fault would become a permanent 401 the
+    operator can only repair on the host. The receipt stands; the fault is
+    reported."""
+    import stat as _stat
+    real_os = webhook_auth.os
+    dir_syncs = []
+
+    def fsync_dirs_fail(fd):
+        # The receipt writer syncs the directory first (a fault there aborts
+        # BEFORE anything is linked — the other pin); the SECOND directory
+        # sync is `_publish`'s, after the link. That is the one that fails.
+        if _stat.S_ISDIR(real_os.fstat(fd).st_mode):
+            dir_syncs.append(fd)
+            if len(dir_syncs) == 2:
+                raise OSError(5, "I/O error")
+        return real_os.fsync(fd)
+    monkeypatch.setattr(webhook_auth, "os", _ModuleShim(os, fsync=fsync_dirs_fail))
+
+    minted = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path, role="assistant")
+
+    assert minted is not None and len(minted) == 43
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["vm", "vm.mint"]
+    assert webhook_auth.resident_secret_provenance("vm", secrets_dir=tmp_path) == "casa_minted"
+    assert webhook_auth.read_certified_secret(
+        "vm", role="assistant", secrets_dir=tmp_path) == minted
+    # and the next pass finds a certified, readable slot — nothing to do
+    assert rts.mint_for_specs([_webhook("vm")], secrets_dir=tmp_path, role="assistant") == []
+    assert (tmp_path / "vm").read_bytes() == minted
+
+
 def test_a_repeated_mint_changes_nothing(tmp_path: Path):
     first = webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path, role="assistant")
     before = {p.name: (p.read_bytes(), p.stat().st_ino) for p in tmp_path.iterdir()}
