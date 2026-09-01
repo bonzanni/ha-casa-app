@@ -188,7 +188,7 @@ not own: INV-CONT-004 and INV-CONT-005.
 
 **A restart replays an outcome nobody was told.** A terminal record is not only state to be
 tidied: if the finalization funnel committed it, somebody is still owed the news (INV-ENG-018,
-in [`architecture/engagement-finalization.md`](engagement-finalization.md)). Startup walks the
+in [`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md)). Startup walks the
 records still carrying that obligation and enqueues one notice each, addressed from the
 record's own persisted origin — the role that asked, on the channel it asked from, quoting the
 request. It runs once the channels and the resident loops are up, because a notice enqueued

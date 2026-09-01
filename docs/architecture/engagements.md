@@ -229,7 +229,7 @@ same reason: expiring the row would delete the obligation along with the state n
 discharge it. `quiesce_pending` is the kill a terminal `claude_code` record still owes
 (INV-CONT-006); `terminal_notification_pending` is the telling a finalized outcome still owes
 the party that asked for the work (INV-ENG-018, in
-[`architecture/engagement-finalization.md`](engagement-finalization.md)). A legacy row missing
+[`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md)). A legacy row missing
 either key decodes as owing NOTHING — the opposite default would discharge the whole
 tombstone's worth of obligations at the first boot after an upgrade.
 

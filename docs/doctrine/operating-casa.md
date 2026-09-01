@@ -89,7 +89,7 @@ it are separate, best-effort operations that can each fail on their own. So a te
 carrying no outcome mark is Casa telling you that *something* in that sequence did not
 confirm — the post, or the mark — and it is a prompt to go and check, never proof that the
 summary is missing. A marked topic is not proof anyone read it either. When it matters that
-a person knows, confirm it with them. See `architecture/engagement-finalization.md`.
+a person knows, confirm it with them. See `architecture/engagement-terminal-telling.md`.
 
 **Do not infer your capabilities from your persona.** Persona text is presentation and is not
 validated against what you can actually do — it can name a tool you do not have. What you can

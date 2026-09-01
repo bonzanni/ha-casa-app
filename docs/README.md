@@ -66,6 +66,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | trigger types, resident webhook routing, one-shot firing and cleanup, scheduling, or who may write a resident's trigger file | [`architecture/triggers.md`](architecture/triggers.md) |
 | turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed | [`architecture/engagement-turn-admission.md`](architecture/engagement-turn-admission.md) |
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |
+| what a terminal engagement's topic or its engager is told, the outcome mark, the unconfirmed-post disclosure, or the durable obligation to notify | [`architecture/engagement-terminal-telling.md`](architecture/engagement-terminal-telling.md) |
 | who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
 <!-- END ROUTING -->
 
