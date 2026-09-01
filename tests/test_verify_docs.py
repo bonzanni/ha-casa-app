@@ -6,6 +6,7 @@ nothing on its own — the point of these is that each check demonstrably bites.
 import importlib.util
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -1296,3 +1297,199 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 
     assert impact.count("architecture/engagement-finalization.md") == 1, impact
     assert impact.count("architecture/jobs-and-delivery.md") == 1, impact
+
+
+# --- #707 + #646: a document's declared ownership expressed as a `covers` claim ------
+#
+# Both issues are one mechanism at different sites: `_claimants` reads `covers` and
+# NOTHING else, so ownership recorded in `docs/coverage.yaml`, in `defines_invariants`
+# or in prose is invisible to `--impact`. A module its owning document genuinely rules
+# on could change with `--impact` naming no document at all and both corpus gates
+# green. These tests are REAL-CORPUS on purpose: a synthetic `tmp_path` manifest passes
+# at every base and pins nothing, because the defect is missing data in the published
+# corpus rather than a fault in the verifier.
+#
+# THIS REGION'S PROSE MAKES NO CLAIM ABOUT CORPUS STATE — no count, and no word
+# stating a quantity, a rate or a trend either. Four review rounds of this change
+# each found the same defect shape at a different site: a hand-written claim about
+# the corpus, true when typed and false by the time it was read. The first three were
+# figures (anchors per document, documents per source file, invariants per document).
+# The fourth was the attempted cure for the first three — "growing", "several",
+# "busiest", "often", "gain more over time" — which is the same claim with the
+# number removed, still unchecked and still falsifiable by an unrelated author
+# adding or removing an anchor.
+#
+# So the rule for anything added here is: state only what is STRUCTURALLY true of
+# the mechanism, never what happens to be true of today's corpus. The tables below
+# carry the pairs, the verifier carries the anchors, and measurements of what a
+# change did belong in that change's commit message, which is dated by construction
+# and read by a gate.
+#
+# Scope, stated so it is not over-read: this table claims exactly the (source file,
+# owning document) pairs listed in it, and a second table further down claims the
+# INV-MEM-011 enforcement pairs. Together they assert nothing about any other anchor
+# anywhere in the corpus. A corpus-wide "no undeclared anchor" pin was tried and cut:
+# closing that class would bind these tests to the ENTIRE `covers` list of each of the
+# five documents edited here rather than to the rows declared below, so a later
+# author's legitimate anchor on an unrelated file would fail THESE tests — including
+# anchors this change never owned. The general gap behind that — the
+# corpus has nothing preventing a document from claiming any resolvable symbol in any
+# file — is #787, and is not introduced here.
+
+# (source file, owning document, the enforcement points that document claims IN it)
+_DECLARED_OWNERSHIP = [
+    ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory.md",
+     ["delegated_recall"]),
+    ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-lifecycle.md",
+     ["retain_delegated"]),
+    ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-scoping.md",
+     ["delegated_recall"]),
+    ("casa/rootfs/opt/casa/config.py", "architecture/configuration.md",
+     ["AgentConfig"]),
+    ("casa/rootfs/opt/casa/config.py", "architecture/config-reconciliation.md",
+     ["_EnvSafeLoader", "_construct_env_scalar", "load_yaml_with_env",
+      "text_has_lone_placeholder", "load_yaml_declared_text",
+      "dump_yaml_declared_text"]),
+    ("casa/rootfs/opt/casa/agent_loader.py", "architecture/config-reconciliation.md",
+     ["parse_yaml_text"]),
+    ("casa/rootfs/opt/casa/reminders.py", "architecture/config-reconciliation.md",
+     ["remove_entry"]),
+    ("casa/rootfs/opt/casa/tools.py", "architecture/memory-scoping.md",
+     ["_origin_clearance_markers", "inherit_origin_markers",
+      "_engagement_rebuild_fence"]),
+    ("casa/rootfs/opt/casa/engagement_registry.py", "architecture/memory-scoping.md",
+     ["EngagementRegistry.lower_origin_clearance",
+      "EngagementRegistry.clear_context_rebuild_pending"]),
+    ("casa/rootfs/opt/casa/channels/telegram.py", "architecture/memory-scoping.md",
+     ["TelegramChannel.handle_update", "TelegramChannel._resume_and_ready"]),
+    ("casa/rootfs/opt/casa/internal_handlers.py", "architecture/memory-scoping.md",
+     ["_make_internal_tools_call_handler.handler"]),
+]
+
+
+
+def _covers_by_doc():
+    """The real corpus's `covers` lists, through the verifier's own shard-aware
+    loader — never a hand-rolled YAML read, which would test a different map from
+    the one `--impact` and the coverage ledger consult."""
+    entries, problems = verify_docs._load_entries(REPO_ROOT / "docs")
+    assert problems == [], problems
+    return {e["doc"]: (e.get("covers") or []) for e in entries
+            if isinstance(e, dict) and isinstance(e.get("doc"), str)}
+
+
+@pytest.mark.parametrize("source,doc,symbols", _DECLARED_OWNERSHIP,
+                         ids=[f"{s.rsplit('/', 1)[-1]}->{d.rsplit('/', 1)[-1]}"
+                              for s, d, _ in _DECLARED_OWNERSHIP])
+def test_a_changed_enforcement_module_names_its_owning_document(source, doc, symbols):
+    """#707/#646, the defect itself. At this change's base `--impact` named no
+    document at all for `delegated_memory.py` or `config.py`, and named neither
+    `memory-scoping.md` nor `config-reconciliation.md` for any of the modules
+    enforcing the invariants those two documents declare. Past tense and base
+    scope are the point: this test is green at the head, so a present-tense claim
+    here would tell a reader that a gap this range closed is still open.
+
+    `count(doc) == 1` and not an exact set: this pin's scope is the one pair in its
+    row, and every other claimant of the same file is outside that scope. An
+    exact-set assertion would couple the pin to those other claimants, so any
+    unrelated change that anchored or unanchored one of these files would fail
+    THESE tests — turning the pin into that author's blocker.
+    """
+    impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
+
+    assert impact.count(doc) == 1, impact
+
+
+@pytest.mark.parametrize("source,doc,symbols", _DECLARED_OWNERSHIP,
+                         ids=[f"{s.rsplit('/', 1)[-1]}->{d.rsplit('/', 1)[-1]}"
+                              for s, d, _ in _DECLARED_OWNERSHIP])
+def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, symbols):
+    """The edge above is file-grained, so ONE anchor anywhere in the file satisfies
+    it — which would let the enforcement points drift silently underneath a green
+    impact test. This pins which symbols each document claims in each file it owns.
+
+    `Counter` equality rather than set equality: it rejects a missing anchor, a
+    substituted one, an extra one and a duplicated one, and a duplicate `covers`
+    entry is the one of those four that a set comparison hides.
+    """
+    covers = _covers_by_doc()[doc]
+    actual = Counter(a for a in covers if verify_docs.parse_anchor(a)[0] == source)
+    expected = Counter(f"{source}::{sym}" for sym in symbols)
+
+    assert actual == expected, actual
+
+
+# --- #707 + #646: INV-MEM-011's own enforcement points ------------------------------
+#
+# The sites `architecture/memory-scoping.md` names in its INV-MEM-011 prose
+# (`docs/architecture/memory-scoping.md:106-112` at this change's base) and that no
+# document claimed: "the drivers' last-instant launch gates" — the `#369` gate inside
+# `InCasaDriver.start` and the one inside `ClaudeCodeDriver.start` — and "the resume
+# core and boot replay", whose boot-replay half is `replay_undergoing_engagements`.
+#
+# An earlier attempt of this cluster EXCLUDED them and pinned the exclusion
+# negatively, on the ground that impact is file-grained (`_claimants` matches
+# `parse_anchor(anchor)[0]`, not the symbol), so claiming them adds a read-clearance
+# document to the impact set of EVERY edit to these files, whatever the edit touched.
+# That cost is real, and it was measured rather than argued at the time; the figures
+# are in the commit that added these anchors, dated by it. The exclusion was reversed
+# anyway, because a cheaper guard that is silent where the invariant is enforced is
+# not a cheaper guard.
+#
+# Their own table, deliberately not merged into `_DECLARED_OWNERSHIP`: that table and
+# the two tests parametrized over it are the earlier attempt's ACCEPTED red case, and
+# re-parametrizing an accepted red case is not a thing this may do.
+
+# (source file, owning document, the one enforcement point that document claims IN it)
+_INV_MEM_011_ENFORCEMENT_OWNERSHIP = [
+    ("casa/rootfs/opt/casa/drivers/in_casa_driver.py",
+     "architecture/memory-scoping.md", "InCasaDriver.start"),
+    ("casa/rootfs/opt/casa/drivers/claude_code_driver.py",
+     "architecture/memory-scoping.md", "ClaudeCodeDriver.start"),
+    ("casa/rootfs/opt/casa/casa_core.py",
+     "architecture/memory-scoping.md", "replay_undergoing_engagements"),
+]
+
+_ENFORCEMENT_IDS = [s.rsplit("/", 1)[-1] for s, _, _ in _INV_MEM_011_ENFORCEMENT_OWNERSHIP]
+
+
+@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
+                         ids=_ENFORCEMENT_IDS)
+def test_an_inv_mem_011_enforcement_point_names_memory_scoping(source, doc, symbol):
+    """The impact level — the one the shipping gate actually consults. At this
+    change's base `memory-scoping.md` was among the documents `impacted_docs`
+    returned for none of these three files, so a change that weakened one of
+    INV-MEM-011's launch gates satisfied `docs_impact.sh` without the document that
+    asserts the invariant ever being named.
+
+    `count(doc) == 1` rather than an exact set, for the reason
+    `_DECLARED_OWNERSHIP`'s tests give: any other claimant of the same file is
+    outside this pin's scope, and an exact-set assertion would couple the pin to
+    those claimants and turn it into an unrelated author's blocker.
+    """
+    impact = sorted(verify_docs.impacted_docs(REPO_ROOT, [source]))
+
+    assert impact.count(doc) == 1, impact
+
+
+@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
+                         ids=_ENFORCEMENT_IDS)
+def test_memory_scoping_claims_exactly_the_enforcement_point(source, doc, symbol):
+    """The manifest level, as a SEPARATELY COLLECTED test rather than a second
+    assertion in the one above. Measured: substituting an anchor for another
+    resolvable symbol in the same file (`InCasaDriver.start` ->
+    `InCasaDriver.inbound_unread_depth`) leaves the impact count at 1, so the impact
+    assertion still passes and only this `Counter` equality fails. Were the two
+    assertions in one test the impact one would fire first on a deletion mutant and
+    stop execution, and the mutation evidence could claim both levels were checked
+    while only one was.
+
+    `Counter` equality on the file's slice of `covers` rejects an absent anchor, a
+    substituted one, an extra one and a duplicated one — a set comparison hides the
+    last.
+    """
+    covers = _covers_by_doc()[doc]
+    actual = Counter(a for a in covers if verify_docs.parse_anchor(a)[0] == source)
+    expected = Counter([f"{source}::{symbol}"])
+
+    assert actual == expected, actual

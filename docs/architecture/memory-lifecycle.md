@@ -384,6 +384,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory.delete_bank`
 - `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.delete_bank`
 - `casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once`
+- `casa/rootfs/opt/casa/delegated_memory.py::retain_delegated`
 
 **Tests**
 - `tests/test_session_saver.py`

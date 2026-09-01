@@ -179,6 +179,18 @@ after the launch recalls again ([`engagements.md`](engagements.md)).
 - `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`
 - `casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag`
 - `casa/rootfs/opt/casa/executor_epoch.py::make_archive_epoch_filter`
+- `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
+- `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
+- `casa/rootfs/opt/casa/tools.py::inherit_origin_markers`
+- `casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.lower_origin_clearance`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.clear_context_rebuild_pending`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.handle_update`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._resume_and_ready`
+- `casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler.handler`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.start`
+- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.start`
+- `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
 
 **Tests**
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`
