@@ -879,6 +879,92 @@ def test_a_doc_duplicated_between_root_and_shard_is_caught(tmp_path):
     assert any("listed twice" in p for p in verify_docs.verify(root))
 
 
+# --- a manifest that fails to load renders nothing (#812) ---------------------------
+
+BROKEN_SHARD = "- doc: [unclosed\n"
+
+GENERATED = [
+    "README.md",
+    "architecture/turn-loop.md",
+    "contributing/doc-contract.md",
+    "doctrine/invariants-n-z.md",
+    "doctrine/invariants.md",
+    "doctrine/publishing.md",
+    "llms.txt",
+]
+
+
+def _generated_bytes(root: Path) -> dict[str, bytes]:
+    return {rel: (root / "docs" / rel).read_bytes() for rel in GENERATED}
+
+
+def _fresh_corpus_then_break_the_shard(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
+    """A sharded corpus whose generated navigation is CURRENT, then one shard made
+    unparsable. Current first, because the seeded skeleton is stale by construction
+    and the point is to tell a broken manifest apart from stale navigation."""
+    root = _sharded_corpus(tmp_path, ENTRY)
+    assert verify_docs.write_nav(root) == GENERATED
+    assert verify_docs.stale_nav(root) == []
+    before = _generated_bytes(root)
+    (root / "docs" / "manifest.d" / "architecture.yaml").write_text(BROKEN_SHARD)
+    return root, before
+
+
+def test_write_nav_refuses_an_unloadable_shard_without_writing(tmp_path):
+    """Pins INV-DOC-010's seam half. Red at the pre-fix tree: `_documents()` discards the
+    loader's problem, so `write_nav` does not raise and rewrites the four corpus-wide
+    artifacts from an empty document list."""
+    root, before = _fresh_corpus_then_break_the_shard(tmp_path)
+    with pytest.raises(RuntimeError) as excinfo:
+        verify_docs.write_nav(root)
+    assert type(excinfo.value).__name__ == "ManifestLoadError"
+    problems = excinfo.value.problems
+    assert len(problems) == 1
+    assert problems[0].count("docs/manifest.d/architecture.yaml") == 1
+    assert "is not valid YAML:" in problems[0]
+    assert "expected ',' or ']'" in problems[0]
+    assert _generated_bytes(root) == before
+
+
+def test_bare_cli_reports_a_broken_shard_before_navigation_staleness(tmp_path, monkeypatch, capsys):
+    """Pins INV-DOC-010's ordering half. Red at the pre-fix tree: `stale_nav` renders an
+    empty corpus before `verify()` runs, so the bare run prints the stale-navigation
+    finding with the destructive remedy and never names the shard or the YAML error."""
+    root, before = _fresh_corpus_then_break_the_shard(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root)])
+    rc = verify_docs.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert out.count("✗ ") == 1
+    assert out.count("docs/manifest.d/architecture.yaml is not valid YAML:") == 1
+    assert out.count("expected ',' or ']'") == 1
+    assert out.count("1 problem(s).") == 1
+    assert out.count("generated navigation is stale") == 0
+    assert out.count("run: python -m scripts.verify_docs . --write-nav") == 0
+    assert _generated_bytes(root) == before
+
+
+def test_manifest_load_failure_precedes_report_and_write_nav(tmp_path, monkeypatch, capsys):
+    """Pins INV-DOC-010's write half through the CLI. Red at the pre-fix tree: `--report`
+    prints `0 files, 0.0 KB total`, `--write-nav` regenerates the four corpus-wide
+    artifacts from an empty corpus and changes their bytes, and only then does `verify()`
+    report the shard error."""
+    root, before = _fresh_corpus_then_break_the_shard(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root), "--report", "--write-nav"])
+    rc = verify_docs.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert out.count("✗ ") == 1
+    assert out.count("docs/manifest.d/architecture.yaml is not valid YAML:") == 1
+    assert out.count("expected ',' or ']'") == 1
+    assert out.count("1 problem(s).") == 1
+    assert out.count("files, ") == 0
+    assert out.count(" KB  ") == 0
+    assert out.count("✓ regenerated docs/") == 0
+    assert out.count("generated navigation is stale") == 0
+    assert _generated_bytes(root) == before
+
+
 # --- the base-aware size trigger (#722) ----------------------------------------------
 #
 # The ceiling is a tripwire measured against a base, not a tree-state prohibition:
