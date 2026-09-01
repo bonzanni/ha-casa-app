@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.253.0] - 2026-09-01
+
+### Fixed
+
+- A delegation that finished while Casa was stopping is now recorded and
+  announced after the restart as what it was — completed, or failed with its
+  real reason — instead of being reported as "lost on restart". Until now a
+  graceful stop could close the job ledger before a delegation that had just
+  finished was written to it, so the next start found a row that looked
+  abandoned and told the operator a delegation was lost that had in fact
+  completed; a failure with a real cause was reported as that same generic
+  loss. Two cases still fall to the existing restart reconciliation and are
+  reported as before: a conversation turn already in flight during the stop
+  can still start a delegation after the final drain, and a result whose
+  first write to the ledger failed before the stop leaves its retry to the
+  ledger's shutdown.
+
+### Documentation
+
+- The jobs-and-delivery architecture document was split into three focused
+  documents: `architecture/jobs-and-delivery.md` keeps the job ledger, and
+  voice delivery and scheduled asks move to `architecture/voice-delivery.md`
+  and `architecture/scheduled-asks.md`. No behaviour changes.
+
 ## [0.252.0] - 2026-09-01
 
 ### Fixed
