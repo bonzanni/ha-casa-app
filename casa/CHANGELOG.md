@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.251.0] - 2026-09-01
+
+### Fixed
+
+- A message that arrived for a delegated engagement while it was being
+  redirected, and whose "dropped" notice could never be sent, no longer
+  vanishes. Until now such a message stayed on disk but was quoted by nothing:
+  the notice was its only disclosure, and when that notice failed to send, the
+  engagement's closing post — on completion, on cancellation, or when the
+  engagement failed to launch — listed the other unread messages and said
+  nothing about this one. It is now quoted in that closing post alongside the
+  other messages the engagement never got to read, once, so whoever sent it
+  can see it was received but not acted on. It is not delivered to the
+  engagement afterwards, and it does not hold a completion back.
+
+### Documentation
+
+- The published statement of the completion gate now names the completion
+  path it governs. A completion requested through the completion tool is
+  refused while unread inbound messages exist; the operator's own `/complete`
+  was never gated, and the documentation no longer implies that it is.
+- Two long architecture documents were split into focused ones:
+  `architecture/engagements.md` hands turn admission to
+  `architecture/engagement-turn-admission.md`, and
+  `architecture/engagement-finalization.md` hands the terminal telling to
+  `architecture/engagement-terminal-telling.md`. No behaviour changes.
+
 ## [0.250.0] - 2026-09-01
 
 ### Fixed
