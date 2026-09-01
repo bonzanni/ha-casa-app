@@ -70,8 +70,10 @@ transition landing mid-turn cannot revoke a delivery — closing the writer is i
 end-of-input the CLI acts on — so a turn already begun runs until the finalize path's driver
 teardown *attempts* to stop it, and what that teardown does and does not establish about the
 OS process is in [`architecture/engagement-containment.md`](engagement-containment.md). A *completion*
-cannot land in that window, because a message is still counted as unread throughout its own
-write and INV-ENG-003 refuses; a cancellation can, and what becomes of the truncated turn it
+requested through the completion tool cannot land in that window, because a message is still
+counted as unread throughout its own write and INV-ENG-003 refuses; a cancellation can, and so
+can the operator's own complete command, which finalizes past unread input deliberately and
+discloses it — and what becomes of the truncated turn either one
 produces is teardown's business rather than the write path's — INV-CONT-001 states what that
 does and does not settle. The
 admission also expresses no opinion on a record the registry does not know, which is

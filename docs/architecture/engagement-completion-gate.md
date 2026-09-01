@@ -38,7 +38,7 @@ holds it.
 
 ## Contracts & invariants
 
-**INV-ENG-003**: A successful completion is refused while unread inbound messages, inbound messages in flight to the engagement's CLI, or inbound reservations exist, when the driver exposes its inbound state.
+**INV-ENG-003**: A successful completion requested through the completion tool is refused while unread inbound messages, inbound messages in flight to the engagement's CLI, or inbound reservations exist, when the driver exposes its inbound state.
 
 Enforced both as a pre-check and again as a hook inside the transition itself, so the
 condition is re-evaluated at the moment the state changes rather than only before it. The
