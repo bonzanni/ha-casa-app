@@ -155,13 +155,14 @@
     - tests/test_casa_reload_tool.py
     - tests/test_config_git.py
     - tests/test_admin_reload_route.py
+    - tests/test_reload_live_resident_not_promoted.py
   related: [architecture/overview.md, architecture/plugins.md, architecture/agent-taxonomy.md, architecture/config-reconciliation.md]
   defines_invariants: [INV-CFG-001, INV-CFG-002, INV-CFG-003, INV-CFG-004, INV-CFG-011]
   invariant_tests:
     INV-CFG-001: [tests/test_pin_g4_invariants.py::test_pin_inv_cfg_001_exactly_eight_scopes_none_reading_options]
     INV-CFG-002: [tests/test_reload.py::test_full_excludes_other_scopes]
     INV-CFG-011: [tests/test_bundle_reload_fence.py::test_casa_reload_executors_takes_plugin_guard_before_rw_reader, tests/test_bundle_reload_fence.py::test_admin_reload_executors_takes_plugin_guard_before_rw_reader, tests/test_bundle_reload_fence.py::test_admin_reload_plugin_env_takes_plugin_guard_before_rw_reader, tests/test_bundle_reload_fence.py::test_casa_reload_plugin_env_takes_plugin_guard_before_rw_reader, tests/test_reload_lock_order.py::test_the_fenced_set_is_the_scopes_whose_handlers_take_the_guard, tests/test_reload_lock_order.py::test_no_production_caller_dispatches_a_fenced_scope_outside_an_entry_point]
-    INV-CFG-003: [tests/test_phase_a_compiler_integration.py::test_reload_refuses_hot_swap_across_identity_change, tests/test_reload.py::test_reload_triggers_two_step_laundering_is_blocked]
+    INV-CFG-003: [tests/test_phase_a_compiler_integration.py::test_reload_refuses_hot_swap_across_identity_change, tests/test_reload.py::test_reload_triggers_two_step_laundering_is_blocked, tests/test_reload_live_resident_not_promoted.py::test_policies_reload_does_not_promote_a_live_residents_staged_reset, tests/test_reload_live_resident_not_promoted.py::test_overlay_loader_routes_binding_commit_by_liveness_and_tier]
     INV-CFG-004: [tests/test_config_git.py::test_store_and_staging_stay_untracked]
 
 - doc: architecture/delegation.md

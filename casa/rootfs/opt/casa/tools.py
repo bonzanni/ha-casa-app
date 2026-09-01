@@ -13291,8 +13291,11 @@ async def specialist_upgrade(args: dict) -> dict:
 
 @tool(
     "specialist_rollback",
-    "Restore an installed specialist's retained prior version (the state before its most recent "
-    "upgrade). Fails if no prior version was retained.",
+    "Restore an installed specialist's retained prior tuple — the state before its most recent "
+    "upgrade OR persona override (a first persona override rotates the component-default "
+    "binding into that prior, so this is also the way back to the bundled persona). The "
+    "rollback exchanges the active tuple with the retained prior, owned plugin set included; "
+    "fails with no_prior_tuple if nothing was retained.",
     {"type": "object", "properties": {"slug": {"type": "string"}}, "required": ["slug"]},
 )
 async def specialist_rollback(args: dict) -> dict:
@@ -13589,6 +13592,18 @@ async def persona_apply(args: dict) -> dict:
         persona = load_persona_pack(personas_root / "pack", personas_root / "manifest.json")
     except (PersonaPackError, OSError) as exc:
         return _result({"ok": False, "kind": "persona_unavailable", "detail": str(exc)})
+    # INV-PERS-013 (#737): the pack found at the requested directory must
+    # DECLARE the identity the caller named — the rule `_resolve_local_persona`
+    # (#323) and the resident loader's `_declares` (#670) already enforce. A
+    # pack parked under the wrong directory was otherwise bound under its own
+    # declared id@version while this tool reported success for the requested
+    # one, and the response carries no persona identity that would reveal it.
+    if persona.persona_id != args["persona_id"] or persona.version != args["persona_version"]:
+        return _result({"ok": False, "kind": "persona_unavailable",
+                        "detail": (f"persona pack under {personas_root} declares "
+                                   f"{persona.persona_id}@{persona.version}, not the "
+                                   f"requested {args['persona_id']}@{args['persona_version']}; "
+                                   "nothing was staged")})
 
     if kind == "resident":
         # Controller resolution #2 (task-n1d-brief deviation): the brief
@@ -14987,11 +15002,15 @@ async def get_item_fields(args: dict) -> dict:
 # Both tools STAGE a desired instance tuple (InstanceDir.stage_desired) rather
 # than committing directly — the actual `active := desired` commit happens at
 # the NEXT BOOT's reconcile_resident_binding (agent_loader), which re-validates
-# against the then-current role checksum before committing. This keeps exactly
-# one commit code path (boot-time reconciliation), so a personality-identity
-# change is always restart-to-swap. `active_runtime` is the established
-# module-level accessor (mirrors active_semantic_memory), set by casa_core as
-# `agent.active_runtime = runtime`.
+# against the then-current role checksum before committing. An in-process
+# reload of an already-live resident loads with binding_commit=False (#672,
+# INV-CFG-003): it validates the staged candidate and refuses the hot-swap
+# without touching the InstanceDir, so the commit paths are boot and a
+# resident's very first load only — a personality-identity change is
+# restart-to-swap on disk and in memory alike, and the persona reference scan
+# keeps pinning what a resident serves until the restart. `active_runtime` is
+# the established module-level accessor (mirrors active_semantic_memory), set
+# by casa_core as `agent.active_runtime = runtime`.
 
 def _persona_roots() -> tuple[Path, ...]:
     """#323: resolve the approved persona roots through the SAME seams the

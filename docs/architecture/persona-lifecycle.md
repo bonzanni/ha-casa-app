@@ -29,15 +29,16 @@ staging under the personas root is reclaimed on rejection and consumed by a succ
 commit; abandoned trees fall to the boot age sweep beside the specialist staging roots.
 
 **A local persona ref resolves only under the approved roots, and every consumer agrees
-on where those are.** The ref's id and version segments are validated with the same
-patterns every persona path join uses (a traversal-bearing ref never reaches a join),
-the loaded pack must *declare* the identity the ref names, and one call-time seam
-resolves the installed-personas root everywhere — the install flow's staging and
-publication, the apply tools, the resident bindings root, the specialist loader's
-override activation (upgrade and rollback included), and the boot staging sweep — so a
-pack installed under a custom config root is found by everything that later reads it. A
-tool that staged where boot does not look would report success for a swap that never
-activates.
+on where those are.** A ref that arrives through a persona tool has its id and version
+segments validated with the shared canonical patterns before any path join (a
+traversal-bearing ref never reaches a caller-facing join), a tool that loads a pack to bind
+it requires the pack to *declare* the identity the ref names, and the installed-personas
+root is resolved at call time from the config root by every consumer — the install flow's
+staging and publication, the apply tools, the specialist loader's override activation
+(upgrade and rollback included), the boot staging sweep, and the resident loader, which
+derives the same root itself — so a pack installed under a custom config root is found by
+everything that later reads it. A tool that staged where boot does not look would report
+success for a swap that never activates.
 
 **A specialist's own default persona is not one of those roots.** The two approved roots
 are the installed-personas root and the image defaults tree; a specialist's
@@ -57,7 +58,8 @@ that no slot defaults to has no reachable consumer at all.
 **Removing a persona is decided by who still refers to it, not by who is using it.** A
 persona's bytes are needed for as long as any binding tuple that a later load — or a later
 *recovery* — can read still names them. That set is wider than "what is active": a staged
-`desired` tuple, a specialist's retained prior (its rollback input), the pending-rotation
+`desired` tuple, a specialist's retained prior (its rollback input — and, after a first
+override, the way back to the bundled persona: `specialist_rollback` restores it), the pending-rotation
 temporary a failed prior rotation leaves behind, and the tuple bytes captured inside an
 bundle journal that would still be *replayed*, whose capture both the tool layer's compensation
 and the next boot's journal reconciliation write back verbatim. Removal computes that whole set
@@ -153,6 +155,29 @@ both directions. See INV-SPEC-010 in `architecture/specialist-lifecycle.md` for 
 what a positive report establishes, what remains outside it, and why the absence of a
 positive report is not a guarantee that the operator learned anything.
 
+**INV-PERS-013**: A persona ref that arrives through a persona tool — a swap, a reset, an apply, an install commit, a removal or the sweep — has its id and version segments validated against the shared canonical patterns before any path join under the approved roots, and where the tool loads a pack to bind it — a swap, a reset, an apply — the pack must declare the identity the ref names; so a traversal-bearing ref never reaches a caller-facing persona path join and a mis-parked pack is never bound under a ref it does not declare.
+
+The two halves guard different things. Segment validation is one shared function every
+caller-facing join runs first, so the containment does not depend on which tool the ref
+arrived through. The declaration check is what makes the ref *mean* the pack: the resolver
+the swap and reset tools share, and the apply tool, each compare the loaded pack's own id and
+version with the ref and refuse a pack parked under the wrong directory rather than binding
+it under a name it does not carry — the same rule the resident loader applies to what it
+reloads.
+
+What it does not cover: the joins whose ref comes from an on-disk binding tuple or an
+in-image default constant rather than from a caller — the resident loader's binding
+activation, the specialist loader's activation, upgrade and rollback arms, the specialist
+self-heal rebuild, and the in-lock re-proof before an apply is staged — resolve the approved
+roots but do not re-run the segment validators; their inputs are bytes this system wrote.
+Removal and the sweep act on the directory a validated ref names and never read what the
+pack there declares, so a mis-parked pack is listed, and removable, under its directory's
+ref; the install commit publishes under the pack's own declared identity, so no comparison
+arises there. And the resident loader derives the installed root itself rather than through
+the shared seam: the two agree by construction — same variable, same default,
+installed-then-image — and the agreement is pinned by behaviour, not by a single
+implementation. The loader's joins are [`personality.md`](personality.md)'s.
+
 ## Failure behavior
 
 **An operator applies a persona a resident cannot compile.** Refused at the point of asking,
@@ -192,6 +217,9 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `casa/rootfs/opt/casa/persona_install.py::prune_installed_personas`
 - `casa/rootfs/opt/casa/persona_install.py::list_installed_personas`
 - `casa/rootfs/opt/casa/persona_install.py::apply_persona_override`
+- `casa/rootfs/opt/casa/persona_install.py::validate_persona_path_segments`
+- `casa/rootfs/opt/casa/persona_install.py::installed_personas_root`
+- `casa/rootfs/opt/casa/persona_install.py::persona_pack_roots`
 
 **Tests**
 - `tests/test_persona_install.py`
@@ -200,6 +228,7 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `tests/test_persona_pack.py`
 - `tests/test_persona_install_consent.py`
 - `tests/test_tools_persona_install.py`
+- `tests/test_wholebranch_security_fixes.py`
 
 **Related**
 - [`architecture/personality.md`](../architecture/personality.md)

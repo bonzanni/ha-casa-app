@@ -25,7 +25,7 @@ The index is sharded by family letter: see also [`doctrine/invariants-n-z.md`](i
 | `INV-CB-009` | The consumer's `meta` is size-capped, stored and echoed value-preserving, never interpreted, and never reaches a log surface. | [`architecture/callback-delivery.md`](../architecture/callback-delivery.md) |
 | `INV-CFG-001` | Exactly eight reload scopes exist, and none of them rereads the app manifest options. | [`architecture/configuration.md`](../architecture/configuration.md) |
 | `INV-CFG-002` | A full reload excludes every other dispatched reload for its duration. | [`architecture/configuration.md`](../architecture/configuration.md) |
-| `INV-CFG-003` | A resident identity change is refused as restart-required rather than hot-swapped. | [`architecture/configuration.md`](../architecture/configuration.md) |
+| `INV-CFG-003` | A live resident identity change is restart-only: an in-process reload neither hot-swaps the resident nor promotes its staged binding on disk before the restart that activates it. | [`architecture/configuration.md`](../architecture/configuration.md) |
 | `INV-CFG-004` | Only an explicit whitelist of the config tree is version-controlled. | [`architecture/configuration.md`](../architecture/configuration.md) |
 | `INV-CFG-005` | Reconciliation of the config tree is never boot-fatal. | [`architecture/config-reconciliation.md`](../architecture/config-reconciliation.md) |
 | `INV-CFG-006` | In a file reconciled per entry, an entry whose name the image has never shipped is preserved, except when the image ships that name for the first time. | [`architecture/config-reconciliation.md`](../architecture/config-reconciliation.md) |

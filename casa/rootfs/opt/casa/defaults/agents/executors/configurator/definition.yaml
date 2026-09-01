@@ -7,7 +7,8 @@ description: |
   install/upgrade/rollback/uninstall specialists, add/update/remove plugins,
   install personas, apply an installed persona to a resident or specialist, and
   reset a resident to its image-default persona (personas have no upgrade or
-  uninstall tool; reset is residents-only).
+  uninstall tool; reset is residents-only — a specialist's first persona override
+  is undone by specialist_rollback).
   Installed specialists are managed, not hand-authored. Commits changes via
   config_git and reloads Casa (soft or hard per reload.md doctrine) on
   completion.
