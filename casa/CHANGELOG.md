@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.249.0] - 2026-09-01
+
+### Fixed
+
+- Editing a resident's `prompts/system.md` through the file tools is now
+  refused, with an explanation of what actually changes a resident. That file
+  is read only into a fallback prompt, and a resident whose persona bundle is
+  active is never served it — so an instruction written there, by hand or by
+  the configurator on your behalf, changed nothing and nothing said so. The
+  Write, Edit, MultiEdit and NotebookEdit tools now refuse to touch it and
+  name the working route instead: a resident's behaviour is changed through
+  its persona, its grants and its doctrine. Every operator- and
+  configurator-facing instruction that used to route behaviour into that file
+  now names that route too. The refusal covers those four file tools; an agent
+  that holds a shell could still edit the file, and for a resident bound to
+  its persona bundle that edit is inert.
+- Every resident's served prompt now carries the rule that a sign-in link,
+  one-time code or token returned by a tool is never repeated into a chat, and
+  that an earlier agreement to fetch or send something is not authority for
+  the next one. Until now that rule lived only in the fallback prompt no
+  persona-bound resident receives. It is part of the shipped safety kernel, so
+  it is live at each resident's next load: the compiled prompt projections
+  move, and no persisted persona binding is invalidated — there is no
+  restart-to-swap.
+
 ## [0.248.0] - 2026-08-31
 
 ### Fixed
