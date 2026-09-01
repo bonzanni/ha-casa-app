@@ -58,6 +58,19 @@ at boot" is either verifiable from code in this repository or it is not. If it i
 honest options are to check, to cut it, or to ask — never to soften the wording until it
 sounds safe.
 
+**INV-PUB-004**: With no override set, for a branch update that is not a deletion, the pre-push hook refuses unless every commit it enumerates is in the attested reviewed set; it enumerates the pushed tip excluding the destination's current sha for that ref, when the ref already exists, and every branch head the destination advertises that resolves locally, and when nothing can be subtracted, or the enumeration itself fails, it enumerates the whole local ancestry.
+
+Coverage is asked of the destination itself, never of this clone's tracking refs: a
+`refs/remotes/<name>/*` entry records what this clone last saw, and a repointed or reset
+remote turns it into a claim about nothing. Because the subtraction is against every branch
+the destination advertises rather than the one tip being replaced, a set reviewed against the
+destination's current `main` is accepted whichever tip the branch previously held, while a
+commit the destination holds on no branch is refused by name unless it was reviewed. What it
+does not cover: an advertised head that reaches commits nobody here has read is already
+public at that destination by hash — the hook guards publication, not the review of what is
+published — and a head advertised but never fetched is skipped, which loses nothing because a
+clone holds every ancestor of its own commits.
+
 ## Failure behavior
 
 Three automated layers refuse what they can recognise, and none of them is the rule:
@@ -66,7 +79,9 @@ Three automated layers refuse what they can recognise, and none of them is the r
 - the pre-push gate sweeps the endpoint tree, every unpublished commit, their messages,
   runs a pinned secret scanner over both tree and history, and refuses a change that
   alters a documented surface without updating or explicitly waiving the document that
-  claims it;
+  claims it — where "unpublished" is judged against the branches the destination
+  advertises, not against the tip being replaced or this clone's tracking refs
+  (INV-PUB-004);
 - CI repeats the generic layers on every pull request.
 
 What they cannot do is recognise a paragraph that is confidential without containing a

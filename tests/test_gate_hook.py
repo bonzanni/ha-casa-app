@@ -48,10 +48,14 @@ def _commit(repo: Path, rel: str) -> str:
     ).stdout.strip()
 
 
-def _push(repo: Path, sha: str, env: dict | None = None):
+def _push(repo: Path, sha: str, env: dict | None = None, *,
+          remote_sha: str = ZERO, branch: str = "main"):
+    """Feed the hook one stdin line as git would. `remote_sha` is what the destination
+    currently holds for the ref: ZERO selects the new-ref arm, a real sha the
+    existing-ref arm. `$1` is the destination remote name, as git passes it."""
     return subprocess.run(
-        ["bash", str(HOOK)], cwd=repo, capture_output=True, text=True,
-        input=f"refs/heads/main {sha} refs/heads/main {ZERO}\n",
+        ["bash", str(HOOK), "origin"], cwd=repo, capture_output=True, text=True,
+        input=f"refs/heads/{branch} {sha} refs/heads/{branch} {remote_sha}\n",
         env={"PATH": "/usr/bin:/bin", "HOME": str(repo), **(env or {})},
     )
 
@@ -423,3 +427,217 @@ def test_an_unattested_branch_publication_can_be_overridden(tmp_path):
     )
     assert result.returncode == 0
     assert "overridden" in result.stderr
+
+
+# --- coverage is relative to the DESTINATION, for an existing ref too --------------------
+#
+# Every case above pushes a NEW ref with no remote configured, so `ls-remote` fails and
+# the hook enumerates the whole ancestry. These cases give the hook a real destination: a
+# bare repository it can ask, and a real `remote_sha` for the ref being replaced.
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _remote(repo: Path) -> Path:
+    """A bare destination named `origin`, holding whatever `repo` pushes to it.
+
+    Fixture pushes use --no-verify: the hook under test is run explicitly, never as a
+    side effect of building the graph."""
+    bare = repo.parent / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    _git(repo, "remote", "add", "origin", str(bare))
+    return bare
+
+
+def _fixture_push(repo: Path, *refspecs: str) -> None:
+    _git(repo, "push", "-q", "--no-verify", "origin", *refspecs)
+
+
+def _moved_main(repo: Path) -> dict[str, str]:
+    """M0 on main (published); cand = C1 on M0 (published as a new ref); main advances to
+    M1 (published); cand is rebased onto M1, giving C1r — the byte-identical re-cut."""
+    _remote(repo)
+    m0 = _commit(repo, "docs/architecture/m0.md")
+    _fixture_push(repo, "main")
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _fixture_push(repo, "cand")
+    _git(repo, "checkout", "-q", "main")
+    m1 = _commit(repo, "docs/architecture/m1.md")
+    _fixture_push(repo, "main")
+    _git(repo, "checkout", "-q", "cand")
+    _git(repo, "rebase", "-q", "main")
+    c1r = _git(repo, "rev-parse", "HEAD")
+    assert c1r != c1
+    return {"M0": m0, "C1": c1, "M1": m1, "C1r": c1r}
+
+
+def _bare_ref(repo: Path, ref: str) -> str:
+    return subprocess.run(
+        ["git", "--git-dir", str(repo.parent / "origin.git"), "rev-parse", ref],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def test_a_re_cut_onto_a_moved_main_pushes_over_its_own_ref(tmp_path):
+    """Pins INV-PUB-004 (the accept half): a commit the destination already reaches on
+    ANY branch is not introduced, so the reviewed set of a re-cut is the re-cut alone.
+
+    Red case demonstrated: enumerating an existing ref as `remote_sha..local_sha` counts
+    the destination's own `main` commit as introduced and refuses the attested re-cut,
+    naming M1 as "never in the reviewed range"."""
+    repo = _repo(tmp_path)
+    g = _moved_main(repo)
+    # The shape, asserted before the hook runs: the replaced tip lacks TWO commits, the
+    # destination as a whole lacks ONE.
+    assert set(_git(repo, "rev-list", f"{g['C1']}..{g['C1r']}").split()) == {g["M1"], g["C1r"]}
+    assert _git(repo, "rev-list", g["C1r"], "--not", g["C1"], g["M1"]).split() == [g["C1r"]]
+    _approve(repo, g["C1r"], branch="cand", extra=[g["C1r"]])   # exactly what gate.sh writes
+    assert (repo / ".git" / "casa-gate-commits").read_text().split() == [g["C1r"]]
+
+    result = _push(repo, g["C1r"], remote_sha=g["C1"], branch="cand")
+    assert result.returncode == 0, result.stderr
+    assert g["M1"] not in result.stderr
+
+
+def test_a_real_force_push_of_a_re_cut_is_gated_and_then_accepted(tmp_path):
+    """The same shape through `git push` itself, with the repository's hooks installed for
+    that one command, so the stdin line the direct tests feed is proven to be git's.
+
+    First WITHOUT a receipt — refused, the bare ref unmoved — proving the hook ran at all;
+    then approved — accepted, the bare ref at the re-cut."""
+    repo = _repo(tmp_path)
+    g = _moved_main(repo)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(repo)}
+    push = ["git", "-c", f"core.hooksPath={HOOK.parent}", "push", "--force-with-lease",
+            "origin", "cand"]
+
+    refused = subprocess.run(push, cwd=repo, capture_output=True, text=True, env=env)
+    assert refused.returncode == 1, refused.stderr
+    assert "not attested" in refused.stderr
+    assert _bare_ref(repo, "refs/heads/cand") == g["C1"]
+
+    _approve(repo, g["C1r"], branch="cand", extra=[g["C1r"]])
+    accepted = subprocess.run(push, cwd=repo, capture_output=True, text=True, env=env)
+    assert accepted.returncode == 0, accepted.stderr
+    assert _bare_ref(repo, "refs/heads/cand") == g["C1r"]
+
+
+def test_a_re_cut_carrying_an_unreviewed_commit_is_still_refused_by_name(tmp_path):
+    """Pins INV-PUB-004 (the refuse half): subtracting what the destination advertises
+    must not subtract anything else. C2 sits on the re-cut; only C2 was reviewed; the
+    destination lacks both, so both are enumerated and the omitted one is named — while
+    the destination's own M1 is not."""
+    repo = _repo(tmp_path)
+    g = _moved_main(repo)
+    c2 = _commit(repo, "docs/architecture/c2.md")
+    _approve(repo, c2, branch="cand", extra=[c2])            # the re-cut was never reviewed
+    result = _push(repo, c2, remote_sha=g["C1"], branch="cand")
+    assert result.returncode == 1
+    assert "never in" in result.stderr
+    assert "2 commit(s)" in result.stderr                    # C2 and C1r, not M1
+    assert g["C1r"] in result.stderr
+    assert g["M1"] not in result.stderr
+
+
+def _unfetched_sibling(repo: Path) -> str:
+    """A second clone publishes `sib` at the destination; this clone never fetches it, so
+    the destination advertises a head that is not a local object."""
+    other = repo.parent / "other"
+    subprocess.run(["git", "clone", "-q", str(repo.parent / "origin.git"), str(other)],
+                   check=True)
+    for key, value in (("user.email", "o@o"), ("user.name", "o")):
+        _git(other, "config", key, value)
+    _git(other, "checkout", "-q", "-b", "sib", "origin/main")
+    (other / "sib.md").write_text("sibling\n")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-qm", "sib")
+    _git(other, "push", "-q", "--no-verify", "origin", "sib")
+    sib = _git(other, "rev-parse", "HEAD")
+    absent = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", sib],
+                            capture_output=True)
+    assert absent.returncode != 0, "the sibling head must be unknown to this clone"
+    return sib
+
+
+def test_an_unfetched_sibling_head_does_not_refuse_a_gated_first_push(tmp_path):
+    """New-ref arm. An advertised head this clone never fetched made the subtraction fail
+    and the WHOLE ancestry was enumerated, refusing a validly gated first push by naming
+    commits the destination already publishes."""
+    repo = _repo(tmp_path)
+    g = _moved_main(repo)
+    _unfetched_sibling(repo)
+    _approve(repo, g["C1r"], branch="cand2", extra=[g["C1r"]])
+    result = _push(repo, g["C1r"], remote_sha=ZERO, branch="cand2")
+    assert result.returncode == 0, result.stderr
+    assert g["M1"] not in result.stderr and g["M0"] not in result.stderr
+
+
+def test_an_unfetched_sibling_head_does_not_refuse_a_gated_re_push(tmp_path):
+    """Existing-ref arm, the same rule: a head that is not a local object cannot be an
+    ancestor of the local tip, so dropping it from the subtraction loses nothing."""
+    repo = _repo(tmp_path)
+    g = _moved_main(repo)
+    _unfetched_sibling(repo)
+    _approve(repo, g["C1r"], branch="cand", extra=[g["C1r"]])
+    result = _push(repo, g["C1r"], remote_sha=g["C1"], branch="cand")
+    assert result.returncode == 0, result.stderr
+
+
+def test_an_unreachable_destination_still_gates_a_re_cut_against_its_old_tip(tmp_path):
+    """When the destination cannot be asked, nothing it did not prove is subtracted: the
+    range degrades to what the replaced tip lacked, so the re-cut is refused naming M1 —
+    fail closed, exactly as before the destination was consulted for existing refs."""
+    repo = _repo(tmp_path)
+    g = _moved_main(repo)
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "nowhere.git"))
+    _approve(repo, g["C1r"], branch="cand", extra=[g["C1r"]])
+    result = _push(repo, g["C1r"], remote_sha=g["C1"], branch="cand")
+    assert result.returncode == 1
+    assert "never in" in result.stderr
+    assert g["M1"] in result.stderr
+
+
+def test_an_unreachable_destination_does_not_widen_to_the_whole_ancestry(tmp_path):
+    """The other side of the same fallback: a plain fast-forward of an existing ref with
+    the destination unreachable enumerates only what the replaced tip lacked, so a
+    reviewed set of exactly that commit is accepted — the failure neither widened the
+    range to the whole ancestry nor emptied it."""
+    repo = _repo(tmp_path)
+    g = _moved_main(repo)
+    _git(repo, "checkout", "-q", "main")
+    m2 = _commit(repo, "docs/architecture/m2.md")
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "nowhere.git"))
+    assert _git(repo, "rev-list", f"{g['M1']}..{m2}").split() == [m2]
+    _approve(repo, m2, branch="main", extra=[m2])
+    result = _push(repo, m2, remote_sha=g["M1"], branch="main")
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_local_tracking_ref_ahead_of_the_destination_subtracts_nothing(tmp_path):
+    """A local refs/remotes/origin/main is not evidence the destination holds anything.
+    Here the destination's main is still at M0 while the tracking ref claims M1; the
+    re-cut on M1 must be refused, naming M1, which the destination does not publish."""
+    repo = _repo(tmp_path)
+    _remote(repo)
+    m0 = _commit(repo, "docs/architecture/m0.md")
+    _fixture_push(repo, "main")
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _fixture_push(repo, "cand")
+    _git(repo, "checkout", "-q", "main")
+    m1 = _commit(repo, "docs/architecture/m1.md")            # NOT pushed
+    _git(repo, "update-ref", "refs/remotes/origin/main", m1)  # the tracking ref lies
+    _git(repo, "checkout", "-q", "cand")
+    _git(repo, "rebase", "-q", "main")
+    c1r = _git(repo, "rev-parse", "HEAD")
+    assert _bare_ref(repo, "refs/heads/main") == m0
+    _approve(repo, c1r, branch="cand", extra=[c1r])
+    result = _push(repo, c1r, remote_sha=c1, branch="cand")
+    assert result.returncode == 1
+    assert "never in" in result.stderr
+    assert "2 commit(s)" in result.stderr                    # C1r and M1
+    assert m1 in result.stderr
