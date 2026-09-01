@@ -698,3 +698,48 @@ async def test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement(
     actual = (result, len(delivered))
     assert actual == (False, 0 if tap_state == "gone" else 1), (
         f"persona reconciliation facts: {actual!r}")
+
+
+@pytest.mark.asyncio
+async def test_persona_apply_refuses_a_pack_that_does_not_declare_the_requested_identity(
+        monkeypatch, tmp_path) -> None:
+    """INV-PERS-013 red case (#737): a pack found under the approved roots must
+    DECLARE the identity the ref names. `_resolve_local_persona` (#323) and the
+    resident loader (#670) already refuse a mis-parked pack; `persona_apply`
+    loaded the pack at the requested directory and applied whatever identity
+    it declared. RED at the base: the tool answers `ok: true` for a request of
+    `casa/ellen@0.9.0` and stages a binding for `casa/ellen@0.8.0`."""
+    import shutil
+
+    from persona_pack import load_persona_pack
+    from personality_binding import InstanceDir
+    from test_persona_install import install_persona_for_apply
+    from tools import persona_apply
+
+    bindings_root = tmp_path / "bindings"
+    monkeypatch.setenv("CASA_BINDINGS_DIR", str(bindings_root))
+    # A valid pack declaring casa/ellen@0.8.0 at its canonical directory, and
+    # the SAME bytes parked at the 0.9.0 directory.
+    install_persona_for_apply(tmp_path, monkeypatch, persona_id="casa/ellen", version="0.8.0")
+    personas = tmp_path / "config-root" / "personas" / "casa" / "ellen"
+    shutil.copytree(personas / "0.8.0", personas / "0.9.0")
+    canonical = load_persona_pack(personas / "0.8.0" / "pack", personas / "0.8.0" / "manifest.json")
+    parked = load_persona_pack(personas / "0.9.0" / "pack", personas / "0.9.0" / "manifest.json")
+    assert canonical.persona_id == parked.persona_id == "casa/ellen"
+    assert canonical.version == parked.version == "0.8.0"
+    assert canonical.checksum == parked.checksum
+
+    result = await persona_apply.handler({
+        "target_role_id": "resident:assistant",
+        "persona_id": "casa/ellen", "persona_version": "0.9.0",
+    })
+
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["kind"] == "persona_unavailable"
+    assert "casa/ellen@0.9.0" in payload["detail"]
+    assert "casa/ellen@0.8.0" in payload["detail"]
+    instance_dir = InstanceDir(bindings_root / "resident-assistant")
+    assert instance_dir.active() is None
+    assert instance_dir.desired() is None
+    assert len(list((bindings_root / "resident-assistant").glob("*.yaml"))) == 0
