@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import stat
+import threading
 import time
 from pathlib import Path
 from typing import Mapping
@@ -52,8 +53,22 @@ _TMP_SWEEP_SECS = 60
 # name. (`.rot.json` already overflows at 257 — pre-existing, and its state
 # machine has no caller outside tests.)
 MINT_RECEIPT_SUFFIX = ".mint"
-_RECEIPT_VERSION = 1
-_RECEIPT_KEYS = frozenset({"v", "minted_by", "value_sha256"})
+# v2 (#620, retirement): the receipt also names the ROLE the mint was for. That
+# is what a retirement stands on — "Casa minted these bytes, registering this
+# name for this role" — and it is read only when the value binding holds, so a
+# role can never certify bytes it did not mint. v1 receipts (no role) read as
+# `unproven`: exactly one schema, and the fail-closed direction for a slot that
+# predates the field.
+_RECEIPT_VERSION = 2
+_RECEIPT_KEYS = frozenset({"v", "minted_by", "value_sha256", "role"})
+# The alphabet the resident trigger schema admits for a role directory name; a
+# hand-written receipt cannot smuggle a path into the boot directory probe.
+_ROLE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# One process-wide critical section for resident mints: receipt-before-link and
+# the compare-before-unlink cleanup below are only safe against each other when
+# two mints of one name cannot interleave (seam S4/S11). Re-entrant so a caller
+# already holding it (the registration lifecycle) can mint inside.
+_RESIDENT_MINT_LOCK = threading.RLock()
 # The digest is shape-checked BEFORE it is compared. `hmac.compare_digest`
 # raises TypeError on a str holding non-ASCII, and this function is documented
 # total — a hand-written receipt would otherwise propagate that out through
@@ -322,31 +337,69 @@ def probe_secret(name: str, *, owner: str, secrets_dir: Path) -> tuple[str, str]
         f"printable ASCII characters")
 
 
-def retire_secret(name: str, *, secrets_dir: Path) -> None:
+def retire_secret(name: str, *, secrets_dir: Path) -> list[str]:
     """Remove EVERY slot for ``name`` — the live secret, a staged ``.next``,
-    the rotation state file, and the ``.ident`` consent binding (Release B
-    artifact retirement).
+    the rotation state file, the ``.ident`` consent binding and the mint
+    receipt (Release B artifact retirement; #620 resident retirement).
 
-    Called when the owning plugin artifact changes or is removed, BEFORE any
-    re-approval can mint a replacement — a new artifact never inherits the
-    old one's credentials. Missing files/dir are fine; never raises.
-    Best-effort by design: non-inheritance does NOT depend on this
-    succeeding — :func:`ensure_secret_for_identity` rekeys at activation
-    whenever the surviving secret's identity binding doesn't match.
+    Returns the artifact names STILL PRESENT after the attempt — ``[]`` is
+    success. Never raises; a missing file or directory is success for that
+    artifact. The plugin callers ignore the return; the resident lifecycle
+    reads it and refuses to publish a route over a slot it could not remove.
+
+    Order is load-bearing (#620, seam S12): the LIVE file first, the receipt
+    LAST and only once the live file is confirmed absent. A refused live unlink
+    therefore leaves the receipt in place, so the slot is still certified and
+    the next attempt has its authority; a live unlink that succeeded with a
+    refused receipt unlink leaves an orphan receipt, which certifies nothing
+    (no bytes) and is replaced by the next mint under that name.
+
+    Best-effort by design for the plugin path: non-inheritance there does NOT
+    depend on this succeeding — :func:`ensure_secret_for_identity` rekeys at
+    activation whenever the surviving secret's identity binding doesn't match.
     """
     if not name:
-        return
+        return []
     secrets_dir = Path(secrets_dir)
-    for fname in (name, _next_name(name), f"{name}.rot.json",
-                  f"{name}.ident", f"{name}{MINT_RECEIPT_SUFFIX}"):
-        try:
-            (secrets_dir / fname).unlink()
-        except OSError:
-            pass
+    remaining: list[str] = []
+    for fname in (name, _next_name(name), f"{name}.rot.json", f"{name}.ident"):
+        if not _unlink_checked(secrets_dir / fname):
+            remaining.append(fname)
+    receipt = f"{name}{MINT_RECEIPT_SUFFIX}"
+    if name in remaining:
+        # The live bytes survived: keep their proof, so the retry still has
+        # the authority the caller acted on.
+        if _present(secrets_dir / receipt):
+            remaining.append(receipt)
+    elif not _unlink_checked(secrets_dir / receipt):
+        remaining.append(receipt)
     try:
         _fsync_dir(secrets_dir)
     except OSError:
         pass
+    return remaining
+
+
+def _present(path: Path) -> bool:
+    """ENOENT is the only absence; any other answer reads as present."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _unlink_checked(path: Path) -> bool:
+    """Unlink and CONFIRM absence. True iff nothing is at ``path`` afterwards."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return not _present(path)
+    return not _present(path)
 
 
 def retire_secrets_with_prefix(prefix: str, *, secrets_dir: Path) -> list[str]:
@@ -408,8 +461,9 @@ def ensure_secret(name: str, *, owner: str, secrets_dir: Path) -> bytes | None:
 # written for, never merely its own presence, so every way a value can change
 # without Casa minting it — a hand replacement, `rotation_promote`'s replace, a
 # restore from backup — self-invalidates it and the answer falls back to
-# `unproven`. Nothing here retires anything: this records the fact a later,
-# owner-aware retirement would have to stand on. #620 stays open.
+# `unproven`. Since v2 it also names the ROLE the mint was for, which is what
+# `resident_trigger_secrets.retire_for_role` stands on, and what
+# `read_certified_secret` binds a casa-owned resident route to.
 # ---------------------------------------------------------------------------
 
 
@@ -417,26 +471,31 @@ def _receipt_path(name: str, secrets_dir: Path) -> Path:
     return secrets_dir / f"{name}{MINT_RECEIPT_SUFFIX}"
 
 
-def _write_mint_receipt(name: str, value: bytes, secrets_dir: Path) -> bool:
-    """Record that Casa generated exactly ``value`` at ``name``. Never raises.
+def _receipt_payload(value: bytes, role: str) -> bytes:
+    return json.dumps({
+        "v": _RECEIPT_VERSION,
+        "minted_by": "casa",
+        "value_sha256": hashlib.sha256(value).hexdigest(),
+        "role": role,
+    }).encode("ascii")
 
-    Best-effort ON PURPOSE. The secret is already published and usable by the
-    time this runs; raising would turn a missing PROOF into a trigger that
-    401s forever, and `mint_for_specs` records a failure only for a raised
-    exception. A filesystem fault must not reshape the surface. A slot with no
-    receipt simply reads `unproven`, which is the fail-closed answer and can
-    never authorise destruction.
+
+def _write_mint_receipt(name: str, value: bytes, secrets_dir: Path, *, role: str) -> None:
+    """Record that Casa generated exactly ``value`` at ``name`` for ``role``.
+    Raises the ``OSError`` that stopped it — the caller reports that reason.
+
+    Since #620's retirement this is written BEFORE the value is linked (see
+    :func:`mint_resident_secret`): a casa-owned resident route authenticates
+    only with certified bytes, so a slot without its proof would 401 with
+    nothing to retry it. A receipt that cannot be written is therefore a mint
+    that does not happen, reported as one.
 
     Stages under `.tmp-` so `_sweep_orphans` reclaims a crash remnant, writes
     in full (#622 — a short write would stage a truncated digest, which reads
     as a MISMATCH and is therefore safe, but pointless), fsyncs, then replaces
     atomically. The payload holds a digest, never the value.
     """
-    payload = json.dumps({
-        "v": _RECEIPT_VERSION,
-        "minted_by": "casa",
-        "value_sha256": hashlib.sha256(value).hexdigest(),
-    }).encode("ascii")
+    payload = _receipt_payload(value, role)
     try:
         tmp = secrets_dir / f".tmp-mint-{os.getpid()}-{secrets.token_hex(8)}"
         fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
@@ -454,26 +513,24 @@ def _write_mint_receipt(name: str, value: bytes, secrets_dir: Path) -> bool:
             raise
         finally:
             os.close(fd)
-        os.replace(tmp, _receipt_path(name, secrets_dir))
+        try:
+            os.replace(tmp, _receipt_path(name, secrets_dir))
+        except OSError:
+            # Leave no staging file behind: `_sweep_orphans` would only
+            # reclaim it 60s later, and a mint that publishes nothing must
+            # leave the directory exactly as it found it.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         _fsync_dir(secrets_dir)
-        return True
     except OSError:
-        return False
+        raise
 
 
-def _read_receipt(name: str, secrets_dir: Path) -> dict | None:
-    """The parsed receipt, or ``None`` for every anomaly.
-
-    Unlike :func:`_read_state`, a malformed receipt is reported and **NEVER
-    deleted**. Speculative deletion in this directory is the whole hazard;
-    an unreadable receipt already fails closed as `unproven`.
-    """
-    try:
-        raw = _read_raw(f"{name}{MINT_RECEIPT_SUFFIX}", secrets_dir)
-    except OSError:
-        return None
-    if raw is None:
-        return None
+def _parse_receipt(raw: bytes) -> dict | None:
+    """The receipt's dict iff it is exactly the v2 schema; ``None`` otherwise."""
     try:
         rec = json.loads(raw)
     except (ValueError, TypeError):
@@ -489,17 +546,110 @@ def _read_receipt(name: str, secrets_dir: Path) -> dict | None:
     digest = rec["value_sha256"]
     if not isinstance(digest, str) or not _HEX64_RE.match(digest):
         return None
+    role = rec["role"]
+    if not isinstance(role, str) or not _ROLE_RE.match(role):
+        return None
     return rec
+
+
+def _read_receipt(name: str, secrets_dir: Path) -> dict | None:
+    """The parsed receipt, or ``None`` for every anomaly.
+
+    Unlike :func:`_read_state`, a malformed receipt is reported and **NEVER
+    deleted**. Speculative deletion in this directory is the whole hazard;
+    an unreadable receipt already fails closed as `unproven`.
+    """
+    try:
+        raw = _read_raw(f"{name}{MINT_RECEIPT_SUFFIX}", secrets_dir)
+    except OSError:
+        return None
+    if raw is None:
+        return None
+    return _parse_receipt(raw)
+
+
+# The three answers a certifying read can give. `UNAVAILABLE` is an artifact
+# that exists but could not be read NOW (an OSError other than ENOENT);
+# `UNCERTIFIED` is every evidential failure — absent, malformed, v1, stale
+# digest, symlinked. The distinction is load-bearing for retirement (seam S25):
+# uncertified evidence is skipped, an unavailable artifact aborts.
+UNCERTIFIED = "uncertified"
+UNAVAILABLE = "unavailable"
+
+
+class Certified(tuple):
+    """``(raw, receipt)`` — the live bytes and the receipt that certifies them."""
+    __slots__ = ()
+
+    @property
+    def raw(self) -> bytes:
+        return self[0]
+
+    @property
+    def role(self) -> str:
+        return self[1]["role"]
+
+
+def _read_raw_tri(name: str, secrets_dir: Path):
+    """``(raw | None, unavailable)``: ENOENT is the only absence."""
+    path = secrets_dir / name
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None, False
+    except OSError:
+        return None, True
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, False
+        return os.read(fd, _PROVIDER_MAX + 1), False
+    except OSError:
+        return None, True
+    finally:
+        os.close(fd)
+
+
+def _certified_read(name: str, secrets_dir: Path):
+    """ONE read of the live bytes and ONE of the receipt, compared to each other.
+
+    Returns :class:`Certified` when the receipt is exactly the v2 schema and
+    its digest matches THOSE bytes; :data:`UNAVAILABLE` when either artifact
+    exists but could not be read; :data:`UNCERTIFIED` otherwise. Every public
+    reader below sits on this one implementation so their definitions cannot
+    drift (seam S1 — the reader must never certify one read and return another).
+    Total: never raises.
+    """
+    secrets_dir = Path(secrets_dir)
+    raw, unavailable = _read_raw_tri(name, secrets_dir)
+    if unavailable:
+        return UNAVAILABLE
+    if raw is None:
+        return UNCERTIFIED
+    rec_raw, unavailable = _read_raw_tri(f"{name}{MINT_RECEIPT_SUFFIX}", secrets_dir)
+    if unavailable:
+        return UNAVAILABLE
+    if rec_raw is None:
+        return UNCERTIFIED
+    rec = _parse_receipt(rec_raw)
+    if rec is None:
+        return UNCERTIFIED
+    # `_parse_receipt` has already shape-checked the digest to 64 lowercase
+    # hex, which is what makes this comparison safe to reach: `compare_digest`
+    # raises on a non-ASCII str, and this function never raises.
+    if not hmac.compare_digest(rec["value_sha256"], hashlib.sha256(raw).hexdigest()):
+        return UNCERTIFIED
+    return Certified((raw, rec))
 
 
 def resident_secret_provenance(name: str, *, secrets_dir: Path) -> str:
     """``casa_minted`` | ``unproven`` | ``absent`` for the slot at ``name``.
 
     ``casa_minted`` means Casa GENERATED the bytes that are in the slot right
-    now. It is the ONLY state a future retirement may act on, and it requires
-    all of: a regular, non-symlinked live file; a regular, non-symlinked,
-    parseable receipt of the exact schema and version; and a digest matching
-    those exact live bytes.
+    now. It is the ONLY state a retirement may act on, and it requires all of:
+    a regular, non-symlinked live file; a regular, non-symlinked, parseable
+    receipt of the exact schema and version; and a digest matching those
+    exact live bytes.
 
     Every other condition — no receipt, malformed, wrong version, stale from a
     value since replaced, unreadable, a lost create race — is ``unproven``.
@@ -519,46 +669,60 @@ def resident_secret_provenance(name: str, *, secrets_dir: Path) -> str:
     Total: never raises.
     """
     secrets_dir = Path(secrets_dir)
+    got = _certified_read(name, secrets_dir)
+    if isinstance(got, Certified):
+        return "casa_minted"
+    if got is UNAVAILABLE:
+        return "unproven"
+    # ENOENT is the ONLY absent condition. Unreadable, non-regular and
+    # symlinked must not collapse into absent, or a transient /data fault
+    # reads as "nothing here" to whatever later decides what to do.
     try:
-        raw = _read_raw(name, secrets_dir)
+        os.lstat(secrets_dir / name)
+    except FileNotFoundError:
+        return "absent"
     except OSError:
         return "unproven"
-    if raw is None:
-        # ENOENT is the ONLY absent condition. Unreadable, non-regular and
-        # symlinked must not collapse into absent, or a transient /data fault
-        # reads as "nothing here" to whatever later decides what to do.
-        try:
-            os.lstat(secrets_dir / name)
-        except FileNotFoundError:
-            return "absent"
-        except OSError:
-            return "unproven"
-        return "unproven"
-    rec = _read_receipt(name, secrets_dir)
-    if rec is None:
-        return "unproven"
-    # `_read_receipt` has already shape-checked the digest to 64 lowercase hex,
-    # which is what makes this comparison safe to reach: `compare_digest`
-    # raises on a non-ASCII str, and this function never raises.
-    actual = hashlib.sha256(raw).hexdigest()
-    return ("casa_minted" if hmac.compare_digest(rec["value_sha256"], actual)
-            else "unproven")
+    return "unproven"
 
 
-def mint_resident_secret(name: str, *, secrets_dir: Path) -> bytes | None:
-    """Mint a casa-owned RESIDENT slot and record value-bound provenance.
+def resident_secret_minted_for(name: str, *, secrets_dir: Path) -> str | None:
+    """The role the slot's receipt names — iff the receipt certifies the live
+    bytes (the same value binding as :func:`resident_secret_provenance`); else
+    ``None``. Total, owner-agnostic."""
+    got = _certified_read(name, Path(secrets_dir))
+    return got.role if isinstance(got, Certified) else None
+
+
+def read_certified_secret(name: str, *, role: str, secrets_dir: Path) -> bytes | None:
+    """The live bytes iff the receipt certifies them for exactly ``role`` and
+    they are a valid casa value; ``None`` otherwise (→ 401). One read, no
+    re-read: the bytes returned are the bytes that were certified."""
+    got = _certified_read(name, Path(secrets_dir))
+    if not isinstance(got, Certified) or got.role != role:
+        return None
+    return got.raw if _valid_value("casa", got.raw) else None
+
+
+def mint_resident_secret(name: str, *, secrets_dir: Path, role: str) -> bytes | None:
+    """Mint a casa-owned RESIDENT slot for ``role`` and record value-bound,
+    role-bound provenance. Raises ``OSError`` when the proof cannot be written.
 
     The resident counterpart to :func:`ensure_secret`, which is deliberately
     left unchanged: that one also serves the plugin path through
     :func:`ensure_secret_for_identity`, whose provenance is the `.ident`
-    consent binding and whose semantics are retire-and-rekey. A resident has
-    neither, and a second differently-shaped provenance on that path would be
-    redundant surface.
+    consent binding and whose semantics are retire-and-rekey.
 
-    A receipt is written ONLY when this call actually created the live name.
-    `_publish` keeps a concurrent winner's file rather than clobbering it, and
-    that winner can be an operator hand-placing a credential — certifying its
-    bytes would be the precise mistake this mechanism exists to prevent.
+    Receipt BEFORE link (#620, seam c3): a casa-owned resident route
+    authenticates only with certified bytes, so the proof is made durable
+    first and the value is published only after it. A receipt that cannot be
+    written publishes nothing and raises — one named mint failure, retried by
+    the next pass. A link that loses the race, or fails, removes the receipt
+    this call wrote — and only after re-reading it and confirming it is exactly
+    this attempt's, so a receipt another writer replaced meanwhile is never
+    touched. `_publish` keeps a concurrent winner's file rather than
+    clobbering it, and that winner can be an operator hand-placing a
+    credential; nothing here certifies bytes it did not write.
 
     An EXISTING value is returned untouched and NEVER receipted. Backfilling
     would certify a 43-byte operator credential as Casa's, because nothing
@@ -566,15 +730,39 @@ def mint_resident_secret(name: str, *, secrets_dir: Path) -> bytes | None:
     guard already means this normally sees no file at all.
     """
     secrets_dir = Path(secrets_dir)
-    if secrets_dir.exists():
-        _sweep_orphans(secrets_dir)
-    existing = _read_final(name, "casa", secrets_dir)
-    if existing is not None:
-        return existing
-    value = secrets.token_urlsafe(_CASA_TOKEN_NBYTES).encode("ascii")
-    if _publish(name, value, secrets_dir):
-        _write_mint_receipt(name, value, secrets_dir)
-    return _read_final(name, "casa", secrets_dir)
+    with _RESIDENT_MINT_LOCK:
+        if secrets_dir.exists():
+            _sweep_orphans(secrets_dir)
+        existing = _read_final(name, "casa", secrets_dir)
+        if existing is not None:
+            return existing
+        value = secrets.token_urlsafe(_CASA_TOKEN_NBYTES).encode("ascii")
+        secrets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _write_mint_receipt(name, value, secrets_dir, role=role)   # raises: no proof, no slot
+        mine = _receipt_payload(value, role)
+        try:
+            won = _publish(name, value, secrets_dir)
+        except BaseException:
+            _remove_receipt_if_exactly(name, mine, secrets_dir)
+            raise
+        if not won:
+            _remove_receipt_if_exactly(name, mine, secrets_dir)
+        return _read_final(name, "casa", secrets_dir)
+
+
+def _remove_receipt_if_exactly(name: str, payload: bytes, secrets_dir: Path) -> None:
+    """Compare-before-unlink: remove the receipt only if its bytes are exactly
+    the ones this attempt wrote (seam S4 amendment). Never raises."""
+    try:
+        current = _read_raw(f"{name}{MINT_RECEIPT_SUFFIX}", secrets_dir)
+    except OSError:
+        return
+    if current is None or current != payload:
+        return
+    try:
+        os.unlink(_receipt_path(name, secrets_dir))
+    except OSError:
+        pass
 
 
 def _ident_path(name: str, secrets_dir: Path) -> Path:

@@ -166,16 +166,23 @@ class TriggerRegistry:
         # → role. The wildcard /webhook/{name} handler in casa_core consults
         # this to 404 unknown names and dispatch knowns to the registered
         # role. reregister_for evicts removed names by role.
-        self._webhook_targets: dict[str, str] = {}
+        #
+        # #620 (seam S1): ONE immutable record per name — ``{"role",
+        # "clearance", "auth"}`` — published by a single dict assignment, so a
+        # reader that takes ``webhook_route(name)`` sees one route whole. The
+        # former three per-field maps (target / clearance / auth policy) let a
+        # consumer read a target, then a clearance from a re-registration that
+        # landed in between, and stamp one message from two routes. A consumer
+        # that needs more than one field of a route reads ``webhook_route``,
+        # never two getters.
+        self._webhook_routes: dict[str, dict] = {}
         self._webhook_names_by_role: dict[str, list[str]] = {}
-        # Release A: per-trigger memory read-clearance (spec A1/A4), stamped
-        # onto webhook_trigger turns so the recall gate reads at the declared
-        # tier (default/floor "public", never "private").
-        self._webhook_clearances: dict[str, str] = {}
-        # Release A: per-trigger auth policy (spec A1) — mode/header/
-        # tolerance_secs/secret_owner. The wildcard handler reads it to verify
-        # the request with the right scheme + secret.
-        self._webhook_auth_policies: dict[str, dict] = {}
+        # #620 (seam S14/S17): while a ``reregister_for`` call is in progress,
+        # its webhook records are STAGED here and published only after every
+        # entry validated, the retirement hook succeeded and every job
+        # installed. ``None`` outside such a call (a direct ``register_agent``
+        # — boot, the reminder sites — publishes immediately, as before).
+        self._staging: dict[str, dict] | None = None
         # Release B: plugin-declared webhook triggers form a SEPARATE overlay
         # layer keyed by effective name (always ``plg-<plugin>--<declared>``).
         # Resident trigger names can never start with ``plg-`` (schema
@@ -234,12 +241,7 @@ class TriggerRegistry:
                 # per-path route is gone, so ``path`` is neither served nor a
                 # collision axis (v2 triggers carry path=""; a path check would
                 # false-collide). Uniqueness is by trigger NAME only.
-                owner = self._webhook_targets.get(trig.name)
-                if owner is not None and owner != role:
-                    raise TriggerError(
-                        f"agent {role!r} trigger {trig.name!r}: webhook "
-                        f"trigger name already registered by role {owner!r}"
-                    )
+                self._check_webhook_collision(role, trig.name)
                 self._register_webhook(role, trig)
             else:
                 raise TriggerError(
@@ -464,15 +466,88 @@ class TriggerRegistry:
         # was an unauthenticated bypass; a v2 trigger's empty path even
         # registered an open ``POST /``). This method now only maintains the
         # name→role/clearance/auth allowlist the wildcard handler consults.
-        self._webhook_targets[trig.name] = role
-        self._webhook_names_by_role.setdefault(role, []).append(trig.name)
-        self._webhook_clearances[trig.name] = (
-            getattr(trig, "clearance", "public") or "public"
-        )
-        self._webhook_auth_policies[trig.name] = getattr(trig, "auth", None) or {
-            "mode": "hmac_body", "header": "X-Webhook-Signature",
-            "tolerance_secs": 300, "secret_owner": "casa",
+        record = {
+            "role": role,
+            "clearance": getattr(trig, "clearance", "public") or "public",
+            "auth": getattr(trig, "auth", None) or {
+                "mode": "hmac_body", "header": "X-Webhook-Signature",
+                "tolerance_secs": 300, "secret_owner": "casa",
+            },
         }
+        self._webhook_names_by_role.setdefault(role, []).append(trig.name)
+        if self._staging is not None:
+            self._staging[trig.name] = record
+        else:
+            self._webhook_routes[trig.name] = record
+
+    def _check_webhook_collision(self, role: str, name: str) -> None:
+        owner = (self._webhook_routes.get(name) or {}).get("role")
+        if owner is not None and owner != role:
+            raise TriggerError(
+                f"agent {role!r} trigger {name!r}: webhook "
+                f"trigger name already registered by role {owner!r}"
+            )
+
+    def _validate_agent(
+        self, role: str, triggers: list[TriggerSpec], channels: list[str],
+    ) -> None:
+        """Every check :meth:`register_agent` performs, with NO side effect
+        (#620, seam S33). ``reregister_for`` runs this before the retirement
+        hook and before any job is installed, so a later entry's fault can
+        neither follow a retirement nor find an earlier job already executable.
+        Raises :class:`TriggerError` for every failure, including the ones
+        APScheduler's own trigger construction would raise at ``add_job``."""
+        from apscheduler.triggers.cron import CronTrigger
+        import reminders
+
+        names_seen: set[str] = set()
+        for trig in triggers:
+            if trig.name in names_seen:
+                raise TriggerError(
+                    f"agent {role!r}: duplicate trigger name {trig.name!r}"
+                )
+            names_seen.add(trig.name)
+            if trig.type in ("interval", "cron", "date"):
+                if trig.channel not in channels:
+                    raise TriggerError(
+                        f"agent {role!r} trigger {trig.name!r}: channel "
+                        f"{trig.channel!r} not registered on this agent "
+                        f"(channels={channels})"
+                    )
+                job_id = f"{role}:{trig.name}"
+                if job_id in self._seen_job_ids:
+                    raise TriggerError(f"duplicate scheduler job id {job_id!r}")
+                try:
+                    if trig.type == "date":
+                        reminders.parse_at(trig.at)
+                    elif trig.type == "cron":
+                        fields = trig.schedule.split()
+                        if len(fields) != 5:
+                            raise TriggerError(
+                                f"agent {role!r} trigger {trig.name!r}: cron "
+                                f"schedule must be a 5-field string; got "
+                                f"{trig.schedule!r}"
+                            )
+                        minute, hour, day, month, day_of_week = fields
+                        extra: dict = {}
+                        if trig.at:
+                            extra["start_date"] = reminders.parse_at(trig.at)
+                        CronTrigger(minute=minute, hour=hour, day=day, month=month,
+                                    day_of_week=_translate_cron_dow(day_of_week),
+                                    **extra)
+                except TriggerError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — surfaced as the one error type
+                    raise TriggerError(
+                        f"agent {role!r} trigger {trig.name!r}: {exc}"
+                    ) from exc
+            elif trig.type == "webhook":
+                self._check_webhook_collision(role, trig.name)
+            else:
+                raise TriggerError(
+                    f"agent {role!r} trigger {trig.name!r}: unknown "
+                    f"trigger type {trig.type!r}"
+                )
 
     def get_webhook_target(self, name: str) -> str | None:
         """Return the role registered for a webhook trigger ``name``,
@@ -482,13 +557,33 @@ class TriggerRegistry:
         triggers win; plugin-overlay triggers (``plg-…``) are the fallback
         (the namespaces are disjoint, so at most one ever matches).
         """
-        role = self._webhook_targets.get(name)
-        if role is not None:
-            return role
+        record = self._webhook_routes.get(name)
+        if record is not None:
+            return record["role"]
         if self._plugin_overlay is ROUTING_UNAVAILABLE:
             return None                                  # #606: closed ingress
         entry = self._plugin_overlay.get(name)
         return entry["role"] if entry is not None else None
+
+    def webhook_route(self, name: str) -> dict | None:
+        """ONE atomic snapshot of the route for ``name`` — ``{"role",
+        "clearance", "auth", "resident"}`` — or ``None`` when nothing routes
+        it (#620, seam S1). Resident records win; the plugin overlay is the
+        fallback, ``resident: False``, exactly as ``get_webhook_target``
+        resolves. The wildcard handler and the secret report read THIS and
+        nothing else per request or row, so a re-registration between two
+        reads can never stamp one message, or one row, from two routes.
+        """
+        record = self._webhook_routes.get(name)
+        if record is not None:
+            return {**record, "resident": True}
+        if self._plugin_overlay is ROUTING_UNAVAILABLE:
+            return None                                  # #606: closed ingress
+        entry = self._plugin_overlay.get(name)
+        if entry is None:
+            return None
+        return {"role": entry["role"], "clearance": entry["clearance"],
+                "auth": entry["auth"], "resident": False}
 
     def webhook_names_for(self, role: str) -> list[str]:
         """The webhook names this role currently ROUTES, from the same map
@@ -496,21 +591,22 @@ class TriggerRegistry:
 
         Deliberately not ``_webhook_names_by_role``: that is teardown
         bookkeeping which appends without de-duplicating, so a re-registration
-        leaves the name twice. ``_webhook_targets`` is the routing authority
+        leaves the name twice. ``_webhook_routes`` is the routing authority
         and ``_unwind_role`` clears it, so a name here is a name a request
         would actually reach. Plugin-overlay names are excluded by
         construction — they live in ``_plugin_overlay`` and their namespace
         (``plg-…``) is disjoint from any resident name the schema admits.
         """
-        return sorted(n for n, r in self._webhook_targets.items() if r == role)
+        return sorted(n for n, r in self._webhook_routes.items() if r["role"] == role)
 
     def get_clearance(self, name: str) -> str:
         """Return the declared memory read-clearance for webhook trigger
         ``name`` (default ``"public"``). Stamped onto the dispatched turn's
         ``_origin_clearance`` so the recall gate reads at the declared tier.
         """
-        if name in self._webhook_clearances:
-            return self._webhook_clearances[name]
+        record = self._webhook_routes.get(name)
+        if record is not None:
+            return record["clearance"]
         if self._plugin_overlay is ROUTING_UNAVAILABLE:
             return "public"                              # #606: closed ingress
         entry = self._plugin_overlay.get(name)
@@ -520,9 +616,9 @@ class TriggerRegistry:
         """Return the per-trigger auth policy for webhook ``name`` (mode/header/
         tolerance_secs/secret_owner), or ``None`` if the name is unregistered.
         The wildcard handler verifies the request with this policy."""
-        policy = self._webhook_auth_policies.get(name)
-        if policy is not None:
-            return policy
+        record = self._webhook_routes.get(name)
+        if record is not None:
+            return record["auth"]
         if self._plugin_overlay is ROUTING_UNAVAILABLE:
             return None                                  # #606: closed ingress
         entry = self._plugin_overlay.get(name)
@@ -647,10 +743,8 @@ class TriggerRegistry:
             # Only evict if THIS role still owns the name (register_agent
             # now rejects cross-role webhook name collisions, so this is
             # belt-and-braces).
-            if self._webhook_targets.get(name) == role:
-                self._webhook_targets.pop(name, None)
-                self._webhook_clearances.pop(name, None)
-                self._webhook_auth_policies.pop(name, None)
+            if (self._webhook_routes.get(name) or {}).get("role") == role:
+                self._webhook_routes.pop(name, None)
         self._webhook_names_by_role[role] = []
         return stuck
 
@@ -659,9 +753,17 @@ class TriggerRegistry:
         role: str,
         triggers: list[TriggerSpec],
         channels: list[str],
+        *,
+        before_install=None,
     ) -> None:
         """Remove this role's existing APScheduler jobs and webhook paths,
-        then re-wire from the supplied specs.
+        then re-wire from the supplied specs — as ONE operation (#620):
+        unwind → validate every entry (no side effect) → ``before_install``
+        (the secret-retirement hook, handed the sorted webhook names about to
+        route; any exception aborts) → install (jobs live, webhook records
+        STAGED) → publish the staged records. Nothing is published, and no job
+        exists, before every earlier step succeeded; a failure at any step
+        runs the existing unwind arm and leaves the role with NO triggers.
 
         Fail-closed: if re-registration raises, the agent is left with NO
         triggers. #307: register_agent stops at the offending entry, so the
@@ -686,7 +788,18 @@ class TriggerRegistry:
                 f"zombie/duplicate jobs"
             )
         try:
-            self.register_agent(role, triggers, channels)
+            self._validate_agent(role, triggers, channels)
+            if before_install is not None:
+                before_install(sorted(
+                    t.name for t in triggers if t.type == "webhook"))
+            self._staging = {}
+            try:
+                self.register_agent(role, triggers, channels)
+                staged = self._staging
+            finally:
+                self._staging = None
+            for name, record in staged.items():
+                self._webhook_routes[name] = record
         except Exception as exc:
             leftover = self._unwind_role(role)
             if leftover:

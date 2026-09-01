@@ -183,13 +183,18 @@ class TestReregisterFor:
         # First unwind removal (t0) succeeds; the post-failure unwind's
         # removal of the just-installed "good" job fails.
         scheduler.remove_job.side_effect = [None, RuntimeError("stuck")]
+        # #620 (S33): every entry is VALIDATED before any job is installed, so
+        # a malformed later entry can no longer follow an installed one. The
+        # fault that still can is an INSTALL-time scheduler fault on a later,
+        # valid entry — which is what this pin has always been about.
+        scheduler.add_job.side_effect = [None, RuntimeError("scheduler refused")]
 
         good = TriggerSpec(
             name="good", type="interval", minutes=10,
             channel="telegram", prompt="p",
         )
         bad = TriggerSpec(
-            name="bad", type="cron", schedule="not-a-cron",
+            name="bad", type="interval", minutes=20,
             channel="telegram", prompt="q",
         )
         with pytest.raises(TriggerError) as excinfo:

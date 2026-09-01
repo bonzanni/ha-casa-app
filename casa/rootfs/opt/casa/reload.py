@@ -17,7 +17,9 @@ other scopes via the ``_GLOBAL_LOCK`` mechanism.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import threading
 import time
 from collections import deque
 from typing import Any, Awaitable, Callable
@@ -142,25 +144,78 @@ _SECRET_REPORT_SCOPES = frozenset(
     {"triggers", "agent", "agents", "full", "policies", "config_sync"})
 
 
-async def _mint_trigger_secrets(actions: list[str], role: str, specs: list) -> None:
-    """Create the missing casa-owned per-trigger secrets for *specs*.
+# #620 (INV-TRIG-016) — route mutation, secret retirement and the mint are ONE
+# operation. Every seam finding of the design attack shared one shape: two
+# reload handlers, each under the dispatcher's shared READ lock with a distinct
+# per-scope key, interleaving a route mutation with a secrets reconcile. So one
+# process-wide lock serialises the whole lifecycle across roles and scopes, and
+# inside it the registry runs unwind → validate → retire (the hook) → install →
+# publish, with the mint after publication. A worker thread holding this lock
+# never awaits an asyncio lock, so it creates no ordering with the reload locks
+# or `_PLUGIN_TOOLS_LOCK`; `webhook_auth._RESIDENT_MINT_LOCK` nests inside.
+_ROUTE_LIFECYCLE_LOCK = threading.Lock()
 
-    Called AFTER registration at every install site. Never raises: a mint
-    failure is an `actions` entry naming the trigger, which rides out on the
-    ordinary envelope, plus the report row that says what the file's condition
-    actually is.
+
+class RetirementRefused(Exception):
+    """A retirement the filesystem refused; the registration that asked for it
+    is aborted and the role is left with no routes. `names` are the slots."""
+
+    def __init__(self, names):
+        self.names = list(names)
+        super().__init__(
+            f"retirement of {', '.join(self.names)} refused; the role is left "
+            f"with no active triggers")
+
+
+def _register_and_reconcile(registry, role: str, triggers: list, channels: list,
+                            *, secrets_dir) -> tuple[list[str], list[tuple[str, str]]]:
+    """Worker-thread body: register *triggers* for *role* with the retirement
+    hook, then mint. Returns ``(retired_names, mint_failures)``; raises
+    whatever the registry raises (a hook refusal included), with nothing
+    published."""
+    import resident_trigger_secrets
+    retired: list[str] = []
+
+    def hook(staged: list[str]) -> None:
+        out = resident_trigger_secrets.retire_for_role(
+            role, declared=triggers, staged=staged, secrets_dir=secrets_dir)
+        if out.failed:
+            raise RetirementRefused(out.failed)
+        retired.extend(out.retired)
+
+    with _ROUTE_LIFECYCLE_LOCK:
+        registry.reregister_for(role, list(triggers), list(channels),
+                                before_install=hook)
+        failures = resident_trigger_secrets.mint_for_specs(
+            triggers, secrets_dir=secrets_dir, role=role)
+    return retired, failures
+
+
+def _unroute(registry, role: str) -> None:
+    """``reregister_for(role, [], [])`` under the lifecycle lock — a teardown
+    retires nothing (design: eviction is not a removal event)."""
+    with _ROUTE_LIFECYCLE_LOCK:
+        registry.reregister_for(role, [], [])
+
+
+async def _register_and_reconcile_async(
+    actions: list[str], runtime: Any, role: str, triggers: list, channels: list,
+) -> None:
+    """The one registration + secrets step every install site calls. Raises on
+    a registration or retirement failure (the caller converts it to its own
+    ``reregister_failed``); a MINT failure never raises — it is an `actions`
+    entry naming the trigger, plus the report row that says what the file's
+    condition actually is. Retired slots ride out as
+    ``trigger_secret_retired_<name>``.
     """
-    try:
-        import resident_trigger_secrets
-        import trigger_reconcile
-        failures = await asyncio.to_thread(
-            resident_trigger_secrets.mint_for_specs,
-            specs, secrets_dir=trigger_reconcile.SECRETS_DIR,
-        )
-    except Exception as exc:  # noqa: BLE001 — never abort a reload for this
-        logger.warning("trigger secret mint failed for role=%s: %s", role, exc)
-        actions.append(f"trigger_secret_mint_error_{role}")
-        return
+    import trigger_reconcile
+    retired, failures = await asyncio.to_thread(
+        _register_and_reconcile, runtime.trigger_registry, role, list(triggers),
+        list(channels), secrets_dir=trigger_reconcile.SECRETS_DIR,
+    )
+    for name in retired:
+        logger.info("retired the webhook secret of %r (role=%s)", name, role)
+        actions.append(f"trigger_secret_retired_{name}")
     for name, reason in failures:
         logger.warning(
             "trigger %r on role=%s has no usable secret and could not be "
@@ -650,20 +705,17 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
     # finisher cannot reach a running loop. Each revocation settles its ask:
     # the keyboard is retired and the scheduled session is told.
     scheduled_asks.revoke_role(role, "trigger_reloaded")
+    # #609/#620: registration, retirement and the mint are one operation under
+    # the route lifecycle lock — the registry validates, the hook retires, the
+    # records publish, then the mint runs, so the cross-role webhook-name
+    # collision test has refused a name this role may not have before any
+    # secret is touched.
+    secret_actions: list[str] = []
     try:
-        await asyncio.to_thread(
-            runtime.trigger_registry.reregister_for,
-            role, list(cfg.triggers), list(cfg.channels),
-        )
+        await _register_and_reconcile_async(
+            secret_actions, runtime, role, list(cfg.triggers), list(cfg.channels))
     except Exception as exc:  # noqa: BLE001
         raise ReloadError("reregister_failed", str(exc)) from exc
-
-    # #609: mint AFTER registration, so the cross-role webhook-name collision
-    # test inside `register_agent` has already refused a name this role may not
-    # have. Minting first would write a casa token into another role's slot for
-    # a registration that is then rejected.
-    secret_actions: list[str] = []
-    await _mint_trigger_secrets(secret_actions, role, list(cfg.triggers))
 
     # Q-1 fix (v0.35.2): refresh the runtime cache so back-compat consumers
     # (tools.casa_reload_triggers emits `registered=[...]` by reading
@@ -1002,9 +1054,7 @@ async def _teardown_role(runtime: Any, role: str) -> None:
         )
     scheduled_asks.revoke_role(role, "role_evicted")
     try:
-        await asyncio.to_thread(
-            runtime.trigger_registry.reregister_for, role, [], [],
-        )
+        await asyncio.to_thread(_unroute, runtime.trigger_registry, role)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "reload_agents: trigger deregister(%s) failed: %s", role, exc,
@@ -1234,10 +1284,8 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
     # Re-register triggers for that role only.
     scheduled_asks.revoke_role(role, "trigger_reloaded")
     try:
-        await asyncio.to_thread(
-            runtime.trigger_registry.reregister_for,
-            role, list(new_cfg.triggers), list(new_cfg.channels),
-        )
+        await _register_and_reconcile_async(
+            actions, runtime, role, list(new_cfg.triggers), list(new_cfg.channels))
         actions.append("reregister_triggers")
     except Exception as exc:  # noqa: BLE001
         # #327(b): surface the failure — pre-fix this logged and returned
@@ -1253,8 +1301,6 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
             f"triggers unless the error below names job(s) that remain "
             f"live: {exc}",
         ) from exc
-
-    await _mint_trigger_secrets(actions, role, list(new_cfg.triggers))
 
     # Drain pending-reload guard if any.
     try:
@@ -1622,18 +1668,20 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         if getattr(new_cfg, "triggers", None):
             scheduled_asks.revoke_role(r, "trigger_reloaded")
             try:
-                await asyncio.to_thread(
-                    runtime.trigger_registry.reregister_for,
-                    r, list(new_cfg.triggers), list(new_cfg.channels),
-                )
+                await _register_and_reconcile_async(
+                    actions, runtime, r, list(new_cfg.triggers), list(new_cfg.channels))
                 actions.append(f"registered_triggers_{r}")
-                await _mint_trigger_secrets(actions, r, list(new_cfg.triggers))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "reload_agents: trigger register failed for added "
                     "role=%s: %s", r, exc,
                 )
                 actions.append(f"trigger_register_failed_{r}")
+                # This sweep aggregates per role and returns ok; a refused
+                # secret retirement is named per slot here since no error
+                # envelope carries it (#620).
+                for name in getattr(exc, "names", ()):
+                    actions.append(f"trigger_secret_retire_failed_{name}")
 
     # Evict deleted residents — H11: full lifecycle teardown (cancel
     # consumer, drop queue/handler, unwind triggers), mirroring the add
@@ -1927,6 +1975,16 @@ async def reload_config_sync(runtime: Any, *, role: str | None = None) -> list[s
     image_version = getattr(runtime, "image_version", "unknown")
 
     actions: list[str] = []
+    # #620 (path 12): a pass that changes a known resident's triggers.yaml must
+    # re-register THAT resident's triggers, or a dropped webhook keeps its route
+    # and its credential until an unrelated reload. Hashed before and after —
+    # the report's `merged` records no-op merges too, so it cannot say which
+    # files changed — and scoped to the residents whose file changed, because
+    # a trigger reload revokes that role's pending scheduled asks.
+    agents_dir = getattr(runtime, "agents_dir", None) or os.path.join(config_dir, "agents")
+    known = list(getattr(runtime, "role_configs", None) or {})
+    before = {r: _trigger_file_hash(os.path.join(agents_dir, r, "triggers.yaml"))
+              for r in known}
     rc = await asyncio.to_thread(
         config_sync.run,
         defaults_dir=defaults_dir,
@@ -1955,7 +2013,49 @@ async def reload_config_sync(runtime: Any, *, role: str | None = None) -> list[s
         except Exception as exc:  # noqa: BLE001 — one cascade failure shouldn't abort the rest
             logger.warning("config_sync cascade: scope=%s failed: %s", scope, exc)
 
+    # Then the residents whose trigger file the pass changed (#620). An
+    # `UNREADABLE` on EITHER side counts as changed: a transient read fault must
+    # never suppress the cascade (seam S13) — `reload_triggers` re-reads the
+    # file itself and reports `load_error` if it is still unreadable. Lock
+    # order stays one-directional: config_sync -> triggers:<role>.
+    handler = _HANDLERS.get("triggers")
+    for r in known:
+        after = _trigger_file_hash(os.path.join(agents_dir, r, "triggers.yaml"))
+        if handler is None or (after == before[r] and "UNREADABLE" not in (before[r], after)):
+            continue
+        try:
+            async with _get_lock(_lock_key("triggers", r)):
+                sub = await handler(runtime, role=r)
+            actions.extend(f"triggers:{r}:{a}" for a in sub)
+        except Exception as exc:  # noqa: BLE001 — one role's refusal never aborts another's
+            kind = getattr(exc, "kind", type(exc).__name__)
+            logger.warning("config_sync cascade: triggers:%s failed: %s", r, exc)
+            actions.append(f"triggers:{r}:error:{kind}")
+
     return actions
+
+
+def _trigger_file_hash(path: str) -> str:
+    """sha256 of the file, or the sentinels ``ABSENT`` (ENOENT) and
+    ``UNREADABLE`` (any other fault) — distinct answers on purpose."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return "ABSENT"
+    except OSError:
+        return "UNREADABLE"
+    try:
+        h = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return "UNREADABLE"
+    finally:
+        os.close(fd)
 
 
 register_handler("config_sync", reload_config_sync)

@@ -120,10 +120,12 @@
     - tests/test_resident_trigger_secrets.py
     - tests/test_webhook_secrets.py
     - tests/test_webhook_mint_receipt.py
+    - tests/test_resident_trigger_retirement.py
   related: [architecture/triggers.md, architecture/http-surface.md, architecture/plugin-triggers.md]
-  defines_invariants: [INV-TRIG-014]
+  defines_invariants: [INV-TRIG-014, INV-TRIG-016]
   invariant_tests:
     INV-TRIG-014: [tests/test_webhook_mint_receipt.py::test_a_hand_placed_value_is_never_certified, tests/test_webhook_mint_receipt.py::test_a_receipt_does_not_survive_a_value_replacement, tests/test_webhook_mint_receipt.py::test_an_existing_value_is_returned_but_never_receipted, tests/test_webhook_mint_receipt.py::test_a_lost_create_race_receipts_nothing, tests/test_resident_trigger_secrets.py::test_resident_provenance_is_value_bound_not_receipt_presence]
+    INV-TRIG-016: [tests/test_resident_trigger_retirement.py::test_removal_paths_retire_and_recreate_fresh, tests/test_resident_trigger_retirement.py::test_delete_reload_recreate_reload_rotates_once, tests/test_resident_trigger_retirement.py::test_unproven_casa_slot_is_preserved_but_refused, tests/test_resident_trigger_retirement.py::test_certified_read_matrix_and_bypasses, tests/test_resident_trigger_retirement.py::test_retirement_fault_matrix, tests/test_resident_trigger_retirement.py::test_hook_barrier_keeps_route_unpublished, tests/test_resident_trigger_retirement.py::test_webhook_handler_uses_one_atomic_route_snapshot, tests/test_resident_trigger_retirement.py::test_disabled_specialist_does_not_retire_secret]
 
 - doc: architecture/triggers.md
   summary: What makes an agent act without a person speaking — a resident's scheduled and webhook triggers, and who may write the file they live in.

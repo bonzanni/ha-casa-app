@@ -40,6 +40,10 @@ def _make_registry(
     }
     reg = MagicMock()
     reg.get_webhook_target = lambda name: targets.get(name)
+    reg.webhook_route = lambda name: (
+        None if name not in targets else {
+            "role": targets[name], "clearance": reg.get_clearance(name),
+            "auth": reg.get_auth_policy(name), "resident": True})
     reg.get_clearance = lambda name: clearances.get(name, "public")
     reg.get_auth_policy = lambda name: (
         policies.get(name, default_policy) if name in targets else None
@@ -295,7 +299,9 @@ class TestPerTriggerAuthModes:
             calls.append(name)
             raise OSError("read-only filesystem")
 
-        monkeypatch.setattr(webhook_auth, "read_secret", _boom)
+        # #620: a casa-owned resident route reads through the CERTIFIED reader;
+        # patching `read_secret` would leave a green test that exercised nothing.
+        monkeypatch.setattr(webhook_auth, "read_certified_secret", _boom)
         app, bus = await _build_app(
             targets={"vm": "assistant"},
             policies={"vm": {"mode": "static_header", "header": "X-API-Key",
