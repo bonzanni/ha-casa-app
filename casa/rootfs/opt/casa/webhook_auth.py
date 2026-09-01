@@ -382,13 +382,16 @@ def retire_secret(name: str, *, secrets_dir: Path) -> list[str]:
 
 
 def _present(path: Path) -> bool:
-    """ENOENT is the only absence; any other answer reads as present."""
+    """ENOENT is the only absence — plus ENAMETOOLONG: a name this filesystem
+    cannot represent holds nothing (the schema admits a 248-byte trigger name,
+    and its ``.rot.json`` sidecar would be 257 against a 255 NAME_MAX). Any
+    other answer reads as present."""
     try:
         os.lstat(path)
     except FileNotFoundError:
         return False
-    except OSError:
-        return True
+    except OSError as exc:
+        return exc.errno != errno.ENAMETOOLONG
     return True
 
 

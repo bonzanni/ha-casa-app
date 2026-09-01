@@ -449,6 +449,19 @@ def test_a_repeated_mint_changes_nothing(tmp_path: Path):
         "vm", secrets_dir=tmp_path) == "casa_minted"
 
 
+def test_a_maximum_length_name_retires_cleanly(tmp_path: Path):
+    """#620 (review round 4): a 248-byte name's `.rot.json` sidecar path is 257
+    bytes against a 255 NAME_MAX. ENAMETOOLONG on that probe is not "present";
+    a name the filesystem cannot represent holds nothing, and the retirement
+    must report nothing left."""
+    name = "a" * 248
+    assert webhook_auth.mint_resident_secret(name, secrets_dir=tmp_path, role="assistant") is not None
+    assert sorted(p.name for p in tmp_path.iterdir()) == [name, f"{name}.mint"]
+
+    assert webhook_auth.retire_secret(name, secrets_dir=tmp_path) == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
 def test_the_receipt_fits_a_maximum_length_trigger_name(tmp_path: Path):
     """`triggers.v1.json` caps a name at 248 bytes against a 255-byte
     NAME_MAX, reserving 7 for a suffix. A longer one would raise
