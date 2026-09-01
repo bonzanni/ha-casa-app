@@ -326,6 +326,7 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - `tests/test_personality_admin_handlers.py`
 - `tests/test_response_shape_write_guard.py`
 - `tests/test_resident_prompt_write_guard.py`
+- `tests/test_resident_prompt_guard_denial_wording.py`
 - `tests/test_assistant_prompts.py`
 - `tests/test_prompt_compiler.py`
 - `tests/test_persona_pack.py`

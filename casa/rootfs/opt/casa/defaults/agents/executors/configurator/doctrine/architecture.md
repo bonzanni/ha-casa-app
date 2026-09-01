@@ -16,8 +16,8 @@ Everything you edit lives under `/config/`:
         triggers.yaml              # optional
         hooks.yaml                 # optional
         prompts/
-          system.md                # REQUIRED to exist, read by NOTHING a
-                                   # bundle-bound resident is served — not
+          system.md                # REQUIRED to exist, read at load, NOT
+                                   # served to a bundle-bound resident — not
                                    # editable; see recipes/prompt/resident.md
           <trigger-name>.md        # one per scheduled/webhook trigger
       specialists/

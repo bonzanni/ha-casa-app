@@ -4,8 +4,9 @@
 Edit of it are refused, and it would not have worked: the file is not served.**
 
 `agents/<role>/prompts/system.md` is loaded, is pointed at by `character.yaml`'s
-`prompt_file:`, and is required to exist. It is also read by nothing a resident
-is served. A resident's base prompt is its **compiled bundle** — the persona
+`prompt_file:`, and is required to exist. The loader does read it — into a
+composed prompt that no bundle-bound resident is served. A resident's base
+prompt is its **compiled bundle** — the persona
 plus the role artifact's own doctrine and response block — and that bundle
 REPLACES the composed prompt this file feeds (INV-PERS-001). Every resident is
 bundle-bound from its first boot, because all three role artifacts declare
