@@ -12,9 +12,11 @@ What happens when a launch does not become a live engagement, and what a restart
 the records left behind: which gate refused a delegation, what a `claude_code` launch abort
 rolls back and how far it gets, which failure arms answer the calling turn rather than the
 operator's topic, and what replay resumes or refuses. The record itself, how a launch is
-admitted, turn admission and the driver protocol are in
+admitted and the driver protocol are in
 [`architecture/engagements.md`](engagements.md), which also states the invariants this
-behaviour is measured against. How an engagement *ends* once it is live is
+behaviour is measured against; how a turn is admitted to a live engagement is
+[`architecture/engagement-turn-admission.md`](engagement-turn-admission.md). How an
+engagement *ends* once it is live is
 [`architecture/engagement-finalization.md`](engagement-finalization.md); the OS boundary its
 workspace and uid live inside is
 [`architecture/engagement-containment.md`](engagement-containment.md).

@@ -13,9 +13,9 @@ how "unread" and "in flight" differ and why the gate needs both, what each drive
 how a message that dies with the engagement is disclosed rather than swallowed. The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
 finalization side effects behind the flip and topic output ordering are in
-[`architecture/engagement-finalization.md`](engagement-finalization.md). The record, how one is
-launched and how a turn is admitted to it are in
-[`architecture/engagements.md`](engagements.md).
+[`architecture/engagement-finalization.md`](engagement-finalization.md). The record and how one
+is launched are in [`architecture/engagements.md`](engagements.md); how a turn is admitted to
+it is in [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md).
 
 ## Mental model
 
@@ -283,6 +283,7 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 <!-- END SOURCEMAP -->
