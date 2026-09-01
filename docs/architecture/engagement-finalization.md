@@ -17,8 +17,9 @@ effects behind the flip, and the ordering of what an engagement posts to its top
 engagement's topic and its engager are told — the outcome mark, the unconfirmed-post
 disclosure and the durable obligation to notify — is in
 [`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md). The record
-itself, how one is launched, how a turn is admitted to it and the driver protocol are in
-[`architecture/engagements.md`](engagements.md); what a restart rewrites is in
+itself, how one is launched and the driver protocol are in
+[`architecture/engagements.md`](engagements.md); how a turn is admitted to it is in
+[`architecture/engagement-turn-admission.md`](engagement-turn-admission.md); what a restart rewrites is in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). The OS boundary a
 `claude_code` engagement runs inside, and what its teardown does and does not establish
 about the OS process, are in
@@ -281,6 +282,7 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/engagement-terminal-telling.md`](../architecture/engagement-terminal-telling.md)
 - [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)

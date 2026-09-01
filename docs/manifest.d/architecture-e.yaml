@@ -108,7 +108,7 @@
     - tests/test_engagement_registry.py
     - tests/test_output_sequencer.py
     - tests/test_anchor_narration_buffer.py
-  related: [architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/engagement-terminal-telling.md, architecture/engagement-containment.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
+  related: [architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/engagement-completion-gate.md, architecture/engagement-terminal-telling.md, architecture/engagement-containment.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
   defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-005, INV-ENG-010]
   invariant_tests:
     INV-ENG-001: [tests/test_emit_completion_tool.py::test_cancel_during_g2_reload_window_finalizes_once, tests/test_engagement_registry.py::test_mark_idle_never_overwrites_terminal, tests/test_engagement_registry.py::test_mark_error_loses_to_terminal_winner, tests/test_engagement_registry.py::test_sweep_does_not_resurrect_concurrently_finalized]

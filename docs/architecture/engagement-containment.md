@@ -14,9 +14,10 @@ being redirected out of it, where the run-state root alone touches lives, the pr
 refuses a launch whose privilege drop could not succeed, and the confirmed-down sweep boot
 replay runs before it migrates or resumes a service.
 
-The engagement *record* — its creation and turn admission — is
-[`architecture/engagements.md`](engagements.md); what a restart rewrites, and what a launch
-abort rolls back, are
+The engagement *record* and its creation are
+[`architecture/engagements.md`](engagements.md); how a turn is admitted to a live engagement
+is [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md); what a
+restart rewrites, and what a launch abort rolls back, are
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md); the
 terminal transition, its side effects
 and the finalize path's driver teardown, the one stop path that is not
