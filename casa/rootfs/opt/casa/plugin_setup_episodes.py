@@ -488,6 +488,21 @@ def damage_sentence(read: "EpisodesRead | StoreRead", *,
     return f"the plugin setup history could not be read ({read.damage})"
 
 
+def _stamp(value: Any) -> float:
+    """``updated_ts`` as a number, tolerating anything a hand-edited row holds
+    (the status tool's `_status_sort_key` rule). A malformed stamp reads as the
+    OLDEST time rather than raising: a raise here used to be swallowed by the
+    health merge, which then published no setup row at all — hiding a valid
+    pending obligation sitting beside the bad row — and, since this function
+    is the standing surface's damage disclosure, no global row either. Reading
+    the stamp as oldest decays a terminal row and keeps a pending one, which is
+    the direction that loses nothing an operator needs."""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def health_issues() -> list[dict]:
     """Non-terminal-success obligations for plugin-health regeneration.
     ``failed``/``stale``/``refused`` rows decay after
@@ -502,7 +517,7 @@ def health_issues() -> list[dict]:
         st = e.get("status")
         if st == "pending" or (
                 st in ("failed", "stale", "refused")
-                and float(e.get("updated_ts") or 0) >= cutoff):
+                and _stamp(e.get("updated_ts")) >= cutoff):
             out.append({
                 "kind": f"setup_episode_{st}",
                 "plugin": e.get("plugin"),

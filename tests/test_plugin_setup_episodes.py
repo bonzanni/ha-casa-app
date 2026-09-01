@@ -1473,3 +1473,42 @@ async def test_undecodable_store_bytes_are_malformed_never_a_raise(
     disk = json.loads(store.read_text(encoding="utf-8"))
     assert disk["reset"] == {"damage": "malformed", "ts": _T0}
     assert disk["episodes"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_timestamp_on_one_row_hides_no_other_row(
+        tmp_path, monkeypatch):
+    """Gate review (sol): a mapping-shaped row whose `updated_ts` is not a
+    number raised inside `health_issues()`, the health merge swallowed it, and
+    the report carried NO setup row — the valid pending obligation beside it
+    vanished from the standing surface. Now the bad stamp reads as oldest (the
+    status tool's own rule): the terminal row decays, the pending row stands,
+    nothing raises, and the store is not misreported as damaged (its rows are
+    all readable mappings)."""
+    import agent as agent_mod
+    import tools
+
+    store = tmp_path / "plugin-setup-episodes.json"
+    health = tmp_path / "plugin-health.json"
+    monkeypatch.setattr(pse, "STORE_PATH", store)
+    monkeypatch.setattr(tools, "_PLUGIN_HEALTH_PATH", str(health))
+    monkeypatch.setattr(agent_mod, "active_runtime", None, raising=False)
+    monkeypatch.setattr(pse, "_now", lambda: _T0)
+    bad = _valid_row("bad")
+    bad["updated_ts"] = "not-a-number"
+    pending = _valid_row("good")
+    pending["status"] = "pending"
+    _write_store(store, [bad, pending])
+
+    read = pse.read_episodes()
+    assert (len(read.rows), read.damage, read.reset) == (2, None, None)
+    rows = pse.health_issues()
+    assert [(r["kind"], r["plugin"]) for r in rows] == [
+        ("setup_episode_pending", "good")]
+    report = _regen_into(monkeypatch, health, registered=["bad", "good"])
+    assert [(d["name"], d["reason_code"]) for d in report["issues"]] == [
+        ("good", "setup_episode_pending")]
+    out = await tools.plugin_status.handler({})
+    status = json.loads(out["content"][0]["text"])
+    assert len(status["history"]) == 2
+    assert "history_unavailable" not in status
