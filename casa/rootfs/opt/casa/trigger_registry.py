@@ -196,6 +196,16 @@ class TriggerRegistry:
         # reconcile nothing authoritative has been computed, and ``{}`` would
         # claim otherwise.
         self._plugin_overlay = ROUTING_UNAVAILABLE
+        # #803: ONE publication generation for BOTH overlays, advanced by
+        # every ``replace_*_overlay`` call after its rebind — a map, the
+        # sentinel, the sentinel again. It answers the question the two
+        # identity predicates cannot: "has ANY publication landed since I
+        # last looked?" The setup-dispatch worker captures it before its
+        # blocking route recomputation and compares it, yield-free, before
+        # the send; an ordinary live-to-live publication (the revoke sweep
+        # filtering a plugin's routes out) is invisible to the predicates
+        # and visible here.
+        self._routing_generation = 0
         # Plugin-declared authorization callbacks are a SECOND,
         # independent overlay keyed by effective name (also ``plg-<plugin>--
         # <declared>``, in its OWN namespace — the callback endpoint is
@@ -640,8 +650,11 @@ class TriggerRegistry:
         """
         if overlay is ROUTING_UNAVAILABLE:
             self._plugin_overlay = ROUTING_UNAVAILABLE
-            return
-        self._plugin_overlay = dict(overlay)
+        else:
+            self._plugin_overlay = dict(overlay)
+        # #803: bump AFTER the one rebind, in the same synchronous step, so a
+        # loop-side reader never sees a new generation with an old overlay.
+        self._routing_generation += 1
 
     def replace_callback_overlay(self, overlay: dict[str, dict]) -> None:
         """Atomically replace the ENTIRE authorization-callback overlay —
@@ -659,8 +672,9 @@ class TriggerRegistry:
         """
         if overlay is ROUTING_UNAVAILABLE:
             self._callback_overlay = ROUTING_UNAVAILABLE
-            return
-        self._callback_overlay = dict(overlay)
+        else:
+            self._callback_overlay = dict(overlay)
+        self._routing_generation += 1                 # #803: see the trigger twin
 
     def get_callback(self, name: str) -> dict | None:
         """The overlay entry for callback ``name``, or ``None`` when no such
@@ -708,6 +722,13 @@ class TriggerRegistry:
         """True while no authoritative plugin-callback routing computation
         stands behind the overlay (#606)."""
         return self._callback_overlay is ROUTING_UNAVAILABLE
+
+    def routing_generation(self) -> int:
+        """#803: the number of overlay publications so far, of EITHER kind
+        and including a re-published sentinel. Two equal readings mean no
+        publication landed between them; the setup-dispatch worker relies on
+        exactly that across its blocking route recomputation."""
+        return self._routing_generation
 
     def _unwind_role(self, role: str) -> list[str]:
         """Drop every scheduler job and webhook-allowlist entry owned by

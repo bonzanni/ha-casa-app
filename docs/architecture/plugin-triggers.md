@@ -110,10 +110,12 @@ interleave between a mutation's registry commit and that mutation's own reconcil
 regenerates health once after every attempt, so a heal clears the routing rows at once and
 a half that newly fails gains its row at once. A failure that persists costs one log line
 and one identical report per pass; the report's fingerprints do not change, so nothing is
-announced again. What this does not cover: the setup route gate reads recomputed state and
-durable artifacts, not the applied markers, so a released obligation can pass it while one
-half of the pair is still being recomputed — a pre-existing gap of that gate, tracked in its
-own issue, not of the recovery.
+announced again. The kicks this pass fires from its trigger half land before its callback
+half has swapped, and they wake a setup worker that reads both applied markers itself — before
+its recomputation and again, with no yield, before the send — and defers on its own timer
+while either stands or while any publication has landed since ([`plugin-setup.md`](plugin-setup.md),
+INV-PLUG-016); so a released obligation woken by a half-healed pair defers rather than
+dispatching against the half still closed.
 
 ## Failure behavior
 

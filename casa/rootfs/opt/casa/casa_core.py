@@ -3172,6 +3172,32 @@ def _callback_and_trigger_routes_live(plugin: str) -> bool:
     return True
 
 
+def _applied_plugin_routing() -> "tuple[bool, int] | None":
+    """#803: the applied plugin routing state the setup-dispatch worker reads
+    beside the route gate above — ``None`` when no runtime registry is bound
+    (the recomputation alone decides, exactly as before), else
+    ``(published, generation)``: ``published`` is False while EITHER applied
+    overlay carries :data:`trigger_registry.ROUTING_UNAVAILABLE` (identity,
+    via the registry's own predicates), ``generation`` counts every overlay
+    publication of either kind. No I/O, no lock, no yield — safe from the
+    gate's thread and from the loop. Raises propagate: a swallowed exception
+    would have to become ``None`` (which reads as "no registry", fail-open)
+    or an invented tuple, so each caller fails CLOSED itself.
+
+    Reads the LIVE registry, never a captured one: a consent-tap reconcile
+    publishes to the registry it captured, which may be stale after a full
+    reload, and the worker must decide against what requests route through.
+    """
+    import agent as _agent_mod
+    runtime = getattr(_agent_mod, "active_runtime", None)
+    registry = getattr(runtime, "trigger_registry", None) if runtime else None
+    if registry is None:
+        return None
+    published = not (registry.plugin_overlay_unavailable()
+                     or registry.callback_overlay_unavailable())
+    return published, int(registry.routing_generation())
+
+
 def _setup_ack_lookup_union(identity: str) -> str | None:
     """Setup-round crash-recovery ack lookup. Trigger and callback
     acks live in DISJOINT sha256 identity spaces, so a stranded round whose
@@ -5233,6 +5259,11 @@ async def main() -> None:
         # a callback dark for a non-consent reason contributes no round member,
         # so the trigger gate alone would settle + dispatch with it unrouted.
         routes_live=_callback_and_trigger_routes_live,
+        # #803: the APPLIED overlays and their publication generation — read
+        # before the recompute and again, yield-free, before the send, so a
+        # setup is never dispatched against ingress the sentinel has closed
+        # or a publication has changed under the recompute.
+        applied_routing=_applied_plugin_routing,
         secrets_ready=_setup_secrets_ready,
         execution_ready=_setup_execution_ready,
     )

@@ -30,7 +30,9 @@ written by the *reconcile* that follows. A gate derived from consent alone there
 described a route as fully live during the window in between — and a setup tool's whole
 job is to hand those artifacts to an external provider. So the gate recomputes the applied
 state at the moment it decides (INV-PLUG-011), and holds until what the setup tool will
-read actually exists.
+read actually exists. The one applied thing that recomputation does not read — the two
+routing overlays requests actually route through — is read separately, before it and again
+with no yield before the send (INV-PLUG-016).
 
 **A reconcile pass describes one registry snapshot.** Each pass pins a single registry
 resolution and serves every read from it — the plugins and their manifests, each target's
@@ -108,6 +110,35 @@ so rather than guessing a tool name.
 
 **INV-PLUG-011**: The setup-dispatch route gate recomputes the applied state at the moment it decides — a per-trigger webhook secret must already be minted under the consent identity the recomputation derives, and a routed plugin's callback marker pair must already equal the desired one — so an artifact the reconcile has not yet written keeps the obligation holding; and it opens only for a plugin each recomputation reports having actually seen, never merely for one no issue happens to name.
 
+**INV-PLUG-016**: A released setup obligation is dispatched only from a read, with no yield between it and the bus send, in which neither applied plugin routing overlay carries the unavailable marker and no overlay publication of either kind has landed since the route recomputation began — every publication, including one that re-publishes the marker, advances a single registry generation the read compares; the same marker read precedes the recomputation, and a standing marker defers before it runs. Every refusal these reads produce leaves the obligation pending and released and establishes a worker-owned timed retry; a publication's kick may run the pass sooner, but correctness does not depend on it. With no runtime registry bound the recomputation alone decides.
+
+The recomputation verifies durable artifacts and reads no overlay, so on its own it answered
+"live" while a reconcile's unavailable marker had ingress shut — and that state is ordinary,
+not exotic: every paired producer wakes this worker from its trigger half before its callback
+half has swapped, the consent-tap reconciles heal one half only, and the scheduled recovery
+pass is itself a paired producer. Nor could a read taken only before the recomputation close
+it, because the recomputation blocks off the loop and a publication can land inside it. So the
+worker reads the applied overlays twice. The first read defers on a standing marker without
+paying the recomputation. The second is the last thing before the send, with nothing that
+yields between them, and it compares a registry generation captured at the first: the
+registry advances it on every publication of either overlay, so a marker published and
+cleared inside the recomputation, or an ordinary map that dropped this plugin's routes — the
+revoke sweep's shape, invisible to the marker predicates — is seen before the decision. A
+publication is one synchronous rebind followed by the increment, so a reader on the loop never
+sees a new generation with an old overlay. The bus enqueues onto an unbounded queue without
+suspending, so what the second read sees is what the bus accepts against; that fact is pinned
+by a test rather than claimed by the rule.
+
+What it does not cover: the provider's own registration, which happens in the agent's later
+turn and cannot be fenced from here; the scheduled recovery bounds how long ingress stays
+closed after that. And every refusal these reads produce is a *deferral* on the worker's own
+timer rather than a hold waiting for a publication to wake it, because the wake cannot be
+proved: the revoke sweep kicks only through reconciles that may raise, a heal cancelled between
+its swap and its kick clears the marker with no wake, and with both overlays then live the
+recovery pass has nothing to recover. A refusal whose waker cannot be proved must not depend
+on one. Without a runtime registry there is nothing to read, and the recomputation decides
+alone — the state before the runtime is bound, in which it already answers not-ok.
+
 The gate the obligation passes through is a *recomputation*, not a cached verdict: it
 re-derives every plugin's trigger and callback gaps from the live approval stores and
 registry, and refuses on any outstanding issue of either kind, per plugin and
@@ -146,7 +177,8 @@ only `hmac_body` can therefore pass this gate and be provisioned against a route
 refuses every request, which is the same derived-versus-applied gap one level up. The two
 checks here are also a *recomputation*, not a transaction: a pass landing inside a
 reconcile's marker rewrite sees the pair briefly absent, which costs one spurious health row
-or one spurious hold, both cleared by the next pass.
+or one spurious hold, both cleared by the next pass. A publication landing inside the
+recomputation is a different matter and is the applied-overlay reads' to see (INV-PLUG-016).
 
 It does now cover a plugin the recomputation never *saw*, and getting there took naming the
 shape twice. The gate asked whether any issue named the plugin — and an invalid registry, or
@@ -192,6 +224,13 @@ records what it is waiting for; the obligation stays `pending` and released, and
 reconcile's mint or marker publish closes it (INV-PLUG-011). The same hold covers a mint
 that keeps failing — an unwritable state directory, say — which is visible as a trigger
 issue rather than as a setup run against a credential that does not exist.
+
+**An applied routing overlay is unavailable, or a publication lands during the route
+check.** The obligation defers on the worker's own timer and records which it was — the
+marker standing, a publication since the check began, or a read that raised — and the next
+pass re-reads, recomputes and compares afresh; the row stays `pending` and released, its
+attempt counter untouched, visible in plugin health throughout. A publication's kick runs
+that pass sooner, and nothing depends on it arriving (INV-PLUG-016).
 
 **The episode store on disk cannot be read.** Every reader gets an empty store and every
 writer's next save replaces the damaged file with a valid one: the reconcile, consent and
@@ -271,11 +310,13 @@ verdict; adding an inference there would reintroduce the defect this design remo
 - `casa/rootfs/opt/casa/callback_reconcile.py::verify_published_markers`
 - `casa/rootfs/opt/casa/plugin_registry.py::pinned_resolver`
 - `casa/rootfs/opt/casa/webhook_auth.py::secret_bound_to_identity`
+- `casa/rootfs/opt/casa/casa_core.py::_applied_plugin_routing`
 
 **Tests**
 - `tests/test_plugin_setup_single_runner.py`
 - `tests/test_plugin_setup_episodes.py`
 - `tests/test_plugin_reconcile_pass_integrity.py`
+- `tests/test_plugin_setup_dispatch_overlays.py`
 
 **Related**
 - [`architecture/plugin-runtime.md`](../architecture/plugin-runtime.md)
