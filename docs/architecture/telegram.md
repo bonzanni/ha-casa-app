@@ -113,6 +113,8 @@ instead: a link destination is the one datum a display cannot carry, and it is r
 after its label. When that reconstruction would not fit one message the page's own text is
 sent unchanged and the destinations follow as a further message, one per line — the plain
 splitter cuts at newlines, so an inline reconstruction could otherwise be cut through an
+address. A destination that would not fit a whole message on its own cannot be delivered as
+text in any shape, so it is omitted with a log line rather than sent as fragments of an
 address. One rejection is still retried once and only once; what may take more than one
 message is the retried payload, never a second attempt at the rejected one.
 

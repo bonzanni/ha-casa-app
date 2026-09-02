@@ -134,6 +134,31 @@ def test_fallback_over_the_budget_keeps_the_display_and_appends_targets():
     assert sum(c.count(URL) for c in chunks) == 1
 
 
+def test_a_destination_longer_than_one_message_is_dropped_not_fragmented():
+    """`_split_message` hard-cuts a line it cannot fit, so a url longer than a
+    whole message would arrive as unusable pieces. It is omitted instead."""
+    from text_util import utf16_len
+
+    ch, _ = _mk_channel_with_fake_bot()
+    huge = "https://example.test/" + "z" * 5000
+    display = "L" * 4090
+    chunks = ch._plain_fallback_chunks(
+        display, [_link(0, 4090, url=huge)])
+    assert chunks == [display]
+    assert all(utf16_len(c) <= 4096 for c in chunks)
+
+
+def test_a_deliverable_destination_survives_beside_an_undeliverable_one():
+    ch, _ = _mk_channel_with_fake_bot()
+    huge = "https://example.test/" + "z" * 5000
+    display = "AB" + "L" * 4088
+    chunks = ch._plain_fallback_chunks(display, [
+        _link(0, 1, url=huge),
+        _link(1, 1, url=URL),
+    ])
+    assert chunks == [display, URL]
+
+
 async def test_send_response_overflowing_fallback_sends_display_then_target():
     ch, bot = _mk_channel_with_fake_bot()
     sent: list[str] = []

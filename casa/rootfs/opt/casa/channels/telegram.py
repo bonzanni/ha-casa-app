@@ -4521,7 +4521,19 @@ class TelegramChannel(Channel):
         text = plain_with_link_targets(display, entities)
         if utf16_len(text) <= _TG_MAX_LENGTH:
             return [text]
-        targets = missing_link_targets(display, entities)
+        # A destination longer than one whole message cannot be delivered by
+        # this platform in ANY shape, and emitting it anyway would hand the
+        # reader fragments of an address instead of an address (both reviewers,
+        # measured: a 5,021-unit url hard-cut into unusable pieces). Drop it
+        # and say so in the log; the targets that DO fit still go out whole.
+        targets = []
+        for url in missing_link_targets(display, entities):
+            if utf16_len(url) > _TG_MAX_LENGTH:
+                logger.warning(
+                    "link destination exceeds one message and cannot be "
+                    "delivered plain: %d units", utf16_len(url))
+                continue
+            targets.append(url)
         return [display, *_split_message("\n".join(targets))]
 
     async def _send_one(self, chat_id, original, display, entities, **kw):
