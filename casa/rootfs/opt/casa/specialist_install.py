@@ -3338,6 +3338,25 @@ def _rollback_core(
     if unavailable:
         detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)
         raise SpecialistInstallError("dependency_unavailable", detail)
+    # #815 (INV-SPEC-012, diff review r4): the store-integrity gate runs
+    # UNCONDITIONALLY, not only when the role checksum moved — the role
+    # checksum does not cover the manifest or the dependency closure, so a
+    # store whose bytes drifted under an unchanged role would otherwise be
+    # restored to a root that no longer names its bytes. Same predicate as
+    # the loader's L1; same typed refusal, naming both roots.
+    _prior_id, _prior_version, _prior_suffix = parse_component_root(prior.root)
+    _fresh_root_digest = compute_install_root_digest(
+        prior_component, prior_deps,
+        manifest_bytes=(cas_dir / "manifest.json").read_bytes())
+    if (_fresh_root_digest != _prior_suffix
+            or prior_component.component_id != _prior_id
+            or prior_component.version != _prior_version):
+        raise SpecialistInstallError(
+            "compile_failed",
+            f"{slug!r}: the retained prior is not restored — the installed component in "
+            f"the store ({prior_component.component_id}@{prior_component.version}"
+            f"#{_fresh_root_digest}) is not the prior tuple's root ({prior.root}); the "
+            "current active is untouched")
     binding = prior.binding
     if binding.role_checksum != role.checksum:
         # #815: the only input that may have moved is the resolved model; prove
