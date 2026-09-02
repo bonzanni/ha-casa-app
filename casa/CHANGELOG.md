@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.260.0] - 2026-09-02
+
+### Fixed
+
+- A long reply that Telegram refuses to format now still delivers every link's
+  address. When a reply is split across messages and Telegram rejects the
+  formatting on one of them, that message used to be re-sent as the plain
+  display text — which carries a link's label but not its address, so the
+  address arrived nowhere while the turn still reported the message delivered.
+  The retry now reconstructs the plain text from the formatting Casa already
+  holds, so labels and addresses both survive. All four paths that send a long
+  reply are covered.
+- A destination too long to fit in a message at all is left out, with a note in
+  the log, rather than delivered as fragments.
+
+### Changed
+
+- Residents now hand over an authorization or consent page as a labelled,
+  tappable link instead of a bare several-hundred-character address. This
+  applies to the reply a resident writes on a text surface; it does not change
+  what Casa is permitted to send, and bearer sign-in links remain governed by
+  the safety kernel's credential rule rather than by formatting.
+
 ## [0.259.0] - 2026-09-02
 
 ### Fixed
