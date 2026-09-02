@@ -772,7 +772,14 @@ def test_upgrade_refuses_when_uninstall_races_before_the_lock(
         result = real_compile(*a, **k)
         if not fired["done"]:
             fired["done"] = True
-            uninstall_specialist(
+            # #810 (INV-SPEC-011): the four lifecycle entry points now run WHOLE
+            # under SPECIALIST_LIFECYCLE_LOCK, so a lifecycle call can no longer
+            # land inside another's window (pinned by
+            # test_specialist_lifecycle_lock.py). The in-lock revalidation this
+            # test pins still guards against a NON-lifecycle writer — boot
+            # journal recovery, the tool layer's compensation, a hand edit —
+            # so the race is simulated through the unlocked core.
+            uninstall_specialist.__wrapped__(
                 slug="mtg", specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
         return result
 
@@ -818,7 +825,14 @@ def test_rollback_refuses_when_uninstall_races_before_the_lock(
         result = real_compile(*a, **k)
         if not fired["done"]:
             fired["done"] = True
-            uninstall_specialist(
+            # #810 (INV-SPEC-011): the four lifecycle entry points now run WHOLE
+            # under SPECIALIST_LIFECYCLE_LOCK, so a lifecycle call can no longer
+            # land inside another's window (pinned by
+            # test_specialist_lifecycle_lock.py). The in-lock revalidation this
+            # test pins still guards against a NON-lifecycle writer — boot
+            # journal recovery, the tool layer's compensation, a hand edit —
+            # so the race is simulated through the unlocked core.
+            uninstall_specialist.__wrapped__(
                 slug="mtg", specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
         return result
 
@@ -859,7 +873,14 @@ def test_commit_refuses_when_a_concurrent_install_activates_first(
         result = real_compile(*a, **k)
         if not fired["done"]:
             fired["done"] = True  # guard: the nested commit's own compile must not re-fire
-            commit_specialist_install(
+            # #810 (INV-SPEC-011): the four lifecycle entry points now run WHOLE
+            # under SPECIALIST_LIFECYCLE_LOCK, so a lifecycle call can no longer
+            # land inside another's window (pinned by
+            # test_specialist_lifecycle_lock.py). The in-lock revalidation this
+            # test pins still guards against a NON-lifecycle writer — boot
+            # journal recovery, the tool layer's compensation, a hand edit —
+            # so the race is simulated through the unlocked core.
+            commit_specialist_install.__wrapped__(
                 inspection=winner, config={}, secret_names_provided=frozenset(), acks=winner_acks,
                 specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
         return result
@@ -1103,7 +1124,14 @@ def test_apply_persona_override_specialist_refuses_when_uninstall_races_before_t
         result = real_mob(*a, **k)
         if not fired["done"]:
             fired["done"] = True
-            uninstall_specialist(
+            # #810 (INV-SPEC-011): the four lifecycle entry points now run WHOLE
+            # under SPECIALIST_LIFECYCLE_LOCK, so a lifecycle call can no longer
+            # land inside another's window (pinned by
+            # test_specialist_lifecycle_lock.py). The in-lock revalidation this
+            # test pins still guards against a NON-lifecycle writer — boot
+            # journal recovery, the tool layer's compensation, a hand edit —
+            # so the race is simulated through the unlocked core.
+            uninstall_specialist.__wrapped__(
                 slug="mtg", specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
         return result
 

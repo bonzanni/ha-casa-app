@@ -13682,6 +13682,51 @@ async def persona_apply(args: dict) -> dict:
                                    f"requested {args['persona_id']}@{args['persona_version']}; "
                                    "nothing was staged")})
 
+    async def _materialize_and_apply(role_dir: Path, instance_dir_root: Path, **library_kwargs):
+        # #355: resolve ha_option models exactly as the agent loader does —
+        # options={} would bind the override to the role's DEFAULT checksum,
+        # and the loader would then reject the persisted binding.
+        role = materialize_role(
+            source=load_role_artifact(role_dir), options=_ha_model_options())
+        # #607: the SAME compile proof boot reconciliation runs
+        # (agent_loader.make_candidate_compile_validator), so a persona that
+        # blows an admission ceiling is refused here — with nothing written —
+        # instead of being committed active and killing every subsequent boot.
+        # Built on this thread and handed in; the factory reads the image-owned
+        # platform frame and safety kernel eagerly, so a broken image raises
+        # OSError here rather than inside the materialize lock.
+        import agent_loader
+
+        try:
+            validator = agent_loader.make_candidate_compile_validator(role)
+        except OSError as exc:
+            return {"ok": False, "kind": "image_incomplete", "detail": str(exc)}
+        try:
+            staged = await asyncio.to_thread(
+                apply_persona_override, target_role_id=args["target_role_id"],
+                persona=persona, role=role, instance_dir_root=instance_dir_root,
+                candidate_validator=validator, **library_kwargs)
+        except ValueError as exc:
+            return {"ok": False, "kind": "incompatible", "detail": str(exc)}
+        except SpecialistInstallError as exc:
+            # Fix-round-1 (finding IMPORTANT): installed_component_role_dirs()
+            # legitimately resolves a pending-configuration specialist
+            # (desired-only, active=None — a real state per
+            # specialist_registry.py), so apply_persona_override's specialist
+            # branch can reach here and raise
+            # SpecialistInstallError("no_active_tuple", ...) for a target this
+            # tool otherwise accepted. Without this clause that escaped as an
+            # unstructured MCP error instead of the tool's {ok, kind} contract.
+            return {"ok": False, "kind": exc.kind, "detail": exc.detail}
+        # #607: for a resident this is now the STAGED tuple — `restart_required`
+        # describes something that has not happened yet, which is what the
+        # tool description and recipes/persona/apply.md have always claimed. A
+        # specialist is committed active and reports restart_required: false,
+        # activated by casa_reload.
+        return {"ok": True, "target_role_id": args["target_role_id"],
+                "binding_digest": staged.binding.binding_digest,
+                "restart_required": kind == "resident"}
+
     if kind == "resident":
         # Controller resolution #2 (task-n1d-brief deviation): the brief
         # hard-coded Path("/opt/casa/defaults/roles/resident") — use the
@@ -13696,7 +13741,24 @@ async def persona_apply(args: dict) -> dict:
         # restart_required while the restarted resident read a different
         # directory and kept the prior persona.
         instance_dir_root = agent_loader._resident_bindings_root(None) / f"resident-{slot}"
-    elif kind == "specialist":
+        return _result(await _materialize_and_apply(role_dir, instance_dir_root))
+    if kind != "specialist":
+        return _result({"ok": False, "kind": "invalid_target", "target_role_id": args["target_role_id"]})
+
+    # #810 (INV-SPEC-011): a specialist override is a specialist-generation
+    # transaction (it rotates the tuple AND its owned-plugins sidecar into the
+    # retained prior), so this arm holds the plugin-tools mutation lock across
+    # the WHOLE transaction — from the installed-index read that chooses the
+    # role, through the role materialization, to the library call — exactly
+    # as the four bundle handlers do, so no bundle handler's swap or commit can
+    # interleave with the discovery this apply is built on. The raw lock, not
+    # `_plugin_tools_guard`: this handler never re-enters. The library call
+    # is the JOURNALED arm (`bundle=True`): the transaction begins, commits
+    # and completes inside the worker thread under the lifecycle lock, so a
+    # cancelled handler task can neither release it early nor leave its
+    # journal open — this handler has no sequencer phase for a journal to
+    # outlive.
+    async with _PLUGIN_TOOLS_LOCK:
         from specialist_registry import InstalledSpecialistIndex
 
         index = InstalledSpecialistIndex()
@@ -13704,55 +13766,8 @@ async def persona_apply(args: dict) -> dict:
         role_dirs = index.installed_component_role_dirs()
         if slot not in role_dirs:
             return _result({"ok": False, "kind": "not_installed", "slug": slot})
-        role_dir = role_dirs[slot] / "role"
-        instance_dir_root = Path("/config/specialists") / slot
-    else:
-        return _result({"ok": False, "kind": "invalid_target", "target_role_id": args["target_role_id"]})
-
-    # #355: resolve ha_option models exactly as the agent loader does —
-    # options={} would bind the override to the role's DEFAULT checksum,
-    # and the loader would then reject the persisted binding.
-    role = materialize_role(
-        source=load_role_artifact(role_dir), options=_ha_model_options())
-    # #607: the SAME compile proof boot reconciliation runs
-    # (agent_loader.make_candidate_compile_validator), so a persona that blows
-    # an admission ceiling is refused here — with nothing written — instead of
-    # being committed active and killing every subsequent boot. Built on this
-    # thread and handed in; the factory reads the image-owned platform frame
-    # and safety kernel eagerly, so a broken image raises OSError here rather
-    # than inside the materialize lock. Imported HERE rather than relying on
-    # the resident branch's binding — a specialist target never enters that
-    # branch, and the name would be unbound.
-    import agent_loader
-
-    try:
-        validator = agent_loader.make_candidate_compile_validator(role)
-    except OSError as exc:
-        return _result({"ok": False, "kind": "image_incomplete", "detail": str(exc)})
-    try:
-        staged = await asyncio.to_thread(
-            apply_persona_override, target_role_id=args["target_role_id"], persona=persona,
-            role=role, instance_dir_root=instance_dir_root,
-            candidate_validator=validator)
-    except ValueError as exc:
-        return _result({"ok": False, "kind": "incompatible", "detail": str(exc)})
-    except SpecialistInstallError as exc:
-        # Fix-round-1 (finding IMPORTANT): installed_component_role_dirs()
-        # legitimately resolves a pending-configuration specialist (desired-
-        # only, active=None — a real state per specialist_registry.py), so
-        # apply_persona_override's specialist branch can reach here and raise
-        # SpecialistInstallError("no_active_tuple", ...) for a target this
-        # tool otherwise accepted. Without this clause that escaped as an
-        # unstructured MCP error instead of the tool's {ok, kind} contract.
-        return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
-    # #607: for a resident this is now the STAGED tuple — `restart_required`
-    # describes something that has not happened yet, which is what the tool
-    # description and recipes/persona/apply.md have always claimed. A
-    # specialist is still committed active (its branch is unchanged) and
-    # reports restart_required: false, activated by casa_reload.
-    return _result({"ok": True, "target_role_id": args["target_role_id"],
-                     "binding_digest": staged.binding.binding_digest,
-                     "restart_required": kind == "resident"})
+        return _result(await _materialize_and_apply(
+            role_dirs[slot] / "role", Path("/config/specialists") / slot, bundle=True))
 
 
 def _find_entry(data, name: str) -> dict | None:

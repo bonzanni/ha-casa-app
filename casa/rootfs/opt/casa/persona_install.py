@@ -576,6 +576,8 @@ def _commit_persona_install_locked(
 def apply_persona_override(
     *, target_role_id: str, persona: "PersonaPack", role: "RoleSlot", instance_dir_root: Path,
     candidate_validator: "Callable[[PersonaPack, BindingRecord], None]",
+    bundle: bool = False, acks: "Any | None" = None,
+    registry_path: "Path | None" = None, ops_dir: "Path | None" = None,
 ) -> Any:
     """Generalizes Task 8's resident_persona_swap for ANY persona-bearing
     agent — reuses check_persona_requirements + materialize_override_binding
@@ -597,7 +599,20 @@ def apply_persona_override(
     config_snapshot/dependency_digests. A specialist override must keep
     `root` pointed at the component and carry the override ELSEWHERE on the
     binding (mode="override" + override_source — BindingRecord already has
-    both fields; this function only needed to stop clobbering `root`)."""
+    both fields; this function only needed to stop clobbering `root`).
+
+    #810 (INV-SPEC-011): the SPECIALIST arm is a specialist-generation
+    transaction — it rotates the active tuple into the retained prior, and
+    with it (since the tuple commit owns both rotations) the owned-plugins
+    sidecar — so it runs WHOLE under SPECIALIST_LIFECYCLE_LOCK in this worker
+    thread, gates the caller's role against the installed component's role
+    under the LIVE option resolution (a stale role is `concurrent_mutation`,
+    nothing written), and, with `bundle=True` (the tool's call), journals
+    itself as `op="persona_override"` exactly like the four bundle
+    operations: before-state captured, committed, completed; a raise
+    compensates from the capture. `bundle=False` (direct library callers) is
+    unjournaled, as before. The resident arm takes neither the lifecycle
+    lock nor a journal: a resident owns no plugins and stages only."""
     from personality_binding import (
         InstanceDir, check_persona_requirements, make_instance_tuple,
         materialize_override_binding,
@@ -662,13 +677,63 @@ def apply_persona_override(
     # role.v1.json's slot pattern), but the caller-built `instance_dir_root`
     # is derived from that slot upstream — re-assert the canonical slug shape
     # so a hostile target can never index the specialist InstanceDir tree.
-    from specialist_install import validate_specialist_slug, _require_active_unchanged
+    from specialist_install import validate_specialist_slug
     validate_specialist_slug(role.slot)
+    with specialist_materialize.SPECIALIST_LIFECYCLE_LOCK:
+        return _apply_specialist_override_locked(
+            target_role_id=target_role_id, persona=persona, role=role,
+            instance_dir=instance_dir, override_source=override_source,
+            bundle=bundle, acks=acks, registry_path=registry_path, ops_dir=ops_dir)
+
+
+def _apply_specialist_override_locked(
+    *, target_role_id: str, persona, role, instance_dir, override_source: str,
+    bundle: bool, acks, registry_path: "Path | None", ops_dir: "Path | None",
+) -> Any:
+    """The specialist arm of `apply_persona_override`, under the lifecycle lock."""
+    from personality_binding import (
+        make_instance_tuple, materialize_override_binding,
+    )
+    from specialist_install import (
+        _require_active_unchanged, _tuple_files_snapshot, cas_store_dir,
+        parse_component_root,
+    )
+    import specialist_materialize
+
+    slug = role.slot
+    slug_dir = Path(instance_dir._dir)
     active_before = instance_dir.active()
     if active_before is None:
         raise SpecialistInstallError(
             "no_active_tuple",
             f"{target_role_id!r} has no active installed component to apply an override to")
+
+    # #810 (INV-SPEC-011, stale-role gate): the caller materialized `role`
+    # OUTSIDE this lock, from an overlay that may predate a concurrent
+    # upgrade or an option flip. Require it to be the installed component's
+    # role under the LIVE resolution — the L2 leg of the loader's
+    # re-derivation — or an override bound to a stale checksum would be
+    # committed and refused by the next load. Nothing has been written.
+    from role_artifact import load_role_artifact
+    from role_slot import _ha_model_options, materialize_role
+    _, _, checksum = parse_component_root(active_before.root)
+    cas_dir = cas_store_dir(checksum, store_root=slug_dir.parent / "store")
+    try:
+        live_role = materialize_role(
+            source=load_role_artifact(cas_dir / "role"), options=_ha_model_options())
+    except (OSError, ValueError) as exc:
+        raise SpecialistInstallError(
+            "dependency_unavailable",
+            f"{target_role_id!r}: the installed component's role artifact could not be "
+            f"materialized from its store ({exc})") from exc
+    if (live_role.checksum != role.checksum or live_role.role_id != role.role_id
+            or live_role.slot != role.slot):
+        raise SpecialistInstallError(
+            "concurrent_mutation",
+            f"{target_role_id!r}: the role this override was compiled for "
+            f"({role.checksum}) is not the installed component's role under the "
+            f"current option resolution ({live_role.checksum}) — a stale overlay or a "
+            "model change raced this apply; retry the operation")
     # materialize_override_binding (Plan 1 Task 7) hard-defaults
     # dependency_digests=()/EMPTY_CONFIG_DIGEST — correct for a resident (no
     # dependency closure exists there) but wrong for a specialist, whose
@@ -684,25 +749,71 @@ def apply_persona_override(
         dependency_digests=active_before.binding.dependency_digests,
         effective_config_digest=active_before.binding.effective_config_digest,
     )
-    # F2a: re-read + stage + commit under MATERIALIZE_LOCK. `active_before` was
-    # read BEFORE the lock; a concurrent uninstall (resurrection — staging here
-    # would recreate a just-removed InstanceDir), a config-only upgrade, or
-    # another override may have committed a different active while we built the
-    # binding and blocked on the lock. `_require_active_unchanged` re-reads the
-    # active tuple in-lock and refuses (typed concurrent_mutation) unless it is
-    # byte-for-byte `active_before` — which also subsumes the vanished-active
-    # (no_active_tuple) case, since a removed active re-reads as None. Never
-    # commit this override over a concurrent winner, and never overwrite it with
-    # a binding derived from the now-stale `active_before`.
-    with specialist_materialize.MATERIALIZE_LOCK:
-        _require_active_unchanged(instance_dir, active_before, slug=role.slot)
-        require_persona_present(binding)   # #543
-        instance_dir.stage_desired(make_instance_tuple(
-            root=active_before.root,                       # UNCHANGED — still the component root
-            binding=binding,
-            config_snapshot=active_before.config_snapshot,  # UNCHANGED — override never touches config
-        ))
-        return instance_dir.commit_desired_to_active()
+
+    def _commit():
+        # F2a: re-read + stage + commit under MATERIALIZE_LOCK. `active_before`
+        # was read before it; a concurrent uninstall (resurrection — staging
+        # here would recreate a just-removed InstanceDir), a config-only
+        # upgrade, or another override may have committed a different active
+        # while we built the binding. `_require_active_unchanged` re-reads the
+        # active tuple in-lock and refuses (typed concurrent_mutation) unless
+        # it is byte-for-byte `active_before` — which also subsumes the
+        # vanished-active (no_active_tuple) case. Never commit this override
+        # over a concurrent winner. The commit rotates the outgoing tuple AND
+        # its owned-plugins sidecar into the prior pair (#810).
+        with specialist_materialize.MATERIALIZE_LOCK:
+            _require_active_unchanged(instance_dir, active_before, slug=slug)
+            require_persona_present(binding)   # #543
+            instance_dir.stage_desired(make_instance_tuple(
+                root=active_before.root,                       # UNCHANGED — still the component root
+                binding=binding,
+                config_snapshot=active_before.config_snapshot,  # UNCHANGED — override never touches config
+            ))
+            return instance_dir.commit_desired_to_active()
+
+    if not bundle:
+        return _commit()
+
+    # #810: the journaled arm (the tool's call). The before-state — owned
+    # registry rows, every tuple/sidecar file, the slug's consent acks — is
+    # captured before the commit so a raise restores it, and boot
+    # reconciliation rolls back an in-progress journal exactly as it does for
+    # the four bundle operations. The override swaps no registry row, so the
+    # capture's owned rows are restored unchanged.
+    import plugin_registry
+    import specialist_bundle_journal
+    from specialist_bundle_journal import BundleTxn
+    if acks is None:
+        from specialist_install_consent import SpecialistInstallAckStore
+        acks = SpecialistInstallAckStore()
+    if registry_path is None:
+        registry_path = plugin_registry.REGISTRY_PATH
+    before_owned = plugin_registry.owned_entries_for(
+        slug, plugin_registry.load_registry(registry_path))
+    before_tuple_files = _tuple_files_snapshot(slug_dir)
+    ack_records = acks.snapshot_slug(slug)
+    _begin_kwargs = {} if ops_dir is None else {"ops_dir": ops_dir}
+    journal = specialist_bundle_journal.begin(
+        "persona_override", slug, before_entries=before_owned,
+        before_tuple_files=before_tuple_files, ack_records=ack_records,
+        **_begin_kwargs)
+    rollback_txn = BundleTxn(
+        journal_path=journal, slug=slug, before_entries=before_owned,
+        before_tuple_files=before_tuple_files, ack_records=ack_records,
+        op="persona_override", registry_path=registry_path,
+        specialists_dir=slug_dir.parent, acks_path=acks.path,
+        agents_specialists_dir=Path("/config/agents/specialists"))
+    try:
+        committed = _commit()
+        specialist_bundle_journal.mark_step(journal, "committed")
+    except BaseException:
+        # P1-1: complete the journal ONLY after a SUCCESSFUL restore — a
+        # restore that raises leaves the in-progress journal for boot.
+        rollback_txn.rollback_disk()
+        specialist_bundle_journal.complete(journal)
+        raise
+    specialist_bundle_journal.complete(journal)
+    return committed
 
 
 # ---------------------------------------------------------------------------

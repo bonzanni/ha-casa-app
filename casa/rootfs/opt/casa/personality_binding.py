@@ -48,6 +48,23 @@ logger = logging.getLogger(__name__)
 # worker thread (or single-threaded boot init offloaded via `asyncio.to_thread`).
 MATERIALIZE_LOCK = threading.Lock()
 
+# #810 (INV-SPEC-011): the SPECIALIST LIFECYCLE LOCK. A specialist-generation
+# transaction — install, upgrade, rollback, uninstall, and a specialist persona
+# override — is one unit: sampling, journal begin, registry swap, tuple and
+# sidecar commit. The bundle paths used to hold MATERIALIZE_LOCK for the tuple
+# commit and AGAIN, separately, for the sidecar rotation, so a second lifecycle
+# call could commit between the two scopes and release a tuple, a sidecar and
+# a registry from different generations. This lock is taken by the LIBRARY
+# function (specialist_install.py's four entry points and
+# persona_install.apply_persona_override's specialist arm), in the worker
+# thread, around its WHOLE body — never by the tool handler, whose task can be
+# cancelled mid-section while the thread it offloaded to runs on. Order:
+# tools._PLUGIN_TOOLS_LOCK -> SPECIALIST_LIFECYCLE_LOCK -> MATERIALIZE_LOCK;
+# non-reentrant; no library function calls another (measured); never acquired
+# on the event loop. Re-exported by specialist_materialize with the writer
+# catalog. Residents never take it.
+SPECIALIST_LIFECYCLE_LOCK = threading.Lock()
+
 # NOTE: EMPTY_CONFIG_DIGEST / compute_effective_config_digest are defined in
 # role_slot.py (Task 6), imported and re-exported here — NOT redefined. Task 6's
 # own executor-loading wiring needs this constant BEFORE personality_binding.py
@@ -625,6 +642,20 @@ class InstanceDir:
         desired_path = self._path("desired.yaml")
         active_path = self._path("active.yaml")
         prior_path = self._path("active.prior.yaml")
+        # #810 (INV-SPEC-011, F1): finish whatever the previous commit left
+        # pending BEFORE choosing a branch — the tuple temporary a failed
+        # prior promotion kept, and the sidecar temporary paired with it. The
+        # crash-retry branch used to do this for the tuple alone; a lone
+        # sidecar temporary, or a pair left by a failed promotion, is now
+        # promoted by the next commit of ANY tuple, so the retained pair is
+        # never one generation behind what the temporaries hold. Best-effort
+        # here (the caller's commit must not fail on cleanup); the rollback
+        # calls the same method and refuses if it cannot complete.
+        pending_error: "OSError | None" = None
+        try:
+            self.complete_pending_rotation()
+        except OSError as exc:
+            pending_error = exc
         # Task N1c fix: compare the FULL tuple (root included), not just
         # binding_digest. binding_digest deliberately excludes `root`
         # (compute_binding_digest's eight normative fields never include it
@@ -650,28 +681,22 @@ class InstanceDir:
             # `candidate` to active.yaml but died before finishing. active.yaml
             # already IS the candidate, so do NOT re-copy it toward prior —
             # that would overwrite the true pre-commit rollback target with a
-            # duplicate of the new active. #339: under the write-active-first
-            # order below, the interrupted step may ALSO be the pending
-            # tmp -> prior rotation (the copied OLD active) — finish it, but
-            # only after PROVING the tmp is a genuine pre-commit generation
-            # (Sol review): a bundle-journal rollback restores active/prior
-            # without knowing about this tmp, so a stale tmp can survive
-            # holding the SAME tuple as the restored active — rotating that
-            # duplicate over prior is exactly the clobber this branch exists
-            # to prevent. A tmp that fails to load (corrupt/tampered) must
-            # never reach prior either. Unlink in both cases.
-            pending = active_path.with_suffix(active_path.suffix + ".rollback-tmp")
+            # duplicate of the new active. #339: the interrupted step may have
+            # been the pending tmp -> prior rotation; complete_pending_rotation
+            # above finished it (or discarded a stale/corrupt pair — Sol
+            # review: a bundle-journal rollback restores active/prior without
+            # knowing about the tmp, so a duplicate of the restored active must
+            # never be rotated over the true prior). A NO-OP TUPLE COMMIT
+            # ROTATES NO SIDECAR (#810): the pair moves only with the tuple.
+            if pending_error is not None:
+                # Nothing below touches the temporaries, so an uncompleted
+                # pair is safe to leave for the next completion; the commit
+                # itself is a durable no-op and must not fail on cleanup.
+                logger.warning(
+                    "%s: pending prior rotation not completed (%s); retried on "
+                    "the next commit or rollback", self._dir, pending_error,
+                )
             try:
-                if pending.exists():
-                    try:
-                        pending_tuple = load_instance_tuple(pending)
-                    except (ValueError, OSError, yaml.YAMLError,
-                            jsonschema.ValidationError):
-                        pending_tuple = None
-                    if pending_tuple is not None and pending_tuple != candidate:
-                        os.replace(pending, prior_path)
-                    else:
-                        pending.unlink(missing_ok=True)
                 desired_path.unlink(missing_ok=True)
             except OSError:
                 # Sol round-2: active.yaml already IS the candidate — the
@@ -689,37 +714,73 @@ class InstanceDir:
         # prior first, so an active-write failure in between left
         # prior == active — the previous rollback generation destroyed with
         # nothing gained. Now a failure at any point leaves prior intact,
-        # and a crash after the active write is completed by the
-        # crash-retry branch above (the .rollback-tmp copy IS the journal).
+        # and a crash after the active write is completed by
+        # complete_pending_rotation on the next commit (the .rollback-tmp
+        # copies ARE the journal).
+        # #810 (INV-SPEC-011): the owned-plugins sidecar rotates WITH the tuple
+        # — the active sidecar is copied to its own temporary beside the tuple
+        # copy, and promoted to owned-plugins.prior.yaml only when the tuple
+        # promotion completed, whatever the sidecar's bytes. A temporary, not
+        # a direct copy, so that a promotion failure leaves a PAIR pending for
+        # the next commit to complete (a direct copy would put the prior
+        # sidecar one generation ahead of a tuple whose promotion failed).
+        # #810 (gate-owned review, Sol): a REAL transition writes its own
+        # temporaries over the pending pair's paths and, on a failed active
+        # write, unlinks them. If the pending pair could not be completed
+        # above, those paths still hold the immediate rollback generation —
+        # overwriting them would destroy it, and a failed write would then
+        # delete it. So a rotation never starts over an uncompleted pair: the
+        # commit refuses with the completion's own error, nothing written, and
+        # the pair stays for the next completion (the rollback refuses on the
+        # same error; a journaled transaction compensates from its capture).
+        if pending_error is not None:
+            raise pending_error
         pending_prior = copy_rollback()
+        pending_sidecar = (self._copy_sidecar_to_temp()
+                           if current_active is not None else None)
         try:
             atomic_write_instance_tuple(active_path, candidate)
         except BaseException:
-            # A FAILED (not crashed) write must not leave the copied tmp
+            # A FAILED (not crashed) write must not leave the copied tmps
             # behind: a later commit of a tuple identical to active would
-            # take the crash-retry branch and rotate this stale copy over
-            # the true prior. (A hard crash here is safe without cleanup —
-            # active != candidate still, so retry recreates the copy.)
+            # take the crash-retry branch and rotate this stale pair over
+            # the true prior pair. (A hard crash here is safe without cleanup
+            # — active != candidate still, so retry recreates the copies.)
+            # Sidecar first, for the same reason complete_pending_rotation
+            # discards in that order: a lone sidecar temporary reads as a
+            # completed promotion's companion.
+            if pending_sidecar is not None:
+                pending_sidecar.unlink(missing_ok=True)
             if pending_prior is not None:
                 pending_prior.unlink(missing_ok=True)
             raise
         if pending_prior is not None:
             try:
+                if pending_sidecar is None:
+                    # The outgoing generation owned no sidecar: remove the
+                    # prior sidecar BEFORE the tuple promotion (same order as
+                    # complete_pending_rotation), so a failure at either step
+                    # keeps the tuple temporary pending for the next commit
+                    # or rollback to repeat both.
+                    owned_plugins_prior_path(self._dir).unlink(missing_ok=True)
                 os.replace(pending_prior, prior_path)
             except OSError:
                 # Terra review: the commit has already SUCCEEDED — the new
                 # active is durably written. Failing here would make the
                 # caller run the pre-commit tuple while disk says otherwise
                 # (reconcile catches OSError and returns the retained
-                # active). Keep the tmp as the pending-rotation journal —
-                # the no-op recommit branch above completes it, and any
-                # later real commit overwrites it — and log the degraded
+                # active). Keep BOTH tmps as the pending-rotation journal —
+                # completed by the next commit, or by the next rollback before
+                # it reads the retained generation — and log the degraded
                 # prior instead of failing a committed transition.
                 logger.warning(
                     "%s: new active committed but prior rotation failed; "
                     "rollback target is one generation stale until the "
                     "pending rotation completes", self._dir, exc_info=True,
                 )
+            else:
+                if pending_sidecar is not None:
+                    self._promote_pending_sidecar(pending_sidecar)
         try:
             desired_path.unlink(missing_ok=True)
         except OSError:
@@ -731,6 +792,121 @@ class InstanceDir:
                 "cleared on the next recommit", self._dir, exc_info=True,
             )
         return candidate
+
+    def _promote_pending_sidecar(self, pending_sidecar: Path) -> None:
+        """#810: the sidecar half of a completed tuple promotion — the
+        temporary becomes ``owned-plugins.prior.yaml``. (An outgoing
+        generation that owned no sidecar has its prior sidecar removed BEFORE
+        the tuple promotion instead; absent reads as the empty owned set,
+        ``read_owned_plugins``, which is exactly what that generation owned.)
+        A promotion that fails keeps the temporary — a lone sidecar temporary
+        — for the next commit or rollback to complete."""
+        prior_sidecar = owned_plugins_prior_path(self._dir)
+        try:
+            os.replace(pending_sidecar, prior_sidecar)
+        except OSError:
+            logger.warning(
+                "%s: new active committed but the owned-plugins prior rotation "
+                "failed; completed by the next commit or rollback",
+                self._dir, exc_info=True,
+            )
+
+    def complete_pending_rotation(self) -> None:
+        """#810 (INV-SPEC-011, F1): complete a prior rotation a previous commit
+        left pending. Idempotent; a no-op when nothing is pending. The caller
+        holds ``MATERIALIZE_LOCK`` (this method does not acquire it).
+
+        Each temporary is OBSERVED by one closed classification —
+        ``_observe_temporary``: absent (ENOENT alone), a regular file, or a
+        special file (a symlink, a directory, a FIFO — nothing this module
+        writes); any other I/O failure propagates unchanged. Three review
+        rounds found the same shape in this method (a partial failure, a
+        transient read error, a followed symlink), each letting a state the
+        method had not classified fall into a branch written for another; the
+        table below is closed over what the observation can return.
+
+        A regular tuple temporary that loads and differs from the current
+        active is a genuine pre-commit generation: it is promoted to
+        ``active.prior.yaml`` and its regular sidecar temporary to
+        ``owned-plugins.prior.yaml`` — or, when no sidecar temporary exists,
+        the prior sidecar is unlinked (that generation owned no sidecar). A
+        tuple temporary equal to the active (the #346 stale pair a journal
+        rollback can leave), one whose BYTES fail to parse or validate, or a
+        pair in which EITHER temporary is a special file discards BOTH
+        temporaries: a duplicate of the active must never reach the prior, and
+        nothing this module did not write may be promoted. A lone regular
+        sidecar temporary (the tuple promotion completed, the sidecar's did
+        not) is promoted on its own; a lone special one is discarded. Raises
+        ``OSError`` on any I/O failure other than absence — a failed read or
+        observation as much as a failed rename — with the pair left as it was;
+        callers decide whether that is fatal (the rollback refuses, a commit
+        logs and continues)."""
+        active_path = self._path("active.yaml")
+        prior_path = self._path("active.prior.yaml")
+        pending = active_path.with_suffix(active_path.suffix + ".rollback-tmp")
+        pending_sidecar = owned_plugins_rollback_temp_path(self._dir)
+        prior_sidecar = owned_plugins_prior_path(self._dir)
+        tuple_state = _observe_temporary(pending)
+        sidecar_state = _observe_temporary(pending_sidecar)
+        if tuple_state == "absent":
+            if sidecar_state == "regular":
+                os.replace(pending_sidecar, prior_sidecar)
+            elif sidecar_state == "special":
+                pending_sidecar.unlink(missing_ok=True)
+            return
+        genuine = False
+        if tuple_state == "regular" and sidecar_state != "special":
+            # Classified by what the bytes SAY — a parse or schema failure is
+            # corruption; an I/O error propagates (Sol, diff review r5).
+            try:
+                pending_tuple = load_instance_tuple(pending)
+            except (ValueError, yaml.YAMLError, jsonschema.ValidationError):
+                pending_tuple = None
+            try:
+                current = load_instance_tuple(active_path)
+            except (ValueError, yaml.YAMLError, jsonschema.ValidationError):
+                current = None
+            genuine = pending_tuple is not None and pending_tuple != current
+        # ORDER MATTERS in every branch, because any step can fail and the
+        # NEXT call classifies the state from what survived (Sol, diff
+        # review r2): the tuple temporary must outlive every step whose
+        # failure would otherwise leave a lone sidecar temporary that the
+        # next call would promote as a completed promotion's companion, and
+        # a prior-sidecar removal must happen while the tuple temporary still
+        # marks the promotion as pending.
+        if genuine:
+            if sidecar_state == "regular":
+                # Tuple first: a failure after it leaves a LONE sidecar
+                # temporary, which the next call promotes — correct, it is
+                # this genuine pair's sidecar.
+                os.replace(pending, prior_path)
+                os.replace(pending_sidecar, prior_sidecar)
+            else:
+                # The outgoing generation owned no sidecar: remove the prior
+                # sidecar BEFORE promoting the tuple, so a failure at either
+                # step leaves the tuple temporary pending and the next call
+                # repeats both (a removal already done is a no-op).
+                prior_sidecar.unlink(missing_ok=True)
+                os.replace(pending, prior_path)
+        else:
+            # Sidecar first: a failure between the two leaves the tuple
+            # temporary, so the next call classifies the pair stale again and
+            # discards; the other order would leave a lone STALE sidecar
+            # temporary that the next call promotes over the true prior.
+            pending_sidecar.unlink(missing_ok=True)
+            pending.unlink(missing_ok=True)
+
+    def _copy_sidecar_to_temp(self) -> "Path | None":
+        """#810: the sidecar twin of ``_copy_to_temp`` — the active owned-plugins
+        sidecar copied to ``owned-plugins.yaml.rollback-tmp``, or ``None`` when
+        the active generation owns no sidecar."""
+        active = owned_plugins_path(self._dir)
+        if not active.exists():
+            return None
+        temp = owned_plugins_rollback_temp_path(self._dir)
+        temp.write_bytes(active.read_bytes())
+        os.chmod(temp, 0o600)
+        return temp
 
     def _copy_to_temp(self, path: Path) -> Path:
         temp = path.with_suffix(path.suffix + ".rollback-tmp")
@@ -775,31 +951,29 @@ class InstanceDir:
         write_owned_plugins(owned_plugins_desired_path(self._dir), doc)
 
     def commit_owned_plugins_desired_to_active(self) -> None:
-        """Rotate the owned-plugins sidecar triple in lockstep with
-        `commit_desired_to_active`'s tuple rotation: desired->active,
-        active->prior. Called inside the SAME MATERIALIZE_LOCK step. A no-op
-        when no desired sidecar was staged (defensive — every bundle commit
-        stages one first)."""
+        """Publish the staged owned-plugins sidecar as the active one:
+        desired->active, and NOTHING else. Called inside the SAME
+        MATERIALIZE_LOCK step as the tuple commit, after it. A no-op when no
+        desired sidecar was staged (defensive — every bundle commit stages one
+        first).
+
+        #810 (INV-SPEC-011): this method no longer rotates active->prior. The
+        prior sidecar is rotated by the TUPLE commit (`_commit_core`), in the
+        same step as `active.prior.yaml` and on the tuple's own no-op
+        predicate — so the retained sidecar is always the owned set of the
+        generation the retained prior tuple holds, whatever the sidecar's
+        bytes. The #346 byte-identity no-op this method used to apply keyed
+        on the wrong identity: a tuple-only generation change (a persona
+        override, a same-root config-only upgrade) re-staged identical bytes
+        and never retained a prior sidecar, so the next rollback republished
+        an older generation's set or none. A tuple no-op followed by a
+        DIFFERING desired sidecar replaces the active document without
+        rotating: the registry the caller just swapped is the authority the
+        sidecar mirrors."""
         desired = owned_plugins_desired_path(self._dir)
         active = owned_plugins_path(self._dir)
-        prior = owned_plugins_prior_path(self._dir)
         if not desired.exists():
             return
-        if active.exists() and desired.read_bytes() == active.read_bytes():
-            # #346: no-op recommit (crash-retry, or a duplicate bundle that
-            # lost a race) — the staged sidecar IS the active one. Rotating
-            # would clobber the true prior generation with a duplicate of
-            # the new active, desyncing owned-plugins.prior from
-            # active.prior.yaml for rollback. Mirrors
-            # commit_desired_to_active's tuple no-op semantics.
-            desired.unlink()
-            return
-        if active.exists():
-            # Copy-then-replace (mirrors commit_desired_to_active's
-            # _copy_to_temp) so a crash mid-rotation never destroys the prior
-            # rollback target before the new active is in place.
-            prior.write_bytes(active.read_bytes())
-            os.chmod(prior, 0o600)
         os.replace(desired, active)
 
 
@@ -818,6 +992,30 @@ def owned_plugins_path(directory: Path) -> Path:
 
 def owned_plugins_prior_path(directory: Path) -> Path:
     return Path(directory) / "owned-plugins.prior.yaml"
+
+
+def _observe_temporary(path: Path) -> str:
+    """#810: the ONE way a pending-rotation temporary is classified — a closed
+    answer over ``lstat`` (never a followed ``exists()``, which reports a looped
+    or dangling symlink as absent — Terra, diff review r7): ``"absent"`` for
+    ENOENT alone, ``"regular"`` for a regular file, ``"special"`` for anything
+    else this module never writes (a symlink, a directory, a FIFO). Every other
+    ``OSError`` propagates: an observation that could not be made is not an
+    answer."""
+    import stat as _stat
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "absent"
+    return "regular" if _stat.S_ISREG(st.st_mode) else "special"
+
+
+def owned_plugins_rollback_temp_path(directory: Path) -> Path:
+    """#810: the sidecar's pending-rotation temporary — the twin of
+    ``active.yaml.rollback-tmp``, written by ``_commit_core`` beside it and
+    promoted (or discarded) with it. Journalled with the tuple files
+    (``specialist_bundle_journal.TUPLE_FILENAMES``)."""
+    return Path(directory) / "owned-plugins.yaml.rollback-tmp"
 
 
 # Whole-branch F: an owned-plugins sidecar is on-disk state a rollback/boot

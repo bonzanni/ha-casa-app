@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.258.0] - 2026-09-02
+
+### Fixed
+
+- Undoing a specialist's persona override with a rollback now keeps every plugin
+  that specialist owns. The retained owned-plugin set is rotated with the tuple
+  it belongs to, so a rollback always republishes the owned set of the
+  generation it restores. Until now the sidecar holding that set rotated only
+  when its own bytes changed, while the tuple rotated whenever the tuple
+  changed, so an override — and a same-reference configuration-only upgrade —
+  left the retained set a generation behind or absent, and the rollback then
+  removed the specialist's plugins or served an older version's.
+- A rollback after a model change now restores the prior with its binding
+  re-derived for the model in force at rollback time, instead of refusing on the
+  checksum recorded when the prior was retained. Changing the primary model — or
+  an image upgrade that moves what a model name means — no longer strands the
+  previous version of an installed specialist.
+- A rollback whose retained component bytes have drifted in the store, or whose
+  identity has moved, is still refused by name, and the active generation is
+  left untouched.
+
+### Changed
+
+- `specialist_rollback` reports two new typed refusals: `bundle_required` when a
+  rollback asked for without the bundle transaction would change the owned
+  plugin set, and `pending_rotation_failed` when a rollback cannot complete a
+  generation pair left pending by an interrupted write.
+
 ## [0.257.0] - 2026-09-02
 
 ### Fixed

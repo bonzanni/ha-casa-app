@@ -95,6 +95,26 @@ _DEFAULT_OVERLAY_ROOT = Path("/config/specialists/.roles-overlay")
 # InstanceDir), so this one-way edge introduces no import cycle.
 from personality_binding import MATERIALIZE_LOCK  # noqa: E402
 
+# #810 (INV-SPEC-011): the SPECIALIST LIFECYCLE LOCK, defined beside
+# MATERIALIZE_LOCK in personality_binding.py and re-exported here for the same
+# reason. THE INVARIANT: a specialist-generation transaction — install,
+# upgrade, rollback, uninstall, and a specialist persona override — runs WHOLE
+# under it: sampling, journal begin, registry swap, tuple commit and sidecar
+# publication, so at every release of it the active tuple, the active
+# owned-plugins sidecar and the registry's owned rows are one generation.
+# WRITER CATALOG (every acquirer, in the worker thread, around its whole body):
+# specialist_install.commit_specialist_install, .upgrade_specialist,
+# .rollback_specialist, .uninstall_specialist (both arms each), and
+# persona_install.apply_persona_override's specialist arm. The tool layer never
+# holds it: a tool handler's task can be cancelled while the thread it
+# offloaded to runs on, and a lock held by the handler would be released
+# mid-section. LOCK ORDER: tools._PLUGIN_TOOLS_LOCK -> SPECIALIST_LIFECYCLE_LOCK
+# -> MATERIALIZE_LOCK; non-reentrant; no library function calls another
+# (measured), so no nesting; never acquired on the event loop. The reconcile
+# pass, boot journal recovery and the tool layer's compensation take
+# MATERIALIZE_LOCK only, as before.
+from personality_binding import SPECIALIST_LIFECYCLE_LOCK  # noqa: E402, F401
+
 # F5 (fail-closed self-heal): a small marker dotfile written INTO each content
 # directory recording the (binding_digest, component_root) the op-files were
 # materialized from. The self-heal loop reads it to decide whether an

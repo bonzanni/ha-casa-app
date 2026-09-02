@@ -68,6 +68,12 @@ TUPLE_FILENAMES = frozenset({
     # compensation must restore (or re-remove) it with the rest of the
     # tuple state or a compensated crash discards the pending rotation.
     "active.yaml.rollback-tmp",
+    # #810 (INV-SPEC-011): the sidecar's pending-rotation temporary, the twin
+    # of the tuple temporary above — written and promoted (or discarded) with
+    # it by InstanceDir._commit_core, so a compensation must restore or
+    # re-remove it with the rest of the pair or a compensated crash leaves
+    # the two halves of one pending rotation in different states.
+    "owned-plugins.yaml.rollback-tmp",
     # #331 (Sol r7-2): the pending-receipt marker travels WITH the pending
     # tuple — an activating retry clears it, and if that retry's sequencer
     # fails, compensation must restore the marker alongside desired.yaml or

@@ -174,24 +174,44 @@ def test_owned_plugins_supports_plugin_less_component(tmp_path: Path) -> None:
     assert loaded["component_source"]["repo"]      # provenance still present
 
 
-def test_commit_owned_plugins_rotates_desired_to_active_and_prior(tmp_path: Path) -> None:
+def test_commit_owned_plugins_replaces_desired_to_active_and_leaves_the_prior_alone(
+        tmp_path: Path, monkeypatch) -> None:
+    """#810 (INV-SPEC-011), re-specifying the Task 10 pin: the sidecar publication
+    is desired->active and NOTHING else — the prior sidecar is rotated by the
+    tuple commit, paired with active.prior.yaml. A pre-existing prior document
+    is byte-identical afterwards and was written zero times."""
     from personality_binding import (
         InstanceDir, owned_plugins_path, owned_plugins_prior_path,
         owned_plugins_desired_path, read_owned_plugins, write_owned_plugins,
     )
     d = InstanceDir(tmp_path)
-    # generation 1 already active
+    prior_path = owned_plugins_prior_path(tmp_path)
+    # generation 1 active, an older generation 0 retained as the prior
     write_owned_plugins(owned_plugins_path(tmp_path), _doc())
-    gen1 = read_owned_plugins(owned_plugins_path(tmp_path))
-    # stage generation 2 as desired
+    write_owned_plugins(prior_path, _doc(plugins=[{**_doc()["plugins"][0], "version": "0.9.0"}]))
+    prior_bytes = prior_path.read_bytes()
     gen2 = _doc(plugins=[])
     d.stage_desired_owned_plugins(gen2)
     assert read_owned_plugins(owned_plugins_desired_path(tmp_path)) == gen2
 
+    prior_writes = {"count": 0}
+    real_replace, real_write = os.replace, Path.write_bytes
+
+    def _replace(src, dst, *a, **k):
+        prior_writes["count"] += str(dst) == str(prior_path)
+        return real_replace(src, dst, *a, **k)
+
+    def _write_bytes(self_path, data, *a, **k):
+        prior_writes["count"] += str(self_path) == str(prior_path)
+        return real_write(self_path, data, *a, **k)
+
+    monkeypatch.setattr(os, "replace", _replace)
+    monkeypatch.setattr(Path, "write_bytes", _write_bytes)
     d.commit_owned_plugins_desired_to_active()
 
     assert read_owned_plugins(owned_plugins_path(tmp_path)) == gen2       # new active
-    assert read_owned_plugins(owned_plugins_prior_path(tmp_path)) == gen1  # old -> prior
+    assert prior_writes["count"] == 0
+    assert prior_path.read_bytes() == prior_bytes                           # prior untouched
     assert not owned_plugins_desired_path(tmp_path).exists()               # consumed
 
 

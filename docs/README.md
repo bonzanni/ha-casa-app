@@ -24,6 +24,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
 | a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule | [`architecture/scheduled-asks.md`](architecture/scheduled-asks.md) |
+| a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, the bundle journal, or bundle-transaction recovery | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, the question lifecycle, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
@@ -52,7 +53,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, the retry spool, or the memory wipe | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
-| specialist install identity, consent, materialization, or bundle-transaction recovery | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
+| specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
 | the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker | [`architecture/callback-delivery.md`](architecture/callback-delivery.md) |
@@ -63,6 +64,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the engagement uid allocator, workspace ownership, root's access into a workspace, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep | [`architecture/engagement-containment.md`](architecture/engagement-containment.md) |
 | the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools | [`architecture/plugin-events.md`](architecture/plugin-events.md) |
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
+| the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused | [`architecture/prompt-file-guards.md`](architecture/prompt-file-guards.md) |
 | the setup tool's dispatch, its consent gating, or the route gate a setup obligation passes through | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
 | the turn lifecycle, the warm client pool, retry behaviour, or turn teardown | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
 | trigger types, resident webhook routing, one-shot firing and cleanup, scheduling, or who may write a resident's trigger file | [`architecture/triggers.md`](architecture/triggers.md) |

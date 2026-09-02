@@ -21,8 +21,10 @@ specialist component's own bundle transactions, which are
 **A published persona version is immutable, and installing one is consent-bound.** A bare
 persona repo installs through checksum-bound durable operator consent; re-publishing the
 same `persona_id@version` with different bytes is refused rather than replaced, and
-applying an override to a specialist preserves its component root and configuration. Boot
-reconciliation holds the same line: an override is reloaded by `persona_id@version` and the
+applying an override to a specialist preserves its component root and configuration — and
+is a specialist-generation transaction like an upgrade: it rotates the tuple and its
+owned-plugin sidecar into the retained prior together, under the lifecycle lock, journaled
+when made through the tool (INV-SPEC-011). Boot reconciliation holds the same line: an override is reloaded by `persona_id@version` and the
 bytes found on disk must match the binding's pinned checksum — changed bytes under a pinned
 version are refused, never silently re-materialized into a fresh binding. Inspection
 staging under the personas root is reclaimed on rejection and consumed by a successful
