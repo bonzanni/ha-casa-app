@@ -3288,3 +3288,101 @@ class TestDeliveryAcknowledgedAnnouncements:
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(msg)
         assert msg.on_delivery is None
+
+
+class _RecordingStreamChannel:
+    """A Telegram-shaped channel that COUNTS what a turn actually did.
+
+    Unlike ``_StubTelegramChannel`` its ``create_on_token`` returns a recording
+    callback, so a test can assert what the token stream carried — which is the
+    whole question #666 asks.
+    """
+
+    name = "telegram"
+    delivers_final_text = True
+
+    def __init__(self) -> None:
+        self.tokens: list[str] = []
+        self.send = AsyncMock()
+        self.send_response = AsyncMock()
+        self.finalize_stream = AsyncMock()
+        self.finalize_response_stream = AsyncMock()
+        self.turn_finished = AsyncMock()
+
+    def create_on_token(self, _context):
+        async def _on_token(text: str) -> None:
+            self.tokens.append(text)
+        return _on_token
+
+
+class TestIssue666SentinelHold:
+    """INV-TURN-009 through the real turn path: a chosen-silence turn shows the
+    operator NOTHING, and its typing teardown still runs.
+
+    At the base the stream callback runs before the sentinel gate, so the
+    literal ``<silent/>`` is posted as a real Telegram message and — on this
+    chosen-silence path — nothing ever supersedes it: the gate empties ``text``,
+    delivery is skipped, and ``turn_finished`` only releases the typing lease.
+    """
+
+    async def test_sentinel_only_turn_streams_nothing_and_still_tears_down(
+        self, tmp_path,
+    ):
+        FakeClient.reset()
+        FakeClient.response_text = "<silent/>"
+        agent = _make_agent(tmp_path, role="assistant")
+        channel = _RecordingStreamChannel()
+        agent._channel_manager.register(channel)
+
+        msg = BusMessage(
+            type=MessageType.REQUEST,
+            source="telegram",
+            target="assistant",
+            content="anything?",
+            channel="telegram",
+            context={"chat_id": "123"},
+        )
+        with patch("sdk_client_pool._default_make_client", FakeClient):
+            result = await agent.handle_message(msg)
+
+        # Nothing reached the operator, on any surface.
+        assert channel.tokens == []
+        assert channel.send.call_count == 0
+        assert channel.send_response.call_count == 0
+        assert channel.finalize_stream.call_count == 0
+        assert channel.finalize_response_stream.call_count == 0
+        # ...and turn_finished is now the ONLY release of the typing lease,
+        # because create_on_token's first-token teardown never runs.
+        assert channel.turn_finished.call_count == 1
+        # M4: a REQUEST turn still returns exactly one empty RESPONSE.
+        assert result is not None
+        assert result.type is MessageType.RESPONSE
+        assert result.content == ""
+
+    async def test_recant_turn_streams_the_whole_text_sentinel_included(
+        self, tmp_path,
+    ):
+        """The G-3 recant contract at the turn level: the hold releases, and
+        what it releases is the whole text with the literal intact."""
+        FakeClient.reset()
+        FakeClient.response_text = "<silent/> actually, meeting at 3pm."
+        agent = _make_agent(tmp_path, role="assistant")
+        channel = _RecordingStreamChannel()
+        channel.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        agent._channel_manager.register(channel)
+
+        msg = BusMessage(
+            type=MessageType.REQUEST,
+            source="telegram",
+            target="assistant",
+            content="when?",
+            channel="telegram",
+            context={"chat_id": "123"},
+        )
+        with patch("sdk_client_pool._default_make_client", FakeClient):
+            result = await agent.handle_message(msg)
+
+        assert channel.tokens == ["<silent/> actually, meeting at 3pm."]
+        assert channel.finalize_response_stream.call_count == 1
+        assert channel.turn_finished.call_count == 0
+        assert result.content == "<silent/> actually, meeting at 3pm."

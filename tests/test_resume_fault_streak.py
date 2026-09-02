@@ -507,11 +507,17 @@ class TestNoticeDeliveryShapes:
         assert channel.stream_sends == []
         assert channel.final_sends == [_USER_MESSAGES[ErrorKind.SDK_ERROR]]
 
-    async def test_literal_sentinel_doomed_reply_is_send_plus_edit(
+    async def test_literal_sentinel_doomed_reply_is_one_final_send(
         self, tmp_path,
     ):
-        """The streamed literal sentinel (pre-existing G-3 cost) is
-        SUPERSEDED by the final edit carrying the mapped error."""
+        """#666 (INV-TURN-009): the literal sentinel is never streamed, so the
+        classified retry-tainted reply is ONE fresh send and no edit.
+
+        This pin previously asserted one streamed sentinel plus one superseding
+        edit — the pre-existing G-3 cost. With the sentinel held, Telegram's
+        on_token closure holds no message id, `finalize_stream` takes its
+        fresh-send branch, and the failed-final-edit residual disappears with
+        the message that carried it."""
         CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
         FakeClient.reset()
         FakeClient.failure_schedule = [CLIConnectionError("x"), None]
@@ -525,9 +531,9 @@ class TestNoticeDeliveryShapes:
                 patch_retry_sleep():
             await agent.handle_message(_trusted_msg(chat="s2"))
 
-        assert channel.stream_sends == ["<silent/>"]
-        assert channel.edits[-1] == _USER_MESSAGES[ErrorKind.SDK_ERROR]
-        assert channel.final_sends == []
+        assert channel.stream_sends == []
+        assert channel.edits == []
+        assert channel.final_sends == [_USER_MESSAGES[ErrorKind.SDK_ERROR]]
 
 
 class TestRequestTurns:

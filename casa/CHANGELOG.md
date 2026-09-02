@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.259.0] - 2026-09-02
+
+### Fixed
+
+- A turn Casa chooses to stay silent on no longer shows a literal `<silent/>` in
+  the chat. The sentinel used to be streamed to the channel like any other text,
+  and on a turn that stayed silent nothing ever replaced it — the literal stood
+  there permanently; on a turn that changed its mind it cost an extra edit and
+  could leave the literal behind if that edit failed. Streamed output is now
+  held while it could still turn out to be nothing but that sentinel, and
+  released in full as soon as it cannot, so a turn that speaks after all
+  delivers its whole text exactly as before.
+
 ## [0.258.0] - 2026-09-02
 
 ### Fixed
