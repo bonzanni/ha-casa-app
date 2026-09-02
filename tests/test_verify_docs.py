@@ -578,6 +578,49 @@ def test_a_class_qualified_binding_naming_a_missing_method_is_refused(tmp_path):
     )
 
 
+def test_a_parametrised_binding_is_refused_naming_the_unparametrised_id(tmp_path):
+    """The binding is the UNPARAMETRISED node id (#812): `test_b[False]` names no Python
+    identifier, so it can never resolve, and inside a flow-style list the brackets do not
+    even parse. The refusal says so, for the module-level and the class-qualified shape
+    both, and fires before either resolution arm reads the file."""
+    manifest = _inv_manifest(
+        "\n  invariant_tests:\n    INV-X-001: ['tests/test_a.py::test_b[False]', "
+        "'tests/test_a.py::TestC::test_b[False]']"
+    )
+    root = _corpus(tmp_path, manifest, docs=INV_DOC)
+    (root / "tests" / "test_a.py").write_text(
+        "def test_b():\n    pass\n\n\nclass TestC:\n    def test_b(self):\n        pass\n")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    problems = verify_docs.verify(root)
+    hinted = [p for p in problems if "bound by its unparametrised node id" in p]
+    assert len(hinted) == 2
+    assert any("test_b[False]' does not resolve in tests/test_a.py" in p for p in hinted)
+    assert any("TestC::test_b[False]' does not resolve in tests/test_a.py" in p for p in hinted)
+
+
+def test_a_parametrised_binding_is_refused_even_when_a_comment_quotes_it(tmp_path):
+    """A bracketed node id is refused BEFORE either resolution arm looks at the file.
+    The module-level arm is a substring search, so a comment (or a docstring, or a
+    string literal) that happens to quote `test_b[False]` used to satisfy it and the
+    corpus went green on a binding pytest would never collect. Red at the tree that
+    only added the hint: `verify()` returned `[]` for this corpus."""
+    manifest = _inv_manifest(
+        "\n  invariant_tests:\n    INV-X-001: ['tests/test_a.py::test_b[False]']"
+    )
+    root = _corpus(tmp_path, manifest, docs=INV_DOC)
+    (root / "tests" / "test_a.py").write_text(
+        "def test_b():\n    pass\n\n\n# the False case of test_b[False] is the one that bites\n"
+    )
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    problems = verify_docs.verify(root)
+    refused = [
+        p for p in problems
+        if "INV-X-001" in p and "tests/test_a.py::test_b[False]" in p
+        and "bound by its unparametrised node id" in p
+    ]
+    assert refused, problems
+
+
 def test_the_pinning_sentinel_is_a_failure_naming_the_invariant(tmp_path):
     """The sentinel makes the missing-test backlog mechanical: the corpus is RED until
     every sentinel is replaced by a real, demonstrated-red pinning test."""
@@ -877,6 +920,92 @@ def test_a_doc_duplicated_between_root_and_shard_is_caught(tmp_path):
     (shard_dir / "architecture.yaml").write_text(ENTRY)
     subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
     assert any("listed twice" in p for p in verify_docs.verify(root))
+
+
+# --- a manifest that fails to load renders nothing (#812) ---------------------------
+
+BROKEN_SHARD = "- doc: [unclosed\n"
+
+GENERATED = [
+    "README.md",
+    "architecture/turn-loop.md",
+    "contributing/doc-contract.md",
+    "doctrine/invariants-n-z.md",
+    "doctrine/invariants.md",
+    "doctrine/publishing.md",
+    "llms.txt",
+]
+
+
+def _generated_bytes(root: Path) -> dict[str, bytes]:
+    return {rel: (root / "docs" / rel).read_bytes() for rel in GENERATED}
+
+
+def _fresh_corpus_then_break_the_shard(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
+    """A sharded corpus whose generated navigation is CURRENT, then one shard made
+    unparsable. Current first, because the seeded skeleton is stale by construction
+    and the point is to tell a broken manifest apart from stale navigation."""
+    root = _sharded_corpus(tmp_path, ENTRY)
+    assert verify_docs.write_nav(root) == GENERATED
+    assert verify_docs.stale_nav(root) == []
+    before = _generated_bytes(root)
+    (root / "docs" / "manifest.d" / "architecture.yaml").write_text(BROKEN_SHARD)
+    return root, before
+
+
+def test_write_nav_refuses_an_unloadable_shard_without_writing(tmp_path):
+    """Pins INV-DOC-010's seam half. Red at the pre-fix tree: `_documents()` discards the
+    loader's problem, so `write_nav` does not raise and rewrites the four corpus-wide
+    artifacts from an empty document list."""
+    root, before = _fresh_corpus_then_break_the_shard(tmp_path)
+    with pytest.raises(RuntimeError) as excinfo:
+        verify_docs.write_nav(root)
+    assert type(excinfo.value).__name__ == "ManifestLoadError"
+    problems = excinfo.value.problems
+    assert len(problems) == 1
+    assert problems[0].count("docs/manifest.d/architecture.yaml") == 1
+    assert "is not valid YAML:" in problems[0]
+    assert "expected ',' or ']'" in problems[0]
+    assert _generated_bytes(root) == before
+
+
+def test_bare_cli_reports_a_broken_shard_before_navigation_staleness(tmp_path, monkeypatch, capsys):
+    """Pins INV-DOC-010's ordering half. Red at the pre-fix tree: `stale_nav` renders an
+    empty corpus before `verify()` runs, so the bare run prints the stale-navigation
+    finding with the destructive remedy and never names the shard or the YAML error."""
+    root, before = _fresh_corpus_then_break_the_shard(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root)])
+    rc = verify_docs.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert out.count("✗ ") == 1
+    assert out.count("docs/manifest.d/architecture.yaml is not valid YAML:") == 1
+    assert out.count("expected ',' or ']'") == 1
+    assert out.count("1 problem(s).") == 1
+    assert out.count("generated navigation is stale") == 0
+    assert out.count("run: python -m scripts.verify_docs . --write-nav") == 0
+    assert _generated_bytes(root) == before
+
+
+def test_manifest_load_failure_precedes_report_and_write_nav(tmp_path, monkeypatch, capsys):
+    """Pins INV-DOC-010's write half through the CLI. Red at the pre-fix tree: `--report`
+    prints `0 files, 0.0 KB total`, `--write-nav` regenerates the four corpus-wide
+    artifacts from an empty corpus and changes their bytes, and only then does `verify()`
+    report the shard error."""
+    root, before = _fresh_corpus_then_break_the_shard(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["verify_docs", str(root), "--report", "--write-nav"])
+    rc = verify_docs.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert out.count("✗ ") == 1
+    assert out.count("docs/manifest.d/architecture.yaml is not valid YAML:") == 1
+    assert out.count("expected ',' or ']'") == 1
+    assert out.count("1 problem(s).") == 1
+    assert out.count("files, ") == 0
+    assert out.count(" KB  ") == 0
+    assert out.count("✓ regenerated docs/") == 0
+    assert out.count("generated navigation is stale") == 0
+    assert _generated_bytes(root) == before
 
 
 # --- the base-aware size trigger (#722) ----------------------------------------------
