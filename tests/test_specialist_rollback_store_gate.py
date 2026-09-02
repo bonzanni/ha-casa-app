@@ -97,3 +97,49 @@ def test_a_drifted_component_file_is_refused_by_name_not_as_an_unstructured_erro
     assert prior.root in raised.value.detail
     assert len(writes) == 0
     assert active_path.read_bytes() == active_before
+
+
+def test_a_schema_invalid_retained_manifest_is_refused_by_name_not_as_an_unstructured_error(
+        tmp_path: Path, monkeypatch) -> None:
+    """Diff review round 8 (Sol): the retained manifest drifts to VALID JSON that
+    violates the component schema — the component loader propagates
+    ``jsonschema.ValidationError`` unwrapped, which is not a ``ValueError``.
+    The rollback still refuses the typed ``compile_failed`` naming the prior's
+    root, with zero tuple writes, zero journals and the active untouched.
+    Mutant: enumerate the caught classes again (drop the schema error) → this
+    raises ``ValidationError``, not ``SpecialistInstallError``."""
+    import json
+    import specialist_bundle_journal
+    from specialist_install import (
+        SpecialistInstallError, cas_store_dir, parse_component_root, rollback_specialist,
+    )
+
+    specialists_root, agents_root, _ = _install(tmp_path, monkeypatch)
+    assert _upgrade(tmp_path, specialists_root, agents_root, version="0.2.0").state == "active"
+    prior, _, active_path, _ = _prior_and_paths(specialists_root)
+    _, _, prior_checksum = parse_component_root(prior.root)
+    cas_dir = cas_store_dir(prior_checksum, store_root=specialists_root / "store")
+    manifest_path = cas_dir / "manifest.json"
+    cas_dir.chmod(0o755)
+    manifest_path.chmod(0o644)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["dependencies"] = "not-a-list"                   # schema-invalid, JSON-valid
+    manifest_path.write_text(json.dumps(manifest))
+    active_before = active_path.read_bytes()
+    writes = _count_tuple_writes(monkeypatch)
+    begins = {"count": 0}
+    real_begin = specialist_bundle_journal.begin
+    monkeypatch.setattr(specialist_bundle_journal, "begin",
+                        lambda *a, **k: (begins.__setitem__("count", begins["count"] + 1),
+                                         real_begin(*a, **k))[1])
+
+    with pytest.raises(SpecialistInstallError) as raised:
+        rollback_specialist(
+            slug=_SLUG, specialists_dir=specialists_root, agents_specialists_dir=agents_root)
+
+    assert raised.value.kind == "compile_failed"
+    assert prior.root in raised.value.detail
+    assert "ValidationError" in raised.value.detail
+    assert len(writes) == 0
+    assert begins["count"] == 0
+    assert active_path.read_bytes() == active_before

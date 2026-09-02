@@ -3342,12 +3342,20 @@ def _rollback_core(
         # current active tuple keeps running untouched.
         prior_component = load_specialist_component(cas_dir, cas_dir / "manifest.json")
         prior_deps = resolve_dependency_closure(prior_component, cas_dir)
-    except (ValueError, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001 — ONE boundary, one rule (diff review r8)
+        # Whatever a loader raises — a ValueError, an OSError, a jsonschema
+        # ValidationError the component loader deliberately propagates
+        # unwrapped, a YAML error — is the same fact at THIS boundary: the
+        # retained generation's store cannot be loaded as the generation the
+        # prior names. Three review rounds each found one more class escaping
+        # an enumerated catch; the enumeration is cut. The class and message
+        # travel in the detail, so nothing is hidden, and the active tuple has
+        # not been touched.
         raise SpecialistInstallError(
             "compile_failed",
             f"{slug!r}: the retained prior is not restored — its component store "
             f"({prior.root}) could not be loaded as the generation the prior names "
-            f"({exc}); the current active is untouched") from exc
+            f"({type(exc).__name__}: {exc}); the current active is untouched") from exc
     unavailable = [d for d in prior_deps if not d.available]
     if unavailable:
         detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)
