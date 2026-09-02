@@ -745,3 +745,78 @@ async def test_cascade_rebuild_failure_keeps_the_teardown_rows_and_names_the_ste
     assert env["actions"].count(f"failed:{ROLE}:RuntimeError") == 0, env["actions"]
     assert h.live_count() == 0
     monkeypatch.setattr(AgentRegistry, "build", real_build)
+
+
+# --------------------------------------------------------------------------
+# diff review round 2: callers of the retirement path (config_sync's swallow,
+# the sweep's candidate set) — written after acceptance, as siblings
+# --------------------------------------------------------------------------
+
+
+async def test_config_sync_names_a_failed_sweep_rebuild(harness, monkeypatch):
+    """The sweep's bulk `AgentRegistry` rebuild raises after its committed
+    scan found the role disabled: the sweep aborts before its retirement
+    loop (as at the base), `config_sync` swallows the sub-handler's
+    exception, and its policies cascade cannot retire a role the registry
+    no longer lists. The envelope must NAME the failed step rather than
+    report a clean pass over a live disabled specialist."""
+    from agent_registry import AgentRegistry
+    h = harness
+    real_build = AgentRegistry.build
+
+    def boom(**kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(AgentRegistry, "build", staticmethod(boom))
+    env = await _dispatch(h, "config_sync")
+    assert env["status"] == "ok", env
+    assert env["actions"].count("agents:error:agent_registry_rebuild_failed") == 1, env["actions"]
+    assert env["actions"].count("agents:error:RuntimeError") == 0, env["actions"]
+    # The role IS still live — and the report says why.
+    assert h.live_count() == 1
+    assert await h.send_checked() == "accepted"
+    monkeypatch.setattr(AgentRegistry, "build", real_build)
+
+
+async def test_sweep_alone_returns_the_named_rebuild_error(harness, monkeypatch):
+    from agent_registry import AgentRegistry
+    h = harness
+    real_build = AgentRegistry.build
+
+    def boom(**kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(AgentRegistry, "build", staticmethod(boom))
+    env = await _dispatch(h, "agents")
+    assert env["status"] == "error", env
+    assert env["kind"] == "agent_registry_rebuild_failed", env
+    monkeypatch.setattr(AgentRegistry, "build", real_build)
+
+
+async def test_sweep_retries_a_retirement_whose_bus_step_failed(harness, monkeypatch):
+    """First sweep: the Agent is popped but the bus unregister raises — the
+    row names it and the queue survives (a message is still ACCEPTED).
+    Second sweep, same disabled file, bus healthy: the role is no longer in
+    `runtime.agents`, yet the retirement is RETRIED and completes — the
+    queue is gone. Third sweep: nothing left to retire, no teardown row."""
+    h = harness
+    real = h.bus.unregister_and_wait
+
+    async def boom(name):
+        raise RuntimeError("bus refused")
+    monkeypatch.setattr(h.bus, "unregister_and_wait", boom)
+    env1 = await _dispatch(h, "agents")
+    assert env1["status"] == "ok", env1
+    assert env1["actions"].count(f"{TEARDOWN}_{ROLE}") == 1, env1["actions"]
+    assert env1["actions"].count(f"teardown_incomplete_bus_unregister_{ROLE}") == 1, env1["actions"]
+    assert h.live_count() == 0
+    assert await h.send_checked() == "accepted"      # the residue is reachable
+
+    monkeypatch.setattr(h.bus, "unregister_and_wait", real)
+    env2 = await _dispatch(h, "agents")
+    assert env2["status"] == "ok", env2
+    assert env2["actions"].count(f"{TEARDOWN}_{ROLE}") == 1, env2["actions"]
+    assert sum(a.startswith("teardown_incomplete_") for a in env2["actions"]) == 0, env2["actions"]
+    assert await h.send_checked() == "no_target"
+
+    env3 = await _dispatch(h, "agents")
+    assert env3["status"] == "ok", env3
+    assert _teardown_rows(env3["actions"]) == 0, env3["actions"]

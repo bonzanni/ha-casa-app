@@ -215,7 +215,11 @@ step that failed is named rather than absorbed: `teardown_incomplete_<step>` for
 teardown step, an error envelope whose kind names the step in the single-role scopes, a
 `failed:<role>:<kind>` row in the cascade, `refresh_role_map_failed` for the map. A sweep
 whose own re-scan failed reports `specialist_scan_failed` and retires nothing from the
-stale generation. A resident that shares a disabled specialist's name is never touched.
+stale generation; a sweep whose agent-registry rebuild failed returns
+`agent_registry_rebuild_failed`, which `config_sync` reports as `agents:error:<kind>` rather
+than swallowing. A retirement that left a step failed is remembered for the life of the
+process, and the next sweep that reads the role disabled retries it and reports its own
+outcome. A resident that shares a disabled specialist's name is never touched.
 The single-role scopes read and decide under the role's agent lock, so a disabled read and
 a concurrent enabled swap of the same role serialize: the last file read wins, truthfully.
 

@@ -516,6 +516,10 @@ def _fresh_reload_locks(monkeypatch):
         return
     monkeypatch.setattr(_reload, "_LOCKS", {})
     monkeypatch.setattr(_reload, "_GLOBAL_RW", None)
+    # The remembered incomplete retirements are process state of the same
+    # kind (#786): one test's failed teardown must not make the next test's
+    # sweep retry a role it never touched.
+    monkeypatch.setattr(_reload, "_INCOMPLETE_RETIREMENTS", set())
     yield
 
 

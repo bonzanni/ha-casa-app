@@ -1136,6 +1136,16 @@ def _specialist_disabled(tier: str | None, cfg: Any) -> bool:
     return tier == "specialist" and getattr(cfg, "enabled", True) is False
 
 
+# Disabled specialists whose retirement left a step FAILED (a queue, an ask
+# or a route may survive). Module-level for the same reason as
+# `_AGENT_CLOSE_TASKS`: the process, not one reload, owns the residue. The
+# `agents` sweep admits a remembered role as a candidate even when it is no
+# longer in `runtime.agents`, so a later reload that reads the role disabled
+# RETRIES the retirement and names its own outcome (diff review r2, terra)
+# instead of reporting green over residue; a clean teardown forgets it.
+_INCOMPLETE_RETIREMENTS: set[str] = set()
+
+
 async def _teardown_disabled_specialist(
     actions: list[str], runtime: Any, role: str, *, suffix: str = "",
 ) -> None:
@@ -1169,6 +1179,10 @@ async def _teardown_disabled_specialist(
     failed += await _teardown_role(runtime, role)
     for step in failed:
         actions.append(f"teardown_incomplete_{step}{suffix}")
+    if failed:
+        _INCOMPLETE_RETIREMENTS.add(role)
+    else:
+        _INCOMPLETE_RETIREMENTS.discard(role)
 
 
 async def _retire_disabled_specialist(
@@ -1953,10 +1967,24 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
     # resident adds/evicts and the registry re-scan all happened above; the
     # remaining loops mutate runtime.agents only.
     from agent_registry import AgentRegistry
-    runtime.agent_registry = AgentRegistry.build(
-        residents=runtime.role_configs,
-        specialists=runtime.specialist_registry.all_configs(),
-    )
+    try:
+        runtime.agent_registry = AgentRegistry.build(
+            residents=runtime.role_configs,
+            specialists=runtime.specialist_registry.all_configs(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # #786 (INV-CFG-012, diff review r2): the rebuild aborts the sweep
+        # here at the base too; the error now NAMES the step, so a caller
+        # that composes this sweep (`config_sync`, `full`) reports which
+        # step failed instead of a bare exception text — a disabled
+        # specialist this sweep's committed scan found is then known to be
+        # still live, not hidden behind a green envelope.
+        raise ReloadError(
+            "agent_registry_rebuild_failed",
+            f"specialist registry re-scanned, but the AgentRegistry rebuild "
+            f"failed before the backfill and the disabled-specialist "
+            f"retirement ran: {exc}",
+        ) from exc
     actions.append("rebuild_agent_registry")
 
     # Registry-known specialists missing an Agent object need agent-home +
@@ -2031,12 +2059,13 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
                 if isinstance(r, str)}
         except Exception:  # noqa: BLE001 — a pre-v0.74 registry stand-in
             disabled_now = set()
-    for s in sorted((set(runtime.agents.keys()) & disabled_now)
+    live_or_residual = set(runtime.agents.keys()) | _INCOMPLETE_RETIREMENTS
+    for s in sorted((live_or_residual & disabled_now)
                     - set(runtime.role_configs.keys())):
         async with _get_lock(_lock_key("agent", s)):
             if runtime.specialist_registry.is_disabled(s) is not True:
                 continue
-            if s not in runtime.agents:
+            if s not in runtime.agents and s not in _INCOMPLETE_RETIREMENTS:
                 continue
             await _teardown_disabled_specialist(actions, runtime, s, suffix=f"_{s}")
 
@@ -2233,6 +2262,11 @@ async def reload_config_sync(runtime: Any, *, role: str | None = None) -> list[s
             actions.append(f"{scope}:{sub}")
         except Exception as exc:  # noqa: BLE001 — one cascade failure shouldn't abort the rest
             logger.warning("config_sync cascade: scope=%s failed: %s", scope, exc)
+            # #786 (INV-CFG-012, diff review r2): a swallowed sub-handler
+            # failure was invisible in the envelope; the row carries the
+            # step's kind, exactly as the triggers arm below already does.
+            kind = getattr(exc, "kind", None) or type(exc).__name__
+            actions.append(f"{scope}:error:{kind}")
 
     # Then the residents whose trigger file the pass changed (#620). An
     # `UNREADABLE` on EITHER side counts as changed: a transient read fault must
