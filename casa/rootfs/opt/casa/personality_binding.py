@@ -804,27 +804,36 @@ class InstanceDir:
         and its paired sidecar temporary to ``owned-plugins.prior.yaml`` — or,
         when no sidecar temporary exists, the prior sidecar is unlinked (that
         generation owned no sidecar). A tuple temporary equal to the active
-        (the #346 stale pair a journal rollback can leave) or one that fails to
-        load discards BOTH temporaries: a duplicate of the active must never
-        reach the prior, and a bad prior would be refused by the next rollback
-        anyway. A lone sidecar temporary (the tuple promotion completed, the
-        sidecar's did not) is promoted on its own. Raises ``OSError`` on a
-        failed rename; callers decide whether that is fatal."""
+        (the #346 stale pair a journal rollback can leave) or one whose BYTES
+        fail to parse or validate discards BOTH temporaries: a duplicate of the
+        active must never reach the prior, and a bad prior would be refused by
+        the next rollback anyway. A lone sidecar temporary (the tuple promotion
+        completed, the sidecar's did not) is promoted on its own. Raises
+        ``OSError`` on any I/O failure — a failed read as much as a failed
+        rename — with the pair left as it was; callers decide whether that is
+        fatal (the rollback refuses, a commit logs and continues)."""
         active_path = self._path("active.yaml")
         prior_path = self._path("active.prior.yaml")
         pending = active_path.with_suffix(active_path.suffix + ".rollback-tmp")
         pending_sidecar = owned_plugins_rollback_temp_path(self._dir)
         prior_sidecar = owned_plugins_prior_path(self._dir)
         if pending.exists():
+            # A pair is classified STALE or CORRUPT only on what the bytes SAY
+            # — a parse or schema failure. An I/O error says nothing about the
+            # bytes and PROPAGATES (Sol, diff review r5 — the second finding
+            # of one shape in this method, generalised rather than patched): a
+            # transient read failure must never discard a genuine pending
+            # generation, or the rollback that follows restores the older
+            # visible prior and reports success. The rollback refuses on the
+            # OSError with the pair intact; a commit logs it and leaves the
+            # pair for the next completion.
             try:
                 pending_tuple = load_instance_tuple(pending)
-            except (ValueError, OSError, yaml.YAMLError,
-                    jsonschema.ValidationError):
+            except (ValueError, yaml.YAMLError, jsonschema.ValidationError):
                 pending_tuple = None
             try:
                 current = load_instance_tuple(active_path)
-            except (ValueError, OSError, yaml.YAMLError,
-                    jsonschema.ValidationError):
+            except (ValueError, yaml.YAMLError, jsonschema.ValidationError):
                 current = None
             # ORDER MATTERS in every branch, because any step can fail and
             # the NEXT call classifies the state from what survived (Sol,
