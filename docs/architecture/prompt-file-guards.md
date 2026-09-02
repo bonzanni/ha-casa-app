@@ -84,9 +84,11 @@ the image.
 
 **An agent writes to a resident's copy through a file tool.** Refused on every hook path with
 a denial naming the file and the surface that does carry the behaviour. **Through the shell.**
-Not classified: a `Bash` call is not routed to these guards, so a shell-capable agent can
-still make the edit — inert for a bundle-bound resident, and a separate decision for the
-plugin-developer's tree.
+The two guards differ here. The response-shape guard keeps a coarse shell backstop: a `Bash`
+command that names `response_shape.yaml` and is not provably read-only is refused — it
+recognises the accidental spelling, not every one. The prompt-file guard classifies no shell
+command at all, so a shell-capable agent can still edit `prompts/system.md` — inert for a
+bundle-bound resident, and a separate decision for the plugin-developer's tree.
 
 ## Extension points
 
