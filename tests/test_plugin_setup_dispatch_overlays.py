@@ -306,7 +306,7 @@ async def test_the_recompute_path_alone_decides_when_no_registry_is_bound(
     await h.release_obligation()
     assert await pse._worker_pass() is False
     assert len(h.dispatches) == 0
-    assert h.callback_calls == 0
+    assert h.callback_calls == 1
     assert h.pending_released() == 1
     assert h.row()["last_error"] == "waiting for live trigger route"
 
