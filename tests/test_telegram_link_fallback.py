@@ -7,7 +7,10 @@ carries the label alone and a `TEXT_LINK`'s destination reaches nobody, while
 the turn still reports DELIVERED. These pin the destination's presence in what
 was ACTUALLY sent to the Bot API — counts and payloads, never statuses.
 
-Specified by sol (red-case SPECIFY round, cluster U attempt 2).
+Specified by sol (red-case SPECIFY round, cluster U attempt 2). The payload
+assertions pin the PROPERTY the acceptor asked for — the destination present
+exactly once in what the retry actually sent — rather than one implementation's
+formatting of it.
 """
 from __future__ import annotations
 
@@ -25,7 +28,6 @@ LABEL = "DESTINATION"
 URL = "https://example.test/target"
 TAIL = "x" * 4096
 AUTHORED = f"[{LABEL}]({URL})\n\n{TAIL}"
-FALLBACK = f"{LABEL} ({URL})"
 
 
 def _record_attempts(bot):
@@ -76,16 +78,22 @@ async def test_send_response_multipage_entity_fallback_keeps_link_target():
         len(attempts),
         sum(text.count(URL) for _, text, _ in attempts),
         sum(text.count(LABEL) for _, text, _ in attempts),
-        attempts,
+        [(name, urls) for name, _, urls in attempts],
+        attempts[0][1],
+        URL in attempts[1][1],
+        attempts[2][1],
     ) == (
         3,
         1,
         2,
         [
-            ("send_message", LABEL, [URL]),
-            ("send_message", FALLBACK, []),
-            ("send_message", TAIL, []),
+            ("send_message", [URL]),
+            ("send_message", []),
+            ("send_message", []),
         ],
+        LABEL,
+        True,
+        TAIL,
     )
 
 
@@ -104,16 +112,22 @@ async def test_finalize_response_stream_multipage_entity_fallback_keeps_link_tar
         len(attempts),
         sum(text.count(URL) for _, text, _ in attempts),
         sum(text.count(LABEL) for _, text, _ in attempts),
-        attempts,
+        [(name, urls) for name, _, urls in attempts],
+        attempts[0][1],
+        URL in attempts[1][1],
+        attempts[2][1],
     ) == (
         3,
         1,
         2,
         [
-            ("edit_message_text", LABEL, [URL]),
-            ("edit_message_text", FALLBACK, []),
-            ("send_message", TAIL, []),
+            ("edit_message_text", [URL]),
+            ("edit_message_text", []),
+            ("send_message", []),
         ],
+        LABEL,
+        True,
+        TAIL,
     )
 
 
@@ -128,16 +142,22 @@ async def test_send_response_to_topic_multipage_entity_fallback_keeps_link_targe
         len(attempts),
         sum(text.count(URL) for _, text, _ in attempts),
         sum(text.count(LABEL) for _, text, _ in attempts),
-        attempts,
+        [(name, urls) for name, _, urls in attempts],
+        attempts[0][1],
+        URL in attempts[1][1],
+        attempts[2][1],
     ) == (
         3,
         1,
         2,
         [
-            ("send_message", LABEL, [URL]),
-            ("send_message", FALLBACK, []),
-            ("send_message", TAIL, []),
+            ("send_message", [URL]),
+            ("send_message", []),
+            ("send_message", []),
         ],
+        LABEL,
+        True,
+        TAIL,
     )
 
 
@@ -155,14 +175,20 @@ async def test_topic_stream_finalize_multipage_entity_fallback_keeps_link_target
         len(attempts),
         sum(text.count(URL) for _, text, _ in attempts),
         sum(text.count(LABEL) for _, text, _ in attempts),
-        attempts,
+        [(name, urls) for name, _, urls in attempts],
+        attempts[0][1],
+        URL in attempts[1][1],
+        attempts[2][1],
     ) == (
         3,
         1,
         2,
         [
-            ("edit_message_text", LABEL, [URL]),
-            ("edit_message_text", FALLBACK, []),
-            ("send_message", TAIL, []),
+            ("edit_message_text", [URL]),
+            ("edit_message_text", []),
+            ("send_message", []),
         ],
+        LABEL,
+        True,
+        TAIL,
     )
