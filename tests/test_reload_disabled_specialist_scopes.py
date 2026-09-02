@@ -647,12 +647,61 @@ async def test_failed_role_map_refresh_is_named(harness, monkeypatch):
 
 async def test_cascade_rescan_failure_keeps_the_teardown_rows_and_names_itself(harness):
     """The policies cascade tears the role down, then the registry re-scan
-    raises: the rows already earned survive and the failure is a row, so the
-    envelope says both what happened and what did not."""
+    raises: the rows already earned survive and the failure is a row naming
+    the STEP (the reload error's kind, `specialist_reload_failed` — the same
+    kind the single-role scopes return as their error envelope), so the
+    envelope says both what happened and what did not. The specifier wrote
+    the row as `failed:finance:OSError`; the acceptor's scope round asked
+    that a failed step be NAMED, and an exception's type name does not name
+    a step — so the row carries the kind, and the type name only for an
+    exception that has none."""
     h = harness
     h.registry.fail_load = OSError("scan refused")
     env = await _dispatch(h, "policies")
     assert env["status"] == "ok", env
     assert env["actions"].count(f"{TEARDOWN}_{ROLE}") == 1, env["actions"]
-    assert env["actions"].count(f"failed:{ROLE}:OSError") == 1, env["actions"]
+    assert env["actions"].count(f"failed:{ROLE}:specialist_reload_failed") == 1, env["actions"]
+    assert env["actions"].count(f"failed:{ROLE}:OSError") == 0, env["actions"]
     assert h.live_count() == 0
+
+
+async def test_failed_registry_rebuild_is_a_named_error_after_the_teardown(harness, monkeypatch):
+    """Acceptor's scope round: the CORE teardown succeeds, then the
+    `AgentRegistry` rebuild raises. The single-role scope must return an
+    error envelope whose KIND names that step and whose message says the
+    teardown already happened — at the base the raise reaches the dispatcher
+    as an `unexpected` error carrying only the exception's text, so the
+    registry entry the role still holds is neither removed nor named."""
+    from agent_registry import AgentRegistry
+    h = harness
+    real_build = AgentRegistry.build
+
+    def boom(**kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(AgentRegistry, "build", staticmethod(boom))
+    env = await _dispatch(h, "agent", role=ROLE)
+    assert env["status"] == "error", env
+    assert env["kind"] == "agent_registry_rebuild_failed", env
+    assert "torn down" in env["message"], env
+    assert h.live_count() == 0
+    assert await h.send_checked() == "no_target"
+    monkeypatch.setattr(AgentRegistry, "build", real_build)
+
+
+async def test_cascade_rebuild_failure_keeps_the_teardown_rows_and_names_the_step(harness, monkeypatch):
+    """The same arm through the policies cascade: the teardown row survives
+    and the failure row names the rebuild step, not the exception's type."""
+    from agent_registry import AgentRegistry
+    h = harness
+    real_build = AgentRegistry.build
+
+    def boom(**kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(AgentRegistry, "build", staticmethod(boom))
+    env = await _dispatch(h, "policies")
+    assert env["status"] == "ok", env
+    assert env["actions"].count(f"{TEARDOWN}_{ROLE}") == 1, env["actions"]
+    assert env["actions"].count(f"failed:{ROLE}:agent_registry_rebuild_failed") == 1, env["actions"]
+    assert env["actions"].count(f"failed:{ROLE}:RuntimeError") == 0, env["actions"]
+    assert h.live_count() == 0
+    monkeypatch.setattr(AgentRegistry, "build", real_build)
