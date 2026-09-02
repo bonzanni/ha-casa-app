@@ -544,8 +544,20 @@ def _restore_active_runtime():
     same value). Same defect class and the same shape as the broker fixture
     below (#783); pinned by ``tests/test_active_runtime_isolation.py``.
 
-    Test-only: production binds the global once and never rebinds it."""
-    import agent as _agent
+    Test-only: production binds the global once and never rebinds it.
+
+    Guarded like ``_fresh_reload_locks`` above, and for a reason that is not
+    hypothetical: ``qa.yml``'s root lane runs
+    ``tests/test_private_state_dropped_uid.py`` in a bare ``python:3.11-slim``
+    with only pytest installed, where ``agent``'s ``from claude_agent_sdk
+    import ...`` has no SDK to find — and this fixture still runs at each of
+    that file's tests' setup. Nothing to snapshot there, so nothing to
+    restore. Pinned by ``TestRestoreFixtureWithoutAgent`` in the same file."""
+    try:
+        import agent as _agent
+    except ImportError:
+        yield
+        return
 
     snapshot = _agent.active_runtime
     try:
