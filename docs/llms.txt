@@ -40,6 +40,7 @@ Code is the source of truth; these files are a map.
 - [architecture/plugin-setup.md](architecture/plugin-setup.md): Who runs a plugin's declared setup tool — the single-runner obligation, the consent verdict that releases it, and the applied-state gate it passes through.
 - [architecture/plugin-triggers.md](architecture/plugin-triggers.md): What a plugin's declared webhook must satisfy before it routes — the overlay, its preconditions, and the operator approval gating them.
 - [architecture/plugins.md](architecture/plugins.md): How a plugin becomes usable — registry, content-addressed store, artifact identity, and per-call authorization.
+- [architecture/prompt-file-guards.md](architecture/prompt-file-guards.md): The per-agent prompt files a compiled bundle makes dead — response_shape.yaml and prompts/system.md — and the file-tool guards that refuse an edit to them.
 - [architecture/reminders.md](architecture/reminders.md): How an agent comes to nudge someone later — entry ownership, the narrow writer, delivery, and the sweep that redeems a past-dated one-shot the process was down for.
 - [architecture/scheduled-asks.md](architecture/scheduled-asks.md): A scheduled question as a durable obligation — its record on disk, its terminal delivery back to the session that asked, and its manners in the operator's attention lane.
 - [architecture/specialist-lifecycle.md](architecture/specialist-lifecycle.md): Specialist install/upgrade/rollback — instance tuples, the store, consent receipts, materialization, the crash journal.
