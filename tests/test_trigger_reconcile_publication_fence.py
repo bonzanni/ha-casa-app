@@ -480,3 +480,55 @@ async def test_a_mint_hop_failure_republishes_and_leaves_the_marker(
     deferred = await f.worker_pass()
     assert len(f.dispatches) == 0
     assert deferred is True
+
+
+# ---------------------------------------------------------------------------
+# 6. A second cancellation during the drain still holds the lock (review r1, sol)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_second_cancellation_during_the_drain_still_holds_the_lock(
+        tmp_path, monkeypatch):
+    """The drain must survive every cancellation, not only the first: a second
+    ``cancel()`` delivered while the writes are still in flight used to escape
+    the drain, release the lock and let a successor publish a map over
+    artifacts still landing (reproduced by sol: publications
+    ``[marker, marker, map]`` with the writer still running). Fixed: however
+    many cancellations arrive, the caller stays pending and the lock held until
+    the same future settles; the cancelled pass then publishes no map and the
+    successor exactly one."""
+    f = Fence(tmp_path, monkeypatch)
+    f.live_prior()
+    await f.release_obligation()
+    entered, release = f.block_after_mint(first_only=True)
+    first = asyncio.create_task(f.reconcile(), name="first-writing-pass")
+    successor = None
+    try:
+        await wait_until(entered.is_set)
+        assert f.bound() == 1
+        first.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        first.cancel()                       # the second cancellation, mid-drain
+        successor = asyncio.create_task(f.reconcile(), name="successor-pass")
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert first.done() is False
+        assert f.tr._RECONCILE_LOCK.locked() is True
+        assert successor.done() is False
+        assert f.reg.publications == ["marker"]
+    finally:
+        release.set()
+    cancelled = 0
+    try:
+        await first
+    except asyncio.CancelledError:
+        cancelled += 1
+    assert cancelled == 1
+    await successor
+    assert f.reg.publications == ["marker", "map"]
+    assert f.reg.routes() == 1
+    assert f.tr._RECONCILE_LOCK.locked() is False
+    deferred = await f.worker_pass()
+    assert len(f.dispatches) == 1
+    assert deferred is False
