@@ -100,6 +100,8 @@
     - tests/test_telegram_supervisor.py
     - tests/test_telegram_split.py
     - tests/test_telegram_topic_stream.py
+    - tests/test_telegram_link_fallback.py
+    - tests/test_telegram_link_fallback_shapes.py
   related: [architecture/overview.md, architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/http-surface.md]
   defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-005, INV-TG-006, INV-TG-007]
   invariant_tests:

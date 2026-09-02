@@ -690,6 +690,81 @@ def render(text: str) -> tuple[str, "list[MessageEntity] | None"]:
     return display, _spans_to_entities(display, spans)
 
 
+def _link_spans(display: str, entities) -> "list[tuple[int, int, str]]":
+    """``(python_start, python_end, url)`` for every TEXT_LINK in *entities*
+    whose url is not already visible inside its own label, in display order.
+
+    ``[]`` on anything unusable — the callers below are plain-fallback paths
+    and must degrade rather than raise (#831). Entity offsets are UTF-16 units
+    (``MessageEntity.adjust_message_entities_to_utf_16`` was applied when the
+    entities were built), so each boundary converts back through
+    ``text_util.utf16_prefix_end``, the shared measurement helper, and is
+    round-trip checked: an offset that does not map back to itself lands
+    inside a surrogate pair and the entity is dropped rather than guessed at.
+    """
+    try:
+        out: list[tuple[int, int, str]] = []
+        for ent in entities or []:
+            if getattr(ent, "type", None) != MessageEntity.TEXT_LINK:
+                continue
+            url = getattr(ent, "url", None)
+            offset, length = getattr(ent, "offset", None), getattr(ent, "length", None)
+            if not url or type(offset) is not int or type(length) is not int:
+                continue
+            if offset < 0 or length <= 0:
+                continue
+            start = utf16_prefix_end(display, 0, offset)
+            end = utf16_prefix_end(display, start, length)
+            if _utf16_units(display[:start]) != offset:
+                continue
+            if _utf16_units(display[start:end]) != length:
+                continue
+            if url in display[start:end]:
+                # An autolink whose label IS the address already carries it.
+                continue
+            out.append((start, end, url))
+        out.sort(key=lambda span: span[0])
+        return out
+    except Exception:  # noqa: BLE001 — never raise on a fallback path
+        return []
+
+
+def plain_with_link_targets(display: str, entities) -> str:
+    """*display* with every TEXT_LINK destination re-attached, as ``label (url)``.
+
+    #831: ``render_paged`` pages are marker-free DISPLAY slices, so a multi-page
+    sender whose entities Telegram rejects has only the display to retry with —
+    and a ``TEXT_LINK``'s url is the ONE datum a display cannot carry (``_KIND``
+    is closed to pre/code/bold/italic, and ``_spans_to_entities`` emits only
+    those plus TEXT_LINK). Reconstructing from ``(display, entities)`` is
+    therefore lossless, needs no authored source, and leaves ``render_paged``
+    and its two-tuple shape untouched.
+
+    Insertions run right-to-left so an earlier index is never invalidated.
+    Non-link entities are ignored: their information is already in the display.
+    NEVER raises — an exception here would turn a formatting nuisance into a
+    lost turn — and returns *display* unchanged when there is nothing to add.
+    """
+    spans = _link_spans(display, entities)
+    if not spans:
+        return display
+    out = display
+    for _, end, url in reversed(spans):
+        out = f"{out[:end]} ({url}){out[end:]}"
+    return out
+
+
+def missing_link_targets(display: str, entities) -> list[str]:
+    """The destinations ``plain_with_link_targets`` would add, in order, without
+    duplicates — the overflow form, one url per line, used when the inline
+    reconstruction does not fit one message (#831)."""
+    seen: list[str] = []
+    for _, _, url in _link_spans(display, entities):
+        if url not in seen:
+            seen.append(url)
+    return seen
+
+
 def _advance_by_utf16(display: str, start: int, budget: int) -> int:
     """Largest index ``end`` such that ``display[start:end]`` fits *budget*
     UTF-16 units (shared implementation: ``text_util.utf16_prefix_end``)."""

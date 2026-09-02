@@ -689,3 +689,98 @@ def test_every_resident_projection_carries_the_credential_rule_exactly_once(
         sum(1 for c in counts if c == 1),
         sum(1 for c in counts if c != 1),
     ) == (1, 9, 0)
+
+
+# ---------------------------------------------------------------------------
+# #658 red case — the authorization-link formatting rule.
+#
+# An authorization or consent page a household member has to open reaches them
+# as a bare several-hundred-character address, because no shipped prompt
+# carrier says anything about how to write such a link. No code composes that
+# message: the address arrives as a plugin tool result the model is handed
+# directly, so the instruction IS the fix.
+#
+# This test DECLARES rather than pins (D34). It asserts PRESENCE and PROVENANCE
+# in the served prompt and nothing else — not model compliance, not what a
+# transport then does with the labelled form, and not enforcement, of which
+# there is none and of which this change adds none. Deliberately no invariant
+# id: one paragraph, one test, retirable without manifest surgery.
+#
+# Specified by sol, 2026-09-02, before any production change; accepted by
+# terra. The intended failure at the base is ABSENCE — the paragraph occurs
+# zero times in all nine compiled resident carriers — not an import, fixture or
+# helper error.
+#
+# The guard is PARAGRAPH IDENTITY, not clause sampling, and that is a
+# deliberate replacement rather than a first guess: a presence-anchor pin was
+# specified, then defeated twice by reproduction — once by deleting a clause,
+# once by ADDITIVE broadening of the governed class ("...or any other link they
+# must visit..."), which no existential anchor can ever see. The per-sentence
+# counts below are additional, not a return to sampling: they close a partial
+# leak (one sentence copied into a Voice section) that a whole-paragraph count
+# cannot see. Sections are selected ALONE because Core+Text is CONCATENATED
+# before the whitespace collapse, so a paragraph split across that boundary
+# reconstructs itself in the combined selection while its prefix ships in all
+# nine projections.
+# ---------------------------------------------------------------------------
+
+_LINK_RULE_SENTENCES = (
+    "When a person has to open a link themselves — an authorization or consent "
+    "page they must visit to grant a connection access — write it as a labelled "
+    "link, `[action (destination-domain)](url)`: name the action and the real "
+    "destination domain in the label, rather than leaving the address standing "
+    "bare.",
+    "The one exception is a message sent with the message tool, which is not "
+    "rendered: put the plain address there.",
+    "Opening that page is what the link is for, so handing it to the person who "
+    "must open it is passing it to its intended consumer; labelling changes only "
+    "the shape of a link you were already going to hand over, never whether you "
+    "may hand it over.",
+)
+
+LINK_RULE_PARAGRAPH = " ".join(_LINK_RULE_SENTENCES)
+
+
+def test_the_authorization_link_rule_reaches_only_the_resident_text_projections():
+    """#658: every resident's SERVED text projection carries the
+    authorization-link paragraph exactly once, sourced from that role's
+    doctrine `## Text projection` section, and no other served projection
+    carries any part of it.
+
+    RED pre-fix: the paragraph occurs zero times in all nine compiled
+    carriers and zero times in every doctrine section. That absence, not a
+    fixture or import problem, is the intended failure.
+    """
+    from markdown_sections import select_markdown_sections
+    from prompt_compiler import _PROJECTION_HEADINGS
+
+    compiled = _compiled_resident_carriers()
+    assert len(compiled) == 9
+
+    paragraph = _collapse_ws(LINK_RULE_PARAGRAPH)
+    text_counts = [_collapse_ws(t).count(paragraph)
+                   for name, t in compiled if name.endswith(":text")]
+    assert text_counts == [1, 1, 1]
+
+    # Per sentence: exactly once on every text carrier, and NOT PRESENT AT ALL
+    # on the six others — a whole-paragraph count cannot see one sentence
+    # copied into a Voice or restricted-webhook section.
+    for sentence in _LINK_RULE_SENTENCES:
+        needle = _collapse_ws(sentence)
+        on_text = [_collapse_ws(t).count(needle)
+                   for name, t in compiled if name.endswith(":text")]
+        elsewhere = [_collapse_ws(t).count(needle)
+                     for name, t in compiled if not name.endswith(":text")]
+        assert (on_text, elsewhere) == ([1, 1, 1], [0, 0, 0, 0, 0, 0]), sentence
+
+    # Provenance: the doctrine's own Text section, selected ALONE, and never
+    # the Core section that every projection inherits.
+    for slot in _RESIDENT_SLOTS:
+        doctrine = (_casa_root() / "defaults/roles/resident" / slot
+                    / "doctrine.md").read_text(encoding="utf-8")
+        text_only = select_markdown_sections(
+            doctrine, ("Text projection",), exclude=_PROJECTION_HEADINGS)
+        core_only = select_markdown_sections(
+            doctrine, ("Core doctrine",), exclude=_PROJECTION_HEADINGS)
+        assert (_collapse_ws(text_only).count(paragraph),
+                _collapse_ws(core_only).count(paragraph)) == (1, 0), slot
