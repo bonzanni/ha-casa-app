@@ -3317,6 +3317,10 @@ def _rollback_core(
     # the retained root no longer names its bytes. Refused by name, typed,
     # the active untouched — never an unstructured error out of the tool.
     try:
+        # ONE pass over the store (diff review r9): the manifest bytes are read
+        # here, once, and reused by the digest gate below — nothing after this
+        # block touches the store again.
+        _manifest_bytes = (cas_dir / "manifest.json").read_bytes()
         role = materialize_role(
             source=load_role_artifact(cas_dir / "role"),
             # #355: resolve ha_option models exactly as the agent loader
@@ -3342,6 +3346,8 @@ def _rollback_core(
         # current active tuple keeps running untouched.
         prior_component = load_specialist_component(cas_dir, cas_dir / "manifest.json")
         prior_deps = resolve_dependency_closure(prior_component, cas_dir)
+        _fresh_root_digest = compute_install_root_digest(
+            prior_component, prior_deps, manifest_bytes=_manifest_bytes)
     except Exception as exc:  # noqa: BLE001 — ONE boundary, one rule (diff review r8)
         # Whatever a loader raises — a ValueError, an OSError, a jsonschema
         # ValidationError the component loader deliberately propagates
@@ -3367,9 +3373,6 @@ def _rollback_core(
     # restored to a root that no longer names its bytes. Same predicate as
     # the loader's L1; same typed refusal, naming both roots.
     _prior_id, _prior_version, _prior_suffix = parse_component_root(prior.root)
-    _fresh_root_digest = compute_install_root_digest(
-        prior_component, prior_deps,
-        manifest_bytes=(cas_dir / "manifest.json").read_bytes())
     if (_fresh_root_digest != _prior_suffix
             or prior_component.component_id != _prior_id
             or prior_component.version != _prior_version):
@@ -3381,14 +3384,18 @@ def _rollback_core(
             "current active is untouched")
     binding = prior.binding
     if binding.role_checksum != role.checksum:
-        # #815: the only input that may have moved is the resolved model; prove
-        # it (L1 store digest, L2 live role, L3 agent id) and re-derive. A gate
-        # refusal is the same typed `compile_failed` the verbatim compile
-        # produced — its detail names the root that drifted, not a checksum.
-        try:
-            binding = _rederive_stale_binding(role, prior, cas_dir)
-        except ValueError as exc:
-            raise SpecialistInstallError("compile_failed", str(exc)) from exc
+        # #815: the only input that may have moved is the resolved model, and
+        # the three legs the loader's `_rederive_stale_binding` proves are all
+        # proved HERE without a second pass over the store (diff review r9):
+        # L1 — the store's bytes hash to the prior's root — is the unconditional
+        # gate above; L2 — the role is that component's under the live option
+        # resolution — holds by construction, because `role` IS the store's
+        # role artifact materialized under `_ha_model_options()`; L3 — the
+        # stored agent id is the role's — is inside the pure helper, which
+        # returns the binding UNCHANGED on an identity move so the compile
+        # below refuses it naming `stable_agent_id`.
+        from personality_binding import rederive_binding_for_role
+        binding = rederive_binding_for_role(binding=binding, role=role)
     try:
         compile_prompt_bundle(
             role=role, persona=persona, binding=binding,

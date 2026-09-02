@@ -143,3 +143,73 @@ def test_a_schema_invalid_retained_manifest_is_refused_by_name_not_as_an_unstruc
     assert len(writes) == 0
     assert begins["count"] == 0
     assert active_path.read_bytes() == active_before
+
+
+def test_the_rollback_reads_the_retained_store_once_and_a_failed_read_is_the_typed_refusal(
+        tmp_path: Path, monkeypatch) -> None:
+    """Diff review round 9 (Sol): everything the rollback core learns about the
+    retained store it learns in ONE guarded pass — the digest gate reuses the
+    manifest bytes read there and the re-derivation is the pure helper, so a
+    model-flip rollback opens the retained manifest exactly twice (the
+    component loader's own read and the pass's), never calls the loader's
+    store-reading re-derivation, and an ``OSError`` on ANY of those reads is
+    the typed ``compile_failed`` naming the prior's root with zero writes.
+    Mutant: read the manifest again outside the boundary → the failing read
+    escapes as a raw ``OSError``."""
+    import specialist_install
+    from specialist_install import (
+        SpecialistInstallError, cas_store_dir, parse_component_root, rollback_specialist,
+    )
+    from test_specialist_binding_rederive import _cas_role, _expected_rederived
+
+    specialists_root, agents_root, _ = _install(tmp_path, monkeypatch)
+    assert _upgrade(tmp_path, specialists_root, agents_root, version="0.2.0").state == "active"
+    prior, _, active_path, _ = _prior_and_paths(specialists_root)
+    _, _, prior_checksum = parse_component_root(prior.root)
+    manifest_path = cas_store_dir(prior_checksum, store_root=specialists_root / "store") / "manifest.json"
+    monkeypatch.setenv("PRIMARY_AGENT_MODEL", "sonnet")
+    expected = _expected_rederived(prior, _cas_role(specialists_root, prior))
+
+    opens = {"count": 0}
+    rederive_calls = {"count": 0}
+    real_open = Path.open                       # read_text/read_bytes go through it
+    real_rederive = specialist_install._rederive_stale_binding
+
+    def _counting_open(self_path, mode="r", *a, **k):
+        if str(self_path) == str(manifest_path) and "r" in str(mode):
+            opens["count"] += 1
+        return real_open(self_path, mode, *a, **k)
+
+    monkeypatch.setattr(Path, "open", _counting_open)
+    monkeypatch.setattr(specialist_install, "_rederive_stale_binding",
+                        lambda *a, **k: (rederive_calls.__setitem__("count", rederive_calls["count"] + 1),
+                                         real_rederive(*a, **k))[1])
+
+    rolled_back = rollback_specialist(
+        slug=_SLUG, specialists_dir=specialists_root, agents_specialists_dir=agents_root)
+    assert rolled_back.active == expected
+    assert rederive_calls["count"] == 0
+    assert opens["count"] == 2
+
+    # Roll forward again so the prior is the v2 tuple, then fail EVERY read of
+    # its manifest: the typed refusal, nothing written.
+    prior2, _, active_path, _ = _prior_and_paths(specialists_root)
+    _, _, checksum2 = parse_component_root(prior2.root)
+    manifest2 = cas_store_dir(checksum2, store_root=specialists_root / "store") / "manifest.json"
+
+    def _failing_open(self_path, mode="r", *a, **k):
+        if str(self_path) == str(manifest2) and "r" in str(mode):
+            raise OSError(5, "EIO reading the retained manifest")
+        return real_open(self_path, mode, *a, **k)
+
+    monkeypatch.setattr(Path, "open", _failing_open)
+    active_before = active_path.read_bytes()
+    writes = _count_tuple_writes(monkeypatch)
+    with pytest.raises(SpecialistInstallError) as raised:
+        rollback_specialist(
+            slug=_SLUG, specialists_dir=specialists_root, agents_specialists_dir=agents_root)
+    assert raised.value.kind == "compile_failed"
+    assert prior2.root in raised.value.detail
+    assert "OSError" in raised.value.detail
+    assert len(writes) == 0
+    assert active_path.read_bytes() == active_before
