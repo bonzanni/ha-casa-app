@@ -651,13 +651,11 @@ class InstanceDir:
         # never one generation behind what the temporaries hold. Best-effort
         # here (the caller's commit must not fail on cleanup); the rollback
         # calls the same method and refuses if it cannot complete.
+        pending_error: "OSError | None" = None
         try:
             self.complete_pending_rotation()
-        except OSError:
-            logger.warning(
-                "%s: pending prior rotation not completed; retried on the next "
-                "commit", self._dir, exc_info=True,
-            )
+        except OSError as exc:
+            pending_error = exc
         # Task N1c fix: compare the FULL tuple (root included), not just
         # binding_digest. binding_digest deliberately excludes `root`
         # (compute_binding_digest's eight normative fields never include it
@@ -690,6 +688,14 @@ class InstanceDir:
             # knowing about the tmp, so a duplicate of the restored active must
             # never be rotated over the true prior). A NO-OP TUPLE COMMIT
             # ROTATES NO SIDECAR (#810): the pair moves only with the tuple.
+            if pending_error is not None:
+                # Nothing below touches the temporaries, so an uncompleted
+                # pair is safe to leave for the next completion; the commit
+                # itself is a durable no-op and must not fail on cleanup.
+                logger.warning(
+                    "%s: pending prior rotation not completed (%s); retried on "
+                    "the next commit or rollback", self._dir, pending_error,
+                )
             try:
                 desired_path.unlink(missing_ok=True)
             except OSError:
@@ -718,6 +724,17 @@ class InstanceDir:
         # a direct copy, so that a promotion failure leaves a PAIR pending for
         # the next commit to complete (a direct copy would put the prior
         # sidecar one generation ahead of a tuple whose promotion failed).
+        # #810 (gate-owned review, Sol): a REAL transition writes its own
+        # temporaries over the pending pair's paths and, on a failed active
+        # write, unlinks them. If the pending pair could not be completed
+        # above, those paths still hold the immediate rollback generation —
+        # overwriting them would destroy it, and a failed write would then
+        # delete it. So a rotation never starts over an uncompleted pair: the
+        # commit refuses with the completion's own error, nothing written, and
+        # the pair stays for the next completion (the rollback refuses on the
+        # same error; a journaled transaction compensates from its capture).
+        if pending_error is not None:
+            raise pending_error
         pending_prior = copy_rollback()
         pending_sidecar = (self._copy_sidecar_to_temp()
                            if current_active is not None else None)

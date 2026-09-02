@@ -204,3 +204,62 @@ def test_a_special_sidecar_temporary_beside_a_genuine_tuple_temporary_discards_t
     # that owned no sidecar temporary: promoted, and the prior sidecar removed.
     assert load_instance_tuple(slug_dir / "active.prior.yaml") == gens["g2"][0]
     assert not prior_sidecar.exists()
+
+
+# --- gate-owned review (Sol): a real transition never starts over a pending pair
+#     it could not complete — its own temporaries would overwrite the immediate
+#     rollback generation, and a failed active write would then delete it. --------
+
+
+def test_a_rotation_over_an_uncompletable_pending_pair_refuses_and_leaves_the_pair(
+        tmp_path: Path, monkeypatch) -> None:
+    """The compound fault: the genuine pair T2/S2 pending, one EIO on the read
+    of the pending temporary, then a DIFFERENT tuple committed whose active
+    write raises ENOSPC. The commit refuses with the completion's error before
+    writing anything: both temporaries keep T2/S2's bytes, the visible prior
+    stays T1/S1, the active stays T3, and the next completion promotes T2/S2.
+    Mutant: log-and-continue on the completion error for a rotation → the
+    pair is overwritten by the transition's copies and unlinked on the failed
+    write; the visible prior is still T1/S1 with nothing pending."""
+    import personality_binding
+    from personality_binding import InstanceDir, load_instance_tuple
+    from test_personality_binding import _binding, _tuple
+
+    ctx, gens, slug_dir = _pending_state(tmp_path, monkeypatch)
+    t1, t2 = gens["g1"][0], gens["g2"][0]
+    _, s2_doc, s2_bytes, _ = gens["g2"]
+    before = _snapshot(slug_dir)
+    assert before[_TMP_SIDECAR] == s2_bytes
+    _, prior_sidecar = _sidecar_paths(slug_dir)
+    fired = _fail_once_reading(monkeypatch, slug_dir / _TMP_TUPLE)
+    real_atomic = personality_binding.atomic_write_instance_tuple
+    active_writes = {"count": 0}
+
+    def _enospc_active_write(path, tuple_):
+        if path.name == "active.yaml":
+            active_writes["count"] += 1
+            raise OSError(28, "ENOSPC on the active write")
+        return real_atomic(path, tuple_)
+
+    monkeypatch.setattr(personality_binding, "atomic_write_instance_tuple", _enospc_active_write)
+    different = _tuple(_binding(persona_version="9.9.9"))
+
+    d = InstanceDir(slug_dir)
+    d.stage_desired(different)
+    with pytest.raises(OSError) as raised:
+        d.commit_desired_to_active()
+
+    assert raised.value.errno == 5                       # the completion's error, not ENOSPC
+    assert fired["count"] == 1
+    assert active_writes["count"] == 0                   # refused before any write
+    after = _snapshot(slug_dir)
+    assert after[_TMP_TUPLE] == before[_TMP_TUPLE]
+    assert after[_TMP_SIDECAR] == s2_bytes
+    assert after["active.prior.yaml"] == before["active.prior.yaml"]
+    assert after["active.yaml"] == before["active.yaml"]
+    assert load_instance_tuple(slug_dir / "active.prior.yaml") == t1
+
+    monkeypatch.setattr(personality_binding, "atomic_write_instance_tuple", real_atomic)
+    d.complete_pending_rotation()
+    assert load_instance_tuple(slug_dir / "active.prior.yaml") == t2
+    assert prior_sidecar.read_bytes() == s2_bytes
