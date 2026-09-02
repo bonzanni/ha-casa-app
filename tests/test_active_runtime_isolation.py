@@ -27,6 +27,7 @@ snapshot is taken, and the second test must see exactly that object back.
 """
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -106,3 +107,47 @@ def test_pair2_b_gets_exactly_the_module_baseline_back(module_sentinel):
     """A fixture that forces `None` instead of restoring its snapshot fails
     here; so does one that snapshots after yielding."""
     assert agent_mod.active_runtime is module_sentinel
+
+
+# --- the fixture in a lane that cannot import `agent` -----------------------
+
+
+class TestRestoreFixtureWithoutAgent:
+    """`qa.yml`'s root lane runs `tests/test_private_state_dropped_uid.py` in a
+    bare `python:3.11-slim` with only pytest installed and
+    `PYTHONPATH=casa/rootfs/opt/casa`. `agent` cannot be imported there (its
+    `from claude_agent_sdk import ...` has no SDK to find), yet every autouse
+    fixture in `tests/conftest.py` still runs at each of that file's tests'
+    setup. An unguarded `import agent` in `_restore_active_runtime` made all
+    nine ERROR at setup; the sibling `_fresh_reload_locks` guards its own
+    import and degrades to a bare yield, and this fixture must do the same.
+
+    The arrangement drives the fixture through pytest itself, as the lane
+    does: a class-scoped fixture — a higher scope, so pytest sets it up BEFORE
+    the function-scoped autouse fixtures — makes `agent` unimportable for the
+    duration of this class. At the base this test ERRORs at setup with
+    `ModuleNotFoundError: No module named 'agent'`; with the guard it runs,
+    and the body measures that the premise held in this very process."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    @classmethod
+    def _agent_unimportable(cls):
+        # `None` in `sys.modules` makes `import agent` raise
+        # ModuleNotFoundError — the lane's failure class — without unloading
+        # the SDK the rest of this process has already imported. Restored by
+        # hand: `monkeypatch` is function-scoped and would run AFTER the
+        # fixture under test.
+        previous = sys.modules["agent"]
+        sys.modules["agent"] = None
+        try:
+            yield
+        finally:
+            sys.modules["agent"] = previous
+
+    def test_restore_fixture_yields_when_agent_cannot_be_imported(self):
+        with pytest.raises(ImportError):
+            import agent  # noqa: F401 — the premise, measured where the fixture ran
+        # Reaching here IS the outcome: `_restore_active_runtime` set up and
+        # yielded with `agent` unimportable. The module object this file holds
+        # is untouched by the degraded fixture.
+        assert agent_mod.__name__ == "agent"
