@@ -597,6 +597,29 @@ def test_a_parametrised_binding_is_refused_naming_the_unparametrised_id(tmp_path
     assert any("TestC::test_b[False]' does not resolve in tests/test_a.py" in p for p in hinted)
 
 
+def test_a_parametrised_binding_is_refused_even_when_a_comment_quotes_it(tmp_path):
+    """A bracketed node id is refused BEFORE either resolution arm looks at the file.
+    The module-level arm is a substring search, so a comment (or a docstring, or a
+    string literal) that happens to quote `test_b[False]` used to satisfy it and the
+    corpus went green on a binding pytest would never collect. Red at the tree that
+    only added the hint: `verify()` returned `[]` for this corpus."""
+    manifest = _inv_manifest(
+        "\n  invariant_tests:\n    INV-X-001: ['tests/test_a.py::test_b[False]']"
+    )
+    root = _corpus(tmp_path, manifest, docs=INV_DOC)
+    (root / "tests" / "test_a.py").write_text(
+        "def test_b():\n    pass\n\n\n# the False case of test_b[False] is the one that bites\n"
+    )
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    problems = verify_docs.verify(root)
+    refused = [
+        p for p in problems
+        if "INV-X-001" in p and "tests/test_a.py::test_b[False]" in p
+        and "bound by its unparametrised node id" in p
+    ]
+    assert refused, problems
+
+
 def test_the_pinning_sentinel_is_a_failure_naming_the_invariant(tmp_path):
     """The sentinel makes the missing-test backlog mechanical: the corpus is RED until
     every sentinel is replaced by a real, demonstrated-red pinning test."""
