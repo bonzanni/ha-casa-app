@@ -33,10 +33,14 @@ that plugin's triggers route. Partial routing is deliberately not offered.
 
 **Approval and the secret it authorizes land at different moments.** The acknowledgement
 persists in the operator's tap; the per-trigger secret is minted by the reconcile that
-follows. Routing is unaffected — the overlay swaps in the same reconcile — but anything
-deciding whether a plugin's ingress is *usable by an external service*, the setup-tool
-dispatch gate above all, has to read the minted secret rather than infer it from the
-approval (INV-PLUG-011 in [`plugin-setup.md`](plugin-setup.md)).
+follows, and anything deciding whether a plugin's ingress is *usable by an external
+service*, the setup-tool dispatch gate above all, has to read the minted secret rather than
+infer it from the approval (INV-PLUG-011 in [`plugin-setup.md`](plugin-setup.md)). The secret
+is written before the route it backs is published, so the artifact leads the route — which
+is why a pass that will write one first publishes the unavailable marker, closing plugin
+ingress for the duration of its writes, and swaps the map in only afterwards
+(INV-TRIG-017). A pass that finds every secret already bound writes nothing and publishes
+its map alone: a healthy reconcile never closes ingress.
 
 **The reconciliation mint is identity-bound.** A surviving secret under a different approval
 identity is retired and re-minted rather than inherited, and a stale one that cannot be
@@ -76,8 +80,9 @@ routing immediately.
 
 **INV-TRIG-006**: A plugin routing overlay carries an authoritative map only when an authoritative computation produced it; otherwise it carries the unavailable marker, which closes ingress at every accessor and is never coerced into an empty map. While it stands, plugin health says so.
 
-Three separate paths reach a non-authoritative overlay — a reconcile that raised, one that
-ran against a registry it could not read, and one that has not run yet — and all three used
+Four separate paths reach a non-authoritative overlay — a reconcile that raised, one that
+ran against a registry it could not read, one that has not run yet, and one that is in the
+middle of writing the secrets its map will route (INV-TRIG-017) — and the first three used
 to be spelled the same way as the honest answer "nothing should route". Each failure the
 invariant forbids is silent. Coercing the marker to `{}` anywhere is the sharpest of them: it
 does not open a route, it manufactures authority, and the next consumer to read it acts on a
@@ -110,10 +115,57 @@ interleave between a mutation's registry commit and that mutation's own reconcil
 regenerates health once after every attempt, so a heal clears the routing rows at once and
 a half that newly fails gains its row at once. A failure that persists costs one log line
 and one identical report per pass; the report's fingerprints do not change, so nothing is
-announced again. What this does not cover: the setup route gate reads recomputed state and
-durable artifacts, not the applied markers, so a released obligation can pass it while one
-half of the pair is still being recomputed — a pre-existing gap of that gate, tracked in its
-own issue, not of the recovery.
+announced again. The kicks this pass fires from its trigger half land before its callback
+half has swapped, and they wake a setup worker that reads both applied markers itself — before
+its recomputation and again, with no yield, before the send — and defers on its own timer
+while either stands or while any publication has landed since ([`plugin-setup.md`](plugin-setup.md),
+INV-PLUG-016); so a released obligation woken by a half-healed pair defers rather than
+dispatching against the half still closed.
+
+**INV-TRIG-017**: A trigger reconcile publishes the unavailable marker on the plugin overlay before it may create or rekey a per-trigger secret. A pass that published the marker replaces it only with the authoritative map that pass computed. A pass whose caller is cancelled while its secret-writing future is in flight holds the reconcile lock until that future settles, however many cancellations arrive, and then publishes nothing. A pass whose secrets are all already bound publishes no marker. A pass that published the marker and cannot publish its map leaves it standing for the scheduled recovery; a process torn down mid-pass relies on the next boot, which starts at the marker and reconciles before serving.
+
+The setup-dispatch gate reads the durable artifact and no overlay, and the reconcile used
+to create that artifact inside its compute, before its one publication: between the mint and
+the swap a bound secret said "this route is ready" while the applied overlay carried no
+route, so a setup pass woken in that window — by the other half's kick, by the approve tap
+itself, by the worker's own timer — dispatched the plugin's setup tool against an endpoint
+the handler answered not-found for, and the obligation was consumed. Cancelling the pass at
+its thread hand-off made the state permanent: the thread cannot be interrupted and finished
+the mint, the lock was released, and nothing was published until the next reconcile of any
+kind. The consumer side cannot close this — a hold there has no waker, and the lock is held
+by passes that publish nothing — so the reconciler produces the evidence instead.
+
+The pass is two hops under one lock. The first computes as before and writes nothing; it also
+answers whether the mint will write, with the gate's own predicate (a secret bound to the
+identity this pass derived), which is the exact complement of the mint's reuse test — a read
+that fails counts as unbound on both sides, so the answer errs toward publishing the marker.
+Only a pass that will write publishes it, as one synchronous rebind under the reconcile
+lock, and only then runs the writes in its second hop; the map that replaces the marker is
+the one this pass computed. A caller cancelled during the writes does not release the lock:
+the same future is awaited again, through every further cancellation, until the writes land,
+and only then does the cancellation propagate — with no map, no kick, no seal and no prompt,
+so the marker stands and the scheduled recovery republishes within one interval. The wait is
+bounded by the remaining writes, which the loop's own teardown waits for anyway. A write hop that fails re-publishes the
+marker and re-raises, the compute arm's own contract.
+
+What it costs, deliberately: on a writing pass — a first approval, a re-approval after a
+revocation, a plugin update, a mint that previously failed — plugin trigger ingress answers
+not-found for the duration of the secret writes, and every consumer of the marker sees it
+for that long: the setup worker defers on its own timer (INV-PLUG-016), the revoke tool's
+direct sweep skips and relies on its queued reconcile, `plugin_status` may say routing is
+not established, the recovery probe may schedule one spare paired pass. One consequence is
+not closed here and is stated as a cost: a health regeneration that samples the marker
+during those writes and finishes after the map is live persists a `trigger_routing_unavailable`
+row that nothing clears until the next regeneration of any kind — a plugin mutation, a
+consent tap, a recovery pass, a boot — because a pass run from a reload scope regenerates
+nothing afterwards and the recovery probe sees no marker. The base already had that shape
+for a reload-scope pass that heals a stuck marker.
+
+What it does not cover: the callback half, whose markers already trail its overlay (it
+retires before the swap and writes after); a bound secret whose route re-enters the desired
+set through a configuration change with no write — that is the derived-versus-applied gap
+the setup worker's own reads bound (INV-PLUG-016), not an artifact created ahead of its
+route; and a process torn down mid-pass, which relies on the next boot starting at the marker.
 
 ## Failure behavior
 
@@ -141,7 +193,15 @@ itself without anyone touching the system.
 
 **A secret cannot be minted.** That plugin's whole set fails closed — every one of its
 routes drops out of the overlay, rather than some routing without a usable credential. One
-plugin's storage failure never aborts the pass for the others.
+plugin's storage failure never aborts the pass for the others. A failure of the writing hop
+itself, outside any one plugin's mint, re-publishes the marker and propagates
+(INV-TRIG-017).
+
+**A writing pass is cancelled.** Its caller is released only after the secret writes have
+landed, whether one cancellation arrives or several; the pass publishes no map, kicks nothing
+and prompts nothing, and the marker it published stands until the scheduled recovery
+republishes an authoritative set. A process torn down mid-pass leaves the marker for the next
+boot, which starts at the marker and reconciles before serving.
 
 **The approval store is missing or corrupt.** Treated as no approvals. Pending routes stay
 absent rather than opening.
@@ -187,6 +247,7 @@ those leaves the old overlay live until a covered scope runs.
 - `tests/test_plugin_triggers_overlay.py`
 - `tests/test_plugin_triggers_manifest.py`
 - `tests/test_trigger_consent.py`
+- `tests/test_trigger_reconcile_publication_fence.py`
 
 **Related**
 - [`architecture/triggers.md`](../architecture/triggers.md)

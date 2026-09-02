@@ -222,12 +222,15 @@ def prompt_trigger_consent(
                 # #453: what is durable here is the ack and NOTHING ELSE. The
                 # per-trigger secret is minted by ``reconcile_cb`` below, and
                 # settling the round kicks the setup worker — which can wake
-                # before that mint lands. The ordering is safe because the
-                # dispatch gate reads the APPLIED state (an unminted or
-                # previous-generation secret is a `trigger_secret_missing` gap
-                # in ``trigger_reconcile.current_issues``), so setup HOLDS
-                # until the mint it needs exists rather than racing it. Casa's
-                # route overlay healing remains a separate, surfaced concern.
+                # before that mint lands. That is safe because the dispatch
+                # gate reads the DURABLE artifact (an unminted or previous-
+                # generation secret is a `trigger_secret_missing` gap in
+                # ``trigger_reconcile.issue_state``), so setup HOLDS until the
+                # mint it needs exists. The artifact LEADS the applied route,
+                # not the other way round (#823): the reconcile publishes the
+                # unavailable marker before it writes, and the worker's own
+                # applied-overlay read (#803) DEFERS on that marker until the
+                # map that routes the new secret has landed.
                 await _feed_setup_episode(approved=True)
                 if reconcile_cb is not None:
                     try:

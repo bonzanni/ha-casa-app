@@ -155,6 +155,9 @@ _notify_operator: Callable[[str], Awaitable[None]] | None = None
 _resolve_registry_entry: Callable[[str], Any] | None = None
 _ack_lookup: Callable[[str], str | None] | None = None
 _routes_live: Callable[[str], bool] | None = None
+# #803: ``() -> (published, generation) | None`` over the APPLIED routing
+# overlays (None = no runtime registry bound). See ``_applied_routing_state``.
+_applied_routing: "Callable[[], tuple[bool, int] | None] | None" = None
 _secrets_ready: Callable[[str], bool] | None = None
 _execution_ready: Callable[[str, str, str], bool] | None = None
 _sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
@@ -170,8 +173,9 @@ def _now() -> float:
 
 
 def configure(*, dispatch, notify_operator, resolve_registry_entry,
-              ack_lookup=None, routes_live=None, secrets_ready=None,
-              execution_ready=None, sleep=asyncio.sleep) -> None:
+              ack_lookup=None, routes_live=None, applied_routing=None,
+              secrets_ready=None, execution_ready=None,
+              sleep=asyncio.sleep) -> None:
     """casa_core boot wiring. Idempotent. ``ack_lookup(identity)`` returns
     the persisted ack's approval generation (or None) — the boot recovery
     sweep's ground truth. ``routes_live(plugin)`` reports whether the
@@ -188,15 +192,21 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
     artifact — an agent whose published binding was built while the plugin
     was env-withheld keeps excluding it until an agent reload, and a
     dispatch into that session would consume the episode against a session
-    without the tool; agent reloads call :func:`kick`."""
+    without the tool; agent reloads call :func:`kick`. ``applied_routing()``
+    (#803) reports the APPLIED routing overlays as ``(published, generation)``
+    or ``None`` when no runtime registry is bound: the worker reads it before
+    the route recomputation and again, yield-free, before the send, and
+    DEFERS (its own timer) on a standing unavailable marker, on any
+    publication that landed in between, or on a read that raised."""
     global _dispatch, _notify_operator, _resolve_registry_entry
-    global _ack_lookup, _routes_live, _secrets_ready, _execution_ready
-    global _sleep, _lock, _kick
+    global _ack_lookup, _routes_live, _applied_routing, _secrets_ready
+    global _execution_ready, _sleep, _lock, _kick
     _dispatch = dispatch
     _notify_operator = notify_operator
     _resolve_registry_entry = resolve_registry_entry
     _ack_lookup = ack_lookup
     _routes_live = routes_live
+    _applied_routing = applied_routing
     _secrets_ready = secrets_ready
     _execution_ready = execution_ready
     _sleep = sleep
@@ -1323,6 +1333,25 @@ def _update_episode(episode_id: str, **fields) -> None:
     _save(data)
 
 
+# #803: the applied-routing seam raised. Its OWN object: ``None`` means "no
+# registry bound" (the recompute decides) and a tuple is a reading, so a raise
+# collapsed into either would fail open or invent a generation.
+_ROUTING_UNREADABLE = object()
+
+
+def _applied_routing_state():
+    """One read of the applied-routing seam, fail-closed: ``None`` (seam absent
+    or no registry bound), a ``(published, generation)`` tuple, or
+    :data:`_ROUTING_UNREADABLE` when the seam raised."""
+    if _applied_routing is None:
+        return None
+    try:
+        return _applied_routing()
+    except Exception:  # noqa: BLE001
+        logger.exception("applied routing read failed")
+        return _ROUTING_UNREADABLE
+
+
 async def _run_episode(ep: dict) -> bool:
     """Dispatch one pending episode. Returns True iff it DEFERRED on
     transient registry unavailability (the caller schedules a delayed
@@ -1381,6 +1410,29 @@ async def _run_episode(ep: dict) -> bool:
     # transient reconcile failure must not strand the round), but the setup
     # tool must not point the external service at an unrouted endpoint. The
     # episode stays pending; every reconcile kicks the worker to re-check.
+    # #803: read the APPLIED overlays BEFORE the route recomputation. The
+    # recompute below verifies durable artifacts — secret sidecars, the marker
+    # pair — and reads no overlay, so it answers "live" while a reconcile's
+    # unavailable marker has ingress shut (every paired producer kicks this
+    # worker from its trigger half before its callback half has swapped, and
+    # the four consent-tap reconciles heal one half only). A standing marker
+    # DEFERS here without paying the recompute; the capture is compared
+    # again, yield-free, before the send, so a publication landing DURING the
+    # recompute is seen before the decision. Every refusal these reads produce
+    # is a timed deferral (the caller's 5 s self-kick), never a hold: the
+    # publication that would clear it may not kick (the revoke sweep kicks
+    # only through reconciles that may raise; a heal cancelled between its
+    # swap and its kick clears the marker with no wake and both overlays then
+    # read live, so the recovery job stays idle), and a hold with no waker is
+    # a lost setup. No registry bound reads ``None``: the recompute decides.
+    routing_before = _applied_routing_state()
+    if routing_before is _ROUTING_UNREADABLE:
+        _update_episode(ep["id"], last_error="applied routing state unreadable")
+        return True  # deferred — caller schedules a delayed self-kick
+    if routing_before is not None and not routing_before[0]:
+        _update_episode(ep["id"],
+                        last_error="waiting for plugin routing to be published")
+        return True  # deferred — caller schedules a delayed self-kick
     if _routes_live is not None:
         try:
             # #453: OFF THE EVENT LOOP. The gate re-derives both reconcilers'
@@ -1485,6 +1537,28 @@ async def _run_episode(ep: dict) -> bool:
     ok = False
     attempts = int(ep.get("attempts") or 0)
     while attempts < _MAX_DISPATCH_ATTEMPTS and not ok:
+        # #803: the FINAL read, yield-free before the send — inside the loop
+        # because the backoff sleep below yields between attempts, and before
+        # the attempt counter so a refusal records no attempt that never
+        # happened. Everything between the gate's thread and here is
+        # synchronous, and ``_setup_dispatch`` reaches its bus enqueue with no
+        # further await (pinned by source), so what this read sees is what the
+        # bus accepts against. A standing marker, a publication of either
+        # kind since the capture (generation), or a read that raised all
+        # DEFER on the worker's own timer.
+        if _applied_routing is not None:
+            now = _applied_routing_state()
+            if now is _ROUTING_UNREADABLE:
+                reason = "applied routing state unreadable at dispatch"
+            elif now is not None and not now[0]:
+                reason = "waiting for plugin routing to be published"
+            elif now != routing_before:
+                reason = "plugin routing was republished during the dispatch check"
+            else:
+                reason = None
+            if reason is not None:
+                _update_episode(ep["id"], last_error=reason)
+                return True  # deferred — caller schedules a delayed self-kick
         attempts += 1
         if _dispatch is not None:
             try:

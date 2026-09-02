@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.257.0] - 2026-09-02
+
+### Fixed
+
+- An automatic plugin setup is no longer dispatched against a webhook route that
+  is not applied yet. The setup worker now reads both applied routing overlays
+  and their publication generation right before it sends the setup turn, and
+  defers on its own timer when either overlay carries the unavailable marker or
+  a publication landed during its check — instead of deciding from a
+  recomputation that could not see the applied state. Until now a setup woken
+  by a reconcile's kick, by a consent tap or by the routing-recovery pass could
+  be spent against ingress that still answered 404, and the setup was never
+  re-run.
+- The trigger reconciler now publishes the unavailable marker before it writes a
+  plugin's per-trigger secrets and replaces it with the routing map when they
+  land, so the secret a setup verifies never exists ahead of the route it
+  authenticates. Plugin trigger ingress is closed for the few milliseconds of
+  those writes on a first approval, a re-approval or a plugin update — never on
+  a healthy reconcile, which publishes its map alone. A reconcile cancelled
+  mid-write holds its lock until the writes land and leaves the marker for the
+  scheduled recovery, instead of a bound secret with no route.
+
+### Changed
+
+- A plugin-health regeneration that races a writing trigger reconcile can
+  persist a `trigger_routing_unavailable` row until the next regeneration of
+  any kind; the plugin-triggers document records this as a self-healing cost,
+  tracked separately.
+
 ## [0.256.0] - 2026-09-02
 
 ### Fixed

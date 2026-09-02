@@ -60,7 +60,9 @@ route on its own.
 
 What it does not cover: ingress routing only, not the credential's fate once deposited. The
 marker is advisory here but load-bearing for setup dispatch, which holds until the pair on
-disk equals the desired one (INV-PLUG-011).
+disk equals the desired one (INV-PLUG-011) and, separately, reads this overlay itself: it
+defers while the overlay carries the unavailable marker at the moment of dispatch, or while
+any publication has landed since its route check began (INV-PLUG-016).
 
 **INV-CB-003**: A callback ack binds `(plugin, effective, declaration_digest)`; the ack store fails closed whole-store on any malformed or key-mismatched record; and plugin removal revokes its acks and unroutes.
 
