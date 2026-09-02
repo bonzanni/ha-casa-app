@@ -104,6 +104,18 @@ in one of three forms — a padded monospace box when narrow and link-free, per-
 their formatting intact otherwise — chosen so cell content and link destinations are never
 silently dropped. Anything ambiguous stays literal rather than rendering wrongly.
 
+**A page Telegram rejects still carries its link destinations.** The platform can refuse a
+message's entities; the sender then re-sends that message as plain text, exactly once. A
+single-page reply re-sends the text the agent authored, which still contains the address of
+every `[label](url)` link. A paginated reply has only its rendered pages, which are
+deliberately marker-free, so its plain form is reconstructed from the page and its entities
+instead: a link destination is the one datum a display cannot carry, and it is re-attached
+after its label. When that reconstruction would not fit one message the page's own text is
+sent unchanged and the destinations follow as a further message, one per line — the plain
+splitter cuts at newlines, so an inline reconstruction could otherwise be cut through an
+address. One rejection is still retried once and only once; what may take more than one
+message is the retried payload, never a second attempt at the rejected one.
+
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
 paginator, the plain splitter and streaming edits, and the authorization-challenge size gate
@@ -331,6 +343,8 @@ units but sends unformatted text only.
 - `tests/test_telegram_supervisor.py`
 - `tests/test_telegram_split.py`
 - `tests/test_telegram_topic_stream.py`
+- `tests/test_telegram_link_fallback.py`
+- `tests/test_telegram_link_fallback_shapes.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

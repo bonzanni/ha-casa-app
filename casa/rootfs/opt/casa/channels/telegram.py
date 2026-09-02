@@ -39,7 +39,9 @@ from telegram.error import (
     TimedOut,
 )
 
-from channels.tg_richtext import render, render_paged
+from channels.tg_richtext import (
+    missing_link_targets, plain_with_link_targets, render, render_paged,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -4499,19 +4501,48 @@ class TelegramChannel(Channel):
     # routing, notices, permission prompts, and error text.
     # ------------------------------------------------------------------
 
+    def _plain_fallback_chunks(self, display, entities) -> list[str]:
+        """The plain form of a rich page, as physical messages (#831).
+
+        Ordinarily ONE chunk: the display with every TEXT_LINK destination
+        re-attached, which is byte-identical to the display when the page
+        carries no link. The reconstruction is longer than the display, so a
+        page already at the 4096-unit budget can overflow — and then the first
+        chunk is the display EXACTLY as before and the destinations follow, one
+        url per line. That shape is deliberate: ``_split_message`` cuts at the
+        last newline before the limit and otherwise hard-cuts, so splitting the
+        inline form would cut a url across two messages and lose it again.
+
+        Only the MULTI-PAGE senders use this. Every single-page path keeps
+        retrying with its authored text, and widening the reconstruction to the
+        single-page topic path would make a failed tail send classify a visible
+        turn as NOT_DELIVERED (refutation round, cluster U attempt 2).
+        """
+        text = plain_with_link_targets(display, entities)
+        if utf16_len(text) <= _TG_MAX_LENGTH:
+            return [text]
+        targets = missing_link_targets(display, entities)
+        return [display, *_split_message("\n".join(targets))]
+
     async def _send_one(self, chat_id, original, display, entities, **kw):
         """Send one ≤4096 message with entities; on entity BadRequest resend the
         ORIGINAL text plain (exactly one retry — a TimedOut etc. propagates so we
-        never duplicate a message Telegram may already have accepted)."""
+        never duplicate a message Telegram may already have accepted).
+
+        Returns True iff that one retry happened, so a caller holding further
+        fallback chunks knows whether it owes them — and can commit its own
+        delivery latch BEFORE sending them (#831)."""
         try:
-            return await self._app.bot.send_message(
+            await self._app.bot.send_message(
                 chat_id=chat_id, text=display, entities=entities, **kw,
             )
+            return False
         except BadRequest as exc:
             logger.warning("rich-text send fell back to plain: %s", exc)
-            return await self._app.bot.send_message(
+            await self._app.bot.send_message(
                 chat_id=chat_id, text=original, **kw,
             )
+            return True
 
     async def send_response(
         self, message: str, context: dict[str, Any],
@@ -4541,16 +4572,27 @@ class TelegramChannel(Channel):
             return DeliveryOutcome.DELIVERED
         outcome = DeliveryOutcome.NOT_DELIVERED
         for display, entities in pages:
+            chunks, fell_back = [display], False
             if entities is None:
                 await self._app.bot.send_message(
                     chat_id=target_chat, text=display)
             else:
-                await self._send_one(target_chat, display, display, entities)
+                # #831: the plain retry carries this page's link destinations,
+                # which its marker-free display cannot.
+                chunks = self._plain_fallback_chunks(display, entities)
+                fell_back = await self._send_one(
+                    target_chat, chunks[0], display, entities)
             # Page 1 carries the notice: once it lands the delivery counts as
-            # shown, however the remaining pages fare.
+            # shown, however the remaining pages fare. Stamped BEFORE the
+            # overflow chunks below, so a raising tail cannot erase the fact
+            # that the head is on screen.
             if outcome is DeliveryOutcome.NOT_DELIVERED:
                 context["_delivery_head_sent"] = True
                 outcome = DeliveryOutcome.DELIVERED
+            if fell_back:
+                for chunk in chunks[1:]:
+                    await self._app.bot.send_message(
+                        chat_id=target_chat, text=chunk)
         return outcome
 
     async def finalize_response_stream(
@@ -4578,11 +4620,16 @@ class TelegramChannel(Channel):
             return await self.finalize_stream(  # verbatim (§2.1)
                 full_text, context, on_token)
         display0, entities0 = pages[0]
-        fallback0 = full_text if len(pages) == 1 else display0
+        # #831: a rejected multi-page page-1 edit carries its link
+        # destinations; the single page keeps its authored text verbatim.
+        chunks0 = ([full_text] if len(pages) == 1
+                   else self._plain_fallback_chunks(display0, entities0))
+        fallback0 = chunks0[0]
         # Page 1 carries a prepended operator notice, so page 1 decides the
         # outcome; the overflow sends below swallow their errors and cannot
         # downgrade it (#556 design §2.3).
         outcome = DeliveryOutcome.NOT_DELIVERED
+        fell_back0 = False
         try:
             try:
                 if entities0 is not None:
@@ -4596,6 +4643,7 @@ class TelegramChannel(Channel):
                         text=fallback0,
                     )
             except BadRequest:
+                fell_back0 = True
                 await self._app.bot.edit_message_text(
                     chat_id=target_chat, message_id=message_id, text=fallback0,
                 )
@@ -4610,13 +4658,27 @@ class TelegramChannel(Channel):
         else:
             outcome = DeliveryOutcome.DELIVERED
             context["_delivery_head_sent"] = True
+        # An edit cannot be split, so page 1's overflow destinations follow as
+        # ordinary messages — after the outcome above is decided, under the
+        # same log-and-continue policy the overflow pages use.
+        for chunk in (chunks0[1:] if fell_back0 else ()):
+            try:
+                await self._app.bot.send_message(
+                    chat_id=target_chat, text=chunk)
+            except TelegramError as exc:
+                logger.warning("Final stream link-target send failed: %s", exc)
         for display, entities in pages[1:]:
             try:
                 if entities is None:
                     await self._app.bot.send_message(
                         chat_id=target_chat, text=display)
                 else:
-                    await self._send_one(target_chat, display, display, entities)
+                    chunks = self._plain_fallback_chunks(display, entities)
+                    if await self._send_one(
+                            target_chat, chunks[0], display, entities):
+                        for chunk in chunks[1:]:
+                            await self._app.bot.send_message(
+                                chat_id=target_chat, text=chunk)
             except TelegramError as exc:
                 logger.warning("Final stream overflow send failed: %s", exc)
         return outcome
@@ -4663,8 +4725,14 @@ class TelegramChannel(Channel):
                 except BadRequest as exc:
                     logger.warning(
                         "topic response page fell back to plain: %s", exc)
-                    last_mid = await self.send_to_topic(
-                        thread_id, display, **page_kwargs)
+                    # #831: the plain retry carries this page's link
+                    # destinations; kwargs stay on the first message only.
+                    chunk_kwargs = page_kwargs
+                    for chunk in self._plain_fallback_chunks(
+                            display, entities):
+                        last_mid = await self.send_to_topic(
+                            thread_id, chunk, **chunk_kwargs)
+                        chunk_kwargs = {}
             page_kwargs = {}
         assert last_mid is not None  # pages is never empty
         return last_mid
@@ -5033,7 +5101,12 @@ class TopicStreamHandle:
         # single-page case keeps the v0.89.0 raw-fallback contract).
         pages = render_paged(full_text)
         display0, entities0 = pages[0]
-        fallback0 = full_text if len(pages) == 1 else display0
+        # #831: a rejected multi-page page-1 edit carries its link destinations.
+        chunks0 = ([full_text] if len(pages) == 1
+                   else self._channel._plain_fallback_chunks(
+                       display0, entities0))
+        fallback0 = chunks0[0]
+        tail0: tuple[str, ...] | list[str] = ()
         try:
             if entities0 is not None:
                 try:
@@ -5043,6 +5116,7 @@ class TopicStreamHandle:
                         text=display0, entities=entities0,
                     )
                 except BadRequest:
+                    tail0 = chunks0[1:]
                     await bot.edit_message_text(
                         chat_id=self._channel.engagement_supergroup_id,
                         message_id=self._message_id,
@@ -5057,6 +5131,19 @@ class TopicStreamHandle:
         except TelegramError as exc:
             if "not modified" not in str(exc).lower():
                 logger.warning("Stream finalize edit failed: %s", exc)
+        # An edit cannot be split, so page 1's overflow destinations follow as
+        # ordinary messages, under the same log-and-continue policy.
+        for chunk in tail0:
+            try:
+                await bot.send_message(
+                    chat_id=self._channel.engagement_supergroup_id,
+                    message_thread_id=self._topic_id,
+                    text=chunk,
+                )
+            except TelegramError as exc:
+                logger.warning(
+                    "Stream finalize link-target send failed: %s", exc,
+                )
         for display, entities in pages[1:]:
             try:
                 if entities is not None:
@@ -5067,11 +5154,13 @@ class TopicStreamHandle:
                             text=display, entities=entities,
                         )
                     except BadRequest:
-                        await bot.send_message(
-                            chat_id=self._channel.engagement_supergroup_id,
-                            message_thread_id=self._topic_id,
-                            text=display,
-                        )
+                        for chunk in self._channel._plain_fallback_chunks(
+                                display, entities):
+                            await bot.send_message(
+                                chat_id=self._channel.engagement_supergroup_id,
+                                message_thread_id=self._topic_id,
+                                text=chunk,
+                            )
                 else:
                     await bot.send_message(
                         chat_id=self._channel.engagement_supergroup_id,

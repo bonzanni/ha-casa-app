@@ -169,16 +169,15 @@ whose label names the action and the destination domain, with the address carrie
 link's destination — the one exception being the message tool, which is not rendered, so a
 plain address is what belongs there.
 
-Four things that shape does *not* do, all of them pre-existing properties of every labelled
+Three things that shape does *not* do, all of them pre-existing properties of every labelled
 link rather than consequences of asking for one. A Telegram text reply and a button question
 pass through the rich renderer, but a streamed reply's text is unrendered until its final
-edit, so the raw form is briefly visible; if Telegram rejects the formatting, a single-page
-reply and a button question both re-send the text as authored, while a multi-page reply
-re-sends each page's visible text, which for a labelled link is the label alone — and there
-the address does not reach the reader at all. A voice reply is spoken rather than rendered,
-and an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
-arrives as markup with its address intact. The instruction improves legibility on the surface
-where a person reads it; it conceals nothing and guarantees nothing about the transport.
+edit, so the raw form is briefly visible. A voice reply is spoken rather than rendered, and
+an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
+arrives as markup with its address intact. If Telegram rejects the formatting the reply is
+re-sent as plain text carrying the same addresses, whether it is one message or several, so
+that path loses nothing. The instruction improves legibility on the surface where a person
+reads it; it conceals nothing and guarantees nothing about the transport.
 
 ## What this cannot tell you
 
