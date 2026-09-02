@@ -315,9 +315,10 @@ def verify_minted_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
     hook awaits afterwards. A gate derived from consent alone therefore reported
     "live" while the file was absent (a first approval), still bound to the
     PREVIOUS approval generation (a re-approval after a revoke, which rekeys),
-    or lazily minted unbound by the webhook handler and about to be replaced.
-    Setup would then wire the external service to a credential Casa is about to
-    change — the exact failure setup exists to prevent.
+    or left unbound by a crash mid-bind and about to be replaced (the webhook
+    handler mints nothing since #609). Setup would then wire the external
+    service to a credential Casa is about to change — the exact failure setup
+    exists to prevent.
 
     Holding is the safe direction and it is not a dead end: ``_mint_secrets``
     runs on EVERY pass with no availability gate of its own, so the gap closes
@@ -343,9 +344,34 @@ def verify_minted_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
     _fail_close_plugins(desired, unbacked)
 
 
+def _needs_mint(desired: DesiredTriggers, secrets_dir: Path) -> bool:
+    """Will :func:`_mint_secrets` WRITE on this pass? True iff some routed,
+    secret-backed entry is not already bound to the identity this pass derived
+    (#823). Read-only: the gate's own predicate
+    (:func:`webhook_auth.secret_bound_to_identity`, the one
+    :func:`verify_minted_secrets` applies), which is the exact complement of the
+    reuse test inside ``ensure_secret_for_identity`` — a read failure reads as
+    "unbound" on both sides, so the answer errs toward publishing the marker
+    and the mint then rekeys. It decides whether the pass must close plugin
+    ingress before it writes; a pass whose secrets are all bound writes
+    nothing and publishes no marker."""
+    import webhook_auth
+
+    secrets_dir = Path(secrets_dir)
+    return any(
+        not webhook_auth.secret_bound_to_identity(
+            eff, identity=entry.get("identity", ""), secrets_dir=secrets_dir)
+        for eff, entry in _secret_backed(desired))
+
+
 def _mint_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
     """Eagerly mint casa-owned per-trigger secrets for the routed set; a mint
-    failure fail-closes the OWNING PLUGIN's whole set (all-or-nothing)."""
+    failure fail-closes the OWNING PLUGIN's whole set (all-or-nothing).
+
+    #823: runs ONLY from :func:`reconcile_plugin_triggers`'s writing hop, after
+    that pass has published the unavailable marker (INV-TRIG-017) — the
+    artifact this writes is what the setup-dispatch gate accepts, and it must
+    never lead the route it backs. Direct callers (tests) bind in place."""
     import webhook_auth
     from plugin_registry import PluginIssue
 
@@ -423,7 +449,7 @@ async def reconcile_plugin_triggers(
     # so there is one source of truth for the secrets location.
     secrets_dir = SECRETS_DIR if secrets_dir is None else secrets_dir
 
-    def _compute_and_mint() -> "tuple":
+    def _compute() -> "tuple":
         # ONE snapshot for the whole pass (#451 r3): the pending membership and
         # the setup-candidate sweep must describe the same registry, or the
         # sealed round and the obligation can name different artifacts.
@@ -432,7 +458,14 @@ async def reconcile_plugin_triggers(
         desired = compute_desired(
             role_configs=role_configs, acks=acks, resolver=pinned,
             global_secret_ok=global_secret_ok)
-        _mint_secrets(desired, Path(secrets_dir))
+        # #823: NO secret write in this hop. The mint used to run here, inside
+        # the compute, so the durable artifact the setup-dispatch gate accepts
+        # (the identity-bound secret) existed for the rest of the compute and
+        # until the swap below while the applied overlay carried no route —
+        # a worker pass woken in that window recomputed "live" and dispatched
+        # against a 404 (reproduced). The write moves to its own hop, taken
+        # only after this pass has published the unavailable marker, and only
+        # when `_needs_mint` says the hop will write (INV-TRIG-017).
         # The CALLBACK half of the union membership and the setup-candidate
         # sweep are derived here, in the SAME worker thread — both read
         # plugin.json for every resolved plugin, which must never run on the
@@ -455,14 +488,16 @@ async def reconcile_plugin_triggers(
             role_configs=role_configs, resolver=pinned)
         cand_ok, cand = setup_candidates(resolver=pinned)
         candidates = cand if cand_ok else None
+        # `one_generation` is read here, before the writing hop: the mint
+        # performs no resolver read, so the generation check is unchanged.
         return (desired, union, union_ok, candidates, peer_unknown,
-                one_generation(pinned))
+                one_generation(pinned), _needs_mint(desired, Path(secrets_dir)))
 
     try:
       async with _RECONCILE_LOCK:
         try:
             (desired, callback_pending, callback_ok, setup_cands,
-             peer_unknown, one_gen) = await asyncio.to_thread(_compute_and_mint)
+             peer_unknown, one_gen, needs_mint) = await asyncio.to_thread(_compute)
         except Exception:
             # Terra shipB-r1 P1-2: a compute failure must not RETAIN the old
             # overlay (a just-unassigned/revoked plugin's routes would stay
@@ -478,6 +513,40 @@ async def reconcile_plugin_triggers(
             trigger_registry.replace_plugin_overlay(
                 trigger_registry_mod.ROUTING_UNAVAILABLE)
             raise
+        if needs_mint:
+            # #823 (INV-TRIG-017): the marker LEADS the first secret write. It
+            # is one synchronous rebind under _RECONCILE_LOCK only — no new
+            # lock, no new order — and it is what the setup worker's applied-
+            # overlay read (#803) defers on while the artifact exists ahead of
+            # its route. Only a pass that will write pays it: a healthy pass
+            # (every secret already bound) publishes its map alone and never
+            # closes ingress.
+            trigger_registry.replace_plugin_overlay(
+                trigger_registry_mod.ROUTING_UNAVAILABLE)
+            writes = asyncio.ensure_future(
+                asyncio.to_thread(_mint_secrets, desired, Path(secrets_dir)))
+            try:
+                await asyncio.shield(writes)
+            except asyncio.CancelledError:
+                # The thread cannot be stopped and always finishes its writes.
+                # Releasing the lock now would let a successor publish a map
+                # over artifacts still landing, so hold it until the same
+                # future settles, then let the cancellation through: no map,
+                # no kick, no seal, no prompt — the marker stands for the
+                # scheduled recovery (INV-TRIG-015). A second cancellation
+                # delivered during this drain (loop teardown) releases the
+                # lock with the marker standing; boot starts at the marker.
+                try:
+                    await asyncio.shield(writes)
+                except BaseException:  # noqa: BLE001 — the mint raising or a
+                    pass                # second cancel: the marker stands either way
+                raise
+            except Exception:
+                # Same contract as the compute arm: fail closed (the marker
+                # already stands — an idempotent re-publish) and propagate.
+                trigger_registry.replace_plugin_overlay(
+                    trigger_registry_mod.ROUTING_UNAVAILABLE)
+                raise
         # #606: only an authoritative computation may publish a map. An
         # invalid registry returns NORMALLY with an empty overlay, and
         # publishing that would clear the sentinel without anything having been
