@@ -482,3 +482,211 @@ async def test_include_partial_messages_voice_only(agent_fixture, monkeypatch):
 
     assert factory.clients[0].options.include_partial_messages is True
     assert factory.clients[1].options.include_partial_messages is False
+
+
+# ---------------------------------------------------------------------------
+# #666 — the silence sentinel is never handed to the token stream
+# (INV-TURN-009; red cases specified by terra, redcase round 1).
+# ---------------------------------------------------------------------------
+
+
+async def test_sentinel_only_fold_emits_nothing(agent_fixture, monkeypatch):
+    """INV-TURN-009: a turn whose canonical fold is nothing but the literal
+    sentinel hands NOTHING to on_token. At the base the fold emits
+    ``'<silent/>'`` and Telegram posts it as a real message that the final
+    gate then never supersedes."""
+    factory = QueuedScriptFactory([[_mk_assistant("<silent/>")]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == []
+    assert text == "<silent/>"
+
+
+async def test_repeated_and_padded_sentinel_folds_emit_nothing(
+    agent_fixture, monkeypatch,
+):
+    """The hold reuses ``_strips_to_silence``, so every form that whole-output
+    silence already covers — whitespace padding, repetition — is held too."""
+    factory = QueuedScriptFactory([[
+        _mk_assistant("\n  <silent/>  \n"),
+        _mk_assistant("<silent/>"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == []
+
+
+async def test_voice_sentinel_fragments_emit_nothing(agent_fixture, monkeypatch):
+    """The voice StreamEvent path delivers the sentinel in fragments, and a
+    fragment does NOT strip to silence (``_strips_to_silence('<sil')`` is
+    False at the base). The partial path's hold is therefore prefix-aware:
+    every cumulative that could still become sentinel-only is held."""
+    factory = QueuedScriptFactory([[
+        _mk_stream_event("<"),
+        _mk_stream_event("sil"),
+        _mk_stream_event("ent/>"),
+        _mk_assistant("<silent/>"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == []
+    assert text == "<silent/>"
+
+
+async def test_sentinel_prefix_that_diverges_releases_the_whole_cumulative(
+    agent_fixture, monkeypatch,
+):
+    """A cumulative that merely LOOKED like a sentinel on its way in is
+    released in full the moment it diverges — the whole ``_cum()``, not the
+    diverging tail. At the base the held prefix leaks first."""
+    factory = QueuedScriptFactory([[
+        _mk_stream_event("<sil"),
+        _mk_stream_event("ly good"),
+        _mk_assistant("<silly good"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == ["<silly good"]
+    assert text == "<silly good"
+
+
+async def test_g3_recant_releases_the_exact_cumulative_sentinel_included(
+    agent_fixture, monkeypatch,
+):
+    """The G-3 recant contract: a sentinel followed by real prose delivers the
+    WHOLE text, literal included. The hold must release the exact ``_cum()``
+    — a stripped variant would make the final delivery re-insert what the
+    stream hid, and would break the AR-A formula."""
+    factory = QueuedScriptFactory([[
+        _mk_assistant("<silent/>"),
+        _mk_assistant("Actually, meeting at 3pm."),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == ["<silent/>\n\nActually, meeting at 3pm."]
+    assert text == "<silent/>\n\nActually, meeting at 3pm."
+
+
+async def test_held_sentinel_does_not_survive_into_the_next_attempt(
+    agent_fixture, monkeypatch,
+):
+    """AR-E: a fresh ``state`` per attempt. Attempt 1 folds the sentinel (held)
+    and then faults; attempt 2 answers normally, and its emissions are its own
+    — nothing of attempt 1 is carried, released or re-held."""
+    RetryableError = type("CLIConnectionError", (RuntimeError,), {})
+    factory = QueuedScriptFactory([
+        [
+            _mk_assistant("<silent/>"),
+            RetryableError("upstream reset"),
+        ],
+        [
+            _mk_stream_event("Attempt two "),
+            _mk_stream_event("reply."),
+            _mk_assistant("Attempt two reply."),
+        ],
+    ])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    with patch_retry_sleep():
+        text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert factory.constructed == 2
+    assert seen == ["Attempt two ", "Attempt two reply."]
+    assert text == "Attempt two reply."
+
+
+async def test_divergent_canonical_correction_to_silence_emits_only_the_prose(
+    agent_fixture, monkeypatch,
+):
+    """The NARROW scope of INV-TURN-009, pinned so it cannot be re-inflated.
+
+    A voice partial can stream non-silent provisional prose which the canonical
+    fold then REPLACES with the sentinel (a divergent canonical correction —
+    ``test_canonical_shrinking_correction_is_safe`` above pins that path). The
+    prose has already been spoken and cannot be un-spoken; what the hold
+    guarantees is that the correction to silence adds NO further emission. At
+    the base the fold additionally emits the literal sentinel."""
+    factory = QueuedScriptFactory([[
+        _mk_stream_event("Visible provisional answer."),
+        _mk_assistant("<silent/>"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == ["Visible provisional answer."]
+    assert text == "<silent/>"
+
+
+async def test_bare_sentinel_prefix_fold_is_released_not_held(
+    agent_fixture, monkeypatch,
+):
+    """The canonical fold uses the STRICT predicate, not the prefix-aware one.
+
+    A fold cumulative of ``'<sil'`` is not silence: ``handle_message``'s gate
+    DELIVERS it, so the stream must not hold it — and on voice, whose ``send()``
+    is a no-op with ``delivers_final_text = False``, holding it would lose the
+    message outright. This also kills the "record a held cumulative in
+    last_emitted" mutant: the held partial would dedup the fold's release away
+    and ``seen`` would be empty. (Passes at the base — a regression pin on the
+    fix's shape, not a red case.)"""
+    factory = QueuedScriptFactory([[
+        _mk_stream_event("<sil"),
+        _mk_assistant("<sil"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == ["<sil"]
+    assert text == "<sil"
