@@ -494,18 +494,15 @@ def _check_prose_code(text: str, doc: str, modules: set[str], names: set[str]) -
     return problems
 
 
-def _parametrised_hint(node: str) -> str:
-    """Why a `name[case]` node id cannot bind: the binding is the UNPARAMETRISED id.
+PARAMETRISED_HINT = (
+    " — a parametrised case is bound by its unparametrised node id "
+    "(`test_name`, not `test_name[case]`)"
+)
+"""Why a `name[case]` node id cannot bind: the binding is the UNPARAMETRISED id.
 
-    A parametrised case never appears in the source under its bracketed name, and inside a
-    flow-style YAML list the brackets do not even parse — the shape that once broke a shard
-    (#812)."""
-    if "[" not in node:
-        return ""
-    return (
-        " — a parametrised case is bound by its unparametrised node id "
-        "(`test_name`, not `test_name[case]`)"
-    )
+A parametrised case never appears in the source under its bracketed name, and inside a
+flow-style YAML list the brackets do not even parse — the shape that once broke a shard
+(#812)."""
 
 
 def _check_invariant_tests(entry: dict, repo_root: Path, tracked: set[str]) -> list[str]:
@@ -545,6 +542,19 @@ def _check_invariant_tests(entry: dict, repo_root: Path, tracked: set[str]) -> l
                 continue
             if node is None:
                 continue
+            if "[" in node or "]" in node:
+                # A bracketed node id names a parametrised case, which is
+                # refused BEFORE either resolution arm reads the file: no
+                # Python identifier carries a bracket, so it can never
+                # resolve structurally — and the substring arm below would
+                # accept a comment, docstring or string literal that
+                # happens to quote `test_name[case]`, certifying a binding
+                # pytest would never collect (#812).
+                problems.append(
+                    f"{doc}: {inv} names {ref!r} but {node!r} does not "
+                    f"resolve in {rel}{PARAMETRISED_HINT}"
+                )
+                continue
             if "::" in node:
                 # A class-qualified pytest node id (`Class::method`) — a
                 # RUNNABLE anchor (`pytest {rel}::{node}` works verbatim
@@ -556,7 +566,7 @@ def _check_invariant_tests(entry: dict, repo_root: Path, tracked: set[str]) -> l
                 if not symbol_exists(repo_root / rel, node.replace("::", ".")):
                     problems.append(
                         f"{doc}: {inv} names {ref!r} but {node!r} does not "
-                        f"resolve in {rel}{_parametrised_hint(node)}"
+                        f"resolve in {rel}"
                     )
                 continue
             # A plain string search, not pytest collection: cheap, dependency-free, and
@@ -568,7 +578,6 @@ def _check_invariant_tests(entry: dict, repo_root: Path, tracked: set[str]) -> l
             if node not in text:
                 problems.append(
                     f"{doc}: {inv} names {ref!r} but {node!r} does not appear in {rel}"
-                    f"{_parametrised_hint(node)}"
                 )
     for inv in sorted(set(bindings) - set(declared)):
         problems.append(

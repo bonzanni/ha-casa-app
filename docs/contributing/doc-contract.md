@@ -94,10 +94,11 @@ docstring of a tracked Python file outside `docs/` — a file named `*.py` or ca
 shebang — resolves, when its family is one the corpus defines; that every declared invariant carries at least one
 `invariant_tests` binding to a tracked file that is not the missing-test sentinel, with any
 named test node resolved structurally against the file — module-level functions and
-class-qualified `Class::method` identifiers both, always by the *unparametrised* node id,
-since a parametrised case `test_name[case]` appears in no source file under that name and
-does not even parse inside a flow-style YAML list — so a binding that would not collect
-fails the build (that the reference is a genuine *pinning* test is still established by
+class-qualified `Class::method` identifiers both, always by the *unparametrised* node id:
+a bracketed id `test_name[case]` is refused before the file is read, since no Python
+identifier carries a bracket, a comment or string that happens to quote the case is not
+a test, and such an id does not even parse inside a flow-style YAML list — so a binding
+that would not collect fails the build (that the reference is a genuine *pinning* test is still established by
 the red-case discipline, not by CI); that generated navigation is rendered only from a
 manifest that loads; the code-derived
 coverage ledger in both directions (every enumerated

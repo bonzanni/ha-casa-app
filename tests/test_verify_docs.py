@@ -579,9 +579,10 @@ def test_a_class_qualified_binding_naming_a_missing_method_is_refused(tmp_path):
 
 
 def test_a_parametrised_binding_is_refused_naming_the_unparametrised_id(tmp_path):
-    """The binding is the UNPARAMETRISED node id (#812): `test_b[False]` appears in no
-    source file and the substring arm cannot match it, and inside a flow-style list the
-    brackets do not even parse. The refusal says so, in both resolution arms."""
+    """The binding is the UNPARAMETRISED node id (#812): `test_b[False]` names no Python
+    identifier, so it can never resolve, and inside a flow-style list the brackets do not
+    even parse. The refusal says so, for the module-level and the class-qualified shape
+    both, and fires before either resolution arm reads the file."""
     manifest = _inv_manifest(
         "\n  invariant_tests:\n    INV-X-001: ['tests/test_a.py::test_b[False]', "
         "'tests/test_a.py::TestC::test_b[False]']"
@@ -593,7 +594,7 @@ def test_a_parametrised_binding_is_refused_naming_the_unparametrised_id(tmp_path
     problems = verify_docs.verify(root)
     hinted = [p for p in problems if "bound by its unparametrised node id" in p]
     assert len(hinted) == 2
-    assert any("test_b[False]' does not appear in tests/test_a.py" in p for p in hinted)
+    assert any("test_b[False]' does not resolve in tests/test_a.py" in p for p in hinted)
     assert any("TestC::test_b[False]' does not resolve in tests/test_a.py" in p for p in hinted)
 
 
