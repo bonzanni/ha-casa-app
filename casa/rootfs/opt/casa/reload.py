@@ -1876,8 +1876,13 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         runtime.refresh_personality_maps()
         old_agent = runtime.agents.pop(r, None)  # AR-7: capture before drop
         _schedule_agent_close(old_agent)  # F12
-        await _teardown_role(runtime, r)
+        incomplete = await _teardown_role(runtime, r)
         actions.append(f"evicted_{r}")
+        # #786 (INV-CFG-012, diff review r1): the teardown names the steps
+        # that failed; a caller that drops the names turns a failure the
+        # base RAISED (the revoke was unguarded) into a green `evicted_<r>`.
+        for step in incomplete:
+            actions.append(f"teardown_incomplete_{step}_{r}")
 
     # ---- Specialists ----
     specialists_dir = os.path.join(agents_dir, "specialists")
