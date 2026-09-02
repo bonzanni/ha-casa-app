@@ -531,15 +531,21 @@ async def reconcile_plugin_triggers(
                 # The thread cannot be stopped and always finishes its writes.
                 # Releasing the lock now would let a successor publish a map
                 # over artifacts still landing, so hold it until the same
-                # future settles, then let the cancellation through: no map,
-                # no kick, no seal, no prompt — the marker stands for the
-                # scheduled recovery (INV-TRIG-015). A second cancellation
-                # delivered during this drain (loop teardown) releases the
-                # lock with the marker standing; boot starts at the marker.
-                try:
-                    await asyncio.shield(writes)
-                except BaseException:  # noqa: BLE001 — the mint raising or a
-                    pass                # second cancel: the marker stands either way
+                # future settles — through EVERY further cancellation, not
+                # only the first (review r1: a second cancel escaped a
+                # single re-await and a successor published mid-write) —
+                # then let the cancellation through: no map, no kick, no
+                # seal, no prompt; the marker stands for the scheduled
+                # recovery (INV-TRIG-015). The wait is bounded by the
+                # remaining secret writes; loop teardown waits for the
+                # default executor's threads anyway.
+                while not writes.done():
+                    try:
+                        await asyncio.shield(writes)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:  # noqa: BLE001 — the mint raised:
+                        break          # settled; the marker stands
                 raise
             except Exception:
                 # Same contract as the compute arm: fail closed (the marker

@@ -122,7 +122,7 @@ while either stands or while any publication has landed since ([`plugin-setup.md
 INV-PLUG-016); so a released obligation woken by a half-healed pair defers rather than
 dispatching against the half still closed.
 
-**INV-TRIG-017**: A trigger reconcile publishes the unavailable marker on the plugin overlay before it may create or rekey a per-trigger secret. A pass that published the marker replaces it only with the authoritative map that pass computed. A pass whose caller receives a first cancellation while its secret-writing future is in flight holds the reconcile lock until that future settles; if a further cancellation interrupts that drain, the unavailable marker remains for scheduled recovery or, after process teardown, next-boot reconciliation. A pass whose secrets are all already bound publishes no marker. A pass that published the marker and cannot publish its map leaves it standing for the scheduled recovery.
+**INV-TRIG-017**: A trigger reconcile publishes the unavailable marker on the plugin overlay before it may create or rekey a per-trigger secret. A pass that published the marker replaces it only with the authoritative map that pass computed. A pass whose caller is cancelled while its secret-writing future is in flight holds the reconcile lock until that future settles, however many cancellations arrive, and then publishes nothing. A pass whose secrets are all already bound publishes no marker. A pass that published the marker and cannot publish its map leaves it standing for the scheduled recovery; a process torn down mid-pass relies on the next boot, which starts at the marker and reconciles before serving.
 
 The setup-dispatch gate reads the durable artifact and no overlay, and the reconcile used
 to create that artifact inside its compute, before its one publication: between the mint and
@@ -142,9 +142,10 @@ that fails counts as unbound on both sides, so the answer errs toward publishing
 Only a pass that will write publishes it, as one synchronous rebind under the reconcile
 lock, and only then runs the writes in its second hop; the map that replaces the marker is
 the one this pass computed. A caller cancelled during the writes does not release the lock:
-the same future is awaited again until the writes land, and only then does the cancellation
-propagate — with no map, no kick, no seal and no prompt, so the marker stands and the
-scheduled recovery republishes within one interval. A write hop that fails re-publishes the
+the same future is awaited again, through every further cancellation, until the writes land,
+and only then does the cancellation propagate — with no map, no kick, no seal and no prompt,
+so the marker stands and the scheduled recovery republishes within one interval. The wait is
+bounded by the remaining writes, which the loop's own teardown waits for anyway. A write hop that fails re-publishes the
 marker and re-raises, the compute arm's own contract.
 
 What it costs, deliberately: on a writing pass — a first approval, a re-approval after a
@@ -164,8 +165,7 @@ What it does not cover: the callback half, whose markers already trail its overl
 retires before the swap and writes after); a bound secret whose route re-enters the desired
 set through a configuration change with no write — that is the derived-versus-applied gap
 the setup worker's own reads bound (INV-PLUG-016), not an artifact created ahead of its
-route; and a process torn down during the drain, which relies on the next boot starting at
-the marker.
+route; and a process torn down mid-pass, which relies on the next boot starting at the marker.
 
 ## Failure behavior
 
@@ -198,9 +198,9 @@ itself, outside any one plugin's mint, re-publishes the marker and propagates
 (INV-TRIG-017).
 
 **A writing pass is cancelled.** Its caller is released only after the secret writes have
-landed; the pass publishes no map, kicks nothing and prompts nothing, and the marker it
-published stands until the scheduled recovery republishes an authoritative set. A second
-cancellation delivered during that drain — process teardown — leaves the marker for the next
+landed, whether one cancellation arrives or several; the pass publishes no map, kicks nothing
+and prompts nothing, and the marker it published stands until the scheduled recovery
+republishes an authoritative set. A process torn down mid-pass leaves the marker for the next
 boot, which starts at the marker and reconciles before serving.
 
 **The approval store is missing or corrupt.** Treated as no approvals. Pending routes stay
