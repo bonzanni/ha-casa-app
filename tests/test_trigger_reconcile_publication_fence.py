@@ -126,6 +126,11 @@ class Fence:
             role_configs=ROLE_CONFIGS, acks=self.acks, resolver=self.resolver,
             global_secret_ok=lambda: True).overlay[EFFECTIVE]["identity"]
 
+        # A fresh reconcile lock for this test's loop: ``asyncio.Lock`` binds
+        # to the loop of the first CONTENDED acquire, and the cancellation and
+        # successor tests below contend — the module lock would otherwise stay
+        # bound to this test's closed loop and break a later file's contention.
+        monkeypatch.setattr(tr, "_RECONCILE_LOCK", asyncio.Lock())
         monkeypatch.setattr(tr, "SECRETS_DIR", self.secrets)
         monkeypatch.setattr(tr, "_default_acks", lambda: self.acks)
         monkeypatch.setattr(tr, "_default_resolver", lambda: self.resolver)
@@ -407,9 +412,9 @@ async def test_a_pass_whose_secrets_are_all_bound_publishes_no_marker(
     pass."""
     f = Fence(tmp_path, monkeypatch)
     f.live_prior()
-    await f.reconcile()
+    await f.reconcile()          # the WRITING pass: binds the secret, routes it
     assert f.bound() == 1
-    assert f.reg.publications == ["map"]
+    assert f.reg.routes() == 1
     f.reg.publications.clear()
     await f.release_obligation()
 
