@@ -218,8 +218,10 @@ whose own re-scan failed reports `specialist_scan_failed` and retires nothing fr
 stale generation; a sweep whose agent-registry rebuild failed returns
 `agent_registry_rebuild_failed`, which `config_sync` reports as `agents:error:<kind>` rather
 than swallowing. A retirement that left a step failed is remembered for the life of the
-process, and the next sweep that reads the role disabled retries it and reports its own
-outcome. A resident that shares a disabled specialist's name is never touched.
+process, and the next sweep retries it — whether the role is still disabled on disk or its
+directory has since gone — and reports its own outcome. A resident that shares a disabled
+specialist's name is never touched: the sweep excludes it, and a single-role scope whose
+role a resident came to own while it ran refuses with `role_conflict`.
 The single-role scopes read and decide under the role's agent lock, so a disabled read and
 a concurrent enabled swap of the same role serialize: the last file read wins, truthfully.
 

@@ -619,6 +619,23 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
     if runtime.trigger_registry is None:
         raise ReloadError("not_initialized", "trigger registry not wired")
 
+    # #786 (INV-CFG-012): the tier classification, the load, the identity
+    # guard, the disabled decision and the registration all run under
+    # `agent:<role>` — the lock a scope=agent reload of the same role holds
+    # for ITS load and swap — so a disabled read here can never be acted on
+    # after a concurrent swap installed the role, and vice versa: the last
+    # file read wins, under one lock. Order: triggers:<role> → agent:<role>;
+    # `reload_agent` takes no other lock, and `config_sync → triggers:<role>`
+    # composes. A resident's trigger reload thereby also serialises against
+    # its own agent reload — both write `role_configs[role]` and did so
+    # unserialised before. (Diff review r3: the classification is inside the
+    # lock too, so a directory that appears while this reload waits is seen.)
+    async with _get_lock(_lock_key("agent", role)):
+        return await _reload_triggers_locked(runtime, role=role)
+
+
+async def _reload_triggers_locked(runtime: Any, *, role: str) -> list[str]:
+    """`reload_triggers`' body, under `agent:<role>` (#786)."""
     # Find the agent dir: residents at agents/<role>/, specialists at
     # agents/specialists/<role>/. Mirrors tools.casa_reload_triggers.
     base = runtime.config_dir
@@ -638,24 +655,6 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
             "unknown_role", f"no agent directory for role={role!r}",
         )
 
-    # #786 (INV-CFG-012): the load, the identity guard, the disabled decision
-    # and the registration all run under `agent:<role>` — the lock a
-    # scope=agent reload of the same role holds for ITS load and swap — so a
-    # disabled read here can never be acted on after a concurrent swap
-    # installed the role, and vice versa: the last file read wins, under one
-    # lock. Order: triggers:<role> → agent:<role>; `reload_agent` takes no
-    # other lock, and `config_sync → triggers:<role>` composes. A resident's
-    # trigger reload thereby also serialises against its own agent reload —
-    # both write `role_configs[role]` and did so unserialised before.
-    async with _get_lock(_lock_key("agent", role)):
-        return await _reload_triggers_locked(
-            runtime, role=role, agent_dir=agent_dir, tier=tier, base=base)
-
-
-async def _reload_triggers_locked(
-    runtime: Any, *, role: str, agent_dir: str, tier: str, base: str,
-) -> list[str]:
-    """`reload_triggers`' body, under `agent:<role>` (#786)."""
     # H-3 fix carry-forward (v0.34.0): always re-load policies from disk so
     # residents with disclosure.yaml don't trip _compose_prompt's None guard.
     import policies as policies_module
@@ -1169,6 +1168,19 @@ async def _teardown_disabled_specialist(
     specialist`` for the one-file readers; the ``agents`` sweep has already
     done all three when it reaches this).
     """
+    # Diff review r3 (terra): decided at the point of use, for every caller.
+    # The tier was classified from a directory; a resident of the same name
+    # added meanwhile by the sweep's lock-free resident block now owns
+    # `runtime.agents[role]`, and a specialist retirement never touches a
+    # resident (the sweep's own candidate set subtracts `role_configs` for
+    # the same reason). The single-role scopes surface this as their error.
+    if role in runtime.role_configs:
+        raise ReloadError(
+            "role_conflict",
+            f"role={role} is a live resident; the specialist read as disabled "
+            f"is not retired (a resident and a specialist claim one role)",
+        )
+
     async def purge_grants() -> None:
         _invalidate_role_grants(role)
 
@@ -1179,6 +1191,14 @@ async def _teardown_disabled_specialist(
     failed += await _teardown_role(runtime, role)
     for step in failed:
         actions.append(f"teardown_incomplete_{step}{suffix}")
+    _note_retirement_outcome(role, failed)
+
+
+def _note_retirement_outcome(role: str, failed: list[str]) -> None:
+    """Remember a retirement that left a step failed; forget one that
+    completed. The ONE writer of `_INCOMPLETE_RETIREMENTS`, called by every
+    specialist teardown the sweep or a single-role scope runs, so no
+    teardown path can drop the residue by omission (diff review r3)."""
     if failed:
         _INCOMPLETE_RETIREMENTS.add(role)
     else:
@@ -2021,13 +2041,21 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
     for s in (set(runtime.agents.keys()) & known_residents) - on_disk_residents:
         # No-op — handled in resident block above.
         pass
-    for s in set(runtime.agents.keys()) - on_disk_residents - on_disk_specialists:
+    # #786 (diff review r2/r3): the candidates of BOTH specialist teardown
+    # loops below are derived ONCE — the live Agents plus every role whose
+    # earlier retirement left a step failed — so a queue, an ask or a route
+    # that survived is retried whether the role is still disabled on disk or
+    # its directory has since gone; a clean teardown forgets the residue.
+    live_or_residual = (set(runtime.agents.keys()) | _INCOMPLETE_RETIREMENTS
+                        ) - set(runtime.role_configs.keys())
+    for s in sorted(live_or_residual - on_disk_residents - on_disk_specialists):
         # A:§3.3/§3.4 (r2-B5 enumerated seam): purge+cancel BEFORE teardown —
         # the role is about to become undispatchable entirely.
         _invalidate_role_grants(s)
         old_agent = runtime.agents.pop(s, None)  # AR-7: capture before drop
         _schedule_agent_close(old_agent)  # F12
         incomplete = await _teardown_role(runtime, s)
+        _note_retirement_outcome(s, incomplete)
         # S-3: the registry diff above already reported registry-known
         # evictions; only a runtime.agents entry the diff did NOT cover
         # still needs surfacing here (a leaked entry — each run reports the
@@ -2059,9 +2087,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
                 if isinstance(r, str)}
         except Exception:  # noqa: BLE001 — a pre-v0.74 registry stand-in
             disabled_now = set()
-    live_or_residual = set(runtime.agents.keys()) | _INCOMPLETE_RETIREMENTS
-    for s in sorted((live_or_residual & disabled_now)
-                    - set(runtime.role_configs.keys())):
+    for s in sorted(live_or_residual & disabled_now):
         async with _get_lock(_lock_key("agent", s)):
             if runtime.specialist_registry.is_disabled(s) is not True:
                 continue

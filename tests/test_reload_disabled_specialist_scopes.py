@@ -820,3 +820,74 @@ async def test_sweep_retries_a_retirement_whose_bus_step_failed(harness, monkeyp
     env3 = await _dispatch(h, "agents")
     assert env3["status"] == "ok", env3
     assert _teardown_rows(env3["actions"]) == 0, env3["actions"]
+
+
+# --------------------------------------------------------------------------
+# diff review round 3: the residue outlives the directory; a resident claims
+# the name mid-reload — siblings, written after acceptance
+# --------------------------------------------------------------------------
+
+
+async def test_sweep_retries_a_residue_whose_directory_has_gone(harness, monkeypatch, tmp_path):
+    """Sweep 1 reads the role disabled and its bus step fails (queue
+    survives). The operator then DELETES the specialist directory. Sweep 2:
+    the role is in neither `runtime.agents` nor the registry — it is retried
+    from the remembered residue by the directory-gone loop: the queue goes,
+    the eviction row and no incomplete row. Sweep 3: nothing."""
+    import shutil
+    h = harness
+    real = h.bus.unregister_and_wait
+
+    async def boom(name):
+        raise RuntimeError("bus refused")
+    monkeypatch.setattr(h.bus, "unregister_and_wait", boom)
+    env1 = await _dispatch(h, "agents")
+    assert env1["actions"].count(f"teardown_incomplete_bus_unregister_{ROLE}") == 1, env1["actions"]
+    assert await h.send_checked() == "accepted"
+
+    shutil.rmtree(tmp_path / "agents" / "specialists" / ROLE)
+    # The registry stand-in now sees no specialist at all.
+    monkeypatch.setattr(h.registry, "load", lambda **kw: setattr(h.registry, "_enabled", {}) or setattr(h.registry, "_disabled", set()))
+    monkeypatch.setattr(h.bus, "unregister_and_wait", real)
+    env2 = await _dispatch(h, "agents")
+    assert env2["status"] == "ok", env2
+    assert env2["actions"].count(f"evicted_specialist_{ROLE}") == 1, env2["actions"]
+    assert sum(a.startswith("teardown_incomplete_") for a in env2["actions"]) == 0, env2["actions"]
+    assert await h.send_checked() == "no_target"
+    assert len(h.empty_unroutes()) == 2
+
+    env3 = await _dispatch(h, "agents")
+    assert env3["status"] == "ok", env3
+    assert env3["actions"].count(f"evicted_specialist_{ROLE}") == 0, env3["actions"]
+    assert len(h.empty_unroutes()) == 2
+
+
+async def test_retirement_refuses_a_role_a_resident_now_claims(harness, monkeypatch, tmp_path):
+    """The triggers arm classifies the role as a specialist, then — while it
+    holds the lock — the sweep's lock-free resident block adds a resident of
+    the same name (modelled as a side effect of the load). The retirement
+    must refuse at the point of use: error `role_conflict`, the resident's
+    Agent and bus consumer untouched."""
+    import reload as reload_mod
+    h = harness
+    real_load = reload_mod._load_agent_with_overlay_retry
+    resident = _fake_agent("RESIDENT")
+
+    async def load_then_resident_appears(runtime, agent_dir, **kw):
+        cfg, roles_dir = await real_load(runtime, agent_dir, **kw)
+        resident_cfg = _cfg(enabled=True)
+        del resident_cfg.enabled
+        runtime.role_configs[ROLE] = resident_cfg
+        runtime.refresh_personality_maps()
+        runtime.agents[ROLE] = resident
+        h.bus.register(ROLE, resident.handle_message)
+        return cfg, roles_dir
+    monkeypatch.setattr(reload_mod, "_load_agent_with_overlay_retry", load_then_resident_appears)
+
+    env = await _dispatch(h, "triggers", role=ROLE)
+    assert env["status"] == "error", env
+    assert env["kind"] == "role_conflict", env
+    assert h.runtime.agents[ROLE] is resident
+    assert await h.send_checked() == "accepted"
+    assert len(h.empty_unroutes()) == 0
+    assert _teardown_rows(env.get("actions", [])) == 0
