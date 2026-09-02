@@ -17,12 +17,13 @@ authenticated ([`architecture/hook-resolution.md`](hook-resolution.md)).
 
 ## Mental model
 
-**The file is read; what it composes is not served.** Both files feed only the composed
+**An edit to either file changes no served prompt.** Both files feed only the composed
 fallback prompt, and every resident is served a compiled bundle from its first boot, so an
 edit to either is written, committed and reported live while the served prompt stays
 byte-identical. The guards exist because that failure was silent: they refuse the write
 through the file tools on every hook path Casa builds, and the instructions that used to
-route behaviour into these files now name what actually works.
+route behaviour into these files now name what actually works. What each file's guard
+covers, and what it deliberately does not, is stated under its own invariant below.
 
 ## Contracts & invariants
 
