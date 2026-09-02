@@ -632,15 +632,18 @@ async def test_t5_a_cancelled_handler_cannot_release_the_library_transaction_ear
 
     def _bound_apply(**kw):
         # The handler names the production instance root; bind it to this
-        # test's tree and hand the library the journaled-bundle keywords.
+        # test's tree and hand the library the journaled-bundle keywords —
+        # `bundle=True` is what the handler itself passes on the fixed tree,
+        # so it is SET here rather than added beside the handler's own.
         kw["instance_dir_root"] = instance_path
+        kw.update(bundle=True, acks=acks, registry_path=registry_path, ops_dir=ops_dir)
         try:
-            return real_apply(**kw, bundle=True, acks=acks, registry_path=registry_path,
-                              ops_dir=ops_dir)
+            return real_apply(**kw)
         except TypeError as exc:
             if "unexpected keyword" not in str(exc):
                 raise
-            return real_apply(**kw)
+            return real_apply(**{k: v for k, v in kw.items()
+                                 if k not in ("bundle", "acks", "registry_path", "ops_dir")})
         finally:
             worker_done["count"] += 1
 
