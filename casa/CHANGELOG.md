@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.256.0] - 2026-09-02
+
+### Fixed
+
+- A specialist whose role file says `enabled: false` is now torn down — its
+  consumer, its in-flight work, its grants, its scheduled asks, its triggers and
+  its webhook routes — by whichever reload scope reads the file: `policies`,
+  `triggers`, `agents`, `config_sync` and `full`, not only `scope=agent`. Until
+  now every other scope left the disabled specialist answering its queue, firing
+  its schedules or accepting delegation after the reload, and some of them
+  reported it as evicted while it kept running.
+- A teardown step that fails during that retirement is named in the reload
+  report (`teardown_incomplete_<step>`) instead of hidden behind a green row,
+  and a reload that could not complete the retirement retries it on the next
+  reload that reads the role as disabled.
+- A specialist retirement refuses a role name that a resident also uses
+  (`role_conflict`), on every reload scope.
+
+### Documentation
+
+- The configuration document's disabled-specialist entry now covers every
+  reload scope (it described `scope=agent` only) and declares INV-CFG-012 over
+  the behaviour.
+
 ## [0.255.0] - 2026-09-01
 
 ### Fixed

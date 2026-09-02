@@ -686,7 +686,7 @@ class TestReloadPolicies:
         # Patch _reload_role_after_policies (helper) to avoid real load.
         import reload as reload_mod
         called_roles: list[str] = []
-        async def fake_reload_role(runtime, role):
+        async def fake_reload_role(runtime, role, *, rows=None):  # #786: rows kwarg
             called_roles.append(role)
         monkeypatch.setattr(reload_mod, "_reload_role_after_policies", fake_reload_role)
 
@@ -1118,6 +1118,54 @@ class TestReloadAgents:
         )
         # Survivor untouched.
         assert "ellen" in bus.queues and "ellen" in bus.handlers
+
+    async def test_evicted_resident_teardown_failure_is_named(
+            self, tmp_path, monkeypatch):
+        """#786 (INV-CFG-012, diff review r1): the shared teardown is a
+        sequence of named best-effort steps, and the resident-deletion
+        eviction must carry the names it returns. At the base an exception
+        from the scheduled-ask revoke escaped the sweep as an `unexpected`
+        error; a caller that swallowed it into a green `evicted_<role>`
+        would be worse than the base. So: the eviction row AND the
+        `teardown_incomplete_revoke_asks_<role>` row, and the unroute that
+        follows the failed step still ran."""
+        from bus import MessageBus
+        from reload import dispatch, register_handler, reload_agents
+        register_handler("agents", reload_agents)
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "ellen").mkdir()
+
+        monkeypatch.setattr("agent_loader.load_agent_from_dir",
+                            lambda *a, **kw: MagicMock())
+        monkeypatch.setattr("policies.load_policies",
+                            lambda *a, **kw: MagicMock())
+
+        def boom(role, reason):
+            raise RuntimeError("broker refused")
+        monkeypatch.setattr("scheduled_asks.revoke_role", boom)
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        bus = MessageBus()
+        bus.register("ellen", MagicMock())
+        bus.register("tina", MagicMock())
+        runtime.bus = bus
+        runtime.role_configs = {"ellen": MagicMock(), "tina": MagicMock()}
+        tina_agent = MagicMock()
+        tina_agent.aclose = AsyncMock()
+        runtime.agents = {"ellen": MagicMock(), "tina": tina_agent}
+        runtime.specialist_registry.all_configs = lambda: {}
+
+        result = await dispatch("agents", runtime=runtime)
+        assert result["status"] == "ok", result
+        actions = result["actions"]
+        assert actions.count("evicted_tina") == 1, actions
+        assert actions.count("teardown_incomplete_revoke_asks_tina") == 1, actions
+        assert "tina" not in bus.queues and "tina" not in bus.handlers
+        runtime.trigger_registry.reregister_for.assert_any_call("tina", [], [])
 
     async def test_surfaces_specialist_load_failures(
         self, tmp_path, monkeypatch,
@@ -3230,7 +3278,7 @@ class TestReloadIssue327:
 
         cascaded = []
 
-        async def fake_role_reload(runtime, r):
+        async def fake_role_reload(runtime, r, *, rows=None):  # #786: rows kwarg
             cascaded.append(r)
 
         monkeypatch.setattr(

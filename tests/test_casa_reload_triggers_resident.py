@@ -208,7 +208,16 @@ class TestCasaReloadTriggersResident:
     ):
         """Specialists have NO disclosure.yaml. The fix must not
         regress this path (loading policies is harmless - agent_loader
-        only consults the library when the agent has a disclosure)."""
+        only consults the library when the agent has a disclosure).
+
+        #786: this synthetic specialist is `enabled: false`, so what the
+        triggers reload owes it is a TEARDOWN, not a registration — the one
+        `reregister_for` call is the teardown's `_unroute`
+        (`reregister_for(role, [], [])` with NO `before_install` hook,
+        INV-TRIG-016), and the envelope names `teardown_disabled_specialist`.
+        At the base the same empty tuple was recorded, but as an INSTALL of
+        the disabled declaration through `_register_and_reconcile`, hook and
+        all — the tuple alone could not tell the two apart."""
         import agent as agent_mod
         from tools import casa_reload_triggers
 
@@ -229,10 +238,12 @@ class TestCasaReloadTriggersResident:
         monkeypatch.setattr("agent_loader.DEFAULT_ROLES_DIR", str(roles_dir))
 
         recorded: list[tuple[str, list, list]] = []
+        recorded_kwargs: list[dict] = []
         fake_registry = MagicMock()
         fake_registry.reregister_for.side_effect = (
-            lambda role, triggers, channels, **kw: recorded.append(
-                (role, list(triggers), list(channels)),
+            lambda role, triggers, channels, **kw: (
+                recorded.append((role, list(triggers), list(channels))),
+                recorded_kwargs.append(dict(kw)),
             )
         )
 
@@ -265,9 +276,9 @@ class TestCasaReloadTriggersResident:
         # to check the no-trigger path is also fine.
         _seed_policies(tmp_path)
 
-        agent_mod.active_runtime = _runtime_with(
+        monkeypatch.setattr(agent_mod, "active_runtime", _runtime_with(
             tmp_path, trigger_registry=fake_registry,
-        )
+        ))
 
         result = await casa_reload_triggers.handler(
             {"role": "casa-probe-x"},
@@ -288,3 +299,9 @@ class TestCasaReloadTriggersResident:
         recorded_role, recorded_triggers, recorded_channels = recorded[0]
         assert recorded_role == "casa-probe-x"
         assert recorded_triggers == []
+        # #786: exactly one call, and it is the teardown's unroute — no
+        # retirement hook — and the envelope says what happened.
+        assert len(recorded) == 1
+        assert "before_install" not in recorded_kwargs[0], recorded_kwargs
+        assert "teardown_disabled_specialist" in payload.get("actions", []), payload
+        assert "reregister_triggers" not in payload.get("actions", []), payload

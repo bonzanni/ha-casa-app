@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-01
+last_reviewed: 2026-09-02
 ---
 
 # Configuration, reload and secrets
@@ -150,6 +150,29 @@ the ordering by construction: nothing prevents a future caller from dispatching 
 scope from somewhere neither entry point covers, which is why the set and the callers are
 pinned statically as well as behaviourally.
 
+**INV-CFG-012**: A reload that reads a specialist's `enabled: false` constructs and registers nothing for it and retires none of its Casa-minted secret slots; and for each of — its runtime agent, its bus queue, its scheduled jobs and webhook routes, its agent-registry entry, its delegation-map entry — the reload either removes it or names the step that failed in its report or its error; whichever scope read the file.
+
+Enforced by one shared retirement that every file-reading scope calls once its loader
+returns a disabled specialist config: the agent scope's own arm, the policies cascade's
+per-role swap (which retires instead of constructing), the triggers scope (which retires
+instead of registering, under the role's agent lock), and the agents sweep, which retires
+the runtime agent of a role its own committed re-scan reports disabled — re-validated under
+that role's lock, never a same-named resident — so the full and config-sync scopes inherit
+through their composition. The retirement is a sequence of named best-effort steps (grant
+purge, bus unregister, scheduled-ask revoke, route unwind), each failure a
+`teardown_incomplete_<step>` row; the registry re-scan and the agent-registry rebuild that
+follow raise a reload error whose kind names the step (`specialist_reload_failed`,
+`agent_registry_rebuild_failed`), which the single-role scopes return as their error
+envelope and the policies cascade reports as `failed:<role>:<kind>` beside the rows already
+earned; a delegation-map refresh that fails is a `refresh_role_map_failed` row.
+
+What it does not cover: scopes that read no agent file (the plugin-environment and
+executors scopes); a role no reload has read since the flag changed — the flag is honoured
+when a scope reads it, not when it is written; and the agent scope's own swap window, in
+which a flip between its load and its re-scan installs an agent the registry calls disabled
+until the next reload that reads the file or the registry. The personality maps refreshed
+alongside the delegation map are not among the five states named.
+
 ## Failure behavior
 
 **The required credential option is missing.** Boot stops at validation — the earliest fatal
@@ -178,6 +201,29 @@ triggers and webhook routes, and rebuilds the agent registry without it; the arm
 constructs nothing and registers nothing. The role's Casa-minted webhook secrets stay on
 disk through this teardown, so a later reload that reads it enabled re-registers the same
 credentials. This entry describes the `scope=agent` arm only.
+
+**A specialist's `enabled: false` is read by another reload scope.** The same retirement,
+secrets included, whichever scope read the file (INV-CFG-012). The `policies` cascade
+retires the role instead of constructing a replacement from the disabled config; the
+`triggers` scope retires it instead of registering its jobs and routes — and unwinds them
+through the same route unwind a teardown uses, never through the registration path, so no
+retirement hook sees the role; the `agents` sweep retires the runtime agent of a role whose
+fresh re-scan reports it disabled, alongside its registry-eviction row; `config_sync` and
+`full` inherit through the scopes they compose. Each reports
+`teardown_disabled_specialist` (suffixed with the role in the multi-role scopes), and a
+step that failed is named rather than absorbed: `teardown_incomplete_<step>` for a
+teardown step, an error envelope whose kind names the step in the single-role scopes, a
+`failed:<role>:<kind>` row in the cascade, `refresh_role_map_failed` for the map. A sweep
+whose own re-scan failed reports `specialist_scan_failed` and retires nothing from the
+stale generation; a sweep whose agent-registry rebuild failed returns
+`agent_registry_rebuild_failed`, which `config_sync` reports as `agents:error:<kind>` rather
+than swallowing. A retirement that left a step failed is remembered for the life of the
+process, and the next sweep retries it — whether the role is still disabled on disk or its
+directory has since gone — and reports its own outcome. A resident that shares a disabled
+specialist's name is never touched: the sweep excludes it, and a single-role scope whose
+role a resident came to own while it ran refuses with `role_conflict`.
+The single-role scopes read and decide under the role's agent lock, so a disabled read and
+a concurrent enabled swap of the same role serialize: the last file read wins, truthfully.
 
 **A reload handler raises.** The dispatcher returns an error envelope rather than propagating
 — a failed reload is a reported outcome, not an exception at the caller. A `config_sync`
@@ -224,6 +270,7 @@ None of those are inferred.
 - `tests/test_admin_reload_route.py`
 - `tests/test_reload_live_resident_not_promoted.py`
 - `tests/test_reload.py`
+- `tests/test_reload_disabled_specialist_scopes.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

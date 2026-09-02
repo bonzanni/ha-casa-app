@@ -619,6 +619,23 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
     if runtime.trigger_registry is None:
         raise ReloadError("not_initialized", "trigger registry not wired")
 
+    # #786 (INV-CFG-012): the tier classification, the load, the identity
+    # guard, the disabled decision and the registration all run under
+    # `agent:<role>` — the lock a scope=agent reload of the same role holds
+    # for ITS load and swap — so a disabled read here can never be acted on
+    # after a concurrent swap installed the role, and vice versa: the last
+    # file read wins, under one lock. Order: triggers:<role> → agent:<role>;
+    # `reload_agent` takes no other lock, and `config_sync → triggers:<role>`
+    # composes. A resident's trigger reload thereby also serialises against
+    # its own agent reload — both write `role_configs[role]` and did so
+    # unserialised before. (Diff review r3: the classification is inside the
+    # lock too, so a directory that appears while this reload waits is seen.)
+    async with _get_lock(_lock_key("agent", role)):
+        return await _reload_triggers_locked(runtime, role=role)
+
+
+async def _reload_triggers_locked(runtime: Any, *, role: str) -> list[str]:
+    """`reload_triggers`' body, under `agent:<role>` (#786)."""
     # Find the agent dir: residents at agents/<role>/, specialists at
     # agents/specialists/<role>/. Mirrors tools.casa_reload_triggers.
     base = runtime.config_dir
@@ -698,6 +715,21 @@ async def reload_triggers(runtime: Any, *, role: str | None = None) -> list[str]
             f"casa_restart_supervised to activate (trigger reload refused to "
             f"avoid mixed state)",
         )
+
+    # #786 (INV-CFG-012): a specialist whose file now reads `enabled: false`
+    # gets no registration and no mint — its declaration is not installed
+    # at all. It is RETIRED: the same teardown (routes unwound through
+    # `_unroute`, which passes no retirement hook — INV-TRIG-016), re-scan,
+    # registry rebuild and map refresh `reload_agent`'s arm runs. The
+    # re-scan below is the helper's own, so the post-registration one is
+    # not reached. Pre-fix this scope installed the disabled declaration
+    # through the retirement-hook path and re-scanned afterwards.
+    if _specialist_disabled(tier, cfg):
+        actions: list[str] = []
+        await _retire_disabled_specialist(
+            actions, runtime, role, roles_dir=roles_dir,
+            context=f"triggers role={role}")
+        return actions
 
     # #573: the role's trigger set is being replaced, so every question one of
     # its schedules left pending is revoked FIRST — on the event loop, because
@@ -932,6 +964,9 @@ def _refresh_role_map(runtime: Any, *, context: str) -> list[str]:
         actions.append("refresh_role_map")
     except Exception as exc:  # noqa: BLE001 — log but don't fail the caller
         logger.warning("role-map refresh failed (%s): %s", context, exc)
+        # #786 (INV-CFG-012): a stale map still resolves a role the reload
+        # just retired, so the failure is a ROW, not only a log line.
+        actions.append("refresh_role_map_failed")
         return actions
 
     after = _delegate_directory()
@@ -1029,7 +1064,7 @@ def _start_bus_loop(runtime: Any, role: str) -> None:
         logger.warning("start_agent_loop(%s) failed: %s", role, exc)
 
 
-async def _teardown_role(runtime: Any, role: str) -> None:
+async def _teardown_role(runtime: Any, role: str) -> list[str]:
     """Best-effort full deregistration of an evicted role.
 
     H11 (v0.49.0): the remove half of the add/remove lifecycle —
@@ -1041,24 +1076,180 @@ async def _teardown_role(runtime: Any, role: str) -> None:
     (the AttributeError was swallowed) and never touched triggers, so
     'deleted' residents kept consuming and firing as ghost agents until
     the next add-on restart.
+
+    #786 (INV-CFG-012): still never raises — every sweep loop that calls
+    this depends on that — but the outcome is no longer silent, and no step
+    can be left unguarded by omission: the teardown is a SEQUENCE of named
+    best-effort steps, each run in its own guard, each failure recorded by
+    NAME and the next step still run. Returns the names of the steps that
+    FAILED, from ``bus_unregister``, ``revoke_asks`` and ``unroute``; empty
+    on success. A caller that reports a teardown appends one
+    ``teardown_incomplete_<step>`` row per name, so a surviving queue, ask
+    or job is named in the envelope instead of hiding behind a green
+    ``teardown_*``/``evicted_*`` row. (Pre-fix the revoke sat unguarded
+    between the other two: a raise there aborted the teardown before the
+    unroute and surfaced as an `unexpected` error naming nothing.)
     """
-    try:
+    async def bus_unregister() -> None:
         # #343(b): the awaiting variant also cancels + drains the role's
         # in-flight dispatch tasks, so no handler work survives the evict
         # (a deleted role must not keep sending/acting after teardown
         # reports complete).
         await runtime.bus.unregister_and_wait(role)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "reload_agents: bus.unregister(%s) failed: %s", role, exc,
-        )
-    scheduled_asks.revoke_role(role, "role_evicted")
-    try:
+
+    async def revoke_asks() -> None:
+        scheduled_asks.revoke_role(role, "role_evicted")
+
+    async def unroute() -> None:
         await asyncio.to_thread(_unroute, runtime.trigger_registry, role)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "reload_agents: trigger deregister(%s) failed: %s", role, exc,
+
+    return await _run_named_steps(
+        role, ("bus_unregister", bus_unregister), ("revoke_asks", revoke_asks),
+        ("unroute", unroute))
+
+
+async def _run_named_steps(role: str, *steps) -> list[str]:
+    """Run ``(name, coroutine-function)`` pairs in order, each in its own
+    guard; return the names of those that raised (#786, INV-CFG-012). The
+    ONE place a retirement step's failure is caught, so a new step added to
+    a sequence is guarded and named by construction rather than by
+    remembering to wrap it."""
+    failed: list[str] = []
+    for name, step in steps:
+        try:
+            await step()
+        except Exception as exc:  # noqa: BLE001 — best-effort, named
+            logger.warning("teardown step %s(%s) failed: %s", name, role, exc)
+            failed.append(name)
+    return failed
+
+
+def _specialist_disabled(tier: str | None, cfg: Any) -> bool:
+    """The ONE enabled predicate every reload scope shares (#786).
+
+    Identity against ``False`` — a missing attribute is enabled (test
+    stand-ins pass ``SimpleNamespace`` configs without the field), a truthy
+    or falsy non-``False`` value is enabled — and specialist-only: residents
+    carry the field too (``AgentConfig.enabled``) and are never gated here.
+    """
+    return tier == "specialist" and getattr(cfg, "enabled", True) is False
+
+
+# Disabled specialists whose retirement left a step FAILED (a queue, an ask
+# or a route may survive). Module-level for the same reason as
+# `_AGENT_CLOSE_TASKS`: the process, not one reload, owns the residue. The
+# `agents` sweep admits a remembered role as a candidate even when it is no
+# longer in `runtime.agents`, so a later reload that reads the role disabled
+# RETRIES the retirement and names its own outcome (diff review r2, terra)
+# instead of reporting green over residue; a clean teardown forgets it.
+_INCOMPLETE_RETIREMENTS: set[str] = set()
+
+
+async def _teardown_disabled_specialist(
+    actions: list[str], runtime: Any, role: str, *, suffix: str = "",
+) -> None:
+    """The CORE of a disabled specialist's retirement (#786): purge grants
+    and cancel challenges BEFORE the pop (the role is about to become
+    undispatchable entirely), drop and background-close the Agent, then the
+    shared ``_teardown_role`` — bus consumer and every in-flight dispatch
+    cancelled, scheduled asks revoked, routes unwound through ``_unroute``,
+    which passes NO retirement hook: a disabled specialist's Casa-minted
+    secret slots are never touched (INV-TRIG-016).
+
+    Rows are appended PROGRESSIVELY, so a caller whose later step raises
+    still carries the rows this one earned. ``suffix`` is ``_<role>`` in the
+    multi-role scopes and empty where the envelope already names the role.
+
+    ``runtime.role_configs`` mutation audit (see
+    ``_resident_identity_changed``): this writes ``runtime.agents`` ONLY —
+    never ``role_configs`` — so it is not an activation path and needs no
+    identity guard. The registry re-scan, the ``AgentRegistry`` rebuild and
+    the delegation-map refresh are the CALLER's (``_retire_disabled_
+    specialist`` for the one-file readers; the ``agents`` sweep has already
+    done all three when it reaches this).
+    """
+    # Diff review r3 (terra): decided at the point of use, for every caller.
+    # The tier was classified from a directory; a resident of the same name
+    # added meanwhile by the sweep's lock-free resident block now owns
+    # `runtime.agents[role]`, and a specialist retirement never touches a
+    # resident (the sweep's own candidate set subtracts `role_configs` for
+    # the same reason). The single-role scopes surface this as their error.
+    if role in runtime.role_configs:
+        raise ReloadError(
+            "role_conflict",
+            f"role={role} is a live resident; the specialist read as disabled "
+            f"is not retired (a resident and a specialist claim one role)",
         )
+
+    async def purge_grants() -> None:
+        _invalidate_role_grants(role)
+
+    failed = await _run_named_steps(role, ("purge_grants", purge_grants))
+    old_agent = runtime.agents.pop(role, None)
+    _schedule_agent_close(old_agent, runtime=runtime, role=role)
+    actions.append(f"teardown_disabled_specialist{suffix}")
+    failed += await _teardown_role(runtime, role)
+    for step in failed:
+        actions.append(f"teardown_incomplete_{step}{suffix}")
+    _note_retirement_outcome(role, failed)
+
+
+def _note_retirement_outcome(role: str, failed: list[str]) -> None:
+    """Remember a retirement that left a step failed; forget one that
+    completed. The ONE writer of `_INCOMPLETE_RETIREMENTS`, called by every
+    specialist teardown the sweep or a single-role scope runs, so no
+    teardown path can drop the residue by omission (diff review r3)."""
+    if failed:
+        _INCOMPLETE_RETIREMENTS.add(role)
+    else:
+        _INCOMPLETE_RETIREMENTS.discard(role)
+
+
+async def _retire_disabled_specialist(
+    actions: list[str], runtime: Any, role: str, *, roles_dir: str | None,
+    context: str, suffix: str = "",
+) -> None:
+    """The FULL retirement a scope that has just READ a specialist's
+    ``enabled: false`` from disk owes it (#786): the core teardown, then the
+    specialist-registry re-scan that makes ``all_configs()`` enabled-only
+    truth and ``is_disabled(role)`` True (verify's grading reads it), the
+    ``AgentRegistry`` rebuild without the role, and the delegation-map
+    refresh so ``delegate_to_agent`` refuses it. Called by ``reload_agent``,
+    the policies cascade and ``reload_triggers`` — each under ``agent:<role>``.
+
+    Every step after the teardown that fails raises a ``ReloadError`` whose
+    KIND names the step — ``specialist_reload_failed`` (the re-scan),
+    ``agent_registry_rebuild_failed`` (the rebuild) — AFTER the teardown
+    rows were appended: the single-role scopes surface it as their error
+    envelope, the policies cascade as a ``failed:<role>:<kind>`` row beside
+    the rows already earned. The map refresh names its own failure as a
+    row (``refresh_role_map_failed``). No step on this path fails silently.
+    """
+    await _teardown_disabled_specialist(actions, runtime, role, suffix=suffix)
+    try:
+        await asyncio.to_thread(runtime.specialist_registry.load, roles_dir=roles_dir)
+    except Exception as exc:  # noqa: BLE001
+        raise ReloadError(
+            "specialist_reload_failed",
+            f"role={role} torn down, but the specialist registry re-scan "
+            f"failed, so the registry and the delegation map may still name "
+            f"it: {exc}",
+        ) from exc
+    from agent_registry import AgentRegistry
+    try:
+        runtime.agent_registry = AgentRegistry.build(
+            residents=runtime.role_configs,
+            specialists=runtime.specialist_registry.all_configs(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ReloadError(
+            "agent_registry_rebuild_failed",
+            f"role={role} torn down and the specialist registry re-scanned, "
+            f"but the AgentRegistry rebuild failed, so the agent registry "
+            f"and the delegation map may still name it: {exc}",
+        ) from exc
+    actions.append(f"rebuild_agent_registry{suffix}")
+    actions.extend(f"{a}{suffix}" for a in _refresh_role_map(runtime, context=context))
 
 
 def _resident_identity_changed(new_cfg: Any, live_cfg: Any) -> bool:
@@ -1176,29 +1367,17 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
 
     # v0.74.1 (Sol B1, live proxy-drive finding): a DISABLED specialist must
     # not be constructed or (re)registered. Reload used to install it into
-    # runtime.agents + register its bus handler, leaving it reachable via
-    # /invoke — and because the AgentRegistry excludes disabled specialists,
-    # its resolve tier-missed to resident:<role> and it would execute with an
-    # EMPTY plugin binding. Tear down any existing instance and deregister
-    # the role instead; verify reports its plugin targets state="disabled".
-    if tier == "specialist" and getattr(new_cfg, "enabled", True) is False:
-        # A:§3.3/§3.4 (r2-B5 enumerated seam): purge+cancel BEFORE teardown
-        # proceeds — the role is about to become undispatchable entirely.
-        _invalidate_role_grants(role)
-        old_agent = runtime.agents.pop(role, None)
-        _schedule_agent_close(old_agent, runtime=runtime, role=role)
-        await _teardown_role(runtime, role)
-        try:
-            await asyncio.to_thread(runtime.specialist_registry.load, roles_dir=roles_dir)
-        except Exception as exc:  # noqa: BLE001
-            raise ReloadError("specialist_reload_failed", str(exc)) from exc
-        from agent_registry import AgentRegistry
-        runtime.agent_registry = AgentRegistry.build(
-            residents=runtime.role_configs,
-            specialists=runtime.specialist_registry.all_configs(),
-        )
-        actions += ["teardown_disabled_specialist", "rebuild_agent_registry"]
-        actions += _refresh_role_map(runtime, context=f"role={role}")
+    # runtime.agents + register its bus handler, leaving it reachable by its
+    # own trigger firings, its webhook routes and ordinary delegation — and
+    # because the AgentRegistry excludes disabled specialists, its resolve
+    # tier-missed to resident:<role> and it would execute with an EMPTY
+    # plugin binding. Tear down any existing instance and deregister the
+    # role instead; verify reports its plugin targets state="disabled".
+    # #786 (INV-CFG-012): the arm is the shared retirement every scope that
+    # reads the file calls; its action list is unchanged and pinned.
+    if _specialist_disabled(tier, new_cfg):
+        await _retire_disabled_specialist(
+            actions, runtime, role, roles_dir=roles_dir, context=f"role={role}")
         return actions
 
     # #327(c): build the construction registry as an OVERLAY — the live
@@ -1323,12 +1502,21 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
 register_handler("agent", reload_agent)
 
 
-async def _reload_role_after_policies(runtime: Any, role: str) -> None:
+async def _reload_role_after_policies(
+    runtime: Any, role: str, *, rows: list[str] | None = None,
+) -> None:
     """Re-load one role's AgentConfig + Agent with the new policy_lib.
 
     Used by reload_policies — does the agent-scope work without holding
     the agent-scope lock (caller already holds the policies lock; agent
     re-loads here are sequential).
+
+    #786 (INV-CFG-012): a specialist whose file now reads ``enabled: false``
+    is RETIRED here instead of being rebuilt from the disabled config — the
+    same teardown/re-scan/rebuild/refresh ``reload_agent``'s arm runs. The
+    rows it earns are appended to ``rows``, a list the CALLER owns, as each
+    step completes — so when the re-scan or the rebuild raises after the
+    teardown, the cascade still reports the teardown beside the failure.
     """
     # Determine tier
     base = runtime.config_dir
@@ -1366,6 +1554,17 @@ async def _reload_role_after_policies(runtime: Any, role: str) -> None:
             "(role_checksum or binding_digest differs) — skipping hot-swap; the "
             "policy change activates on a supervised restart", role,
         )
+        return
+
+    # #786: the file was read under agent:<role> (the cascade holds it), so
+    # this decision cannot be overtaken by a scope=agent swap of the same
+    # role. The cascade never re-scans the registry itself; the retirement
+    # does, per role, so a later role in this same loop constructs against a
+    # registry that no longer names the retired one.
+    if _specialist_disabled(tier, new_cfg):
+        await _retire_disabled_specialist(
+            [] if rows is None else rows, runtime, role, roles_dir=_roles_dir,
+            context=f"policies cascade role={role}")
         return
 
     new_agent = await asyncio.to_thread(
@@ -1414,6 +1613,7 @@ async def reload_policies(runtime: Any, *, role: str | None = None) -> list[str]
         runtime.specialist_registry.all_configs().keys()
     )
     for r in role_list:
+        sub: list[str] = []
         try:
             # #327(d): serialize each role's swap with that role's
             # agent-scope lock. `agent:<role>` and `policies` are
@@ -1424,9 +1624,21 @@ async def reload_policies(runtime: Any, *, role: str | None = None) -> list[str]
             # (policies -> agent:<r>; the agent handler takes no other
             # scope lock), so this cannot deadlock.
             async with _get_lock(_lock_key("agent", r)):
-                await _reload_role_after_policies(runtime, r)
+                await _reload_role_after_policies(runtime, r, rows=sub)
+            # #786: a disabled specialist's retirement rows, role-suffixed.
+            actions.extend(f"{a}_{r}" for a in sub)
         except Exception as exc:  # noqa: BLE001 — one role's failure shouldn't kill the rest
             logger.warning("policies cascade: role=%s failed: %s", r, exc)
+            # #786: the rows earned BEFORE the failure precede its row.
+            actions.extend(f"{a}_{r}" for a in sub)
+            # #786 (INV-CFG-012): a swallowed per-role failure was invisible
+            # in the envelope; a retirement whose re-scan or rebuild failed
+            # must be reported beside the teardown rows it already earned,
+            # and the row names the STEP — a `ReloadError`'s kind — because
+            # an exception's type name does not; the type name only for an
+            # exception that carries no kind.
+            actions.append(
+                f"failed:{r}:{getattr(exc, 'kind', None) or type(exc).__name__}")
     actions.append(f"cascaded_to_{len(role_list)}_roles")
 
     # #436: the cascade commits a fresh AgentConfig for every role it swaps
@@ -1698,8 +1910,13 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         runtime.refresh_personality_maps()
         old_agent = runtime.agents.pop(r, None)  # AR-7: capture before drop
         _schedule_agent_close(old_agent)  # F12
-        await _teardown_role(runtime, r)
+        incomplete = await _teardown_role(runtime, r)
         actions.append(f"evicted_{r}")
+        # #786 (INV-CFG-012, diff review r1): the teardown names the steps
+        # that failed; a caller that drops the names turns a failure the
+        # base RAISED (the revoke was unguarded) into a green `evicted_<r>`.
+        for step in incomplete:
+            actions.append(f"teardown_incomplete_{step}_{r}")
 
     # ---- Specialists ----
     specialists_dir = os.path.join(agents_dir, "specialists")
@@ -1720,14 +1937,21 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
     # it just no longer drives the report.
     known_specialists_before = set(
         runtime.specialist_registry.all_configs().keys())
+    scan_committed = False
     try:
         roles_dir = await _specialist_roles_dir(runtime)
         await asyncio.to_thread(
             runtime.specialist_registry.load,
             roles_dir=roles_dir,
         )
+        scan_committed = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("specialist_registry.load failed: %s", exc)
+        # #786 (INV-CFG-012): the registry is now the PREVIOUS generation.
+        # Named in the envelope, and no disabled-keyed retirement below is
+        # admitted from it — a stale "disabled" must not retire a role whose
+        # file was meanwhile set back to enabled.
+        actions.append("specialist_scan_failed")
 
     # O-2b (v0.37.9): surface per-specialist load failures so casactl
     # callers see them. The registry's load() catches per-dir LoadError
@@ -1763,10 +1987,24 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
     # resident adds/evicts and the registry re-scan all happened above; the
     # remaining loops mutate runtime.agents only.
     from agent_registry import AgentRegistry
-    runtime.agent_registry = AgentRegistry.build(
-        residents=runtime.role_configs,
-        specialists=runtime.specialist_registry.all_configs(),
-    )
+    try:
+        runtime.agent_registry = AgentRegistry.build(
+            residents=runtime.role_configs,
+            specialists=runtime.specialist_registry.all_configs(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # #786 (INV-CFG-012, diff review r2): the rebuild aborts the sweep
+        # here at the base too; the error now NAMES the step, so a caller
+        # that composes this sweep (`config_sync`, `full`) reports which
+        # step failed instead of a bare exception text — a disabled
+        # specialist this sweep's committed scan found is then known to be
+        # still live, not hidden behind a green envelope.
+        raise ReloadError(
+            "agent_registry_rebuild_failed",
+            f"specialist registry re-scanned, but the AgentRegistry rebuild "
+            f"failed before the backfill and the disabled-specialist "
+            f"retirement ran: {exc}",
+        ) from exc
     actions.append("rebuild_agent_registry")
 
     # Registry-known specialists missing an Agent object need agent-home +
@@ -1803,21 +2041,59 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
     for s in (set(runtime.agents.keys()) & known_residents) - on_disk_residents:
         # No-op — handled in resident block above.
         pass
-    for s in set(runtime.agents.keys()) - on_disk_residents - on_disk_specialists:
+    # #786 (diff review r2/r3): the candidates of BOTH specialist teardown
+    # loops below are derived ONCE — the live Agents plus every role whose
+    # earlier retirement left a step failed — so a queue, an ask or a route
+    # that survived is retried whether the role is still disabled on disk or
+    # its directory has since gone; a clean teardown forgets the residue.
+    live_or_residual = (set(runtime.agents.keys()) | _INCOMPLETE_RETIREMENTS
+                        ) - set(runtime.role_configs.keys())
+    for s in sorted(live_or_residual - on_disk_residents - on_disk_specialists):
         # A:§3.3/§3.4 (r2-B5 enumerated seam): purge+cancel BEFORE teardown —
         # the role is about to become undispatchable entirely.
         _invalidate_role_grants(s)
         old_agent = runtime.agents.pop(s, None)  # AR-7: capture before drop
         _schedule_agent_close(old_agent)  # F12
-        await _teardown_role(runtime, s)
+        incomplete = await _teardown_role(runtime, s)
+        _note_retirement_outcome(s, incomplete)
         # S-3: the registry diff above already reported registry-known
         # evictions; only a runtime.agents entry the diff did NOT cover
-        # still needs surfacing here (a leaked entry, or the second step of
-        # a disabled-then-deleted specialist: the registry entry went in an
-        # earlier reload, the backfilled runtime Agent only now — each run
-        # reports the layer it actually tore down).
+        # still needs surfacing here (a leaked entry — each run reports the
+        # layer it actually tore down).
         if s not in evicted_from_registry:
             actions.append(f"evicted_specialist_{s}")
+        for step in incomplete:
+            actions.append(f"teardown_incomplete_{step}_{s}")
+
+    # #786 (INV-CFG-012): a specialist whose directory is still present but
+    # whose fresh scan reports it DISABLED loses its runtime Agent too — the
+    # registry-diff row above says the registry dropped it; this is the
+    # runtime layer, reported as its own row. Pre-fix, eviction was keyed on
+    # the directory alone, so the old Agent kept consuming its queue while
+    # the envelope said `evicted_specialist_<role>` (disable-then-delete was
+    # modelled as two runtime steps; it is one now). Only from a scan THIS
+    # sweep committed; never a same-named resident (`role_configs` wins, as
+    # `AgentRegistry.build` and `sync_agent_role_map` already rule); and the
+    # decision is re-validated UNDER `agent:<s>` — an `agent:<s>` reload that
+    # interleaved between the scan above and this lock re-scanned the
+    # registry inside its own critical section, so under the lock the
+    # registry's answer for `s` is the latest file read for that role.
+    # Lock order: agents → agent:<s>; the agent handler takes no other lock.
+    disabled_now: set[str] = set()
+    if scan_committed:
+        try:
+            disabled_now = {
+                r for r in runtime.specialist_registry.disabled_roles()
+                if isinstance(r, str)}
+        except Exception:  # noqa: BLE001 — a pre-v0.74 registry stand-in
+            disabled_now = set()
+    for s in sorted(live_or_residual & disabled_now):
+        async with _get_lock(_lock_key("agent", s)):
+            if runtime.specialist_registry.is_disabled(s) is not True:
+                continue
+            if s not in runtime.agents and s not in _INCOMPLETE_RETIREMENTS:
+                continue
+            await _teardown_disabled_specialist(actions, runtime, s, suffix=f"_{s}")
 
     # (agent_registry rebuild happens ABOVE, before the backfill loop —
     # #327(c); the eviction loops here mutate runtime.agents only, which is
@@ -2012,6 +2288,11 @@ async def reload_config_sync(runtime: Any, *, role: str | None = None) -> list[s
             actions.append(f"{scope}:{sub}")
         except Exception as exc:  # noqa: BLE001 — one cascade failure shouldn't abort the rest
             logger.warning("config_sync cascade: scope=%s failed: %s", scope, exc)
+            # #786 (INV-CFG-012, diff review r2): a swallowed sub-handler
+            # failure was invisible in the envelope; the row carries the
+            # step's kind, exactly as the triggers arm below already does.
+            kind = getattr(exc, "kind", None) or type(exc).__name__
+            actions.append(f"{scope}:error:{kind}")
 
     # Then the residents whose trigger file the pass changed (#620). An
     # `UNREADABLE` on EITHER side counts as changed: a transient read fault must
