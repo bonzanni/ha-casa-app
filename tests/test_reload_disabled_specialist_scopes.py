@@ -616,6 +616,46 @@ async def test_failed_unroute_is_named(harness):
     assert env["actions"].count(TEARDOWN) == 1
 
 
+async def test_failed_scheduled_ask_revoke_is_named_and_unroute_still_runs(harness, monkeypatch):
+    """Acceptor's round 3: the revoke of the role's pending scheduled asks
+    sits BETWEEN the bus unregister and the unroute in the shared teardown,
+    and at the base it is the one unguarded step — a raise there aborts the
+    teardown before the unroute (jobs and routes survive) and reaches the
+    dispatcher as `unexpected`. The teardown is a sequence of NAMED
+    best-effort steps: the failed one is a row, the next one still runs."""
+    def boom(role, reason):
+        raise RuntimeError("broker refused")
+    monkeypatch.setattr("scheduled_asks.revoke_role", boom)
+    h = harness
+    env = await _dispatch(h, "agent", role=ROLE)
+    assert env["status"] == "ok", env
+    assert env["actions"].count("teardown_incomplete_revoke_asks") == 1, env["actions"]
+    assert env["actions"].count(TEARDOWN) == 1
+    assert len(h.empty_unroutes()) == 1, h.trigger_registry.calls
+    assert h.live_count() == 0
+    assert await h.send_checked() == "no_target"
+
+
+async def test_failed_grant_purge_is_named_and_the_teardown_still_runs(harness, monkeypatch):
+    """The grant purge is the FIRST step of the core teardown. A raise there
+    at the base aborts the whole arm before anything is removed and reaches
+    the dispatcher as `unexpected`; it is a named step like the others, so
+    the role is still torn down and the stale grant is named, not hidden."""
+    import reload as reload_mod
+
+    def boom(role):
+        raise RuntimeError("grants refused")
+    monkeypatch.setattr(reload_mod, "_invalidate_role_grants", boom)
+    h = harness
+    env = await _dispatch(h, "agent", role=ROLE)
+    assert env["status"] == "ok", env
+    assert env["actions"].count("teardown_incomplete_purge_grants") == 1, env["actions"]
+    assert env["actions"].count(TEARDOWN) == 1
+    assert len(h.empty_unroutes()) == 1, h.trigger_registry.calls
+    assert h.live_count() == 0
+    assert await h.send_checked() == "no_target"
+
+
 async def test_failed_sweep_scan_admits_no_disabled_candidate(harness):
     """Registry (last generation) says disabled, the file now says enabled,
     the Agent is live, and this sweep's scan RAISES: a stale generation must
