@@ -44,11 +44,13 @@ def test_specialist_rollback_description_names_both_prior_tuple_sources() -> Non
 async def test_specialist_rollback_handler_exchanges_a_persona_override_with_component_default(
         tmp_path: Path, monkeypatch) -> None:
     """t2 — the real handler over the real cores: a first override is undone by
-    one rollback, whose owned-plugin republish is DISCLOSED in the envelope
-    (the override apply never rotated the sidecar, so the retained owned
-    generation is the pre-install one — empty); and a second rollback swaps
-    the override back, because a rollback exchanges active and prior. Green at
-    the base — it pins the mechanism the doctrine now names."""
+    one rollback that republishes the SAME owned set the specialist owns (the
+    override rotated the tuple AND its sidecar into the prior pair, #810 /
+    INV-SPEC-011), so its envelope discloses nothing and the registry keeps
+    `mtg.mtg`; and a second rollback swaps the override back, because a
+    rollback exchanges active and prior. Re-specified with #810: at v0.252.0
+    this pinned the drop (`owned == []`, a four-key disclosure) as current
+    behaviour."""
     import plugin_registry
     import specialist_bundle_journal
     import specialist_install
@@ -110,12 +112,11 @@ async def test_specialist_rollback_handler_exchanges_a_persona_override_with_com
     first = _payload(await specialist_rollback.handler({"slug": "mtg"}))
     assert first["ok"] is True
     assert first["state"] == "active"
-    assert first["plugin_data_plugins"] == ["mtg.mtg"]
-    assert sum(k in first for k in _DISCLOSURE_KEYS) == 4
+    assert sum(k in first for k in _DISCLOSURE_KEYS) == 0
     active = InstanceDir(slug_dir).active()
     assert active.binding.mode == "component-default"
     assert active.root == original_root
-    assert [e["name"] for e in _owned(registry_path, "mtg")] == []
+    assert [e["name"] for e in _owned(registry_path, "mtg")] == ["mtg.mtg"]
 
     second = _payload(await specialist_rollback.handler({"slug": "mtg"}))
     assert second["ok"] is True
@@ -150,10 +151,10 @@ def test_apply_recipe_routes_a_specialists_first_override_undo_through_the_rollb
 
 
 def test_rollback_recipe_names_the_persona_override_and_states_the_exchange() -> None:
-    """t3b — the rollback recipe opens on both retained-prior producers, warns
-    about the owned-plugin generation before the call, and states what a
-    second call does. RED at the base: it names only upgrades and says a second
-    call returns `no_prior_tuple`, which t2 measures to be false."""
+    """t3b — the rollback recipe opens on both retained-prior producers, states
+    that the owned-plugin generation travels with the retained tuple (#810: an
+    override undo drops nothing; the relay is for a version rollback), names
+    the model-change case (#815), and states what a second call does."""
     text = _read("recipes/specialist/rollback.md")
     lower = text.lower()
     assert "bad upgrade" in lower
@@ -163,7 +164,11 @@ def test_rollback_recipe_names_the_persona_override_and_states_the_exchange() ->
     assert "immediately-prior tuple" in lower
     assert "pre-override binding" in lower
     assert "owned-plugin generation" in lower
-    assert "older or absent" in lower
+    assert "rotate together" in lower
+    assert "drops nothing" in lower
+    assert "version rollback" in lower
+    assert "model change" in lower
+    assert "re-derived" in lower
     assert "confirm" in lower
     assert "`plugin_data_note`" in text
     assert "`plugin_list()`" in text

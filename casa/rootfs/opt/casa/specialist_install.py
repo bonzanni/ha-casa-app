@@ -87,6 +87,27 @@ def is_safe_corpus_identifier(identifier: object) -> bool:
 # MATERIALIZE_LOCK held.
 
 
+def _under_specialist_lifecycle_lock(fn):
+    """#810 (INV-SPEC-011): run *fn* — one of the four lifecycle entry points —
+    WHOLE under ``specialist_materialize.SPECIALIST_LIFECYCLE_LOCK``, read at
+    call time so a test that wraps the lock object sees every acquisition.
+    The library function takes the lock, not its tool handler: the handler's
+    asyncio task can be cancelled while the worker thread it offloaded to runs
+    on, and a lock the handler held would be released mid-section. Every
+    caller is a worker thread (tools.py's ``asyncio.to_thread``, the
+    configure re-commit, direct library callers in tests); the lock is never
+    acquired on the event loop. Non-reentrant, and none of the four calls
+    another (measured), so there is no nesting."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        import specialist_materialize
+        with specialist_materialize.SPECIALIST_LIFECYCLE_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 def _require_active_unchanged(instance_dir, active_before, *, slug: str) -> None:
     """F2: upgrade/rollback captured `active_before` BEFORE taking the lock. A
     concurrent uninstall (which removes specialists/<slug>, active.yaml
@@ -1604,6 +1625,7 @@ def _assert_receipt_matches_inspection(
             "inspection")
 
 
+@_under_specialist_lifecycle_lock
 def commit_specialist_install(
     *, inspection: "InspectionResult", receipt: "SourceReceipt | None" = None,
     config: "Mapping[str, str]",
@@ -2203,6 +2225,7 @@ def activate_binding_for_config(
     )
 
 
+@_under_specialist_lifecycle_lock
 def upgrade_specialist(
     *, slug: str, inspection: "InspectionResult", receipt: "SourceReceipt | None" = None,
     config: "Mapping[str, str]",
@@ -2223,12 +2246,14 @@ def upgrade_specialist(
     old owned generation fully untouched (spec §3.4). Returns
     `(instance, BundleTxn)`.
 
-    Delta (code): the owned-plugins sidecar rotates in a SEPARATE
-    MATERIALIZE_LOCK step immediately after the core tuple commit (the lock is
-    non-reentrant and the core takes it internally). The journal's before-state
-    covers the crash window; the sidecar is provenance metadata read only by
-    lifecycle ops that serialize under _PLUGIN_TOOLS_LOCK, so a momentary
-    tuple-vs-sidecar desync is not a runtime hazard."""
+    Delta (code): the owned-plugins sidecar is PUBLISHED (desired->active) in a
+    second MATERIALIZE_LOCK step immediately after the core tuple commit (the
+    lock is non-reentrant and the core takes it internally); the prior sidecar
+    was already rotated BY the tuple commit, paired with active.prior.yaml
+    (#810, INV-SPEC-011). The journal's before-state covers the crash window,
+    and the whole transaction — sampling, journal, publish, swap, both commits
+    — runs under SPECIALIST_LIFECYCLE_LOCK, so nothing can observe the
+    tuple-vs-sidecar window between the two materialize scopes."""
     import dataclasses
 
     import plugin_registry
@@ -3031,6 +3056,7 @@ def _prior_owned_entry(slug: str, row: dict) -> dict:
     }
 
 
+@_under_specialist_lifecycle_lock
 def rollback_specialist(
     *, slug: str, bundle: bool = False,
     acks: "SpecialistInstallAckStore | None" = None,
@@ -3055,12 +3081,56 @@ def rollback_specialist(
     import specialist_bundle_journal
     from specialist_bundle_journal import BundleTxn
     from personality_binding import (
-        InstanceDir, OwnedPluginsSidecarError, owned_plugins_prior_path,
-        read_owned_plugins,
+        InstanceDir, OwnedPluginsSidecarError, owned_plugins_path,
+        owned_plugins_prior_path, read_owned_plugins,
     )
     import specialist_materialize
 
+    validate_specialist_slug(slug)
+    slug_dir = specialists_dir / slug
+
+    # #810 (INV-SPEC-011, F1): a prior promotion that failed left the retained
+    # generation in a PAIR of temporaries, and the visible active.prior.yaml /
+    # owned-plugins.prior.yaml are one generation stale. Complete that pair
+    # BEFORE reading either retained file, so the generation this rollback
+    # restores is the immediately preceding one; if completion itself fails,
+    # refuse rather than consume a prior that is not it. One materialize-lock
+    # acquisition; the core takes its own later.
+    with specialist_materialize.MATERIALIZE_LOCK:
+        try:
+            InstanceDir(slug_dir).complete_pending_rotation()
+        except OSError as exc:
+            raise SpecialistInstallError(
+                "pending_rotation_failed",
+                f"{slug!r}: a pending prior rotation could not be completed ({exc}); "
+                "the retained generation is not readable as the immediately "
+                "preceding one — retry the rollback") from exc
+
     if not bundle:
+        # #810 (INV-SPEC-011, F2): this arm restores the tuple only — it has
+        # no registry, no store and no journal. It may therefore restore a
+        # generation only when that generation's owned set is the ACTIVE
+        # one; otherwise the released state would be a tuple of one
+        # generation beside a registry and sidecar of another, which is the
+        # thing the invariant exists to exclude. Absent reads as the empty
+        # set on both sides (a pre-sidecar generation, or a specialist that
+        # never owned a plugin); a PRESENT but malformed sidecar refuses as
+        # today. Nothing has been written when this refuses.
+        try:
+            prior_doc = read_owned_plugins(owned_plugins_prior_path(slug_dir))
+            active_doc = read_owned_plugins(owned_plugins_path(slug_dir))
+        except OwnedPluginsSidecarError as exc:
+            raise SpecialistInstallError("rollback_sidecar_invalid", str(exc))
+        _rows = lambda doc: sorted(  # noqa: E731
+            (list(doc.get("plugins") or []) if doc else []),
+            key=lambda r: str(r.get("name", "")))
+        if _rows(prior_doc) != _rows(active_doc):
+            raise SpecialistInstallError(
+                "bundle_required",
+                f"{slug!r}: the retained prior generation owns a different plugin "
+                "set from the active one; a direct rollback cannot swap the "
+                "registry — use the bundle rollback (specialist_rollback) so the "
+                "owned set is exchanged with the tuple")
         return _rollback_core(
             slug=slug, specialists_dir=specialists_dir,
             agents_specialists_dir=agents_specialists_dir)
@@ -3072,9 +3142,6 @@ def rollback_specialist(
     if acks is None:
         from specialist_install_consent import SpecialistInstallAckStore
         acks = SpecialistInstallAckStore()
-
-    validate_specialist_slug(slug)
-    slug_dir = specialists_dir / slug
 
     # Prior owned set from its sidecar (missing sidecar but present prior tuple
     # ⇒ pre-feature generation ⇒ empty owned set, spec §3.4). P1-4: a PRESENT
@@ -3134,14 +3201,16 @@ def rollback_specialist(
             slug=slug, new_entries=prior_entries, registry_path=registry_path)
         prior_ids = {r["artifact_id"] for r in prior_rows}
         removed = _removed_artifact_ids(before_entries, prior_ids)
-        instance = _rollback_core(
-            slug=slug, specialists_dir=specialists_dir,
-            agents_specialists_dir=agents_specialists_dir)
+        # #810 (INV-SPEC-011): the retained prior's owned document becomes
+        # the ACTIVE sidecar inside the core's own commit scope — the tuple
+        # commit rotates the outgoing active pair (tuple AND sidecar) into
+        # the prior pair, then the restored generation's document is
+        # published; one lock scope, so a second call exchanges back.
         prior_doc = prior_sidecar or {"schema_version": 1,
                                       "component_source": {}, "plugins": []}
-        with specialist_materialize.MATERIALIZE_LOCK:
-            InstanceDir(slug_dir).stage_desired_owned_plugins(prior_doc)
-            InstanceDir(slug_dir).commit_owned_plugins_desired_to_active()
+        instance = _rollback_core(
+            slug=slug, specialists_dir=specialists_dir,
+            agents_specialists_dir=agents_specialists_dir, owned_doc=prior_doc)
         specialist_bundle_journal.mark_step(journal, "committed")
         txn = BundleTxn(
             journal_path=journal, slug=slug, before_entries=before_entries,
@@ -3168,13 +3237,35 @@ def rollback_specialist(
 def _rollback_core(
     *, slug: str, specialists_dir: Path = Path("/config/specialists"),
     agents_specialists_dir: Path = Path("/config/agents/specialists"),
+    owned_doc: "dict | None" = None,
 ) -> "SpecialistInstance":
     """Restore the RETAINED active.prior.yaml as the new active tuple (spec
     §2.4's rollback target — the prior binding's blobs stay pinned exactly
     because a retained tuple still references them, see Task N1d's
     cas_pin_roots). Rollback IS an upgrade to the prior tuple — reuse
-    InstanceDir's own stage/commit, never a bespoke restore path."""
-    from personality_binding import InstanceDir, InstanceTuple, load_instance_tuple
+    InstanceDir's own stage/commit, never a bespoke restore path.
+
+    #815 (INV-SPEC-012): the retained prior's binding is compiled as stored
+    only while its role checksum still equals the prior component's role
+    materialized under the CURRENT option resolution. When the resolved model
+    moved between retention and rollback (an HA option flip, a MODEL_MAP
+    alias move — both fold into the checksum), the binding is RE-DERIVED for
+    that role behind the same three gates the loader's re-derivation uses
+    (`_rederive_stale_binding`: the store's bytes still hash to the prior's
+    root, the role is that component's under live options, the agent id is
+    the role's), compiled, and the RE-DERIVED tuple is what gets committed —
+    never the stale prior verbatim, or the next load would rewrite the active
+    again and the operational-file marker would carry a digest nobody
+    persisted. A drifted store or a moved identity is refused by name, the
+    active untouched.
+
+    #810 (INV-SPEC-011): `owned_doc`, when given (the bundle arm), is the
+    restored generation's owned-plugins document, published as the active
+    sidecar inside the same lock scope as the tuple commit, after it — the
+    commit itself rotates the outgoing pair into the prior pair."""
+    from personality_binding import (
+        InstanceDir, InstanceTuple, load_instance_tuple, make_instance_tuple,
+    )
     from prompt_compiler import compile_prompt_bundle
     from role_slot import _ha_model_options, materialize_role
     from role_artifact import load_role_artifact
@@ -3247,9 +3338,19 @@ def _rollback_core(
     if unavailable:
         detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)
         raise SpecialistInstallError("dependency_unavailable", detail)
+    binding = prior.binding
+    if binding.role_checksum != role.checksum:
+        # #815: the only input that may have moved is the resolved model; prove
+        # it (L1 store digest, L2 live role, L3 agent id) and re-derive. A gate
+        # refusal is the same typed `compile_failed` the verbatim compile
+        # produced — its detail names the root that drifted, not a checksum.
+        try:
+            binding = _rederive_stale_binding(role, prior, cas_dir)
+        except ValueError as exc:
+            raise SpecialistInstallError("compile_failed", str(exc)) from exc
     try:
         compile_prompt_bundle(
-            role=role, persona=persona, binding=prior.binding,
+            role=role, persona=persona, binding=binding,
             platform_frame=(Path(__file__).parent / "defaults" / "personality"
                              / "platform-frame.md").read_text(encoding="utf-8"),
             safety_kernel=(Path(__file__).parent / "defaults" / "personality"
@@ -3257,6 +3358,13 @@ def _rollback_core(
         )
     except ValueError as exc:
         raise SpecialistInstallError("compile_failed", str(exc)) from exc
+    # The tuple that gets committed: the prior verbatim when nothing moved
+    # (byte-identical restore), else the prior with its re-derived binding —
+    # same root, same snapshot, same digest equation (#372: the factory
+    # derives config_digest from the snapshot it persists).
+    restore = (prior if binding is prior.binding
+               else make_instance_tuple(root=prior.root, binding=binding,
+                                        config_snapshot=prior.config_snapshot))
 
     # #337/#372 (D5): a pre-v0.137 prior can carry a secret's plaintext with a
     # digest VALIDLY computed over that secret-bearing mapping (the equation
@@ -3290,8 +3398,14 @@ def _rollback_core(
         # since `active_before` — never roll back over a concurrent winner or
         # resurrect a removed InstanceDir.
         _require_active_unchanged(instance_dir, active_before, slug=slug)
-        instance_dir.stage_desired(prior)
+        instance_dir.stage_desired(restore)
         committed = instance_dir.commit_desired_to_active()
+        if owned_doc is not None:
+            # #810: the restored generation's owned set becomes the active
+            # sidecar in the SAME scope as its tuple — the commit above
+            # already retained the outgoing pair as the new prior pair.
+            instance_dir.stage_desired_owned_plugins(owned_doc)
+            instance_dir.commit_owned_plugins_desired_to_active()
         try:
             specialist_materialize.materialize_specialist_operational_files(
                 agents_specialists_dir=agents_specialists_dir, slug=slug, role=role, persona=persona,
@@ -3307,6 +3421,7 @@ def _rollback_core(
         desired=None, last_activation_error=last_activation_error)
 
 
+@_under_specialist_lifecycle_lock
 def uninstall_specialist(
     *, slug: str, bundle: bool = False,
     acks: "SpecialistInstallAckStore | None" = None,

@@ -11,12 +11,15 @@ from when it was active.
 2. `specialist_rollback(slug=...)`. This republishes the retained prior's owned plugin set too, in
    the SAME call: a plugin the CURRENT version owns but the prior generation did not is removed,
    and anything the prior generation owned is restored — atomically with the tuple itself, no
-   separate plugin step. After a persona override the retained owned-plugin generation may be
-   older or absent (the override apply rotates the tuple but not the owned-plugins sidecar), so
-   undoing an override this way can remove every plugin the specialist owns; the
-   `plugin_data_note` relay below names what was dropped, and `plugin_list()` afterwards shows
-   what is left. If it returns `kind: "no_prior_tuple"`, nothing was ever retained (the
-   specialist was never upgraded or overridden). If the result carries
+   separate plugin step. The retained owned-plugin generation is always the one the retained
+   prior tuple belongs to (the two rotate together), so undoing a persona override republishes
+   the SAME set the specialist owns today and drops nothing — the removal relay below fires only
+   when a VERSION rollback drops a plugin the prior version never had; `plugin_list()`
+   afterwards shows what is left. A rollback after a model change (the `primary_agent_model`
+   option, or an image release moving an alias) restores the prior with its binding re-derived
+   for the model now in force; it is refused only when the retained component's bytes drifted
+   or its persona identity moved. If it returns `kind: "no_prior_tuple"`, nothing was ever
+   retained (the specialist was never upgraded or overridden). If the result carries
    `plugin_data_note` — on ANY outcome, including an `ok:false` result that
    carries no `state` at all — relay it verbatim with the names in
    `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4

@@ -504,34 +504,60 @@ def test_load_binding_still_rejects_a_tampered_digest(tmp_path: Path) -> None:
         load_binding(path)
 
 
-def test_owned_plugins_noop_recommit_does_not_rotate_prior(tmp_path: Path) -> None:
-    """#346: a crash-retry / concurrent-duplicate bundle commit whose staged
-    sidecar is byte-identical to the active one must NOT rotate
-    owned-plugins.yaml -> owned-plugins.prior.yaml — that clobbers the true
-    prior generation with a duplicate of the new active, so a later rollback
-    would activate one generation's tuple while registering another's
-    plugins. Mirrors commit_desired_to_active's tuple no-op semantics."""
+def test_a_tuple_noop_with_differing_desired_sidecar_bytes_replaces_active_without_rotating(
+        tmp_path: Path, monkeypatch) -> None:
+    """#810 (INV-SPEC-011), re-specifying the #346 pin: the sidecar prior rotates
+    with the TUPLE, on the tuple's own no-op predicate — never on the sidecar's
+    bytes. A no-op tuple recommit (crash-retry, a duplicate bundle that lost a
+    race) followed by a DIFFERING desired sidecar replaces the active document
+    and mutates the prior sidecar zero times: the true prior generation's pair
+    survives, so a later rollback still activates one generation's tuple with
+    that same generation's plugins."""
+    import os as _os
     from personality_binding import (
         owned_plugins_desired_path, owned_plugins_path, owned_plugins_prior_path,
-        read_owned_plugins, write_owned_plugins,
+        read_owned_plugins,
     )
 
-    d = InstanceDir(tmp_path / "mtg")
+    base = tmp_path / "mtg"
+    d = InstanceDir(base)
+    prior_sidecar = owned_plugins_prior_path(base)
     gen1 = {"schema_version": 1, "component_source": {"gen": "one"}, "plugins": []}
     gen2 = {"schema_version": 1, "component_source": {"gen": "two"}, "plugins": []}
-    d.stage_desired_owned_plugins(gen1)
-    d.commit_owned_plugins_desired_to_active()
-    d.stage_desired_owned_plugins(gen2)
-    d.commit_owned_plugins_desired_to_active()
-    assert read_owned_plugins(owned_plugins_prior_path(tmp_path / "mtg")) == gen1
+    gen3 = {"schema_version": 1, "component_source": {"gen": "three"}, "plugins": []}
+    t1 = _tuple(_binding(persona_version="0.1.0"))
+    t2 = _tuple(_binding(persona_version="0.2.0"))
+    for tuple_, doc in ((t1, gen1), (t2, gen2)):
+        d.stage_desired(tuple_)
+        d.stage_desired_owned_plugins(doc)
+        d.commit_desired_to_active()
+        d.commit_owned_plugins_desired_to_active()
+    assert read_owned_plugins(prior_sidecar) == gen1      # rotated BY the tuple commit
 
-    # Re-stage the ALREADY-ACTIVE doc (crash-retry) and recommit.
-    d.stage_desired_owned_plugins(gen2)
+    mutations = {"count": 0}
+    real_replace, real_write = _os.replace, Path.write_bytes
+
+    def _replace(src, dst, *a, **k):
+        mutations["count"] += str(dst) == str(prior_sidecar)
+        return real_replace(src, dst, *a, **k)
+
+    def _write_bytes(self_path, data, *a, **k):
+        mutations["count"] += str(self_path) == str(prior_sidecar)
+        return real_write(self_path, data, *a, **k)
+
+    monkeypatch.setattr(_os, "replace", _replace)
+    monkeypatch.setattr(Path, "write_bytes", _write_bytes)
+
+    # The SAME tuple recommitted (a no-op) with DIFFERENT sidecar bytes staged.
+    d.stage_desired(t2)
+    d.stage_desired_owned_plugins(gen3)
+    d.commit_desired_to_active()
     d.commit_owned_plugins_desired_to_active()
 
-    assert read_owned_plugins(owned_plugins_path(tmp_path / "mtg")) == gen2
-    assert read_owned_plugins(owned_plugins_prior_path(tmp_path / "mtg")) == gen1
-    assert not owned_plugins_desired_path(tmp_path / "mtg").exists()
+    assert mutations["count"] == 0
+    assert read_owned_plugins(owned_plugins_path(base)) == gen3
+    assert read_owned_plugins(prior_sidecar) == gen1
+    assert not owned_plugins_desired_path(base).exists()
 
 
 def test_stale_rollback_tmp_left_by_journal_rollback_is_never_rotated_over_prior(

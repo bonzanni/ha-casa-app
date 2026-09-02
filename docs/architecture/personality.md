@@ -164,12 +164,11 @@ write is a same-generation primitive that re-observes the active tuple under the
 materialize lock, refuses on any concurrent change, and admits no delta but those two
 fields — so it cannot become a way around prior rotation for a real generation change.
 
-What it does not cover: the retained prior. A previous-version prior is preserved, not
-repaired — a rollback into it after a model change refuses on the same checksum mismatch
-until that arm is given the same treatment. Nor the operational files: the marker they
-carry is rewritten by the next reconcile pass, not by the load. Nor engagement resume:
-nothing here compares a suspended engagement's recorded epoch against the definition it
-resumes under.
+What it does not cover: the retained prior, which is preserved as it was and re-derived
+the same way by the rollback that restores it (INV-SPEC-012). Nor the operational files:
+the marker they carry is rewritten by the next reconcile pass, not by the load. Nor
+engagement resume: nothing here compares a suspended engagement's recorded epoch against
+the definition it resumes under.
 
 **INV-PERS-009**: Every section body a persona's Markdown declares reaches the text projection exactly once.
 
