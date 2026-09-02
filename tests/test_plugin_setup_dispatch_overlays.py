@@ -582,16 +582,17 @@ def test_every_overlay_publication_advances_the_routing_generation():
     gen = getattr(reg, "routing_generation", lambda: 0)
     base = gen()
     deltas, identities, calls = [], 0, 0
-    for method in (reg.replace_plugin_overlay, reg.replace_callback_overlay):
+    for half in ("plugin", "callback"):
+        publish = getattr(reg, f"replace_{half}_overlay")
         for payload in ({}, U, U, {}):
-            method(payload)
+            publish(payload)
             calls += 1
             deltas.append(gen() - base)
             if payload is U:
-                store = (reg._plugin_overlay
-                         if method is reg.replace_plugin_overlay
-                         else reg._callback_overlay)
-                identities += store is U
+                # The half's OWN store, looked up by name: a bound-method
+                # identity test is always False (each attribute access binds
+                # anew) and would silently read the other overlay.
+                identities += getattr(reg, f"_{half}_overlay") is U
     assert deltas == [1, 2, 3, 4, 5, 6, 7, 8]
     assert calls == 8
     assert identities == 4
