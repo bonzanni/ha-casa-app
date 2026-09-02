@@ -690,3 +690,34 @@ async def test_bare_sentinel_prefix_fold_is_released_not_held(
 
     assert seen == ["<sil"]
     assert text == "<sil"
+
+
+async def test_a_sentinel_fragment_with_content_behind_it_is_released(
+    agent_fixture, monkeypatch,
+):
+    """The incomplete prefix must be the SUFFIX of the cumulative.
+
+    ``"<sil<silent/>"`` can never become sentinel-only — the fragment has
+    content behind it — so the hold must release at that delta rather than wait
+    for the next one. The prefix-aware predicate consumes only LEADING complete
+    sentinels for exactly this reason; a variant that deleted sentinels anywhere
+    would hold this cumulative and delay the device by a whole delta. (Added
+    after the accepted red cases, as a mutation pin: nothing else distinguishes
+    the two predicate shapes.)"""
+    factory = QueuedScriptFactory([[
+        _mk_stream_event("<sil"),
+        _mk_stream_event("<silent/>"),
+        _mk_stream_event("x"),
+        _mk_assistant("<sil<silent/>x"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == ["<sil<silent/>", "<sil<silent/>x"]
+    assert text == "<sil<silent/>x"
