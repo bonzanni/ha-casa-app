@@ -578,6 +578,25 @@ def test_a_class_qualified_binding_naming_a_missing_method_is_refused(tmp_path):
     )
 
 
+def test_a_parametrised_binding_is_refused_naming_the_unparametrised_id(tmp_path):
+    """The binding is the UNPARAMETRISED node id (#812): `test_b[False]` appears in no
+    source file and the substring arm cannot match it, and inside a flow-style list the
+    brackets do not even parse. The refusal says so, in both resolution arms."""
+    manifest = _inv_manifest(
+        "\n  invariant_tests:\n    INV-X-001: ['tests/test_a.py::test_b[False]', "
+        "'tests/test_a.py::TestC::test_b[False]']"
+    )
+    root = _corpus(tmp_path, manifest, docs=INV_DOC)
+    (root / "tests" / "test_a.py").write_text(
+        "def test_b():\n    pass\n\n\nclass TestC:\n    def test_b(self):\n        pass\n")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    problems = verify_docs.verify(root)
+    hinted = [p for p in problems if "bound by its unparametrised node id" in p]
+    assert len(hinted) == 2
+    assert any("test_b[False]' does not appear in tests/test_a.py" in p for p in hinted)
+    assert any("TestC::test_b[False]' does not resolve in tests/test_a.py" in p for p in hinted)
+
+
 def test_the_pinning_sentinel_is_a_failure_naming_the_invariant(tmp_path):
     """The sentinel makes the missing-test backlog mechanical: the corpus is RED until
     every sentinel is replaced by a real, demonstrated-red pinning test."""

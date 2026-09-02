@@ -262,6 +262,31 @@ def _load_entries(docs_dir: Path) -> tuple[list[dict], list[str]]:
     return entries, problems
 
 
+class ManifestLoadError(RuntimeError):
+    """A manifest source — the root or a shard — did not load, so there is NO corpus to
+    render from (#812). Carries the loader's own problems, each naming the source and
+    the error, so a caller reports the cause rather than a symptom of it."""
+
+    def __init__(self, problems: list[str]):
+        super().__init__("; ".join(problems))
+        self.problems = list(problems)
+
+
+def _load_or_refuse(docs_dir: Path) -> list[dict]:
+    """The loaded entries, or ``ManifestLoadError`` when a source failed to load.
+
+    The predicate is :func:`verify`'s own — problems and no entries — so a load failure
+    and an entry-level problem are told apart the same way everywhere: an entry the
+    loader could not normalise is reported by ``verify()`` while navigation still
+    renders; a source that could not be read or parsed yields nothing to render, and
+    rendering from nothing is how four generated artifacts once collapsed to their
+    headers (INV-DOC-010)."""
+    entries, problems = _load_entries(docs_dir)
+    if problems and not entries:
+        raise ManifestLoadError(problems)
+    return entries
+
+
 def _check_entry_shape(entry: dict, seen: set[str]) -> list[str]:
     doc = entry["doc"]
     problems: list[str] = []
@@ -469,6 +494,20 @@ def _check_prose_code(text: str, doc: str, modules: set[str], names: set[str]) -
     return problems
 
 
+def _parametrised_hint(node: str) -> str:
+    """Why a `name[case]` node id cannot bind: the binding is the UNPARAMETRISED id.
+
+    A parametrised case never appears in the source under its bracketed name, and inside a
+    flow-style YAML list the brackets do not even parse — the shape that once broke a shard
+    (#812)."""
+    if "[" not in node:
+        return ""
+    return (
+        " — a parametrised case is bound by its unparametrised node id "
+        "(`test_name`, not `test_name[case]`)"
+    )
+
+
 def _check_invariant_tests(entry: dict, repo_root: Path, tracked: set[str]) -> list[str]:
     """Every invariant must name a test that fails if the invariant is false.
 
@@ -517,7 +556,7 @@ def _check_invariant_tests(entry: dict, repo_root: Path, tracked: set[str]) -> l
                 if not symbol_exists(repo_root / rel, node.replace("::", ".")):
                     problems.append(
                         f"{doc}: {inv} names {ref!r} but {node!r} does not "
-                        f"resolve in {rel}"
+                        f"resolve in {rel}{_parametrised_hint(node)}"
                     )
                 continue
             # A plain string search, not pytest collection: cheap, dependency-free, and
@@ -529,6 +568,7 @@ def _check_invariant_tests(entry: dict, repo_root: Path, tracked: set[str]) -> l
             if node not in text:
                 problems.append(
                     f"{doc}: {inv} names {ref!r} but {node!r} does not appear in {rel}"
+                    f"{_parametrised_hint(node)}"
                 )
     for inv in sorted(set(bindings) - set(declared)):
         problems.append(
@@ -1140,7 +1180,13 @@ def verify(repo_root: Path, base: str | None = None) -> list[str]:
 # --- generated navigation ------------------------------------------------------------
 
 def _documents(repo_root: Path) -> list[dict]:
-    entries, _ = _load_entries(repo_root / "docs")
+    """The documents to render navigation from — or ``ManifestLoadError``.
+
+    This is the ONE seam under every renderer, ``nav_targets``, ``stale_nav`` and
+    ``write_nav``; refusing here is what keeps a broken manifest from being rendered as
+    an empty corpus, written out as header-only artifacts, or reported as stale
+    navigation (INV-DOC-010)."""
+    entries = _load_or_refuse(repo_root / "docs")
     return [e for e in entries if e.get("kind", "document") in DOCUMENT_KINDS]
 
 
@@ -1435,9 +1481,21 @@ def main() -> int:
             print(doc)
         return 0
 
-    if "--report" in args and (root / "docs" / "manifest.yaml").exists():
-        docs_dir = root / "docs"
-        entries, _ = _load_entries(docs_dir)
+    # The manifest is loaded ONCE, before anything is printed or written (#812): a
+    # source that fails to load is the whole report. Everything below — the size
+    # table, --write-nav, the stale-navigation check, the ceilings — renders from the
+    # manifest, and rendering from a manifest that did not load used to write four
+    # header-only artifacts and then prescribe the very command that wrote them.
+    docs_dir = root / "docs"
+    if not (docs_dir / "manifest.yaml").exists():
+        return _print_report(verify(root, base))
+    try:
+        _load_or_refuse(docs_dir)
+    except ManifestLoadError as exc:
+        return _print_report(exc.problems)
+
+    if "--report" in args:
+        entries = _load_or_refuse(docs_dir)
         sizes = [
             (entry["doc"], (docs_dir / entry["doc"]).stat().st_size)
             for entry in entries
@@ -1483,6 +1541,12 @@ def main() -> int:
                 for line in result.stdout.splitlines()
                 if line.startswith("✗")
             )
+    return _print_report(problems)
+
+
+def _print_report(problems: list[str]) -> int:
+    """The one output grammar every exit path shares: `✗ <problem>` lines and
+    `N problem(s).` with exit 1, or `✓ docs corpus verified` with exit 0."""
     for problem in problems:
         print(f"✗ {problem}")
     if problems:

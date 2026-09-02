@@ -59,6 +59,17 @@ true.
 
 The idiom already dominates: code prose cites invariant ids far more often than it names document paths, and an id is the one handle that survives a split, because an invariant is defined once and the generated index maps it to its document. What was missing was the other direction of the check the corpus already runs inside `docs/` — so a retired or renumbered id stayed cited from a test docstring indefinitely, which is how a citation of the retired OBS 002 id outlived it. The check reads Python comments and PEP 258 docstrings only, and only for families the corpus defines: a synthetic fixture citing a family this corpus never defines is not a citation, and a rule that fired on the verifier's own test data would be waved through. A shell or Markdown comment outside `docs/` is NOT checked.
 
+**INV-DOC-010**: Generated navigation is rendered only from a manifest that loads — when the root manifest or any `manifest.d/` shard fails to load, the corpus check and `--write-nav` report the source and the error, write no generated artifact, and do not report the navigation as stale.
+
+A load failure is a source the verifier could not read or parse at all — an unparsable
+shard, a duplicate key, an unreadable file, a source that is not a list — and it leaves
+nothing to render from. Rendering from nothing is how the invariant index, its N-Z shard,
+`llms.txt` and the routing table once collapsed to their headers while the bare check,
+run before the collapse, named no shard and prescribed `--write-nav`. What the invariant
+does not cover: an entry-level problem in a manifest that did load (a malformed `covers`
+list, say) is reported as its own finding while navigation still renders, and `--impact`
+neither renders nor writes navigation and is not governed by it.
+
 **INV-DOC-008**: A `Docs-impact:` waiver is checked against the diff it ships with — the waived documents are exactly the documents the change impacts and does not update, no document is waived twice, the reserved token `none` asserts that set is empty, only the tip commit may carry a waiver line, a subject line is never one, and every tip carries a line; whether a waiver's reason is true remains a review question.
 
 **INV-DOC-007**: Growth splits, it never appends: the change that crosses the size ceiling lands visibly, the next change touching the over-ceiling document — its file or its manifest row — must split it first, a new path may not be born over the ceiling, and the ceiling is not raised; nothing shards on its own.
@@ -83,9 +94,12 @@ docstring of a tracked Python file outside `docs/` — a file named `*.py` or ca
 shebang — resolves, when its family is one the corpus defines; that every declared invariant carries at least one
 `invariant_tests` binding to a tracked file that is not the missing-test sentinel, with any
 named test node resolved structurally against the file — module-level functions and
-class-qualified `Class::method` identifiers both — so a binding that would not collect
+class-qualified `Class::method` identifiers both, always by the *unparametrised* node id,
+since a parametrised case `test_name[case]` appears in no source file under that name and
+does not even parse inside a flow-style YAML list — so a binding that would not collect
 fails the build (that the reference is a genuine *pinning* test is still established by
-the red-case discipline, not by CI); the code-derived
+the red-case discipline, not by CI); that generated navigation is rendered only from a
+manifest that loads; the code-derived
 coverage ledger in both directions (every enumerated
 surface assigned to a document or excluded with a reason, no stale entries) — and, where
 a surface is claimed by some document's `covers`, that the ledger's assignment agrees
@@ -155,7 +169,10 @@ family letter across `doctrine/invariants.md` (A-M) and `doctrine/invariants-n-z
 because one file outgrew the index ceiling — the routing
 table between the README's markers, and each document's Source & test map are all rendered
 from the manifest (root plus shards). Hand-kept indexes rot behind the corpus they index; generated ones
-cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`.
+cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`. A manifest that
+fails to load regenerates nothing: the verifier reports the source and the error, leaves
+every generated file as it was, and does not call the navigation stale — fix the source
+first, then regenerate.
 
 ## Source & test map
 
