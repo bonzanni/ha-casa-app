@@ -418,6 +418,37 @@ def _strips_to_silence(text: str | None) -> bool:
     return not stripped or not stripped.replace("<silent/>", "").strip()
 
 
+_SILENCE_SENTINEL = "<silent/>"
+
+
+def _may_still_be_silence(text: str | None) -> bool:
+    """True when *text* is silence today, or could still BECOME silence as
+    more deltas arrive: what remains after consuming leading complete
+    sentinels and whitespace is a prefix of one more sentinel.
+
+    #666: the voice ``StreamEvent`` path sees a sentinel arrive in fragments,
+    and a fragment is not silence — ``_strips_to_silence("<sil")`` is False. A
+    hold keyed on the shared predicate alone would leak ``"<"``, ``"<sil"``, …
+    to the device before the completed sentinel could ever be held.
+
+    ADDITIVE, never a fork: the completed case delegates to
+    ``_strips_to_silence``, which keeps its exact meaning for the sentinel gate,
+    the #650 reclassification and the resume-health verdict. This predicate is
+    strictly weaker and is used on the partial-delta path ONLY — the canonical
+    fold uses the strict one, so the stream and ``handle_message``'s gate agree
+    on what silence is, and a fold that the gate would DELIVER is never held.
+
+    The incomplete prefix must be the SUFFIX: ``"<sil<silent/>"`` releases,
+    because a fragment with content behind it can never complete.
+    """
+    if _strips_to_silence(text):
+        return True
+    rest = (text or "").lstrip()
+    while rest.startswith(_SILENCE_SENTINEL):
+        rest = rest[len(_SILENCE_SENTINEL):].lstrip()
+    return _SILENCE_SENTINEL.startswith(rest)
+
+
 def _resume_fault_streak(entry: dict | None, sid: str | None) -> int:
     """The advisory #650 fault streak *entry* holds AGAINST *sid*, else 0.
 
@@ -920,7 +951,14 @@ class Agent:
         # whitespace) is a no-op, regardless of channel-trigger source.
         # The cost of false suppression is zero in practice (no model
         # legitimately emits the literal sentinel string to a user); the
-        # cost of operator-visible literal `<silent/>` is real-but-small.
+        # cost of operator-visible literal `<silent/>` used to be
+        # real-but-small, and #666 (INV-TURN-009) has now paid it: the
+        # token stream holds a cumulative that is nothing but sentinels
+        # and whitespace, so this gate no longer runs behind a sentinel
+        # the channel has already posted. On a chosen-silence turn that
+        # posted message was permanent — this gate empties `text`,
+        # delivery is skipped, and `turn_finished` only releases the
+        # typing lease, so nothing ever superseded it.
         # A turn is silence when it strips to nothing, or to nothing but
         # one-or-more `<silent/>` sentinels and surrounding whitespace
         # (so a buffered model that emits the sentinel on its own line, or
@@ -2357,6 +2395,35 @@ class Agent:
                 + state["partial"]
             )
 
+        async def _emit(cum: str, *, partial: bool) -> None:
+            """Hand *cum* to ``on_token``, unless it is silence (#666).
+
+            The one emission path for both sites, in one order: compute the
+            cumulative, decide the HOLD on the UNFILTERED cumulative, emit,
+            then dedup on the string ACTUALLY handed over.
+
+            The hold carries NO state. It is a pure function of the current
+            cumulative, which is the strongest form of "a held cumulative must
+            never be recorded as ``last_emitted``": that field is assigned only
+            on the line after a real call, so it keeps meaning exactly "the
+            last string handed to the callback" and a held value can never
+            dedup its own release away. Nothing to reset means AR-E's fresh
+            state per attempt holds by construction.
+
+            ``partial`` selects the predicate: prefix-aware for in-flight
+            deltas, strict for the canonical fold — see
+            ``_may_still_be_silence``.
+            """
+            if on_token is None:
+                return
+            if _may_still_be_silence(cum) if partial else _strips_to_silence(cum):
+                return
+            emitted = cum
+            if emitted == state["last_emitted"]:
+                return
+            await on_token(emitted)
+            state["last_emitted"] = emitted
+
         async def on_message(sdk_msg: Any) -> None:
             # Voice partial streaming — handled EARLY so a StreamEvent never
             # falls through to the phase4b dispatch below (no per-token log
@@ -2372,13 +2439,7 @@ class Agent:
                             t = d.get("text") or ""
                             if t:
                                 state["partial"] += t
-                                cum = _cum()
-                                if (
-                                    on_token is not None
-                                    and cum != state["last_emitted"]
-                                ):
-                                    await on_token(cum)
-                                    state["last_emitted"] = cum
+                                await _emit(_cum(), partial=True)
                 except Exception as stream_exc:  # noqa: BLE001
                     logger.warning(
                         "stream_event dispatch failed: %s", stream_exc,
@@ -2487,10 +2548,7 @@ class Agent:
                     # cum() then equals state["text"] unchanged, which already
                     # matches last_emitted, so no spurious emit follows.
                     state["partial"] = ""
-                    cum = _cum()
-                    if on_token is not None and cum != state["last_emitted"]:
-                        await on_token(cum)
-                        state["last_emitted"] = cum
+                    await _emit(_cum(), partial=False)
 
         return on_message, state
 

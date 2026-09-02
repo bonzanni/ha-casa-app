@@ -167,9 +167,27 @@ the refusal-only registration clearing of INV-TURN-007 is untouched.
 
 What it does not cover: the notice does not extend to delegation-completion synthesis
 turns (no trusted ingress; a delegation fault surfaces through the delegation machinery's
-own consumers), and text a channel streamed before classification stays streamed — a
-final edit supersedes a streamed literal sentinel on the classified path, but a failed
-edit leaves what the stream already showed.
+own consumers), and text a channel streamed before classification stays streamed. The
+silence sentinel is no longer part of that residue — it is never streamed at all
+(INV-TURN-009), so the reclassified reply is one fresh send rather than a posted literal
+and a superseding edit.
+
+**INV-TURN-009**: The token stream never carries a cumulative that is nothing but `<silent/>` sentinels and whitespace, nor — on the partial-delta path — one that could still become such silence. With a token callback present, a canonical-fold cumulative that is not silence, and a partial-delta cumulative that cannot still become silence, is handed to the callback in full, including any literal sentinel, unless it equals the last cumulative already handed to that callback.
+
+The sentinel is the model's way of saying "send nothing", and the gate above already
+honours it — but only at the end of the turn, after the stream has run. So a turn that
+chose silence used to post the literal to the operator first, and on that path nothing
+ever took it back: the gate empties the text, delivery is skipped, and the teardown hook
+only releases the typing indicator. The hold moves the decision to the emission itself.
+It is stated per emission rather than per turn, because on the partial-delta path a
+provisional sentence can be streamed and then replaced by a canonical fold of pure
+silence; what has been spoken cannot be unspoken, and the guarantee is that the
+correction adds nothing further. Release hands over the exact cumulative, the literal
+included, so a turn that recants after the sentinel still delivers its whole text; and
+because the fold uses the same predicate as the final gate, the stream never holds
+something the gate would deliver. Nothing records a held cumulative, so a hold can never
+suppress its own release. On a held turn the teardown hook is the only thing that stops
+the typing indicator, since the first-token teardown never runs.
 
 ## Failure behavior
 
@@ -242,6 +260,7 @@ the same way.
 
 **Source**
 - `casa/rootfs/opt/casa/agent.py::Agent._process`
+- `casa/rootfs/opt/casa/agent.py::Agent._make_on_message`
 - `casa/rootfs/opt/casa/agent.py::Agent._build_options`
 - `casa/rootfs/opt/casa/agent.py::Agent.aclose`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn`

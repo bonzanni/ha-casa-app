@@ -181,6 +181,7 @@
   when_changing: the turn lifecycle, the warm client pool, retry behaviour, or turn teardown
   covers:
     - casa/rootfs/opt/casa/agent.py::Agent._process
+    - casa/rootfs/opt/casa/agent.py::Agent._make_on_message
     - casa/rootfs/opt/casa/agent.py::Agent._build_options
     - casa/rootfs/opt/casa/agent.py::Agent.aclose
     - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn
@@ -196,7 +197,7 @@
     - tests/test_retry.py
     - tests/test_agent_api_error_message.py
   related: [architecture/overview.md, architecture/agent-taxonomy.md]
-  defines_invariants: [INV-TURN-001, INV-TURN-002, INV-TURN-003, INV-TURN-004, INV-TURN-005, INV-TURN-006, INV-TURN-007, INV-TURN-008]
+  defines_invariants: [INV-TURN-001, INV-TURN-002, INV-TURN-003, INV-TURN-004, INV-TURN-005, INV-TURN-006, INV-TURN-007, INV-TURN-008, INV-TURN-009]
   invariant_tests:
     INV-TURN-001: [tests/test_sdk_client_pool_pool.py::test_sid_mismatch_reconnects_on_registry_sid]
     INV-TURN-002: [tests/test_sdk_client_pool_client.py::test_error_result_nonretryable_returns_but_invalidates]
@@ -206,6 +207,7 @@
     INV-TURN-006: [tests/test_sdk_client_pool_pool.py::test_close_key_joins_inflight_invalidation_flush]
     INV-TURN-007: [tests/test_agent_api_error_message.py::test_refusal_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_api_error_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_refusal_is_not_retried, tests/test_agent_api_error_message.py::test_result_stop_reason_refusal_is_the_second_carrier, tests/test_agent_api_error_message.py::test_subagent_api_error_suppresses_text_without_failing_the_turn, tests/test_agent_api_error_message.py::test_a_refused_turn_does_not_leave_its_session_resumable, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_refusal_raises_with_the_refusal_kind, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_fault_after_output_truncation_still_raises, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_sub_agent_scoped_fault_does_not_end_the_turn]
     INV-TURN-008: [tests/test_agent_process.py::TestIssue650RedCases::test_trusted_retry_then_silent_final_emits_exactly_one_delivery, tests/test_agent_process.py::TestIssue650RedCases::test_two_trusted_sdk_retry_exhaustions_start_fresh_and_retain_old_snapshot, tests/test_agent_process.py::TestIssue650RedCases::test_untrusted_sdk_retry_exhaustions_keep_resuming, tests/test_agent_process.py::TestIssue650RedCases::test_trusted_silence_without_retries_stays_silent, tests/test_resume_fault_streak.py::TestAgentStrikeShapes::test_mixed_retry_kinds_still_strike_and_escape, tests/test_resume_fault_streak.py::TestGateOrderedNotes::test_concurrent_asks_cannot_overshoot_the_limit]
+    INV-TURN-009: [tests/test_agent_partial_streaming.py::test_sentinel_only_fold_emits_nothing, tests/test_agent_partial_streaming.py::test_voice_sentinel_fragments_emit_nothing, tests/test_agent_partial_streaming.py::test_sentinel_prefix_that_diverges_releases_the_whole_cumulative, tests/test_agent_partial_streaming.py::test_g3_recant_releases_the_exact_cumulative_sentinel_included, tests/test_agent_partial_streaming.py::test_held_sentinel_does_not_survive_into_the_next_attempt, tests/test_agent_partial_streaming.py::test_divergent_canonical_correction_to_silence_emits_only_the_prose, tests/test_agent_partial_streaming.py::test_bare_sentinel_prefix_fold_is_released_not_held, tests/test_agent_process.py::TestIssue666SentinelHold::test_sentinel_only_turn_streams_nothing_and_still_tears_down, tests/test_agent_process.py::TestIssue666SentinelHold::test_recant_turn_streams_the_whole_text_sentinel_included]
 
 - doc: architecture/voice.md
   summary: How speech becomes a turn and the answer gets back — transports, auth, turn budget, deferred delivery.
