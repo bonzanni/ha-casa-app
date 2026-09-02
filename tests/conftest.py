@@ -495,6 +495,62 @@ def _fresh_operator_notice_lock():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_reload_locks(monkeypatch):
+    """Give every test its own reload lock cache and reader/writer lock.
+
+    ``reload._LOCKS`` caches one ``asyncio.Lock`` per scope key for the
+    process's life and ``reload._GLOBAL_RW`` is created once; both are correct
+    in production, where there is one event loop. An ``asyncio.Lock`` binds to
+    the loop of its FIRST contended acquire, and pytest-asyncio gives each test
+    a fresh loop — so a test that genuinely contends on ``agent:<role>`` leaves
+    a lock bound to a dead loop for the next test to trip over ("is bound to a
+    different event loop"). Several files already reset both by hand; this
+    makes the reset the default. Same defect class as the two fixtures below.
+
+    Test-only: nothing about the lock discipline reload enforces is relaxed —
+    each test simply gets its own instances of the same locks."""
+    try:
+        import reload as _reload
+    except Exception:  # pragma: no cover — import is universal in tests
+        yield
+        return
+    monkeypatch.setattr(_reload, "_LOCKS", {})
+    monkeypatch.setattr(_reload, "_GLOBAL_RW", None)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _restore_active_runtime():
+    """#818: snapshot ``agent.active_runtime`` at every test's setup and
+    restore THE SNAPSHOT at its teardown.
+
+    The module global (``agent.py``) is ``None`` until ``casa_core.main`` binds
+    the runtime once per process; every consumer reads it at call time. Tests
+    that drive the reload tool handlers bare-assign a ``CasaRuntime`` to it and
+    nothing restored it, so the leaked runtime — whose ``trigger_registry`` is a
+    ``MagicMock`` — made two truthiness probes fire in later, unpatched tests
+    (``callback_reconcile``'s routing row and ``_tool_plugin_status``'s
+    ``routing_unavailable`` key), breaking exact-shape assertions elsewhere.
+    ``--dist loadfile`` hid it by placing the leaker and its victims on different
+    workers; the default serial order was red.
+
+    Restore-to-snapshot, never force-``None``: a module-scoped baseline bound
+    before this function-scoped fixture runs must come back exactly (a
+    ``monkeypatch.setattr`` inside a test is fine — it restores first, to the
+    same value). Same defect class and the same shape as the broker fixture
+    below (#783); pinned by ``tests/test_active_runtime_isolation.py``.
+
+    Test-only: production binds the global once and never rebinds it."""
+    import agent as _agent
+
+    snapshot = _agent.active_runtime
+    try:
+        yield
+    finally:
+        _agent.active_runtime = snapshot
+
+
+@pytest.fixture(autouse=True)
 def _isolate_verdict_broker_and_challenges():
     """#783: clear the two process-global request registries at every test
     boundary, so a request one test registers cannot reach the next one.

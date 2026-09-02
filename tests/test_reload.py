@@ -686,7 +686,7 @@ class TestReloadPolicies:
         # Patch _reload_role_after_policies (helper) to avoid real load.
         import reload as reload_mod
         called_roles: list[str] = []
-        async def fake_reload_role(runtime, role):
+        async def fake_reload_role(runtime, role, *, rows=None):  # #786: rows kwarg
             called_roles.append(role)
         monkeypatch.setattr(reload_mod, "_reload_role_after_policies", fake_reload_role)
 
@@ -3230,7 +3230,7 @@ class TestReloadIssue327:
 
         cascaded = []
 
-        async def fake_role_reload(runtime, r):
+        async def fake_role_reload(runtime, r, *, rows=None):  # #786: rows kwarg
             cascaded.append(r)
 
         monkeypatch.setattr(
