@@ -226,7 +226,7 @@
 - item: casa/rootfs/opt/casa/speaker_provenance.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_bundle_journal.py
-  doc: architecture/specialist-lifecycle.md
+  doc: architecture/specialist-bundle-transactions.md
 - item: casa/rootfs/opt/casa/specialist_component.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_install.py
