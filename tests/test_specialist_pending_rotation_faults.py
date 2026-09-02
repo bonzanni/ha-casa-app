@@ -134,3 +134,73 @@ def test_a_commit_whose_pending_read_fails_leaves_the_pair_for_the_next_completi
     assert load_instance_tuple(slug_dir / "active.prior.yaml") == t2
     assert prior_sidecar.read_bytes() == s2_bytes
     assert sum(1 for n in (_TMP_TUPLE, _TMP_SIDECAR) if (slug_dir / n).exists()) == 0
+
+
+# --- diff review round 7 (Terra): a temporary that is not a regular file is
+#     never "absent" — a looped symlink where the tuple temporary should be must
+#     not let the lone-sidecar branch promote the sidecar alone. -----------------
+
+
+def _special_temporaries_state(tmp_path: Path, monkeypatch):
+    """The pending state, with the tuple temporary replaced by a looped symlink
+    and the genuine sidecar temporary S2 left as a regular file."""
+    import os
+    ctx, gens, slug_dir = _pending_state(tmp_path, monkeypatch)
+    (slug_dir / _TMP_TUPLE).unlink()
+    os.symlink(_TMP_TUPLE, slug_dir / _TMP_TUPLE)        # self-referential: ELOOP
+    assert not (slug_dir / _TMP_TUPLE).exists()          # what exists() reports for it
+    assert (slug_dir / _TMP_TUPLE).is_symlink()
+    return ctx, gens, slug_dir
+
+
+def test_a_looped_symlink_tuple_temporary_discards_the_pair_and_promotes_nothing(
+        tmp_path: Path, monkeypatch) -> None:
+    """Completion with a looped symlink in the tuple temporary's place: the pair
+    is discarded — the sidecar temporary is NOT promoted alone — and the
+    retained pair stays T1/S1. Mutant: classify the temporary with a followed
+    ``exists()`` → the sidecar S2 is promoted over S1 beside prior T1."""
+    from personality_binding import InstanceDir, load_instance_tuple
+
+    ctx, gens, slug_dir = _special_temporaries_state(tmp_path, monkeypatch)
+    t1, _, _, _ = gens["g1"]
+    _, prior_sidecar = _sidecar_paths(slug_dir)
+    prior_sidecar_before = prior_sidecar.read_bytes()
+
+    InstanceDir(slug_dir).complete_pending_rotation()
+
+    assert load_instance_tuple(slug_dir / "active.prior.yaml") == t1
+    assert prior_sidecar.read_bytes() == prior_sidecar_before
+    assert not (slug_dir / _TMP_TUPLE).is_symlink()
+    assert sum(1 for n in (_TMP_TUPLE, _TMP_SIDECAR) if (slug_dir / n).exists()
+               or (slug_dir / n).is_symlink()) == 0
+
+
+def test_a_special_sidecar_temporary_beside_a_genuine_tuple_temporary_discards_the_pair(
+        tmp_path: Path, monkeypatch) -> None:
+    """The other half: a genuine tuple temporary T2 beside a sidecar temporary
+    that is a directory (nothing this module writes). Neither is promoted; both
+    are removed; the retained pair stays T1/S1 rather than becoming T2 beside
+    an emptied or stale sidecar."""
+    import shutil
+    from personality_binding import InstanceDir, load_instance_tuple
+
+    ctx, gens, slug_dir = _pending_state(tmp_path, monkeypatch)
+    t1, _, _, _ = gens["g1"]
+    _, prior_sidecar = _sidecar_paths(slug_dir)
+    (slug_dir / _TMP_SIDECAR).unlink()
+    (slug_dir / _TMP_SIDECAR).mkdir()
+    prior_sidecar_before = prior_sidecar.read_bytes()
+
+    with pytest.raises(OSError):                          # a directory cannot be unlinked
+        InstanceDir(slug_dir).complete_pending_rotation()
+    # Nothing was promoted by the failed attempt: the pair is still as it was.
+    assert load_instance_tuple(slug_dir / "active.prior.yaml") == t1
+    assert prior_sidecar.read_bytes() == prior_sidecar_before
+    assert (slug_dir / _TMP_TUPLE).exists()
+
+    shutil.rmtree(slug_dir / _TMP_SIDECAR)                # the operator clears it by hand
+    InstanceDir(slug_dir).complete_pending_rotation()
+    # With the special file gone, the genuine tuple temporary is a generation
+    # that owned no sidecar temporary: promoted, and the prior sidecar removed.
+    assert load_instance_tuple(slug_dir / "active.prior.yaml") == gens["g2"][0]
+    assert not prior_sidecar.exists()

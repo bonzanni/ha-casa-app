@@ -3308,32 +3308,46 @@ def _rollback_core(
     # touches `root`), independent of prior.binding.mode.
     _, _, checksum = parse_component_root(prior.root)
     cas_dir = cas_store_dir(checksum, store_root=specialists_dir / "store")
-    role = materialize_role(
-        source=load_role_artifact(cas_dir / "role"),
-        # #355: resolve ha_option models exactly as the agent loader
-        # does — options={} froze the DEFAULT into the checksum, and
-        # the loader then rejected the persisted binding.
-        options=_ha_model_options())
-    if prior.binding.mode == "override":
-        from persona_install import installed_personas_root
-        personas_root = installed_personas_root()   # #323 (Sol r3-3)
-        persona = load_persona_pack(
-            personas_root / prior.binding.persona_id / prior.binding.persona_version / "pack",
-            personas_root / prior.binding.persona_id / prior.binding.persona_version / "manifest.json",
-        )
-    else:
-        persona = load_persona_pack(cas_dir / "persona" / "pack", cas_dir / "persona" / "manifest.json")
-
-    # Whole-branch review F6 (rollback verification gate): the prior tuple was
-    # valid when it was active, but the world may have changed since —
-    # a pinned plugin dependency can have been uninstalled/re-published out
-    # from under it. Re-run the SAME pre-activation gates upgrade uses (full
-    # dependency-closure availability against the prior's CAS bytes + a
-    # compile of role/persona/prior-binding) BEFORE staging/committing, so a
-    # rollback into a now-broken tuple is refused with a typed error and the
-    # current active tuple keeps running untouched.
-    prior_component = load_specialist_component(cas_dir, cas_dir / "manifest.json")
-    prior_deps = resolve_dependency_closure(prior_component, cas_dir)
+    # #815 (INV-SPEC-012, diff review r7): EVERY load of the retained
+    # generation's store — the role artifact, the persona pack, the component
+    # and its closure — is one guarded step. A store whose bytes drifted
+    # surfaces from these loaders as a ValueError (a checksum that no longer
+    # matches its manifest, a pack that no longer validates) or an OSError,
+    # and every one of them is the SAME fact the digest gate below refuses:
+    # the retained root no longer names its bytes. Refused by name, typed,
+    # the active untouched — never an unstructured error out of the tool.
+    try:
+        role = materialize_role(
+            source=load_role_artifact(cas_dir / "role"),
+            # #355: resolve ha_option models exactly as the agent loader
+            # does — options={} froze the DEFAULT into the checksum, and
+            # the loader then rejected the persisted binding.
+            options=_ha_model_options())
+        if prior.binding.mode == "override":
+            from persona_install import installed_personas_root
+            personas_root = installed_personas_root()   # #323 (Sol r3-3)
+            persona = load_persona_pack(
+                personas_root / prior.binding.persona_id / prior.binding.persona_version / "pack",
+                personas_root / prior.binding.persona_id / prior.binding.persona_version / "manifest.json",
+            )
+        else:
+            persona = load_persona_pack(cas_dir / "persona" / "pack", cas_dir / "persona" / "manifest.json")
+        # Whole-branch review F6 (rollback verification gate): the prior tuple
+        # was valid when it was active, but the world may have changed since —
+        # a pinned plugin dependency can have been uninstalled/re-published out
+        # from under it. Re-run the SAME pre-activation gates upgrade uses (full
+        # dependency-closure availability against the prior's CAS bytes + a
+        # compile of role/persona/prior-binding) BEFORE staging/committing, so a
+        # rollback into a now-broken tuple is refused with a typed error and the
+        # current active tuple keeps running untouched.
+        prior_component = load_specialist_component(cas_dir, cas_dir / "manifest.json")
+        prior_deps = resolve_dependency_closure(prior_component, cas_dir)
+    except (ValueError, OSError) as exc:
+        raise SpecialistInstallError(
+            "compile_failed",
+            f"{slug!r}: the retained prior is not restored — its component store "
+            f"({prior.root}) could not be loaded as the generation the prior names "
+            f"({exc}); the current active is untouched") from exc
     unavailable = [d for d in prior_deps if not d.available]
     if unavailable:
         detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)

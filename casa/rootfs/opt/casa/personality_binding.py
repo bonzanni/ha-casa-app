@@ -799,34 +799,48 @@ class InstanceDir:
         left pending. Idempotent; a no-op when nothing is pending. The caller
         holds ``MATERIALIZE_LOCK`` (this method does not acquire it).
 
-        A tuple temporary that loads and differs from the current active is a
-        genuine pre-commit generation: it is promoted to ``active.prior.yaml``
-        and its paired sidecar temporary to ``owned-plugins.prior.yaml`` — or,
-        when no sidecar temporary exists, the prior sidecar is unlinked (that
-        generation owned no sidecar). A tuple temporary equal to the active
-        (the #346 stale pair a journal rollback can leave) or one whose BYTES
-        fail to parse or validate discards BOTH temporaries: a duplicate of the
-        active must never reach the prior, and a bad prior would be refused by
-        the next rollback anyway. A lone sidecar temporary (the tuple promotion
-        completed, the sidecar's did not) is promoted on its own. Raises
-        ``OSError`` on any I/O failure — a failed read as much as a failed
-        rename — with the pair left as it was; callers decide whether that is
-        fatal (the rollback refuses, a commit logs and continues)."""
+        Each temporary is OBSERVED by one closed classification —
+        ``_observe_temporary``: absent (ENOENT alone), a regular file, or a
+        special file (a symlink, a directory, a FIFO — nothing this module
+        writes); any other I/O failure propagates unchanged. Three review
+        rounds found the same shape in this method (a partial failure, a
+        transient read error, a followed symlink), each letting a state the
+        method had not classified fall into a branch written for another; the
+        table below is closed over what the observation can return.
+
+        A regular tuple temporary that loads and differs from the current
+        active is a genuine pre-commit generation: it is promoted to
+        ``active.prior.yaml`` and its regular sidecar temporary to
+        ``owned-plugins.prior.yaml`` — or, when no sidecar temporary exists,
+        the prior sidecar is unlinked (that generation owned no sidecar). A
+        tuple temporary equal to the active (the #346 stale pair a journal
+        rollback can leave), one whose BYTES fail to parse or validate, or a
+        pair in which EITHER temporary is a special file discards BOTH
+        temporaries: a duplicate of the active must never reach the prior, and
+        nothing this module did not write may be promoted. A lone regular
+        sidecar temporary (the tuple promotion completed, the sidecar's did
+        not) is promoted on its own; a lone special one is discarded. Raises
+        ``OSError`` on any I/O failure other than absence — a failed read or
+        observation as much as a failed rename — with the pair left as it was;
+        callers decide whether that is fatal (the rollback refuses, a commit
+        logs and continues)."""
         active_path = self._path("active.yaml")
         prior_path = self._path("active.prior.yaml")
         pending = active_path.with_suffix(active_path.suffix + ".rollback-tmp")
         pending_sidecar = owned_plugins_rollback_temp_path(self._dir)
         prior_sidecar = owned_plugins_prior_path(self._dir)
-        if pending.exists():
-            # A pair is classified STALE or CORRUPT only on what the bytes SAY
-            # — a parse or schema failure. An I/O error says nothing about the
-            # bytes and PROPAGATES (Sol, diff review r5 — the second finding
-            # of one shape in this method, generalised rather than patched): a
-            # transient read failure must never discard a genuine pending
-            # generation, or the rollback that follows restores the older
-            # visible prior and reports success. The rollback refuses on the
-            # OSError with the pair intact; a commit logs it and leaves the
-            # pair for the next completion.
+        tuple_state = _observe_temporary(pending)
+        sidecar_state = _observe_temporary(pending_sidecar)
+        if tuple_state == "absent":
+            if sidecar_state == "regular":
+                os.replace(pending_sidecar, prior_sidecar)
+            elif sidecar_state == "special":
+                pending_sidecar.unlink(missing_ok=True)
+            return
+        genuine = False
+        if tuple_state == "regular" and sidecar_state != "special":
+            # Classified by what the bytes SAY — a parse or schema failure is
+            # corruption; an I/O error propagates (Sol, diff review r5).
             try:
                 pending_tuple = load_instance_tuple(pending)
             except (ValueError, yaml.YAMLError, jsonschema.ValidationError):
@@ -835,39 +849,35 @@ class InstanceDir:
                 current = load_instance_tuple(active_path)
             except (ValueError, yaml.YAMLError, jsonschema.ValidationError):
                 current = None
-            # ORDER MATTERS in every branch, because any step can fail and
-            # the NEXT call classifies the state from what survived (Sol,
-            # diff review r2): the tuple temporary must outlive every step
-            # whose failure would otherwise leave a lone sidecar temporary
-            # that the next call would promote as a completed promotion's
-            # companion, and a prior-sidecar removal must happen while the
-            # tuple temporary still marks the promotion as pending.
-            if pending_tuple is not None and pending_tuple != current:
-                if pending_sidecar.exists():
-                    # Tuple first: a failure after it leaves a LONE sidecar
-                    # temporary, which the next call promotes — correct, it is
-                    # this genuine pair's sidecar.
-                    os.replace(pending, prior_path)
-                    os.replace(pending_sidecar, prior_sidecar)
-                else:
-                    # The outgoing generation owned no sidecar: remove the prior
-                    # sidecar BEFORE promoting the tuple, so a failure at
-                    # either step leaves the tuple temporary pending and the
-                    # next call repeats both (a removal already done is a
-                    # no-op) — never a promoted prior tuple beside a stale
-                    # prior sidecar with nothing pending.
-                    prior_sidecar.unlink(missing_ok=True)
-                    os.replace(pending, prior_path)
+            genuine = pending_tuple is not None and pending_tuple != current
+        # ORDER MATTERS in every branch, because any step can fail and the
+        # NEXT call classifies the state from what survived (Sol, diff
+        # review r2): the tuple temporary must outlive every step whose
+        # failure would otherwise leave a lone sidecar temporary that the
+        # next call would promote as a completed promotion's companion, and
+        # a prior-sidecar removal must happen while the tuple temporary still
+        # marks the promotion as pending.
+        if genuine:
+            if sidecar_state == "regular":
+                # Tuple first: a failure after it leaves a LONE sidecar
+                # temporary, which the next call promotes — correct, it is
+                # this genuine pair's sidecar.
+                os.replace(pending, prior_path)
+                os.replace(pending_sidecar, prior_sidecar)
             else:
-                # Sidecar first: a failure between the two leaves the tuple
-                # temporary, so the next call classifies the pair stale again
-                # and discards; the other order would leave a lone STALE
-                # sidecar temporary that the next call promotes over the true
-                # prior.
-                pending_sidecar.unlink(missing_ok=True)
-                pending.unlink(missing_ok=True)
-        elif pending_sidecar.exists():
-            os.replace(pending_sidecar, prior_sidecar)
+                # The outgoing generation owned no sidecar: remove the prior
+                # sidecar BEFORE promoting the tuple, so a failure at either
+                # step leaves the tuple temporary pending and the next call
+                # repeats both (a removal already done is a no-op).
+                prior_sidecar.unlink(missing_ok=True)
+                os.replace(pending, prior_path)
+        else:
+            # Sidecar first: a failure between the two leaves the tuple
+            # temporary, so the next call classifies the pair stale again and
+            # discards; the other order would leave a lone STALE sidecar
+            # temporary that the next call promotes over the true prior.
+            pending_sidecar.unlink(missing_ok=True)
+            pending.unlink(missing_ok=True)
 
     def _copy_sidecar_to_temp(self) -> "Path | None":
         """#810: the sidecar twin of ``_copy_to_temp`` — the active owned-plugins
@@ -965,6 +975,22 @@ def owned_plugins_path(directory: Path) -> Path:
 
 def owned_plugins_prior_path(directory: Path) -> Path:
     return Path(directory) / "owned-plugins.prior.yaml"
+
+
+def _observe_temporary(path: Path) -> str:
+    """#810: the ONE way a pending-rotation temporary is classified — a closed
+    answer over ``lstat`` (never a followed ``exists()``, which reports a looped
+    or dangling symlink as absent — Terra, diff review r7): ``"absent"`` for
+    ENOENT alone, ``"regular"`` for a regular file, ``"special"`` for anything
+    else this module never writes (a symlink, a directory, a FIFO). Every other
+    ``OSError`` propagates: an observation that could not be made is not an
+    answer."""
+    import stat as _stat
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "absent"
+    return "regular" if _stat.S_ISREG(st.st_mode) else "special"
 
 
 def owned_plugins_rollback_temp_path(directory: Path) -> Path:

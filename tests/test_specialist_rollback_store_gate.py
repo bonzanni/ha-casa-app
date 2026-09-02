@@ -61,3 +61,39 @@ def test_a_drifted_store_is_refused_by_name_without_a_model_change(
     assert "role_checksum" not in raised.value.detail
     assert len(writes) == 0
     assert active_path.read_bytes() == active_before
+
+
+def test_a_drifted_component_file_is_refused_by_name_not_as_an_unstructured_error(
+        tmp_path: Path, monkeypatch) -> None:
+    """Diff review round 7 (Sol): a component-owned file — the retained role's
+    doctrine — is altered, so the component loader itself rejects the store
+    (its checksum no longer matches its manifest) before any digest gate. The
+    rollback still refuses the TYPED ``compile_failed`` naming the prior's root
+    — never a bare ``ValueError`` the tool would emit unstructured — with zero
+    tuple writes and the active untouched. Mutant: let the loader's error
+    escape → this raises ValueError, not SpecialistInstallError."""
+    from specialist_install import (
+        SpecialistInstallError, cas_store_dir, parse_component_root, rollback_specialist,
+    )
+
+    specialists_root, agents_root, _ = _install(tmp_path, monkeypatch)
+    assert _upgrade(tmp_path, specialists_root, agents_root, version="0.2.0").state == "active"
+    prior, _, active_path, _ = _prior_and_paths(specialists_root)
+    _, _, prior_checksum = parse_component_root(prior.root)
+    cas_dir = cas_store_dir(prior_checksum, store_root=specialists_root / "store")
+    doctrine = cas_dir / "role" / "doctrine.md"
+    cas_dir.chmod(0o755)
+    (cas_dir / "role").chmod(0o755)
+    doctrine.chmod(0o644)
+    doctrine.write_bytes(doctrine.read_bytes() + b"\ndrifted\n")
+    active_before = active_path.read_bytes()
+    writes = _count_tuple_writes(monkeypatch)
+
+    with pytest.raises(SpecialistInstallError) as raised:
+        rollback_specialist(
+            slug=_SLUG, specialists_dir=specialists_root, agents_specialists_dir=agents_root)
+
+    assert raised.value.kind == "compile_failed"
+    assert prior.root in raised.value.detail
+    assert len(writes) == 0
+    assert active_path.read_bytes() == active_before
