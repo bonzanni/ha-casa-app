@@ -158,6 +158,28 @@ argument set, so a repeat call needs a fresh one. Where a tool is not declared p
 such gate exists — which is why the rule beside it matters: an earlier agreement to fetch or
 send is not authority for the next one, and the absence of a refusal is not consent.
 
+**A page someone has to open is delivered, not withheld — and its shape is the work.** An
+authorization or consent page is not the same class of thing as an artifact whose possession
+is the access: its whole purpose is that a person opens it, so that person is the operation
+meant to consume it, and the rule above is satisfied by handing it over rather than by
+holding it back. What that rule does not settle is the form, and the form is where this went
+wrong in practice: a several-hundred-character address pasted into a chat is delivered and
+unusable at the same time. The residents' text doctrine therefore asks for a labelled link
+whose label names the action and the destination domain, with the address carried as the
+link's destination — the one exception being the message tool, which is not rendered, so a
+plain address is what belongs there.
+
+Four things that shape does *not* do, all of them pre-existing properties of every labelled
+link rather than consequences of asking for one. A Telegram text reply and a button question
+pass through the rich renderer, but a streamed reply's text is unrendered until its final
+edit, so the raw form is briefly visible; if Telegram rejects the formatting, a single-page
+reply and a button question both re-send the text as authored, while a multi-page reply
+re-sends each page's visible text, which for a labelled link is the label alone — and there
+the address does not reach the reader at all. A voice reply is spoken rather than rendered,
+and an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
+arrives as markup with its address intact. The instruction improves legibility on the surface
+where a person reads it; it conceals nothing and guarantees nothing about the transport.
+
 ## What this cannot tell you
 
 These rules cover the failure modes the system's own structure creates. They do not cover the
