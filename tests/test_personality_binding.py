@@ -697,3 +697,148 @@ def test_a_failed_desired_unlink_does_not_fail_the_committed_transition(
     assert d.desired() == gen2               # stale, retried later
     d.commit_desired_to_active()             # no-op recommit clears it
     assert d.desired() is None
+
+
+# --- #810 (diff review r2, Sol S2): a partial failure inside the pending-rotation
+#     completion must leave a state the NEXT call classifies the same way — never
+#     a lone STALE sidecar temporary, never a promoted prior tuple beside a stale
+#     prior sidecar with nothing pending. Each pin fails exactly one step of the
+#     first call and asserts the retained PAIR after the retry. ------------------
+
+
+def _seed_pair_state(base: Path, *, active, prior, tuple_temp, active_doc, prior_doc,
+                     sidecar_temp_doc) -> None:
+    from personality_binding import (
+        atomic_write_instance_tuple, owned_plugins_path, owned_plugins_prior_path,
+        owned_plugins_rollback_temp_path, write_owned_plugins,
+    )
+    base.mkdir(parents=True, exist_ok=True)
+    atomic_write_instance_tuple(base / "active.yaml", active)
+    if prior is not None:
+        atomic_write_instance_tuple(base / "active.prior.yaml", prior)
+    if tuple_temp is not None:
+        atomic_write_instance_tuple(base / "active.yaml.rollback-tmp", tuple_temp)
+    write_owned_plugins(owned_plugins_path(base), active_doc)
+    if prior_doc is not None:
+        write_owned_plugins(owned_plugins_prior_path(base), prior_doc)
+    if sidecar_temp_doc is not None:
+        write_owned_plugins(owned_plugins_rollback_temp_path(base), sidecar_temp_doc)
+
+
+def _fail_once_unlink(monkeypatch, target: Path) -> dict:
+    """Make the FIRST ``Path.unlink`` of *target* raise ``OSError``; count."""
+    real_unlink = Path.unlink
+    fired = {"count": 0}
+
+    def _unlink(self_path, *a, **k):
+        if str(self_path) == str(target) and fired["count"] == 0:
+            fired["count"] += 1
+            raise OSError("EIO on unlink")
+        return real_unlink(self_path, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", _unlink)
+    return fired
+
+
+def test_a_stale_pair_whose_sidecar_temporary_unlink_fails_is_still_discarded_on_retry(
+        tmp_path: Path, monkeypatch) -> None:
+    """Sol (diff review r2): the stale pair T2/S2 (temporaries duplicating the
+    active) — the first completion's SIDECAR-temporary unlink fails. The tuple
+    temporary must survive that failure, so the retry classifies the pair stale
+    again and discards it; the retained pair stays T1/S1. The reverse order
+    left a lone stale S2 temporary that the retry promoted over S1."""
+    from personality_binding import (
+        load_instance_tuple, owned_plugins_prior_path, owned_plugins_rollback_temp_path,
+        read_owned_plugins,
+    )
+
+    base = tmp_path / "mtg"
+    t1, t2 = (_tuple(_binding(persona_version=v)) for v in ("0.1.0", "0.2.0"))
+    s1 = {"schema_version": 1, "component_source": {"gen": "one"}, "plugins": []}
+    s2 = {"schema_version": 1, "component_source": {"gen": "two"}, "plugins": []}
+    _seed_pair_state(base, active=t2, prior=t1, tuple_temp=t2, active_doc=s2, prior_doc=s1,
+                     sidecar_temp_doc=s2)
+    fired = _fail_once_unlink(monkeypatch, owned_plugins_rollback_temp_path(base))
+
+    with pytest.raises(OSError):
+        InstanceDir(base).complete_pending_rotation()
+    assert fired["count"] == 1
+    assert (base / "active.yaml.rollback-tmp").exists()      # still marks the pair stale
+
+    InstanceDir(base).complete_pending_rotation()
+
+    assert load_instance_tuple(base / "active.prior.yaml") == t1
+    assert read_owned_plugins(owned_plugins_prior_path(base)) == s1
+    assert not (base / "active.yaml.rollback-tmp").exists()
+    assert not owned_plugins_rollback_temp_path(base).exists()
+
+
+def test_a_genuine_promotion_without_a_sidecar_whose_prior_sidecar_unlink_fails_is_repeated_on_retry(
+        tmp_path: Path, monkeypatch) -> None:
+    """The outgoing generation T2 owned no sidecar (no sidecar temporary) and
+    the prior sidecar S1 must go with the promotion. The prior-sidecar removal
+    runs BEFORE the tuple promotion, so when it fails the tuple temporary is
+    still pending and the retry repeats both; the retained pair after the
+    retry is T2 with NO prior sidecar — never T2 beside a stale S1 with nothing
+    left pending."""
+    from personality_binding import (
+        load_instance_tuple, owned_plugins_prior_path, owned_plugins_rollback_temp_path,
+        read_owned_plugins,
+    )
+
+    base = tmp_path / "mtg"
+    t1, t2, t3 = (_tuple(_binding(persona_version=v)) for v in ("0.1.0", "0.2.0", "0.3.0"))
+    s1 = {"schema_version": 1, "component_source": {"gen": "one"}, "plugins": []}
+    s3 = {"schema_version": 1, "component_source": {"gen": "three"}, "plugins": []}
+    _seed_pair_state(base, active=t3, prior=t1, tuple_temp=t2, active_doc=s3, prior_doc=s1,
+                     sidecar_temp_doc=None)
+    fired = _fail_once_unlink(monkeypatch, owned_plugins_prior_path(base))
+
+    with pytest.raises(OSError):
+        InstanceDir(base).complete_pending_rotation()
+    assert fired["count"] == 1
+    assert load_instance_tuple(base / "active.prior.yaml") == t1   # nothing promoted yet
+    assert (base / "active.yaml.rollback-tmp").exists()
+
+    InstanceDir(base).complete_pending_rotation()
+
+    assert load_instance_tuple(base / "active.prior.yaml") == t2
+    assert read_owned_plugins(owned_plugins_prior_path(base)) is None
+    assert not (base / "active.yaml.rollback-tmp").exists()
+    assert not owned_plugins_rollback_temp_path(base).exists()
+
+
+def test_a_commit_of_a_sidecarless_generation_whose_prior_sidecar_unlink_fails_keeps_the_pair_pending(
+        tmp_path: Path, monkeypatch) -> None:
+    """The commit-core twin: T1 active with NO sidecar, a stale prior sidecar
+    S0 on disk, committing T2. The prior-sidecar removal fails; the commit still
+    succeeds (the new active is durable), the tuple temporary stays pending and
+    the visible prior is untouched; the next completion promotes T1 and removes
+    S0 — the retained pair is T1 with no sidecar."""
+    from personality_binding import (
+        load_instance_tuple, owned_plugins_prior_path, read_owned_plugins,
+        write_owned_plugins,
+    )
+
+    base = tmp_path / "mtg"
+    d = InstanceDir(base)
+    t1, t2 = (_tuple(_binding(persona_version=v)) for v in ("0.1.0", "0.2.0"))
+    d.stage_desired(t1)
+    d.commit_desired_to_active()
+    s0 = {"schema_version": 1, "component_source": {"gen": "zero"}, "plugins": []}
+    write_owned_plugins(owned_plugins_prior_path(base), s0)
+    fired = _fail_once_unlink(monkeypatch, owned_plugins_prior_path(base))
+
+    d.stage_desired(t2)
+    committed = d.commit_desired_to_active()          # must NOT raise
+
+    assert committed == t2 and d.active() == t2
+    assert fired["count"] == 1
+    assert (base / "active.yaml.rollback-tmp").exists()
+    assert load_instance_tuple(base / "active.prior.yaml") is None
+
+    d.complete_pending_rotation()
+
+    assert load_instance_tuple(base / "active.prior.yaml") == t1
+    assert read_owned_plugins(owned_plugins_prior_path(base)) is None
+    assert not (base / "active.yaml.rollback-tmp").exists()

@@ -729,13 +729,23 @@ class InstanceDir:
             # take the crash-retry branch and rotate this stale pair over
             # the true prior pair. (A hard crash here is safe without cleanup
             # — active != candidate still, so retry recreates the copies.)
-            if pending_prior is not None:
-                pending_prior.unlink(missing_ok=True)
+            # Sidecar first, for the same reason complete_pending_rotation
+            # discards in that order: a lone sidecar temporary reads as a
+            # completed promotion's companion.
             if pending_sidecar is not None:
                 pending_sidecar.unlink(missing_ok=True)
+            if pending_prior is not None:
+                pending_prior.unlink(missing_ok=True)
             raise
         if pending_prior is not None:
             try:
+                if pending_sidecar is None:
+                    # The outgoing generation owned no sidecar: remove the
+                    # prior sidecar BEFORE the tuple promotion (same order as
+                    # complete_pending_rotation), so a failure at either step
+                    # keeps the tuple temporary pending for the next commit
+                    # or rollback to repeat both.
+                    owned_plugins_prior_path(self._dir).unlink(missing_ok=True)
                 os.replace(pending_prior, prior_path)
             except OSError:
                 # Terra review: the commit has already SUCCEEDED — the new
@@ -752,7 +762,8 @@ class InstanceDir:
                     "pending rotation completes", self._dir, exc_info=True,
                 )
             else:
-                self._promote_pending_sidecar(pending_sidecar)
+                if pending_sidecar is not None:
+                    self._promote_pending_sidecar(pending_sidecar)
         try:
             desired_path.unlink(missing_ok=True)
         except OSError:
@@ -765,19 +776,17 @@ class InstanceDir:
             )
         return candidate
 
-    def _promote_pending_sidecar(self, pending_sidecar: "Path | None") -> None:
-        """#810: the sidecar half of a completed tuple promotion. A temporary
-        becomes ``owned-plugins.prior.yaml``; no temporary means the outgoing
-        active owned no sidecar, so the prior sidecar is REMOVED — absent reads
-        as the empty owned set (``read_owned_plugins``), which is exactly what
-        the outgoing generation owned. A promotion that fails keeps the
-        temporary for the next commit or rollback to complete."""
+    def _promote_pending_sidecar(self, pending_sidecar: Path) -> None:
+        """#810: the sidecar half of a completed tuple promotion — the
+        temporary becomes ``owned-plugins.prior.yaml``. (An outgoing
+        generation that owned no sidecar has its prior sidecar removed BEFORE
+        the tuple promotion instead; absent reads as the empty owned set,
+        ``read_owned_plugins``, which is exactly what that generation owned.)
+        A promotion that fails keeps the temporary — a lone sidecar temporary
+        — for the next commit or rollback to complete."""
         prior_sidecar = owned_plugins_prior_path(self._dir)
         try:
-            if pending_sidecar is not None:
-                os.replace(pending_sidecar, prior_sidecar)
-            else:
-                prior_sidecar.unlink(missing_ok=True)
+            os.replace(pending_sidecar, prior_sidecar)
         except OSError:
             logger.warning(
                 "%s: new active committed but the owned-plugins prior rotation "
@@ -817,15 +826,37 @@ class InstanceDir:
             except (ValueError, OSError, yaml.YAMLError,
                     jsonschema.ValidationError):
                 current = None
+            # ORDER MATTERS in every branch, because any step can fail and
+            # the NEXT call classifies the state from what survived (Sol,
+            # diff review r2): the tuple temporary must outlive every step
+            # whose failure would otherwise leave a lone sidecar temporary
+            # that the next call would promote as a completed promotion's
+            # companion, and a prior-sidecar removal must happen while the
+            # tuple temporary still marks the promotion as pending.
             if pending_tuple is not None and pending_tuple != current:
-                os.replace(pending, prior_path)
                 if pending_sidecar.exists():
+                    # Tuple first: a failure after it leaves a LONE sidecar
+                    # temporary, which the next call promotes — correct, it is
+                    # this genuine pair's sidecar.
+                    os.replace(pending, prior_path)
                     os.replace(pending_sidecar, prior_sidecar)
                 else:
+                    # The outgoing generation owned no sidecar: remove the prior
+                    # sidecar BEFORE promoting the tuple, so a failure at
+                    # either step leaves the tuple temporary pending and the
+                    # next call repeats both (a removal already done is a
+                    # no-op) — never a promoted prior tuple beside a stale
+                    # prior sidecar with nothing pending.
                     prior_sidecar.unlink(missing_ok=True)
+                    os.replace(pending, prior_path)
             else:
-                pending.unlink(missing_ok=True)
+                # Sidecar first: a failure between the two leaves the tuple
+                # temporary, so the next call classifies the pair stale again
+                # and discards; the other order would leave a lone STALE
+                # sidecar temporary that the next call promotes over the true
+                # prior.
                 pending_sidecar.unlink(missing_ok=True)
+                pending.unlink(missing_ok=True)
         elif pending_sidecar.exists():
             os.replace(pending_sidecar, prior_sidecar)
 
