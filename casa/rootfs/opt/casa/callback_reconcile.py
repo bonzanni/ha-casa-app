@@ -668,6 +668,48 @@ async def _regen_health_safe() -> None:
         logger.warning("post-consent plugin-health regen failed", exc_info=True)
 
 
+async def _settle_under_lock(fut: "asyncio.Future") -> Any:
+    """Await *fut* while holding ``_RECONCILE_LOCK``, and on cancellation keep
+    holding it until the SAME future settles — through EVERY further
+    cancellation, not only the first — then let the cancellation through.
+
+    #825, the callback twin of the trigger fence (``trigger_reconcile``,
+    INV-TRIG-017). ``asyncio.to_thread`` cannot stop the thread it started, so
+    releasing the lock at the first cancellation lets a successor pass compute
+    and publish over marker files still landing. The wait is bounded by that
+    thread's own work — a bounded number of file operations, waiting on no
+    event, no network and no lock beyond the spool's or the ack store's own —
+    never by anything external; loop teardown waits for the default executor's
+    threads anyway. Settled means EITHER outcome: a return, or a raise from the
+    thread. Any non-cancellation exception propagates exactly as the plain
+    ``await asyncio.to_thread(...)`` propagated it."""
+    try:
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        while not fut.done():
+            try:
+                await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 — the thread raised: settled.
+                break
+        raise
+
+
+def _kick_setup_worker() -> None:
+    """Wake the setup-episode worker after this half publishes.
+
+    One place rather than three so the cancellation and normal paths cannot
+    drift. A kick is an idempotent ``Event.set()`` that nothing downstream may
+    depend on ARRIVING (INV-PLUG-016), which is why every failure here — the
+    import included — is swallowed: it must never break a reconcile."""
+    try:
+        import plugin_setup_episodes
+        plugin_setup_episodes.kick()
+    except Exception:  # noqa: BLE001 — never break a reconcile on this
+        pass
+
+
 async def reconcile_plugin_callbacks(
     *, trigger_registry: Any, role_configs: dict,
     channel_manager: Any = None, acks: Any = None, spool: Any = _UNSET,
@@ -738,30 +780,58 @@ async def reconcile_plugin_callbacks(
         # closed to ABSENT on any write error. The in-memory previous overlay
         # is not consulted — it is empty across a restart and would miss a
         # stale marker (the r2/r3 finding this replaces).
-        republish = await asyncio.to_thread(
-            _reconcile_markers_pre_swap, spool, desired)
+        # #825: every threaded write hop below is fenced — the future is
+        # created, shielded, and drained through every further cancellation
+        # before the cancellation is allowed out. Nothing of this pass has been
+        # published yet, so a cancellation here publishes nothing and kicks
+        # nothing; what the fence buys is that the retire's deletes finish
+        # before a successor may take the lock and compute against files this
+        # thread has not deleted yet.
+        retiring = asyncio.ensure_future(asyncio.to_thread(
+            _reconcile_markers_pre_swap, spool, desired))
+        republish = await _settle_under_lock(retiring)
         # #606: only an authoritative computation may publish a map.
         trigger_registry.replace_callback_overlay(
             desired.overlay if desired.registry_valid
             else trigger_registry_mod.ROUTING_UNAVAILABLE)
-        await asyncio.to_thread(
-            _publish_markers_post_swap, spool, desired, republish)
+        # #825 (INV-CB-010): the map above is LIVE, so no marker stands and
+        # `plugin_routing_recovery.needs_recovery` reads False — nothing will
+        # collect this pass. A setup obligation held on the callback marker
+        # pair is a bare return that arms no timer, so the kick is this arm's
+        # terminal act, where the trigger fence deliberately has none (its
+        # marker stands for the scheduled recovery instead). It fires only
+        # after the future has SETTLED, never from a `finally`: the dispatch
+        # gate reads the pair under the spool lock, so a worker woken between
+        # `write_ready` and `write_index_entry` reads a half-published pair.
+        writes = asyncio.ensure_future(asyncio.to_thread(
+            _publish_markers_post_swap, spool, desired, republish))
+        try:
+            await _settle_under_lock(writes)
+        except asyncio.CancelledError:
+            _kick_setup_worker()
+            raise
 
         if desired.prunable:
+            # Fenced for the same reason, and its cancellation arm kicks for the
+            # same one: the pair is already complete and live by now, so the
+            # obligation's condition has been cleared and the wake is owed.
+            # Unfenced, the orphan could also rewrite the ack store with the
+            # lock free — deleting an ack a successor recorded after this pass
+            # computed its keep-set.
+            pruning = asyncio.ensure_future(asyncio.to_thread(
+                acks.prune_stale, desired.valid_identities))
             try:
-                removed = await asyncio.to_thread(
-                    acks.prune_stale, desired.valid_identities)
+                removed = await _settle_under_lock(pruning)
                 if removed:
                     logger.info("pruned %d stale callback ack(s)", len(removed))
+            except asyncio.CancelledError:
+                _kick_setup_worker()
+                raise
             except Exception:  # noqa: BLE001 — an opportunistic prune must
                 # never break the reconcile; the next pass retries.
                 logger.warning("callback ack prune failed", exc_info=True)
 
-        try:
-            import plugin_setup_episodes
-            plugin_setup_episodes.kick()
-        except Exception:  # noqa: BLE001 — never break a reconcile on this
-            pass
+        _kick_setup_worker()
 
         # Prompts fire INSIDE the lock (the trigger-reconcile discipline):
         # keyboard registration is then ordered BEFORE any later reconcile can
@@ -781,11 +851,7 @@ async def reconcile_plugin_callbacks(
             unknown=(trigger_reconcile.consent_position_unknown(desired.issues)
                      | (peer_unknown or set())),
             single_generation=one_gen)
-        try:
-            import plugin_setup_episodes
-            plugin_setup_episodes.kick()   # a zero-member verdict releases
-        except Exception:  # noqa: BLE001
-            pass
+        _kick_setup_worker()   # a zero-member verdict releases
         if prompt and desired.pending:
             _fire_consent_prompts(
                 desired.pending, trigger_registry=trigger_registry,

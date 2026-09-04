@@ -108,6 +108,31 @@ What it does not cover — documented, tested residuals: the in-container nginx 
 upstream failure, and the outer reverse proxy's own logs, which are operator-configured. The
 `/callback/` access line still records the path (only its query is dropped).
 
+**INV-CB-010**: A callback reconcile whose caller is cancelled holds the reconcile lock until the marker and ack writes it has already handed to a worker thread have settled, however many cancellations arrive; and a pass that had already published its overlay delivers one setup-worker kick after those writes settle and before the cancellation propagates.
+
+The reconcile takes three write hops in worker threads under its lock — retire the pairs about to
+stop being published, publish the routed set's pairs after the swap, prune stale acks — and a
+thread handed work cannot be stopped. Each hop is therefore awaited through a shield and, on
+cancellation, drained until that same future settles, through every further cancellation rather
+than only the first. Released at the first one, the lock would let a successor compute against
+files the orphan has not finished writing.
+
+The kick is the terminal act of the two hops that follow the swap, and it fires only once the
+future has settled — never from a `finally`. The [setup-dispatch gate](plugin-setup.md) reads the
+marker pair under the spool's own lock, so a worker woken between the two writes of a pair reads a
+half-published one, which the writer then deletes and records as a `callback_spool_error`: the
+same held obligation, reached the other way round. The trigger half's fence
+([`plugin-triggers.md`](plugin-triggers.md), INV-TRIG-017) deliberately kicks nothing on
+cancellation, and the difference is not an inconsistency: that pass leaves its unavailable marker
+standing for the scheduled recovery to collect, while this one has already swapped a live map, so
+no marker stands, the recovery predicate reads nothing to recover, and the wake is owed here or
+nowhere. The wait is bounded by the thread's own work and by nothing external.
+
+Cancelled before the swap, the pass still drains — the deletes must land before another pass may
+compute — but publishes nothing and kicks nothing, because nothing of its own has become both
+durable and live. Nothing downstream may depend on a kick arriving: it is an `Event.set()`, and
+the obligations it wakes keep their own reads (INV-PLUG-011, INV-PLUG-016).
+
 ## Failure behavior
 
 **An unrouted name, or a missing, malformed, expired, replayed or never-minted state.** All
@@ -139,6 +164,12 @@ revoke can shift callback assignment too. Reopening is paired the same way: whil
 marker stands, the scheduled recovery pass [`plugin-triggers.md`](plugin-triggers.md)
 describes recomputes both halves together, so a transient failure does not leave this half
 shut until an operator action.
+
+**A pass is cancelled.** It is released only after the writes it had already handed to a worker
+thread have landed, however many cancellations arrive; a pass cancelled after its overlay swap
+then wakes the setup worker once, and one cancelled before it publishes and wakes nothing
+(INV-CB-010). Either way no reader sees a half-published pair, and no obligation is left held on a
+marker pair this pass completed with nobody coming.
 
 ## Extension points
 
@@ -196,6 +227,7 @@ on the return leg, and the one place a malformed value could reach a third party
 - `tests/test_callback_consent.py`
 - `tests/test_plugin_callbacks.py`
 - `tests/test_callback_urls.py`
+- `tests/test_callback_reconcile_publication_fence.py`
 
 **Related**
 - [`architecture/callback-delivery.md`](../architecture/callback-delivery.md)

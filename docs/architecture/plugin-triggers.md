@@ -167,6 +167,12 @@ set through a configuration change with no write — that is the derived-versus-
 the setup worker's own reads bound (INV-PLUG-016), not an artifact created ahead of its
 route; and a process torn down mid-pass, which relies on the next boot starting at the marker.
 
+The callback half has a fence of its own for the same unstoppable-thread reason, and it ends
+the other way round ([`callbacks.md`](callbacks.md), INV-CB-010): a callback pass cancelled
+after its swap has already published a live map, so no marker of its stands for the recovery
+to collect and its drain ends in a setup-worker kick, where this one deliberately ends in
+none. Same mechanism, opposite terminus, because the two passes leave opposite state behind.
+
 ## Failure behavior
 
 **Reconciliation raises.** The overlay is replaced before the exception propagates, so a
