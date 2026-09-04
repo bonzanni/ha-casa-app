@@ -107,8 +107,9 @@
     - tests/test_telegram_topic_stream.py
     - tests/test_telegram_link_fallback.py
     - tests/test_telegram_link_fallback_shapes.py
+    - tests/test_tg_richtext.py
   related: [architecture/overview.md, architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/http-surface.md]
-  defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-005, INV-TG-006, INV-TG-007]
+  defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-005, INV-TG-006, INV-TG-007, INV-TG-008]
   invariant_tests:
     INV-TG-001: [tests/test_telegram_update_handler.py::test_no_secret_configured_rejects, tests/test_telegram_update_handler.py::test_wrong_token_403_and_not_processed, tests/test_telegram_update_handler.py::test_correct_token_200]
     INV-TG-002: [tests/test_telegram_inline_callback.py::test_wrong_user_refused_without_claiming, tests/test_verdict_broker.py::test_claim_forbidden_on_actor_mismatch, tests/test_channel_internal_handlers.py::test_permission_verdict_route_gone]
@@ -117,6 +118,7 @@
     INV-TG-005: [tests/test_tg_richtext.py::test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets]
     INV-TG-006: [tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_notice_survives_a_delivery_that_sent_nothing, tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_head_delivered_then_raise_does_not_repeat_the_notice, tests/test_telegram_delivery_outcome.py::TestSend::test_send_without_app_reports_not_delivered, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_persistent_forbidden_is_not_delivered, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_landed_emit_latches_through_final_edit_refusal, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_no_emit_multi_page_refusal_is_unknown, tests/test_telegram_topic_stream.py::TestAmbiguousEmitWeakensTheClaim::test_timed_out_emit_then_refused_finalize_is_unknown, tests/test_telegram_topic_stream.py::TestAmbiguousEmitWeakensTheClaim::test_a_refused_emit_does_not_weaken_the_claim, tests/test_telegram_topic_stream.py::TestPreSendFailuresEstablishAbsence::test_connect_timeouts_establish_not_delivered, tests/test_telegram_topic_stream.py::TestPreSendFailuresEstablishAbsence::test_read_timeout_keeps_the_ambiguity]
     INV-TG-007: [tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_plain_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_rich_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_entity_fallback_retry_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_empty_markup_survives_to_the_wire]
+    INV-TG-008: [tests/test_tg_richtext.py::test_render_paged_conversion_failure_keeps_well_formed_link_target, tests/test_telegram_link_fallback.py::test_all_four_senders_deliver_the_target_when_conversion_fails]
 
 - doc: architecture/tools-interface.md
   summary: The mutation interface — the one tool registry, result envelopes, the question lifecycle, and which failures roll back versus report.

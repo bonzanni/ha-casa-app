@@ -50,6 +50,7 @@ page), and enforces BOTH the 4096 UTF-16-unit length budget AND the
 from __future__ import annotations
 
 import bisect
+import logging
 import re
 
 from markdown_it import MarkdownIt
@@ -60,6 +61,8 @@ from text_util import utf16_len, utf16_prefix_end
 # kind: pre/code/bold/italic, or "link:<url>" (URL rides in the kind so the
 # pagination clip/rebase logic carries it across page cuts unchanged).
 Span = tuple[int, int, str]
+
+logger = logging.getLogger(__name__)
 
 MAX_LEN = 4096
 MAX_ENTITIES = 100
@@ -836,6 +839,125 @@ def _paginate(
     return pages
 
 
+def _without_lone_surrogates(text: str) -> str:
+    """*text* with every surrogate code point replaced by ``U+FFFD``.
+
+    Not cosmetic, and not the same thing as the measurement's tolerance. PTB
+    22.7 sends a request as ``data=request_data.json_parameters`` — FORM data,
+    which httpx encodes as UTF-8 — not as ``json_payload``, whose
+    ``ensure_ascii`` would have escaped a lone surrogate harmlessly. So a page
+    that still carries one raises ``NetworkError(UnicodeEncodeError)`` before
+    any request leaves the process: the repaired page would deliver nothing at
+    all. Replacement is ONE code point for one, which preserves every Python
+    offset the reconstruction inserts at and every UTF-16 unit the budget was
+    measured in.
+
+    Applied only to the pages the conversion-failure arm emits. A page whose
+    spans convert, and a page with no spans, never reach here and keep their
+    bytes exactly — narrowing this asymmetry further is a separate defect with
+    its own reachability, not this one.
+    """
+    if not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join(
+        "\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
+
+
+def _link_targets_for_page(
+    page_text: str, page_spans: list[Span],
+) -> tuple[list[tuple[int, int, str]], list[str], bool]:
+    """``(insertable spans, unique urls, inline_ok)`` for one page's spans.
+
+    The span-side sibling of ``_link_spans``: ``_paginate`` rebases every span
+    to PYTHON offsets on its own page, so a reconstruction from spans needs no
+    UTF-16 round-trip — and that round-trip is precisely what a lone surrogate
+    breaks. Selection mirrors ``_link_spans`` so the two plain forms agree: a
+    non-link kind carries no datum the display lacks, an empty url is what
+    ``_spans_to_entities`` itself rejects, and a url already visible inside its
+    own label would be printed twice.
+
+    ``inline_ok`` is False when a link span's offsets do not address this page.
+    Its url still reaches the caller, which then uses the whole-page overflow
+    form rather than guessing an insertion point.
+    """
+    spans: list[tuple[int, int, str]] = []
+    urls: list[str] = []
+    inline_ok = True
+    for start, end, kind in page_spans:
+        if not kind.startswith(_LINK_KIND):
+            continue
+        url = kind[len(_LINK_KIND):]
+        if not url:
+            continue
+        if not (0 <= start < end <= len(page_text)):
+            inline_ok = False
+        elif url in page_text[start:end]:
+            continue                     # an autolink already carries it
+        else:
+            spans.append((start, end, url))
+        if url not in urls:
+            urls.append(url)
+    spans.sort(key=lambda sp: sp[0])
+    return spans, urls, inline_ok
+
+
+def _target_pages(urls: list[str]) -> list[str]:
+    """*urls* as pages of one destination per line, each within ``MAX_LEN``.
+
+    A destination longer than one whole message cannot be delivered by this
+    platform in ANY shape, and fragments of an address are worse than none, so
+    it is dropped with a log line — the rule
+    ``TelegramChannel._plain_fallback_chunks`` already applies. Packing the
+    survivors greedily at newlines is safe exactly because each one fits alone.
+    """
+    pages: list[str] = []
+    current = ""
+    for url in urls:
+        if _utf16_units(url) > MAX_LEN:
+            logger.warning(
+                "link destination exceeds one message and cannot be "
+                "delivered plain: %d units", _utf16_units(url))
+            continue
+        candidate = f"{current}\n{url}" if current else url
+        if current and _utf16_units(candidate) > MAX_LEN:
+            pages.append(current)
+            current = url
+        else:
+            current = candidate
+    if current:
+        pages.append(current)
+    return pages
+
+
+def _plain_pages_with_targets(
+    page_text: str, page_spans: list[Span],
+) -> list[tuple[str, None]]:
+    """The pages that replace one page whose entities cannot be EXPRESSED.
+
+    #834: a page whose conversion failed is emitted as ``(page_text, None)``,
+    which every sender reads as "this page has no formatting" — so a
+    ``link:<url>`` span's destination, the one datum a display cannot carry,
+    reaches nobody and no ``BadRequest`` is raised for the sender-side plain
+    fallback to key on. Here the renderer re-attaches the destinations itself,
+    in the same ``label (url)`` form that fallback produces from entities.
+
+    Inline while it fits the page budget; otherwise the page's own text
+    unchanged, followed by destination-only pages. Insertions run right-to-left
+    so an earlier index is never invalidated.
+    """
+    spans, urls, inline_ok = _link_targets_for_page(page_text, page_spans)
+    page_text = _without_lone_surrogates(page_text)
+    if not urls:
+        return [(page_text, None)]
+    if inline_ok:
+        inline = page_text
+        for _, end, url in reversed(spans):
+            inline = f"{inline[:end]} ({url}){inline[end:]}"
+        if _utf16_units(inline) <= MAX_LEN:
+            return [(inline, None)]
+    return [(page_text, None), *((page, None) for page in _target_pages(urls))]
+
+
 def render_paged(
     text: str,
 ) -> list[tuple[str, "list[MessageEntity] | None"]]:
@@ -846,12 +968,33 @@ def render_paged(
     no spans on that page, or UTF-16 conversion failure) still carries its
     DISPLAY slice, never raw source. Callers send each page as one physical
     message; kwargs like ``reply_parameters`` belong on the FIRST page only.
-    Never raises."""
+    Never raises.
+
+    #834: when a page's spans exist but cannot be CONVERTED — a lone surrogate
+    makes PTB's UTF-16 adjustment raise — the plain page is emitted with each
+    link destination re-attached, because ``(page_text, None)`` is what a page
+    with no formatting looks like and no sender can tell the two apart. So a
+    multi-page result no longer concatenates back to the display: a page that
+    lost its entities and held a link is deliberately longer than its slice.
+    A SINGLE-page result is untouched, entities and bytes both — its senders
+    retry with the AUTHORED text, which still carries every address.
+    """
     display, spans = parse_markdown(text)
     out: list[tuple[str, "list[MessageEntity] | None"]] = []
-    for page_text, page_spans in _paginate(display, spans, MAX_LEN, MAX_ENTITIES):
+    paged = _paginate(display, spans, MAX_LEN, MAX_ENTITIES)
+    for page_text, page_spans in paged:
         if not page_spans:
             out.append((page_text, None))
             continue
-        out.append((page_text, _spans_to_entities(page_text, page_spans)))
+        entities = _spans_to_entities(page_text, page_spans)
+        if entities is not None or len(paged) == 1:
+            out.append((page_text, entities))
+            continue
+        try:
+            out.extend(_plain_pages_with_targets(page_text, page_spans))
+        except Exception:  # noqa: BLE001 — this contract never raises
+            logger.warning(
+                "could not reconstruct link destinations for a page whose "
+                "entities failed to convert", exc_info=True)
+            out.append((page_text, None))
     return out

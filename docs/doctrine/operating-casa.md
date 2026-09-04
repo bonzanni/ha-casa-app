@@ -174,10 +174,15 @@ link rather than consequences of asking for one. A Telegram text reply and a but
 pass through the rich renderer, but a streamed reply's text is unrendered until its final
 edit, so the raw form is briefly visible. A voice reply is spoken rather than rendered, and
 an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
-arrives as markup with its address intact. If Telegram rejects the formatting the reply is
-re-sent as plain text carrying the same addresses, whether it is one message or several, so
-that path loses nothing. The instruction improves legibility on the surface where a person
-reads it; it conceals nothing and guarantees nothing about the transport.
+arrives as markup with its address intact. Two things can go wrong with the formatting, and
+both are repaired in the text before it is handed to the transport: Telegram can refuse it,
+and the message is then re-sent as plain text carrying the same addresses; or the entities
+cannot be expressed at all, and on a paged reply the affected page is emitted with its
+destinations re-attached, beside their labels or on a page of their own that follows. A
+destination too long to be a message on its own is left out of any such reconstruction, with a
+log line. What that repair covers is the link and nothing else about the reply: text carrying
+no link has no address to re-attach. The instruction improves legibility on the surface where
+a person reads it; it conceals nothing and guarantees nothing about the transport.
 
 ## What this cannot tell you
 
