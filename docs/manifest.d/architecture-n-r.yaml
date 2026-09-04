@@ -124,9 +124,9 @@
     - tests/test_resident_prompt_write_guard.py
     - tests/test_resident_prompt_guard_denial_wording.py
   related: [architecture/personality.md, architecture/hook-resolution.md]
-  defines_invariants: [INV-PERS-008, INV-PERS-012]
+  defines_invariants: [INV-PERS-017, INV-PERS-012]
   invariant_tests:
-    INV-PERS-008: [tests/test_response_shape_write_guard.py::TestResponseShapeWriteGuard::test_denies_every_write_primitive_on_every_resident, tests/test_response_shape_write_guard.py::TestTheFileIsActuallyDead::test_every_resident_role_requires_a_persona]
+    INV-PERS-017: [tests/test_response_shape_write_guard.py::TestResponseShapeWriteGuard::test_denies_every_write_primitive_on_every_resident, tests/test_response_shape_write_guard.py::TestTheFileIsActuallyDead::test_every_resident_role_requires_a_persona, tests/test_response_shape_write_guard.py::TestTheFileIsReadRenderedButNotServed::test_published_invariant_matches_the_measured_response_shape_path, tests/test_response_shape_write_guard.py::TestTheFileIsReadRenderedButNotServed::test_real_loader_renders_each_response_shape_field, tests/test_response_shape_write_guard.py::TestTheFileIsReadRenderedButNotServed::test_each_response_shape_field_is_absent_from_all_served_projections, tests/test_response_shape_write_guard.py::TestTheWriteClauseHoldsOnEveryPathItNames::test_three_builder_paths_deny_and_a_specialist_abstains]
     INV-PERS-012: [tests/test_resident_prompt_write_guard.py::TestTheGuardIsRegisteredAndRefuses::test_registry_primitives_and_denial_counts, tests/test_resident_prompt_write_guard.py::TestTheGuardIsRegisteredAndRefuses::test_the_shell_is_not_classified_at_all, tests/test_resident_prompt_write_guard.py::TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks::test_four_builder_paths_deny_or_abstain_exactly, tests/test_resident_prompt_write_guard.py::TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks::test_the_claude_code_transport_carries_it_on_both_halves, tests/test_resident_prompt_write_guard.py::TestTheFileIsReadButNotServed::test_the_loader_opens_the_file_into_the_composed_prompt, tests/test_resident_prompt_write_guard.py::TestTheFileIsReadButNotServed::test_no_served_projection_carries_the_composed_prompt]
 
 - doc: architecture/plugin-events.md
