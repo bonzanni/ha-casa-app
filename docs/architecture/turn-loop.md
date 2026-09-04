@@ -251,11 +251,14 @@ another exclusion, not the pool internals.
 
 Teardown is asynchronous on purpose: draining the pool synchronously from inside a turn that
 holds one of its own entry locks deadlocks. A new teardown path must background the drain
-the same way. That drain is also bounded, so a wedged turn cannot hold shutdown open: each
-entry's lock is awaited up to a drain timeout — a default the caller may override, spent
-serially per entry — and an entry still locked when it expires is force-closed rather than
-waited on further. What that force-close can reach when the turn holding the lock is hosting
-an engagement launch is in
+the same way. That drain is bounded per entry, though not pool-wide: each entry's lock is
+awaited up to a drain timeout — a default the caller may override, spent serially per
+entry — and an entry still locked when it expires is force-closed rather than waited on
+further. The bound reaches only the entries the pool still holds. A generation already
+handed to an in-flight invalidation has left that map, and the closers that own it take the
+entry lock with no timeout at all, so a turn wedged on one of those holds shutdown open
+until it releases, whatever the drain timeout is set to. What that force-close can reach
+when the turn holding the lock is hosting an engagement launch is in
 [`architecture/engagements.md`](engagements.md).
 
 ## Source & test map
