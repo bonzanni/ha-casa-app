@@ -625,3 +625,84 @@ def test_boot_replays_one_real_process_crash_journal(
     assert (commits, committed_v2, replayable_before, _rolled_back(actions),
             1 if _generation(base) == g1 else 0,
             len(list(ops_dir.glob("*.json")))) == (1, 1, 1, 1, 1, 0)
+
+
+# ---------------------------------------------------------------------------
+# 7 — the grace is anchored to the FIRST cancellation and never re-armed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_does_not_re_arm_the_grace(
+        tmp_path: Path, monkeypatch) -> None:
+    """Added at the diff-review round (sol, S2), which reproduced the gap: with
+    the anchor mutated to re-arm on every absorbed cancellation, the bounded
+    arm above still passed, because its single late cancel adds far less delay
+    than its upper tolerance allows. A caller that keeps cancelling could then
+    extend its own wait without bound while the suite stayed green.
+
+    This arm cancels REPEATEDLY across five graces. Anchored to the first
+    cancellation, the handler finishes one grace after it and well inside the
+    cancel window; re-armed, it cannot finish until a grace after the LAST
+    cancel, which is past the window's end. No accepted assertion above is
+    changed by this case: it only adds one.
+
+    Green at the fix, red under the mutant `if True:` in place of
+    `if cancellation is None:`."""
+    case = _setup("rollback", tmp_path, monkeypatch)
+    _fresh_plugin_tools_lock(monkeypatch)
+    bound = _Bound(monkeypatch, case.ctx, tmp_path / "receipts")
+    grace = 0.5
+    monkeypatch.setattr(tools_mod, "_SPECIALIST_BUNDLE_CANCEL_GRACE_S", grace,
+                        raising=False)
+    gate = asyncio.Event()
+    bound.seq.gate = gate
+
+    a = asyncio.create_task(tools_mod.specialist_rollback.handler({"slug": _SLUG}))
+    await wait_until(lambda: len(bound.seq.calls) == 1 or a.done(),
+                     timeout=_TIMEOUT)
+    assert len(bound.seq.calls) == 1, "the sequencer was never entered"
+
+    loop = asyncio.get_running_loop()
+    a.cancel()
+    t0 = loop.time()
+    window = t0 + grace * 5
+    extra = 0
+
+    async def _keep_cancelling() -> None:
+        # A cadence of a fifth of a grace, so several further cancellations land
+        # INSIDE the first grace — an anchored deadline still expires at its end
+        # while a re-armed one is pushed to the window's. Stops as soon as the
+        # handler finishes, so the healthy run spins for one grace, not five.
+        nonlocal extra
+        while loop.time() < window and not a.done():
+            due = loop.time() + grace / 5
+            await wait_until(lambda: loop.time() >= due or a.done(),
+                             timeout=_TIMEOUT)
+            if not a.done():
+                a.cancel()
+                extra += 1
+
+    canceller = asyncio.create_task(_keep_cancelling())
+    done, pending = await asyncio.wait({a}, timeout=_TIMEOUT)
+    elapsed = loop.time() - t0
+    await canceller
+    assert not pending, "the handler never finished"
+    cancellations = 1 if a.cancelled() else 0
+    if not a.cancelled() and a.exception() is not None:
+        raise a.exception()
+
+    gate.set()
+    # Settle on the CONDITION, not on the counter: this arm's handler can return
+    # while its transaction is still running, and the completion counter moves
+    # one statement before the journal file is unlinked.
+    await _settle(lambda: _in_progress(case.ctx.kw["ops_dir"]) == 0)
+
+    assert extra >= 3, (
+        f"only {extra} further cancellations were delivered — the arm cannot "
+        f"tell an anchored deadline from a re-armed one")
+    assert elapsed < grace * 2, (
+        f"the handler finished {elapsed:.3f}s after the FIRST cancellation, "
+        f"past two graces: the deadline was re-armed by a later one")
+    assert (cancellations, bound.completes,
+            _in_progress(case.ctx.kw["ops_dir"])) == (1, 1, 0)
