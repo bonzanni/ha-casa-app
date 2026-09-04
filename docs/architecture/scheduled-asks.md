@@ -124,7 +124,7 @@ What it does not cover: selection from the durable record file. Live decisions r
 broker, which is synchronous; the record file is written after an await and would miss an
 ask that had just won its lane.
 
-**INV-JOB-014**: At boot, a durable scheduled question is restored over an occupant of its lane only when that occupant is a human-raised question whose keyboard post has not recorded a message id — the one case whose own delivery retires the restored question truthfully. Any delivered occupant, and any machine-timed one, refuses the restore and settles the question `operator_busy`.
+**INV-JOB-014**: At boot, a durable scheduled question is restored over an occupant of its lane only when that occupant is a human-raised question whose keyboard post has not yet recorded a message id; a delivered occupant, and any machine-timed one, refuses the restore and settles the question `operator_busy`.
 
 The live path and the boot pass ask the same question of the lane and are right to answer it
 differently, because a refusal costs a different amount in each. On the live path a refused
@@ -135,17 +135,20 @@ told, and none of that can be taken back. A challenge or a human question whose 
 still in flight would therefore destroy a question the operator can currently see, in exchange
 for one that may never arrive — and if that post then fails, the operator has neither.
 
-Restoring instead is the cheaper mistake in both directions, and it is not a bet: the
-compensation is the same delivery-time displacement INV-JOB-008 already requires. If the post
-lands, its own driver retires the restored question then, with the reason that actually
-happened; if it fails, the restored question was never in anyone's way. The cost is one extra
-keyboard edit in the case where both happen.
+Restoring instead is the cheaper mistake in both directions, and it is not a bet. Where the
+occupant displaces on delivery — an authorization challenge, a human `ask_user` — the restored
+question is retired at that moment with the reason that actually happened, which is the same
+delivery-time displacement INV-JOB-008 already requires; the cost is one extra keyboard edit.
+Where it does not, both questions simply remain live and answerable. Neither outcome loses a
+question, which is the property this rule protects; refusing the restore does lose one, and
+cannot be undone.
 
-That compensation is also the boundary of the rule, and it is why a MACHINE-TIMED occupant is
-excluded from it. The displacement is one-way by design — a human question supersedes a
-machine one, never the reverse — so a scheduled ask that is itself still posting will never
-retire anything. Restoring over one would leave two machine questions live in a lane that holds
-one, each answerable, with nothing to retire either. It therefore holds the lane from
+A MACHINE-TIMED occupant is excluded, and for a different reason than the cost. A scheduled ask
+that is itself still posting won the lane through the admission rule above, against an idle
+lane, at a moment when the durable record could not be seen. Restoring over it would put a second
+machine question beside the one that had just been admitted properly — defeating from the recovery
+path the serialization the live path had already enforced, and leaving two machine questions in a
+lane that holds one, with nothing that retires either. It therefore holds the lane from
 registration, exactly as every occupant used to.
 
 The predicate is a recorded message id, which is written in two places and means the same thing
@@ -156,7 +159,9 @@ question and the answer.
 
 What it does not cover: whether the operator has actually READ the keyboard. A message id says
 Telegram accepted the message, not that anyone looked at it — the guarantee is about what
-reached the screen, not about attention itself. Nor does it make the reconcile pass atomic: a
+reached the screen, not about attention itself. Nor does it promise that the restored question
+is later retired: that happens only where the occupant displaces on delivery, and an occupant
+that does not simply leaves both questions standing. Nor does it make the reconcile pass atomic: a
 request registering between two records of one pass is judged by the same rule, which is the
 point, but the pass still decides each record as it reaches it.
 
