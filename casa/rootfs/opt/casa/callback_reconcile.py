@@ -787,6 +787,25 @@ async def reconcile_plugin_callbacks(
         # nothing; what the fence buys is that the retire's deletes finish
         # before a successor may take the lock and compute against files this
         # thread has not deleted yet.
+        #
+        # Why this arm is deliberately SILENT — it reads like a lost wake and is
+        # not, and two review rounds asked. This half deletes exactly two
+        # classes and no third: ORPHANS, which `verify_published_markers` never
+        # examines because it iterates `desired.routed`; and routed pairs whose
+        # `_pair_state` says `needs_republish` — the SAME predicate that
+        # verifier uses to record a gap. A pair already equal to the desired one
+        # is left untouched (`:539`). So every pair this hop can delete was
+        # ALREADY a gap the setup-dispatch gate was already holding on, and a
+        # cancellation here leaves that hold exactly as it found it: measured
+        # over 128 marker/inventory combinations, none moves the gate's gap
+        # count from 0 to 1, while removing the untouched-pair guard moves 8 of
+        # 8. Publishing ROUTING_UNAVAILABLE here — the shape both a design round
+        # and two diff rounds proposed — would instead close `/callback/{name}`
+        # for every routed plugin (measured: two live callbacks to zero, one
+        # routing-generation step) to heal a hold this pass did not cause, and
+        # would leave the identical window one hop earlier, in the threaded
+        # compute, untreated. The wake is owed where the pass CLEARS the
+        # condition, which is after the swap.
         retiring = asyncio.ensure_future(asyncio.to_thread(
             _reconcile_markers_pre_swap, spool, desired))
         republish = await _settle_under_lock(retiring)

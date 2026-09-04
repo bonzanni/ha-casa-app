@@ -130,7 +130,10 @@ nowhere. The wait is bounded by the thread's own work and by nothing external.
 
 Cancelled before the swap, the pass still drains — the deletes must land before another pass may
 compute — but publishes nothing and kicks nothing, because nothing of its own has become both
-durable and live. Nothing downstream may depend on a kick arriving: it is an `Event.set()`, and
+durable and live. That silence is not a lost wake: the pre-swap half retires only orphans, which
+the gate's mirror never examines, and pairs that already differ from the desired one, which is
+the very condition that mirror records as a gap. Every pair it can delete was therefore already
+one the gate was holding on, and the cancellation leaves that hold exactly as it found it. Nothing downstream may depend on a kick arriving: it is an `Event.set()`, and
 the obligations it wakes keep their own reads (INV-PLUG-011, INV-PLUG-016).
 
 ## Failure behavior
