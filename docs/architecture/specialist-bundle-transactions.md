@@ -95,10 +95,10 @@ override made through the tool is journaled like the four bundle operations, so 
 restores the captured state and boot reconciliation rolls an in-progress one back.
 
 What it does not cover: a prior generation that predates the sidecar, which reads as the
-empty set, as before; and a transaction cancelled between its commit and its journal
-completion — reachable for the four bundle handlers, whose journal is completed by the
-tool layer after a sequencer phase — whose in-progress journal boot reconciliation
-restores over any generation committed after it, as it did before this change.
+empty set, as before. The other carve-out it used to name — a transaction cancelled
+between its commit and its journal completion, whose in-progress journal boot
+reconciliation restored over any generation committed after it — is no longer open:
+INV-SPEC-013 below closes it for all four bundle handlers.
 
 **INV-SPEC-012**: A rollback whose retained prior's role checksum differs from the prior component's role materialized under the current option resolution — with the component store's bytes still hashing to the prior's root and the persona identity and agent id unchanged — restores the prior with its binding re-derived for that role, committing the re-derived tuple; a prior whose store bytes drifted, or whose persona identity or agent id moved, is refused by name with the active tuple untouched.
 
@@ -116,6 +116,32 @@ the field that moved.
 What it does not cover: a prior that predates the secret-digest guard, refused as
 `legacy_prior` as before; and the operational-file marker on a materialization that failed
 after the commit, which the next reconcile pass rewrites.
+
+**INV-SPEC-013**: A specialist bundle handler whose library call has been dispatched runs the library commit, the post-commit sequencer and the journal's completion or compensation as one unit that cancellation does not interrupt — the unit runs on to a terminal journal disposition while holding the plugin-tools mutation lock, whether or not the handler was cancelled, so boot never replays a cancelled handler's journal over a generation committed after it; the handler reports cancelled exactly once, waits for that disposition only for a bounded time and then stops waiting without cancelling the transaction or releasing its lock; a cancel that arrives before the mutation lock was acquired stops the transaction outright with nothing begun; and a journal left behind by a process that died is still replayed at boot.
+
+The journal's in-progress state means *undo me at boot*. It is written before the visible
+swap and the library returns with it still standing, because completion is deferred past a
+sequencer that may have to compensate a generation that is already committed. That left
+the whole post-commit window owned by an ordinary coroutine, and `CancelledError` is not
+an `Exception`: a cancelled handler completed nothing and compensated nothing, whether the
+cancel landed during the sequencer or while the library call was still in its worker
+thread — a thread cannot be cancelled, so it committed anyway.
+
+Enforced by running that whole in-lock body in a child task which takes the mutation lock
+itself and is awaited through a shield. The task that took the lock is the task that
+releases it, so a handler that stops waiting cannot let a second mutation in behind it;
+the shield begins before the library call, because the executor already has the work by
+the time the awaiting coroutine can be cancelled; a cancel arriving before the lock was
+acquired cancels the child outright, since nothing has been begun and shielding there
+would perform a mutation the caller aborted; and the absorption is bounded from the first
+cancellation absorbed, because an unbounded one would make cancellation permanently
+ineffective for a wedged reload or notify. Past the bound only the WAIT is abandoned: the
+transaction is not cancelled, keeps the lock, and still completes or compensates.
+
+What it does not cover: a journal left in progress on purpose — a compensating disk
+rollback that itself failed, which stays for boot as the failure behavior below states —
+and a transaction stopped by process death rather than cancellation, which is the
+recovery boot reconciliation exists for and is unchanged.
 
 ## Failure behavior
 
@@ -193,6 +219,7 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - `casa/rootfs/opt/casa/specialist_install.py::_rollback_core`
 - `casa/rootfs/opt/casa/specialist_install.py::uninstall_specialist`
 - `casa/rootfs/opt/casa/specialist_bundle_journal.py::reconcile_boot`
+- `casa/rootfs/opt/casa/tools.py::_run_bundle_transaction`
 - `casa/rootfs/opt/casa/specialist_install.py::_rederive_stale_binding`
 - `casa/rootfs/opt/casa/personality_binding.py::InstanceDir.complete_pending_rotation`
 
@@ -202,6 +229,7 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - `tests/test_specialist_rollback_model_flip.py`
 - `tests/test_specialist_lifecycle_lock.py`
 - `tests/test_specialist_rollback_persona_override.py`
+- `tests/test_specialist_bundle_cancellation.py`
 
 **Related**
 - [`architecture/specialist-lifecycle.md`](../architecture/specialist-lifecycle.md)
