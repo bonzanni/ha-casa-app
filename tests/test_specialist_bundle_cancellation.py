@@ -78,8 +78,22 @@ def _generation(ctx) -> tuple:
 def _in_progress(ops_dir: Path) -> int:
     if not ops_dir.is_dir():
         return 0
-    return sum(1 for p in ops_dir.glob("*.json")
-               if json.loads(p.read_text()).get("state") == "in-progress")
+    total = 0
+    for p in ops_dir.glob("*.json"):
+        try:
+            payload = p.read_text()
+        except FileNotFoundError:
+            # The transaction this scan is watching completes and unlinks its
+            # journal in a worker thread (INV-SPEC-013), so an entry the
+            # listing yielded can be gone by the time it is read. An unlinked
+            # journal is TERMINAL by construction, so it is not in progress.
+            # Per ENTRY, and nothing wider: a PRESENT entry that cannot be read
+            # or decoded still raises, because this helper is the only evidence
+            # these arms have that a transaction reached a terminal disposition.
+            continue
+        if json.loads(payload).get("state") == "in-progress":
+            total += 1
+    return total
 
 
 def _replayable(ops_dir: Path) -> int:
