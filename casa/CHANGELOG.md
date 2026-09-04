@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.265.0] - 2026-09-04
+
+### Fixed
+
+- When a long reply is split across several messages and the formatting for one
+  of those pages cannot be built, that page now keeps its link addresses. It
+  used to go out as plain text, which carries a link's label but not its
+  address — and because nothing raised an error, the fallback that repairs a
+  page the platform refuses never ran. Such a page now has each link's address
+  re-attached after its label, or on a page of its own that follows when it
+  does not fit inline; an address too long to be a message on its own is left
+  out with a note in the log.
+- This covers the page that carries the link. Text elsewhere in the reply is
+  unchanged, and Casa makes no promise here about what the platform accepts.
+
 ## [0.264.0] - 2026-09-04
 
 ### Fixed
