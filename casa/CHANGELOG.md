@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.263.0] - 2026-09-04
+
+### Fixed
+
+- A plugin waiting on its authorization setup no longer stalls indefinitely when
+  Casa's callback bookkeeping is interrupted partway. That bookkeeping publishes
+  a set of marker files and then wakes the worker that is waiting on them; if the
+  pass was cancelled between those two steps, the markers still finished being
+  written but nothing woke the worker, so a setup that was ready to continue sat
+  waiting for an unrelated event to come along and nudge it. The pass now waits
+  for its own writes to land and wakes the worker before it gives up.
+
 ## [0.262.0] - 2026-09-04
 
 ### Fixed
