@@ -245,7 +245,7 @@ from a scheduled turn is a separate problem — a question outlives the turn tha
 which needs durable records and trigger lifecycle ownership — and this invariant makes no
 claim about it. That problem is now solved separately, and the same marker is what admits
 it: the durable question, its terminal outcomes and its attention-lane manners are
-INV-JOB-006/007/008 in [`scheduled-asks.md`](scheduled-asks.md), and the epoch that
+INV-JOB-013/007/008 in [`scheduled-asks.md`](scheduled-asks.md), and the epoch that
 stops a removed trigger's still-running turn from raising one rides alongside the marker
 from the same shared helper — per role AND per trigger, so cancelling one reminder does not
 silence the turns of the role's other schedules. The marker is also read only by those two tools, never by the shared

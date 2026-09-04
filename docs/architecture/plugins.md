@@ -128,9 +128,8 @@ rule itself lives with the scheduled question in
 [`scheduled-asks.md`](scheduled-asks.md) (INV-JOB-008), and the part that matters
 here is one line: a challenge retires a waiting scheduled question only once its own
 keyboard is on screen, so a challenge that fails to post does not cost the operator the
-question that was waiting. The one window that rule does not reach — a boot reconcile
-running while the challenge's post is still in flight — is named with the invariant
-itself.
+question that was waiting. A boot reconcile running while the challenge's post is still in
+flight reads the lane the same way and restores the waiting question (INV-JOB-014).
 
 Who may approve is a separate guarantee, INV-PLUG-007: read this invariant as "one
 approval authorises one action" and that one as "the approver is the configured operator".

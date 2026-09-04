@@ -259,8 +259,25 @@ async def _settle(
     """
     rid = rec["rid"]
     store = STORE
-    if store is not None and not await store.set_state(rid, STATE_SETTLING):
-        return  # another finisher owns it (or it is already gone)
+    # The text rides with the state it belongs to. `settling` says a terminal
+    # outcome was decided; `terminal_edit` says what it decided the keyboard
+    # should read, so a crash between this write and the edit below leaves the
+    # next boot something TRUE to replay instead of a guess (INV-JOB-013). One
+    # locked save, so the pair cannot come apart.
+    if store is not None and not await store.set_state(
+            rid, STATE_SETTLING, terminal_edit=edit_text):
+        # Another finisher owns it, or the record is already gone — the boot
+        # reconciler drops a `posting` record while its broker request stays
+        # live, and every later terminal on that request arrives here. Nothing
+        # is edited and nothing is dispatched, which is right; saying nothing
+        # at all was the one place on this path a terminal outcome vanished
+        # without a trace for an operator reading the log.
+        logger.warning(
+            "scheduled ask %s: terminal outcome %r found no settleable record "
+            "(already settling, or dropped by the boot reconcile); nothing was "
+            "edited or dispatched", rid, kind,
+        )
+        return
     message_id = rec.get("message_id")
     if edit_text is not None and message_id is not None:
         try:
@@ -355,6 +372,13 @@ def _is_scheduled(req: Any) -> bool:
 # cancelling one reminder then discarded every other question that role was
 # waiting on (Sol + Terra, both S2). The epoch keeps its own, separate job —
 # refusing an ask from a turn that is still running under the old trigger set.
+#
+# They also carry the REASON that revocation passed (INV-JOB-012). The live path
+# tells the waiting session why its question went — `cancel_where(reason=...)`
+# carries it into the finish hook — and a marker that dropped it left the
+# reconciler inventing `trigger_changed` for a role eviction, a reminder sweep
+# and a cancelled reminder alike. The window is the only place the two paths
+# could disagree, and there is no reason for them to.
 _BOOT_REVOCATIONS: list[dict] = []
 _BOOT_RECONCILED = False
 
@@ -365,29 +389,36 @@ _BOOT_RECONCILED = False
 _BOOT_REVOCATIONS_MAX = 256
 
 
-def _note_boot_revocation(**selector: Any) -> None:
+def _note_boot_revocation(reason: str, **selector: Any) -> None:
     if _BOOT_RECONCILED:
         # The window is over: every surviving record is registered in the
         # broker, so the caller's own broker scan already saw it.
         return
-    _BOOT_REVOCATIONS.append(selector)
+    _BOOT_REVOCATIONS.append({"reason": reason, **selector})
     while len(_BOOT_REVOCATIONS) > _BOOT_REVOCATIONS_MAX:
         _BOOT_REVOCATIONS.pop(0)
 
 
-def _revoked_before_reconcile(rec: dict) -> bool:
-    """Did a revocation land before this record could be restored?"""
+def _revoked_before_reconcile(rec: dict) -> str | None:
+    """The reason a revocation gave for this record, or ``None`` if none did.
+
+    FIRST MATCH WINS, and that is the faithful answer rather than an ordering
+    left over from the bool this replaced: had the record been live, the
+    EARLIEST matching revocation would have cancelled it through the broker and
+    every later one would have found nothing to select. The window reproduces
+    the live path's own outcome, reason included.
+    """
     for sel in _BOOT_REVOCATIONS:
         if "chat_id" in sel:
             if rec.get("chat_id") == sel["chat_id"]:
-                return True
+                return sel["reason"]
             continue
         if sel.get("role") != rec.get("role"):
             continue
         labels = sel.get("labels")
         if labels is None or rec.get("session_scope") in labels:
-            return True
-    return False
+            return sel["reason"]
+    return None
 
 
 def revoke_role(role: str, reason: str = "trigger_changed") -> int:
@@ -405,7 +436,7 @@ def revoke_role(role: str, reason: str = "trigger_changed") -> int:
     from verdict_broker import BROKER
 
     bump_role_epoch(role)
-    _note_boot_revocation(role=role, labels=None)
+    _note_boot_revocation(reason, role=role, labels=None)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
         predicate=lambda r: _is_scheduled(r) and r.meta.get("target_role") == role,
@@ -434,7 +465,7 @@ def revoke_trigger(
 
     labels = {f"{t}-{name}" for t in _TRIGGER_TYPES}
     bump_trigger_epochs(role, labels)
-    _note_boot_revocation(role=role, labels=labels)
+    _note_boot_revocation(reason, role=role, labels=labels)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
         predicate=lambda r: (
@@ -465,7 +496,7 @@ def cancel_for_chat(chat_id: int, reason: str) -> int:
     from verdict_broker import BROKER
 
     scope = f"dm:{chat_id}"
-    _note_boot_revocation(chat_id=chat_id)
+    _note_boot_revocation(reason, chat_id=chat_id)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
         predicate=lambda r: _is_scheduled(r) and r.scope == scope,
@@ -547,6 +578,30 @@ def broker_meta(rec: dict) -> dict:
 # boot reconciliation
 # ---------------------------------------------------------------------------
 
+async def _replay_terminal_edit(channel: Any, rec: dict) -> None:
+    """Re-apply the keyboard edit a settled record already decided on.
+
+    Deliberately QUIET. A record written by a process that predates
+    ``terminal_edit`` carries none, and there is nothing truthful to say for it:
+    inventing an "expired" body could overwrite a keyboard that already reads
+    "Answered: Confirm", telling the operator that a question they answered
+    expired instead. And ``edit_dm_message`` already logs its own failure and
+    never raises, so a message the operator has since deleted — the ordinary
+    case here, for a record being dropped either way — must not also draw a
+    warning from this side. The ``except`` is for a channel double, not for
+    Telegram: one record may not strand the pass.
+    """
+    text = rec.get("terminal_edit")
+    message_id = rec.get("message_id")
+    if not isinstance(text, str) or message_id is None:
+        return
+    try:
+        await channel.edit_dm_message(rec["chat_id"], message_id, text)
+    except Exception:  # noqa: BLE001 — best-effort; the record is dropped anyway
+        logger.debug("scheduled ask %s: settled-record keyboard edit failed",
+                     rec.get("rid"), exc_info=True)
+
+
 async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
     """Reconcile every durable record against a fresh process.
 
@@ -577,9 +632,16 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
         if not isinstance(rid, str) or not rid:
             continue
         if state == STATE_SETTLING:
-            # A terminal outcome was decided before the crash. At-most-once:
-            # never replay it.
+            # A terminal outcome was decided before the crash. At-most-once
+            # binds the DISPATCH — a duplicated answer makes a resident act
+            # twice on one confirmation — and nothing here dispatches. The
+            # keyboard EDIT is a different thing: the record itself persisted
+            # the text that outcome decided, `edit_dm_message` treats an
+            # identical re-edit as success, and if the crash landed between the
+            # state write and the edit it never happened at all. Replaying it
+            # can only move the screen toward the truth (INV-JOB-013).
             counts["settled_before_crash"] += 1
+            await _replay_terminal_edit(channel, rec)
             await store.drop(rid)
             continue
         if state == STATE_POSTING:
@@ -606,12 +668,18 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
         #
         # The marker each revocation leaves is what closes it — carrying the
         # SELECTOR that revocation used, so cancelling one reminder settles
-        # that reminder's question and restores the role's others.
-        if _revoked_before_reconcile(rec):
+        # that reminder's question and restores the role's others, and the
+        # REASON it passed, so the session hears what actually happened rather
+        # than a placeholder (INV-JOB-012). `is not None`, never truthiness: an
+        # empty reason is nobody's caller today, and if one ever arrives it
+        # belongs in `_terminal_text`'s existing fallback, not in a branch that
+        # silently declines to settle a revoked record.
+        revoked_reason = _revoked_before_reconcile(rec)
+        if revoked_reason is not None:
             counts["revoked_before_reconcile"] = (
                 counts.get("revoked_before_reconcile", 0) + 1)
             await _settle(channel, rec, kind="cancelled",
-                          reason="trigger_changed", chosen=None,
+                          reason=revoked_reason, chosen=None,
                           edit_text=_expired_body(rec.get("body") or ""))
             continue
 
@@ -635,14 +703,22 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
                           edit_text=_expired_body(rec.get("body") or ""))
             continue
 
-        # Same lane contract as the live path: a human question raised
-        # between channel readiness and this reconcile owns the lane, and the
-        # restored machine one must not sit behind it. A refusal is settled,
-        # never left `live` with no hook.
+        # Same lane contract as the live path, decided on DELIVERY rather than
+        # on registration (INV-JOB-014). A human question the operator can SEE
+        # owns the lane and the restored machine one must not sit behind it; a
+        # refusal is settled, never left `live` with no hook. But refusing HERE
+        # is irreversible — `_settle` edits the keyboard and tells the session —
+        # so a request that has only registered must not take a durable
+        # question with it. Restoring instead costs nothing that is not paid
+        # back: if that keyboard does land, its own path retires the restored
+        # question at delivery with the reason that actually happened
+        # (`operator_challenge`, `superseded`), and if it fails the operator
+        # keeps the question that was already on screen.
         req, _created = BROKER.register(
             namespace=NAMESPACE, scope=rec["scope"], request_id=rid,
             timeout_s=remaining, detached=True,
             require_idle=True, idle_scopes=(f"authz:{rec['chat_id']}",),
+            idle_requires_delivered=True,
             meta=broker_meta(rec),
         )
         if req is None:

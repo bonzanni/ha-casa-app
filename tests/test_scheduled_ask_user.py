@@ -727,13 +727,123 @@ class TestBootReconcile:
         assert "delivery_unconfirmed" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
 
-    async def test_settling_record_is_never_replayed(self, _fresh_store):
+    async def test_a_legacy_settling_record_makes_no_edit_and_no_dispatch(
+        self, _fresh_store,
+    ):
+        """INV-JOB-013. A `settling` record written by a process that predates
+        the persisted terminal text carries none, so there is nothing truthful
+        to replay: it is dropped exactly as before, in silence.
+
+        Inventing an "expired" body for it would overwrite a keyboard that may
+        already read "Answered: Confirm" — telling the operator that a question
+        they answered expired instead. The base's silence is at least not false.
+        """
         await _fresh_store.put(self._rec(state=scheduled_asks.STATE_SETTLING))
         channel = _FakeChannel()
         counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
         assert counts["settled_before_crash"] == 1
         assert channel.scheduled_dispatches == []   # at-most-once
+        assert channel.edits == []                  # nothing truthful to say
         assert _fresh_store.all() == []
+
+    async def test_a_settling_record_replays_its_persisted_edit_and_never_dispatches(
+        self, _fresh_store,
+    ):
+        """INV-JOB-013, the fake-channel half of the crash-window replay.
+
+        The real-channel half lives beside INV-TG-007 in
+        `tests/test_telegram_dm_settle.py`; this one pins the reconciler's own
+        counts.
+        """
+        await _fresh_store.put(self._rec(
+            state=scheduled_asks.STATE_SETTLING,
+            terminal_edit="Send the invoice?\n\nAnswered: Confirm"))
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["settled_before_crash"] == 1
+        assert len(channel.edits) == 1
+        assert sum(e[2] == "Send the invoice?\n\nAnswered: Confirm"
+                   for e in channel.edits) == 1
+        assert sum(e[1] == 77 for e in channel.edits) == 1
+        assert channel.scheduled_dispatches == []   # at-most-once, still
+        assert _fresh_store.all() == []
+
+    async def test_a_settling_record_with_no_message_id_edits_nothing(
+        self, _fresh_store,
+    ):
+        """The replay needs somewhere to land. A record whose keyboard id was
+        never captured has nothing to edit, and must not become an error."""
+        await _fresh_store.put(self._rec(
+            state=scheduled_asks.STATE_SETTLING, message_id=None,
+            terminal_edit="Send the invoice?\n\n(this question has expired)"))
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["settled_before_crash"] == 1
+        assert channel.edits == []
+        assert channel.scheduled_dispatches == []
+        assert _fresh_store.all() == []
+
+    async def test_a_replay_that_telegram_refuses_still_drops_the_record(
+        self, _fresh_store,
+    ):
+        """The replay is BEST-EFFORT, and the record is dropped either way.
+
+        `edit_dm_message` returns False for a transient rejection and for a
+        message the operator deleted alike — it cannot tell them apart — so
+        retaining the record to retry would retain it for every boot of a
+        process whose message is gone for good, with no condition that ever
+        retires it. The end state of a failed replay is exactly what the
+        reconciler did for EVERY settling record before this rule: the keyboard
+        is left as posted, nothing is dispatched, and the record goes. What the
+        rule buys is the case where the edit lands, which is the common one.
+        """
+        class _RefusingChannel(_FakeChannel):
+            async def edit_dm_message(self, chat_id, message_id, text):
+                self.edits.append((chat_id, message_id, text))
+                self.calls.append("edit")
+                return False
+
+        await _fresh_store.put(self._rec(
+            state=scheduled_asks.STATE_SETTLING,
+            terminal_edit="Send the invoice?\n\nAnswered: Confirm"))
+        channel = _RefusingChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts["settled_before_crash"] == 1
+        assert len(channel.edits) == 1          # attempted exactly once
+        assert channel.scheduled_dispatches == []
+        assert len(_fresh_store.all()) == 0     # not retained for a retry
+
+    async def test_a_terminal_that_finds_no_settleable_record_says_so(
+        self, _fresh_store, caplog,
+    ):
+        """The one place a terminal outcome used to disappear without a trace.
+
+        `_settle` returns silently when the CAS fails — the record is gone, or
+        another finisher owns it. That return is the tail of every boot race in
+        this module, and an operator reading the log had nothing to find. It
+        still edits nothing and dispatches nothing; it now says so.
+        """
+        import logging
+
+        rec = self._rec(rid="rid-cas-miss",
+                        state=scheduled_asks.STATE_SETTLING)
+        await _fresh_store.put(rec)
+        channel = _FakeChannel()
+        with caplog.at_level(logging.WARNING, logger="scheduled_asks"):
+            await scheduled_asks._settle(
+                channel, rec, kind="cancelled", reason="trigger_removed",
+                chosen=None, edit_text="whatever")
+
+        assert sum(
+            r.name == "scheduled_asks"
+            and r.levelno == logging.WARNING
+            and "rid-cas-miss" in r.getMessage()
+            for r in caplog.records
+        ) == 1
+        assert len(channel.edits) == 0
+        assert len(channel.scheduled_dispatches) == 0
+        assert len(_fresh_store.all()) == 1
 
     async def test_a_revocation_during_the_boot_window_is_not_undone(
         self, _fresh_broker, _fresh_store,
@@ -750,10 +860,81 @@ class TestBootReconcile:
 
         assert counts.get("restored", 0) == 0
         assert counts["revoked_before_reconcile"] == 1
-        assert "trigger_changed" in channel.scheduled_dispatches[0]["text"]
+        assert "trigger_reloaded" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
         assert _fresh_broker.pending(
             namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+
+    async def test_boot_revocation_uses_the_first_matching_callers_reason(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """INV-JOB-012. The marker carries the reason its caller passed, and
+        when two markers match one record the FIRST one wins.
+
+        First-match is not an implementation detail to be tidied later: had the
+        record been live, the EARLIEST matching revocation would have cancelled
+        it and every later one would have found nothing. Reproducing the live
+        path's own answer is the whole point of the marker.
+        """
+        await _fresh_store.put(self._rec())
+        # Both match this record; the chat marker is written first.
+        results = [
+            scheduled_asks.cancel_for_chat(OPERATOR, "new_session"),
+            scheduled_asks.revoke_role("assistant", "trigger_reloaded"),
+        ]
+        assert sum(n == 0 for n in results) == 2
+        assert len(scheduled_asks._BOOT_REVOCATIONS) == 2
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts.get("revoked_before_reconcile", 0) == 1
+        assert counts.get("restored", 0) == 0
+        assert len(channel.edits) == 1
+        assert len(channel.scheduled_dispatches) == 1
+        assert sum("(new_session)" in d["text"]
+                   for d in channel.scheduled_dispatches) == 1
+        assert sum("trigger_reloaded" in d["text"]
+                   for d in channel.scheduled_dispatches) == 0
+        assert sum("trigger_changed" in d["text"]
+                   for d in channel.scheduled_dispatches) == 0
+        assert len(_fresh_store.all()) == 0
+        assert len(_fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+
+    @pytest.mark.parametrize("revoke, reason", [
+        (lambda: scheduled_asks.revoke_role("assistant", "trigger_reloaded"),
+         "trigger_reloaded"),
+        (lambda: scheduled_asks.revoke_role("assistant", "role_evicted"),
+         "role_evicted"),
+        (lambda: scheduled_asks.revoke_trigger(
+            "assistant", "invoices", "trigger_removed"), "trigger_removed"),
+        (lambda: scheduled_asks.revoke_trigger(
+            "assistant", "invoices", "trigger_cancelled"), "trigger_cancelled"),
+    ])
+    async def test_every_live_reason_survives_the_boot_window(
+        self, _fresh_broker, _fresh_store, revoke, reason,
+    ):
+        """INV-JOB-012, over all four reasons a shipped caller passes.
+
+        `reload.py` revokes a reloaded role and an evicted one, the reminder
+        sweep revokes a trigger whose entry is gone, and `cancel_reminder`
+        revokes a cancelled one. Every one of them is discarded inside the boot
+        window unless the marker carries it.
+        """
+        await _fresh_store.put(self._rec(session_scope="cron-invoices"))
+        assert revoke() == 0
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts.get("revoked_before_reconcile", 0) == 1
+        assert counts.get("restored", 0) == 0
+        assert len(channel.scheduled_dispatches) == 1
+        assert sum(f"({reason})" in d["text"]
+                   for d in channel.scheduled_dispatches) == 1
+        assert sum("trigger_changed" in d["text"]
+                   for d in channel.scheduled_dispatches) == 0
 
     async def test_an_untouched_role_is_still_restored(
         self, _fresh_broker, _fresh_store,
@@ -852,14 +1033,61 @@ class TestBootReconcile:
             _FakeChannel(operator=None), now=0.0)
         assert counts["operator_changed"] == 1
 
+    async def test_a_scheduled_ask_still_posting_keeps_the_lane(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """INV-JOB-014's boundary: the relaxation is for HUMAN-raised questions.
+
+        Yielding the lane to an occupant whose keyboard has not landed is only
+        safe because that occupant retires the restored question itself once it
+        does — `authz_grants._drive` and `tools.ask_user` both displace on
+        delivery. A machine-timed ask never displaces anything: the rule is
+        one-way by design. Restoring over one would leave TWO machine questions
+        live in the operator's single lane, each answerable, with nothing to
+        retire either — which is a state neither the base nor this change
+        allows. So it holds the lane from registration, as it always did.
+        """
+        await _fresh_store.put(self._rec())
+        # Exactly what `_ask_user_scheduled` registers: the `scheduled` marker,
+        # and no message id until its own post returns one.
+        req, _created = _fresh_broker.register(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            request_id="fresh-scheduled", timeout_s=300, detached=True,
+            meta={"operator_id": OPERATOR, "scheduled": True},
+        )
+        assert req is not None
+        assert _fresh_broker.get_meta(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            request_id="fresh-scheduled").get("message_id") is None
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts["operator_busy"] == 1
+        assert counts.get("restored", 0) == 0
+        assert sum("operator_busy" in d["text"]
+                   for d in channel.scheduled_dispatches) == 1
+        assert len(_fresh_store.all()) == 0
+        assert _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}") == [
+            "fresh-scheduled"]
+
     async def test_a_live_human_question_keeps_the_lane(
         self, _fresh_broker, _fresh_store,
     ):
+        """INV-JOB-008. A human question the operator can SEE holds the lane,
+        and the machine one yields to it — the direction is one-way by design.
+
+        The fixture records a `message_id` because that is what makes this a
+        human question the operator has: the reconciler judges the lane by what
+        reached the screen, not by what registered. Its sibling below is the
+        same fixture without one.
+        """
         await _fresh_store.put(self._rec())
         _fresh_broker.register(
             namespace="resident_ask", scope=f"dm:{OPERATOR}",
             request_id="human", timeout_s=300, detached=True,
-            meta={"operator_id": OPERATOR},
+            meta={"operator_id": OPERATOR, "message_id": 4242},
         )
         channel = _FakeChannel()
         counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
@@ -868,6 +1096,34 @@ class TestBootReconcile:
         assert _fresh_store.all() == []
         assert _fresh_broker.pending(
             namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["human"]
+
+    async def test_a_human_question_still_posting_does_not_keep_the_lane(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """#762 · INV-JOB-008, the same fixture minus the delivered keyboard.
+
+        Registered is not delivered. Refusing the restore here is irreversible
+        and the question is destroyed for a keyboard that may never arrive; the
+        restore is not, because the human question's own path displaces it at
+        delivery. Only the BOOT pass reads the lane this way — the live path's
+        `require_idle` is unchanged, which `TestLane` pins.
+        """
+        await _fresh_store.put(self._rec())
+        _fresh_broker.register(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            request_id="human", timeout_s=300, detached=True,
+            meta={"operator_id": OPERATOR},
+        )
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts.get("operator_busy", 0) == 0
+        assert counts["restored"] == 1
+        assert channel.scheduled_dispatches == []
+        assert channel.edits == []
+        assert len(_fresh_store.all()) == 1
+        assert sorted(_fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == [
+            "human", "rid-boot"]
 
 
 # ---------------------------------------------------------------------------

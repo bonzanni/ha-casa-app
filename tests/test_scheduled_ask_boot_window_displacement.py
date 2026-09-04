@@ -23,7 +23,8 @@ import scheduled_asks
 import verdict_broker
 from verdict_broker import VerdictBroker
 
-from test_scheduled_ask_attention_lane import _ask_on, _dm_origin
+from broker_helpers import wait_until
+from test_scheduled_ask_attention_lane import _ask_on, _ask_on_raw, _dm_origin
 from test_scheduled_ask_user import LABEL, OPERATOR, _FakeChannel
 
 pytestmark = pytest.mark.asyncio
@@ -196,25 +197,24 @@ async def test_a_delivered_challenge_lets_the_reconciler_settle_operator_busy(
     assert len(scheduled_asks._BOOT_REVOCATIONS) == 0
 
 
-async def test_reconcile_during_an_in_flight_challenge_post_is_still_a_loss(
+async def test_reconcile_skips_an_undelivered_challenge_when_testing_lane_idle(
     _fresh_broker, _fresh_store,
 ):
-    """CHARACTERISATION of a residual #680 does NOT close, pinned so nobody
-    reads the fix as covering it. **This is not a declared invariant** and is
-    deliberately bound to none.
+    """#762 · INV-JOB-008 — the boot half of "delivered and still live".
 
-    `reconcile_at_boot` runs strictly BETWEEN the challenge's registration and
-    its post settling. `require_idle` reads raw `authz:{chat}` occupancy and
-    cannot tell a POSTING challenge from a DELIVERED one, so it settles the
-    durable record `operator_busy`; the post then fails and the operator is
-    left with neither question. The loss is taken by the RECONCILER, not by the
-    challenge's ordering, so no ordering change in `authz_grants.py` can close
-    it — closing it means changing what counts as lane occupancy, which is the
-    `require_idle` half of INV-JOB-008 and a different mechanism.
+    `reconcile_at_boot` runs strictly BETWEEN a challenge's registration and its
+    post settling. The lane it must judge is the OPERATOR'S ATTENTION, and a
+    keyboard that has not reached Telegram is not holding it: refusing here is
+    IRREVERSIBLE (`_settle` edits the keyboard to expired and dispatches the
+    terminal continuation), while restoring is not — if the post lands, the
+    challenge's own driver retires the restored question at DELIVERY with the
+    truthful `operator_challenge`, and if it fails the operator keeps the
+    question that was already on screen.
 
-    Measured identically on the pre-fix tree, where the loss ran through the
-    admission-time boot marker instead (`revoked_before_reconcile == 1`,
-    continuation `trigger_changed`). The fix neither introduces nor widens it.
+    This file's previous CHARACTERISATION of this window asserted the loss
+    (`operator_busy == 1`, one edit, one continuation, record dropped) and
+    passed. It is replaced rather than kept: the residual it pinned is closed,
+    and a test that names a residual which no longer exists is worse than none.
     """
     import authz_grants
 
@@ -228,23 +228,130 @@ async def test_reconcile_during_an_in_flight_challenge_post_is_still_a_loss(
         ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
         channel=channel, challenge_text="Approve send_email?",
     )
-    while len(channel.posts) < 1:
-        await asyncio.sleep(0)
+    await wait_until(lambda: len(channel.posts) == 1)
+
+    # The premise, established by counting the broker's OWN metadata rather
+    # than by trusting the sequencing above: exactly one live authz request,
+    # and its keyboard is not on screen.
+    authz = _fresh_broker.pending(
+        namespace="resident_ask", scope=f"authz:{OPERATOR}")
+    assert len(authz) == 1
+    assert sum(
+        _fresh_broker.get_meta(
+            namespace="resident_ask", scope=f"authz:{OPERATOR}",
+            request_id=rid,
+        ).get("message_id") is None
+        for rid in authz
+    ) == 1
 
     counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
 
     channel.gate.set()
-    assert await handle.settled_post() == "delivery_failed"
+    await handle.settled_post()
     await _fresh_broker.drain_hooks()
 
-    assert counts.get("operator_busy", 0) == 1
-    assert counts.get("restored", 0) == 0
+    assert counts.get("restored", 0) == 1
+    assert counts.get("operator_busy", 0) == 0
     assert counts.get("revoked_before_reconcile", 0) == 0
+
+    scheduled = _fresh_broker.pending(
+        namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    assert len(scheduled) == 1
+    assert sum(rid == "from-previous-process" for rid in scheduled) == 1
+    assert len(_fresh_broker.pending(
+        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 0
+    assert len(channel.posts) == 1
+    assert len(channel.edits) == 0
+    assert len(channel.scheduled_dispatches) == 0
+    assert len(_fresh_store.all()) == 1
+    assert len(scheduled_asks._BOOT_REVOCATIONS) == 0
+
+
+async def test_reconcile_skips_an_undelivered_human_ask_when_testing_lane_idle(
+    _fresh_broker, _fresh_store,
+):
+    """The half the issue does not name, and the same rule.
+
+    A human `ask_user` registers into `dm:{chat}` WITHOUT `require_idle` and
+    sits in the live map while its own post is in flight. The reconciler saw it
+    identically to a delivered one; a fix that covered only the authz half
+    would have fixed half the lane.
+    """
+    await _seed_previous_process_record(_fresh_store)
+    channel = _BlockingPostChannel()
+    channel.gate = asyncio.Event()
+    channel.release_to = None            # the human post will fail too
+
+    asking = asyncio.ensure_future(_ask_on_raw(channel, _dm_origin(), "Celsius?"))
+    await wait_until(lambda: len(channel.posts) == 1)
+
+    live = _fresh_broker.pending(
+        namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    assert len(live) == 1
+    assert sum(rid != "from-previous-process" for rid in live) == 1
+    assert sum(
+        _fresh_broker.get_meta(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}", request_id=rid,
+        ).get("message_id") is None
+        for rid in live
+    ) == 1
+
+    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+    channel.gate.set()
+    await asking
+    await _fresh_broker.drain_hooks()
+
+    assert counts.get("restored", 0) == 1
+    assert counts.get("operator_busy", 0) == 0
+    restored = _fresh_broker.pending(
+        namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    assert sum(rid == "from-previous-process" for rid in restored) == 1
+    assert len(channel.edits) == 0
+    assert len(channel.scheduled_dispatches) == 0
+    assert len(_fresh_store.all()) == 1
+
+
+async def test_a_challenge_delivered_after_a_restore_retires_it_truthfully(
+    _fresh_broker, _fresh_store,
+):
+    """The price of restoring, paid in full and named.
+
+    When the post the reconciler declined to wait for DOES land, the challenge's
+    own driver retires the restored question at delivery — one extra keyboard
+    edit and a continuation carrying `operator_challenge`, which is the reason
+    that actually happened. Compare the base, which told that session
+    `operator_busy` for a keyboard that had not arrived.
+    """
+    import authz_grants
+
+    await _seed_previous_process_record(_fresh_store)
+    channel = _BlockingPostChannel()
+    channel.gate = asyncio.Event()
+    channel.release_to = 99              # this post SUCCEEDS, once released
+
+    coordinator = authz_grants.ChallengeCoordinator()
+    handle = coordinator.register_challenge(
+        ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
+        channel=channel, challenge_text="Approve send_email?",
+    )
+    await wait_until(lambda: len(channel.posts) == 1)
+
+    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    assert counts.get("restored", 0) == 1
+
+    channel.gate.set()
+    assert await handle.settled_post() == "posted"
+    await _fresh_broker.drain_hooks()
+
     assert len(_fresh_broker.pending(
         namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 1
     assert len(channel.edits) == 1
     assert len(channel.scheduled_dispatches) == 1
+    assert sum("operator_challenge" in d["text"]
+               for d in channel.scheduled_dispatches) == 1
+    assert sum("operator_busy" in d["text"]
+               for d in channel.scheduled_dispatches) == 0
     assert len(_fresh_store.all()) == 0
-    assert len(scheduled_asks._BOOT_REVOCATIONS) == 0

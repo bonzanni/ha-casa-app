@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.264.0] - 2026-09-04
+
+### Fixed
+
+- A question Casa asked on a schedule is no longer cancelled during start-up
+  because some other prompt was merely being sent. The check for whether the
+  household's attention was already spoken for counted a prompt from the moment
+  it was registered rather than from the moment it reached the screen, so a
+  prompt still in flight could displace a question that had been waiting since
+  before the restart — and if that in-flight prompt then failed to send, the
+  operator was left with neither.
+- When a scheduled question is retired during start-up because its trigger
+  changed, the reason it reports is now the one its caller actually gave —
+  a reload, an eviction, a removed reminder, a cancelled trigger — instead of a
+  single generic reason applied to every case.
+- A restart landing between a question being answered and its keyboard being
+  updated now re-applies that update, so the buttons of an already-decided
+  question do not stay tappable. The update is best-effort and stays silent when
+  the message is no longer there.
+
 ## [0.263.0] - 2026-09-04
 
 ### Fixed
