@@ -100,6 +100,35 @@ the transition and do nothing.
 The same owner reports a launch *cancelled* before its driver was confirmed live, which
 previously flipped the topic to failed and closed it without posting anything at all.
 
+**What can cut a launch turn — and the healthy completion that looks like a cut.** A launch
+turn is not hosted by the engagement's own client alone: `engage_executor` awaits the
+driver's `start()` inline, so the whole first turn runs inside the launching resident's own
+tool call, and whatever tears that resident's warm client down reaches the launch with it.
+Nothing reaches further — no reload scope holds a reference to the engagement driver, the
+engagement's client belongs to no pool, and the driver's own closers are the only ones — so a
+follow-up turn is unreachable from a reload and only the launch turn is exposed. Two edges to
+it are established from code, and they differ in kind. The first is the drain of the replaced
+agent's pool: that drain is backgrounded on purpose (see
+[`architecture/turn-loop.md`](turn-loop.md)), the launching entry stays locked for the whole
+launch, and it is force-closed once the drain timeout expires — a default, spent serially per
+entry. That clock starts at the swap, not at the reload's return, and the reload's remaining
+work — the rest of its cascade, the executor registry's load, a per-role pass for every role —
+carries no encompassing deadline of its own, so the interval an operator sees between a reload
+returning and a launch being cut is not bounded by this timeout. The second is eviction of the
+launching resident itself, which cancels its in-flight dispatch tasks at once, with no drain to
+wait through; it is exotic, because a launcher is always a resident and a resident is evicted
+only when its own directory goes away. These two are what the code establishes, not a closed
+list: how the CLI answers an interrupt is unmeasured here, and measuring it would add a
+mechanism to the second edge rather than a third edge. Before attributing an ended turn to a
+reload at all, eliminate the benign case first — the finalize tail closes the engagement's own
+client, so a healthy self-emitted completion ends its turn with no result frame, and the
+configurator's doctrine puts a reload immediately before `emit_completion`; a turn that ends
+shortly after a reload having posted no result frame therefore has the shape of a turn that
+succeeded. A launch a reload really did cut is reported, as this invariant requires, but it is
+not attributed: its detail is the undifferentiated "the tool call was cancelled during
+launch", because the launch cause seam is written at the canceller and the graceful stop is
+the only canceller that writes one today (#847).
+
 **INV-ENG-012**: A ticketed FOLLOW-UP turn to an `in_casa` engagement that ends without the turn's own terminal artifact — or that finishes holding it while finalization has *established* that its streamed text was wholly undelivered — is never answered with silence: exactly one bounded operator-facing notice attempt is made in the engagement's topic, by the owner of that turn's admission ticket, and one turn's observation can never be consumed or lost by another turn's owner. The single thing that excuses the telling is that the engagement's terminal path has already told that topic why the engagement ended; the record merely being terminal is not that fact, and wherever it is not known that the topic was told, the telling is made. A follow-up turn that ends holding its terminal artifact with no established delivery failure produces no observation and no notice; an *ambiguous* delivery (a lost acknowledgement, or a handle off the delivery contract) is not an established failure and records nothing. The driver records, never raises, and never reads the record's status.
 
 INV-ENG-011 covers the launch turn. The turn *after* it had the same hole and no owner at
