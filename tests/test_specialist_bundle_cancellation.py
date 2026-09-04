@@ -706,3 +706,122 @@ async def test_repeated_cancellation_does_not_re_arm_the_grace(
         f"past two graces: the deadline was re-armed by a later one")
     assert (cancellations, bound.completes,
             _in_progress(case.ctx.kw["ops_dir"])) == (1, 1, 0)
+
+
+# ---------------------------------------------------------------------------
+# #845 — the ops scan reads an entry the transaction it is watching unlinked
+# ---------------------------------------------------------------------------
+#
+# `_in_progress` lists the ops directory and then reads each entry: two
+# syscalls with a real gap between them. The transaction abandoned at its grace
+# deadline (`tools._run_bundle_transaction` breaks WITHOUT cancelling the child
+# and re-raises the absorbed cancellation) runs on in a worker thread and
+# unlinks its journal (`specialist_bundle_journal.complete`) — by design, under
+# INV-SPEC-013. So the entry the listing yielded can legitimately be gone when
+# the helper opens it.
+#
+# These cases drive that interleaving directly rather than betting on a sleep:
+# the widening the survey used to reproduce the flake (a 50 ms pause between
+# the two steps) is a measurement, not a test.
+
+
+class _DrivenOps:
+    """Drive the ONE seam `_in_progress` has — it calls `is_dir()` and
+    `glob()` on whatever it is handed.
+
+    The listing is the REAL `Path.glob`, exhausted eagerly; the designated
+    entry is then unlinked; the captured real `Path` objects are handed back in
+    a caller-chosen ORDER. The helper's own `read_text()` therefore meets
+    exactly the sequence the abandoned transaction produces — list, unlink,
+    read — with no sleep anywhere, and with the read order fixed rather than
+    left to `os.scandir`, whose ordering is unspecified.
+
+    Nothing about the read, the JSON decode or the counting is simulated: those
+    stay the helper's own, against real files.
+    """
+
+    def __init__(self, real: Path, *, unlink: Path, order: list[Path]) -> None:
+        self._real = real
+        self._unlink = unlink
+        self._order = order
+        self.listed = 0
+        self.unlinked = 0
+
+    def is_dir(self) -> bool:
+        return self._real.is_dir()
+
+    def glob(self, pattern: str):
+        self.listed = len(list(self._real.glob(pattern)))
+        self._unlink.unlink()
+        self.unlinked += 1
+        return iter(self._order)
+
+
+def _ops_with(tmp_path: Path, **entries: object) -> Path:
+    ops = tmp_path / "ops"
+    ops.mkdir()
+    for name, payload in entries.items():
+        path = ops / f"{name}.json"
+        if isinstance(payload, bytes):
+            path.write_bytes(payload)
+        else:
+            path.write_text(payload, encoding="utf-8")
+    return ops
+
+
+def test_in_progress_does_not_count_an_entry_unlinked_after_listing(
+        tmp_path: Path) -> None:
+    """A journal that vanished between the listing and its own read is
+    TERMINAL by construction — `complete` rewrites it and then unlinks it — so
+    it is not in progress, and the scan says 0 rather than raising."""
+    ops = _ops_with(tmp_path, vanished=json.dumps({"state": "in-progress"}))
+    driven = _DrivenOps(ops, unlink=ops / "vanished.json",
+                        order=[ops / "vanished.json"])
+
+    assert (_in_progress(driven), driven.listed, driven.unlinked) == (0, 1, 1)
+
+
+def test_in_progress_counts_a_survivor_listed_after_a_vanished_entry(
+        tmp_path: Path) -> None:
+    """The vanished entry is read FIRST, deterministically. A tolerance wrapped
+    around the whole loop instead of the individual read would abandon the
+    iteration here and report 0 — a stranded in-progress journal, invisible."""
+    ops = _ops_with(tmp_path,
+                    a_vanished=json.dumps({"state": "in-progress"}),
+                    b_survivor=json.dumps({"state": "in-progress"}))
+    driven = _DrivenOps(ops, unlink=ops / "a_vanished.json",
+                        order=[ops / "a_vanished.json", ops / "b_survivor.json"])
+
+    assert (_in_progress(driven), driven.listed, driven.unlinked) == (1, 2, 1)
+
+
+def test_in_progress_propagates_an_unreadable_present_entry(
+        tmp_path: Path) -> None:
+    """STRICTNESS, not tolerance — a mutation check, green at the parent. An
+    entry that is PRESENT but whose bytes cannot be read is not a vanished
+    entry: it still raises out of the helper, so the arm can never mistake a
+    stranded in-progress journal for a terminal one."""
+    ops = _ops_with(tmp_path, unreadable=b'{"state": "in-progress", "s": "\xff\xfe"}')
+
+    raised = 0
+    try:
+        _in_progress(ops)
+    except UnicodeDecodeError:
+        raised += 1
+
+    assert (len(list(ops.glob("*.json"))), raised) == (1, 1)
+
+
+def test_in_progress_propagates_a_present_entry_that_is_not_json(
+        tmp_path: Path) -> None:
+    """STRICTNESS again, and a different mutation: the decode stays OUTSIDE the
+    tolerated region, so a readable entry whose bytes are not JSON raises."""
+    ops = _ops_with(tmp_path, malformed="not json at all")
+
+    raised = 0
+    try:
+        _in_progress(ops)
+    except json.JSONDecodeError:
+        raised += 1
+
+    assert (len(list(ops.glob("*.json"))), raised) == (1, 1)
