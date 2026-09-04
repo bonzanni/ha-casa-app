@@ -221,8 +221,9 @@ _GUARD_DOC = "docs/architecture/prompt-file-guards.md"
 _EXPECTED_STATEMENT = (
     "A persona-bound resident's per-agent `response_shape.yaml` is read and "
     "rendered into the composed fallback prompt, and no part of it is served "
-    "while its compiled bundle is active; and an agent's file-tool write to "
-    "a resident's copy is refused."
+    "while its compiled bundle is active; and an agent's write to a "
+    "resident's copy through `Write`, `Edit`, `MultiEdit` or `NotebookEdit` "
+    "is refused on the executor, resident and delegated-resident hook paths."
 )
 
 def _declared_invariants(text):
@@ -494,3 +495,102 @@ class TestTheFileIsReadRenderedButNotServed:
 
             assert (composed_differences, len(base_served), len(mut_served),
                     served_differences) == (3, 9, 9, 0), field
+
+
+# --- the write clause, on each path Casa builds hooks for ------------------
+
+_RESPONSE_SHAPE_WRITE = {
+    "tool_name": "Write", "cwd": "/config",
+    "tool_input": {"file_path": "/config/agents/assistant/response_shape.yaml"},
+}
+
+
+def _routes(matcher, tool_name):
+    """Whether a matcher string would ROUTE this tool to its hook. A callback
+    registered under `Read` never sees a `Write` in production, so routing is
+    checked before the callback is invoked."""
+    import re
+
+    if matcher is None:
+        return True
+    return re.fullmatch(matcher, tool_name) is not None
+
+
+async def _stack_denies_as_this_guard(opts):
+    """True iff a PreToolUse callback in built options refuses the write AS
+    THIS guard.
+
+    The reason string is matched rather than the bare decision: a hand-built
+    cfg with an empty `hooks.pre_tool_use` resolves to a deny-everything
+    `path_scope`, which would report a stack carrying no response-shape guard
+    as refusing.
+    """
+    for matcher in (opts.hooks or {}).get("PreToolUse", []):
+        if not _routes(getattr(matcher, "matcher", None),
+                       _RESPONSE_SHAPE_WRITE["tool_name"]):
+            continue
+        for cb in matcher.hooks:
+            out = await cb(dict(_RESPONSE_SHAPE_WRITE), None, {})
+            if not out or _decision(out) != "deny":
+                continue
+            if "response_shape_write_guard" in out["hookSpecificOutput"].get(
+                    "permissionDecisionReason", ""):
+                return True
+    return False
+
+
+class TestTheWriteClauseHoldsOnEveryPathItNames:
+    """INV-PERS-017's second clause names three hook paths; this counts them.
+
+    A statement that named every path Casa builds would be false — the
+    `claude_code` transport's resolver deliberately omits this guard, because
+    its Bash half matches a bare basename anywhere in a command and would
+    refuse an executor writing its own `response_shape.yaml` under
+    `/data/engagements`. That exclusion is a not-covered clause in the prose,
+    not a count here: pinning a gap makes its eventual closure arrive as a
+    broken invariant.
+    """
+
+    def test_three_builder_paths_deny_and_a_specialist_abstains(
+        self, tmp_path, monkeypatch,
+    ):
+        """(executor, resident, delegated-resident, specialist) == (1, 1, 1, 0).
+
+        The fourth is 0 BY DESIGN: an actual specialist writing its own
+        engagement artifacts must not be refused by a basename match.
+        Mutation: drop the guard from any one builder and that entry becomes 0.
+        """
+        import asyncio
+        from types import SimpleNamespace
+
+        import tools as tools_mod
+        from test_agent_plugin_binding import _make_agent
+        from test_resident_prompt_write_guard import (
+            _SpecialistCfg, _executor_defn,
+        )
+
+        async def run():
+            executor = tools_mod._build_executor_options(
+                _executor_defn(), executor_type="configurator",
+                plugin_paths=[])
+            agent = _make_agent(tmp_path, role="assistant")
+            resident = await agent._build_options(
+                channel="telegram", channel_key="k", is_fresh=True,
+                resume_sid=None, user_text="hi")
+
+            monkeypatch.setattr(
+                tools_mod, "_agent_registry",
+                SimpleNamespace(tier_for_role=lambda r: (
+                    "resident" if r == "assistant" else "specialist")),
+                raising=False)
+            delegated = tools_mod._build_specialist_options(
+                _SpecialistCfg("assistant"))
+            specialist = tools_mod._build_specialist_options(
+                _SpecialistCfg("finance"))
+
+            counts = []
+            for opts in (executor, resident, delegated, specialist):
+                counts.append(int(await _stack_denies_as_this_guard(opts)))
+            return tuple(counts)
+
+        assert asyncio.run(run()) == (1, 1, 1, 0)
