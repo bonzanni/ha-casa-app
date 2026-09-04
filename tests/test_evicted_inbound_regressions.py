@@ -275,16 +275,18 @@ class TestAccessorFailureIsolation:
         assert notice.count("• m9") == 0, notice
 
     @pytest.mark.parametrize("broken", [
-        "inbound_in_flight_texts", "inbound_message_reservations",
-        "inbound_reservation_texts", "inbound_reservations",
-        "inbound_unread_depth",
+        "inbound_in_flight_texts", "inbound_in_flight_blocking",
+        "inbound_message_reservations", "inbound_reservation_texts",
+        "inbound_reservations", "inbound_unread_depth",
+        "inbound_unread_texts",
     ])
     async def test_an_older_accessor_raising_keeps_the_evicted_bullet_in_the_funnel(
             self, tmp_path, broken):
         """The funnel's own per-accessor guards: the evicted bullet survives
-        every older read failing — except the unread-text read, whose
-        pre-existing early return skips the whole hook and is not this
-        change's to move."""
+        EVERY older read failing. #807 completed the list — the unread-text
+        read used to return from the whole hook (so its row was excluded
+        here), and the in-flight pair used to share one try (so a failure of
+        either erased both)."""
         from tools import FinalizeResult, _finalize_engagement
 
         reg, tch = await _registry(tmp_path)

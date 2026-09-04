@@ -1800,3 +1800,386 @@ class TestReservationReadTimeExclusion:
         assert posted.count("• spooled") == 1, posted
         assert posted.count("• held") == 1, posted
         assert posted.count("up to 2 inbound message(s)") == 1, posted
+
+
+class _AccessorProbe:
+    """A duck driver exposing exactly the eight inbound accessors, recording
+    every call, with any subset made to RAISE or to be ABSENT.
+
+    Local rather than a widened `_FakeInboundDriver`: that fake has no
+    `inbound_evicted_pending_texts`, and every fixture written against it
+    depends on that absence answering `hasattr` — giving it one would silently
+    change their disclosure. Everything that is not an inbound accessor raises
+    `AttributeError`, exactly as a duck driver's absent method would, so the
+    funnel takes its fallback paths and the post the mocked channel received is
+    what the assertions read.
+    """
+
+    _ACCESSORS = (
+        "inbound_unread_texts", "inbound_unread_depth", "inbound_reservations",
+        "inbound_message_reservations", "inbound_reservation_texts",
+        "inbound_in_flight_texts", "inbound_in_flight_blocking",
+        "inbound_evicted_pending_texts",
+    )
+    # Class-level defaults so `__getattr__` can consult them before `__init__`
+    # has bound the instance ones (otherwise the lookup recurses).
+    _broken: frozenset = frozenset()
+    _absent: frozenset = frozenset()
+    _values: dict = {}
+
+    def __init__(self, *, broken=(), absent=(), texts=(), depth=0,
+                 reservations=0, message_reservations=0, reservation_texts=(),
+                 in_flight=(), in_flight_blocking=0, evicted=()):
+        self._broken = frozenset(
+            [broken] if isinstance(broken, str) else broken)
+        self._absent = frozenset(
+            [absent] if isinstance(absent, str) else absent)
+        self._values = {
+            "inbound_unread_texts": list(texts),
+            "inbound_unread_depth": depth,
+            "inbound_reservations": reservations,
+            "inbound_message_reservations": message_reservations,
+            "inbound_reservation_texts": list(reservation_texts),
+            "inbound_in_flight_texts": list(in_flight),
+            "inbound_in_flight_blocking": in_flight_blocking,
+            "inbound_evicted_pending_texts": list(evicted),
+        }
+        unknown = (self._broken | self._absent) - set(self._ACCESSORS)
+        assert not unknown, f"not an inbound accessor: {sorted(unknown)}"
+        self.calls: dict[str, int] = {}
+
+    def __getattr__(self, name):
+        if name not in self._ACCESSORS or name in self._absent:
+            raise AttributeError(name)
+
+        def _read(_eng_id):
+            self.calls[name] = self.calls.get(name, 0) + 1
+            if name in self._broken:
+                raise RuntimeError(f"{name} is broken")
+            value = self._values[name]
+            return list(value) if isinstance(value, list) else value
+
+        return _read
+
+
+class TestOneFailingAccessorCostsOnlyItsOwnInput:
+    """#807 — a driver accessor that fails changes what the terminal hook
+    KNOWS, never what it DOES about everything else it read.
+
+    `_finalize_engagement` is called DIRECTLY: `emit_completion`'s pre-check
+    (which reads depth / reservations / in-flight blocking in its own tries
+    before the funnel) would refuse first and mask the hook's own arm, so the
+    funnel is the only place the hook's decision is observable.
+
+    Pins INV-ENG-003: the veto still fires on every arm the hook could still
+    read, and every terminal still discloses every population that did read.
+    """
+
+    async def _setup(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        from tools import init_tools
+
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
+                                 bus=None)
+        rec = await reg.create(
+            kind="executor", role_or_type="probe-exec", driver="claude_code",
+            task="t", origin={"role": "assistant", "channel": "telegram"},
+            topic_id=42,
+        )
+        tch = MagicMock()
+        tch.send_to_topic = AsyncMock(return_value=11)
+        tch.send_response_to_topic = AsyncMock(return_value=12)
+        tch.close_topic = AsyncMock()
+        cm = MagicMock(); cm.get.return_value = tch
+        bus = MagicMock(); bus.notify = AsyncMock()
+        init_tools(
+            channel_manager=cm, bus=bus,
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=reg,
+        )
+        return reg, rec, tch
+
+    @staticmethod
+    def _posted(tch):
+        return "".join(
+            str(c.args) + str(c.kwargs)
+            for c in (list(tch.send_to_topic.call_args_list)
+                      + list(tch.send_response_to_topic.call_args_list)))
+
+    @staticmethod
+    async def _finalize(rec, drv, *, outcome, gate):
+        from tools import _finalize_engagement
+
+        return await _finalize_engagement(
+            rec, outcome=outcome, text="done", artifacts=[], next_steps=[],
+            driver=drv, inbound_gate=gate)
+
+    # ---- red cases ----------------------------------------------------
+
+    @pytest.mark.parametrize("mode", ["absent", "raises"])
+    @pytest.mark.parametrize("arm", ["depth", "blocking", "reservations"])
+    async def test_a_missing_or_raising_unread_text_read_never_erases_a_readable_veto(
+            self, tmp_path, mode, arm):
+        """The #807 reproduction. The unread-text read is the hook's first,
+        and it must not decide for the arms below it: with it absent or
+        raising and exactly ONE other veto arm armed, a gated completion is
+        still refused. Kills both whole-hook early returns."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(
+            broken="inbound_unread_texts" if mode == "raises" else (),
+            absent="inbound_unread_texts" if mode == "absent" else (),
+            depth=1 if arm == "depth" else 0,
+            in_flight_blocking=1 if arm == "blocking" else 0,
+            reservations=1 if arm == "reservations" else 0)
+
+        result = await self._finalize(rec, drv, outcome="completed", gate=True)
+
+        assert result is FinalizeResult.PRECONDITION_FAILED
+        assert rec.status not in ("completed", "error", "cancelled")
+        assert tch.send_response_to_topic.await_count == 0
+        assert drv.calls.get({"depth": "inbound_unread_depth",
+                              "blocking": "inbound_in_flight_blocking",
+                              "reservations": "inbound_reservations"}[arm]) == 1
+
+    async def test_a_raising_in_flight_text_read_never_erases_the_blocking_veto(
+            self, tmp_path):
+        """The in-flight pair shared ONE try, so the texts read failing zeroed
+        the blocking count with it — a new accessor's failure switching off a
+        veto arm the gate can still read. Kills re-merging the two tries."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_in_flight_texts",
+                             in_flight_blocking=1)
+
+        result = await self._finalize(rec, drv, outcome="completed", gate=True)
+
+        assert result is FinalizeResult.PRECONDITION_FAILED
+        assert rec.status not in ("completed", "error", "cancelled")
+        assert drv.calls.get("inbound_in_flight_blocking") == 1
+        assert tch.send_response_to_topic.await_count == 0
+
+    @pytest.mark.parametrize("mode", ["absent", "raises"])
+    @pytest.mark.parametrize("outcome", ["completed", "cancelled", "error"])
+    async def test_an_unread_text_failure_preserves_every_other_population(
+            self, tmp_path, mode, outcome):
+        """Ungated, so every terminal reaches the renderer: the in-flight,
+        reservation and evicted populations still reach the topic with their
+        count when the unread-text read is absent or raising."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(
+            broken="inbound_unread_texts" if mode == "raises" else (),
+            absent="inbound_unread_texts" if mode == "absent" else (),
+            in_flight=["flight"], message_reservations=1,
+            reservation_texts=["held"], evicted=["evicted"])
+
+        result = await self._finalize(rec, drv, outcome=outcome, gate=False)
+
+        assert result is FinalizeResult.FINALIZED
+        posted = self._posted(tch)
+        assert posted.count("• flight") == 1, posted
+        assert posted.count("• evicted") == 1, posted
+        assert posted.count("• held") == 1, posted
+        assert posted.count("up to 3 inbound message(s)") == 1, posted
+        for name in ("inbound_in_flight_texts", "inbound_message_reservations",
+                     "inbound_reservation_texts",
+                     "inbound_evicted_pending_texts"):
+            assert drv.calls.get(name) == 1, (name, drv.calls)
+
+    @pytest.mark.parametrize("outcome", ["completed", "cancelled", "error"])
+    async def test_a_blocking_failure_preserves_the_in_flight_text(
+            self, tmp_path, outcome):
+        """The other half of the split: the blocking read failing costs only
+        the veto contribution, never the in-flight text already read."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_in_flight_blocking",
+                             in_flight=["flight"])
+
+        result = await self._finalize(rec, drv, outcome=outcome, gate=False)
+
+        assert result is FinalizeResult.FINALIZED
+        posted = self._posted(tch)
+        assert posted.count("• flight") == 1, posted
+        assert posted.count("1 inbound message(s)") == 1, posted
+        assert posted.count("up to") == 0, posted
+
+    async def test_the_unread_text_warning_no_longer_claims_the_gate_was_skipped(
+            self, tmp_path, caplog):
+        """The diagnostic is the operator's only trace of the failure. It said
+        "gate skipped"; the gate now stands and vetoes, so saying so would be
+        a false statement about a refusal that did happen."""
+        import logging
+
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_unread_texts", reservations=1)
+        with caplog.at_level(logging.WARNING, logger="tools"):
+            result = await self._finalize(rec, drv, outcome="completed",
+                                          gate=True)
+
+        assert result is FinalizeResult.PRECONDITION_FAILED
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno >= logging.WARNING]
+        named = [m for m in warnings if "inbound_unread_texts" in m]
+        assert len(named) == 1, warnings
+        assert "gate skipped" not in "".join(warnings), warnings
+
+    async def test_an_unread_text_failure_discloses_and_never_raises_without_a_depth_accessor(
+            self, tmp_path):
+        """Red at base for its disclosure (the early return drops the held
+        reservation), and it is ALSO the definedness pin: the hook runs
+        synchronously inside the registry's terminal critical section, where an
+        exception propagates out of `try_transition_terminal` and is misread as
+        a persist failure that leaves the record live. The absent-depth
+        fallback reads the DEGRADED text list, so a failed text read must leave
+        it defined and empty rather than unbound."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_unread_texts",
+                             absent="inbound_unread_depth",
+                             reservation_texts=["held"],
+                             message_reservations=1)
+
+        result = await self._finalize(rec, drv, outcome="cancelled", gate=False)
+
+        assert result is FinalizeResult.FINALIZED
+        assert rec.status == "cancelled"
+        assert self._posted(tch).count("• held") == 1
+
+    # ---- the 8-accessor matrix: outcome, then post contents -------------
+    #
+    # `none` plus each accessor raising, over a driver with EVERY veto arm
+    # armed and EVERY disclosure population non-empty. Only the
+    # `inbound_unread_texts` rows are red at the pre-fix tree; the rest pin
+    # the containment the other seven guards already had, so a fix that
+    # widened one of them would be caught here.
+
+    _FULL = dict(depth=1, reservations=1, in_flight_blocking=1,
+                 message_reservations=1, texts=["q-text"],
+                 in_flight=["f-text"], evicted=["e-text"],
+                 reservation_texts=["r-text"])
+
+    # broken -> (bullets that must survive, the count copy the renderer emits)
+    _MATRIX = {
+        None: (("q-text", "f-text", "e-text", "r-text"), "up to 4"),
+        "inbound_unread_texts": (("f-text", "e-text", "r-text"), "up to 3"),
+        "inbound_unread_depth": (("q-text", "f-text", "e-text", "r-text"),
+                                 "up to 4"),
+        "inbound_reservations": (("q-text", "f-text", "e-text", "r-text"),
+                                 "up to 4"),
+        # The COUNT is deliberately not asserted for this row. Its text read
+        # succeeds while its count read fails, and `lost_reservations` is the
+        # only count unit the reservation population contributes — so the
+        # renderer quotes four bullets under an exact count of three. That
+        # incoherence is PRE-EXISTING (it is reachable at the base with this
+        # same driver, unchanged by this fix) and is filed separately; pinning
+        # it as observed would codify an undercount, so this row pins only the
+        # containment #807 is about: every readable bullet survives.
+        "inbound_message_reservations": (
+            ("q-text", "f-text", "e-text", "r-text"), None),
+        "inbound_reservation_texts": (("q-text", "f-text", "e-text"),
+                                      "up to 4"),
+        "inbound_in_flight_texts": (("q-text", "e-text", "r-text"), "up to 3"),
+        "inbound_in_flight_blocking": (
+            ("q-text", "f-text", "e-text", "r-text"), "up to 4"),
+        "inbound_evicted_pending_texts": (("q-text", "f-text", "r-text"),
+                                          "up to 3"),
+    }
+
+    @pytest.mark.parametrize("broken", list(_MATRIX))
+    async def test_no_single_accessor_failure_lets_a_gated_completion_through(
+            self, tmp_path, broken):
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken=broken or (), **self._FULL)
+
+        result = await self._finalize(rec, drv, outcome="completed", gate=True)
+
+        assert result is FinalizeResult.PRECONDITION_FAILED
+        assert rec.status not in ("completed", "error", "cancelled")
+
+    @pytest.mark.parametrize("broken", list(_MATRIX))
+    async def test_a_single_accessor_failure_costs_only_its_own_bullet(
+            self, tmp_path, broken):
+        from tools import FinalizeResult
+
+        expected, count = self._MATRIX[broken]
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken=broken or (), **self._FULL)
+
+        result = await self._finalize(rec, drv, outcome="cancelled", gate=False)
+
+        assert result is FinalizeResult.FINALIZED
+        posted = self._posted(tch)
+        for sentinel in ("q-text", "f-text", "e-text", "r-text"):
+            assert posted.count("• " + sentinel) == (
+                1 if sentinel in expected else 0), (sentinel, posted)
+        if count is not None:
+            assert posted.count(f"{count} inbound message(s)") == 1, posted
+
+    # ---- mutation checks (GREEN at the pre-fix tree, not red cases) ------
+
+    @pytest.mark.parametrize("condition", [
+        ("raises", "inbound_unread_texts"),
+        ("absent", "inbound_unread_texts"),
+        ("raises", "inbound_in_flight_texts"),
+        ("raises", "inbound_in_flight_blocking"),
+    ])
+    async def test_an_unreadable_accessor_with_no_other_evidence_fails_open(
+            self, tmp_path, condition):
+        """Option B is NOT what was built: an input the gate cannot read is
+        never itself a refusal. Kills a fix that makes any new guard
+        fail-closed."""
+        from tools import FinalizeResult
+
+        mode, name = condition
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken=name if mode == "raises" else (),
+                             absent=name if mode == "absent" else ())
+
+        result = await self._finalize(rec, drv, outcome="completed", gate=True)
+
+        assert result is FinalizeResult.FINALIZED
+        assert rec.status == "completed"
+        assert "inbound message(s)" not in self._posted(tch)
+
+    async def test_a_driver_exposing_no_inbound_accessor_is_not_gated(
+            self, tmp_path):
+        """The published "a driver that implements none of them is not gated"
+        outcome, pinned so dropping the unread-text `hasattr` short-circuit
+        cannot quietly change it."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(absent=_AccessorProbe._ACCESSORS)
+
+        result = await self._finalize(rec, drv, outcome="completed", gate=True)
+
+        assert result is FinalizeResult.FINALIZED
+        assert rec.status == "completed"
+        assert "inbound message(s)" not in self._posted(tch)
+        assert drv.calls == {}
+
+    async def test_an_absent_depth_accessor_still_vetoes_on_readable_texts(
+            self, tmp_path):
+        """The other side of that fallback: a duck driver exposing only the
+        text read keeps deriving its depth from it. Kills replacing the
+        `len(texts)` fallback with a bare literal 0."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(absent="inbound_unread_depth", texts=["q-text"])
+
+        result = await self._finalize(rec, drv, outcome="completed", gate=True)
+
+        assert result is FinalizeResult.PRECONDITION_FAILED
+        assert rec.status not in ("completed", "error", "cancelled")
