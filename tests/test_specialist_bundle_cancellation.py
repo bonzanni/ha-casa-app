@@ -839,3 +839,38 @@ def test_in_progress_propagates_a_present_entry_that_is_not_json(
         raised += 1
 
     assert (len(list(ops.glob("*.json"))), raised) == (1, 1)
+
+
+def test_in_progress_propagates_a_present_entry_whose_read_is_denied(
+        tmp_path: Path, monkeypatch) -> None:
+    """STRICTNESS, and a third mutation: an `OSError` that is NOT the entry
+    vanishing — a PRESENT journal whose read is denied — still raises. The
+    tolerance is `FileNotFoundError`, not its parent class: a widening to
+    `OSError` would report this transaction as terminal, which is the one
+    outcome the helper exists to make impossible.
+
+    Permission bits are deliberately not used (a privileged runner ignores
+    them). `read_text` is replaced for this ONE path; every other path keeps
+    the real implementation, and the denial is counted rather than assumed.
+    """
+    ops = _ops_with(tmp_path, denied=json.dumps({"state": "in-progress"}))
+    denied = ops / "denied.json"
+    real_read_text = Path.read_text
+    reads = 0
+
+    def _read_text(self, *args, **kwargs):
+        nonlocal reads
+        if self == denied:
+            reads += 1
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
+
+    raised = 0
+    try:
+        _in_progress(ops)
+    except PermissionError:
+        raised += 1
+
+    assert (len(list(ops.glob("*.json"))), reads, raised) == (1, 1, 1)
