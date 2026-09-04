@@ -703,14 +703,22 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
                           edit_text=_expired_body(rec.get("body") or ""))
             continue
 
-        # Same lane contract as the live path: a human question raised
-        # between channel readiness and this reconcile owns the lane, and the
-        # restored machine one must not sit behind it. A refusal is settled,
-        # never left `live` with no hook.
+        # Same lane contract as the live path, decided on DELIVERY rather than
+        # on registration (INV-JOB-014). A human question the operator can SEE
+        # owns the lane and the restored machine one must not sit behind it; a
+        # refusal is settled, never left `live` with no hook. But refusing HERE
+        # is irreversible — `_settle` edits the keyboard and tells the session —
+        # so a request that has only registered must not take a durable
+        # question with it. Restoring instead costs nothing that is not paid
+        # back: if that keyboard does land, its own path retires the restored
+        # question at delivery with the reason that actually happened
+        # (`operator_challenge`, `superseded`), and if it fails the operator
+        # keeps the question that was already on screen.
         req, _created = BROKER.register(
             namespace=NAMESPACE, scope=rec["scope"], request_id=rid,
             timeout_s=remaining, detached=True,
             require_idle=True, idle_scopes=(f"authz:{rec['chat_id']}",),
+            idle_requires_delivered=True,
             meta=broker_meta(rec),
         )
         if req is None:

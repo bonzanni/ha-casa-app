@@ -106,22 +106,47 @@ scheduled question cannot be undone: its finish hook has already edited the keyb
 expired and delivered the terminal continuation to the session that asked (INV-JOB-007).
 So a question that retires one at ADMISSION and then fails to post leaves the operator
 with neither — the machine one expired, the human one never on screen. Displacing at
-delivery instead makes that state unreachable on the live path rather than rarer (the one
-window it does not reach is named below), and there is nothing to compensate afterwards
-because nothing was spent. A challenge that displaces therefore
+delivery instead makes that state unreachable rather than rarer, and there is nothing to
+compensate afterwards because nothing was spent. A challenge that displaces therefore
 leaves no boot-revocation marker: it has taken the lane in this process, and the marker
 exists only to speak for a revocation the live map could not see.
 
-What it does not cover: a boot reconcile that runs strictly BETWEEN a challenge's
-registration and its post settling. The idle requirement reads scope occupancy and cannot
-tell a posting challenge from a delivered one, so it settles the durable record
-`operator_busy` and a post that then fails leaves neither question. That loss belongs to
-the reconciler's notion of occupancy, not to the challenge's ordering, and no ordering
-change closes it.
+What this rule does not itself decide: how a BOOT reconcile reads the same lane. That is
+INV-JOB-014, below — the reconciler answers irreversibly and therefore asks a stricter
+question.
 
 What it does not cover: selection from the durable record file. Live decisions read the
 broker, which is synchronous; the record file is written after an await and would miss an
 ask that had just won its lane.
+
+**INV-JOB-014**: At boot, a durable scheduled question is refused its lane only by a request whose keyboard post has recorded a message id; a request that has merely registered leaves the question restored, to be displaced by that request's own delivery if the post lands.
+
+The live path and the boot pass ask the same question of the lane and are right to answer it
+differently, because a refusal costs a different amount in each. On the live path a refused
+machine question is simply not asked, and nothing is lost by treating a request that has just
+registered as owning the operator's attention — it is about to post. In the boot pass a refusal
+SETTLES the durable record: the keyboard is edited to expired and the session that asked is
+told, and none of that can be taken back. A challenge or a human question whose keyboard is
+still in flight would therefore destroy a question the operator can currently see, in exchange
+for one that may never arrive — and if that post then fails, the operator has neither.
+
+Restoring instead is the cheaper mistake in both directions, and it is not a bet: the
+compensation is the same delivery-time displacement INV-JOB-008 already requires. If the post
+lands, its own driver retires the restored question then, with the reason that actually
+happened; if it fails, the restored question was never in anyone's way. The cost is one extra
+keyboard edit in the case where both happen.
+
+The predicate is a recorded message id, which is written in two places and means the same thing
+in both: after a keyboard post returns one, and for a record restored from disk, whose keyboard
+is still on screen from the previous process. It is decided inside the broker's synchronous
+registration, in the same no-await block as the insert, so nothing can be admitted between the
+question and the answer.
+
+What it does not cover: whether the operator has actually READ the keyboard. A message id says
+Telegram accepted the message, not that anyone looked at it — the guarantee is about what
+reached the screen, not about attention itself. Nor does it make the reconcile pass atomic: a
+request registering between two records of one pass is judged by the same rule, which is the
+point, but the pass still decides each record as it reaches it.
 
 **INV-JOB-012**: A revocation that lands in the boot window settles the record it selected with the reason its caller passed, so the boot path tells the waiting session the same reason the live path would.
 

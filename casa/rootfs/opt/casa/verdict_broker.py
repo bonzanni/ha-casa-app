@@ -119,6 +119,7 @@ class VerdictBroker:
         supersede: bool = False,
         require_idle: bool = False,
         idle_scopes: "tuple[str, ...]" = (),
+        idle_requires_delivered: bool = False,
     ) -> "tuple[PendingRequest | None, bool]":
         """Register (or reattach to) a request.
 
@@ -132,6 +133,21 @@ class VerdictBroker:
         authorization challenge's own registration. ``idle_scopes`` exists
         because that lane is not a single scope — a protected-action challenge
         lives in ``authz:<chat>`` while a plain ask lives in ``dm:<chat>``.
+
+        ``idle_requires_delivered`` (#762) narrows what counts as occupancy to
+        a request whose keyboard post has recorded a ``message_id``. It exists
+        for ONE caller, ``scheduled_asks.reconcile_at_boot``, because that is
+        the one place where a refusal is IRREVERSIBLE: the boot reconciler
+        settles the refused record, editing its keyboard to expired and
+        dispatching its terminal continuation, so a request that has merely
+        registered would destroy a durable question for a keyboard that has not
+        landed and may never land (INV-JOB-014). On the LIVE path the same
+        refusal costs nothing — a machine question simply is not asked — which
+        is why raw live membership stays the default and every other caller
+        keeps it. The predicate is decided HERE, in the same no-await block as
+        the insert, rather than composed by the caller from a separate read:
+        two synchronous calls are equally indivisible today, and a function
+        boundary is what stops a later edit putting an await between them.
         """
         if namespace not in _VALID_NAMESPACES:
             raise ValueError(f"invalid namespace: {namespace!r}")
@@ -139,9 +155,19 @@ class VerdictBroker:
 
         if require_idle:
             occupied = {scope, *idle_scopes}
-            for k in self._live:
-                if k[0] == namespace and k[1] in occupied:
-                    return None, False
+            for k, live in self._live.items():
+                if k[0] != namespace or k[1] not in occupied:
+                    continue
+                if (idle_requires_delivered
+                        and live.meta.get("message_id") is None):
+                    # Registered, but its keyboard is not on screen. The id is
+                    # written in exactly two places: `_run_setup` after a post
+                    # returns one, and `scheduled_asks.broker_meta` for a
+                    # record restored from disk, whose keyboard is still up
+                    # from the previous process. Both are "the operator can see
+                    # it"; neither is "someone means to ask".
+                    continue
+                return None, False
 
         existing = self._live.get(key)
         if existing is not None:

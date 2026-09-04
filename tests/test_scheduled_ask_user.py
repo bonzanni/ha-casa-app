@@ -1005,11 +1005,19 @@ class TestBootReconcile:
     async def test_a_live_human_question_keeps_the_lane(
         self, _fresh_broker, _fresh_store,
     ):
+        """INV-JOB-008. A human question the operator can SEE holds the lane,
+        and the machine one yields to it — the direction is one-way by design.
+
+        The fixture records a `message_id` because that is what makes this a
+        human question the operator has: the reconciler judges the lane by what
+        reached the screen, not by what registered. Its sibling below is the
+        same fixture without one.
+        """
         await _fresh_store.put(self._rec())
         _fresh_broker.register(
             namespace="resident_ask", scope=f"dm:{OPERATOR}",
             request_id="human", timeout_s=300, detached=True,
-            meta={"operator_id": OPERATOR},
+            meta={"operator_id": OPERATOR, "message_id": 4242},
         )
         channel = _FakeChannel()
         counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
@@ -1018,6 +1026,34 @@ class TestBootReconcile:
         assert _fresh_store.all() == []
         assert _fresh_broker.pending(
             namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["human"]
+
+    async def test_a_human_question_still_posting_does_not_keep_the_lane(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """#762 · INV-JOB-008, the same fixture minus the delivered keyboard.
+
+        Registered is not delivered. Refusing the restore here is irreversible
+        and the question is destroyed for a keyboard that may never arrive; the
+        restore is not, because the human question's own path displaces it at
+        delivery. Only the BOOT pass reads the lane this way — the live path's
+        `require_idle` is unchanged, which `TestLane` pins.
+        """
+        await _fresh_store.put(self._rec())
+        _fresh_broker.register(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            request_id="human", timeout_s=300, detached=True,
+            meta={"operator_id": OPERATOR},
+        )
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts.get("operator_busy", 0) == 0
+        assert counts["restored"] == 1
+        assert channel.scheduled_dispatches == []
+        assert channel.edits == []
+        assert len(_fresh_store.all()) == 1
+        assert sorted(_fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == [
+            "human", "rid-boot"]
 
 
 # ---------------------------------------------------------------------------
