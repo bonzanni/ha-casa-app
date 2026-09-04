@@ -27,23 +27,31 @@ covers, and what it deliberately does not, is stated under its own invariant bel
 
 ## Contracts & invariants
 
-**INV-PERS-008**: A persona-bound agent's per-agent `response_shape.yaml` is not read, and an agent's file-tool write to a resident's copy is refused.
+**INV-PERS-017**: A persona-bound resident's per-agent `response_shape.yaml` is read and rendered into the composed fallback prompt, and no part of it is served while its compiled bundle is active; and an agent's write to a resident's copy through `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is refused on the executor, resident and delegated-resident hook paths.
 
-This is INV-PERS-001 seen from the config repo. The file renders only into the composed
-prompt, so for anything carrying a compiled bundle it reaches nothing — and every resident
-carries one from its first boot, because all three role artifacts require a persona. The
-refusal exists because the failure was silent in the worst way: the edit was written,
-committed, and reported live, while the served prompt was byte-identical. What the model
-receives comes from the persona pack and the role artifact's own response block.
+This is INV-PERS-001 seen from the config repo. The loader reads the file on every load,
+schema-validates it and renders all five of its fields — register, format, the two sentence
+limits and the rules — into the composed prompt; that prompt is the fallback, so for
+anything carrying a compiled bundle the bytes reach nothing served. Every resident carries a
+bundle from its first boot, because all three role artifacts require a persona. The refusal
+exists because the failure was silent in the worst way: the edit was written, committed, and
+reported live, while the served prompt was byte-identical. What the model receives comes from
+the persona pack and the role artifact's own response block.
 
-What it does not cover: reads. An agent may still open the file, and should, to explain why
-changing it is not the answer. The shell half of the refusal is a backstop rather than a
-boundary — it recognises the accidental spelling, not every possible one — and the
-specialist subtree is denied by the managed-state guard instead, in its own words.
+What it does not cover. **Reads by the agent**: it may still open the file, and should, to
+explain why changing it is not the answer — a claim about what the file's bytes reach, not
+about who may look at them. **The shell**: the refusal's Bash half is a backstop rather than
+a boundary, recognising the accidental spelling and not every possible one. **The
+`claude_code` transport**, whose resolver deliberately carries the managed-state and
+prompt-file guards and not this one: this guard's Bash half matches a bare basename anywhere
+in a command, so an executor writing its own `response_shape.yaml` under an engagement
+directory would start being refused. **The specialist tier**, for the same reason on the
+delegated builder, and because the specialist subtree is denied by the managed-state guard
+instead, in its own words.
 
 **INV-PERS-012**: A persona-bound resident's `prompts/system.md` is read only into the composed fallback prompt and is not served when its compiled bundle is active; and an agent's write to a resident's copy through `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is refused on the executor, resident, delegated-resident and claude_code hook paths.
 
-This is INV-PERS-008 one file over, and the file operators actually reach for.
+This is INV-PERS-017 one file over, and the file operators actually reach for.
 `character.yaml` points at it, the loader requires it to exist and opens it on
 every load — the file *is* read — and what it reads composes into a prompt no
 bundle-bound resident is served, because the compiled bundle replaces the

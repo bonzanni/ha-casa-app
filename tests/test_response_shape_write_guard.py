@@ -4,9 +4,9 @@ writing it is refused rather than committed and reported live.
 The reported defect: the configurator edits `agents/<role>/response_shape.yaml`,
 commits it, and tells the operator the change "is already live for the agent's
 next turn" — correctly, per its own recipe. For a persona-bound resident the
-file is not read on any turn. The `static_prompt_digest` is byte-identical
-before and after, and the next reply is often shorter by chance, so nothing
-surfaces the drop.
+file is read on every load and served on no turn. The `static_prompt_digest`
+is byte-identical before and after, and the next reply is often shorter by
+chance, so nothing surfaces the drop.
 
 Why the file is dead for a resident: `agent.py` uses the compiled bundle's
 projection as the base prompt whenever a bundle exists (INV-PERS-001), and all
@@ -183,7 +183,13 @@ class TestResponseShapeGuardIsWired:
 class TestTheFileIsActuallyDead:
     """The premise the guard rests on. If a resident's response_shape.yaml ever
     became live again, this guard would be actively harmful — so the premise is
-    pinned, not assumed."""
+    pinned, not assumed.
+
+    "Dead" here means UNSERVED, not unread: the loader reads and renders the
+    file on every load, into a composed prompt no bundle-bound resident is
+    served. INV-PERS-017 states both halves, and
+    `TestTheFileIsReadRenderedButNotServed` counts them.
+    """
 
     def test_every_resident_role_requires_a_persona(self):
         """Bundle-bound from first boot is what makes the file unreachable;
