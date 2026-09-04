@@ -124,7 +124,7 @@ What it does not cover: selection from the durable record file. Live decisions r
 broker, which is synchronous; the record file is written after an await and would miss an
 ask that had just won its lane.
 
-**INV-JOB-014**: At boot, a durable scheduled question is refused its lane only by a request whose keyboard post has recorded a message id; a request that has merely registered leaves the question restored, to be displaced by that request's own delivery if the post lands.
+**INV-JOB-014**: At boot, a durable scheduled question is restored over an occupant of its lane only when that occupant is a human-raised question whose keyboard post has not recorded a message id — the one case whose own delivery retires the restored question truthfully. Any delivered occupant, and any machine-timed one, refuses the restore and settles the question `operator_busy`.
 
 The live path and the boot pass ask the same question of the lane and are right to answer it
 differently, because a refusal costs a different amount in each. On the live path a refused
@@ -140,6 +140,13 @@ compensation is the same delivery-time displacement INV-JOB-008 already requires
 lands, its own driver retires the restored question then, with the reason that actually
 happened; if it fails, the restored question was never in anyone's way. The cost is one extra
 keyboard edit in the case where both happen.
+
+That compensation is also the boundary of the rule, and it is why a MACHINE-TIMED occupant is
+excluded from it. The displacement is one-way by design — a human question supersedes a
+machine one, never the reverse — so a scheduled ask that is itself still posting will never
+retire anything. Restoring over one would leave two machine questions live in a lane that holds
+one, each answerable, with nothing to retire either. It therefore holds the lane from
+registration, exactly as every occupant used to.
 
 The predicate is a recorded message id, which is written in two places and means the same thing
 in both: after a keyboard post returns one, and for a record restored from disk, whose keyboard

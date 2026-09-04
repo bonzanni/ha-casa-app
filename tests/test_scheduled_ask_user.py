@@ -1033,6 +1033,45 @@ class TestBootReconcile:
             _FakeChannel(operator=None), now=0.0)
         assert counts["operator_changed"] == 1
 
+    async def test_a_scheduled_ask_still_posting_keeps_the_lane(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """INV-JOB-014's boundary: the relaxation is for HUMAN-raised questions.
+
+        Yielding the lane to an occupant whose keyboard has not landed is only
+        safe because that occupant retires the restored question itself once it
+        does — `authz_grants._drive` and `tools.ask_user` both displace on
+        delivery. A machine-timed ask never displaces anything: the rule is
+        one-way by design. Restoring over one would leave TWO machine questions
+        live in the operator's single lane, each answerable, with nothing to
+        retire either — which is a state neither the base nor this change
+        allows. So it holds the lane from registration, as it always did.
+        """
+        await _fresh_store.put(self._rec())
+        # Exactly what `_ask_user_scheduled` registers: the `scheduled` marker,
+        # and no message id until its own post returns one.
+        req, _created = _fresh_broker.register(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            request_id="fresh-scheduled", timeout_s=300, detached=True,
+            meta={"operator_id": OPERATOR, "scheduled": True},
+        )
+        assert req is not None
+        assert _fresh_broker.get_meta(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            request_id="fresh-scheduled").get("message_id") is None
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts["operator_busy"] == 1
+        assert counts.get("restored", 0) == 0
+        assert sum("operator_busy" in d["text"]
+                   for d in channel.scheduled_dispatches) == 1
+        assert len(_fresh_store.all()) == 0
+        assert _fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}") == [
+            "fresh-scheduled"]
+
     async def test_a_live_human_question_keeps_the_lane(
         self, _fresh_broker, _fresh_store,
     ):

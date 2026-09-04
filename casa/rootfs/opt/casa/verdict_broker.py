@@ -159,13 +159,27 @@ class VerdictBroker:
                 if k[0] != namespace or k[1] not in occupied:
                     continue
                 if (idle_requires_delivered
-                        and live.meta.get("message_id") is None):
+                        and live.meta.get("message_id") is None
+                        and live.meta.get("scheduled") is not True):
                     # Registered, but its keyboard is not on screen. The id is
                     # written in exactly two places: `_run_setup` after a post
                     # returns one, and `scheduled_asks.broker_meta` for a
                     # record restored from disk, whose keyboard is still up
                     # from the previous process. Both are "the operator can see
                     # it"; neither is "someone means to ask".
+                    #
+                    # A MACHINE-TIMED occupant is excluded from that relaxation,
+                    # and the reason is the whole justification for it. Yielding
+                    # the lane to an undelivered occupant is safe because that
+                    # occupant retires the restored question itself once its
+                    # keyboard lands — `authz_grants._drive` and
+                    # `tools.ask_user` both displace on delivery. A scheduled
+                    # ask does no such thing: the displacement rule is one-way
+                    # by design (a human question supersedes a machine one,
+                    # never the reverse), so restoring over one would leave TWO
+                    # machine questions live in the operator's single lane with
+                    # nothing to retire either. It holds the lane from
+                    # registration, exactly as it did before.
                     continue
                 return None, False
 
