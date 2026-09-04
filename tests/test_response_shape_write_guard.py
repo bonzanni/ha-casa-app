@@ -204,3 +204,293 @@ class TestTheFileIsActuallyDead:
 
         assert "response_shape.yaml" in TIER_FILES["executor"]["forbidden"]
         assert "response_shape.yaml" in TIER_FILES["resident"]["required"]
+
+
+# --- The read/render/not-served pair, and the corpus statement that names it ---
+#
+# Node ids here are UNPARAMETRISED on purpose: they are bound from
+# `docs/manifest.d/architecture-n-r.yaml`, and a bracketed id does not resolve.
+
+_DEFAULT_AGENTS = "casa/rootfs/opt/casa/defaults/agents"
+_DISCLOSURE = "casa/rootfs/opt/casa/defaults/policies/disclosure.yaml"
+_RESIDENTS = ("assistant", "butler", "concierge")
+_GUARD_DOC = "docs/architecture/prompt-file-guards.md"
+
+# The settled statement of the invariant this class pins. Byte-for-byte what
+# `docs/architecture/prompt-file-guards.md` declares.
+_EXPECTED_STATEMENT = (
+    "A persona-bound resident's per-agent `response_shape.yaml` is read and "
+    "rendered into the composed fallback prompt, and no part of it is served "
+    "while its compiled bundle is active; and an agent's file-tool write to "
+    "a resident's copy is refused."
+)
+
+def _declared_invariants(text):
+    import re
+
+    pattern = re.compile(r"^\*\*(?P<id>INV-[A-Z]+-\d+)\*\*: (?P<statement>.+)$")
+    out = []
+    for line in text.splitlines():
+        m = pattern.fullmatch(line)
+        if m:
+            out.append((m["id"], m["statement"]))
+    return out
+
+
+def _statements_about_the_file(declared):
+    """Select by the grammatical SUBJECT, never by id.
+
+    Selecting by id would make this test fail at the base because
+    `INV-PERS-017` is absent, not because the published statement contradicts
+    the loader — a different failure wearing the same red. The subject regex
+    admits the retired wording ("agent's") and the corrected one
+    ("resident's") alike, and excludes INV-PERS-012, whose subject is
+    `prompts/system.md` even though its statement also names the composed
+    fallback.
+    """
+    import re
+
+    subject = re.compile(
+        r"^A persona-bound (?:agent|resident)'s per-agent "
+        r"`response_shape\.yaml`(?:\s|$)")
+    return [(i, s) for i, s in declared if subject.match(s)]
+
+
+def _shape_doc(register="written", format_="plain", confirmation=2,
+               status=4, rules=()):
+    lines = ["schema_version: 1",
+             f"max_sentences_confirmation: {confirmation}",
+             f"max_sentences_status: {status}",
+             f"register: {register}",
+             f"format: {format_}"]
+    if rules:
+        lines.append("rules:")
+        lines.extend(f'  - "{r}"' for r in rules)
+    return "\n".join(lines) + "\n"
+
+
+def _copy_residents(root, shape_for):
+    """Copy the three shipped resident directories, rewriting each copy's
+    `response_shape.yaml` with `shape_for(role)`."""
+    import pathlib
+    import shutil
+
+    roots = {}
+    for role in _RESIDENTS:
+        dst = pathlib.Path(root) / role
+        shutil.copytree(pathlib.Path(_DEFAULT_AGENTS) / role, dst)
+        (dst / "response_shape.yaml").write_text(shape_for(role),
+                                                 encoding="utf-8")
+        roots[role] = dst
+    return roots
+
+
+def _load_residents(roots, bindings_dir, monkeypatch=None):
+    """Real `load_agent_from_dir` on each copy. Returns (cfgs, opened).
+
+    `opened` counts opens of exactly the three copied `response_shape.yaml`
+    paths and is empty unless a monkeypatch is supplied. `binding_commit=False`
+    keeps the reconciliation in memory — the loader still compiles and attaches
+    the bundle, and nothing is written back to the copies.
+    """
+    import builtins
+    import os
+    import pathlib
+
+    from agent_loader import load_agent_from_dir
+    from policies import load_policies
+
+    targets = {str((p / "response_shape.yaml").resolve()) for p in roots.values()}
+    opened = []
+    if monkeypatch is not None:
+        real_open = builtins.open
+
+        def counting_open(file, *args, **kwargs):
+            if isinstance(file, (str, os.PathLike)):
+                try:
+                    resolved = str(pathlib.Path(file).resolve())
+                except OSError:
+                    resolved = None
+                if resolved in targets:
+                    opened.append(resolved)
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", counting_open)
+
+    policies = load_policies(_DISCLOSURE)
+    cfgs = {
+        role: load_agent_from_dir(
+            str(path), policies=policies,
+            bindings_dir=str(bindings_dir), binding_commit=False)
+        for role, path in roots.items()
+    }
+    if monkeypatch is not None:
+        monkeypatch.undo()
+    return cfgs, opened
+
+
+def _served_prompts(cfgs, tmp_path):
+    """`(role, channel) -> served system prompt`, over the three surfaces a
+    resident is actually served: telegram (text), voice, and an untrusted
+    webhook origin (restricted). Nine in all."""
+    import asyncio
+
+    from agent import origin_var
+    from test_agent_plugin_binding import _make_agent
+
+    out = {}
+
+    async def run():
+        for role, cfg in cfgs.items():
+            for channel, route in (("telegram", None), ("voice", None),
+                                   ("webhook", "webhook_trigger")):
+                seat = tmp_path / "seats" / f"{role}-{channel}"
+                seat.mkdir(parents=True, exist_ok=True)
+                agent = _make_agent(seat, role=role)
+                agent.config = cfg
+                token = origin_var.set({"_origin_route": route})
+                try:
+                    opts = await agent._build_options(
+                        channel=channel, channel_key="k", is_fresh=False,
+                        resume_sid=None, user_text="hi")
+                finally:
+                    origin_var.reset(token)
+                out[(role, channel)] = opts.system_prompt or ""
+
+    asyncio.run(run())
+    return out
+
+
+class TestTheFileIsReadRenderedButNotServed:
+    """INV-PERS-017's first two clauses, and the published sentence that names
+    them.
+
+    The behavioural halves are green at the base by construction — the loader
+    was always right; what was wrong was the corpus sentence describing it.
+    They are MUTATION CHECKS, and each is mutated separately below. The RED
+    case is the first method: it measures the loader and reads the published
+    statement in one test, and fails while the two contradict each other.
+    """
+
+    def test_published_invariant_matches_the_measured_response_shape_path(
+        self, tmp_path, monkeypatch,
+    ):
+        """RED at the base: `(1, 3, 3, 1)` against `(1, 3, 3, 0)`.
+
+        The corpus declares one invariant whose subject is a persona-bound
+        resident's `response_shape.yaml`; a real load of the three shipped
+        residents opens all three copies and renders all three markers into
+        the composed prompt; and the published statement claims the file "is
+        not read". The fourth count is the contradiction, and it is the first
+        assertion's only failing term at the base — the id assertions below it
+        are never reached there.
+        """
+        import pathlib
+        import re
+
+        marker = "ZZ-RESPONSE-SHAPE-{}-ZZ"
+        roots = _copy_residents(
+            tmp_path / "agents",
+            lambda role: _shape_doc(rules=(marker.format(role.upper()),)))
+        cfgs, opened = _load_residents(
+            roots, tmp_path / "bindings", monkeypatch=monkeypatch)
+
+        rendered = sum(
+            cfgs[role].system_prompt.count(marker.format(role.upper()))
+            for role in _RESIDENTS)
+
+        declared = _declared_invariants(
+            pathlib.Path(_GUARD_DOC).read_text(encoding="utf-8"))
+        matching = _statements_about_the_file(declared)
+        denies_read = sum(
+            1 for _, statement in matching
+            if re.search(r"\bis\s+not\s+read\b", statement, re.IGNORECASE))
+
+        assert (len(matching), len(opened), rendered, denies_read) == (1, 3, 3, 0)
+        assert [i for i, _ in matching] == ["INV-PERS-017"]
+        assert [s for _, s in matching] == [_EXPECTED_STATEMENT]
+
+    def test_real_loader_renders_each_response_shape_field(
+        self, tmp_path, monkeypatch,
+    ):
+        """Every one of the five rendered fields reaches the composed prompt,
+        counted separately.
+
+        A marker in `rules:` alone would leave `register`, `format` and the
+        two sentence limits free to change behaviour untested. Mutation: drop
+        any one field from `_render_response_shape_section` and that field's
+        count falls to 0; skip the read and the open count falls to 0.
+        """
+        rule = "ZZ-RESPONSE-SHAPE-RULE-{}-ZZ"
+        roots = _copy_residents(
+            tmp_path / "agents",
+            lambda role: _shape_doc(register="spoken", format_="markdown",
+                                    confirmation=71, status=73,
+                                    rules=(rule.format(role.upper()),)))
+        cfgs, opened = _load_residents(
+            roots, tmp_path / "bindings", monkeypatch=monkeypatch)
+
+        sections = {}
+        for role in _RESIDENTS:
+            body = cfgs[role].system_prompt.split("### Response shape", 1)[1]
+            sections[role] = body.split("\n###", 1)[0]
+
+        def across(line_for):
+            return sum(1 for role in _RESIDENTS
+                       if line_for(role) in sections[role].splitlines())
+
+        counts = (
+            across(lambda r: "Register: spoken"),
+            across(lambda r: "Format: markdown"),
+            across(lambda r: "Max sentences (confirmation): 71"),
+            across(lambda r: "Max sentences (status): 73"),
+            across(lambda r: f"  - {rule.format(r.upper())}"),
+        )
+        assert (len(opened), *counts) == (3, 3, 3, 3, 3, 3)
+
+    def test_each_response_shape_field_is_absent_from_all_served_projections(
+        self, tmp_path,
+    ):
+        """No field of the file reaches any served projection — per field, by
+        differential rather than by marker absence.
+
+        `Register: spoken` legitimately occurs in a compiled projection, so a
+        bare marker-absence check would false-positive. Instead each field is
+        changed on its own and the nine served prompts are compared
+        byte-for-byte against the baseline's: three composed prompts differ,
+        zero served prompts do. Mutation: serve `cfg.system_prompt` on the
+        text/voice arm and the served difference count becomes 6; on the
+        restricted-webhook arm, 3; on both, 9.
+        """
+        base_kwargs = dict(register="written", format_="plain",
+                           confirmation=2, status=4,
+                           rules=("baseline rule.",))
+        mutations = {
+            "register": dict(register="spoken"),
+            "format": dict(format_="markdown"),
+            "max_sentences_confirmation": dict(confirmation=12),
+            "max_sentences_status": dict(status=14),
+            "rules": dict(rules=("baseline rule.", "ZZ-EXTRA-RULE-ZZ")),
+        }
+
+        for field, override in mutations.items():
+            arms = {}
+            for arm, kwargs in (("base", base_kwargs),
+                                ("mut", {**base_kwargs, **override})):
+                root = tmp_path / field / arm
+                roots = _copy_residents(root / "agents",
+                                        lambda role, k=kwargs: _shape_doc(**k))
+                cfgs, _ = _load_residents(roots, root / "bindings")
+                arms[arm] = (cfgs, _served_prompts(cfgs, root))
+
+            composed_differences = sum(
+                1 for role in _RESIDENTS
+                if arms["base"][0][role].system_prompt
+                != arms["mut"][0][role].system_prompt)
+            base_served, mut_served = arms["base"][1], arms["mut"][1]
+            served_differences = sum(
+                1 for key in base_served
+                if base_served[key] != mut_served[key])
+
+            assert (composed_differences, len(base_served), len(mut_served),
+                    served_differences) == (3, 9, 9, 0), field
