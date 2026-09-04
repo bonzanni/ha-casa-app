@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.262.0] - 2026-09-04
+
+### Fixed
+
+- Cancelling a specialist install, upgrade, rollback or uninstall while it is
+  running no longer lets a later restart quietly undo newer work. Each of those
+  operations writes a journal entry meaning "undo this if the process dies" and
+  clears it once the operation is complete. When the operation was cancelled in
+  the window between committing to disk and clearing that entry, the entry
+  survived — so the next start-up rolled the specialist back to the generation
+  before it, discarding whatever had been installed since. A cancelled operation
+  now finishes its own transaction before it lets go, and an operation
+  interrupted by a genuine crash is still rolled back at the next start-up,
+  which is what the journal is there for.
+
 ## [0.261.0] - 2026-09-04
 
 ### Fixed
