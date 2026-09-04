@@ -193,3 +193,29 @@ def test_the_shipping_script_has_no_early_return_above_the_waiver_block() -> Non
         "the empty-impact early return is back above the waiver block: waiver "
         "lines would again go unparsed on a diff that impacts no document"
     )
+
+
+def test_decide_removes_its_shell_temporary_directory(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#795. `_decide` copies `tmp="$(mktemp -d)"` from the shipping script; the
+    script pairs it with `trap 'rm -rf "$tmp"' EXIT` and the copy must too. The
+    assertion is a COUNT of entries in an isolated `TMPDIR` across one call, so
+    it measures the leak itself rather than the presence of a line."""
+    _commit(repo, "tests only\n\nDocs-impact: none — no documented surface changes")
+
+    isolated_tmpdir = tmp_path / "system-tmp"
+    isolated_tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(isolated_tmpdir))
+
+    before = {entry.name for entry in isolated_tmpdir.iterdir()}
+    rc, out = _decide(repo, impacted="")
+    after = {entry.name for entry in isolated_tmpdir.iterdir()}
+    added = after - before
+
+    assert (len(before), len(after), len(added)) == (0, 0, 0), (
+        f"_decide leaked TMPDIR entries: before={len(before)}, "
+        f"after={len(after)}, added={len(added)}; added_names={sorted(added)}"
+    )
+    assert rc == 0, out
+    assert "ack_lines=1" in out, out
