@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.261.0] - 2026-09-04
+
+### Fixed
+
+- Setting up an engagement's private outbox no longer fails outright in a
+  rootless or user-namespace container. Casa already tolerated a system that
+  refuses to change the directory's owner when it is not running as root, but
+  the kernel reports that refusal with a second, different error when the
+  target user does not exist in the namespace at all — and that one was not
+  caught, so provisioning stopped with an error instead of carrying on. Both
+  refusals are now treated the same way. A privileged process still fails
+  loudly rather than handing a plugin a directory it does not own.
+
 ## [0.260.0] - 2026-09-02
 
 ### Fixed

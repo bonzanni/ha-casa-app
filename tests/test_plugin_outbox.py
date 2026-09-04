@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import socket
 import stat
 from pathlib import Path
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -760,6 +762,162 @@ def test_provision_engagement_outbox_fresh_replaces_stray_nondir(tmp_path):
     Path(d).write_bytes(b"not a dir")
     d2 = plugin_outbox.provision_engagement_outbox(uid, root=str(root), fresh=True)
     assert os.path.isdir(d2)
+
+
+# --- the unprivileged chown degrade, per errno (#797) ----------------------
+#
+# `provision_engagement_outbox` degrades a chown failure — logs at DEBUG, falls
+# through to `os.chmod(d, 0o700)`, returns the dir — for exactly the errno set
+# {EPERM, EACCES, EINVAL} when `os.geteuid() != 0`; it re-raises every chown
+# failure at euid 0, and every failure outside that set at any euid.
+#
+# EPERM/EACCES is the pre-existing half (`except PermissionError` is exactly
+# those two). EINVAL is the userns unmapped-uid spelling: inside a user
+# namespace `chown` to a uid with no mapping fails EINVAL, a plain OSError that
+# escaped the degrade entirely and crashed provisioning. Every case here stubs
+# `os.chown` because CI has no user namespace, so the real spelling is
+# unreachable there.
+
+
+def _provision_failure_spies(monkeypatch, failure, euid):
+    spies = {
+        "makedirs": Mock(),
+        "chmod": Mock(),
+        "chown": Mock(side_effect=failure),
+        "geteuid": Mock(return_value=euid),
+    }
+    for name, spy in spies.items():
+        monkeypatch.setattr(plugin_outbox.os, name, spy)
+    return spies
+
+
+def _outbox_debug_records(caplog):
+    return [
+        record for record in caplog.records
+        if record.name == plugin_outbox.__name__
+        and record.levelno == logging.DEBUG
+    ]
+
+
+def test_provision_engagement_outbox_nonroot_einval_degrades(
+    monkeypatch, caplog,
+):
+    uid = 200123
+    euid = 1000
+    root = "/eng-outbox"
+    d = f"{root}/{uid}"
+    failure = OSError(errno.EINVAL, "unmapped uid")
+    spies = _provision_failure_spies(monkeypatch, failure, euid)
+
+    with caplog.at_level(logging.DEBUG, logger=plugin_outbox.__name__):
+        result = plugin_outbox.provision_engagement_outbox(uid, root=root)
+
+    assert result == d
+    assert spies["makedirs"].call_count == 2
+    assert spies["makedirs"].call_args_list == [
+        call(root, exist_ok=True),
+        call(d, exist_ok=True),
+    ]
+    assert spies["chown"].call_count == 1
+    assert spies["chown"].call_args_list == [
+        call(d, uid, uid, follow_symlinks=False),
+    ]
+    assert spies["chmod"].call_count == 2
+    assert spies["chmod"].call_args_list == [
+        call(root, 0o711),
+        call(d, 0o700),
+    ]
+    assert spies["geteuid"].call_count == 2
+    records = _outbox_debug_records(caplog)
+    assert len(records) == 1
+    assert "errno" in records[0].getMessage()
+    assert str(errno.EINVAL) in records[0].getMessage()
+
+
+def test_provision_engagement_outbox_root_einval_raises(
+    monkeypatch, caplog,
+):
+    uid = 200123
+    root = "/eng-outbox"
+    d = f"{root}/{uid}"
+    failure = OSError(errno.EINVAL, "unmapped uid")
+    spies = _provision_failure_spies(monkeypatch, failure, 0)
+
+    with caplog.at_level(logging.DEBUG, logger=plugin_outbox.__name__):
+        with pytest.raises(OSError) as caught:
+            plugin_outbox.provision_engagement_outbox(uid, root=root)
+
+    assert caught.value is failure
+    assert caught.value.errno == errno.EINVAL
+    assert spies["makedirs"].call_count == 2
+    assert spies["makedirs"].call_args_list == [
+        call(root, exist_ok=True),
+        call(d, exist_ok=True),
+    ]
+    assert spies["chown"].call_count == 1
+    assert spies["chown"].call_args_list == [
+        call(d, uid, uid, follow_symlinks=False),
+    ]
+    assert spies["chmod"].call_count == 1
+    assert spies["chmod"].call_args_list == [call(root, 0o711)]
+    assert len(_outbox_debug_records(caplog)) == 0
+
+
+def test_provision_engagement_outbox_nonroot_unrelated_errno_raises(
+    monkeypatch, caplog,
+):
+    uid = 200123
+    root = "/eng-outbox"
+    failure = OSError(errno.ENOSPC, "unrelated failure")
+    spies = _provision_failure_spies(monkeypatch, failure, 1000)
+
+    with caplog.at_level(logging.DEBUG, logger=plugin_outbox.__name__):
+        with pytest.raises(OSError) as caught:
+            plugin_outbox.provision_engagement_outbox(uid, root=root)
+
+    assert caught.value is failure
+    assert caught.value.errno == errno.ENOSPC
+    assert spies["makedirs"].call_count == 2
+    assert spies["chown"].call_count == 1
+    assert spies["chmod"].call_count == 1
+    assert spies["chmod"].call_args_list == [call(root, 0o711)]
+    # the errno filter runs BEFORE the euid check: an unexpected errno never
+    # even asks whether this process is root.
+    assert spies["geteuid"].call_count == 0
+    assert len(_outbox_debug_records(caplog)) == 0
+
+
+@pytest.mark.parametrize(
+    "failure_errno",
+    [
+        pytest.param(errno.EPERM, id="EPERM"),
+        pytest.param(errno.EACCES, id="EACCES"),
+    ],
+)
+def test_provision_engagement_outbox_nonroot_permission_errno_degrades(
+    monkeypatch, caplog, failure_errno,
+):
+    uid = 200123
+    euid = 1000
+    root = "/eng-outbox"
+    d = f"{root}/{uid}"
+    failure = OSError(failure_errno, "permission failure")
+    assert isinstance(failure, PermissionError)
+    spies = _provision_failure_spies(monkeypatch, failure, euid)
+
+    with caplog.at_level(logging.DEBUG, logger=plugin_outbox.__name__):
+        result = plugin_outbox.provision_engagement_outbox(uid, root=root)
+
+    assert result == d
+    assert spies["makedirs"].call_count == 2
+    assert spies["chown"].call_count == 1
+    assert spies["chmod"].call_count == 2
+    assert spies["chmod"].call_args_list == [
+        call(root, 0o711),
+        call(d, 0o700),
+    ]
+    assert spies["geteuid"].call_count == 2
+    assert len(_outbox_debug_records(caplog)) == 1
 
 
 def test_get_engagement_outbox_caches_instance(tmp_path):
