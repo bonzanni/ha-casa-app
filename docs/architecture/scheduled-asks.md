@@ -43,7 +43,8 @@ design. Revocation reads the broker, never the record file (INV-JOB-008) — but
 start until this reconcile runs, records exist on disk and the broker is empty, so a
 revocation landing in that window cancels nothing. Each revocation therefore leaves a
 process-local MARKER carrying the selector it used — a role, a role and a trigger's labels,
-or a chat — and the reconciler settles, rather than restores, a record that matches one.
+or a chat — and the reason it gave (INV-JOB-012), and the reconciler settles, rather than
+restores, a record that matches one.
 Not every retirement is a revocation, and only revocations mark. A DISPLACEMENT — a
 human question taking the lane — has nothing to settle: if the live map is empty, the
 previous process's keyboard is still on screen, unedited, and nobody was told anything,
@@ -105,6 +106,24 @@ change closes it.
 What it does not cover: selection from the durable record file. Live decisions read the
 broker, which is synchronous; the record file is written after an await and would miss an
 ask that had just won its lane.
+
+**INV-JOB-012**: A revocation that lands in the boot window settles the record it selected with the reason its caller passed, so the boot path tells the waiting session the same reason the live path would.
+
+Enforced by the marker itself: it carries the reason alongside the selector, and the reconciler
+settles with what it finds rather than a literal of its own. The live path never had this
+problem — the broker's predicate cancel carries the caller's reason into the finish hook — so
+what this closes is a disagreement between two paths that describe the same event. A trigger
+reloaded, a role evicted, a reminder swept away and a reminder cancelled are four different
+things to a resident reading its own continuation, and inside the window all four used to
+arrive as one.
+
+When two markers match one record the FIRST wins, which is not an ordering left over from the
+predicate this replaced: had the record been live, the earliest matching revocation would have
+cancelled it through the broker and every later one would have found nothing to select. The
+window reproduces the live path's own outcome, reason included.
+
+What it does not cover: the fidelity of a reason to anything outside Casa. The guarantee is that
+the boot path repeats the caller's word, not that the word is well chosen.
 
 **Ordinary conversation is not a claim on that lane.** The rule that a plain DM message
 resolves a pending question — the text *is* the answer — is true of a question this

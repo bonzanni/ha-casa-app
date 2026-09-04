@@ -750,10 +750,81 @@ class TestBootReconcile:
 
         assert counts.get("restored", 0) == 0
         assert counts["revoked_before_reconcile"] == 1
-        assert "trigger_changed" in channel.scheduled_dispatches[0]["text"]
+        assert "trigger_reloaded" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
         assert _fresh_broker.pending(
             namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+
+    async def test_boot_revocation_uses_the_first_matching_callers_reason(
+        self, _fresh_broker, _fresh_store,
+    ):
+        """INV-JOB-012. The marker carries the reason its caller passed, and
+        when two markers match one record the FIRST one wins.
+
+        First-match is not an implementation detail to be tidied later: had the
+        record been live, the EARLIEST matching revocation would have cancelled
+        it and every later one would have found nothing. Reproducing the live
+        path's own answer is the whole point of the marker.
+        """
+        await _fresh_store.put(self._rec())
+        # Both match this record; the chat marker is written first.
+        results = [
+            scheduled_asks.cancel_for_chat(OPERATOR, "new_session"),
+            scheduled_asks.revoke_role("assistant", "trigger_reloaded"),
+        ]
+        assert sum(n == 0 for n in results) == 2
+        assert len(scheduled_asks._BOOT_REVOCATIONS) == 2
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts.get("revoked_before_reconcile", 0) == 1
+        assert counts.get("restored", 0) == 0
+        assert len(channel.edits) == 1
+        assert len(channel.scheduled_dispatches) == 1
+        assert sum("(new_session)" in d["text"]
+                   for d in channel.scheduled_dispatches) == 1
+        assert sum("trigger_reloaded" in d["text"]
+                   for d in channel.scheduled_dispatches) == 0
+        assert sum("trigger_changed" in d["text"]
+                   for d in channel.scheduled_dispatches) == 0
+        assert len(_fresh_store.all()) == 0
+        assert len(_fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+
+    @pytest.mark.parametrize("revoke, reason", [
+        (lambda: scheduled_asks.revoke_role("assistant", "trigger_reloaded"),
+         "trigger_reloaded"),
+        (lambda: scheduled_asks.revoke_role("assistant", "role_evicted"),
+         "role_evicted"),
+        (lambda: scheduled_asks.revoke_trigger(
+            "assistant", "invoices", "trigger_removed"), "trigger_removed"),
+        (lambda: scheduled_asks.revoke_trigger(
+            "assistant", "invoices", "trigger_cancelled"), "trigger_cancelled"),
+    ])
+    async def test_every_live_reason_survives_the_boot_window(
+        self, _fresh_broker, _fresh_store, revoke, reason,
+    ):
+        """INV-JOB-012, over all four reasons a shipped caller passes.
+
+        `reload.py` revokes a reloaded role and an evicted one, the reminder
+        sweep revokes a trigger whose entry is gone, and `cancel_reminder`
+        revokes a cancelled one. Every one of them is discarded inside the boot
+        window unless the marker carries it.
+        """
+        await _fresh_store.put(self._rec(session_scope="cron-invoices"))
+        assert revoke() == 0
+
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts.get("revoked_before_reconcile", 0) == 1
+        assert counts.get("restored", 0) == 0
+        assert len(channel.scheduled_dispatches) == 1
+        assert sum(f"({reason})" in d["text"]
+                   for d in channel.scheduled_dispatches) == 1
+        assert sum("trigger_changed" in d["text"]
+                   for d in channel.scheduled_dispatches) == 0
 
     async def test_an_untouched_role_is_still_restored(
         self, _fresh_broker, _fresh_store,
