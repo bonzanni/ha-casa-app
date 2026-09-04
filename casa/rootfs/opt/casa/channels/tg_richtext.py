@@ -839,6 +839,30 @@ def _paginate(
     return pages
 
 
+def _without_lone_surrogates(text: str) -> str:
+    """*text* with every surrogate code point replaced by ``U+FFFD``.
+
+    Not cosmetic, and not the same thing as the measurement's tolerance. PTB
+    22.7 sends a request as ``data=request_data.json_parameters`` — FORM data,
+    which httpx encodes as UTF-8 — not as ``json_payload``, whose
+    ``ensure_ascii`` would have escaped a lone surrogate harmlessly. So a page
+    that still carries one raises ``NetworkError(UnicodeEncodeError)`` before
+    any request leaves the process: the repaired page would deliver nothing at
+    all. Replacement is ONE code point for one, which preserves every Python
+    offset the reconstruction inserts at and every UTF-16 unit the budget was
+    measured in.
+
+    Applied only to the pages the conversion-failure arm emits. A page whose
+    spans convert, and a page with no spans, never reach here and keep their
+    bytes exactly — narrowing this asymmetry further is a separate defect with
+    its own reachability, not this one.
+    """
+    if not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join(
+        "\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
+
+
 def _link_targets_for_page(
     page_text: str, page_spans: list[Span],
 ) -> tuple[list[tuple[int, int, str]], list[str], bool]:
@@ -922,6 +946,7 @@ def _plain_pages_with_targets(
     so an earlier index is never invalidated.
     """
     spans, urls, inline_ok = _link_targets_for_page(page_text, page_spans)
+    page_text = _without_lone_surrogates(page_text)
     if not urls:
         return [(page_text, None)]
     if inline_ok:

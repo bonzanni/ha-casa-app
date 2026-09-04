@@ -122,15 +122,17 @@ message is the retried payload, never a second attempt at the rejected one.
 
 The second way is that a page's entities cannot be EXPRESSED at all. Telegram's offsets are
 UTF-16, and a lone surrogate — which the shared measurement tolerates by design, and the
-platform's client library does not — makes the conversion raise. That degrades to no
-entities, which is exactly what a page with no formatting looks like, so nothing downstream
-can tell the two apart and no rejection is ever raised for the paragraph above to catch. The
-paginating renderer therefore decides it itself, while it still holds the spans: a page whose
-conversion fails is emitted with each destination re-attached in the same `label (url)` form,
-inline while it fits the page's budget and otherwise as the page's own text followed by
-destination-only pages. Its spans are page-relative Python offsets, so this needs no UTF-16
-round trip — the round trip is what the surrogate breaks. A SINGLE-page reply is left alone:
-its senders retry with the text the agent authored, which still contains every address.
+client library does not — makes the conversion raise. That degrades to no entities, which is
+what a page with no formatting looks like, so nothing downstream can tell the two apart and
+no rejection is raised for the paragraph above to catch. The paginating renderer decides it
+itself, while it still holds the spans: the page is emitted with each destination re-attached
+in the same `label (url)` form, inline while it fits the page's budget and otherwise as the
+page's own text followed by destination-only pages. The spans are page-relative Python
+offsets, so this needs no UTF-16 round trip — the round trip is what the surrogate breaks.
+Those pages also have their lone surrogates replaced one code point for one: the client sends
+a request as UTF-8 form data, so a page still carrying one raises before any request leaves
+the process and would deliver nothing at all. A SINGLE-page reply is left alone — its senders
+retry with the text the agent authored, which still contains every address.
 
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
@@ -269,8 +271,9 @@ longer than a whole message cannot be delivered as text in any shape, and is dro
 log line rather than sent as fragments of an address.
 
 What it does not cover: a single-page reply, whose senders retry with the authored text and
-never lost the address; and a page whose entities Telegram merely rejects, which is the
-sender-side path above.
+never lost the address; a page whose entities Telegram merely rejects, which is the sender-side
+path above; and a page with no spans at all, which never enters this path and keeps its bytes —
+including a lone surrogate — exactly as before.
 
 **A plain DM message retires the questions this conversation asked, and only those.** The
 order in the DM path is fixed and each step is there for a measured reason: `/new` is

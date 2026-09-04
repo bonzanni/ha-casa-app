@@ -260,6 +260,8 @@ def _summarise(attempts, fallback_calls):
         sum(text.count(URL) for _, text, _ in attempts),
         sum(text.count(LABEL) for _, text, _ in attempts),
         sum(bool(urls) for _, _, urls in attempts),
+        sum(text.count("\ud800") for _, text, _ in attempts),
+        sum(text.count("\ufffd") for _, text, _ in attempts),
         [name for name, _, _ in attempts],
         [text for _, text, _ in attempts],
         fallback_calls,
@@ -269,7 +271,7 @@ def _summarise(attempts, fallback_calls):
 async def test_all_four_senders_deliver_the_target_when_conversion_fails():
     from channels.tg_richtext import parse_markdown
 
-    first = f"\ud800{LABEL} ({URL})"
+    first = f"\ufffd{LABEL} ({URL})"
 
     display, spans = parse_markdown(CONVERSION_FAILURE_AUTHORED)
     assert (display, spans) == (
@@ -325,25 +327,25 @@ async def test_all_four_senders_deliver_the_target_when_conversion_fails():
 
     assert summaries == {
         "send_response": (
-            2, 1, 1, 0,
+            2, 1, 1, 0, 0, 1,
             ["send_message", "send_message"],
             [first, TAIL],
             [],
         ),
         "finalize_response_stream": (
-            2, 1, 1, 0,
+            2, 1, 1, 0, 0, 1,
             ["edit_message_text", "send_message"],
             [first, TAIL],
             [(1, 1, 0)],
         ),
         "send_response_to_topic": (
-            2, 1, 1, 0,
+            2, 1, 1, 0, 0, 1,
             ["send_message", "send_message"],
             [first, TAIL],
             [],
         ),
         "TopicStreamHandle.finalize": (
-            2, 1, 1, 0,
+            2, 1, 1, 0, 0, 1,
             ["edit_message_text", "send_message"],
             [first, TAIL],
             [(1, 1, 0)],

@@ -203,18 +203,21 @@ def test_render_paged_conversion_failure_keeps_well_formed_link_target():
         )
 
     pages = render_paged(authored)
-    assert (
-        len(pages),
-        sum(text.count(url) for text, _ in pages),
-        pages,
-    ) == (
-        2,
-        1,
-        [
-            (f"\ud800{label} ({url})", None),
-            (tail, None),
-        ],
-    )
+
+    # First, and it is the intended red at the true parent: the destination.
+    assert len(pages) == 2
+    assert sum(text.count(url) for text, _ in pages) == 1
+
+    # Then transportability. PTB 22.7 sends `data=request_data.json_parameters`
+    # — FORM data, which httpx encodes as UTF-8 — so a page still carrying the
+    # lone surrogate raises `NetworkError(UnicodeEncodeError)` before any
+    # request leaves the process, and the restored destination reaches nobody.
+    assert pages == [
+        (f"\ufffd{label} ({url})", None),
+        (tail, None),
+    ]
+    assert sum(text.count("\ud800") for text, _ in pages) == 0
+    assert sum(text.count("\ufffd") for text, _ in pages) == 1
 
 
 def test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets():
@@ -286,7 +289,7 @@ def test_render_paged_reconstruction_ignores_non_link_spans_and_runs_right_to_le
     tail = "x" * 4096
     pages = render_paged(f"\ud800*em* [A]({_U_A}) [B]({_U_B})\n\n{tail}")
     assert pages == [
-        (f"\ud800em A ({_U_A}) B ({_U_B})", None),
+        (f"\ufffdem A ({_U_A}) B ({_U_B})", None),
         (tail, None),
     ]
 
@@ -298,7 +301,7 @@ def test_render_paged_reconstruction_skips_a_url_visible_in_its_own_label():
 
     tail = "x" * 4096
     pages = render_paged(f"\ud800[{_U_A}]({_U_A})\n\n{tail}")
-    assert pages == [(f"\ud800{_U_A}", None), (tail, None)]
+    assert pages == [(f"\ufffd{_U_A}", None), (tail, None)]
 
 
 def test_render_paged_leaves_a_convertible_page_alone_when_a_later_page_fails():
@@ -410,3 +413,46 @@ def test_plain_pages_with_targets_does_not_guess_an_unusable_offset():
         ("label", None),
         (f"{_U_A}\n{_U_B}", None),
     ]
+
+
+def test_render_paged_replaces_each_surrogate_on_failed_page_one_for_one():
+    """Kills deletion, first-only replacement, collapsing several surrogates
+    into one, and replacement by a multi-code-point escape.
+
+    One code point for one keeps every Python offset and every UTF-16 unit
+    count exactly as `_paginate` measured them, which is what lets the
+    reconstruction insert at the offsets it was handed.
+    """
+    from channels.tg_richtext import render_paged
+
+    authored = f"\ud800[A]({_U_A})\ud801\n\n" + "x" * 4096
+    pages = render_paged(authored)
+
+    assert pages[0] == (f"�A ({_U_A})�", None)
+    assert len(pages[0][0]) == len(f"\ud800A ({_U_A})\ud801")
+    assert pages[0][0].count("�") == 2
+    assert pages[0][0].count("\ud800") + pages[0][0].count("\ud801") == 0
+
+
+def test_render_paged_normalizes_a_failed_page_without_link_spans():
+    """Kills normalising only when a destination was reconstructed.
+
+    Once conversion has failed the branch already knows the text may be
+    unencodable; passing it through merely because there is no url to restore
+    would rebuild the same undeliverable page inside the recovery path.
+    """
+    from channels.tg_richtext import render_paged
+
+    tail = "x" * 4096
+    assert render_paged(f"\ud800**B**\n\n{tail}") == [
+        ("�B", None), (tail, None)]
+
+
+def test_render_paged_page_without_spans_remains_byte_identical():
+    """The scope fence: a page with no spans never enters the branch, so its
+    bytes — surrogate included — are exactly what the base emitted."""
+    from channels.tg_richtext import render_paged
+
+    tail = "x" * 4096
+    assert render_paged(f"\ud800plain\n\n{tail}") == [
+        ("\ud800plain", None), (tail, None)]
