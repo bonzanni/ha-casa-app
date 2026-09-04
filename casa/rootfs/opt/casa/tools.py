@@ -19,7 +19,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
     from trigger_registry import TriggerRegistry
@@ -12170,6 +12170,144 @@ def _bundle_binding_blocked(v: dict) -> bool:
     return False
 
 
+# #828 (INV-SPEC-013): how long a CANCELLED bundle handler keeps waiting for its
+# own transaction to reach a terminal journal state before it stops waiting. The
+# bound limits the WAIT only — never the transaction, which is not cancelled by
+# it, keeps the mutation lock, and still completes or compensates its journal.
+#
+# Unbounded absorption is not the safe alternative: it is #321's defect one file
+# over (`_await_voice_persistence` below), where a wedged operation made
+# cancellation permanently ineffective. This unit ends in `reload.dispatch(...)`
+# and `_notify_plugin_health_if_possible()`, neither of which carries a timeout
+# and the second of which can reach the Telegram transport, so a shutdown-time
+# cancel must not be held hostage by either. 60s is two-sided: generous against
+# a sequencer measured in seconds (snapshot reload + agent reload + per-entry
+# verify + health regeneration), short enough that a shutdown is not held for
+# minutes.
+_SPECIALIST_BUNDLE_CANCEL_GRACE_S: float = 60.0
+
+# Strong references to bundle transactions still running after their handler
+# finished cancelled. `asyncio.create_task` alone does NOT keep a task alive —
+# a garbage-collected transaction is exactly the stranded journal this fixes.
+_BUNDLE_MUTATION_TASKS: "set[asyncio.Task]" = set()
+
+
+def _bundle_transaction_done(task: "asyncio.Task") -> None:
+    """Done-callback for a bundle transaction: drop the strong reference and
+    RETRIEVE any exception, so asyncio never logs "exception was never
+    retrieved" for a transaction whose caller had already gone (content
+    deliberately not rendered)."""
+    _BUNDLE_MUTATION_TASKS.discard(task)
+    if task.cancelled():
+        return
+    if task.exception() is not None:
+        logger.error("specialist bundle transaction failed after its handler "
+                     "had finished")
+
+
+async def _run_bundle_transaction(operation: "Callable[[], Awaitable[Any]]") -> Any:
+    """#828: run ONE specialist-bundle transaction so that cancelling its
+    handler cannot strand the journal in progress.
+
+    The journal's `in-progress` state means "undo me at boot". The library
+    writes it BEFORE the visible swap and returns with it still standing, and
+    completion is deliberately the tool layer's — deferred past a sequencer that
+    may have to compensate a committed generation. `CancelledError` is a
+    `BaseException`, so the handlers' `except Exception` arm caught neither
+    door: a cancelled handler completed nothing, compensated nothing, and left a
+    committed generation beside a live undo record that `reconcile_boot` then
+    replayed over any generation committed after it.
+
+    `operation` is the handler's WHOLE in-lock body: library call, post-commit
+    sequencer, journal completion or compensation, receipt prune and staging
+    reclaim. It runs in a CHILD task which acquires `_PLUGIN_TOOLS_LOCK` itself.
+
+    Three properties, and each is load-bearing:
+
+    * **The child owns the mutation lock.** The task that took it is the task
+      that releases it, so when the wait below is abandoned the transaction
+      still holds it and no later specialist-generation mutation can commit
+      before it ends. A parent-held lock would be released by the cancelled
+      handler while an abandoned `_bundle_compensate` could still
+      `rollback_disk` over a newer generation — this defect, re-created
+      in-process.
+    * **A cancel that lands BEFORE the lock was acquired aborts outright.**
+      Nothing has been committed there, and shielding would run a mutation the
+      caller aborted. `entered` is set synchronously between the acquire
+      returning and the operation's first await, and the loop is
+      single-threaded, so when this coroutine gets control the child is
+      suspended at exactly one await: `entered` unset means the library call was
+      never submitted to the executor. (That submission is the real boundary —
+      `asyncio.to_thread` hands the callable to the executor before it suspends,
+      which is why a cancel during the library call commits anyway, and why the
+      shield has to start before it.)
+    * **The absorption is bounded and the transaction is not.** Past
+      `_SPECIALIST_BUNDLE_CANCEL_GRACE_S` from the FIRST absorbed cancellation
+      the wait is abandoned; the child is never cancelled and keeps the lock.
+
+    The absorbed cancellation is re-raised either way, so the handler still
+    finishes cancelled exactly once and the SDK still sees the cancellation it
+    asked for — delayed, never converted into a success."""
+    entered = asyncio.Event()
+    lock = _PLUGIN_TOOLS_LOCK           # read at call time: tests rebind it
+
+    async def _owned() -> Any:
+        async with lock:
+            entered.set()
+            return await operation()
+
+    task = asyncio.create_task(_owned())
+    _BUNDLE_MUTATION_TASKS.add(task)
+    task.add_done_callback(_bundle_transaction_done)
+
+    loop = asyncio.get_running_loop()
+    cancellation: "asyncio.CancelledError | None" = None
+    deadline: "float | None" = None
+    while not task.done():
+        try:
+            if deadline is None:
+                await asyncio.shield(task)
+            else:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+        except asyncio.CancelledError as exc:
+            if not entered.is_set():
+                # Nothing begun: no lock held, no library call dispatched.
+                task.cancel()
+                raise
+            if cancellation is None:
+                # The deadline is anchored to the FIRST absorbed cancellation
+                # and never re-armed: a caller that keeps cancelling must not be
+                # able to extend its own wait indefinitely.
+                cancellation = exc
+                deadline = loop.time() + _SPECIALIST_BUNDLE_CANCEL_GRACE_S
+        except TimeoutError:
+            break
+        except Exception:  # noqa: BLE001 — the transaction's own failure
+            break
+    if not task.done():
+        # Only reachable through the deadline branches.
+        logger.error(
+            "specialist bundle transaction still running %.0fs after "
+            "cancellation — abandoning the wait; it keeps the mutation lock "
+            "and still completes or compensates its journal",
+            _SPECIALIST_BUNDLE_CANCEL_GRACE_S)
+        if cancellation is not None:
+            raise cancellation
+        raise asyncio.CancelledError()
+    # An absorbed cancellation takes PRECEDENCE over the transaction's own
+    # outcome: the caller asked to be cancelled and is, exactly once. The
+    # transaction's failure is retrieved for hygiene only.
+    if cancellation is not None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("specialist bundle transaction failed while "
+                         "cancellation was pending")
+        raise cancellation
+    return task.result()
+
+
 async def _bundle_reload_and_verify(
     slug: str, *, removed_artifact_ids: list, targets_removed: list) -> dict:
     """Task 10 bundle sequencer (spec §3.2d) — the post-mutation half of a
@@ -13185,15 +13323,16 @@ async def specialist_install_commit(args: dict) -> dict:
         receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
         plugin_resolutions=receipt.plugins,
     )
-    async with _PLUGIN_TOOLS_LOCK:
+
+    async def _txn() -> dict:
         # #346: same in-lock receipt re-check as specialist_upgrade — a
         # concurrent same-receipt bundle that completed while we waited has
         # pruned it; fail closed instead of double-consuming.
         if specialist_receipt.load(receipt.receipt_id) is None:
-            return _result({"ok": False, "kind": "receipt_required",
+            return {"ok": False, "kind": "receipt_required",
                             "detail": "the receipt was consumed by a concurrent "
                                       "bundle while waiting for the mutation lock "
-                                      "— re-run specialist_install_inspect"})
+                                      "— re-run specialist_install_inspect"}
         try:
             instance, txn = await asyncio.to_thread(
                 commit_specialist_install, inspection=inspection, receipt=receipt,
@@ -13202,7 +13341,7 @@ async def specialist_install_commit(args: dict) -> dict:
                 acks=SpecialistInstallAckStore(),
             )
         except SpecialistInstallError as exc:
-            return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+            return {"ok": False, "kind": exc.kind, "detail": exc.detail}
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
@@ -13214,7 +13353,7 @@ async def specialist_install_commit(args: dict) -> dict:
         # FAILED mutation — compensate + surface ok:false, never complete the
         # journal + report success.
         if not seq.get("ok", True):
-            return _result(await _bundle_seq_failure(txn, seq, slug=txn.slug))
+            return await _bundle_seq_failure(txn, seq, slug=txn.slug)
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
         # #331: a pending-configuration outcome RETAINS the receipt — the
         # follow-up configure re-commit requires it (receipt_required
@@ -13229,33 +13368,35 @@ async def specialist_install_commit(args: dict) -> dict:
         if instance.state == "active":
             _prune_bundle_receipt(receipt.receipt_id)
             specialist_install_mod.reclaim_staging_tree(staged_dir)
-    return _result({"ok": True, "slug": instance.slug, "state": instance.state,
-                     "activation_committed": instance.state == "active",
-                     "reloaded": seq["reloaded"], "verify": seq["verify"],
-                     # #499: parity with plugin_add's required_env_vars — the
-                     # bundled plugins' declared env names, per plugin, so the
-                     # install recipe wires them in THIS engagement instead of
-                     # leaving the first use to hit the requires gate. Names
-                     # come from the consented receipt rows (the same rows the
-                     # inspect payload and consent DM enumerate). Keyed by the
-                     # SCOPED name (`<slug>.<plugin>`) — the registry identity
-                     # that set_plugin_env_reference / verify_plugin_state
-                     # take for an owned plugin (review r1, Sol+Terra: the
-                     # bare manifest_name returns not_registered there).
-                     "required_env_vars": {
+        return {"ok": True, "slug": instance.slug, "state": instance.state,
+                "activation_committed": instance.state == "active",
+                "reloaded": seq["reloaded"], "verify": seq["verify"],
+                # #499: parity with plugin_add's required_env_vars — the
+                # bundled plugins' declared env names, per plugin, so the
+                # install recipe wires them in THIS engagement instead of
+                # leaving the first use to hit the requires gate. Names
+                # come from the consented receipt rows (the same rows the
+                # inspect payload and consent DM enumerate). Keyed by the
+                # SCOPED name (`<slug>.<plugin>`) — the registry identity
+                # that set_plugin_env_reference / verify_plugin_state
+                # take for an owned plugin (review r1, Sol+Terra: the
+                # bare manifest_name returns not_registered there).
+                "required_env_vars": {
                          row.scoped_name: list(row.env_names)
                          for row in receipt.plugins if row.env_names
-                     },
-                     # #676: an install's swap normally replaces an EMPTY owned
-                     # set and drops nothing, so this adds no fields. It is not
-                     # decoration: the swap runs unconditionally here, and a
-                     # slug carrying stale owned entries (a crash between a
-                     # bundle's registry save and its journal completing, then
-                     # reconciled away from the tuple side) has those entries
-                     # dropped by it. Every successful owned-set swap answers
-                     # for what it dropped — the class, not three of its four
-                     # doors.
-                     **_swap_removal_disclosure(txn)})
+                },
+                # #676: an install's swap normally replaces an EMPTY owned
+                # set and drops nothing, so this adds no fields. It is not
+                # decoration: the swap runs unconditionally here, and a
+                # slug carrying stale owned entries (a crash between a
+                # bundle's registry save and its journal completing, then
+                # reconciled away from the tuple side) has those entries
+                # dropped by it. Every successful owned-set swap answers
+                # for what it dropped — the class, not three of its four
+                # doors.
+                **_swap_removal_disclosure(txn)}
+
+    return _result(await _run_bundle_transaction(_txn))
 
 
 @tool(
@@ -13321,17 +13462,18 @@ async def specialist_upgrade(args: dict) -> dict:
         receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
         plugin_resolutions=receipt.plugins,
     )
-    async with _PLUGIN_TOOLS_LOCK:
+
+    async def _txn() -> dict:
         # #346: the receipt was loaded BEFORE this lock; a concurrent bundle
         # holding the same receipt may have completed (and pruned it) while
         # we waited. Re-check under the lock — proceeding would treat the
         # tuple commit as a no-op yet still rotate the owned-plugins sidecar,
         # desyncing active.prior from owned-plugins.prior for rollback.
         if specialist_receipt.load(receipt.receipt_id) is None:
-            return _result({"ok": False, "kind": "receipt_required",
+            return {"ok": False, "kind": "receipt_required",
                             "detail": "the receipt was consumed by a concurrent "
                                       "bundle while waiting for the mutation lock "
-                                      "— re-run specialist_install_inspect"})
+                                      "— re-run specialist_install_inspect"}
         try:
             instance, txn = await asyncio.to_thread(
                 upgrade_specialist, slug=args["slug"], inspection=inspection, receipt=receipt,
@@ -13340,7 +13482,7 @@ async def specialist_upgrade(args: dict) -> dict:
                 acks=SpecialistInstallAckStore(),
             )
         except SpecialistInstallError as exc:
-            return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+            return {"ok": False, "kind": exc.kind, "detail": exc.detail}
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
@@ -13349,7 +13491,7 @@ async def specialist_upgrade(args: dict) -> dict:
             await _bundle_compensate(txn)
             raise
         if not seq.get("ok", True):
-            return _result(await _bundle_seq_failure(txn, seq, slug=txn.slug))
+            return await _bundle_seq_failure(txn, seq, slug=txn.slug)
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
         # #331: a pending-configuration upgrade outcome retains the receipt
         # for the follow-up configure re-commit; #306/Sol r2-1: the staging
@@ -13358,12 +13500,14 @@ async def specialist_upgrade(args: dict) -> dict:
         if instance.state == "active":
             _prune_bundle_receipt(receipt.receipt_id)
             specialist_install_mod.reclaim_staging_tree(staged_dir)
-    return _result({"ok": True, "slug": instance.slug, "state": instance.state,
-                     "reloaded": seq["reloaded"], "verify": seq["verify"],
-                     # #676: an upgrade whose new owned generation omits an old
-                     # plugin removed that plugin's registry entry. Same
-                     # persisting removal, same disclosure.
-                     **_swap_removal_disclosure(txn)})
+        return {"ok": True, "slug": instance.slug, "state": instance.state,
+                "reloaded": seq["reloaded"], "verify": seq["verify"],
+                # #676: an upgrade whose new owned generation omits an old
+                # plugin removed that plugin's registry entry. Same
+                # persisting removal, same disclosure.
+                **_swap_removal_disclosure(txn)}
+
+    return _result(await _run_bundle_transaction(_txn))
 
 
 @tool(
@@ -13381,13 +13525,14 @@ async def specialist_rollback(args: dict) -> dict:
     import specialist_bundle_journal
 
     slug = args["slug"]
-    async with _PLUGIN_TOOLS_LOCK:
+
+    async def _txn() -> dict:
         try:
             instance, txn = await asyncio.to_thread(
                 rollback_specialist, slug=slug, bundle=True,
                 acks=SpecialistInstallAckStore())
         except SpecialistInstallError as exc:
-            return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+            return {"ok": False, "kind": exc.kind, "detail": exc.detail}
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
@@ -13396,14 +13541,16 @@ async def specialist_rollback(args: dict) -> dict:
             await _bundle_compensate(txn)
             raise
         if not seq.get("ok", True):
-            return _result(await _bundle_seq_failure(txn, seq, slug=txn.slug))
+            return await _bundle_seq_failure(txn, seq, slug=txn.slug)
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
-    return _result({"ok": True, "slug": instance.slug, "state": instance.state,
-                     "reloaded": seq["reloaded"], "verify": seq["verify"],
-                     # #676: a rollback republishes the RETAINED prior owned
-                     # set, so a plugin the current generation added and the
-                     # prior one never had is dropped by the swap.
-                     **_swap_removal_disclosure(txn)})
+        return {"ok": True, "slug": instance.slug, "state": instance.state,
+                "reloaded": seq["reloaded"], "verify": seq["verify"],
+                # #676: a rollback republishes the RETAINED prior owned
+                # set, so a plugin the current generation added and the
+                # prior one never had is dropped by the swap.
+                **_swap_removal_disclosure(txn)}
+
+    return _result(await _run_bundle_transaction(_txn))
 
 
 @tool(
@@ -13419,7 +13566,8 @@ async def specialist_uninstall(args: dict) -> dict:
 
     slug = args["slug"]
     targets_removed = [f"specialist:{slug}"]
-    async with _PLUGIN_TOOLS_LOCK:
+
+    async def _txn() -> dict:
         # Whole-branch M: map a typed refusal (invalid_slug / bundle_required)
         # to a structured ok:false envelope, never a raw exception out of the
         # tool — the same guard the other four bundle tools already have.
@@ -13428,7 +13576,7 @@ async def specialist_uninstall(args: dict) -> dict:
                 uninstall_specialist, slug=slug, bundle=True,
                 acks=SpecialistInstallAckStore())
         except SpecialistInstallError as exc:
-            return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+            return {"ok": False, "kind": exc.kind, "detail": exc.detail}
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
@@ -13437,20 +13585,22 @@ async def specialist_uninstall(args: dict) -> dict:
             await _bundle_compensate(txn)
             raise
         if not seq.get("ok", True):
-            return _result(await _bundle_seq_failure(txn, seq, slug=slug))
+            return await _bundle_seq_failure(txn, seq, slug=slug)
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
-    # #676: the uninstall CASCADED these owned plugins out of the registry —
-    # the same persisting committed removal, reached by another door, so the
-    # same disclosure is owed. Zero owned plugins removes nothing and discloses
-    # nothing. One gate serves every successful bundle now (Terra handback
-    # review, attempt 2): an uninstall's swap publishes an EMPTY owned set, so
-    # `removed_owned_names` is exactly the entries this slug owned — the same
-    # answer the hand-rolled `before_entries` read gave here, now derived the
-    # one way an upgrade and a rollback can share.
-    payload = {"ok": True, "slug": slug, "reloaded": seq["reloaded"],
-               "verify": seq["verify"]}
-    payload.update(_swap_removal_disclosure(txn))
-    return _result(payload)
+        # #676: the uninstall CASCADED these owned plugins out of the registry —
+        # the same persisting committed removal, reached by another door, so the
+        # same disclosure is owed. Zero owned plugins removes nothing and discloses
+        # nothing. One gate serves every successful bundle now (Terra handback
+        # review, attempt 2): an uninstall's swap publishes an EMPTY owned set, so
+        # `removed_owned_names` is exactly the entries this slug owned — the same
+        # answer the hand-rolled `before_entries` read gave here, now derived the
+        # one way an upgrade and a rollback can share.
+        payload = {"ok": True, "slug": slug, "reloaded": seq["reloaded"],
+                   "verify": seq["verify"]}
+        payload.update(_swap_removal_disclosure(txn))
+        return payload
+
+    return _result(await _run_bundle_transaction(_txn))
 
 
 @tool(
