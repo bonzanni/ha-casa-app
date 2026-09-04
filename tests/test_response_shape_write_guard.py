@@ -336,10 +336,19 @@ def _load_residents(roots, bindings_dir, monkeypatch=None):
     return cfgs, opened
 
 
+# The four served surfaces, keyed by route as well as channel: the two webhook
+# routes take DIFFERENT arms — `webhook_trigger` the restricted one at
+# `agent.py:1996`, `invoke` the ordinary projection at `:2144` — so keying by
+# channel alone would let one overwrite the other and leave a route-specific
+# regression green.
+_SURFACES = (("telegram", None), ("voice", None),
+             ("webhook", "webhook_trigger"), ("webhook", "invoke"))
+
+
 def _served_prompts(cfgs, tmp_path):
-    """`(role, channel) -> served system prompt`, over the three surfaces a
-    resident is actually served: telegram (text), voice, and an untrusted
-    webhook origin (restricted). Nine in all."""
+    """`(role, channel, route) -> served system prompt`, over the four surfaces
+    a resident is actually served: telegram (text), voice, an untrusted webhook
+    origin (restricted) and a trusted `/invoke` one. Twelve in all."""
     import asyncio
 
     from agent import origin_var
@@ -349,9 +358,8 @@ def _served_prompts(cfgs, tmp_path):
 
     async def run():
         for role, cfg in cfgs.items():
-            for channel, route in (("telegram", None), ("voice", None),
-                                   ("webhook", "webhook_trigger")):
-                seat = tmp_path / "seats" / f"{role}-{channel}"
+            for channel, route in _SURFACES:
+                seat = tmp_path / "seats" / f"{role}-{channel}-{route}"
                 seat.mkdir(parents=True, exist_ok=True)
                 agent = _make_agent(seat, role=role)
                 agent.config = cfg
@@ -362,7 +370,7 @@ def _served_prompts(cfgs, tmp_path):
                         resume_sid=None, user_text="hi")
                 finally:
                     origin_var.reset(token)
-                out[(role, channel)] = opts.system_prompt or ""
+                out[(role, channel, route)] = opts.system_prompt or ""
 
     asyncio.run(run())
     return out
@@ -463,11 +471,12 @@ class TestTheFileIsReadRenderedButNotServed:
 
         `Register: spoken` legitimately occurs in a compiled projection, so a
         bare marker-absence check would false-positive. Instead each field is
-        changed on its own and the nine served prompts are compared
+        changed on its own and the twelve served prompts are compared
         byte-for-byte against the baseline's: three composed prompts differ,
         zero served prompts do. Mutation: serve `cfg.system_prompt` on the
-        text/voice arm and the served difference count becomes 6; on the
-        restricted-webhook arm, 3; on both, 9.
+        ordinary arm and the served difference count becomes 9 (telegram, voice
+        and the trusted `/invoke` route); on the restricted-webhook arm, 3; on
+        both, 12.
         """
         base_kwargs = dict(register="written", format_="plain",
                            confirmation=2, status=4,
@@ -500,7 +509,7 @@ class TestTheFileIsReadRenderedButNotServed:
                 if base_served[key] != mut_served[key])
 
             assert (composed_differences, len(base_served), len(mut_served),
-                    served_differences) == (3, 9, 9, 0), field
+                    served_differences) == (3, 12, 12, 0), field
 
 
 # --- the write clause, on each path Casa builds hooks for ------------------
