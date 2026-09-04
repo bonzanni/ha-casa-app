@@ -246,3 +246,130 @@ def test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets():
     assert all(
         len(entities or ()) <= MAX_ENTITIES for _, entities in entity_pages
     )
+
+
+# ---------------------------------------------------------------------------
+# #834 mutation checks. These PASS at the pre-fix tree or are vacuous there;
+# they are NOT red cases. Each is here to kill one mutation of the new
+# span-based reconstruction — the existing `plain_with_link_targets` pins in
+# tests/test_telegram_link_fallback_shapes.py cannot, because they exercise
+# the ENTITY-based sibling and not this path (sol, seam round).
+# ---------------------------------------------------------------------------
+
+_U_A = "https://example.test/a"
+_U_B = "https://example.test/bbb"
+
+
+def test_render_paged_single_page_conversion_failure_is_untouched():
+    """Kills removal or inversion of the originally-multi-page fence.
+
+    Every sender branches on `len(pages) == 1` and that arm retries with the
+    AUTHORED text, which already carries the address. Reconstructing here
+    would at best duplicate it and at worst — when the inline form overflows
+    and a destinations page is appended — take the reply off the single-page
+    path entirely.
+    """
+    from channels.tg_richtext import render_paged
+
+    assert render_paged(f"\ud800[A]({_U_A})") == [("\ud800A", None)]
+
+
+def test_render_paged_reconstruction_ignores_non_link_spans_and_runs_right_to_left():
+    """Kills the non-link filter and the insertion order in one exact output.
+
+    A left-to-right insertion with unchanged Python offsets puts the second
+    destination inside the first; dropping the `link:` filter invents a
+    destination out of an italic span's kind.
+    """
+    from channels.tg_richtext import render_paged
+
+    tail = "x" * 4096
+    pages = render_paged(f"\ud800*em* [A]({_U_A}) [B]({_U_B})\n\n{tail}")
+    assert pages == [
+        (f"\ud800em A ({_U_A}) B ({_U_B})", None),
+        (tail, None),
+    ]
+
+
+def test_render_paged_reconstruction_skips_a_url_visible_in_its_own_label():
+    """Kills deletion or inversion of the already-visible-destination guard:
+    an autolink whose label IS the address must not be printed twice."""
+    from channels.tg_richtext import render_paged
+
+    tail = "x" * 4096
+    pages = render_paged(f"\ud800[{_U_A}]({_U_A})\n\n{tail}")
+    assert pages == [(f"\ud800{_U_A}", None), (tail, None)]
+
+
+def test_render_paged_leaves_a_convertible_page_alone_when_a_later_page_fails():
+    """The loss is per page and so is the repair: a page whose entities DO
+    convert keeps them, with no destination text appended."""
+    from channels.tg_richtext import MAX_LEN, render_paged
+    from text_util import utf16_len
+
+    pages = render_paged(f"[A]({_U_A})\n\n" + "y" * 4090 + "\n\n\ud800 z")
+    assert (
+        len(pages),
+        [(e.type, e.url) for e in (pages[0][1] or ())],
+        pages[0][0].count(_U_A),
+        pages[1],
+        all(utf16_len(t) <= MAX_LEN for t, _ in pages),
+    ) == (2, [(MessageEntity.TEXT_LINK, _U_A)], 0, ("\ud800 z", None), True)
+
+
+def test_render_paged_over_budget_reconstruction_packs_targets_onto_own_pages():
+    """Kills unconditional inline insertion and unbounded target packing.
+
+    Two destinations that fit individually but not together must land on two
+    pages, each within the budget, after an UNCHANGED display page — the
+    inline form is what overflows, and cutting it would cut through an
+    address.
+    """
+    from channels.tg_richtext import MAX_LEN, render_paged
+    from text_util import utf16_len
+
+    long_a = "https://example.test/" + "a" * 2500
+    long_b = "https://example.test/" + "b" * 2500
+    pad, tail = "y" * 4000, "x" * 4096
+    pages = render_paged(
+        f"\ud800{pad} [A]({long_a}) [B]({long_b})\n\n{tail}")
+
+    assert (
+        len(pages),
+        pages[0][0].endswith(" A B"),
+        pages[0][0].count(long_a) + pages[0][0].count(long_b),
+        pages[1][0],
+        pages[2][0],
+        pages[3][0],
+        [e for _, e in pages],
+        all(utf16_len(t) <= MAX_LEN for t, _ in pages),
+    ) == (4, True, 0, long_a, long_b, tail,
+          [None, None, None, None], True)
+
+
+def test_render_paged_drops_a_destination_longer_than_one_message(caplog):
+    """Kills removal or inversion of the over-length drop, fragmentation of
+    that destination, suppression of its warning, and loss of a deliverable
+    sibling that shares the page."""
+    import logging
+
+    from channels.tg_richtext import MAX_LEN, render_paged
+    from text_util import utf16_len
+
+    deliverable = "https://example.test/" + "a" * 2000
+    undeliverable = "https://example.test/" + "c" * 5000
+    pad, tail = "y" * 4000, "x" * 4096
+
+    with caplog.at_level(logging.WARNING, logger="channels.tg_richtext"):
+        pages = render_paged(
+            f"\ud800{pad} [A]({deliverable}) [C]({undeliverable})\n\n{tail}")
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert (
+        len(pages),
+        pages[1][0],
+        sum(text.count(undeliverable) for text, _ in pages),
+        sum(text.count(undeliverable[:200]) for text, _ in pages),
+        len(warnings),
+        all(utf16_len(t) <= MAX_LEN for t, _ in pages),
+    ) == (3, deliverable, 0, 0, 1, True)
