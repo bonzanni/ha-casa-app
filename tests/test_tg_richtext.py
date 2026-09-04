@@ -165,6 +165,58 @@ def test_render_unpaired_surrogate_degrades_to_none():
     assert ents is None
 
 
+def test_render_paged_conversion_failure_keeps_well_formed_link_target():
+    """#834 red case, specified by sol: a paginated page whose entity
+    conversion FAILS must still carry its link destination.
+
+    The trigger is a conversion failure on a WELL-FORMED span — the lone
+    surrogate precedes the link, so PTB's UTF-16 adjustment raises while the
+    span itself is exactly what `parse_markdown` produces. Asserted here
+    rather than assumed, so no change to how spans are BUILT can satisfy this
+    case in place of the fix.
+    """
+    import pytest
+    from telegram import MessageEntity
+
+    from channels.tg_richtext import parse_markdown, render_paged
+
+    label = "DESTINATION"
+    url = "https://example.test/target"
+    tail = "x" * 4096
+    authored = f"\ud800[{label}]({url})\n\n{tail}"
+
+    display, spans = parse_markdown(authored)
+    assert (display, spans) == (
+        f"\ud800{label}\n\n{tail}",
+        [(1, 1 + len(label), f"link:{url}")],
+    )
+
+    entity = MessageEntity(
+        type=MessageEntity.TEXT_LINK,
+        offset=1,
+        length=len(label),
+        url=url,
+    )
+    with pytest.raises(UnicodeEncodeError):
+        MessageEntity.adjust_message_entities_to_utf_16(
+            f"\ud800{label}", [entity]
+        )
+
+    pages = render_paged(authored)
+    assert (
+        len(pages),
+        sum(text.count(url) for text, _ in pages),
+        pages,
+    ) == (
+        2,
+        1,
+        [
+            (f"\ud800{label} ({url})", None),
+            (tail, None),
+        ],
+    )
+
+
 def test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets():
     """Pins INV-TG-005: a rich response is paginated to Telegram's UTF-16
     message-length and entity budgets.

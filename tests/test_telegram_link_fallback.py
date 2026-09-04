@@ -192,3 +192,160 @@ async def test_topic_stream_finalize_multipage_entity_fallback_keeps_link_target
         True,
         TAIL,
     )
+
+
+# ---------------------------------------------------------------------------
+# #834 red case — a page whose entities cannot be EXPRESSED, no BadRequest.
+#
+# Specified by sol (red-case SPECIFY round, cluster L attempt 1). The #831
+# cases above key on Telegram REJECTING valid entities; here the conversion
+# itself fails, so no entities are ever attached, nothing raises BadRequest,
+# and `_plain_fallback_chunks` is never reached. Its call count is asserted at
+# zero precisely so a green result cannot be credited to the existing fallback.
+# ---------------------------------------------------------------------------
+
+CONVERSION_FAILURE_AUTHORED = f"\ud800[{LABEL}]({URL})\n\n{TAIL}"
+
+
+def _record_without_rejecting(bot):
+    """Record every Bot API text call and NEVER raise — the point of #834."""
+    attempts: list[tuple[str, str, list[str]]] = []
+
+    def _method(name):
+        async def _call(**kwargs):
+            ents = list(kwargs.get("entities") or [])
+            attempts.append((
+                name,
+                kwargs.get("text"),
+                [e.url for e in ents if getattr(e, "url", None)],
+            ))
+            return MagicMock(message_id=12345)
+        return _call
+
+    bot.send_message = AsyncMock(side_effect=_method("send_message"))
+    bot.edit_message_text = AsyncMock(side_effect=_method("edit_message_text"))
+    return attempts
+
+
+def _observe_fallback(ch):
+    """Record URL counts entering and leaving every #831 fallback call.
+
+    A zero call count is NOT assertable — both stream finalizers compute
+    `chunks0` unconditionally for a multi-page plan (`telegram.py:4636-4638`,
+    `:5117-5119`), whatever the renderer returned. What the acceptor's
+    objection actually protects is that the #831 fallback must not be what
+    delivers the destination, and `(urls in, urls out, entities)` says exactly
+    that: a fallback-created url reads `(0, 1, 0)`, a renderer-created one
+    `(1, 1, 0)`.
+    """
+    calls: list[tuple[int, int, int]] = []
+    inner = ch._plain_fallback_chunks
+
+    def _wrapped(display, entities):
+        chunks = inner(display, entities)
+        calls.append((
+            display.count(URL),
+            sum(chunk.count(URL) for chunk in chunks),
+            len(entities or ()),
+        ))
+        return chunks
+
+    ch._plain_fallback_chunks = _wrapped
+    return calls
+
+
+def _summarise(attempts, fallback_calls):
+    return (
+        len(attempts),
+        sum(text.count(URL) for _, text, _ in attempts),
+        sum(text.count(LABEL) for _, text, _ in attempts),
+        sum(bool(urls) for _, _, urls in attempts),
+        [name for name, _, _ in attempts],
+        [text for _, text, _ in attempts],
+        fallback_calls,
+    )
+
+
+async def test_all_four_senders_deliver_the_target_when_conversion_fails():
+    from channels.tg_richtext import parse_markdown
+
+    first = f"\ud800{LABEL} ({URL})"
+
+    display, spans = parse_markdown(CONVERSION_FAILURE_AUTHORED)
+    assert (display, spans) == (
+        f"\ud800{LABEL}\n\n{TAIL}",
+        [(1, 1 + len(LABEL), f"link:{URL}")],
+    )
+
+    entity = MessageEntity(
+        type=MessageEntity.TEXT_LINK,
+        offset=1,
+        length=len(LABEL),
+        url=URL,
+    )
+    with pytest.raises(UnicodeEncodeError):
+        MessageEntity.adjust_message_entities_to_utf_16(
+            f"\ud800{LABEL}", [entity]
+        )
+
+    summaries: dict[str, tuple] = {}
+
+    ch, bot = _mk_channel_with_fake_bot()
+    attempts = _record_without_rejecting(bot)
+    fallbacks = _observe_fallback(ch)
+    await ch.send_response(CONVERSION_FAILURE_AUTHORED, {"chat_id": "42"})
+    summaries["send_response"] = _summarise(attempts, fallbacks)
+
+    ch, bot = _mk_channel_with_fake_bot()
+    attempts = _record_without_rejecting(bot)
+    fallbacks = _observe_fallback(ch)
+    ch._delivery_mode = "stream"
+    on_token = ch.create_on_token({"chat_id": "42"})
+    await on_token("partial")  # establishes message_id 12345
+    attempts.clear()
+    await ch.finalize_response_stream(
+        CONVERSION_FAILURE_AUTHORED, {"chat_id": "42"}, on_token
+    )
+    summaries["finalize_response_stream"] = _summarise(attempts, fallbacks)
+
+    ch, bot = _mk_channel_with_fake_bot()
+    attempts = _record_without_rejecting(bot)
+    fallbacks = _observe_fallback(ch)
+    await ch.send_response_to_topic(42, CONVERSION_FAILURE_AUTHORED)
+    summaries["send_response_to_topic"] = _summarise(attempts, fallbacks)
+
+    ch, bot = _mk_channel_with_fake_bot()
+    attempts = _record_without_rejecting(bot)
+    fallbacks = _observe_fallback(ch)
+    handle = ch.create_topic_stream(topic_id=42)
+    await handle.emit("partial")  # establishes message_id 12345
+    attempts.clear()
+    await handle.finalize(CONVERSION_FAILURE_AUTHORED)
+    summaries["TopicStreamHandle.finalize"] = _summarise(attempts, fallbacks)
+
+    assert summaries == {
+        "send_response": (
+            2, 1, 1, 0,
+            ["send_message", "send_message"],
+            [first, TAIL],
+            [],
+        ),
+        "finalize_response_stream": (
+            2, 1, 1, 0,
+            ["edit_message_text", "send_message"],
+            [first, TAIL],
+            [(1, 1, 0)],
+        ),
+        "send_response_to_topic": (
+            2, 1, 1, 0,
+            ["send_message", "send_message"],
+            [first, TAIL],
+            [],
+        ),
+        "TopicStreamHandle.finalize": (
+            2, 1, 1, 0,
+            ["edit_message_text", "send_message"],
+            [first, TAIL],
+            [(1, 1, 0)],
+        ),
+    }
