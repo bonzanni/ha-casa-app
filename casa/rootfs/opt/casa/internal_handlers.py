@@ -760,6 +760,14 @@ def build_admin_reload_handler(*, runtime):
         async with tools_mod._plugin_tools_reload_guard(scope):
             result = await reload_mod.dispatch(
                 scope, runtime=active, role=role, include_env=include_env)
+        # #824: a reload that ran the paired plugin reconcile re-derives the
+        # health report afterwards, so a `trigger_routing_unavailable` row
+        # sampled from its own transient marker does not outlive it. After the
+        # fence, for the reason the tool entry point states: the reload RW lock
+        # is released either way, and the regeneration settles through
+        # cancellation in a task of its own, which cannot re-enter a guard the
+        # request handler's task holds.
+        await tools_mod._regenerate_plugin_health_after_reload(scope, result)
         status_code = 200 if result.get("status") == "ok" else 500
         return web.json_response(result, status=status_code)
 
