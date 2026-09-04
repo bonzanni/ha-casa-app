@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.265.0] - 2026-09-04
+
+### Changed
+
+- A table an agent sends over Telegram now arrives as a table in two cases that
+  previously fell back to raw pipe rows: when one data row has fewer cells than
+  the header, and when a header cell is a link. A short row is padded out rather
+  than the whole table being refused, and a table whose header carries a link is
+  laid out as labelled stanzas so the link's address survives. Genuinely
+  ambiguous input — a table with no separator row, ragged rows without one, or a
+  row with more cells than the header — still arrives as plain text, unchanged.
+- The residents' text doctrine now says when a table is the right shape to reach
+  for on a chat surface, so a table is more likely to be written in a form the
+  renderer can lay out in the first place.
+
 ## [0.264.0] - 2026-09-04
 
 ### Fixed
