@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.266.0] - 2026-09-04
+
+### Fixed
+
+- The plugin health report no longer keeps a "routing unavailable" row for a
+  plugin whose routing is live again. A reload that rebuilds plugin routing did
+  not refresh that report afterwards, so a report regenerated while such a
+  rebuild was in flight could sample a marker that existed only for the
+  duration of the rebuild — and that row then stood until some unrelated change
+  happened to regenerate the report. A reload that rebuilds routing now
+  refreshes the report once its reload has finished, so a row that was true
+  during a rebuild does not outlive it, and a reload that clears a stuck marker
+  clears the row it made false.
+- A failure to refresh the report is logged and does not turn an otherwise
+  successful reload into a failed one.
+
 ## [0.265.0] - 2026-09-04
 
 ### Fixed
