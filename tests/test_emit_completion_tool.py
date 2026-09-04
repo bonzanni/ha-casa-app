@@ -2080,7 +2080,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
         # only count unit the reservation population contributes — so the
         # renderer quotes four bullets under an exact count of three. That
         # incoherence is PRE-EXISTING (it is reachable at the base with this
-        # same driver, unchanged by this fix) and is filed separately; pinning
+        # same driver, unchanged by this fix) and is filed as #848; pinning
         # it as observed would codify an undercount, so this row pins only the
         # containment #807 is about: every readable bullet survives.
         "inbound_message_reservations": (
