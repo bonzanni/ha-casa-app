@@ -7158,6 +7158,14 @@ async def casa_reload(args: dict) -> dict:
     async with _plugin_tools_reload_guard(scope):
         result = await dispatch(
             scope, runtime=runtime, role=role, include_env=include_env)
+    # #824: AFTER the fence, not inside it. Dispatch released the reload RW lock
+    # when it returned, so either position keeps the plugin lock off the reload
+    # lock; outside is what lets the regeneration settle through cancellation as
+    # ONE unit in a task of its own, which inside a fenced scope's hold would
+    # deadlock — the guard's re-entrancy is by TASK IDENTITY, and a child task is
+    # not the entry point's. A mutation that interleaves here regenerates under
+    # the same guard, so whichever runs second computes from the fresher state.
+    await _regenerate_plugin_health_after_reload(scope, result)
 
     # Drain pending-reload guard if engagement-bound.
     eng = engagement_var.get(None)
@@ -10968,6 +10976,11 @@ async def casa_reload_triggers(args: dict) -> dict:
 
     from reload import dispatch
     result = await dispatch("triggers", runtime=runtime, role=role)
+    # #824: the THIRD reload entry point, and the one the configurator doctrine
+    # names after every trigger or prompt edit. It dispatches an unfenced
+    # trigger-reconcile scope with no plugin lock of its own, so the helper's
+    # own guard acquisition is the only one on this path.
+    await _regenerate_plugin_health_after_reload("triggers", result)
     result.setdefault("role", role)
     # Back-compat: emit registered=[trigger_names] from runtime.role_configs /
     # specialists.
@@ -11525,6 +11538,119 @@ async def _plugin_tools_reload_guard(scope: str):
             yield
     else:
         yield
+
+
+async def _settle_through_cancellation(coro):
+    """Run *coro* as a task and wait for it even through cancellation; the
+    original `CancelledError` is re-raised once it has settled.
+
+    The coroutine sibling of `topic_ledger._to_thread_uncancellable`, and the
+    same primitive for the same reason (v0.183.0): a cancelled caller that
+    releases a lock while its write is still in flight lets a concurrent
+    operation write the correct state and then has its own stale write land
+    last. The difference is WHAT it covers — a whole acquire-write-release unit
+    rather than the thread hop inside it — because a caller cancelled while
+    still QUEUED for the lock drops the write entirely, which is the same
+    obligation lost by the other door. One settling wrapper around the unit, not
+    one per step inside it.
+
+    The task is a CHILD of the caller, so it must not be started inside a hold of
+    a guard whose re-entrancy is by task identity — it would not be recognised as
+    the owner and would deadlock against its own parent. The one caller starts it
+    with no such hold, deliberately.
+
+    The wait is bounded by the current lock holder's own teardown: cancellation
+    unwinds a holder's `async with` and releases the lock, so a shutdown that
+    cancels everything is not held open by this.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 — the cancellation wins
+                break
+        raise
+
+
+async def _regenerate_plugin_health_after_reload(scope: str, result: dict) -> None:
+    """#824, ENTRY-POINT-ONLY: re-derive the plugin health report after a reload
+    whose dispatch reached its paired trigger/callback/event reconcile.
+
+    The trigger half's health rows read the LIVE overlay at regeneration time
+    (`trigger_reconcile._unavailable_rows`), and a WRITING trigger pass publishes
+    the unavailable marker for the duration of its secret writes (INV-TRIG-017).
+    With nothing regenerating after such a pass, a regeneration that sampled the
+    marker left a `trigger_routing_unavailable` row standing after the map went
+    live, and a reload that HEALED a stuck marker left the row that had been true
+    standing — in both cases until some unrelated regeneration, because the
+    scheduled recovery pass regenerates only while a marker still stands.
+
+    HERE and not in `reload.dispatch`: dispatch holds the reload RW lock across
+    the reconcile, so acquiring the plugin lock there is the INV-CFG-011
+    inversion, it self-deadlocks the mutation sequencers' `dispatch("agent")`
+    (which run under the RAW lock, where the guard records no owner), and it
+    fails the static arm of tests/test_reload_lock_order.py. By the time dispatch
+    RETURNS the RW lock is released, so the guard below is taken with no reload
+    lock held — the global order `_PLUGIN_TOOLS_LOCK -> reload RW ->
+    _RECONCILE_LOCK` is preserved. For a fenced scope the entry point already
+    owns the guard through `_plugin_tools_reload_guard`, so this is a same-task
+    re-entrant no-op there. The classification lives here rather than at the call
+    sites for the same reason `_PLUGIN_TOOLS_RELOAD_SCOPES` does: three entry
+    points carrying their own copy of it is three copies that can drift.
+
+    `status == "ok"` is the exact witness that the paired reconcile was REACHED:
+    in dispatch that block sits in the same `try` as the handler call, so a
+    handler that raised never got to it. A reconcile that itself failed
+    non-fatally still returns "ok", and regenerating there is deliberate — that
+    is the case where a marker may be standing and the report most needs to say
+    so.
+
+    The whole guarded unit — acquire, write, release — goes through
+    `_settle_through_cancellation`, so a cancelled caller neither drops the
+    obligation nor lets a stale write win. Both doors are real and were measured:
+    cancelled DURING the write, `asyncio.to_thread` cancels the AWAIT and never
+    the thread, so releasing the guard there lets a competing guarded operation
+    write the correct report and then has this one's older report land last
+    (`plugin_health._REPORT_LOCK` orders the WRITE, not the compute before it, so
+    it cannot close this); cancelled while still QUEUED for the guard — behind, say,
+    an `_engage_executor_impl` critical section, which holds the raw lock and
+    refreshes no health of its own — the refresh is skipped entirely and a row the
+    reload just made false stands until something unrelated regenerates.
+
+    That settling runs the unit in a CHILD task, which is why this helper is called
+    from OUTSIDE `_plugin_tools_reload_guard` rather than inside it: the guard's
+    re-entrancy is by task identity, so a child started under a fenced scope's hold
+    would queue behind its own parent forever (measured — it hung the `full` arm).
+
+    Never notifies — regeneration and `_notify_plugin_health_if_possible` are
+    separate calls, and the consent-approve regenerations set the same precedent —
+    and never turns a successful reload into an error: the reload's own outcome is
+    the operator's answer, and a health-report write that fails is a warning.
+    """
+    import reload as reload_mod
+
+    if scope not in reload_mod._TRIGGER_RECONCILE_SCOPES:
+        return
+    if result.get("status") != "ok":
+        return
+    async def _guarded_regeneration() -> None:
+        async with _plugin_tools_guard():
+            await asyncio.to_thread(_regenerate_plugin_health, [])
+
+    try:
+        await _settle_through_cancellation(_guarded_regeneration())
+    except Exception:  # noqa: BLE001 — a diagnostic never fails the reload
+        logger.warning("post-reload plugin-health regeneration failed",
+                       exc_info=True)
+    else:
+        result["actions"] = [
+            *(result.get("actions") or []), "plugin_health_regenerated"]
+
 
 # ---------------------------------------------------------------------------
 # Unified plugin architecture (§3.9/§3.13): registry-mutating tools.
