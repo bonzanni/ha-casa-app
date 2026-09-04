@@ -104,6 +104,20 @@ in one of three forms — a padded monospace box when narrow and link-free, per-
 their formatting intact otherwise — chosen so cell content and link destinations are never
 silently dropped. Anything ambiguous stays literal rather than rendering wrongly.
 
+**What counts as ambiguous is judged against the delimiter row.** A `|---|` row declares how
+many columns the table has; a bare run of pipe-bordered lines only implies one. So under a
+delimiter a data row with fewer cells than the header is padded with empty cells and the run
+renders as the table it plainly is, which is what GFM specifies — while a row with *more*
+cells than the header still leaves the whole run literal, because GFM resolves that by
+truncating and truncation drops content, which this renderer does not do for any reason.
+Without a delimiter nothing is padded and every row must match exactly: a guess about the
+column count is not a declaration, and a run that only looks like a table is better read as
+the text it was. A link in the header is no longer disqualifying either — the stanza's field
+label carries it as a real link, with the label's bold split around it so the two never
+overlap — with one exception in the same spirit as the rest: if a linked column is blank in
+every record the stanza would print no line for it at all and the destination would vanish,
+so that run stays in the plain-rows form where the header, and the address, survive.
+
 **A page Telegram rejects still carries its link destinations.** The platform can refuse a
 message's entities; the sender then re-sends that message as plain text, exactly once. A
 single-page reply re-sends the text the agent authored, which still contains the address of
@@ -347,6 +361,7 @@ units but sends unformatted text only.
 - `tests/test_telegram_topic_stream.py`
 - `tests/test_telegram_link_fallback.py`
 - `tests/test_telegram_link_fallback_shapes.py`
+- `tests/test_tg_richtext_v3.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

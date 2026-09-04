@@ -179,6 +179,20 @@ re-sent as plain text carrying the same addresses, whether it is one message or 
 that path loses nothing. The instruction improves legibility on the surface where a person
 reads it; it conceals nothing and guarantees nothing about the transport.
 
+**A reply's shape is chosen for the channel it is read on, and the renderer is the
+backstop rather than the plan.** The same text doctrine asks a resident to reach for a
+markdown table only when the material really is a small grid — a few short columns —
+and otherwise to write one `Field: value` line per item. The reason is not that tables
+render badly: a confident table is re-emitted as a monospace box, a per-record stanza or
+plain rows precisely so that nothing is lost whichever shape arrives. The reason is that
+a wide grid on a phone reads worse than the same facts as lines, and that the choice
+belongs to whoever is composing the reply, who knows what the material is, rather than to
+a renderer inferring it from cell widths. This is guidance, not enforcement: no gate
+counts a reply's columns, and nothing here asserts that a model complies. What the system
+guarantees is the floor beneath the guidance — a table that arrives anyway still renders
+with every cell and every link destination intact, and one whose shape is genuinely
+ambiguous stays literal rather than being rendered wrongly.
+
 ## What this cannot tell you
 
 These rules cover the failure modes the system's own structure creates. They do not cover the
@@ -198,6 +212,7 @@ the right action depends on something only the person knows, ask.
 **Tests**
 - `tests/test_recall_absence_invariant.py`
 - `tests/test_authz_grants.py`
+- `tests/test_assistant_prompts.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)

@@ -784,3 +784,78 @@ def test_the_authorization_link_rule_reaches_only_the_resident_text_projections(
             doctrine, ("Core doctrine",), exclude=_PROJECTION_HEADINGS)
         assert (_collapse_ws(text_only).count(paragraph),
                 _collapse_ws(core_only).count(paragraph)) == (1, 0), slot
+
+
+# --------------------------------------------------------------------------
+# #517 arm B — the channel-fit table rule. Same carrier discipline as the
+# #658 authorization-link pin above: paragraph identity, per-sentence counts,
+# and provenance. A SEPARATE paragraph; the #658 sentences are untouched.
+# --------------------------------------------------------------------------
+
+_TABLE_SHAPE_SENTENCES = (
+    "A table is the right shape only for a small, tidy grid: at most three "
+    "columns, every cell a short value.",
+    "When the material is wider than that, or a cell would carry a sentence, "
+    "write one `Field: value` line per item instead, with a blank line "
+    "between items.",
+    "A single fact or a two-row comparison is a sentence, not a table.",
+)
+
+TABLE_SHAPE_PARAGRAPH = " ".join(_TABLE_SHAPE_SENTENCES)
+
+
+def test_the_table_shape_rule_reaches_only_the_resident_text_projections():
+    """#517: every resident's served text projection carries the channel-fit
+    table paragraph exactly once, sourced from that role's doctrine
+    `## Text projection` section, and no other served projection carries any
+    part of it.
+
+    RED pre-fix: the paragraph occurs zero times in all nine compiled
+    carriers and zero times in every doctrine section. That absence, not a
+    fixture or import problem, is the intended failure.
+    """
+    from markdown_sections import select_markdown_sections
+    from prompt_compiler import _PROJECTION_HEADINGS
+
+    compiled = _compiled_resident_carriers()
+    assert len(compiled) == 9
+
+    paragraph = _collapse_ws(TABLE_SHAPE_PARAGRAPH)
+    text_counts = [_collapse_ws(t).count(paragraph)
+                   for name, t in compiled if name.endswith(":text")]
+    other_counts = [_collapse_ws(t).count(paragraph)
+                    for name, t in compiled if not name.endswith(":text")]
+    assert text_counts == [1, 1, 1]
+    assert other_counts == [0, 0, 0, 0, 0, 0]
+
+    # Per sentence, because a whole-paragraph count cannot see one sentence
+    # copied into a Voice or restricted-webhook section.
+    for sentence in _TABLE_SHAPE_SENTENCES:
+        needle = _collapse_ws(sentence)
+        on_text = [_collapse_ws(t).count(needle)
+                   for name, t in compiled if name.endswith(":text")]
+        elsewhere = [_collapse_ws(t).count(needle)
+                     for name, t in compiled if not name.endswith(":text")]
+        assert (on_text, elsewhere) == ([1, 1, 1], [0, 0, 0, 0, 0, 0]), sentence
+
+    # Provenance: the doctrine's own Text section, selected ALONE, and never
+    # the Core section that every projection inherits.
+    for slot in _RESIDENT_SLOTS:
+        doctrine = (_casa_root() / "defaults/roles/resident" / slot
+                    / "doctrine.md").read_text(encoding="utf-8")
+        text_only = select_markdown_sections(
+            doctrine, ("Text projection",), exclude=_PROJECTION_HEADINGS)
+        core_only = select_markdown_sections(
+            doctrine, ("Core doctrine",), exclude=_PROJECTION_HEADINGS)
+        assert (_collapse_ws(text_only).count(paragraph),
+                _collapse_ws(core_only).count(paragraph)) == (1, 0), slot
+
+
+def test_517_does_not_disturb_the_658_authorization_link_paragraph():
+    """The #658 paragraph is pinned BY IDENTITY; a neighbouring paragraph
+    must not change it. Mutation check — PASSES at the base commit.
+    """
+    compiled = _compiled_resident_carriers()
+    needle = _collapse_ws(LINK_RULE_PARAGRAPH)
+    assert [_collapse_ws(t).count(needle)
+            for name, t in compiled if name.endswith(":text")] == [1, 1, 1]
