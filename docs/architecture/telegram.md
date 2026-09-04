@@ -114,9 +114,10 @@ Without a delimiter nothing is padded and every row must match exactly: a guess 
 column count is not a declaration, and a run that only looks like a table is better read as
 the text it was. A link in the header is no longer disqualifying either — the stanza's field
 label carries it as a real link, with the label's bold split around it so the two never
-overlap — with one exception in the same spirit as the rest: if a linked column is blank in
-every record the stanza would print no line for it at all and the destination would vanish,
-so that run stays in the plain-rows form where the header, and the address, survive.
+overlap. What does disqualify the stanza is a column that is blank in *every* record: the
+stanza prints a field line only where there is a value, so such a column would contribute
+no line at all and its header cell — and any address that cell carried — would appear
+nowhere. A table like that stays in the plain-rows form, where every header cell survives.
 
 **A page whose formatting is refused, or cannot be expressed, still carries its link
 destinations.** Formatting fails in two ways. The platform can REFUSE a message's

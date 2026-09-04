@@ -551,3 +551,20 @@ def test_517_delimiter_wider_than_the_header_still_stays_literal():
     assert display == src
     assert spans == []
     assert display.count("|---|") == 2
+
+
+def test_517_no_header_cell_is_dropped_by_the_stanza_form():
+    # #517 diff-review round 1 (sol S2). `_render_stanza` skips a blank
+    # record line INCLUDING its label, so a column blank in every data row
+    # would emit its header cell nowhere. The guard is per COLUMN and over
+    # ALL columns, not only link-bearing ones — the first shape is a padded
+    # short row (which this change made reachable), the second is the same
+    # hole at exact cell counts, which predates it.
+    for src in (
+        "| A | UNIQUE-HEADER-B |\n|---|---|\n| [x](https://x.test) |",
+        "| A | UNIQUE-HEADER-B |\n|---|---|\n"
+        "| " + "x" * 42 + " |   |",
+    ):
+        display, _ = parse_markdown(src)
+        assert "UNIQUE-HEADER-B" in display, src
+        assert "A" in display, src
