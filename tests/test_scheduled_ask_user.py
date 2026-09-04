@@ -783,6 +783,37 @@ class TestBootReconcile:
         assert channel.scheduled_dispatches == []
         assert _fresh_store.all() == []
 
+    async def test_a_replay_that_telegram_refuses_still_drops_the_record(
+        self, _fresh_store,
+    ):
+        """The replay is BEST-EFFORT, and the record is dropped either way.
+
+        `edit_dm_message` returns False for a transient rejection and for a
+        message the operator deleted alike — it cannot tell them apart — so
+        retaining the record to retry would retain it for every boot of a
+        process whose message is gone for good, with no condition that ever
+        retires it. The end state of a failed replay is exactly what the
+        reconciler did for EVERY settling record before this rule: the keyboard
+        is left as posted, nothing is dispatched, and the record goes. What the
+        rule buys is the case where the edit lands, which is the common one.
+        """
+        class _RefusingChannel(_FakeChannel):
+            async def edit_dm_message(self, chat_id, message_id, text):
+                self.edits.append((chat_id, message_id, text))
+                self.calls.append("edit")
+                return False
+
+        await _fresh_store.put(self._rec(
+            state=scheduled_asks.STATE_SETTLING,
+            terminal_edit="Send the invoice?\n\nAnswered: Confirm"))
+        channel = _RefusingChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+
+        assert counts["settled_before_crash"] == 1
+        assert len(channel.edits) == 1          # attempted exactly once
+        assert channel.scheduled_dispatches == []
+        assert len(_fresh_store.all()) == 0     # not retained for a retry
+
     async def test_a_terminal_that_finds_no_settleable_record_says_so(
         self, _fresh_store, caplog,
     ):

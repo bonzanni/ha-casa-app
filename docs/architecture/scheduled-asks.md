@@ -77,7 +77,12 @@ unanswered question in a session that keeps working. A record still `posting` at
 also leave an orphaned keyboard on screen, which a tap answers with "expired". Nor does it
 cover a `settling` record that carries no terminal text, or one whose message id was never
 captured: neither gives the edit anything truthful to say or anywhere to land, and both are
-dropped in silence.
+dropped in silence. Nor does it cover whether the replayed edit LANDS. It is attempted once and
+the record is dropped either way, because the transport answers a transient rejection and a
+message the operator has deleted with the same failure, so retaining the record to retry would
+retain it at every boot for the one that will never succeed. A replay that fails leaves exactly
+the state a record with no persisted text leaves: the keyboard as posted, nothing dispatched, and
+a tap answered with "expired".
 
 **INV-JOB-007**: Every terminal outcome of a scheduled question — answered, expired, or cancelled for any reason — is delivered back to the session that asked, as a machine-authored scheduled turn.
 
