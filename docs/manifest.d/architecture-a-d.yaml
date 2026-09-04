@@ -77,14 +77,16 @@
     - tests/test_callback_consent.py
     - tests/test_plugin_callbacks.py
     - tests/test_callback_urls.py
+    - tests/test_callback_reconcile_publication_fence.py
   related: [architecture/callback-delivery.md, architecture/http-surface.md, architecture/plugins.md, architecture/triggers.md]
-  defines_invariants: [INV-CB-001, INV-CB-003, INV-CB-004, INV-CB-005, INV-CB-006]
+  defines_invariants: [INV-CB-001, INV-CB-003, INV-CB-004, INV-CB-005, INV-CB-006, INV-CB-010]
   invariant_tests:
     INV-CB-001: [tests/test_callback_http.py::test_unknown_name_mutates_nothing, tests/test_callback_http.py::test_malformed_overlay_entry_is_neutral]
     INV-CB-003: [tests/test_callback_acks.py::test_identity_key_mismatch_yields_zero_acks_whole_store, tests/test_callback_acks.py::test_malformed_record_missing_field_yields_zero_acks, tests/test_callback_reconcile.py::test_revoked_ack_unroutes_marker_first, tests/test_plugin_callbacks.py::test_ack_identity_excludes_artifact]
     INV-CB-004: [tests/test_callback_http.py::test_duplicate_keys_and_order_preserved, tests/test_callback_http.py::test_provider_error_is_a_result_with_wire_fidelity]
     INV-CB-005: [tests/test_callback_http.py::test_every_cause_is_byte_identical, tests/test_callback_http.py::test_uniform_at_a_drained_sampler_bucket, tests/test_callback_http.py::test_flood_caps_emission_but_not_responses]
     INV-CB-006: [tests/test_callback_http.py::test_no_log_record_carries_the_code, tests/test_callback_http.py::test_unknown_name_logs_the_sentinel_not_the_name, tests/test_casa_access_logger.py::test_callback_query_is_suppressed, tests/test_setup_nginx_ingress.py::test_ingress_server_suppresses_callback_query_from_access_log, tests/test_callback_spool.py::test_a_failed_purge_logs_no_callback_identifier]
+    INV-CB-010: [tests/test_callback_reconcile_publication_fence.py::test_cancelled_pre_swap_retire_holds_lock_until_worker_settles, tests/test_callback_reconcile_publication_fence.py::test_cancelled_post_swap_publish_holds_lock_then_kicks_once, tests/test_callback_reconcile_publication_fence.py::test_cancelled_ack_prune_holds_lock_then_kicks_once, tests/test_callback_reconcile_publication_fence.py::test_second_cancellation_during_retire_drain_is_absorbed, tests/test_callback_reconcile_publication_fence.py::test_second_cancellation_during_publish_drain_is_absorbed, tests/test_callback_reconcile_publication_fence.py::test_second_cancellation_during_prune_drain_is_absorbed, tests/test_callback_reconcile_publication_fence.py::test_publish_cancellation_never_kicks_inside_write_index_entry, tests/test_callback_reconcile_publication_fence.py::test_regen_health_waits_for_cancelled_publish_drain, tests/test_callback_reconcile_publication_fence.py::test_uncancelled_reconcile_preserves_publication_order_and_counts]
 
 
 - doc: architecture/concurrency-model.md

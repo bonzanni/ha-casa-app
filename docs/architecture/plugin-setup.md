@@ -133,10 +133,13 @@ What it does not cover: the provider's own registration, which happens in the ag
 turn and cannot be fenced from here; the scheduled recovery bounds how long ingress stays
 closed after that. And every refusal these reads produce is a *deferral* on the worker's own
 timer rather than a hold waiting for a publication to wake it, because the wake cannot be
-proved: the revoke sweep kicks only through reconciles that may raise, a heal cancelled between
-its swap and its kick clears the marker with no wake, and with both overlays then live the
-recovery pass has nothing to recover. A refusal whose waker cannot be proved must not depend
-on one. Without a runtime registry there is nothing to read, and the recomputation decides
+proved: the revoke sweep kicks only through reconciles that may raise, and a producer that
+raises before it publishes wakes nobody. A callback heal cancelled after its swap used to
+clear the marker with no wake at all — with both overlays then live, the recovery pass had
+nothing to recover — and now holds its lock until its marker writes land and kicks before the
+cancellation propagates ([`callbacks.md`](callbacks.md), INV-CB-010), which removes that case
+rather than making the wake something to depend on. A refusal whose waker cannot be proved
+must not depend on one. Without a runtime registry there is nothing to read, and the recomputation decides
 alone — the state before the runtime is bound, in which it already answers not-ok.
 
 The gate the obligation passes through is a *recomputation*, not a cached verdict: it

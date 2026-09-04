@@ -1421,10 +1421,13 @@ async def _run_episode(ep: dict) -> bool:
     # recompute is seen before the decision. Every refusal these reads produce
     # is a timed deferral (the caller's 5 s self-kick), never a hold: the
     # publication that would clear it may not kick (the revoke sweep kicks
-    # only through reconciles that may raise; a heal cancelled between its
-    # swap and its kick clears the marker with no wake and both overlays then
-    # read live, so the recovery job stays idle), and a hold with no waker is
-    # a lost setup. No registry bound reads ``None``: the recompute decides.
+    # only through reconciles that may raise, and a producer that raises
+    # before it publishes kicks nothing at all), and a hold with no waker is a
+    # lost setup. #825 closed one case of that rather than making the wake
+    # dependable: a cancelled callback heal used to clear the marker with no
+    # wake, both overlays then reading live so the recovery job stayed idle,
+    # and now drains its writes and kicks before the cancellation propagates
+    # (INV-CB-010). No registry bound reads ``None``: the recompute decides.
     routing_before = _applied_routing_state()
     if routing_before is _ROUTING_UNREADABLE:
         _update_episode(ep["id"], last_error="applied routing state unreadable")
