@@ -259,8 +259,25 @@ async def _settle(
     """
     rid = rec["rid"]
     store = STORE
-    if store is not None and not await store.set_state(rid, STATE_SETTLING):
-        return  # another finisher owns it (or it is already gone)
+    # The text rides with the state it belongs to. `settling` says a terminal
+    # outcome was decided; `terminal_edit` says what it decided the keyboard
+    # should read, so a crash between this write and the edit below leaves the
+    # next boot something TRUE to replay instead of a guess (INV-JOB-013). One
+    # locked save, so the pair cannot come apart.
+    if store is not None and not await store.set_state(
+            rid, STATE_SETTLING, terminal_edit=edit_text):
+        # Another finisher owns it, or the record is already gone — the boot
+        # reconciler drops a `posting` record while its broker request stays
+        # live, and every later terminal on that request arrives here. Nothing
+        # is edited and nothing is dispatched, which is right; saying nothing
+        # at all was the one place on this path a terminal outcome vanished
+        # without a trace for an operator reading the log.
+        logger.warning(
+            "scheduled ask %s: terminal outcome %r found no settleable record "
+            "(already settling, or dropped by the boot reconcile); nothing was "
+            "edited or dispatched", rid, kind,
+        )
+        return
     message_id = rec.get("message_id")
     if edit_text is not None and message_id is not None:
         try:
@@ -561,6 +578,30 @@ def broker_meta(rec: dict) -> dict:
 # boot reconciliation
 # ---------------------------------------------------------------------------
 
+async def _replay_terminal_edit(channel: Any, rec: dict) -> None:
+    """Re-apply the keyboard edit a settled record already decided on.
+
+    Deliberately QUIET. A record written by a process that predates
+    ``terminal_edit`` carries none, and there is nothing truthful to say for it:
+    inventing an "expired" body could overwrite a keyboard that already reads
+    "Answered: Confirm", telling the operator that a question they answered
+    expired instead. And ``edit_dm_message`` already logs its own failure and
+    never raises, so a message the operator has since deleted — the ordinary
+    case here, for a record being dropped either way — must not also draw a
+    warning from this side. The ``except`` is for a channel double, not for
+    Telegram: one record may not strand the pass.
+    """
+    text = rec.get("terminal_edit")
+    message_id = rec.get("message_id")
+    if not isinstance(text, str) or message_id is None:
+        return
+    try:
+        await channel.edit_dm_message(rec["chat_id"], message_id, text)
+    except Exception:  # noqa: BLE001 — best-effort; the record is dropped anyway
+        logger.debug("scheduled ask %s: settled-record keyboard edit failed",
+                     rec.get("rid"), exc_info=True)
+
+
 async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
     """Reconcile every durable record against a fresh process.
 
@@ -591,9 +632,16 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
         if not isinstance(rid, str) or not rid:
             continue
         if state == STATE_SETTLING:
-            # A terminal outcome was decided before the crash. At-most-once:
-            # never replay it.
+            # A terminal outcome was decided before the crash. At-most-once
+            # binds the DISPATCH — a duplicated answer makes a resident act
+            # twice on one confirmation — and nothing here dispatches. The
+            # keyboard EDIT is a different thing: the record itself persisted
+            # the text that outcome decided, `edit_dm_message` treats an
+            # identical re-edit as success, and if the crash landed between the
+            # state write and the edit it never happened at all. Replaying it
+            # can only move the screen toward the truth (INV-JOB-013).
             counts["settled_before_crash"] += 1
+            await _replay_terminal_edit(channel, rec)
             await store.drop(rid)
             continue
         if state == STATE_POSTING:

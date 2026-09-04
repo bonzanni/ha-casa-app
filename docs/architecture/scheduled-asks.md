@@ -23,20 +23,33 @@ schedule asks the operator something, the question outlives the turn that asked 
 broker holding it is in-memory, so a record on disk is what keeps a keyboard on screen
 honest across a restart, and what guarantees the waiting session is eventually told
 *something*. It is the same disk-leads discipline as a job, with the opposite duplicate
-policy (INV-JOB-006), and it is deliberately timid about the operator's attention —
+policy (INV-JOB-013), and it is deliberately timid about the operator's attention —
 a machine-timed question yields to a human one in both directions, and only to a human
 one that actually reached the screen (INV-JOB-008).
 
 ## Contracts & invariants
 
-**INV-JOB-006**: A scheduled question's durable record is written before its keyboard is posted and moved to settling before any terminal action, so a restart restores an unexpired question and never replays a settled one.
+**INV-JOB-013**: A scheduled question's durable record is written before its keyboard is posted, and the compare-and-set that moves it to `settling` carries the exact terminal text it decided — so a restart never re-dispatches a settled question, and replays exactly that one already-decided, idempotent keyboard edit for every record that carries both the text and a message id.
 
 Enforced by the record's compare-and-set state machine: `posting` before the post, `live`
-once the message id is known, `settling` before the first terminal edit, dropped after the
-terminal continuation is dispatched. Deletion is not the acknowledgement — `settling` is.
-The boot reconciler restores a `live` record with its remaining timeout and the identical
-broker binding, settles an expired, unconfirmed or operator-changed one, and drops a
-`settling` one in silence.
+once the message id is known, `settling` — with the terminal text — before the first terminal
+edit, dropped after the terminal continuation is dispatched. Deletion is not the
+acknowledgement — `settling` is. The boot reconciler restores a `live` record with its
+remaining timeout and the identical broker binding, settles an expired, unconfirmed or
+operator-changed one, and re-applies the decided edit to a `settling` one without dispatching
+anything.
+
+The text rides with the state because the state alone cannot say what the screen should read.
+A crash between "decided" and "edited" leaves a keyboard that still looks answerable, and the
+operator taps it and is told the question expired — the same picture whether the outcome was a
+cancellation or an answer. Guessing is worse than silence here: an invented "expired" body
+would overwrite a keyboard that already reads "Answered: Confirm" with a false account of it.
+Persisting the text removes the guess, and replaying it is safe because an identical re-edit is
+success rather than an error, so a crash after the edit costs nothing.
+
+Which action the crash window forbids replaying is worth stating rather than implying: the
+DISPATCH, and only the dispatch. The keyboard edit is idempotent and, being the text the record
+itself decided, cannot say anything the outcome did not.
 
 One asymmetry is worth stating, because it is the seam between the two halves of this
 design. Revocation reads the broker, never the record file (INV-JOB-008) — but from process
@@ -61,7 +74,10 @@ What it does not cover: exactly-once. The crash window between "decided" and "di
 resolves toward at-most-once — the opposite of INV-JOB-004's choice, and deliberately so: a
 duplicated answer makes a resident act twice on one confirmation, while a lost one leaves an
 unanswered question in a session that keeps working. A record still `posting` at boot may
-also leave an orphaned keyboard on screen, which a tap answers with "expired".
+also leave an orphaned keyboard on screen, which a tap answers with "expired". Nor does it
+cover a `settling` record that carries no terminal text, or one whose message id was never
+captured: neither gives the edit anything truthful to say or anywhere to land, and both are
+dropped in silence.
 
 **INV-JOB-007**: Every terminal outcome of a scheduled question — answered, expired, or cancelled for any reason — is delivered back to the session that asked, as a machine-authored scheduled turn.
 
@@ -145,10 +161,16 @@ the lane at admission.
 ## Failure behavior
 
 **The keyboard's post fails, or the process dies while a question is still `posting`.** The
-record exists before the keyboard does (INV-JOB-006), so a post that never lands is settled
+record exists before the keyboard does (INV-JOB-013), so a post that never lands is settled
 by the next boot's reconcile rather than restored, and a keyboard that did land for a record
 the process lost is answered at a tap with "expired" — the crash window resolves toward
 at-most-once, deliberately.
+
+**The process dies between deciding a terminal outcome and editing the keyboard.** The record
+reads `settling` and carries the text that outcome decided, so the next boot re-applies exactly
+that edit and dispatches nothing (INV-JOB-013). A terminal outcome that arrives when no record
+can be moved to `settling` — it is gone, or another finisher already owns it — edits nothing and
+dispatches nothing, and says so in the log, which is the only trace such a drop leaves.
 
 **A human question's post fails while a scheduled one is waiting.** The scheduled question
 is untouched: displacement happens on delivery, not admission (INV-JOB-008), so a

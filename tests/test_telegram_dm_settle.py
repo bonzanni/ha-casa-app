@@ -175,3 +175,115 @@ async def test_edit_failure_still_reports_false():
     bot.edit_message_text = AsyncMock(side_effect=BadRequest("MESSAGE_ID_INVALID"))
 
     assert await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT) is False
+
+
+# ---------------------------------------------------------------------------
+# INV-JOB-013 — the crash window between the terminal CAS and the keyboard edit
+# ---------------------------------------------------------------------------
+#
+# Everything above drives `edit_dm_message` directly. This drives it the way a
+# scheduled ask does — through `_settle` and then through the BOOT RECONCILER —
+# because nothing else in the tree does, and the gap is exactly where #635's
+# reported picture (buttons intact, tap says "expired") is reachable from code.
+
+
+class _GatedStore:
+    """A `ScheduledAskStore` whose settling CAS blocks AFTER its durable write.
+
+    The process is "killed" while `_settle` is suspended there: the record is on
+    disk reading `settling`, and not one byte has reached Telegram.
+    """
+
+    def __new__(cls, path):
+        import scheduled_asks
+
+        class _Impl(scheduled_asks.ScheduledAskStore):
+            def __init__(self, path):
+                super().__init__(path)
+                self.cas_done = None
+                self.release = None
+
+            async def set_state(self, rid, state, **fields):
+                ok = await super().set_state(rid, state, **fields)
+                if state == scheduled_asks.STATE_SETTLING:
+                    self.cas_done.set()
+                    await self.release.wait()
+                return ok
+
+        return _Impl(path)
+
+
+def _crash_record() -> dict:
+    return {
+        "rid": "rid-crash", "state": "live",
+        "role": "assistant", "session_scope": "cron-invoices",
+        "scope": f"dm:{CHAT}", "chat_id": CHAT, "operator_id": CHAT,
+        "message_id": MESSAGE_ID,
+        "options": ["Confirm", "Wrong"], "body": "Invoice ready?",
+        "epoch": "0:0", "created_at": 0.0, "expires_at": 1_000.0,
+    }
+
+
+async def test_crash_after_settling_cas_replays_exact_edit_once_without_dispatch(
+    tmp_path, monkeypatch,
+):
+    """INV-JOB-013 through the REAL `TelegramChannel.edit_dm_message`.
+
+    A terminal outcome is decided, the CAS persists `settling` together with the
+    exact text it decided, and the process dies before the keyboard is touched.
+    The next boot replays that one edit — with the buttons cleared, INV-TG-007 —
+    and dispatches NOTHING: at-most-once binds the continuation, not the edit.
+    """
+    import asyncio
+    import contextlib
+
+    import scheduled_asks
+    from broker_helpers import wait_until
+
+    monkeypatch.setattr(scheduled_asks, "_BOOT_REVOCATIONS", [])
+    monkeypatch.setattr(scheduled_asks, "_BOOT_RECONCILED", False)
+    path = str(tmp_path / "scheduled_asks.json")
+    store = _GatedStore(path)
+    store.cas_done = asyncio.Event()
+    store.release = asyncio.Event()
+    monkeypatch.setattr(scheduled_asks, "STORE", store)
+
+    rec = _crash_record()
+    await store.put(rec)
+
+    ch, bot = _mk_channel()
+    ch._dispatch_scheduled_continuation = AsyncMock(return_value=True)
+    task = asyncio.create_task(scheduled_asks._settle(
+        ch, rec, kind="cancelled", reason="trigger_cancelled", chosen=None,
+        edit_text=PLAIN_TEXT,
+    ))
+    await wait_until(store.cas_done.is_set)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # The process died here: decided and persisted, nothing sent.
+    assert bot.edit_message_text.await_count == 0
+    assert ch._dispatch_scheduled_continuation.await_count == 0
+
+    # A fresh process reads the same file.
+    reopened = scheduled_asks.ScheduledAskStore(path)
+    monkeypatch.setattr(scheduled_asks, "STORE", reopened)
+    records = reopened.all()
+    assert sum(r.get("state") == scheduled_asks.STATE_SETTLING
+               for r in records) == 1
+    assert sum(r.get("terminal_edit") == PLAIN_TEXT for r in records) == 1
+
+    boot_ch, boot_bot = _mk_channel()
+    boot_ch._dispatch_scheduled_continuation = AsyncMock(return_value=True)
+    counts = await scheduled_asks.reconcile_at_boot(boot_ch, now=0.0)
+
+    assert counts.get("settled_before_crash", 0) == 1
+    assert boot_bot.edit_message_text.await_count == 1
+    _, kwargs = boot_bot.edit_message_text.call_args
+    assert sum(kwargs.get(k) == v for k, v in
+               (("text", PLAIN_TEXT), ("chat_id", CHAT),
+                ("message_id", MESSAGE_ID))) == 3
+    _assert_empty_markup(kwargs)
+    assert boot_ch._dispatch_scheduled_continuation.await_count == 0
+    assert len(reopened.all()) == 0

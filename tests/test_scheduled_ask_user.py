@@ -727,13 +727,92 @@ class TestBootReconcile:
         assert "delivery_unconfirmed" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
 
-    async def test_settling_record_is_never_replayed(self, _fresh_store):
+    async def test_a_legacy_settling_record_makes_no_edit_and_no_dispatch(
+        self, _fresh_store,
+    ):
+        """INV-JOB-013. A `settling` record written by a process that predates
+        the persisted terminal text carries none, so there is nothing truthful
+        to replay: it is dropped exactly as before, in silence.
+
+        Inventing an "expired" body for it would overwrite a keyboard that may
+        already read "Answered: Confirm" — telling the operator that a question
+        they answered expired instead. The base's silence is at least not false.
+        """
         await _fresh_store.put(self._rec(state=scheduled_asks.STATE_SETTLING))
         channel = _FakeChannel()
         counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
         assert counts["settled_before_crash"] == 1
         assert channel.scheduled_dispatches == []   # at-most-once
+        assert channel.edits == []                  # nothing truthful to say
         assert _fresh_store.all() == []
+
+    async def test_a_settling_record_replays_its_persisted_edit_and_never_dispatches(
+        self, _fresh_store,
+    ):
+        """INV-JOB-013, the fake-channel half of the crash-window replay.
+
+        The real-channel half lives beside INV-TG-007 in
+        `tests/test_telegram_dm_settle.py`; this one pins the reconciler's own
+        counts.
+        """
+        await _fresh_store.put(self._rec(
+            state=scheduled_asks.STATE_SETTLING,
+            terminal_edit="Send the invoice?\n\nAnswered: Confirm"))
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["settled_before_crash"] == 1
+        assert len(channel.edits) == 1
+        assert sum(e[2] == "Send the invoice?\n\nAnswered: Confirm"
+                   for e in channel.edits) == 1
+        assert sum(e[1] == 77 for e in channel.edits) == 1
+        assert channel.scheduled_dispatches == []   # at-most-once, still
+        assert _fresh_store.all() == []
+
+    async def test_a_settling_record_with_no_message_id_edits_nothing(
+        self, _fresh_store,
+    ):
+        """The replay needs somewhere to land. A record whose keyboard id was
+        never captured has nothing to edit, and must not become an error."""
+        await _fresh_store.put(self._rec(
+            state=scheduled_asks.STATE_SETTLING, message_id=None,
+            terminal_edit="Send the invoice?\n\n(this question has expired)"))
+        channel = _FakeChannel()
+        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        assert counts["settled_before_crash"] == 1
+        assert channel.edits == []
+        assert channel.scheduled_dispatches == []
+        assert _fresh_store.all() == []
+
+    async def test_a_terminal_that_finds_no_settleable_record_says_so(
+        self, _fresh_store, caplog,
+    ):
+        """The one place a terminal outcome used to disappear without a trace.
+
+        `_settle` returns silently when the CAS fails — the record is gone, or
+        another finisher owns it. That return is the tail of every boot race in
+        this module, and an operator reading the log had nothing to find. It
+        still edits nothing and dispatches nothing; it now says so.
+        """
+        import logging
+
+        rec = self._rec(rid="rid-cas-miss",
+                        state=scheduled_asks.STATE_SETTLING)
+        await _fresh_store.put(rec)
+        channel = _FakeChannel()
+        with caplog.at_level(logging.WARNING, logger="scheduled_asks"):
+            await scheduled_asks._settle(
+                channel, rec, kind="cancelled", reason="trigger_removed",
+                chosen=None, edit_text="whatever")
+
+        assert sum(
+            r.name == "scheduled_asks"
+            and r.levelno == logging.WARNING
+            and "rid-cas-miss" in r.getMessage()
+            for r in caplog.records
+        ) == 1
+        assert len(channel.edits) == 0
+        assert len(channel.scheduled_dispatches) == 0
+        assert len(_fresh_store.all()) == 1
 
     async def test_a_revocation_during_the_boot_window_is_not_undone(
         self, _fresh_broker, _fresh_store,
