@@ -91,15 +91,24 @@ async def test_non_full_reload_is_not_fenced(monkeypatch) -> None:
         return {"status": "ok", "scope": scope}
 
     monkeypatch.setattr(reload_mod, "dispatch", _fake_dispatch)
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", lambda extra: None)
     handler = build_admin_reload_handler(runtime=object())
 
     async with tools_mod._PLUGIN_TOOLS_LOCK:
+        task = asyncio.create_task(
+            handler(_JsonReq({"scope": "agent", "role": "mtg"})))
         # Bounded: an over-fencing regression (an unfenced scope added to
-        # _PLUGIN_TOOLS_RELOAD_SCOPES) makes this await block forever, and a
+        # _PLUGIN_TOOLS_RELOAD_SCOPES) never reaches the dispatch at all, and a
         # hung CI job is a worse signal than a failed assertion.
-        await asyncio.wait_for(
-            handler(_JsonReq({"scope": "agent", "role": "mtg"})), timeout=5.0)
+        await asyncio.wait_for(asyncio.sleep(0.02), timeout=5.0)
         assert log == ["agent"]                 # ran without waiting on the lock
+        # #824: what the entry point does AFTER the dispatch — re-derive the
+        # plugin health report — does take the guard, so the handler's own
+        # completion waits on this hold. The bundle transaction that made
+        # `agent` unfenced is untouched: it reaches reload.dispatch DIRECTLY,
+        # never an entry point (the next test pins exactly that).
+        assert task.done() is False
+    await asyncio.wait_for(task, timeout=5.0)
 
 
 async def test_bundle_agent_dispatch_completes_while_holding_plugin_lock(monkeypatch) -> None:
@@ -590,11 +599,15 @@ async def test_casa_reload_agent_scope_is_not_fenced(
 
     monkeypatch.setattr(reload_mod, "dispatch", _fake_dispatch)
     monkeypatch.setattr(agent_mod, "active_runtime", object(), raising=False)
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", lambda extra: None)
 
     async with tools_mod._PLUGIN_TOOLS_LOCK:
-        await asyncio.wait_for(                     # bounded, as above
-            casa_reload.handler({"scope": "agent", "role": "mtg"}), timeout=5.0)
+        task = asyncio.create_task(
+            casa_reload.handler({"scope": "agent", "role": "mtg"}))
+        await asyncio.wait_for(asyncio.sleep(0.02), timeout=5.0)  # bounded, as above
         assert log == ["agent"]
+        assert task.done() is False                 # #824, as above
+    await asyncio.wait_for(task, timeout=5.0)
 
 
 async def test_direct_reload_executors_still_serializes_its_health_regen(

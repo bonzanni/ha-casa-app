@@ -153,13 +153,21 @@ revocation, a plugin update, a mint that previously failed — plugin trigger in
 not-found for the duration of the secret writes, and every consumer of the marker sees it
 for that long: the setup worker defers on its own timer (INV-PLUG-016), the revoke tool's
 direct sweep skips and relies on its queued reconcile, `plugin_status` may say routing is
-not established, the recovery probe may schedule one spare paired pass. One consequence is
-not closed here and is stated as a cost: a health regeneration that samples the marker
-during those writes and finishes after the map is live persists a `trigger_routing_unavailable`
-row that nothing clears until the next regeneration of any kind — a plugin mutation, a
-consent tap, a recovery pass, a boot — because a pass run from a reload scope regenerates
-nothing afterwards and the recovery probe sees no marker. The base already had that shape
-for a reload-scope pass that heals a stuck marker.
+not established, the recovery probe may schedule one spare paired pass. What the window no
+longer costs is a report that outlives it. A regeneration that samples the marker during
+those writes persists a `trigger_routing_unavailable` row, and the recovery probe cannot
+clear it — the probe regenerates only while a marker still stands, and by then none does.
+So the reload entry points close it at the outer producer: a reload whose dispatch reached
+its paired trigger, callback and event reconcile re-derives the report once afterwards,
+outside the reload read/write lock and under the plugin-mutation lock, which clears a row
+sampled from that reload's own marker and equally a row left true by a marker that reload
+healed. That refresh belongs to the entry point and not to the pass, which is what lets it
+be seen through a cancellation while leaving the pass's own terminus exactly as stated
+above: the only cancellation it survives is one arriving after dispatch has RETURNED, and a
+pass cancelled before that publishes no map, so its reload never reaches the refresh and the
+marker it left standing is still the scheduled recovery's to clear. It is a report refresh
+and nothing else: it announces nothing, and a refresh that fails is logged rather than
+turning a successful reload into a failed one.
 
 What it does not cover: the callback half, whose markers already trail its overlay (it
 retires before the swap and writes after); a bound secret whose route re-enters the desired

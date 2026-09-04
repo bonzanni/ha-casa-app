@@ -55,6 +55,24 @@ same-task re-entries that serialize a direct, undispatched call. Every other sco
 unfenced and concurrent, which is what lets a plugin mutation holding that lock finish its
 own agent reload.
 
+**A reload that re-derived plugin routing also re-derives the report describing it.** The
+scopes that reconcile plugin triggers, callbacks and events after their handler — the
+trigger scope, the two agent scopes and the full scope — regenerate the plugin health report
+once, and the entry points own that too. It cannot live in the dispatcher for the reason
+above, so it runs after the dispatch has returned and released the read/write lock — and
+after the entry point's own fence, so that taking the plugin-mutation lock, writing and
+releasing it is one unit that sees itself through even when the caller is cancelled. A
+caller that goes away neither drops the refresh while queued for the lock nor abandons a
+write already in flight for a newer one to lose to. There are three such entry points: the
+reload tool, the soft trigger-reload tool and the internal route. Regenerating is all it
+does — it announces nothing, and a regeneration that fails is logged rather than failing the
+reload it followed. A full reload therefore regenerates more than once: the executors step
+inside its cascade regenerates and announces, the plugin-environment step does the same when
+the reload asked for it, and this one runs after all of them — so two regenerations and one
+announcement ordinarily, three and two when plugin environment is included. Only the last
+describes the routing the reload left behind; the earlier ones run before the reconcile that
+decides it.
+
 **The config tree is a git repository, but only a whitelist is tracked.** Agents, policies,
 bindings, schema, and specific registry files are versioned; plugin stores, staging areas,
 the environment file and general working state are not. The whitelist is the authority, and
