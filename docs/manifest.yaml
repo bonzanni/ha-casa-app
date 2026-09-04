@@ -89,6 +89,7 @@
   tests:
     - tests/test_recall_absence_invariant.py
     - tests/test_authz_grants.py
+    - tests/test_assistant_prompts.py
   related: [architecture/memory.md, architecture/engagements.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/voice.md]
 
 - doc: doctrine/working-on-casa.md

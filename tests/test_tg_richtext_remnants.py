@@ -232,8 +232,24 @@ def test_pipe_lines_without_separator_stay_literal():
 
 
 def test_table_with_inconsistent_columns_stays_literal():
-    src = "| a | b |\n|---|---|\n| only one |"
+    # #517 RETARGETED (this test's assertion FLIPPED for the short-row case).
+    # "Inconsistent columns" now splits in two: a row with MORE cells than
+    # the header is still ambiguous — truncating it would drop content — so
+    # it stays literal, which is what this test now pins. A row with FEWER
+    # cells is padded, and its own case is the next test.
+    src = "| a | b |\n|---|---|\n| x | y | z |"
     assert parse_markdown(src) == (src, [])
+
+
+def test_517_short_data_row_is_padded_rather_than_left_literal():
+    # The case this file used to assert stayed literal. The delimiter row
+    # declares the column count, so a short DATA row is padded with empty
+    # cells and the run renders as the confident table it plainly is.
+    src = "| a | b |\n|---|---|\n| only one |"
+    display, spans = parse_markdown(src)
+    assert display == "| a        | b |\n| only one |   |"
+    assert display.count("|---|") == 0
+    assert spans == [(0, len(display), "pre")]
 
 
 def test_table_alignment_colons_accepted():

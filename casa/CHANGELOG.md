@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.267.0] - 2026-09-04
+
+### Fixed
+
+- A table Casa sends over Telegram now renders as a table when one of its rows
+  is short. A row with fewer cells than the header used to leave the whole run
+  as raw text — the pipe characters and the `|---|---|` line included — even
+  though that separator line already declares how many columns there are. The
+  short row is now filled out with empty cells instead. A row with *more* cells
+  than the header is still left as written, because resolving that one means
+  dropping what does not fit; and where there is no separator line to declare
+  the column count, nothing is padded and every row must still match the header
+  exactly.
+- A table whose header cell carries a link now renders in the laid-out form
+  too, with the link's address kept on the label where it was written. Any link
+  anywhere in the header used to send the whole table to the plain
+  row-by-row form, however narrow it was.
+- No header is dropped when its column has nothing in it. A column left blank
+  in every row used to make its header vanish from the laid-out form entirely;
+  such a table now stays in the row-by-row form, where every header — and any
+  address it carries — survives.
+
+### Changed
+
+- The residents' text guidance now says when a table is the right shape for a
+  reply and when a plain sentence reads better, so a table is reached for on
+  purpose rather than by habit.
+
 ## [0.266.0] - 2026-09-04
 
 ### Fixed

@@ -24,6 +24,12 @@ there. Opening that page is what the link is for, so handing it to the person wh
 must open it is passing it to its intended consumer; labelling changes only the shape
 of a link you were already going to hand over, never whether you may hand it over.
 
+A table is the right shape only for a small, tidy grid: at most three columns,
+every cell a short value. When the material is wider than that, or a cell would
+carry a sentence, write one `Field: value` line per item instead, with a blank
+line between items. A single fact or a two-row comparison is a sentence, not a
+table.
+
 ## Voice projection
 
 Use short spoken sentences when this role is rendered for voice.
