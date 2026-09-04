@@ -373,3 +373,40 @@ def test_render_paged_drops_a_destination_longer_than_one_message(caplog):
         len(warnings),
         all(utf16_len(t) <= MAX_LEN for t, _ in pages),
     ) == (3, deliverable, 0, 0, 1, True)
+
+
+def test_render_paged_lists_a_repeated_destination_once_on_the_target_page():
+    """Kills removal of the target de-duplication: two links to the SAME
+    address that overflow the inline form owe the reader one line, not two —
+    the rule `missing_link_targets` already applies on the entity side."""
+    from channels.tg_richtext import MAX_LEN, render_paged
+    from text_util import utf16_len
+
+    url = "https://example.test/" + "a" * 3000
+    pad, tail = "y" * 4000, "x" * 4096
+    pages = render_paged(f"\ud800{pad} [A]({url}) [B]({url})\n\n{tail}")
+
+    assert (
+        len(pages),
+        pages[1][0],
+        sum(text.count(url) for text, _ in pages),
+        all(utf16_len(t) <= MAX_LEN for t, _ in pages),
+    ) == (3, url, 1, True)
+
+
+def test_plain_pages_with_targets_does_not_guess_an_unusable_offset():
+    """Kills removal of the `inline_ok` fence.
+
+    A span whose offsets do not address this page cannot say WHERE its label
+    ends, so inserting inline would attach the address at an invented point.
+    The whole page takes the overflow form instead, which loses no
+    destination. Driven at the helper because `_paginate` rebases offsets and
+    cannot produce this shape — the helper's own contract is what is pinned.
+    """
+    from channels.tg_richtext import _plain_pages_with_targets
+
+    spans = [(0, 5, f"link:{_U_A}"), (99, 120, f"link:{_U_B}")]
+    assert _plain_pages_with_targets("label", spans) == [
+        ("label", None),
+        (f"{_U_A}\n{_U_B}", None),
+    ]

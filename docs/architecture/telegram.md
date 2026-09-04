@@ -104,8 +104,10 @@ in one of three forms — a padded monospace box when narrow and link-free, per-
 their formatting intact otherwise — chosen so cell content and link destinations are never
 silently dropped. Anything ambiguous stays literal rather than rendering wrongly.
 
-**A page Telegram rejects still carries its link destinations.** The platform can refuse a
-message's entities; the sender then re-sends that message as plain text, exactly once. A
+**A page whose formatting does not survive still carries its link destinations.** Formatting
+fails in two ways, and both used to be the same shape to the reader — a label with no address
+behind it. The platform can REFUSE a message's entities; the sender then re-sends that message
+as plain text, exactly once. A
 single-page reply re-sends the text the agent authored, which still contains the address of
 every `[label](url)` link. A paginated reply has only its rendered pages, which are
 deliberately marker-free, so its plain form is reconstructed from the page and its entities
@@ -117,6 +119,18 @@ address. A destination that would not fit a whole message on its own cannot be d
 text in any shape, so it is omitted with a log line rather than sent as fragments of an
 address. One rejection is still retried once and only once; what may take more than one
 message is the retried payload, never a second attempt at the rejected one.
+
+The second way is that a page's entities cannot be EXPRESSED at all. Telegram's offsets are
+UTF-16, and a lone surrogate — which the shared measurement tolerates by design, and the
+platform's client library does not — makes the conversion raise. That degrades to no
+entities, which is exactly what a page with no formatting looks like, so nothing downstream
+can tell the two apart and no rejection is ever raised for the paragraph above to catch. The
+paginating renderer therefore decides it itself, while it still holds the spans: a page whose
+conversion fails is emitted with each destination re-attached in the same `label (url)` form,
+inline while it fits the page's budget and otherwise as the page's own text followed by
+destination-only pages. Its spans are page-relative Python offsets, so this needs no UTF-16
+round trip — the round trip is what the surrogate breaks. A SINGLE-page reply is left alone:
+its senders retry with the text the agent authored, which still contains every address.
 
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
@@ -247,6 +261,17 @@ in transport leaves the keyboard standing, and the failure is logged rather than
 (INV-TG-003's caveat applies here too). A tap on such a keyboard is still refused by the
 broker as stale, so what survives is a misleading display, never a wrong outcome.
 
+**INV-TG-008**: In a paginated rich response, a page whose spans cannot be converted to Telegram entities still carries every individually deliverable destination of its link spans — inline after the label, or on destination-only page(s) that follow it.
+
+Enforced in the paginating renderer, which reconstructs from the page's own spans rather than
+from entities it no longer has. "Individually deliverable" is the one exclusion: a destination
+longer than a whole message cannot be delivered as text in any shape, and is dropped with a
+log line rather than sent as fragments of an address.
+
+What it does not cover: a single-page reply, whose senders retry with the authored text and
+never lost the address; and a page whose entities Telegram merely rejects, which is the
+sender-side path above.
+
 **A plain DM message retires the questions this conversation asked, and only those.** The
 order in the DM path is fixed and each step is there for a measured reason: `/new` is
 intercepted first and takes its own reset, which retires both halves of the operator's
@@ -347,6 +372,7 @@ units but sends unformatted text only.
 - `tests/test_telegram_topic_stream.py`
 - `tests/test_telegram_link_fallback.py`
 - `tests/test_telegram_link_fallback_shapes.py`
+- `tests/test_tg_richtext.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
