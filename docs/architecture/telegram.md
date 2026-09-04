@@ -104,12 +104,11 @@ in one of three forms — a padded monospace box when narrow and link-free, per-
 their formatting intact otherwise — chosen so cell content and link destinations are never
 silently dropped. Anything ambiguous stays literal rather than rendering wrongly.
 
-**A page whose formatting does not survive still carries its link destinations.** Formatting
-fails in two ways, and both used to be the same shape to the reader — a label with no address
-behind it. The platform can REFUSE a message's entities; the sender then re-sends that message
-as plain text, exactly once. A
-single-page reply re-sends the text the agent authored, which still contains the address of
-every `[label](url)` link. A paginated reply has only its rendered pages, which are
+**A page whose formatting is refused, or cannot be expressed, still carries its link
+destinations.** Formatting fails in two ways. The platform can REFUSE a message's
+entities; the sender then re-sends that message as plain text, exactly once. A single-page
+reply re-sends the text the agent authored, which still contains the address of every
+`[label](url)` link. A paginated reply has only its rendered pages, which are
 deliberately marker-free, so its plain form is reconstructed from the page and its entities
 instead: a link destination is the one datum a display cannot carry, and it is re-attached
 after its label. When that reconstruction would not fit one message the page's own text is
@@ -131,8 +130,9 @@ page's own text followed by destination-only pages. The spans are page-relative 
 offsets, so this needs no UTF-16 round trip — the round trip is what the surrogate breaks.
 Those pages also have their lone surrogates replaced one code point for one: the client sends
 a request as UTF-8 form data, so a page still carrying one raises before any request leaves
-the process and would deliver nothing at all. A SINGLE-page reply is left alone — its senders
-retry with the text the agent authored, which still contains every address.
+the process. Only the pages this arm emits are treated that way. A SINGLE-page reply is
+outside the arm — it is emitted untouched, entities and bytes both, and its senders fall back
+to the text the agent authored, address and all.
 
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
@@ -267,13 +267,13 @@ broker as stale, so what survives is a misleading display, never a wrong outcome
 
 Enforced in the paginating renderer, which reconstructs from the page's own spans rather than
 from entities it no longer has. "Individually deliverable" is the one exclusion: a destination
-longer than a whole message cannot be delivered as text in any shape, and is dropped with a
-log line rather than sent as fragments of an address.
+longer than a whole message cannot be a message on its own in any shape, and is dropped with a
+log line rather than cut into fragments of an address.
 
-What it does not cover: a single-page reply, whose senders retry with the authored text and
-never lost the address; a page whose entities Telegram merely rejects, which is the sender-side
-path above; and a page with no spans at all, which never enters this path and keeps its bytes —
-including a lone surrogate — exactly as before.
+What it does not cover: a single-page reply, whose senders fall back to the text the agent
+authored, address and all; a page whose entities Telegram merely rejects, which is the
+sender-side path above; and a page with no spans at all, which does not enter this path and
+keeps its bytes — including a lone surrogate — exactly as before.
 
 **A plain DM message retires the questions this conversation asked, and only those.** The
 order in the DM path is fixed and each step is there for a measured reason: `/new` is
