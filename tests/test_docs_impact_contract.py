@@ -63,6 +63,10 @@ def _decide(repo: Path, impacted: str, touched: str = "", deleted: str = "",
     script = "\n".join([
         "set -euo pipefail",
         'tmp="$(mktemp -d)"',
+        # The trap is half of the pairing at `docs_impact.sh:51-52`. Copying the
+        # `mktemp` without it leaked one directory per call (#795); `rm -rf` is
+        # silent, so the counter substrings the callers assert on are unchanged.
+        'trap \'rm -rf "$tmp"\' EXIT',
         'err() { echo "docs-impact: $*" >&2; }',
         'impacted="$1" touched="$2" deleted="$3"',
         'base=main',
