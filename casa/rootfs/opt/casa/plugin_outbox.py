@@ -638,18 +638,36 @@ def provision_engagement_outbox(uid: int, *, root: str | None = None,
     os.makedirs(d, exist_ok=True)
     try:
         os.chown(d, uid, uid, follow_symlinks=False)
-    except PermissionError:
-        # Production always runs this as root (the containment-stage-2
-        # threat model assumes it — see design §"gating measurement"), so a
-        # real chown to an arbitrary allocated uid always succeeds there.
-        # An unprivileged process (unit tests; a dev shell) cannot chown to
-        # an arbitrary uid it does not own — degrade instead of crashing so
-        # the store/provisioning path stays exercisable without root.
+    except OSError as exc:
+        # A chown this process cannot perform has THREE errno spellings, not
+        # one exception class. EPERM/EACCES (which is exactly what
+        # PermissionError covers) is an unprivileged process refused a chown
+        # to a uid it does not own — unit tests, a dev shell. EINVAL is the
+        # user-namespace spelling: inside a userns the target uid has no
+        # mapping at all, so the kernel rejects the id itself rather than the
+        # permission, and that OSError is not a PermissionError. Catching only
+        # PermissionError therefore crashed provisioning in every rootless
+        # sandbox (#797). Any OTHER errno — ENOSPC, EROFS, ENOENT — is a real
+        # filesystem failure and still raises, at any euid; the errno filter
+        # runs first so an unexpected failure never even asks about privilege.
+        #
+        # The euid guard is UNCHANGED and still covers all three: production
+        # runs this as root with a full uid map (the containment-stage-2
+        # threat model assumes it — see design §"gating measurement"), where a
+        # chown to an allocated uid always succeeds. If it ever does not, the
+        # dir would be handed to the uid-dropped CLI without being owned by
+        # it, so root must fail LOUDLY here at provisioning time rather than
+        # silently, late, at send_media. That deliberately leaves a root-mapped
+        # namespace (unshare -Ur: euid 0, EINVAL) raising: the process
+        # believes it is root, and loud is the right answer when it is not
+        # certain it is not.
+        if exc.errno not in (errno.EPERM, errno.EACCES, errno.EINVAL):
+            raise
         if os.geteuid() == 0:
             raise
         logger.debug(
             "engagement outbox: chown to uid %s skipped — process is not "
-            "root (euid=%s)", uid, os.geteuid())
+            "root (euid=%s, errno=%s)", uid, os.geteuid(), exc.errno)
     os.chmod(d, 0o700)
     return d
 
