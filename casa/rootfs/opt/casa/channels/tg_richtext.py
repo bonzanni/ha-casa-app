@@ -37,8 +37,18 @@ consistent rows — v0.109 shape) is re-emitted from parsed cells (``\\|`` is
 cell content; unescaped pipes split, even inside backticks — GFM rule).
 Three forms, chosen so content and URLs are NEVER dropped: a padded PRE box
 (narrow, link-free), a per-record ``Header: value`` stanza (wide or
-link-bearing, real non-empty link-free header, >= 1 data row), or inline
-rows with entities intact (every remaining case). Ragged runs stay text.
+link-bearing, real non-empty header, >= 1 data row), or inline rows with
+entities intact (every remaining case).
+
+Raggedness is judged against the DELIMITER (#517), because a delimiter row
+declares the column count while a bare run of pipes only implies one. Under a
+delimiter a short data row is padded with empty cells, as GFM specifies; a row
+with MORE cells than the header still leaves the whole run literal, since GFM
+would truncate it and truncation drops content. Without a delimiter every row
+must match exactly and nothing is padded — a guess is not a declaration. A
+link in the header no longer refuses the stanza either: the label carries it
+as a TEXT_LINK with the bold split around it, unless that column is blank in
+every record, in which case the run stays inline so the destination survives.
 
 ``render()`` returns one message; ``render_paged()`` is the delivery planner —
 it parses ONCE, cuts the display at preferred boundaries (paragraph → line →
@@ -394,29 +404,48 @@ def _split_cells(stripped_row: str) -> list[str]:
     return cells
 
 
-def _table_shape(stripped_rows: list[str]) -> "str | None":
-    """CONFIDENT markdown table shape: 'sep' (header + ``|---|`` separator
-    row, consistent columns), 'nosep' (v0.109, deliberately NARROW: >= 3
-    rows, consistent counts, >= 2 columns, every row non-empty), or None.
-    Markers inside cells no longer disqualify — cells are re-emitted from a
-    parse, not passed through verbatim (#506 mode-A fix)."""
+def _table_shape(
+    stripped_rows: list[str],
+) -> "tuple[str, list[list[str]]] | None":
+    """CONFIDENT markdown table shape AND its normalized cells, or None.
+
+    Returns ``('sep', rows)`` (header + ``|---|`` delimiter row, delimiter
+    DROPPED from the result) or ``('nosep', rows)`` (v0.109, deliberately
+    NARROW: >= 3 rows, consistent counts, >= 2 columns, every row non-empty).
+    Markers inside cells do not disqualify — cells are re-emitted from a
+    parse, not passed through verbatim (#506 mode-A fix).
+
+    **This is the ONE normalization point** (#517). Every returned matrix is
+    rectangular, so ``_render_table``'s per-column indexing is total rather
+    than conditionally-total — "the parser never raises" stops depending on
+    two functions agreeing about the bar.
+
+    Under a delimiter the column count is DECLARED, so a short DATA row is
+    padded with empty cells, exactly as GFM specifies. A row with MORE cells
+    than the header still rejects the whole run: GFM truncates it, and
+    truncation drops content, which the table doctrine forbids outright.
+    Without a delimiter there is no declaration — only an inference from row
+    shapes — so the ``nosep`` branch keeps its exact-count bar and NEVER
+    pads.
+    """
     if len(stripped_rows) < 2:
         return None
-    ncols = len(_split_cells(stripped_rows[0]))
-    sep = _split_cells(stripped_rows[1])
+    cells = [_split_cells(row) for row in stripped_rows]
+    ncols = len(cells[0])
+    sep = cells[1]
     if all(_TABLE_SEP_CELL_RE.fullmatch(c) for c in sep):
-        if len(sep) == ncols and all(
-            len(_split_cells(row)) == ncols for row in stripped_rows
-        ):
-            return "sep"
-        return None
+        data = cells[2:]
+        if len(sep) != ncols or any(len(row) > ncols for row in data):
+            return None
+        return "sep", [cells[0]] + [
+            row + [""] * (ncols - len(row)) for row in data
+        ]
     if len(stripped_rows) < 3 or ncols < 2:
         return None
     ok = all(
-        len(cells) == ncols and any(c.strip() for c in cells)
-        for cells in map(_split_cells, stripped_rows)
+        len(row) == ncols and any(c.strip() for c in row) for row in cells
     )
-    return "nosep" if ok else None
+    return ("nosep", cells) if ok else None
 
 
 def _split_tables(text: str) -> list[tuple[str, object]]:
@@ -461,8 +490,9 @@ def _split_tables(text: str) -> list[tuple[str, object]]:
             else None
         )
         if shape:
+            kind, body_cells = shape
             flush()
-            blocks.append(("table", _render_table(rows, shape == "sep")))
+            blocks.append(("table", _render_table(body_cells, kind == "sep")))
             ending = lines[j - 1][len(lines[j - 1].rstrip("\r\n")):]
             if ending:
                 text_buf.append(ending)
@@ -479,7 +509,7 @@ def _split_tables(text: str) -> list[tuple[str, object]]:
 
 
 def _render_table(
-    rows: list[str], separatored: bool,
+    body_cells: list[list[str]], separatored: bool,
 ) -> tuple[str, list[Span]]:
     """Re-emit a confident table in ONE of three forms — chosen so cell
     content and link URLs are NEVER dropped (design rounds 1-3):
@@ -494,10 +524,6 @@ def _render_table(
     3. inline rows: every remaining case — cells re-emitted between literal
        pipes with their entity spans intact.
     """
-    src_cells = [_split_cells(r) for r in rows]
-    body_cells = (
-        [src_cells[0]] + src_cells[2:] if separatored else src_cells
-    )
     rendered: list[list[tuple[str, list[Span]]]] = []
     for row in body_cells:
         rrow = []
@@ -524,6 +550,18 @@ def _render_table(
         return text, [(0, len(text), "pre")]
 
     header, data = rendered[0], rendered[1:]
+    # #517: a header link no longer refuses the stanza — the label carries it
+    # as a TEXT_LINK. But `_render_stanza` SKIPS a record line whose value is
+    # blank, LABEL included, so a linked header column that is blank in every
+    # data row would emit its destination nowhere. Such a run stays in the
+    # inline form, where the linked header is emitted and the URL survives.
+    linked_cols = [
+        c for c, (_, sp) in enumerate(header)
+        if any(k.startswith(_LINK_KIND) for _, _, k in sp)
+    ]
+    links_survive = all(
+        any(row[c][0].strip() for row in data) for c in linked_cols
+    )
     header_ok = (
         separatored
         and data
@@ -531,9 +569,7 @@ def _render_table(
         # message (diff-review round 2)
         and any(v[0].strip() for row in data for v in row)
         and all(h[0].strip() for h in header)
-        and not any(
-            k.startswith(_LINK_KIND) for _, sp in header for _, _, k in sp
-        )
+        and links_survive
     )
     if header_ok:
         return _render_stanza(header, data)
@@ -573,8 +609,20 @@ def _render_stanza(
                 pos += 1
             line = hdisp + ": " + vdisp
             label_end = len(hdisp) + 1  # includes the colon
-            holes = sorted((s, e) for s, e, k in hspans if k == "code")
-            spans.extend((pos + s, pos + e, "code") for s, e in holes)
+            # The label's ATOMS — CODE and TEXT_LINK — are re-emitted with
+            # their own kind, and the label's BOLD is their COMPLEMENT, so
+            # bold can never contain or intersect either (emission doctrine,
+            # ":28-31"). The link case is #517: a header link rides onto
+            # every record's label rather than refusing the stanza. Code and
+            # link spans from one cell are disjoint by the inline pass's own
+            # rules (a code-wrapped link is pure code; a link-wrapped code is
+            # pure link), which is what `_subtract_intervals` assumes.
+            atoms = sorted(
+                (s, e, k) for s, e, k in hspans
+                if k == "code" or k.startswith(_LINK_KIND)
+            )
+            holes = [(s, e) for s, e, _ in atoms]
+            spans.extend((pos + s, pos + e, k) for s, e, k in atoms)
             spans.extend(
                 (pos + s, pos + e, "bold")
                 for s, e in _subtract_intervals(0, label_end, holes)
