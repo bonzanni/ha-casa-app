@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.266.0] - 2026-09-04
+
+### Fixed
+
+- Casa no longer finishes an engagement over messages it can still see. When it
+  asked the conversation it is running in whether anything was still unread and
+  that one question could not be answered, Casa treated the whole conversation
+  as having nothing outstanding — so a request to complete went through even
+  though work in flight, held-back messages and a waiting-message count were all
+  still readable, and the record read as finished.
+- The same failure used to remove the whole "you may not have seen these"
+  notice from every ending — completed, cancelled, failed, expired, deleted, and
+  both operator commands ended silently rather than listing what had arrived.
+  Each question is now asked on its own: one that cannot be answered contributes
+  nothing and the rest still count, so an ending still refuses over what Casa
+  could read and still tells you about the messages it did find.
+
 ## [0.265.0] - 2026-09-04
 
 ### Fixed

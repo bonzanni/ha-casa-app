@@ -8992,23 +8992,44 @@ async def _finalize_engagement(
     # unread depth or a pending ingress reservation) with the no-silent-loss
     # SNAPSHOT of queued-unseen texts (all callers — surfaced to the topic
     # after the flip). Accessor failures fail OPEN with a warning: a driver
-    # bug must not wedge termination forever.
+    # bug must not wedge termination forever. #807: open for THAT accessor
+    # only — each of the eight reads below is guarded on its own and
+    # contributes only its own value, so a failure changes what the hook knows
+    # and never what it does about everything else it read.
     unread_snapshot: list[str] = []
     reservation_texts: list[str] = []
     lost_reservations = 0
 
     def _terminal_hook():
         nonlocal lost_reservations
-        if driver is None or not hasattr(driver, "inbound_unread_texts"):
+        if driver is None:
             return None
+        # #807: the queued-text read is ONE optional accessor among eight, and
+        # it is guarded like every one of them — its own try, contributing only
+        # its own value. It used to be the hook's precondition instead: absent,
+        # it returned before the whole hook; raising, it returned before the
+        # reservation, depth and in-flight arms of the veto and before all four
+        # disclosure populations. A gated completion then committed over
+        # reservations, in-flight work and a depth the gate could still have
+        # read, and every terminal — completed, cancelled, error, reap, forced
+        # delete, operator /cancel and complete — posted no inbound disclosure
+        # at all. Failing open is the published policy for an accessor that
+        # cannot answer (see this funnel's header, and the completion gate
+        # document's failure-behaviour section); failing open for the OTHER
+        # seven, which answered, never was. A driver implementing none of the
+        # accessors is still not gated and still discloses nothing — every read
+        # below is hasattr-optional, so that outcome now comes from the reads
+        # themselves rather than from this one accessor standing in for them.
         try:
-            texts = list(driver.inbound_unread_texts(engagement.id))
-            texts = [t for t in texts if isinstance(t, str)]
-        except Exception:  # noqa: BLE001 — fail open
+            _ut = (driver.inbound_unread_texts(engagement.id)
+                   if hasattr(driver, "inbound_unread_texts") else [])
+            texts = [t for t in list(_ut) if isinstance(t, str)]
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the below
             logger.warning(
-                "finalize engagement %s: inbound accessors failed — "
-                "gate skipped", engagement.id[:8], exc_info=True)
-            return None
+                "finalize engagement %s: inbound_unread_texts failed — the "
+                "reservation, depth and in-flight arms still stand",
+                engagement.id[:8], exc_info=True)
+            texts = []
         # #740: the RAW reservation count is read in its OWN try. It used to
         # share the one above, so an unread-accessor failure returned before it
         # and the reservation arm of the gate — the arm that survives a session
@@ -9041,6 +9062,13 @@ async def _finalize_engagement(
         # An ABSENT depth accessor keeps the previous behaviour (a duck driver
         # exposing only texts has no file tier for the split to protect it
         # from); a PRESENT one that raises contributes zero, per above.
+        # #807: that ``len(texts)`` fallback now reads a list that is EMPTY
+        # when the text accessor was absent or raised, which is the value this
+        # arm wants — a population the gate could not read must not veto, and
+        # an unbound ``texts`` here would raise inside the registry's terminal
+        # critical section and be misread as a persist failure that leaves the
+        # record live. An edit that makes the degraded value non-empty must
+        # revisit this line.
         try:
             _du = (driver.inbound_unread_depth(engagement.id)
                    if hasattr(driver, "inbound_unread_depth") else len(texts))
@@ -9066,20 +9094,35 @@ async def _finalize_engagement(
         # a gate would have been able to DISABLE the gate that was there — and
         # an accepted operator message could then be committed past with no veto
         # at all. A failure here now costs only the new coverage.
+        #
+        # #807: and separately from EACH OTHER, for the same reason one step
+        # in. These two reads share nothing but a subject: the texts are
+        # disclosure and the count is a veto arm. While they shared a try, the
+        # texts read raising zeroed a blocking count the driver would have
+        # answered — one accessor's failure switching off a veto arm the gate
+        # could still see — and the blocking read raising discarded in-flight
+        # texts that had already been read.
         try:
             _ift = (driver.inbound_in_flight_texts(engagement.id)
                     if hasattr(driver, "inbound_in_flight_texts") else [])
             in_flight = ([t for t in _ift if isinstance(t, str)]
                          if type(_ift) is list else [])
+        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
+            logger.warning(
+                "finalize engagement %s: in-flight-text accessor failed — the "
+                "blocking arm and the unread gate below still stand",
+                engagement.id[:8], exc_info=True)
+            in_flight = []
+        try:
             _ifb = (driver.inbound_in_flight_blocking(engagement.id)
                     if hasattr(driver, "inbound_in_flight_blocking") else 0)
             blocking = _ifb if type(_ifb) is int else 0
         except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
             logger.warning(
-                "finalize engagement %s: in-flight accessors failed — the "
-                "unread gate below still stands", engagement.id[:8],
+                "finalize engagement %s: in-flight-blocking accessor failed — "
+                "the unread gate below still stands", engagement.id[:8],
                 exc_info=True)
-            in_flight, blocking = [], 0
+            blocking = 0
         # #664: a message still inside its ingress-reservation window has no
         # text anywhere, but it dies with this terminal all the same — carry
         # the DISCLOSURE projection (reservations minus the ones a recognized

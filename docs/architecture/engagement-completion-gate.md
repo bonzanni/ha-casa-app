@@ -251,9 +251,16 @@ a retry. Both halves of the invariant's last sentence are that one path.
 and the caller gets a retryable outcome naming the condition. This is a precondition failure,
 not an error state.
 
-**An inbound accessor raises.** The gate fails open with a warning rather than wedging
-termination: a driver that cannot answer the question does not get to make an engagement
-unendable.
+**An inbound accessor raises.** The gate fails open for THAT accessor, with a warning rather
+than wedging termination: a driver that cannot answer one question does not get to make an
+engagement unendable — and does not get to answer for the other reads either. Each of the
+terminal hook's reads is guarded on its own and contributes only its own value, so a completion
+is still refused over the unread depth, in-flight work or reservations the gate could still
+read, and every terminal still discloses the populations that did read.
+
+**An inbound accessor is absent.** The same contribution, without the warning: an optional
+accessor a driver never implements answers empty because nothing failed, so there is nothing to
+report. Absence is the ordinary case — `InCasaDriver` implements six of the eight.
 
 **An eviction notice never sends.** The evicted message is quoted by the terminal disclosure
 from the spool, at any age, and the notice keeps retrying — through the pre-close drain and
