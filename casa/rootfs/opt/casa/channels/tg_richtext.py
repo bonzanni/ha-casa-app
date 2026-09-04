@@ -547,26 +547,26 @@ def _render_table(
         return text, [(0, len(text), "pre")]
 
     header, data = rendered[0], rendered[1:]
-    # #517: a header link no longer refuses the stanza — the label carries it
-    # as a TEXT_LINK. But `_render_stanza` SKIPS a record line whose value is
-    # blank, LABEL included, so a linked header column that is blank in every
-    # data row would emit its destination nowhere. Such a run stays in the
-    # inline form, where the linked header is emitted and the URL survives.
-    linked_cols = [
-        c for c, (_, sp) in enumerate(header)
-        if any(k.startswith(_LINK_KIND) for _, _, k in sp)
-    ]
-    links_survive = all(
-        any(row[c][0].strip() for row in data) for c in linked_cols
+    # `_render_stanza` SKIPS a record line whose value is blank, LABEL
+    # included — so a column blank in EVERY data row contributes no line at
+    # all and its header cell is emitted nowhere. Such a run stays in the
+    # inline form, where every header cell, and any destination it carries,
+    # survives. #517 diff-review round 1 (sol S2): this must be judged per
+    # COLUMN and over ALL columns, not only the link-bearing ones. A weaker
+    # linked-columns-only guard let a padded short row drop a plain header
+    # cell (`| A | B |` + `|---|---|` + `| x |` renders `A: x`, losing `B`),
+    # and the same hole was already reachable at exact cell counts with an
+    # explicitly blank cell. This predicate subsumes the older ">= 1 non-empty
+    # rendered value" clause it replaces (diff-review round 2 of #506), since
+    # a table always has at least one column.
+    columns_survive = all(
+        any(row[c][0].strip() for row in data) for c in range(ncols)
     )
     header_ok = (
         separatored
         and data
-        # >= 1 non-empty rendered value, or the stanza would emit an empty
-        # message (diff-review round 2)
-        and any(v[0].strip() for row in data for v in row)
+        and columns_survive
         and all(h[0].strip() for h in header)
-        and links_survive
     )
     if header_ok:
         return _render_stanza(header, data)
