@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.268.0] - 2026-09-04
+
+### Fixed
+
+- The plugin health report an operator reads after a reload no longer shows a
+  routing-unavailable row for routing that is live again. While a reload
+  rebuilds plugin routing it marks that routing unavailable, and nothing
+  re-derived the report once the reload had finished — so the warning row
+  stayed on the report, and a row the reload had actually healed stayed there
+  too, until some unrelated change happened to rebuild the report. A reload
+  that rebuilds plugin routing now refreshes the report itself, once the
+  routing it describes is in place. The refresh is silent, and a refresh that
+  fails is recorded rather than turning a successful reload into a failed one.
+
 ## [0.267.0] - 2026-09-04
 
 ### Fixed
