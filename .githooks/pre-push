@@ -10,6 +10,19 @@
 # ungated, and even an all-paths list let an EMPTY commit through, whose message and
 # author identity are published all the same.
 #
+# THE FILE RUNNING IS NOT NECESSARILY THIS WORKTREE'S. `core.hooksPath` names ONE directory
+# for every worktree of a repository, so each of them runs whatever hook that checkout has
+# checked out — and that checkout goes stale on every merge. A superseded hook judging a
+# push is wrong in either direction: it can refuse a legitimate range, naming commits the
+# destination already holds, or accept one the current gate would not. So the running file is
+# compared with the hook at the destination's main before anything else is judged, and
+# only byte-identical is current. A change to the hook is content: it is judged by the
+# current hook like any other content, never by itself — so it is pushed with main's hook
+# running, from a checkout that holds it. Anything else is refused: the checkout
+# core.hooksPath names holds some other revision — behind main, or on a branch of its
+# own — and the remedy is to put it on a tree holding main's hook. A destination that
+# advertises no main, or holds no hook, has nothing to be stale against and is not checked.
+#
 # CASA_GATE_OVERRIDE=<reason> bypasses this. It prints the reason; the reason belongs in
 # the PR. This is a local control — see docs/doctrine/publishing.md for what it does and
 # does not guarantee.
@@ -22,6 +35,48 @@ zero="0000000000000000000000000000000000000000"
 # commit reachable from some *other* configured remote (a private one, say) is not
 # published at this destination.
 destination="${1:-origin}"
+
+# ASK THE DESTINATION what it has, once: every ref in this push goes to the same place.
+# `--not --remotes=<name>` would read local tracking refs, which describe this clone, not
+# the remote: repoint origin at a fresh repository and a stale refs/remotes/origin/main
+# makes whole ancestries look already-published.
+heads="$(git ls-remote --heads "$destination" 2>/dev/null)" || heads=""
+main_sha="$(printf '%s\n' "$heads" | awk '$2 == "refs/heads/main" { print $1 }')"
+
+hook_file="${BASH_SOURCE[0]}"
+hook_rel=".githooks/pre-push"
+
+# The running hook against the destination's. Returns 0 when it may judge this push.
+hook_is_current() {
+  local running main_blob
+  [ -n "$main_sha" ] || return 0     # no main advertised, or unreachable: nothing to be stale against
+  if ! git cat-file -e "$main_sha^{commit}" 2>/dev/null; then
+    # Name the ref: a clone whose fetch refspec covers only its own branch fetches nothing
+    # of main from a bare `git fetch`, and the retry would refuse identically.
+    echo "✋ pre-push: $destination/main ($main_sha) is not a local object, so the hook running" >&2
+    echo "   from $hook_file cannot be checked against it. Run:" >&2
+    echo "     git fetch $destination refs/heads/main" >&2
+    echo "   and push again." >&2
+    return 1
+  fi
+  main_blob="$(git rev-parse --verify -q "$main_sha:$hook_rel")" || return 0   # destination holds no hook
+  # Raw bytes: a clean filter (autocrlf, say) would hash a file whose bytes differ from the
+  # blob as equal, and the bytes are what bash executes — a stray CR ends a code line.
+  running="$(git hash-object --no-filters -- "$hook_file")"
+  [ "$running" = "$main_blob" ] && return 0
+  # No arm accepts "the push carries a newer hook": proving newer from history was tried
+  # twice and each proof had a hole (a merge that keeps an older hook still contains
+  # main's last change; git hides merge resolutions from the path's history). A change to
+  # the hook is content, judged by the current hook like any other content, never by itself.
+  echo "✋ pre-push: the hook running from $hook_file is not the hook at $destination/main." >&2
+  echo "   core.hooksPath names one checkout for every worktree; that checkout holds some" >&2
+  echo "   other revision — behind $destination/main, or on a branch of its own. Put it on a" >&2
+  echo "   tree that holds $destination/main's hook (fast-forward it if it is behind), or run" >&2
+  echo "   that hook directly: git -c core.hooksPath=<a checkout of $destination/main>/.githooks push" >&2
+  echo "   A change to the hook is judged by the current hook, never by itself. An unverified" >&2
+  echo "   hook can accept as easily as it refuses; do not override this." >&2
+  return 1
+}
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue          # deleting a ref publishes nothing
@@ -51,6 +106,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       echo "   If you truly need this: CASA_GATE_OVERRIDE='<reason>' git push ..." >&2
       exit 1 ;;
   esac
+
+  # Before any judgement: is the file making the judgement the current one?
+  if ! hook_is_current; then
+    if [ -n "${CASA_GATE_OVERRIDE:-}" ]; then
+      echo "⚠  pre-push: stale hook overridden — $CASA_GATE_OVERRIDE" >&2
+    else
+      exit 1
+    fi
+  fi
 
   # The destination BRANCH NAME is published metadata in its own right, so this is checked
   # BEFORE any commit enumeration: pushing already-published objects under a NEW name
@@ -86,16 +150,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
   fi
 
-  # ASK THE DESTINATION what it has, for a NEW ref and for an update to an EXISTING one
-  # alike. `--not --remotes=<name>` reads local tracking refs, which describe this clone,
-  # not the remote: repoint origin at a fresh repository and a stale refs/remotes/origin/main
-  # makes whole ancestries look already-published. And "what the destination has" is every
-  # branch it advertises, not the one tip being replaced: a candidate rebased onto a `main`
-  # that has since moved carries main's own published commits, which `remote_sha..local_sha`
-  # counted as introduced and the reviewed set (gated against origin/main) can never contain.
-  # The sha git reports for the ref being replaced stays in the subtrahend, so an unreachable
-  # destination degrades to exactly that old range — never to less.
-  advertised="$(git ls-remote --heads "$destination" 2>/dev/null | cut -f1)" || advertised=""
+  # What the destination has, for a NEW ref and for an update to an EXISTING one alike, is
+  # every branch it advertises, not the one tip being replaced: a candidate rebased onto a
+  # `main` that has since moved carries main's own published commits, which
+  # `remote_sha..local_sha` counted as introduced and the reviewed set (gated against
+  # origin/main) can never contain. The sha git reports for the ref being replaced stays in
+  # the subtrahend, so an unreachable destination degrades to exactly that old range — never
+  # to less.
+  advertised="$(printf '%s\n' "$heads" | cut -f1)"
   [ "$remote_sha" = "$zero" ] || advertised="$remote_sha
 $advertised"
   # Keep only heads present locally. One advertised but unfetched head made `rev-list --not`
