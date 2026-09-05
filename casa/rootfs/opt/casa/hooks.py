@@ -1947,14 +1947,17 @@ def make_trigger_file_write_guard() -> HookCallback:
 
 
 # ---------------------------------------------------------------------------
-# response_shape_write_guard (#610) — the file is READ BY NOTHING for a resident
+# response_shape_write_guard (#610) — the file is read into a fallback prompt
+# that no bundle-bound resident is served
 # ---------------------------------------------------------------------------
 #
-# `agents/<role>/response_shape.yaml` renders only into `_compose_prompt`, whose
-# output is `cfg.system_prompt` — and `agent.py` uses that ONLY when there is no
+# `agents/<role>/response_shape.yaml` is read on every load and renders only
+# into `_compose_prompt`, whose output is `cfg.system_prompt` — the composed
+# FALLBACK, which `agent.py` serves ONLY when there is no
 # compiled bundle (INV-PERS-001). All three resident role artifacts declare
 # `persona.policy: required`, so a resident is bundle-bound from its first boot
-# and the file never reaches the model. #549 made the ROLE ARTIFACT's
+# and no part of the fallback reaches the model while that bundle is active.
+# #549 made the ROLE ARTIFACT's
 # `response:` block the live source; it did not retire this file, and the
 # configurator's recipe still pointed at it.
 #
@@ -1974,13 +1977,14 @@ def make_trigger_file_write_guard() -> HookCallback:
 _RESPONSE_SHAPE_FILE_NAME = "response_shape.yaml"
 
 _RESPONSE_SHAPE_WRITE_DENY = (
-    "response_shape_write_guard: {tool} blocked — {path!r} is not read for a "
-    "persona-bound resident, so editing it would be committed and reported "
-    "live while changing nothing the model sees. A resident's base prompt is "
-    "its COMPILED BUNDLE (the persona plus the role artifact's own response "
-    "block), not the composed prompt this file feeds. To change how a resident "
-    "writes or speaks, change its PERSONA: install the pack that says it "
-    "(doctrine/recipes/persona/install.md) and apply it "
+    "response_shape_write_guard: {tool} blocked — {path!r} is read and "
+    "rendered into the composed FALLBACK prompt, and for a persona-bound "
+    "resident that fallback is not served: its base prompt is its COMPILED "
+    "BUNDLE (the persona plus the role artifact's own response block) for as "
+    "long as that bundle is active. So editing this file would be committed "
+    "and reported live while changing nothing the model sees. To change how a "
+    "resident writes or speaks, change its PERSONA: install the pack that "
+    "says it (doctrine/recipes/persona/install.md) and apply it "
     "(doctrine/recipes/persona/apply.md), then restart that resident. Reading "
     "this file is fine — it is only the edit that would be a lie."
 )

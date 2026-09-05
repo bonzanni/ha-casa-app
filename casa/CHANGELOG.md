@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.269.0] - 2026-09-05
+
+### Fixed
+
+- When an agent's edit to a resident's `response_shape.yaml` is refused, the
+  refusal an operator reads now says what really happens to that file: it is
+  read into a fallback prompt that a persona-bound resident is never served
+  while its compiled bundle is active, so the edit would change nothing the
+  resident says. It used to claim the file is not read. The three code comments
+  and the configurator's own notes that repeated that claim now say the same
+  true thing, and the published invariant for the file was corrected to match.
+  A test now fails if the refusal ever claims the file is not read again.
+
 ## [0.268.0] - 2026-09-04
 
 ### Fixed

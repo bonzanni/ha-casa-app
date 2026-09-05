@@ -2216,10 +2216,11 @@ class Agent:
         # its reminder tools write that file from Casa's loop, and a shell
         # redirect from the CLI child cannot be serialized against them. Both
         # paths lead to config_trigger_upsert / set_reminder instead.
-        # #610: and its own response_shape.yaml, which is read by nothing once
-        # it is bundle-bound — every resident is, from first boot. A shell
-        # redirect from the CLI child would otherwise be committed and reported
-        # live while the prompt digest never moves.
+        # #610: and its own response_shape.yaml, which is read and rendered
+        # into the composed fallback prompt that a bundle-bound resident is
+        # never served — every resident is, from first boot. A shell redirect
+        # from the CLI child would otherwise be committed and reported live
+        # while the prompt digest never moves.
         # #631: and its own prompts/system.md, for the same reason one file
         # over — the composed prompt it feeds is not what a bundle-bound
         # resident is served, so an edit is committed and reported live while

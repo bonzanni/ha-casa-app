@@ -3,9 +3,10 @@
 **There is no response_shape.yaml edit to make. Do not attempt one — the hook
 denies it, and it would not have worked.**
 
-`agents/<role>/response_shape.yaml` is loaded and schema-validated, and then
-nothing reads it for a resident. A resident's base prompt is its **compiled
-bundle** — the persona plus the role artifact's own `response:` block — and
+`agents/<role>/response_shape.yaml` is loaded and schema-validated, and is
+rendered into the composed **fallback** prompt, which a resident is never
+served. A resident's base prompt is its **compiled bundle** — the persona plus
+the role artifact's own `response:` block — and, while that bundle is active,
 that bundle REPLACES the composed prompt this file feeds (INV-PERS-001). Every
 resident is bundle-bound from its first boot, because all three role artifacts
 declare `persona.policy: required`.
