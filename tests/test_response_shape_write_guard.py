@@ -278,14 +278,19 @@ def _shape_doc(register="written", format_="plain", confirmation=2,
 
 def _copy_residents(root, shape_for):
     """Copy the three shipped resident directories, rewriting each copy's
-    `response_shape.yaml` with `shape_for(role)`."""
+    `response_shape.yaml` with `shape_for(role)`.
+
+    `copyfile` copies bytes, not mode bits: the shipped files are read-only on
+    a read-only tree, and the default `copy2` would carry that mode onto the
+    copy the next line rewrites."""
     import pathlib
     import shutil
 
     roots = {}
     for role in _RESIDENTS:
         dst = pathlib.Path(root) / role
-        shutil.copytree(pathlib.Path(_DEFAULT_AGENTS) / role, dst)
+        shutil.copytree(pathlib.Path(_DEFAULT_AGENTS) / role, dst,
+                        copy_function=shutil.copyfile)
         (dst / "response_shape.yaml").write_text(shape_for(role),
                                                  encoding="utf-8")
         roots[role] = dst
