@@ -788,6 +788,10 @@ def test_an_unfetched_main_refuses_rather_than_guessing(tmp_path):
     subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)], check=True)
     for key, value in (("user.email", "o@o"), ("user.name", "o")):
         _git(other, "config", key, value)
+    # The clone's checked-out branch is the runner's init.defaultBranch, which CI sets to
+    # master: a commit there has no parent on main and its push is rejected. Start from
+    # the destination's main explicitly, as _unfetched_sibling does.
+    _git(other, "checkout", "-q", "-B", "main", "origin/main")
     (other / "m1.md").write_text("moved\n")
     _git(other, "add", "-A")
     _git(other, "commit", "-qm", "main moves elsewhere")
