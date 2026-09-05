@@ -49,12 +49,14 @@ def _commit(repo: Path, rel: str) -> str:
 
 
 def _push(repo: Path, sha: str, env: dict | None = None, *,
-          remote_sha: str = ZERO, branch: str = "main"):
+          remote_sha: str = ZERO, branch: str = "main", hook: Path = HOOK):
     """Feed the hook one stdin line as git would. `remote_sha` is what the destination
     currently holds for the ref: ZERO selects the new-ref arm, a real sha the
-    existing-ref arm. `$1` is the destination remote name, as git passes it."""
+    existing-ref arm. `$1` is the destination remote name, as git passes it. `hook` is
+    the FILE that runs — by default the repository's own, which is also what
+    `core.hooksPath` makes every worktree run."""
     return subprocess.run(
-        ["bash", str(HOOK), "origin"], cwd=repo, capture_output=True, text=True,
+        ["bash", str(hook), "origin"], cwd=repo, capture_output=True, text=True,
         input=f"refs/heads/{branch} {sha} refs/heads/{branch} {remote_sha}\n",
         env={"PATH": "/usr/bin:/bin", "HOME": str(repo), **(env or {})},
     )
@@ -641,3 +643,283 @@ def test_a_local_tracking_ref_ahead_of_the_destination_subtracts_nothing(tmp_pat
     assert "never in" in result.stderr
     assert "2 commit(s)" in result.stderr                    # C1r and M1
     assert m1 in result.stderr
+
+
+# --- the file that runs is compared with the destination's ------------------------------
+#
+# `core.hooksPath` names ONE directory for every worktree, so the hook that runs is whatever
+# that checkout has checked out, and it goes stale on every merge. Every case above commits
+# no `.githooks/pre-push` into the fixture, so the destination holds no hook and there is
+# nothing to be stale against. These cases give it one.
+
+HOOK_REL = ".githooks/pre-push"
+
+
+def _hook_bytes(marker: str = "") -> bytes:
+    """The repository's own hook, optionally distinguished by a trailing comment so two
+    versions of it differ in bytes and nothing else."""
+    body = HOOK.read_bytes()
+    return body + f"# {marker}\n".encode() if marker else body
+
+
+def _commit_hook(repo: Path, content: bytes, message: str) -> str:
+    target = repo / HOOK_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _stale_copy(tmp_path: Path) -> Path:
+    """The file a stale checkout would run: the current hook with one older-looking
+    difference, kept OUTSIDE any worktree so only its bytes matter."""
+    copy = tmp_path / "stale-hooks" / "pre-push"
+    copy.parent.mkdir()
+    copy.write_bytes(_hook_bytes("an earlier revision of this hook"))
+    copy.chmod(0o755)          # git runs only an executable hook, and skips one silently
+    return copy
+
+
+def _main_with_hook(repo: Path, content: bytes) -> str:
+    """main = M0 carrying `content` as its hook, published; returns M0."""
+    _remote(repo)
+    m0 = _commit_hook(repo, content, "hook on main")
+    _fixture_push(repo, "main")
+    return m0
+
+
+def test_a_stale_hook_is_refused_before_it_judges_anything(tmp_path):
+    """The measured incident's shape. Pins INV-PUB-005 (the refuse half): the destination's
+    main carries THIS hook, the file running is a different revision, and the pushed tip
+    carries main's hook unchanged — so nothing in the push explains the difference. The
+    push is refused naming the running file, and it is refused BEFORE the attestation is
+    consulted, so a stale hook never judges a receipt.
+
+    Red case demonstrated: a hook that skips the comparison accepts this push on its
+    receipt, exactly as the stale checkout did."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _approve(repo, c1, branch="cand", extra=[c1])
+    stale = _stale_copy(tmp_path)
+
+    result = _push(repo, c1, branch="cand", hook=stale)
+    assert result.returncode == 1
+    assert str(stale) in result.stderr
+    assert "not the hook at origin/main" in result.stderr
+    assert "not attested" not in result.stderr
+
+
+def test_the_current_hook_judges_a_push_from_any_branch(tmp_path):
+    """Pins INV-PUB-005 (the accept half): the running file IS the destination's hook, so
+    it is current whatever the pushed branch carries — here a branch older than main's
+    last hook change, which never saw it."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes("older"))
+    _git(repo, "checkout", "-q", "-b", "cand")            # cand still carries the older hook
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _git(repo, "checkout", "-q", "main")
+    _commit_hook(repo, _hook_bytes(), "hook moves on main")   # main now carries THIS hook
+    _fixture_push(repo, "main")
+    _git(repo, "checkout", "-q", "cand")
+    _approve(repo, c1, branch="cand", extra=[c1])
+
+    result = _push(repo, c1, branch="cand")
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_hook_change_is_judged_by_the_current_hook_not_by_itself(tmp_path):
+    """A change to the hook is content. Pushed with the destination's hook running, it is
+    accepted like any other attested content; pushed with ITSELF running, it is refused —
+    the file making the judgement is not the current hook, whatever the push carries."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())                     # main carries THIS hook
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit_hook(repo, _hook_bytes("proposed"), "a proposed hook change")
+    _approve(repo, c1, branch="cand", extra=[c1])
+
+    judged_by_current = _push(repo, c1, branch="cand")       # runs THIS hook = main's
+    assert judged_by_current.returncode == 0, judged_by_current.stderr
+
+    proposed = tmp_path / "proposed-hooks" / "pre-push"
+    proposed.parent.mkdir()
+    proposed.write_bytes(_hook_bytes("proposed"))
+    proposed.chmod(0o755)
+    judged_by_itself = _push(repo, c1, branch="cand", hook=proposed)
+    assert judged_by_itself.returncode == 1
+    assert "not the hook at origin/main" in judged_by_itself.stderr
+    assert "judged by the current hook, never by itself" in judged_by_itself.stderr
+
+
+def test_a_branch_behind_mains_hook_cannot_run_its_own_older_copy(tmp_path):
+    """The other stale shape: the running file matches the pushed tip's hook, but the tip
+    predates main's last change to the hook. That the tip carries it is no defence — only
+    the destination's hook may judge — and the push is refused."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())                     # M0 carries THIS hook
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")            # cand carries THIS hook too
+    _git(repo, "checkout", "-q", "main")
+    _commit_hook(repo, _hook_bytes("newer"), "hook moves on main")
+    _fixture_push(repo, "main")
+    _git(repo, "checkout", "-q", "cand")
+    _approve(repo, c1, branch="cand", extra=[c1])
+
+    result = _push(repo, c1, branch="cand")                  # runs THIS hook = cand's, older
+    assert result.returncode == 1
+    assert "not the hook at origin/main" in result.stderr
+
+
+def test_an_unfetched_main_refuses_rather_than_guessing(tmp_path):
+    """When the destination's main is not a local object the comparison cannot be made,
+    and the answer is a refusal naming the fetch — never an assumption either way. The
+    named command is the one that works: this clone's fetch refspec covers only its own
+    branch, so a bare `git fetch origin` brings nothing of main and the retry would refuse
+    identically; the ref-naming fetch the message prescribes makes the retry pass."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _fixture_push(repo, "cand")                              # so the restricted refspec resolves
+    _git(repo, "config", "remote.origin.fetch", "+refs/heads/cand:refs/remotes/origin/cand")
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)], check=True)
+    for key, value in (("user.email", "o@o"), ("user.name", "o")):
+        _git(other, "config", key, value)
+    (other / "m1.md").write_text("moved\n")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-qm", "main moves elsewhere")
+    _git(other, "push", "-q", "--no-verify", "origin", "HEAD:main")
+    _approve(repo, c1, branch="cand", extra=[c1])
+
+    result = _push(repo, c1, branch="cand")
+    assert result.returncode == 1
+    assert "not a local object" in result.stderr
+    assert "git fetch origin refs/heads/main" in result.stderr
+
+    _git(repo, "fetch", "-q", "origin")                      # the bare fetch: main still absent
+    again = _push(repo, c1, branch="cand")
+    assert again.returncode == 1 and "not a local object" in again.stderr
+
+    _git(repo, "fetch", "-q", "origin", "refs/heads/main")   # the prescribed command
+    assert _push(repo, c1, branch="cand").returncode == 0
+
+
+def test_a_stale_hook_can_be_overridden_with_a_reason(tmp_path):
+    """The override is the same one every other refusal honours, and it announces
+    itself the same way."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _approve(repo, c1, branch="cand", extra=[c1])
+    result = _push(repo, c1, {"CASA_GATE_OVERRIDE": "hotfix"}, branch="cand",
+                   hook=_stale_copy(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "stale hook overridden — hotfix" in result.stderr
+
+
+def test_a_real_push_through_a_stale_hooks_path_is_refused(tmp_path):
+    """The incident through `git push` itself: `core.hooksPath` names a directory holding a
+    superseded copy of the hook, exactly as a stale primary checkout does. The push is
+    refused with the bare ref unmoved, even though the tip is attested — and the same
+    push through the current hook is accepted."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _approve(repo, c1, branch="cand", extra=[c1])
+    stale = _stale_copy(tmp_path)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(repo)}
+
+    refused = subprocess.run(
+        ["git", "-c", f"core.hooksPath={stale.parent}", "push", "origin", "cand"],
+        cwd=repo, capture_output=True, text=True, env=env)
+    assert refused.returncode == 1, refused.stderr
+    assert "not the hook at origin/main" in refused.stderr
+    assert subprocess.run(["git", "--git-dir", str(tmp_path / "origin.git"), "rev-parse",
+                           "--verify", "-q", "refs/heads/cand"], capture_output=True).returncode != 0
+
+    accepted = subprocess.run(
+        ["git", "-c", f"core.hooksPath={HOOK.parent}", "push", "origin", "cand"],
+        cwd=repo, capture_output=True, text=True, env=env)
+    assert accepted.returncode == 0, accepted.stderr
+    assert _bare_ref(repo, "refs/heads/cand") == c1
+
+
+def test_a_hooks_checkout_on_its_own_branch_is_refused_and_told_so(tmp_path):
+    """The running file need not be BEHIND main: a checkout developing a hook change runs
+    that proposed hook for every worktree's push. The push is refused — the file is neither
+    main's hook nor the tip's — and the remedy names that shape, since fast-forwarding an
+    up-to-date checkout would change nothing."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _approve(repo, c1, branch="cand", extra=[c1])
+    proposed = tmp_path / "proposed-hooks" / "pre-push"
+    proposed.parent.mkdir()
+    proposed.write_bytes(_hook_bytes("a proposed hook update"))
+    proposed.chmod(0o755)
+
+    result = _push(repo, c1, branch="cand", hook=proposed)
+    assert result.returncode == 1
+    assert "not the hook at origin/main" in result.stderr
+    assert "on a branch of its own" in result.stderr
+    assert "fast-forward it if it is behind" in result.stderr
+
+
+def test_the_comparison_is_of_raw_bytes_not_filtered_content(tmp_path):
+    """`git hash-object` applies clean filters by default, so with autocrlf a running file
+    whose bytes differ from main's blob only by a CR hashed EQUAL and was accepted. The
+    bytes are what bash runs, so the comparison is made without filters and the file is
+    refused."""
+    repo = _repo(tmp_path)
+    _main_with_hook(repo, _hook_bytes())
+    _git(repo, "checkout", "-q", "-b", "cand")
+    c1 = _commit(repo, "docs/architecture/c1.md")
+    _approve(repo, c1, branch="cand", extra=[c1])
+    _git(repo, "config", "core.autocrlf", "true")
+    lines = HOOK.read_bytes().splitlines(keepends=True)
+    lines[1] = lines[1].replace(b"\n", b"\r\n")             # a comment line: still runs
+    crlf = repo / HOOK_REL
+    crlf.write_bytes(b"".join(lines))
+    crlf.chmod(0o755)
+    assert _git(repo, "hash-object", str(crlf)) == _git(repo, "rev-parse", f"main:{HOOK_REL}")
+    assert _git(repo, "hash-object", "--no-filters", str(crlf)) != _git(repo, "rev-parse", f"main:{HOOK_REL}")
+
+    result = _push(repo, c1, branch="cand", hook=crlf)
+    assert result.returncode == 1
+    assert "not the hook at origin/main" in result.stderr
+
+
+def test_a_merge_of_main_that_keeps_an_older_hook_is_not_a_newer_hook(tmp_path):
+    """Pins the absence of a "newer hook" arm. An arm that accepted the tip's own hook
+    when the tip contained main's last change to it was defeated by exactly this shape:
+    a branch that began on an older hook, merged main, and kept its own hook (a keep-ours
+    conflict resolution does this) contains the change and still carries the older blob.
+    Its replacement — excluding every blob main ever held — was defeated by a blob main
+    took in a merge resolution, which git hides from the path's history. There is no such
+    arm now; the running file is refused because it is not main's hook, full stop."""
+    repo = _repo(tmp_path)
+    older = _hook_bytes()                                    # THIS hook, the older revision
+    _main_with_hook(repo, older)
+    _git(repo, "checkout", "-q", "-b", "cand")
+    _commit(repo, "docs/architecture/c1.md")
+    _git(repo, "checkout", "-q", "main")
+    _commit_hook(repo, _hook_bytes("newer"), "hook moves on main")
+    _fixture_push(repo, "main")
+    _git(repo, "checkout", "-q", "cand")
+    _git(repo, "merge", "-q", "--no-edit", "main")           # cand now contains the change
+    tip = _commit_hook(repo, older, "keep our hook")         # ...and restores the older blob
+    main_change = _git(repo, "log", "-1", "--format=%H", "main", "--", HOOK_REL)
+    assert _git(repo, "merge-base", "--is-ancestor", main_change, tip) == ""
+    assert _git(repo, "rev-parse", f"{tip}:{HOOK_REL}") == _git(repo, "rev-parse", f"main~1:{HOOK_REL}")
+    _approve(repo, tip, branch="cand",
+             extra=_git(repo, "rev-list", tip, "--not", "origin/main").split())
+
+    result = _push(repo, tip, branch="cand")                 # runs THIS hook = cand's, older
+    assert result.returncode == 1
+    assert "not the hook at origin/main" in result.stderr

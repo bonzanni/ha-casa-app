@@ -71,6 +71,23 @@ public at that destination by hash — the hook guards publication, not the revi
 published — and a head advertised but never fetched is skipped, which loses nothing because a
 clone holds every ancestor of its own commits.
 
+**INV-PUB-005**: When the destination advertises a `main` that holds a pre-push hook, the pre-push hook refuses, before consulting any receipt and with no override set, unless the file it is running from is byte-identical to that hook; a `main` that is not a local object is refused as well, naming the fetch.
+
+The file that runs is not necessarily the pushing worktree's own: `core.hooksPath` names one
+directory for every worktree of a repository, so each runs whatever that checkout has
+checked out, and that checkout goes stale on every merge. A superseded hook judging a push
+is wrong in either direction — it can refuse a legitimate range or accept one the current
+gate would not — so the comparison is made first, and only the destination's own hook may
+judge. There is no arm for "the push carries a newer hook": a change to the hook is content,
+judged by the current hook like any other content and never by itself, so it is pushed with
+`main`'s hook running — from a checkout that holds it, or by naming one through
+`core.hooksPath` for that push. A destination that advertises no
+`main`, or a `main` holding no hook, has nothing to be stale against and is not checked. The
+bytes are compared raw, before any clean filter, because the bytes are what the shell runs.
+The remedy for a refusal is to put the checkout `core.hooksPath` names on a tree that holds
+`main`'s hook — fast-forwarding it when it is behind, leaving its own branch when it is on
+one — never to override.
+
 ## Failure behavior
 
 Three automated layers refuse what they can recognise, and none of them is the rule:
