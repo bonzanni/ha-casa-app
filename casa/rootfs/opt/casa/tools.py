@@ -1989,8 +1989,9 @@ def _build_executor_options(
                for e in (hooks_cfg.pre_tool_use or [])):
         resolved_hooks["PreToolUse"].append(trigger_file_write_guard_matcher())
 
-    # #610: agents/<role>/response_shape.yaml is READ BY NOTHING for a
-    # persona-bound resident — the compiled bundle replaces the composed prompt
+    # #610: agents/<role>/response_shape.yaml is read and rendered into the
+    # composed FALLBACK prompt, which a persona-bound resident is never served
+    # — its active compiled bundle replaces the composed prompt
     # this file feeds (INV-PERS-001) — so an edit here is committed and
     # reported live while changing nothing the model sees. Code-side for the
     # same reason as its neighbours: `hooks_file:` is a config-editable pointer
