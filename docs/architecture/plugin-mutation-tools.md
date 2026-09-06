@@ -148,7 +148,10 @@ inside the plugin-tools mutation lock. The one `ok:false` envelope whose registr
 `compensation_failed` arm of a failed bundle sequencer, discloses on measurement rather
 than on the flag: a failed compensation does not establish that the removal survived, because
 the rollback restores the registry in its first step and then does fallible work, so the arm
-reads the registry back and names only the entries actually still absent. It measures the SAME
+reads the registry back and names only the entries actually still absent. That arm also states what now holds — the undo record is
+still standing, further changes to that specialist are refused, and a restart is what lets boot
+reconciliation finish or quarantine it (INV-SPEC-014) — because it was the one arm of the three
+with no such sentence, telling least at the moment an operator can still act. It measures the SAME
 set the success payloads disclose — what the swap dropped, not what the transaction captured —
 because a read-back can only narrow a candidate set, and the arm that cannot read gets no
 narrowing at all: fed the captured set, it would name plugins the operation had just

@@ -197,7 +197,10 @@ generations of a tarball requirement occupy disk between installs.
 **Resolution, fetch, manifest or dependency problems.** Typed refusals before anything
 durable — reference not found, fetch failure, invalid manifest, slug collision, dependency
 unavailable, a secret value in the plain config channel, an undeclared secret name in the
-secret channel (INV-SPEC-006). Sourced plugin dependencies are additionally refused categorically when they
+secret channel (INV-SPEC-006), and a slug whose earlier bundle transaction still owes boot
+recovery (INV-SPEC-014, `architecture/specialist-bundle-transactions.md`) — a commit there
+would be undone by the next boot, so the install is refused before the component store is
+written to at all. Sourced plugin dependencies are additionally refused categorically when they
 declare system requirements or triggers of their own, or when a required environment name
 collides with another installed plugin's — otherwise-valid bundles fail with dedicated
 error kinds the dependency model alone would not predict. A sourced dependency *may*,

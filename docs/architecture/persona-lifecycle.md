@@ -199,6 +199,12 @@ for a resident — a staged reset does not release the old persona until the res
 An unreadable bundle journal refuses every removal rather than some, and clears itself at the next
 boot's journal reconciliation.
 
+**A specialist override is applied while that slug owes boot recovery.** Refused before
+anything is read or written, naming the unfinished bundle transaction and that a restart lets
+boot reconciliation finish it (INV-SPEC-014, `architecture/specialist-bundle-transactions.md`).
+Both arms are refused, the direct library one included: it commits a generation too, so a
+check placed at the journal write would leave it outside.
+
 **A removal fails after its approval was revoked.** The bytes remain installed and can no longer
 be installed on the old approval — one re-approval. This ordering is deliberate: the inverse
 leaves a live approval for bytes that are gone.
