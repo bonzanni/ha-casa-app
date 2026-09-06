@@ -163,12 +163,12 @@ what has not yet been said.
 **INV-MEM-006**: A session save or removal keyed by channel acts only on the session id its caller snapshotted — a registration carrying a different id in that window is released, not retained or deleted; an explicit reset deliberately removes its snapshotted session even when re-registered.
 
 The registry key names a *conversation slot*, not a session — a new turn can
-re-register the slot at any suspension point. Every step of the save
-protocol therefore carries the session id its caller judged (the reaper's
-cold snapshot, a reset's own snapshot): the save entry point releases a
-claim that landed on a different session, `finish_save` and
-`clear_save_claim` decline when the stored id moved, and an explicit reset's
-trailing removal declines the same way — as do the reaper's direct removals
+re-register the slot at any suspension point. Every step therefore carries
+the session id its caller judged (the reaper's cold snapshot, a reset's own
+snapshot): the save entry point releases a claim that landed on a different
+session, `finish_save` and `clear_save_claim` decline when the stored id
+moved, and an explicit reset — which takes no claim at all, retaining its
+snapshot directly — has its trailing removal decline the same way — as do the reaper's direct removals
 of unusable and recall-only entries (a snapshot without a session id guards
 on that absence).
 
@@ -183,7 +183,7 @@ re-registration is its contract.
 
 What it does not cover: a caller that passes no expected id gets the
 unconditional behavior; and a turn still running on the *same* session when
-a reset saves it can have its tail exchanges miss retention — the reset
+a reset retains it can have its tail exchanges miss retention — the reset
 drops the pointer (its contract) and nothing saves that session again.
 
 **INV-MEM-009**: The per-turn time envelope never reaches the content-addressed document id or the stored memory text — an identical utterance retained from any session collapses to one document — and the turn's wall-clock time is carried out-of-band on the retain item.
@@ -219,7 +219,7 @@ retain — the retiring caller owns the retain); the registry's `register`
 refuses a session id any live claim names as dying, so an in-flight turn
 that resumed it before the claim landed cannot re-arm the pointer (its
 exchanges still reach the retained transcript, which is flushed before the
-retirement's save reads it); and claims are a per-key set of opaque tokens,
+retirement's retain reads it); and claims are a per-key set of opaque tokens,
 so overlapping owners — a wipe over a live reset — end only their own.
 The reset itself snapshots and claims in one no-await block *before* the
 flush-close, so a steered-fresh turn registering mid-close can never become
@@ -266,10 +266,26 @@ session all leave one behind.
 including when the failure is a cancellation at shutdown — and the entry
 stays for the next freshness sweep to retry. The time-to-live sweep does
 not take it away in the meantime, however long the retries go on
-(INV-MEM-017). An explicit reset is the exception — it
-drops the pointer whether or not the save succeeded, unless a newer session
-registered meanwhile (INV-MEM-006), in which case the newer registration
-stands.
+(INV-MEM-017).
+
+**An explicit reset's retain fails.** The reset still drops the pointer —
+that is its contract, and the fresh conversation the user asked for starts
+either way — so the entry cannot be what carries the retry. The durable
+retry record is: a reset retains its snapshot through the same
+registry-decoupled path a gap-superseded session uses, and that path spools
+on failure. The conversation is therefore handed to the freshness sweep
+rather than dropped. Two things this does not promise. A retain that fails
+*and* a spool write that fails leave nothing for the sweep to find, which is
+said out loud at ERROR with the session id and the transcript directory — the
+only handle left. And a wipe completing first discards both, by the operator's
+consent (INV-MEM-014).
+
+Because the reset takes no save claim, a freshness sweep already retaining
+the same session can submit the same transcript alongside it. Retains are
+content-addressed, so the bank ends identical; what is duplicated is work.
+That is the deliberate price of not making the reset's retry depend on
+winning a claim it does not need — the reset has already decided which
+conversation it is ending.
 
 **A gap-superseded session's background retain fails.** That retain runs
 decoupled from the registry (the new turn is about to overwrite the entry),

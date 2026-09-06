@@ -99,6 +99,22 @@ the admin route) — by then the spool and the pointers are already gone,
 and the report says exactly that rather than claiming a deletion that did
 not happen.
 
+## Extension points
+
+**A new door** that can ask for a wipe carries its own consent, and the consent
+is what the door proves rather than what the caller claims: the terminal door
+proves root by peer credential plus an explicit confirm field, the agent door
+proves the configured operator by binding its keyboard to that identity. A door
+that cannot prove one of those must not reach the orchestrator, and with no
+operator configured the agent door refuses everyone.
+
+**A new durable pre-wipe artifact** — anything on disk that could resurrect
+content after a wipe reported completion — must be dropped inside the
+orchestrator's order, before the bank delete, alongside the retry spool. A
+writer that can create one after the drain must also carry the generation check
+in front of *both* its retain and its failure-spool arm; carrying it in front of
+the retain alone is how a pre-wipe record survives a wipe.
+
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
