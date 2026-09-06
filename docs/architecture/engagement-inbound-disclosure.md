@@ -109,11 +109,10 @@ what one failing read costs — its own contribution and nothing else.
 ## Extension points
 
 **A new driver that owns inbound state** should implement the text accessors, so a terminal
-outcome can quote what died with its engagements. A driver that implements none of them quotes
-no message text and still discloses every count it does answer: a reservation count alone posts
-the paragraph, under its "up to" hedge and with no bullets beneath it. What no terminal does is
-assert that nothing was lost — the disclosure, like the refusal, is scoped to what a driver can
-evidence.
+outcome can quote what died with its engagements. Which read feeds which population, and what
+the count over them may claim, is stated above and in INV-ENG-017; this section adds no rule of
+its own and states no second account of the renderer. What no terminal ever does is assert that
+nothing was lost — the disclosure, like the refusal, is scoped to what a driver can evidence.
 
 ## Source & test map
 
