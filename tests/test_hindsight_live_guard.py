@@ -119,3 +119,14 @@ def test_slow_selection_skips_without_expected_version_and_sends_nothing() -> No
         f"{len(_Recorder.received)} request(s) left the live test: "
         f"{_Recorder.received}\n{proc.stdout}{proc.stderr}")
     _assert_one_skipped(proc)
+
+
+def test_slow_selection_skips_without_url_when_expected_version_is_set() -> None:
+    """ARM4 (acceptance round 1): the version set, the URL absent.
+
+    Kills a guard on ``HINDSIGHT_EXPECTED_VERSION`` alone — both other arms
+    leave the version unset, so that mutant passes them. Base-red reason:
+    exit 1, ``1 failed``, ``KeyError: 'HINDSIGHT_URL'``.
+    """
+    proc = _run_slow_selection(_child_env(**{VERSION_VAR: "review-version"}))
+    _assert_one_skipped(proc)
