@@ -11,9 +11,9 @@ last_reviewed: 2026-08-23
 What a terminal outcome tells about inbound messages that died with the engagement: which spool
 populations it quotes, when an evicted message is quoted because its notice never sent, how a
 held ingress reservation carries its message's text, and what the disclosure's count may claim.
-What a *successful* completion is refused over, what each driver counts, and the accessor surface
-both subjects are read through are in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). The terminal
+What a *successful* completion is refused over and what each driver counts are in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md), which also holds
+the driver-lifetime rule both halves' reads answer under. The terminal
 transition itself and the finalization side effects behind it are in
 [`architecture/engagement-finalization.md`](engagement-finalization.md); the outcome mark and the
 notify obligation are in
@@ -109,9 +109,11 @@ what one failing read costs — its own contribution and nothing else.
 ## Extension points
 
 **A new driver that owns inbound state** should implement the text accessors, so a terminal
-outcome can quote what died with its engagements. A driver that implements none of them
-discloses nothing rather than asserting nothing was lost — the disclosure, like the refusal, is
-scoped to what a driver can evidence.
+outcome can quote what died with its engagements. A driver that implements none of them quotes
+no message text and still discloses every count it does answer: a reservation count alone posts
+the paragraph, under its "up to" hedge and with no bullets beneath it. What no terminal does is
+assert that nothing was lost — the disclosure, like the refusal, is scoped to what a driver can
+evidence.
 
 ## Source & test map
 
