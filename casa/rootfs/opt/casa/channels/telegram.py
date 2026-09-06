@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable
 
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
+from telegram.request import HTTPXRequest
 from telegram.error import (
     BadRequest,
     ChatMigrated,
@@ -71,7 +72,7 @@ from channels.output_sequencer import (  # noqa: F401 — re-export
     projection_hash as discrete_projection_hash,
 )
 from media_policies import MEDIA_POLICIES
-from text_util import utf16_len, utf16_prefix_end
+from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
 from channels.telegram_supervisor import ReconnectSupervisor
 from log_cid import cid_var, new_cid
 from provenance import (
@@ -137,6 +138,59 @@ def _resolve_chat_id(context: dict[str, Any], default: int | str) -> int | str:
         except ValueError:
             return default
     return default
+
+
+class _NormalisedRequestData:
+    """Read-only view of a PTB ``RequestData`` whose serialized form values carry
+    no surrogate code point. Exposes exactly the two properties
+    ``HTTPXRequest.do_request`` reads (PTB 22.7: ``multipart_data`` and
+    ``json_parameters``); nothing else is consulted on that path."""
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    @property
+    def multipart_data(self) -> Any:
+        # File names and bytes are not form VALUES; they pass through untouched.
+        return self._inner.multipart_data
+
+    @property
+    def json_parameters(self) -> dict[str, str]:
+        # A ``str`` parameter reaches here RAW (text, caption, ...); every other
+        # value was JSON-encoded with ``ensure_ascii``, so a surrogate nested in
+        # an entity url or a button label is already the six-character ASCII
+        # escape and is left for the platform to judge. Only an actual
+        # surrogate code point is replaced, one for one.
+        return {key: replace_lone_surrogates(value)
+                for key, value in self._inner.json_parameters.items()}
+
+
+class _SurrogateSafeRequest(HTTPXRequest):
+    """The one request class Casa's bot sends through (#846, INV-TG-009).
+
+    PTB sends every request as UTF-8 FORM data, so a string parameter still
+    carrying a lone surrogate raises ``NetworkError(UnicodeEncodeError)``
+    before any request leaves the process — the whole reply vanishes in block
+    mode, page 1 in stream mode, and the loss is classed unknown so the health
+    notice is not re-offered. Normalising here, below every sender (plain,
+    rich, streamed edits, narration, captions) and above the encoder, is what
+    "replace it once where the text leaves for the transport" means: no send
+    site can forget it and no sender changes. Replacement is one code point
+    for one, so entities computed upstream stay valid. Installed by
+    ``_rebuild`` on the ordinary pool only — ``getUpdates`` carries no
+    Casa-authored text. A bot injected through ``bot=`` is outside this
+    guarantee; ``tests/test_telegram_surrogate_boundary.py`` pins it against
+    the real library."""
+
+    async def do_request(  # type: ignore[override]
+        self, url: str, method: str, request_data: Any = None, **timeouts: Any,
+    ) -> tuple[int, bytes]:
+        if request_data is not None:
+            request_data = _NormalisedRequestData(request_data)
+        return await super().do_request(
+            url, method, request_data=request_data, **timeouts)
 
 
 def _peek_stream_message_id(on_token: "OnTokenCallback") -> int | None:
@@ -980,6 +1034,12 @@ class TelegramChannel(Channel):
         if _bot_api_base:
             builder = builder.base_url(f"{_bot_api_base}/bot")
             builder = builder.base_file_url(f"{_bot_api_base}/file/bot")
+        # #846 / INV-TG-009: the ordinary Bot API pool sends through the
+        # surrogate-replacing request class. Not reassigned: the builder
+        # mutates and returns itself, and the suite's fake builder chain does
+        # not. A no-argument HTTPXRequest carries the same pool size, HTTP
+        # version and timeouts the builder would have installed (PTB 22.7).
+        builder.request(_SurrogateSafeRequest())
         app = builder.build()
         # E-13: dispatch to handle_update (engagement-aware router) so
         # that /cancel, /complete, /silent in engagement topics are

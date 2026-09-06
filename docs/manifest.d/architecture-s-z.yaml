@@ -83,15 +83,14 @@
     INV-SPEC-009: [tests/test_personality_binding.py::test_verify_instance_tuple_rejects_a_digest_not_derived_from_the_snapshot, tests/test_personality_binding.py::test_atomic_write_refuses_a_mismatched_tuple_as_a_backstop, tests/test_specialist_install.py::test_boot_sweep_tombstones_an_already_sanitized_pre_guard_digest, tests/test_specialist_bundle_journal.py::test_begin_sanitizes_captured_tuple_files]
 
 - doc: architecture/telegram.md
-  summary: How Telegram messages become turns — transports, authentication, the per-topic causal log, keyboards, and rendering.
-  when_changing: Telegram transport, callback namespaces, topic output ordering, or message rendering
+  summary: How Telegram messages become turns — transports, authentication, the per-topic causal log, and keyboards.
+  when_changing: Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary
   covers:
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel
+    - casa/rootfs/opt/casa/channels/telegram.py::_SurrogateSafeRequest
     - casa/rootfs/opt/casa/channels/telegram.py::_parse_callback_data
-    - casa/rootfs/opt/casa/channels/telegram.py::_split_message
     - casa/rootfs/opt/casa/casa_core.py::_make_telegram_update_handler
     - casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer
-    - casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged
     - casa/rootfs/opt/casa/verdict_broker.py::VerdictBroker
     - casa/rootfs/opt/casa/channels/telegram.py::_InboundReservation
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.engagement_inbound_reservation
@@ -99,26 +98,40 @@
     - tests/test_telegram_update_handler.py
     - tests/test_c1_continuation_admission.py
     - tests/test_telegram_dm_settle.py
-    - tests/test_tg_richtext_remnants.py
     - tests/test_verdict_broker.py
     - tests/test_telegram_new_reset.py
     - tests/test_telegram_supervisor.py
-    - tests/test_telegram_split.py
     - tests/test_telegram_topic_stream.py
-    - tests/test_telegram_link_fallback.py
-    - tests/test_telegram_link_fallback_shapes.py
-    - tests/test_tg_richtext.py
-    - tests/test_tg_richtext_v3.py
-  related: [architecture/overview.md, architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/http-surface.md]
-  defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-005, INV-TG-006, INV-TG-007, INV-TG-008]
+    - tests/test_telegram_reconnect.py
+    - tests/test_telegram_surrogate_boundary.py
+  related: [architecture/overview.md, architecture/telegram-rendering.md, architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/http-surface.md]
+  defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-006, INV-TG-007, INV-TG-009]
   invariant_tests:
     INV-TG-001: [tests/test_telegram_update_handler.py::test_no_secret_configured_rejects, tests/test_telegram_update_handler.py::test_wrong_token_403_and_not_processed, tests/test_telegram_update_handler.py::test_correct_token_200]
     INV-TG-002: [tests/test_telegram_inline_callback.py::test_wrong_user_refused_without_claiming, tests/test_verdict_broker.py::test_claim_forbidden_on_actor_mismatch, tests/test_channel_internal_handlers.py::test_permission_verdict_route_gone]
     INV-TG-003: [tests/test_verdict_broker.py::test_claim_does_not_resolve_until_commit_and_stale_after_retire]
     INV-TG-004: [tests/test_output_sequencer.py::test_serialized_still_mutually_exclusive_across_tasks]
-    INV-TG-005: [tests/test_tg_richtext.py::test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets]
     INV-TG-006: [tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_notice_survives_a_delivery_that_sent_nothing, tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_head_delivered_then_raise_does_not_repeat_the_notice, tests/test_telegram_delivery_outcome.py::TestSend::test_send_without_app_reports_not_delivered, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_persistent_forbidden_is_not_delivered, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_landed_emit_latches_through_final_edit_refusal, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_no_emit_multi_page_refusal_is_unknown, tests/test_telegram_topic_stream.py::TestAmbiguousEmitWeakensTheClaim::test_timed_out_emit_then_refused_finalize_is_unknown, tests/test_telegram_topic_stream.py::TestAmbiguousEmitWeakensTheClaim::test_a_refused_emit_does_not_weaken_the_claim, tests/test_telegram_topic_stream.py::TestPreSendFailuresEstablishAbsence::test_connect_timeouts_establish_not_delivered, tests/test_telegram_topic_stream.py::TestPreSendFailuresEstablishAbsence::test_read_timeout_keeps_the_ambiguity]
     INV-TG-007: [tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_plain_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_rich_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_entity_fallback_retry_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_empty_markup_survives_to_the_wire]
+    INV-TG-009: [tests/test_telegram_surrogate_boundary.py::test_pin_inv_tg_009_no_request_leaves_with_a_surrogate_code_point, tests/test_telegram_reconnect.py::TestRequestBoundaryWiring::test_every_built_application_installs_the_request_boundary_once]
+
+- doc: architecture/telegram-rendering.md
+  summary: How an answer is rendered for Telegram — the markdown grammar and tables, pagination to the platform's budgets, link-destination fallbacks, and the shared UTF-16 measurement.
+  when_changing: Telegram message rendering, pagination and its budgets, link-destination fallback, or the UTF-16 measurement
+  covers:
+    - casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged
+    - casa/rootfs/opt/casa/channels/telegram.py::_split_message
+  tests:
+    - tests/test_tg_richtext.py
+    - tests/test_tg_richtext_v3.py
+    - tests/test_tg_richtext_remnants.py
+    - tests/test_telegram_split.py
+    - tests/test_telegram_link_fallback.py
+    - tests/test_telegram_link_fallback_shapes.py
+  related: [architecture/telegram.md, architecture/overview.md]
+  defines_invariants: [INV-TG-005, INV-TG-008]
+  invariant_tests:
+    INV-TG-005: [tests/test_tg_richtext.py::test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets]
     INV-TG-008: [tests/test_tg_richtext.py::test_render_paged_conversion_failure_keeps_well_formed_link_target, tests/test_telegram_link_fallback.py::test_all_four_senders_deliver_the_target_when_conversion_fails]
 
 - doc: architecture/tools-interface.md

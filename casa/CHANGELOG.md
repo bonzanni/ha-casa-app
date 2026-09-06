@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.271.0] - 2026-09-06
+
+### Fixed
+
+- A Telegram reply that carries a character Telegram cannot accept is now
+  delivered, with that character shown as a replacement mark, instead of
+  vanishing. Such a character can reach a reply from a tool result or from the
+  model itself; before this change every page of the reply was lost at the
+  transport with no request ever sent — and on a streamed reply the first page
+  was lost while Casa recorded the loss as unknown, so the operator was not told.
+  Text now leaves for Telegram through one place, below every sender, where the
+  character is replaced before the request is built. A test now fails if any
+  request can leave for Telegram carrying such a character again. The Telegram
+  architecture document was split, its rendering half moving to its own
+  document.
+
 ## [0.270.0] - 2026-09-06
 
 ### Fixed

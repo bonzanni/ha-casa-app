@@ -50,7 +50,7 @@
 - item: casa/rootfs/opt/casa/channels/telegram_supervisor.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/tg_richtext.py
-  doc: architecture/telegram.md
+  doc: architecture/telegram-rendering.md
 - item: casa/rootfs/opt/casa/channels/voice/channel.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channels/voice/delivery.py
@@ -250,7 +250,7 @@
 - item: casa/rootfs/opt/casa/system_requirements/tarball.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/text_util.py
-  doc: architecture/telegram.md
+  doc: architecture/telegram-rendering.md
 - item: casa/rootfs/opt/casa/tokens.py
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/tools.py

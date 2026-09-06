@@ -271,6 +271,11 @@ def test_render_paged_single_page_conversion_failure_is_untouched():
     would at best duplicate it and at worst — when the inline form overflows
     and a destinations page is appended — take the reply off the single-page
     path entirely.
+
+    The surrogate the page keeps is NOT delivered as such: the channel's
+    request boundary replaces it where the text leaves for the Bot API
+    (INV-TG-009, tests/test_telegram_surrogate_boundary.py). This pin says the
+    renderer does not own that replacement, not that the bytes reach the wire.
     """
     from channels.tg_richtext import render_paged
 
@@ -449,8 +454,12 @@ def test_render_paged_normalizes_a_failed_page_without_link_spans():
 
 
 def test_render_paged_page_without_spans_remains_byte_identical():
-    """The scope fence: a page with no spans never enters the branch, so its
-    bytes — surrogate included — are exactly what the base emitted."""
+    """A page with no spans never enters the conversion-failure branch, so
+    the RENDERER emits its bytes — surrogate included — unchanged. Delivery
+    is a different question: the channel's request boundary replaces the
+    surrogate where the text leaves for the Bot API (INV-TG-009,
+    tests/test_telegram_surrogate_boundary.py), so renderer identity here is
+    not, and never was, proof that this page could be sent."""
     from channels.tg_richtext import render_paged
 
     tail = "x" * 4096
