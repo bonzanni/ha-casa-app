@@ -138,15 +138,53 @@ cancellation absorbed, because an unbounded one would make cancellation permanen
 ineffective for a wedged reload or notify. Past the bound only the WAIT is abandoned: the
 transaction is not cancelled, keeps the lock, and still completes or compensates.
 
-What it does not cover: a journal left in progress on purpose — a compensating disk
-rollback that itself failed, which stays for boot as the failure behavior below states —
-and a transaction stopped by process death rather than cancellation, which is the
-recovery boot reconciliation exists for and is unchanged.
+What it does not cover: a transaction stopped by process death rather than cancellation,
+which is the recovery boot reconciliation exists for and is unchanged. The other case it
+does not cover — a journal left in progress on purpose because its compensating disk
+rollback failed — is covered by INV-SPEC-014 below: the debt still stands for boot, but
+nothing may commit a further generation of that slug meanwhile.
+
+**INV-SPEC-014**: Before its first durable write, each of the five specialist lifecycle writers — install, upgrade, rollback, uninstall and the specialist persona override, in their journaled and unjournaled arms alike — inspects the bundle-journal directory it would journal into, and refuses rather than commit a new generation of the slug while a journal stands there that the next boot's reconciliation would replay over that generation, or that would make it quarantine owned registry rows — the slug's own, or, for a journal whose filename carries no trustworthy slug, every owned row there is. What boot resolves without restoring or removing anything does not stand in the way: a journal a finished transaction left behind, a quarantined file, a write temporary, and any entry boot's scan skips because it is not a regular file. Uncertainty does stand: a journal that cannot be read, a listed entry that cannot be examined at all, and a journal directory that cannot be enumerated — an absent one is a real answer and does not stand. The refusal resolves nothing; boot still replays or quarantines exactly what it would have.
+
+The journal's in-progress state means *undo me at boot*, and two doors leave one standing
+on purpose: a compensating disk rollback that itself failed, and a sync-phase failure
+whose own rollback raised. Both are correct — completing a journal whose rollback did not
+succeed would strand a half-rolled-back mutation with no recovery. What was missing is the
+other half. Nothing consulted that directory before starting the next transaction, so a
+later generation of the same slug committed and completed normally beside the older
+record, and the next boot either replayed the older capture over it or, when that rollback
+failed too, quarantined the slug and dropped the newer generation's owned rows. Either way
+the operator was told the change had succeeded.
+
+Enforced by one classifier-backed read at each of the five writers, above the branch
+between their journaled and unjournaled arms — the unjournaled arms commit generations
+too, so a check placed at the journal write would leave exactly those outside it — and
+before each function's own first durable write, which for a rollback is the completion of
+a pending tuple rotation and for an uninstall is the retirement of the slug's consent
+acknowledgements, both of which happen before either journals. What counts as debt is not
+a second opinion about journals: the classification is the same single authority boot and
+the persona reference scan already share, and the only thing decided here is which of its
+verdicts describe a boot that would damage what came after. The check resolves nothing and
+writes nothing, and it returns the directory it inspected, which the writer then journals
+into — so the directory read and the directory written are the same one by construction.
+
+One state is deliberately outside it: a write temporary left by a process that died
+mid-write is skipped, because boot's pre-scan sweep deletes it. If that deletion ever
+fails, boot falls through to classification and the unparseable name quarantines every
+owned row, including an admitted generation's. Refusing every specialist mutation, for
+every slug, whenever a process died mid-write is the worse trade.
+
+What clears the debt is a restart, and the refusal says so, naming the journal file. It is
+not an unconditional unlock: boot retains a journal whenever the quarantine it needed could
+not be persisted — over an unreadable registry, say — and the fence then keeps refusing
+until a boot resolves it. The operator's own repair paths are refused with everything else,
+and that is the point: an uninstall permitted here would be undone by the very next boot.
 
 ## Failure behavior
 
 **A bundle sync phase fails.** The journal rolls the recorded pre-state back; if rollback
-itself fails, the journal stays in progress for boot to finish.
+itself fails, the journal stays in progress for boot to finish, and that slug refuses
+further mutations until a restart (INV-SPEC-014).
 
 **The post-commit sequencer fails.** The transaction compensates: the recorded pre-state
 is restored, and for a fresh install (no prior active tuple) that restoration includes
@@ -156,7 +194,9 @@ install leaves nothing for agent discovery to keep tripping over. The failure re
 states the outcome explicitly: `rolled_back` when the disk state was restored (with
 `runtime_compensation_incomplete` when the compensating runtime sweep did not converge —
 the next reload or restart converges it), `compensation_failed` when the disk rollback
-itself failed and boot reconciliation is the backstop. A sequencer verdict that blocks
+itself failed and boot reconciliation is the backstop — that arm now also states what
+holds until then: the undo record is still standing, further changes to that specialist
+are refused, and a restart is what lets boot finish or quarantine it. A sequencer verdict that blocks
 only on integrity and binding reasons: config-pending readiness — an unresolved secret,
 a missing system-requirement binary, or a `casa.setupProvides` variable still
 unprovisioned on a fresh install — is a verified-legal terminal state and never triggers
@@ -230,6 +270,8 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - `tests/test_specialist_lifecycle_lock.py`
 - `tests/test_specialist_rollback_persona_override.py`
 - `tests/test_specialist_bundle_cancellation.py`
+- `tests/test_specialist_recovery_debt.py`
+- `tests/test_specialist_recovery_debt_scanner.py`
 
 **Related**
 - [`architecture/specialist-lifecycle.md`](../architecture/specialist-lifecycle.md)

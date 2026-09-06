@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import plugin_registry
+import specialist_bundle_journal
 from plugin_registry import apply_owned_swap, compute_artifact_id, scoped_name
 
 
@@ -316,6 +317,31 @@ def _prep(tmp_path: Path, monkeypatch, *, with_plugin: bool = True,
     )
 
 
+def _setup_install(ctx):
+    """A bundle install used only as SETUP, completed the way the tool layer
+    completes it.
+
+    #838 (INV-SPEC-014): the library returns with its journal still standing —
+    completion is the tool layer's, deferred past a sequencer that may have to
+    compensate — and a second writer for the same slug is now refused while
+    that journal stands. No production caller can produce that overlap: all
+    four bundle handlers hold `_PLUGIN_TOOLS_LOCK` across the whole in-lock
+    body INCLUDING the completion (INV-SPEC-013), and `persona_apply` holds the
+    raw lock. A test that chains two library calls therefore has to finish the
+    first one, exactly as its handler would.
+    """
+    instance, txn = specialist_install.commit_specialist_install(**ctx.kw)
+    specialist_bundle_journal.complete(txn.journal_path)
+    return instance, txn
+
+
+def _setup_upgrade(kw):
+    """The same, for an upgrade used as setup. See `_setup_install`."""
+    instance, txn = specialist_install.upgrade_specialist(**kw)
+    specialist_bundle_journal.complete(txn.journal_path)
+    return instance, txn
+
+
 def _owned(reg_path: Path, slug: str) -> list[dict]:
     data = plugin_registry.load_registry(reg_path)
     return plugin_registry.owned_entries_for(slug, data)
@@ -516,7 +542,7 @@ def _prep_v2(tmp_path: Path, monkeypatch, base_ctx, *, ref: str = "v2",
 
 def test_bundle_upgrade_replaces_owned_set_in_one_swap(tmp_path: Path, monkeypatch) -> None:
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
     v1_aid = _owned(reg, "mtg")[0]["artifact_id"]
 
@@ -534,7 +560,7 @@ def test_bundle_upgrade_replaces_owned_set_in_one_swap(tmp_path: Path, monkeypat
 
 def test_bundle_upgrade_failing_preflight_leaves_old_generation(tmp_path: Path, monkeypatch) -> None:
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
     v1_aid = _owned(reg, "mtg")[0]["artifact_id"]
 
@@ -568,7 +594,7 @@ def test_upgrade_sync_phase_rollback_failure_leaves_journal_in_progress(
     from specialist_bundle_journal import BundleTxn
 
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
 
     def _boom_commit(self):
@@ -596,11 +622,11 @@ def test_upgrade_sync_phase_rollback_failure_leaves_journal_in_progress(
 
 def test_bundle_rollback_restores_prior_owned_rows(tmp_path: Path, monkeypatch) -> None:
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
     v1_aid = _owned(reg, "mtg")[0]["artifact_id"]
     kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
-    _, up_txn = specialist_install.upgrade_specialist(**kw2)
+    _, up_txn = _setup_upgrade(kw2)
     v2_aid = _owned(reg, "mtg")[0]["artifact_id"]
     assert v2_aid != v1_aid
 
@@ -617,11 +643,11 @@ def test_bundle_rollback_restores_prior_owned_rows(tmp_path: Path, monkeypatch) 
 
 def test_bundle_rollback_refuses_missing_retained_artifact(tmp_path: Path, monkeypatch) -> None:
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
     v1_aid = _owned(reg, "mtg")[0]["artifact_id"]
     kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
-    specialist_install.upgrade_specialist(**kw2)
+    _setup_upgrade(kw2)
     v2_aid = _owned(reg, "mtg")[0]["artifact_id"]
     # simulate the retained v1 artifact being missing/corrupt on disk
     import plugin_store
@@ -663,7 +689,7 @@ def test_uninstall_journals_the_retired_acks_atomically(tmp_path: Path, monkeypa
     # so an extra same-slug approval is journaled and restorable, never lost.
     from specialist_install_consent import install_consent_identity
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     # A SECOND ack for the same slug (a different identity — e.g. a re-approval).
     extra = install_consent_identity(
         component_id=ctx.inspection.component_id, version="9.9.9",
@@ -754,10 +780,10 @@ def test_rollback_refuses_a_malformed_prior_sidecar(tmp_path: Path, monkeypatch)
     from personality_binding import owned_plugins_prior_path
 
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
     kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
-    specialist_install.upgrade_specialist(**kw2)          # v1 rotated into the prior sidecar
+    _setup_upgrade(kw2)          # v1 rotated into the prior sidecar
     v2_aid = _owned(reg, "mtg")[0]["artifact_id"]
 
     # Corrupt the prior sidecar in place (a present file that is not valid v1).
@@ -804,7 +830,7 @@ def test_bundle_uninstall_cascade(tmp_path: Path, monkeypatch) -> None:
     from specialist_install_consent import install_consent_identity
 
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
     owned = _owned(reg, "mtg")
     v1_aid = owned[0]["artifact_id"]
@@ -894,7 +920,7 @@ def test_upgrade_refuses_sourced_dep_component_without_a_receipt(
     tmp_path: Path, monkeypatch,
 ) -> None:
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)   # v1 active, published via bundle mode
+    _setup_install(ctx)   # v1 active, published via bundle mode
     reg = ctx.kw["registry_path"]
     v1_aid = _owned(reg, "mtg")[0]["artifact_id"]
     slug_dir = tmp_path / "specialists" / "mtg"
@@ -1039,7 +1065,7 @@ def test_uninstall_begin_failure_restores_retired_acks(
     import specialist_bundle_journal
 
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     assert len(ctx.acks.snapshot_slug("mtg")) == 1               # one ack present
 
     def _boom_begin(*a, **k):
@@ -1086,10 +1112,10 @@ def test_a_pending_upgrade_does_not_claim_it_swapped_the_owned_set(
     says whether it actually swapped, and this one did not."""
     import specialist_lifecycle
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
 
     kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
-    _, active_txn = specialist_install.upgrade_specialist(**kw2)
+    _, active_txn = _setup_upgrade(kw2)
     assert active_txn.owned_swap_committed is True
 
     kw3 = _prep_v2(tmp_path, monkeypatch, ctx, ref="v3", marker="v3")
@@ -1179,7 +1205,7 @@ def test_a_real_upgrade_records_the_owned_plugin_it_dropped(
     entry. `removed_owned_names` is that name — and `before_entries` is not,
     because it still carries the plugin the upgrade re-published."""
     ctx = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"])
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
     assert sorted(e["name"] for e in _owned(reg, "mtg")) == ["mtg.extra", "mtg.mtg"]
 
@@ -1200,7 +1226,7 @@ def test_a_real_upgrade_that_keeps_its_owned_set_records_no_drop(
     same owned names removed nothing, and a survival warning there would be
     the false half of the invariant."""
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
     _, txn = specialist_install.upgrade_specialist(**kw2)
 
@@ -1215,12 +1241,12 @@ def test_a_real_rollback_records_the_owned_plugin_it_dropped(
     current generation added and the prior one never had is dropped by that
     swap — the same removal, reached by the fourth door."""
     ctx = _prep_multi(tmp_path, monkeypatch, ["mtg"])
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
 
     up = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"], root="v2", ref="v2",
                      sha="b" * 40, base_ctx=ctx)
-    specialist_install.upgrade_specialist(**up.kw)
+    _setup_upgrade(up.kw)
     assert sorted(e["name"] for e in _owned(reg, "mtg")) == ["mtg.extra", "mtg.mtg"]
 
     instance, txn = specialist_install.rollback_specialist(
@@ -1241,7 +1267,7 @@ def test_a_real_uninstall_records_every_owned_name_it_dropped(
     name is dropped. This is the claim the tool-level double asserts, pinned
     against the real `uninstall_specialist`."""
     ctx = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"])
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     reg = ctx.kw["registry_path"]
 
     txn = specialist_install.uninstall_specialist(
@@ -1262,9 +1288,9 @@ def test_a_pending_upgrade_records_no_dropped_names(
     `before_entries` carries the whole unchanged owned set."""
     import specialist_lifecycle
     ctx = _prep(tmp_path, monkeypatch)
-    specialist_install.commit_specialist_install(**ctx.kw)
+    _setup_install(ctx)
     kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
-    specialist_install.upgrade_specialist(**kw2)
+    _setup_upgrade(kw2)
 
     kw3 = _prep_v2(tmp_path, monkeypatch, ctx, ref="v3", marker="v3")
     monkeypatch.setattr(specialist_lifecycle, "satisfy_config",

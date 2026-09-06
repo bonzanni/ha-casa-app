@@ -12729,6 +12729,16 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
            "verify": seq.get("verify")}
     if not compensated["disk_ok"]:
         env["compensation_failed"] = True
+        # #838: this is the arm that CREATES recovery debt, and it was the only
+        # one of the three with no `outcome` sentence — the caller told least at
+        # the moment it can still act. Say what now holds: the journal stands,
+        # this specialist refuses further changes (INV-SPEC-014), and a restart
+        # is what lets boot reconciliation finish or quarantine it.
+        env["outcome"] = (
+            "the mutation could not be rolled back on disk, so its undo record "
+            "is still standing; further changes to this specialist are refused "
+            "until Casa is restarted and boot reconciliation finishes or "
+            "quarantines it")
         # #676: this arm is the one ok:false envelope whose registry mutation
         # PERSISTS. On an uninstall that cascaded owned plugins out, that is a
         # committed removal the operator is being told about — so it owes the

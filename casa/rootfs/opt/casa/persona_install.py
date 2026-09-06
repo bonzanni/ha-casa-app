@@ -702,6 +702,12 @@ def _apply_specialist_override_locked(
 
     slug = role.slot
     slug_dir = Path(instance_dir._dir)
+    # #838 (INV-SPEC-014): above the `bundle` split — the direct arm commits a
+    # generation too, so a fence keyed on `begin()` would leave it outside —
+    # and before anything is read or written. The returned directory is what
+    # `begin` is handed below.
+    from specialist_install import require_no_recovery_debt
+    ops_dir = require_no_recovery_debt(slug, ops_dir=ops_dir)
     active_before = instance_dir.active()
     if active_before is None:
         raise SpecialistInstallError(
@@ -792,11 +798,10 @@ def _apply_specialist_override_locked(
         slug, plugin_registry.load_registry(registry_path))
     before_tuple_files = _tuple_files_snapshot(slug_dir)
     ack_records = acks.snapshot_slug(slug)
-    _begin_kwargs = {} if ops_dir is None else {"ops_dir": ops_dir}
     journal = specialist_bundle_journal.begin(
         "persona_override", slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
-        **_begin_kwargs)
+        ops_dir=ops_dir)
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
