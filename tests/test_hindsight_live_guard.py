@@ -15,7 +15,9 @@ test file with the tier's own ``-m slow`` selection — because the declared
 behaviour is a collected outcome (``1 skipped``), and a module-level ``skipif``
 would satisfy it just as well as an in-function guard. A direct call of the
 test function would wrongly reject that equivalent route (specified by the
-red-case round, 2026-09-06).
+red-case round, 2026-09-06). ARM2 counts requests through an in-process
+recorder rather than a loopback listener: the review sandbox denies socket
+creation (re-specified 2026-09-06 after the gate-owned review).
 
 Unmarked on purpose: this file runs in the default unit gate.
 """
@@ -26,8 +28,6 @@ import os
 import re
 import subprocess
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,10 +44,10 @@ def _child_env(**overrides: str) -> dict[str, str]:
     return env
 
 
-def _run_slow_selection(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _run_slow_selection(env: dict[str, str], *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "pytest", LIVE_TEST, "-m", "slow",
-         "-p", "no:cacheprovider", "-q", "--tb=short"],
+         "-p", "no:cacheprovider", "-q", "--tb=short", *extra],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
     )
 
@@ -68,23 +68,35 @@ def _assert_one_skipped(proc: subprocess.CompletedProcess[str]) -> None:
     assert "KeyError" not in out, out
 
 
-class _Recorder(BaseHTTPRequestHandler):
-    """Records every request the live test's cleanup or contract run could send."""
-    received: list[tuple[str, str]] = []
+# A pytest plugin the child loads with `-p`. It rebinds the contract module's
+# request function to a recorder that never opens a socket: the reviewer
+# sandbox denies socket creation, so a loopback listener (the first shape of
+# this arm) failed before the guard was ever reached. The live test's `finally`
+# imports `_request` at call time and `run_contract` reaches it through the
+# module global, so both the contract run and the cleanup DELETE are counted.
+# The import happens inside the hook, not at plugin load: the code root is put
+# on sys.path by tests/conftest.py, which loads after `-p` plugins.
+RECORDER_PLUGIN = "d1_request_recorder"
+RECORDER_SOURCE = """\
+import json, os
 
-    def _record(self) -> None:
-        self.received.append((self.command, self.path))
-        body = json.dumps({}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+def pytest_runtest_setup(item):
+    import hindsight_provenance_contract as m
+    log = os.environ["D1_REQUEST_LOG"]
 
-    do_GET = do_POST = do_PUT = do_DELETE = _record
+    def _record(base_url, method, path, body=None, *, timeout=300.0):
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(json.dumps([method, path]) + "\\n")
+        return 200, {}
 
-    def log_message(self, *_args) -> None:  # keep the child's output clean
-        pass
+    m._request = _record
+"""
+
+
+def _recorded(log: Path) -> list[list[str]]:
+    if not log.exists():
+        return []
+    return [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 def test_slow_selection_skips_when_both_hindsight_variables_are_absent() -> None:
@@ -96,28 +108,25 @@ def test_slow_selection_skips_when_both_hindsight_variables_are_absent() -> None
     _assert_one_skipped(proc)
 
 
-def test_slow_selection_skips_without_expected_version_and_sends_nothing() -> None:
-    """ARM2: URL points at a recording server, the version is absent.
+def test_slow_selection_skips_without_expected_version_and_sends_nothing(tmp_path: Path) -> None:
+    """ARM2: the URL set, the version absent — and exactly zero requests.
 
     Kills a guard on ``HINDSIGHT_URL`` alone and a guard placed inside the
     ``try`` — ``Skipped`` is an exception, so the ``finally``'s DELETE would
     still leave. Base-red reason: ``KeyError: 'HINDSIGHT_EXPECTED_VERSION'``
-    and exactly one received ``DELETE``.
+    and exactly one recorded ``["DELETE", "/v1/default/banks/…"]``.
     """
-    _Recorder.received = []
-    server = HTTPServer(("127.0.0.1", 0), _Recorder)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        url = f"http://127.0.0.1:{server.server_port}"
-        proc = _run_slow_selection(_child_env(**{URL_VAR: url}))
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=10)
-    assert _Recorder.received == [], (
-        f"{len(_Recorder.received)} request(s) left the live test: "
-        f"{_Recorder.received}\n{proc.stdout}{proc.stderr}")
+    (tmp_path / f"{RECORDER_PLUGIN}.py").write_text(RECORDER_SOURCE, encoding="utf-8")
+    log = tmp_path / "requests.jsonl"
+    inherited = os.environ.get("PYTHONPATH")
+    env = _child_env(**{
+        URL_VAR: "http://hindsight.invalid",  # never dialled: the recorder owns _request
+        "D1_REQUEST_LOG": str(log),
+        "PYTHONPATH": str(tmp_path) + (os.pathsep + inherited if inherited else ""),
+    })
+    proc = _run_slow_selection(env, "-p", RECORDER_PLUGIN)
+    assert _recorded(log) == [], (
+        f"request(s) left the live test: {_recorded(log)}\n{proc.stdout}{proc.stderr}")
     _assert_one_skipped(proc)
 
 
