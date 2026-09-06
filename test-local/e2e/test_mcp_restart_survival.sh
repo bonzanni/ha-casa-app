@@ -253,6 +253,22 @@ sys.exit(0 if d.get("_probe_token") == os.environ["TOKEN"] else 1)
     return 1
 }
 
+# Wait for casa-main's internal socket to be SERVING, bounded (#613).
+# `test -S` is the same check the M-9 preamble has always used; this only makes
+# it reusable and gives it a return value, so a caller that NEEDS the socket can
+# say so instead of falling through.
+wait_for_internal_socket() {
+    local timeout="${1:-20}" i
+    for i in $(seq 1 "$timeout"); do
+        if MSYS_NO_PATHCONV=1 docker exec "$NAME" test -S /run/casa/internal.sock; then
+            echo "  internal socket serving after ${i}s"
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 # Classify ONE recorded response, once it is readable, and echo the verdict
 # (#613). The mock CLI writes a response file exactly once per call and never
 # rewrites it, so the answer in that file is FINAL — re-reading it is not a wait
@@ -488,13 +504,11 @@ pass "M-8 provisioned engagement ${EID:0:8} with a turn queued"
 echo "=== M-9: casa-main back up — the redelivered turn must carry authority ==="
 BEFORE_M9="$(casa_call_files)"
 MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -u change svc-casa
-for i in $(seq 1 20); do
-    if MSYS_NO_PATHCONV=1 docker exec "$NAME" test -S /run/casa/internal.sock; then
-        echo "  socket ready after ${i}s"
-        break
-    fi
-    sleep 1
-done
+# Not fatal here, deliberately: casa-main may still be booting, and M-9a below
+# is the assertion that it came up at all. The window arm re-waits and DOES
+# insist, because a turn injected before the socket serves can only take the
+# same -32000.
+wait_for_internal_socket 20 || echo "  socket not serving yet after 20s"
 
 # The record must actually have BEEN idled — otherwise this step could pass
 # without ever exercising the defect.
@@ -550,6 +564,15 @@ case "$M9_VERDICT" in
         echo "  M-9 NOTE (#613): the redelivered turn's call landed in the" \
              "cold-boot window and took the designed -32000; asserting on a" \
              "nonce-bound turn instead."
+        # The socket MUST be serving before the replacement turn is injected.
+        # Without this the arm re-runs the same race it just excused: on a slow
+        # boot the injected call takes the identical -32000 and the step fails a
+        # correct run all over again, one indirection further down.
+        wait_for_internal_socket 60 \
+            || fail "M-9 cold-boot window: casa-main's internal socket was \
+still not serving 60s after the restart, so a replacement turn could only take \
+the same -32000. That is a boot that never finished serving, not a redelivery \
+failure."
         M9_TOKEN="m9w-$$-$(date +%s)"
         MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c \
             "printf '/mock casa_call list_engagement_workspaces $M9_TOKEN\n' > /data/engagement-ctl/$EID/stdin.fifo"

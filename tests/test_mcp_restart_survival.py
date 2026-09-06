@@ -131,7 +131,7 @@ if args[:1] != ["exec"]:
     sys.exit(0)
 rest = args[2:]                                  # drop `exec <container>`
 if rest[:1] == ["test"]:
-    sys.exit(0)                                  # the internal socket is up
+    sys.exit(0 if cfg.get("socket_ready", True) else 1)   # `test -S <socket>`
 if rest[:1] == ["s6-rc"] and "-u" in rest:
     materialise(cfg.get("on_restart", []))
     sys.exit(0)
@@ -252,7 +252,7 @@ class Run:
                 f"--- stdout ---\n{self.out}\n--- stderr ---\n{self.err}")
 
 
-def run_m9(tmp_path, *, on_restart, on_inject=()) -> Run:
+def run_m9(tmp_path, *, on_restart, on_inject=(), socket_ready=True) -> Run:
     """Run the real M-9 block against a scripted response set."""
     helpers, m9 = _helpers_and_m9()
     ws = tmp_path / "workspace"
@@ -265,6 +265,7 @@ def run_m9(tmp_path, *, on_restart, on_inject=()) -> Run:
     cfg = tmp_path / "cfg.json"
     cfg.write_text(json.dumps({"ws": str(ws),
                                "injections": str(injections),
+                               "socket_ready": socket_ready,
                                "on_restart": list(on_restart),
                                "on_inject": list(on_inject)}),
                    encoding="utf-8")
@@ -486,3 +487,44 @@ def test_injection_decoder_refuses_a_form_it_cannot_reproduce(tmp_path):
         capture_output=True, text=True, timeout=60)
     assert proc.returncode != 0, proc.stdout
     assert "unsupported injection" in proc.stderr, proc.stderr
+
+
+# --------------------------------------------------------------------------
+# The window arm must not re-run the race it exists to excuse
+# --------------------------------------------------------------------------
+# Both added on terra's S2 finding in the gate-owned handback review of
+# 97dfcd3b: the arm injected its replacement turn without establishing that the
+# socket had begun serving, so a boot still incomplete after the preamble's
+# bounded wait produced the cold-boot answer TWICE and failed a correct — merely
+# slow — boot one indirection further down. The accepted red case above is
+# unchanged; these are additional arms for a finding it did not cover.
+
+def test_window_arm_refuses_to_inject_while_the_socket_is_not_serving(tmp_path):
+    """A boot that has not finished serving is named, and nothing is injected."""
+    r = run_m9(tmp_path, socket_ready=False,
+               on_restart=[_f(".mock_casa_call.000.json", ERR_SOCKET)],
+               on_inject=[_f(".mock_casa_call.001.json", _own_workspace(),
+                             token="MATCH")])
+    assert r.rc == 9, r
+    assert r.m9_passes == 0, r
+    assert r.injections == [], r
+    assert "still not serving" in r.err, r
+
+
+def test_window_arm_fails_if_the_injected_turn_also_takes_the_window_answer(
+        tmp_path):
+    """With the socket confirmed serving, a second cold answer is an anomaly.
+
+    It must redden the step rather than be excused a second time: the tolerance
+    is for ONE call that raced the socket, not for a bridge that cannot reach
+    casa-main at all.
+    """
+    r = run_m9(tmp_path,
+               on_restart=[_f(".mock_casa_call.000.json", ERR_SOCKET)],
+               on_inject=[_f(".mock_casa_call.001.json", ERR_SOCKET,
+                             token="MATCH")])
+    assert r.rc == 9, r
+    assert r.m9_passes == 0, r
+    assert len(r.injections) == 1, r
+    assert "M-9 expected a dispatched result listing only this engagement" \
+        in r.err, r
