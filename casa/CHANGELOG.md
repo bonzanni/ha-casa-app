@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.281.0] - 2026-09-06
+
+### Fixed
+
+- If Casa restarts between a background specialist finishing and its answer
+  reaching you, you now get the answer itself. Before, the answer was discarded
+  at the moment the work was recorded as finished, so all that survived the
+  restart was a note that it had completed and an offer to run it again. Casa
+  keeps that answer only until it has told you, then drops it.
+- Two limits worth knowing, both deliberate. A delegation still running when Casa
+  is stopped has no answer to keep, so that case is unchanged. And because a
+  notice may be delivered more than once, a repeat now repeats the answer too.
+
 ## [0.280.0] - 2026-09-06
 
 ### Added
