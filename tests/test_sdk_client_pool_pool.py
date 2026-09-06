@@ -2121,3 +2121,70 @@ async def test_866_arm11_a_failed_connect_strands_no_map_entry():
                 client.live, len(pool._entries)) == (0, 1, 0, 0)
     finally:
         await _cleanup_866(pool, made, turn)
+
+
+async def test_force_close_warning_says_whether_there_was_a_transport(caplog):
+    """#866: the force-close warning named a key and claimed a cut it had
+    often not made — the object it force-closed was the transportless stub.
+    It now reports which, so an operator reading the line can tell an
+    interrupted turn from a bookkeeping close. Not part of the frozen red
+    case; the arms there pin hook identity, not log wording."""
+    import logging
+
+    # (a) a turn parked BEFORE its reservation: the stub is what gets forced.
+    pool, made = _mk_gated_pool()
+    options = asyncio.Event()
+    turn = _start_turn(pool, "voice-stub", release_options=options)
+    try:
+        async def mapped():
+            while "voice-stub" not in pool._entries:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(mapped(), timeout=1)
+        with caplog.at_level(logging.WARNING, logger="sdk_client_pool"):
+            await pool.aclose(drain_timeout=0.05)
+        lines = [r.getMessage() for r in caplog.records
+                 if "force close" in r.getMessage()]
+        assert lines == ["pool aclose: drain timeout on voice-stub; "
+                         "force close (transport=False)"]
+        assert len(made) == 0
+    finally:
+        await _cleanup_866(pool, made, turn, gates=(options,))
+
+    # (b) a turn that has connected and is parked in its query, still holding
+    # the entry lock: the reserved client is what gets forced.
+    caplog.clear()
+
+    class _QueryParkingClient(GatedConnectClient):
+        def __init__(self, options):
+            super().__init__(options)
+            self.release_query = asyncio.Event()
+
+        async def query(self, prompt, session_id="default"):
+            await super().query(prompt, session_id)
+            await self.release_query.wait()
+
+    pool, made = _mk_gated_pool()
+    pool._make_client = lambda options: (
+        made.append(_QueryParkingClient(options)) or made[-1])
+    turn = _start_turn(pool, "voice-live")
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+        client.release_connect.set()
+
+        async def querying():
+            while not client.queries:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(querying(), timeout=1)
+
+        with caplog.at_level(logging.WARNING, logger="sdk_client_pool"):
+            await pool.aclose(drain_timeout=0.05)
+        lines = [r.getMessage() for r in caplog.records
+                 if "force close" in r.getMessage()]
+        assert lines == ["pool aclose: drain timeout on voice-live; "
+                         "force close (transport=True)"]
+        assert (client.disconnect_completions, client.live) == (1, 0)
+    finally:
+        client.release_query.set()
+        await _cleanup_866(pool, made, turn)

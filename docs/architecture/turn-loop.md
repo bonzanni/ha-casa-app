@@ -283,6 +283,35 @@ inside its disconnect is joined rather than skipped. What that force-close can r
 the turn holding the lock is hosting an engagement launch is in
 [`architecture/engagements.md`](engagements.md).
 
+A client the pool has opened is recorded before it exists. The replacement a turn
+builds goes into the entry map — replacing the entry that turn was serialized
+against — BEFORE its connect starts, and completing the connect never re-creates
+that membership. Otherwise a close, an invalidation or a key reset that
+enumerated the map during the connect closes the placeholder it found there,
+returns, and leaves the real client and its CLI subprocess connected with nothing
+able to reclaim them: outside the map, outside what the closers own, and outside
+the drain bound above, which quantifies over generations the pool recorded. Two
+of the three close paths never set the closing flag, so the record is keyed on
+map identity rather than on that flag, and the window is not a cold connect's
+alone — it spans the registry read, the flush of a stale warm client, the retain
+spawn and the options build, so a warm entry being replaced enters it too. A
+close that takes the record while the connect is in flight owns that client: it
+is blocked on the entry lock the turn holds, so the turn hands the client over
+closed rather than running a query on a generation something has already retired,
+and a shutdown force-closing it cancels the connect and waits for it to stop — a
+connect that swallows the cancellation and finishes anyway would otherwise
+establish a transport after the close had returned. The record replaces rather
+than adds, so a drain pass still meets one lock per key. A turn whose record is
+taken retries, and during shutdown that retry meets the same closing refusal
+every other post-shutdown turn meets.
+
+**INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows, and no such path returns while a client it removed the key for is still connected.
+
+What this does not cover: a close whose own caller cancels it before it finishes.
+The container shutdown bounds each agent's close well below the pool's own drain
+default, and a cancelled close leaves what it had already removed for a later
+call that, on that path, does not come.
+
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
