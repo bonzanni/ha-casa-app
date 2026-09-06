@@ -73,11 +73,46 @@ def _helpers_and_m9() -> tuple[str, str]:
 # --------------------------------------------------------------------------
 
 _FAKE_DOCKER = '''\
-import json, os, re, sys
+"""The container, played well enough that the block under test cannot tell.
+
+The injection decoder is deliberately NOT a regex over the `docker exec` argv:
+shell quoting and `printf` interpretation are distinct operations, and matching
+the argv text captured the printf format's own trailing newline and quote as
+part of the nonce. What the mock CLI parses is the LINE that reaches the FIFO,
+so this reproduces exactly that — `shlex` for the quoting, a real `printf` for
+the format (executed with the parsed words as data, and with the redirection
+removed, so no FIFO is ever opened), then the mock CLI's own parsing statements.
+"""
+import json, os, shlex, subprocess, sys
+
+
+def decode_injection(command):
+    """The (tool, token) pairs the mock CLI would parse from `command`."""
+    words = shlex.split(command)
+    assert words and words[0] == "printf", ("unsupported injection", words)
+    assert len(words) > 3 and words[-2] == ">", ("unsupported injection", words)
+    assert words[-1].endswith("stdin.fifo"), ("unsupported injection", words)
+    text = subprocess.run(
+        ["sh", "-c", 'printf "$@"', "m9-printf", *words[1:-2]],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    calls = []
+    for line in text.splitlines():
+        text_ = line.rstrip("\\n")
+        if text_.startswith("/mock casa_call"):
+            tool, _, token = text_[len("/mock casa_call"):].strip().partition(" ")
+            calls.append([tool.strip() or "list_engagement_workspaces",
+                          token.strip()])
+    return calls
+
+
+args = sys.argv[1:]
+if args[:1] == ["--decode"]:
+    print(json.dumps(decode_injection(args[1])))
+    sys.exit(0)
 
 cfg = json.load(open(os.environ["M9_CFG"]))
 ws = cfg["ws"]
-args = sys.argv[1:]
 
 
 def materialise(entries, token=""):
@@ -95,15 +130,15 @@ def materialise(entries, token=""):
 if args[:1] != ["exec"]:
     sys.exit(0)
 rest = args[2:]                                  # drop `exec <container>`
-joined = " ".join(rest)
 if rest[:1] == ["test"]:
     sys.exit(0)                                  # the internal socket is up
 if rest[:1] == ["s6-rc"] and "-u" in rest:
     materialise(cfg.get("on_restart", []))
     sys.exit(0)
-if "stdin.fifo" in joined:
-    m = re.search(r"/mock casa_call (\\S+)(?: (\\S+))?", joined)
-    token = (m.group(2) or "") if m else ""
+if rest[:2] == ["sh", "-c"] and "stdin.fifo" in rest[2]:
+    calls = decode_injection(rest[2])
+    assert len(calls) == 1, ("expected exactly one turn per injection", calls)
+    token = calls[0][1]
     with open(cfg["injections"], "a") as fh:
         fh.write(token + "\\n")
     materialise(cfg.get("on_inject", []), token)
@@ -158,12 +193,46 @@ def _f(name: str, body: dict, token: str | None = None) -> dict:
     return e
 
 
+
+def _fake_docker_dir(tmp_path) -> Path:
+    """Write the fake container onto a directory fit for `PATH`."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    docker = bindir / "docker"
+    docker.write_text("#!" + sys.executable + "\n" + _FAKE_DOCKER,
+                      encoding="utf-8")
+    docker.chmod(0o755)
+    return bindir
+
+
+def decode_injection(tmp_path, command: str) -> list[list[str]]:
+    """Ask the fake container what the mock CLI would parse from `command`."""
+    docker = _fake_docker_dir(tmp_path) / "docker"
+    proc = subprocess.run([str(docker), "--decode", command],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
 class Run:
-    def __init__(self, proc, injections: list[str]):
+    def __init__(self, proc, injections: list[str], trace: str = ""):
         self.rc = proc.returncode
         self.out = proc.stdout
         self.err = proc.stderr
         self.injections = injections
+        self.trace = trace
+
+    @property
+    def probe_nonce(self) -> str | None:
+        """The nonce the PROBE generated, read out of bash's own xtrace.
+
+        Independent of the fake container's decoder on purpose: the point of the
+        comparison is that the token bash expanded and the token the container
+        parsed are the same bytes.
+        """
+        hits = [ln.split("M9_TOKEN=", 1)[1].strip()
+                for ln in self.trace.splitlines() if "M9_TOKEN=" in ln]
+        return hits[0] if hits else None
 
     @property
     def m9_passes(self) -> int:
@@ -188,12 +257,7 @@ def run_m9(tmp_path, *, on_restart, on_inject=()) -> Run:
     helpers, m9 = _helpers_and_m9()
     ws = tmp_path / "workspace"
     ws.mkdir()
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    docker = bindir / "docker"
-    docker.write_text("#!" + sys.executable + "\n" + _FAKE_DOCKER,
-                      encoding="utf-8")
-    docker.chmod(0o755)
+    bindir = _fake_docker_dir(tmp_path)
     injections = tmp_path / "injections.log"
     injections.write_text("", encoding="utf-8")
     clock = tmp_path / "clock"
@@ -205,8 +269,13 @@ def run_m9(tmp_path, *, on_restart, on_inject=()) -> Run:
                                "on_inject": list(on_inject)}),
                    encoding="utf-8")
 
+    trace = tmp_path / "xtrace"
     script = "\n".join([
         "set -euo pipefail",
+        # bash's OWN trace of every expansion, on its own descriptor. It is how
+        # the test learns the nonce the probe generated without asking the fake
+        # container to tell it — the two must agree.
+        f'exec 9>"{trace}"', "BASH_XTRACEFD=9", "set -x",
         'NAME="harness"', f'EID="{EID}"', f'WS="{ws}"', f'CLOCK="{clock}"',
         helpers, _STUBS, m9,
     ])
@@ -218,8 +287,10 @@ def run_m9(tmp_path, *, on_restart, on_inject=()) -> Run:
     env["M9_CFG"] = str(cfg)
     proc = subprocess.run(["bash", str(script_path)], capture_output=True,
                           text=True, env=env, timeout=300)
-    return Run(proc, [ln for ln in
-                      injections.read_text(encoding="utf-8").splitlines() if ln])
+    return Run(proc,
+               [ln for ln in
+                injections.read_text(encoding="utf-8").splitlines() if ln],
+               trace.read_text(encoding="utf-8", errors="replace"))
 
 
 # --------------------------------------------------------------------------
@@ -248,7 +319,11 @@ def test_cold_boot_window_answer_does_not_fail_a_correct_run(tmp_path):
     assert r.m9_passes == 1, r
     assert r.failures == 0, r
     assert len(r.injections) == 1, r
-    assert r.injections[0], r          # the injected turn carried a nonce
+    # The token bash expanded and the token the container parsed are the same
+    # bytes. Comparing against a token the fake reconstructed would prove
+    # nothing: an extraction that mangles the nonce mangles both sides.
+    assert r.probe_nonce, r
+    assert r.injections == [r.probe_nonce], r
 
 
 def test_dispatched_redelivered_turn_still_passes_without_any_injection(tmp_path):
@@ -303,6 +378,12 @@ def test_window_arm_reads_its_own_nonce_not_the_newest_file(tmp_path):
     assert r.rc == 9, r
     assert r.m9_passes == 0, r
     assert len(r.injections) == 1, r
+    # It must fail ON THE REFUSAL IT SELECTED, not by timing out having found
+    # nothing: the failure is `assert_own_workspace`'s, and the refused file it
+    # prints is the -32006 one that carried this turn's nonce.
+    assert "M-9 expected a dispatched result listing only this engagement" \
+        in r.err, r
+    assert "-32006" in r.err, r
 
 
 # --------------------------------------------------------------------------
@@ -368,3 +449,40 @@ def test_boot_await_order_is_measured_and_its_documented_consequence_holds():
             f"main awaits the boot replay at line {replay} and creates the "
             f"internal socket at line {socket}, so the cold-boot window is "
             "real; svc_casa_mcp must keep documenting it")
+
+
+# --------------------------------------------------------------------------
+# The harness's own decoder — the seam through which a nonce could be mangled
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("command,expected", [
+    ("printf '/mock casa_call list_engagement_workspaces m9w-42-1000\\n' "
+     "> /data/engagement-ctl/x/stdin.fifo",
+     [["list_engagement_workspaces", "m9w-42-1000"]]),
+    ("printf '/mock casa_call list_engagement_workspaces\\n' "
+     "> /data/engagement-ctl/x/stdin.fifo",
+     [["list_engagement_workspaces", ""]]),
+    ("printf '%s\\n' '/mock casa_call list_engagement_workspaces m11-7-9' "
+     "> /data/engagement-ctl/x/stdin.fifo",
+     [["list_engagement_workspaces", "m11-7-9"]]),
+])
+def test_injection_decoder_reads_the_line_not_the_argv(tmp_path, command,
+                                                       expected):
+    """What reaches the FIFO is a LINE; the argv still holds a printf format.
+
+    Matching the argv text captured the format's own trailing `\\n` and its
+    closing quote as part of the nonce, and `wait_for_token_casa_call` then
+    matched nothing. Shell quoting and `printf` interpretation are distinct
+    operations and the decoder performs both.
+    """
+    assert decode_injection(tmp_path, command) == expected
+
+
+def test_injection_decoder_refuses_a_form_it_cannot_reproduce(tmp_path):
+    """An unsupported injection must fail loudly, never decode to nothing."""
+    docker = _fake_docker_dir(tmp_path) / "docker"
+    proc = subprocess.run(
+        [str(docker), "--decode", "echo hello > /data/engagement-ctl/x/stdin.fifo"],
+        capture_output=True, text=True, timeout=60)
+    assert proc.returncode != 0, proc.stdout
+    assert "unsupported injection" in proc.stderr, proc.stderr
