@@ -8,6 +8,7 @@ behavior. These tests catch accidental reverts.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -859,3 +860,224 @@ def test_517_does_not_disturb_the_658_authorization_link_paragraph():
     needle = _collapse_ws(LINK_RULE_PARAGRAPH)
     assert [_collapse_ws(t).count(needle)
             for name, t in compiled if name.endswith(":text")] == [1, 1, 1]
+
+
+# ---------------------------------------------------------------------------
+# #651 red case — the Telegram retention telling.
+#
+# At the base every shipped resident projection is SILENT about retention while
+# `channel_policy.writes_to_bank("telegram")` is True and `save_session` banks
+# the transcript on `/new`, on the freshness sweep and on a superseded session.
+# The only memory tool the assistant is granted is read-side `recall_memory`,
+# and the kernel and frame push the model toward disowning memory ("never
+# convert them into first-person recollection"), so what the operator gets is
+# the disclaimer the issue reports — while the conversation is banked anyway.
+#
+# This DECLARES rather than pins (D34): it asserts PRESENCE and SCOPE in the
+# served prompt, and nothing about model compliance or about whether any
+# particular retain succeeded. Deliberately no invariant id, following #658
+# above: one paragraph, one test, retirable without manifest surgery.
+#
+# Specified by astra, 2026-09-06, before any production change; accepted by
+# terra. The intended failure at the base is `assistant:text: 0, expected 1` —
+# an ABSENCE, not an import, fixture or helper error.
+#
+# SCOPE IS THE WHOLE POINT, and placement alone does not deliver it.
+# `projection_for` sends a `/invoke` turn (channel "webhook") to the TEXT
+# projection while `writes_to_bank("webhook")` is False, so a paragraph scoped
+# only by its section would be served to a route it is false on. The prose
+# therefore names Telegram in every affirmative clause, and this test asserts
+# the negative on the other eight carriers as hard as the positive on the one.
+#
+# SCOPE IS ALSO WHAT THE RESIDUAL PIN (assertion 6) IS FOR. Counting this
+# paragraph proves it is present where it belongs and absent elsewhere; it
+# says nothing about a DIFFERENT sentence, added later, that makes the
+# prohibited claim in other words. Two reviewers each defeated a
+# vocabulary-based residual with one such sentence, so the residual is pinned
+# by content digest per carrier instead.
+# ---------------------------------------------------------------------------
+
+_RETENTION_SENTENCES = (
+    "On Telegram, an ending conversation is meant to be kept, not dropped: "
+    "when one ends — the person starts a fresh one with `/new`, or it goes "
+    "quiet long enough to be swept up — Casa retains the exchange to "
+    "long-term memory, and whatever is retained can be recalled later, "
+    "subject to the clearance of whoever is asking.",
+    "Do not tell anyone on Telegram that what they say cannot be kept, or "
+    "that it will be gone by next week, merely because you hold no "
+    "memory-writing tool: the retention is the system's and does not pass "
+    "through you.",
+    "That is Telegram's policy and nothing more — it says nothing about a "
+    "voice or webhook conversation, an `/invoke` turn, or a delegation "
+    "originating on one of those; a save can also fail, so never report a "
+    "particular exchange as now being in memory.",
+)
+
+RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
+
+# The compiled content of every carrier as it stands at the base, with this
+# paragraph stripped from the one carrier that may hold it. Per-carrier rather
+# than one digest over all nine, so a failure NAMES the surface that moved.
+#
+# A vocabulary deny-list stood here first and was defeated twice by
+# reproduction — by "The same retention policy applies to webhook
+# conversations" (astra) and then, after the list was measured against that,
+# by "Webhook conversations are kept after they end." (terra), which says the
+# prohibited thing using none of the listed words. Widening the list is
+# sharpening a mechanism that has now failed twice in the same shape; a
+# residual pin is the generalisation, and both reviewers asked for one.
+#
+# WHEN THIS FIRES because of an unrelated prompt change: that is the intended
+# behaviour, not a stale fixture. Re-read this paragraph's scope against the
+# carrier that moved — a retention claim on any other surface, or a broadened
+# one here, is exactly what it exists to catch — and only then regenerate the
+# digest for that carrier. Never regenerate the map wholesale from the
+# candidate; that is the one move which turns this assertion back into nothing.
+_RESIDUAL_DIGESTS = {
+    "assistant:restricted_webhook":
+        "2dd2928a69e7218e312d351a11e2f7a133ea93171db28dd864b5cb52e546b0ef",
+    "assistant:text":
+        "62d7824d006638e101817422aa3ae0ece973c16c112a58bbeec2d02b61ecb08f",
+    "assistant:voice":
+        "33063c98973890148cfbad89b537e3bde6634e6ddc37e8313c10b413e7dfd5ed",
+    "butler:restricted_webhook":
+        "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
+    "butler:text":
+        "45c1aa348c67c243f7f1a4deeb7b44375f7bb6cf848e1cf3ee3c5e9a4af2ad38",
+    "butler:voice":
+        "6325dfcea3037b1d15cea941e8f73e8000afd638191606196b6fc212e293666b",
+    "concierge:restricted_webhook":
+        "4baf96c7443a5688e5c952532a0275eda8e906a8ef04548b54dd511d153d9124",
+    "concierge:text":
+        "0128cf952c45901582c75b4acfbc5647f4499ba240442dc75674fc9d62446108",
+    "concierge:voice":
+        "319a61259c3a302df90cc6554da15e962eedcbcc2c239aaadcab012c145a1cb2",
+}
+
+
+def _retention_expectation() -> dict[str, int]:
+    """DERIVED, never hand-listed (see `_resident_slots`): a fourth resident
+    slot, or a fourth surface, must widen this map automatically."""
+    return {
+        f"{slot}:{surface}": int(slot == "assistant" and surface == "text")
+        for slot in _RESIDENT_SLOTS
+        for surface in ("text", "voice", "restricted_webhook")
+    }
+
+
+def test_the_telegram_retention_telling_reaches_only_the_assistant_text_projection():
+    """#651: the assistant's SERVED text projection says a Telegram
+    conversation is saved when it ends, and no other shipped resident
+    projection says anything of the kind.
+
+    RED pre-fix: the paragraph occurs zero times on all nine compiled
+    carriers, so `assistant:text` is 0 where 1 is expected. That absence, not
+    a fixture or import problem, is the intended failure.
+    """
+    from channel_policy import _WRITABLE_CHANNELS, writes_to_bank
+    from markdown_sections import select_markdown_sections
+    from prompt_compiler import _PROJECTION_HEADINGS
+
+    compiled = _compiled_resident_carriers()
+    expected = _retention_expectation()
+
+    # 1. Exact carrier inventory INCLUDING multiplicity — asserted on the list
+    #    before any dict is built, or a duplicated carrier name would vanish.
+    assert sorted(name for name, _ in compiled) == sorted(expected)
+
+    # 2. Whole paragraph, then each sentence on its own. The #658 comment
+    #    above records why both: a whole-paragraph count cannot see one
+    #    sentence copied into a Voice section, and per-sentence anchors alone
+    #    were defeated by clause deletion and by additive broadening.
+    paragraph = _collapse_ws(RETENTION_PARAGRAPH)
+    assert {name: _collapse_ws(body).count(paragraph)
+            for name, body in compiled} == expected
+    for sentence in _RETENTION_SENTENCES:
+        needle = _collapse_ws(sentence)
+        assert {name: _collapse_ws(body).count(needle)
+                for name, body in compiled} == expected, sentence[:48]
+
+    # 3. Provenance: the assistant doctrine's own Text section, selected
+    #    ALONE, and never the Core section every projection inherits.
+    text_sections: dict[str, str] = {}
+    for slot in _RESIDENT_SLOTS:
+        doctrine = (_casa_root() / "defaults/roles/resident" / slot
+                    / "doctrine.md").read_text(encoding="utf-8")
+        text_only = select_markdown_sections(
+            doctrine, ("Text projection",), exclude=_PROJECTION_HEADINGS)
+        core_only = select_markdown_sections(
+            doctrine, ("Core doctrine",), exclude=_PROJECTION_HEADINGS)
+        text_sections[slot] = text_only
+        assert (_collapse_ws(text_only).count(paragraph),
+                _collapse_ws(core_only).count(paragraph)) == (
+                    (1, 0) if slot == "assistant" else (0, 0)), slot
+
+    # 4. The paragraph is a STANDALONE block, and the last one in the section.
+    #    A count survives insertion INSIDE another sentence; this does not.
+    blocks = re.split(r"\n[ \t]*\n", text_sections["assistant"].strip())
+    assert _collapse_ws(blocks[-1]).strip() == paragraph
+
+    # 5. "long-term memory" is said exactly twice on every carrier at the base
+    #    (the kernel's attributed-evidence rule and Core's wipe refusal); this
+    #    paragraph is the third occurrence, on one carrier.
+    assert {name: _collapse_ws(body).lower().count("long-term memory")
+            for name, body in compiled} == {
+                name: 2 + n for name, n in expected.items()}
+
+    # 6. Residual content: strip this paragraph from the one carrier that may
+    #    carry it, and every carrier is byte-for-byte what it was before this
+    #    change. This is what catches a SECOND sentence making the prohibited
+    #    claim in words no anchor list contains — read the note on
+    #    `_RESIDUAL_DIGESTS` before regenerating anything.
+    residual = {}
+    for name, body in compiled:
+        collapsed = _collapse_ws(body)
+        if expected[name]:
+            collapsed = _collapse_ws(collapsed.replace(paragraph, "", 1))
+        residual[name] = hashlib.sha256(
+            collapsed.strip().encode("utf-8")).hexdigest()
+    assert residual == _RESIDUAL_DIGESTS
+
+    # 7. The policy the prose depends on. If Telegram ever loses write-trust,
+    #    or another channel gains it, this paragraph must be re-read — so the
+    #    pin fails rather than the prompt quietly becoming false.
+    assert _WRITABLE_CHANNELS == frozenset({"telegram"})
+    assert [writes_to_bank(c) for c in (
+        "telegram", "ha_voice", "voice", "webhook", "webhook_trigger",
+        "no-such-channel")] == [True, False, False, False, False, False]
+
+
+def test_the_retention_telling_is_scoped_by_channel_because_invoke_gets_text():
+    """The routing fact that makes assertion 6's negatives necessary: a
+    `/invoke` turn is served the TEXT projection while its channel is not
+    write-trusted, so the paragraph's Telegram scoping is what keeps it true
+    there. Reproduced through the production selector, not asserted in prose.
+    """
+    from prompt_compiler import CompiledPromptBundle, CompiledProjection, projection_for
+
+    bodies = dict(_compiled_resident_carriers())
+
+    def _proj(surface: str) -> CompiledProjection:
+        return CompiledProjection(
+            system_prompt=bodies[f"assistant:{surface}"],
+            digest=f"stub-{surface}", estimated_tokens=0,
+        )
+
+    bundle = CompiledPromptBundle(
+        role_id="resident:assistant", resolved_model="opus",
+        text=_proj("text"), voice=_proj("voice"),
+        restricted_webhook=_proj("restricted_webhook"),
+        binding_digest="stub-binding-digest",
+    )
+    routed = {
+        ("telegram", "telegram"): "text",
+        ("webhook", "invoke"): "text",
+        ("webhook", "webhook_trigger"): "restricted_webhook",
+        ("voice", None): "voice",
+        ("voice", "webhook_trigger"): "restricted_webhook",
+        ("no-such-channel", None): "text",
+    }
+    for (channel, origin_route), surface in routed.items():
+        got = projection_for(bundle, channel=channel, origin_route=origin_route)
+        assert got.system_prompt == bodies[f"assistant:{surface}"], (
+            channel, origin_route)
