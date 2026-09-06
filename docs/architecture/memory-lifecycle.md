@@ -2,7 +2,7 @@
 last_reviewed: 2026-08-13
 ---
 
-# Memory lifecycle: retention, reset, and the wipe
+# Memory lifecycle: retention, reset, and the retry spool
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
@@ -12,8 +12,10 @@ How a conversation becomes long-term memory and how it stops being one: the
 freshness windows that make a session save-eligible, the claim-and-guard
 protocol that retains it exactly once, how each item is labelled on the way in
 (its sensitivity tier, its speaker provenance, and the content addressing that
-deduplicates it), the explicit reset, the durable retry spool, and the
-operator-consented wipe that removes everything. What happens to a stored fact
+deduplicates it), the explicit reset, and the durable retry spool. The
+operator-consented wipe that removes everything — its two doors, its consent
+posture, the fence every writer passes through and what it leaves behind — is
+[`architecture/memory-wipe.md`](memory-wipe.md). What happens to a stored fact
 on the way back out — rendering and what a caller may claim from a result — is
 [`architecture/memory.md`](memory.md), and who may read it back is
 [`architecture/memory-scoping.md`](memory-scoping.md); the warm-client pool
@@ -88,49 +90,8 @@ sessions that went cold; a superseded session's transcript is retained by a
 detached background task, whose failure spools a durable retry record under
 `/data/cold-retain-retry`; and a finishing engagement retains its summary
 from a detached task of its own. All of them converge on the shared bank —
-which is why the wipe cannot be "delete the bank" alone.
-
-**The wipe is one operation, two doors, one consent posture.** The
-orchestrator first closes *turn admission* and drains every in-flight turn
-(INV-CONC-005) — until that holds, a turn the client pool never owned can
-re-arm a session pointer after the wipe has reported completion, and a
-first-ever turn on a key is not even visible to enumerate. It then claims
-every key, drains in-flight bank writers behind an exclusive fence, drops the
-retry spool, drops every session pointer *without retaining it* (retiring
-saves first — exactly the residue a wipe must not leave), deletes the bank,
-and reports counts. Both drains are bounded and fail closed: turns or writers
-that do not finish in time abort the wipe with nothing deleted, because a wipe
-that cannot prove it drained everything must not report that it deleted
-everything. The terminal door
-(`casactl memory-wipe --yes` → `POST /admin/memory/wipe`) is root-gated by
-the same peer-credential check as every admin route; the agent door (the
-`wipe_memory` tool) posts an Approve/Cancel keyboard to the configured
-operator and executes only on the operator's own tap, from the broker's
-finish hook — never inside the invoking turn, whose pool lock the wipe's
-flush-close must be able to take. With no operator configured, nobody can
-consent and the tool door refuses everyone. At most one wipe runs at a time,
-and shutdown freezes new admissions before draining a running one.
-
-**Which door a shipped install actually has.** The terminal door, and only
-that one. A Casa tool reaches an agent's MCP server only when that agent's
-resolved grants name it, and no shipped runtime, role or executor artifact
-names the wipe tool — so the agent door exists, is correct, and is held by
-nobody. An operator's own agent configuration can grant it, and the tool's
-gates then apply unchanged. Because the door is unreachable by default, every
-shipped resident's doctrine carries the matching refusal: claim the capability
-only when the tool is actually present, and otherwise say plainly that this
-agent cannot do it and name the terminal command, rather than delegating the
-request or promising a confirmation that will never arrive.
-
-**Writers that straddle a wipe discard.** Every bank writer captures a
-*fence generation* in the same no-await block as the decision that commits
-it to its source data — beside the pool's resume decision for a superseded
-session's retain, at summary assembly for an engagement's, at entry for the
-save and the spool replay — and enters a shared fence section that compares
-it. A wipe bumps the generation under the exclusive side after draining the
-in-flight sections, so a pre-wipe writer that resumes later retains nothing
-and, crucially, spools nothing: the operator consented to deleting exactly
-that content.
+which is why the wipe cannot be "delete the bank" alone
+([`architecture/memory-wipe.md`](memory-wipe.md)).
 
 ## Contracts & invariants
 
@@ -275,27 +236,6 @@ longer the load-bearing protection: turn admission (INV-CONC-005) is, and it
 holds until every turn has drained. The claims remain because they still
 cover the background retain paths, which are not turns.
 
-**INV-MEM-014**: The wipe executes only on the configured operator's explicit consent at its consent-bearing door, and no durable pre-wipe writer survives it: the spool is dropped, every claimed pointer is dropped without retention, and a bank writer that straddles the wipe discards — retaining nothing and spooling nothing.
-
-Enforced by the tool door binding its keyboard to the configured operator's
-identity (the broker refuses any other actor's tap, and a broker cancel can
-only finish as *cancelled*, never as an answer); by the admin door sitting
-behind the root peer-credential gate plus an explicit confirm field; by the
-orchestrator's order — claims first, then the exclusive fence drain and
-generation bump, then the spool, then sid-guarded pointer removals, then the
-bank — with claims released in a `finally`; and by every writer's
-generation check sitting in front of both its retain *and* its
-failure-spool arm.
-
-What it does not cover, deliberately disclosed: a turn or engagement already
-in flight when the wipe runs may contribute one post-wipe item (its retain
-enters the fence with a post-wipe generation); a session pointer registered
-by a steered-fresh turn mid-wipe survives (its conversation is
-post-wipe-initiation — the sid-guarded remove protects it on purpose); the
-backend applies retains it accepted before the delete on its own schedule;
-and the bank deletion itself is the backend's — Casa does not verify
-emptiness afterwards.
-
 **INV-MEM-017**: The time-to-live sweep neither evicts nor reaps a session entry that names a transcript on a bank-writable channel, whatever its age, provenance, claims, or activity timestamp.
 
 The sweep is Casa's only transcript deleter, and a transcript is the only
@@ -353,18 +293,6 @@ file with structurally corrupt individual entries quarantines just those
 entries and keeps the rest. Affected session pointers are lost; the app
 comes up.
 
-**The wipe's writer drain times out.** The wipe aborts with nothing deleted
-and says so — a stuck retain must not be raced, and an abort is retryable.
-A wipe interrupted by shutdown is drained to completion (or a truthful
-failure report) before the channels and the memory backend close; a consent
-approval landing during shutdown is refused, never half-run.
-
-**The bank delete itself fails.** The failure propagates to the door that
-asked (an error edit on the consent keyboard, a non-2xx with the reason on
-the admin route) — by then the spool and the pointers are already gone,
-and the report says exactly that rather than claiming a deletion that did
-not happen.
-
 ## Extension points
 
 **A new writer** should build its items through the retain-item builder
@@ -404,15 +332,6 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `casa/rootfs/opt/casa/session_registry.py::SessionRegistry.begin_retirement`
 - `casa/rootfs/opt/casa/session_registry.py::SessionRegistry.end_retirement`
 - `casa/rootfs/opt/casa/session_registry.py::SessionRegistry.retirement_pending`
-- `casa/rootfs/opt/casa/memory_wipe.py::RetainFence`
-- `casa/rootfs/opt/casa/memory_wipe.py::wipe_long_term_memory`
-- `casa/rootfs/opt/casa/memory_wipe.py::start_wipe_task`
-- `casa/rootfs/opt/casa/memory_wipe.py::freeze_wipes`
-- `casa/rootfs/opt/casa/memory_wipe.py::drain_wipe_task`
-- `casa/rootfs/opt/casa/tools.py::wipe_memory`
-- `casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler`
-- `casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory.delete_bank`
-- `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.delete_bank`
 - `casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once`
 - `casa/rootfs/opt/casa/delegated_memory.py::retain_delegated`
 - `casa/rootfs/opt/casa/session_sweeper.py::SessionSweeper._sweep_once`
@@ -423,10 +342,6 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `tests/test_freshness_reaper.py`
 - `tests/test_retirement_claims.py`
 - `tests/test_reset_channel_retirement.py`
-- `tests/test_memory_wipe.py`
-- `tests/test_retain_fence_writers.py`
-- `tests/test_wipe_memory_tool.py`
-- `tests/test_admin_memory_wipe_route.py`
 - `tests/test_memory_provenance.py`
 - `tests/test_time_envelope.py`
 - `tests/test_specialist_memory_tiers.py`
@@ -434,6 +349,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)
+- [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 <!-- END SOURCEMAP -->

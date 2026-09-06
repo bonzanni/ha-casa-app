@@ -101,7 +101,7 @@ delegate it, not to relay it through a question tool, and above all not to say a
 confirmation is on its way. Delegation cannot conjure a capability: a tool nobody is
 granted is not granted to a specialist either. The shipped example is the long-term memory
 wipe, whose agent door exists but is held by no shipped agent, so every resident's doctrine
-names the terminal command instead. See `architecture/memory-lifecycle.md`.
+names the terminal command instead. See `architecture/memory-wipe.md`.
 
 The same rule read the other way is a telling rather than a refusal: where a capability is
 present and invisible, silence about it is its own kind of false answer. A resident holds no

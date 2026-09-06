@@ -53,7 +53,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
 | recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
-| session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, the retry spool, or the memory wipe | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
+| session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
@@ -74,6 +74,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | what a terminal engagement's topic or its engager is told, the outcome mark, the unconfirmed-post disclosure, or the durable obligation to notify | [`architecture/engagement-terminal-telling.md`](architecture/engagement-terminal-telling.md) |
 | what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, the evicted-message population, or a reservation's disclosed text and the count over it | [`architecture/engagement-inbound-disclosure.md`](architecture/engagement-inbound-disclosure.md) |
 | who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
+| wipe consent or its doors, the wipe orchestrator's order, the retain fence, the writer drain, or what a wipe leaves behind | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
 <!-- END ROUTING -->
 
 Documents stay small — a 25 KB ceiling, judged on pull requests against the merge-base —
