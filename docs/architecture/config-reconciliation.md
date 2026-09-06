@@ -168,9 +168,13 @@ falling back to the shipped default's only when the live one would make the resu
 invalid.
 
 What it does not cover: it constrains the reconciler, not the writers. Different producers
-of the same file may emit different versions — the configurator writes a newer trigger
-schema version than the shipped default does — and nothing here reconciles that
-disagreement. Carrying content *across* a version is migration, which does not exist yet
+of the same file may emit different versions, and nothing here reconciles that
+disagreement. The shipped trigger default and the writers now agree — the assistant's
+`triggers.yaml` ships at `schema_version: 2`, and `reminders` creates an absent trigger
+document at 2 — but an install whose own copy of that file predates the change is still
+on 1, and stays there: reconciliation composes under the live document's top level, so an
+edited v1 file keeps its version and its entries rather than being carried forward.
+Carrying content *across* a version is migration, which does not exist yet
 ([#402](https://github.com/bonzanni/ha-casa-app/issues/402)).
 
 **INV-CFG-009**: A `${VAR}` placeholder is resolved once its scalar is being built, so a variable's contents are never lexed as part of the document, and a quoted placeholder's value reaches its field unaltered.
