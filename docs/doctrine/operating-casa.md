@@ -103,6 +103,17 @@ granted is not granted to a specialist either. The shipped example is the long-t
 wipe, whose agent door exists but is held by no shipped agent, so every resident's doctrine
 names the terminal command instead. See `architecture/memory-lifecycle.md`.
 
+The same rule read the other way is a telling rather than a refusal: where a capability is
+present and invisible, silence about it is its own kind of false answer. A resident holds no
+tool that writes to long-term memory, and a Telegram conversation is retained regardless — by
+the system, not by the agent — so "no write tool, therefore nothing is kept" is an inference
+the shape of the tool layer invites and the pipeline contradicts. The assistant's text
+doctrine states what a Telegram conversation leaves behind when it ends, scoped to Telegram
+by name rather than by surface: the same text projection is served to an `/invoke` caller,
+whose channel is not write-trusted, and the butler and concierge speak only over voice, so
+neither carries the telling. What the doctrine states is the policy and not a receipt — a
+save can fail, and it says so rather than promising an outcome nothing here guarantees.
+
 **Do not assume a tool is safe because it was offered.** Being callable is not being
 appropriate. The allowlist constrains which tools reach you; it is not a judgement that any
 particular call is a good idea, and several destructive operations are ordinary tools.
@@ -174,8 +185,10 @@ link rather than consequences of asking for one. A Telegram text reply and a but
 pass through the rich renderer, but a streamed reply's text is unrendered until its final
 edit, so the raw form is briefly visible. A voice reply is spoken rather than rendered, and
 an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
-arrives as markup with its address intact. Two things can go wrong with the formatting, and
-both are repaired in the text before it is handed to the transport: Telegram can refuse it,
+arrives as markup with its address intact. The reply is written for the chat surface either
+way; a consumer receiving it as data parses what it gets. Two things can go wrong with the
+formatting, and both are repaired in the text before it is handed to the transport: Telegram
+can refuse it,
 and the message is then re-sent as plain text carrying the same addresses; or the entities
 cannot be expressed at all, and on a paged reply the affected page is emitted with its
 destinations re-attached, beside their labels or on a page of their own that follows. A

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.280.0] - 2026-09-06
+
+### Added
+
+- The assistant now says, on Telegram, that a conversation is kept when it ends
+  and can be recalled later. It holds no memory-writing tool, so it had every
+  reason to tell people the opposite, and nothing in its instructions corrected
+  that. The wording is scoped to Telegram by name: it says nothing about a voice
+  or webhook conversation, and it states the policy rather than promising that any
+  particular exchange was saved.
+- The documentation states that an `/invoke` reply is written for the chat surface,
+  and that a consumer receiving it as data parses what it gets.
+
 ## [0.279.0] - 2026-09-06
 
 ### Fixed
