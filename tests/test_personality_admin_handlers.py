@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from unittest.mock import Mock
 
 import pytest
 from aiohttp import web
@@ -578,6 +579,85 @@ async def test_explain_nonboolean_gate_values_rejected_400(
         assert resp.status == 400
         body = await resp.json()
         assert "SENSITIVE" not in json.dumps(body)
+
+
+# ---------------------------------------------------------------------------
+# GH #634: the explain gate's refusal names the offending field and the type
+# ---------------------------------------------------------------------------
+
+
+_SS_STR = "SHOW_SENSITIVE_STRING_SENTINEL"
+_CF_STR = "CONFIRMED_STRING_SENTINEL"
+_NUM = 314159265
+_SS_ARR = ["SHOW_SENSITIVE_ARRAY_SENTINEL"]
+_CF_ARR = ["CONFIRMED_ARRAY_SENTINEL"]
+_SS_OBJ = {"marker": "SHOW_SENSITIVE_OBJECT_SENTINEL"}
+_CF_OBJ = {"marker": "CONFIRMED_OBJECT_SENTINEL"}
+
+
+@pytest.mark.parametrize(
+    "payload_extra, field, json_type, sentinels",
+    [
+        # --- show_sensitive wrong, confirmed a real boolean -----------------
+        ({"show_sensitive": _SS_STR, "confirmed": True},
+         "show_sensitive", "string", [_SS_STR]),
+        ({"show_sensitive": _NUM, "confirmed": True},
+         "show_sensitive", "number", [str(_NUM)]),
+        ({"show_sensitive": _SS_ARR, "confirmed": True},
+         "show_sensitive", "array", _SS_ARR),
+        ({"show_sensitive": _SS_OBJ, "confirmed": True},
+         "show_sensitive", "object", [_SS_OBJ["marker"]]),
+        ({"show_sensitive": None, "confirmed": True},
+         "show_sensitive", "null", []),
+        # --- confirmed wrong, show_sensitive a real boolean -----------------
+        ({"show_sensitive": True, "confirmed": _CF_STR},
+         "confirmed", "string", [_CF_STR]),
+        ({"show_sensitive": True, "confirmed": _NUM},
+         "confirmed", "number", [str(_NUM)]),
+        ({"show_sensitive": True, "confirmed": _CF_ARR},
+         "confirmed", "array", _CF_ARR),
+        ({"show_sensitive": True, "confirmed": _CF_OBJ},
+         "confirmed", "object", [_CF_OBJ["marker"]]),
+        ({"show_sensitive": True, "confirmed": None},
+         "confirmed", "null", []),
+        # --- BOTH wrong: show_sensitive is the field named ------------------
+        ({"show_sensitive": _SS_STR, "confirmed": _CF_OBJ},
+         "show_sensitive", "string", [_SS_STR, _CF_OBJ["marker"]]),
+    ],
+)
+async def test_explain_nonboolean_gate_values_report_safe_first_field_before_store_read(
+    tmp_path, record, monkeypatch, payload_extra, field, json_type, sentinels,
+) -> None:
+    """GH #634: the #356 gate refused every non-boolean with one constant
+    ``{"error": "invalid_args"}`` payload, so a caller on the internal socket
+    could not tell which of the two fields was rejected or that a JSON boolean
+    was expected. The refusal now carries a ``detail`` naming exactly one field
+    and the JSON TYPE received — never the value — and still fires before the
+    explanation store is read. When both fields are wrong, ``show_sensitive``
+    is named (the gate's own source order)."""
+    store = ExplanationStore(tmp_path / "explanations")
+    store.record(record)
+    store_get = Mock(side_effect=AssertionError(
+        "ExplanationStore.get must not be reached by a refused request"))
+    monkeypatch.setattr(store, "get", store_get)
+    runtime = _FakeRuntime(explanation_store=store)
+    app = _make_app(runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/admin/explain",
+            json={"correlation_id": record.correlation_id, **payload_extra},
+        )
+        assert resp.status == 400
+        body = await resp.json()
+        assert body == {
+            "error": "invalid_args",
+            "detail": f"{field} must be a JSON boolean; received {json_type}",
+        }
+    rendered = json.dumps(body)
+    assert "SENSITIVE PERSONA PROSE" not in rendered
+    for sentinel in sentinels:
+        assert sentinel not in rendered
+    store_get.assert_not_called()
 
 
 async def test_explain_boolean_gate_still_serves_sensitive(tmp_path, record) -> None:
