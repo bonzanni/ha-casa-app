@@ -5,9 +5,12 @@ writer (``reminders.upsert_entry``) and the REAL loader
 (``agent_loader.validate_persisted`` + ``_build_triggers``) — a fixture copy of
 the YAML body would pin nothing about the bytes that ship in the image.
 
-``copy_function=shutil.copyfile`` copies BYTES, never modes: the candidate gate
-executes on a read-only materialization of the tree, where a mode-preserving
-copytree yields ``0444`` files the writer then cannot replace.
+The copy is an explicit walk rather than ``shutil.copytree``: the candidate gate
+executes on a read-only materialization of the tree, and ``copytree`` calls
+``copystat`` on every DIRECTORY it creates regardless of ``copy_function``, so
+the destination inherits mode ``0555`` and the writer's sibling temp file
+cannot be created inside it. Measured on that tree: ``PermissionError`` out of
+``atomic_write_text``'s ``tempfile.mkstemp``, green in every writable worktree.
 """
 from __future__ import annotations
 
@@ -24,10 +27,21 @@ _SHIPPED_ASSISTANT = (
 )
 
 
+def _copy_shipped_agent(src: Path, dst: Path) -> None:
+    """Copy the shipped agent directory as BYTES, with fresh directory modes."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for path in sorted(src.rglob("*")):
+        target = dst / path.relative_to(src)
+        if path.is_dir():
+            target.mkdir(exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+
+
 def test_shipped_assistant_accepts_configurator_webhook_recipe(tmp_path, caplog):
     agent_dir = tmp_path / "assistant"
-    shutil.copytree(_SHIPPED_ASSISTANT, agent_dir,
-                    copy_function=shutil.copyfile)
+    _copy_shipped_agent(_SHIPPED_ASSISTANT, agent_dir)
     triggers_path = agent_dir / "triggers.yaml"
     assert triggers_path.read_bytes() == (
         _SHIPPED_ASSISTANT / "triggers.yaml").read_bytes()
