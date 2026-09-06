@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.282.0] - 2026-09-06
+
+### Fixed
+
+- The persona admin surface now answers for an installed specialist instead of
+  reporting it absent. Inspecting, rendering or diffing a live specialist's
+  persona returned "not found" on every route, because the views were derived
+  only from resident roles and a specialist never enters that set. Retiring or
+  reloading a specialist now updates those views at the point the change is
+  committed, rather than at the end of the reload, so a retired specialist stops
+  answering even when a later step of the reload fails.
+
 ## [0.281.0] - 2026-09-06
 
 ### Fixed
