@@ -8366,9 +8366,13 @@ async def _report_launch_death(
     lost_texts: list[str] = []
     lost_reservation_texts: list[str] = []
     lost_reservations = 0
+    # #848: whether the disclosure-count read RAISED — an observation made in
+    # its except arm only, never inferred from a zero. Carried out like
+    # `lost_reservations`; read by the rendering below and by nothing else.
+    reservation_count_failed = False
 
     def _snapshot_hook():
-        nonlocal lost_reservations
+        nonlocal lost_reservations, reservation_count_failed
         if driver is None:
             return None
         try:
@@ -8399,6 +8403,7 @@ async def _report_launch_death(
             lost_reservations = _r if type(_r) is int else 0
         except Exception:  # noqa: BLE001 — fail open
             lost_reservations = 0
+            reservation_count_failed = True
         # #691: and the TEXTS of those reservations, where Casa knows them —
         # its own try, so a new accessor's failure costs only the new coverage.
         try:
@@ -8510,13 +8515,21 @@ async def _report_launch_death(
                 f"{_WORKSPACE_RETENTION_DAYS} days so its work can be "
                 "recovered; after that it is deleted."
             )
-        if lost_texts or lost_reservations:
+        # #848: a reservation text that was read is evidence of a lost message
+        # even when the count read raised — the paragraph is posted for it.
+        # The new arm needs BOTH the observed failure and a text: a failed
+        # read alone is never evidence (nothing was read), and a successful
+        # zero beside a text is the driver answering off its own clamp, left
+        # exactly as it was. INV-ENG-017's failed-count clause.
+        if (lost_texts or lost_reservations
+                or (reservation_count_failed and lost_reservation_texts)):
             _budget, _parts = 2800, []
             # #691: the spool population, then the texts of reservations whose
-            # message never became durable. The paragraph's emission condition,
-            # the base sentence above and this paragraph's position after the
-            # retention one are all UNCHANGED — INV-ENG-015's red cases assert
-            # this notice by whole-text equality.
+            # message never became durable. The paragraph's emission condition
+            # with no reservation text involved, the base sentence above and
+            # this paragraph's position after the retention one are all
+            # UNCHANGED — INV-ENG-015's red cases assert this notice by
+            # whole-text equality.
             _bullets = list(lost_texts) + list(lost_reservation_texts)
             for _t in _bullets:
                 _ex = _t if len(_t) <= 400 else _t[:400] + "\u2026"
@@ -8525,10 +8538,16 @@ async def _report_launch_death(
                 _budget -= len(_ex)
                 _parts.append(f"\u2022 {_ex}")
             _more = len(_bullets) - len(_parts)
-            _total = len(lost_texts) + lost_reservations
-            # #664: reservation counts are an upper bound (see the
-            # _finalize_engagement rendering); text-only totals stay exact.
-            _count = f"up to {_total}" if lost_reservations else f"{_total}"
+            if reservation_count_failed and lost_reservation_texts:
+                # #848: the reservation population is quoted but cannot be
+                # counted, so the sentence names no number (see the
+                # _finalize_engagement rendering for why no bound is honest).
+                _count = "An unknown number of"
+            else:
+                _total = len(lost_texts) + lost_reservations
+                # #664: reservation counts are an upper bound (see the
+                # _finalize_engagement rendering); text-only totals stay exact.
+                _count = f"up to {_total}" if lost_reservations else f"{_total}"
             text += (
                 f"\n\n\u26a0\ufe0f {_count} inbound message(s) had no turn "
                 "start recorded before this engagement ended \u2014 they may "
@@ -9008,9 +9027,13 @@ async def _finalize_engagement(
     unread_snapshot: list[str] = []
     reservation_texts: list[str] = []
     lost_reservations = 0
+    # #848: whether the disclosure-count read RAISED — an observation made in
+    # its except arm only, never inferred from a zero. Carried out like
+    # `lost_reservations`; read by the post-flip rendering and nothing else.
+    reservation_count_failed = False
 
     def _terminal_hook():
-        nonlocal lost_reservations
+        nonlocal lost_reservations, reservation_count_failed
         if driver is None:
             return None
         # #807: the queued-text read is ONE optional accessor among eight, and
@@ -9148,9 +9171,10 @@ async def _finalize_engagement(
         except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
             logger.warning(
                 "finalize engagement %s: message-reservation accessor "
-                "failed — reservation disclosure skipped", engagement.id[:8],
+                "failed — reservation count skipped", engagement.id[:8],
                 exc_info=True)
             lost_reservations = 0
+            reservation_count_failed = True
         # Disclosure covers BOTH populations at any age; the veto counts only
         # in-flight young enough to still be arriving (see the driver's
         # in_flight_blocking_depth — an unbounded veto here could make a
@@ -9165,7 +9189,9 @@ async def _finalize_engagement(
         # counted. Its OWN try, like every accessor beside it: this read is new
         # and its failure must cost only the new coverage. It contributes
         # nothing to the veto (the raw count above already does) and nothing to
-        # the totals (below) — only bullets.
+        # the totals (below) — only bullets; #848: when the count read above
+        # RAISED, these texts are the only evidence the population has, and
+        # the rendering posts them under a sentence that names no number.
         try:
             _rt = (driver.inbound_reservation_texts(engagement.id)
                    if hasattr(driver, "inbound_reservation_texts") else [])
@@ -9421,7 +9447,15 @@ async def _finalize_engagement(
                 # notification and semantic memory) and BOUNDED to one
                 # message: excerpts + count, full texts stay in the durable
                 # spool file.
-                if unread_snapshot or lost_reservations:
+                # #848: a reservation text that was read is evidence of a
+                # lost message even when the count read raised — the
+                # paragraph is posted for it. The new arm needs BOTH the
+                # observed failure and a text: a failed read alone is never
+                # evidence (nothing was read), and a successful zero beside
+                # a text is the driver answering off its own clamp, left
+                # exactly as it was. INV-ENG-017's failed-count clause.
+                if (unread_snapshot or lost_reservations
+                        or (reservation_count_failed and reservation_texts)):
                     _budget = 2800
                     _parts = []
                     # #691: the spool population first, in its existing order
@@ -9461,9 +9495,20 @@ async def _finalize_engagement(
                     # in the enqueue-to-release window, so a total that
                     # includes reservations is an upper bound and the copy
                     # says so; a text-only total keeps the exact claim.
-                    _total = len(unread_snapshot) + lost_reservations
-                    _count = (f"up to {_total}" if lost_reservations
-                              else f"{_total}")
+                    if reservation_count_failed and reservation_texts:
+                        # #848: the reservation population is quoted but
+                        # cannot be counted. No bound is honest here: "up to"
+                        # is false whenever a text-less reservation the
+                        # failed read would have counted exists, and "at
+                        # least" is false when the exclusion read ALSO failed
+                        # (it fails open to "suppress nothing", so a held
+                        # text can sit beside its own spool envelope). So the
+                        # sentence names no number; the bullets stay.
+                        _count = "An unknown number of"
+                    else:
+                        _total = len(unread_snapshot) + lost_reservations
+                        _count = (f"up to {_total}" if lost_reservations
+                                  else f"{_total}")
                     summary_text += (
                         f"\n\n⚠️ {_count} inbound message(s) "
                         "had no turn start recorded before this engagement "
