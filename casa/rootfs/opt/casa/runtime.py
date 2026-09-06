@@ -139,16 +139,65 @@ class CasaRuntime:
     # Appended, per this file's convention that new defaulted fields go last.
     webhook_global_secret_usable: bool = False
 
+    def _activated_specialist_configs(self) -> list:
+        """The enabled specialists whose binding has been ACTIVATED, in
+        ascending registry-slug order (#673).
+
+        Specialists never enter ``role_configs`` (boot builds it from
+        residents; ``reload.py`` writes it only under ``tier == "resident"``),
+        so the registry's own snapshot is the only place a specialist's
+        ``persona_pack``/``binding``/``compiled_prompt_bundle`` lives.
+        ``all_configs()`` is a defensive copy of the ENABLED configs only —
+        that, and nothing else, is what drops a retired specialist from the
+        maps once its re-scan commits.
+
+        ``binding is None`` means the binding was never activated (a
+        pending-configuration or legacy specialist:
+        ``specialist_install.activate_binding_for_config`` sets
+        ``persona_pack``, ``binding`` and ``compiled_prompt_bundle``
+        together, or none of them). Such a specialist yields NO row in ANY of
+        the four maps — including ``role_slots``, whose presence alone would
+        flip ``persona diff`` from 404 to a 200 naming a null current persona
+        for a half-configured agent.
+
+        Narrow stand-ins are tolerated WITHOUT a blanket ``except``: a
+        ``None`` registry and a non-callable accessor fail ``callable()``, and
+        a ``MagicMock``'s ``all_configs()`` returns a ``MagicMock``, which is
+        not a ``Mapping``. Swallowing a real registry's exception here would
+        silently empty the specialist half of every map in production, which
+        is the defect this method exists to prevent.
+        """
+        from collections.abc import Mapping as _Mapping
+
+        registry = getattr(self, "specialist_registry", None)
+        all_configs = getattr(registry, "all_configs", None)
+        if not callable(all_configs):
+            return []
+        configs = all_configs()
+        if not isinstance(configs, _Mapping):
+            return []
+        return [cfg for _slug, cfg in sorted(configs.items())
+                if getattr(cfg, "binding", None) is not None]
+
     def refresh_personality_maps(self) -> None:
-        """Re-derive the four personality maps from ``role_configs`` and
-        REBIND them as fresh read-only views (GH #356).
+        """Re-derive the four personality maps from ``role_configs`` and the
+        activated specialist registry snapshot, and REBIND them as fresh
+        read-only views (GH #356, #673).
 
         Single source of truth for the derivation: boot (casa_core) calls
-        this right after constructing the runtime, and every reload path
-        calls it synchronously after mutating ``role_configs`` — otherwise
-        a hot-added resident is dispatchable while ``casactl persona
-        inspect/render/diff`` 404s for its role until restart (and an
-        evicted one stays inspectable).
+        this right after constructing the runtime, every reload path calls it
+        synchronously after mutating ``role_configs``, and every path that
+        commits a specialist registry generation calls it once the awaited
+        re-scan RETURNS (#673) — otherwise a hot-added resident or a
+        just-installed specialist is dispatchable while ``casactl persona
+        inspect/render/diff`` 404s for its role until restart (and an evicted
+        or retired one stays inspectable).
+
+        The registry publishes its new generation inside a worker thread, so
+        the span between that publication and the reload coroutine's
+        resumption is not covered, and a reload cancelled while suspended in
+        that ``to_thread`` skips its refresh entirely; both leave the maps on
+        the previous generation until a later refresh.
 
         Pure in-memory derivation — no I/O, no await point — so callers on
         the event loop can invoke it between a ``role_configs`` mutation
@@ -167,7 +216,20 @@ class CasaRuntime:
         # fields; the default tolerates the narrow SimpleNamespace stand-ins
         # test harnesses seed role_configs with (same "absent → skip"
         # semantics either way).
-        for cfg in self.role_configs.values():
+        # #673: specialists FIRST, residents LAST, through one loop body, so
+        # there is one derivation rule rather than two. `persona_packs` is the
+        # only map where the two can collide — it is keyed `id@version` across
+        # ALL agents, while the other three key by `cfg.role_id` and
+        # `resident:<slot>`/`specialist:<slug>` are disjoint namespaces. Last
+        # writer wins, so a RESIDENT's pack wins any shared ref and the
+        # widening is strictly additive: no `persona inspect <ref>` that
+        # answered correctly before returns different bytes now (`inspect`
+        # exposes the checksum, so a wrong winner would be observable). Among
+        # specialists the ascending-slug order above makes the residual choice
+        # deterministic — the greatest slug wins — rather than dependent on
+        # registry scan order.
+        for cfg in (*self._activated_specialist_configs(),
+                    *self.role_configs.values()):
             role_slot = getattr(cfg, "role_slot", None)
             if role_slot is None:
                 continue
