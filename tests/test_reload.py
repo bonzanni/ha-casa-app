@@ -3572,3 +3572,258 @@ class TestPersonalityMapRefresh:
         # Maps describe the config the now-live agent runs — not the old one.
         assert runtime.compiled_prompt_bundles["ellen"] is new_cfg.compiled_prompt_bundle
         assert runtime.bindings["ellen"] is new_cfg.binding
+
+
+class TestSpecialistGenerationRefresh:
+    """#673: the four personality maps derive from the specialist registry as
+    well as from `role_configs`, so every scope that COMMITS a registry
+    generation must publish it to the maps before its next await or failure —
+    otherwise the persona admin surface answers from a generation the registry
+    has already replaced (a retired specialist that still renders, a live one
+    that 404s).
+
+    Each test drives one of the four `specialist_registry.load` sites and
+    observes the maps at the earliest point AFTER the load at which the site
+    can diverge — a return, or a real failure the file already raises there —
+    because at a successful return the end-of-scope catch-all
+    (`_refresh_role_map`) would mask the placement under test.
+    """
+
+    @staticmethod
+    def _spec_cfg(role_id: str = "specialist:mtg"):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            role=role_id.split(":", 1)[1], role_id=role_id,
+            character=SimpleNamespace(name="Mtg", card=""),
+            triggers=[], channels=[],
+            memory=SimpleNamespace(read_strategy="per_turn"),
+            role_slot=SimpleNamespace(role_id=role_id),
+            persona_pack=SimpleNamespace(persona_id="casa/judge", version="0.1.0"),
+            binding=SimpleNamespace(persona_id="casa/judge", persona_version="0.1.0"),
+            compiled_prompt_bundle=SimpleNamespace(role_id=role_id),
+        )
+
+    class _Registry:
+        """A registry stand-in whose `load()` COMMITS a new generation: it
+        replaces its whole snapshot, exactly as `SpecialistRegistry.load`
+        rebinds `_configs` at the end of its scan."""
+
+        def __init__(self, *, before=None, after=None):
+            self._configs = dict(before or {})
+            self._after = dict(after or {})
+            self.loads = 0
+
+        def load(self, roles_dir=None):
+            self.loads += 1
+            self._configs = dict(self._after)
+
+        def all_configs(self):
+            return dict(self._configs)
+
+        def load_failures(self):
+            return []
+
+        def disabled_roles(self):
+            return []
+
+        def is_disabled(self, role):
+            return False
+
+    @staticmethod
+    def _counts(runtime):
+        return (len(runtime.role_slots), len(runtime.bindings),
+                len(runtime.compiled_prompt_bundles), len(runtime.persona_packs))
+
+    async def test_triggers_scope_publishes_the_generation_it_commits(
+        self, tmp_path, monkeypatch,
+    ):
+        """`_reload_triggers_locked`'s specialist branch loads the registry and
+        RETURNS — it reaches no `_refresh_role_map`, so the return is the
+        observation point and removing its refresh leaves the maps empty."""
+        from types import SimpleNamespace
+
+        from reload import dispatch, register_handler, reload_triggers
+        register_handler("triggers", reload_triggers)
+
+        agents_dir = tmp_path / "agents"
+        (agents_dir / "specialists" / "mtg").mkdir(parents=True)
+        monkeypatch.setattr("agent_loader.load_agent_from_dir",
+                            lambda *a, **kw: SimpleNamespace(triggers=[], channels=[]))
+        monkeypatch.setattr("policies.load_policies", lambda *a, **kw: MagicMock())
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        runtime.specialist_registry = self._Registry(after={"mtg": self._spec_cfg()})
+        runtime.trigger_registry.reregister_for = MagicMock()
+        runtime.refresh_personality_maps()
+        assert self._counts(runtime) == (0, 0, 0, 0)  # precondition
+
+        result = await dispatch("triggers", runtime=runtime, role="mtg")
+
+        assert result["status"] == "ok", result
+        assert runtime.specialist_registry.loads == 1
+        assert self._counts(runtime) == (1, 1, 1, 1)
+        assert "specialist:mtg" in runtime.compiled_prompt_bundles
+
+    async def test_retirement_publishes_before_the_agent_registry_rebuild(
+        self, monkeypatch,
+    ):
+        """`_retire_disabled_specialist` re-scans, then rebuilds the
+        AgentRegistry — and that rebuild RAISES before `_refresh_role_map`
+        (`agent_registry_rebuild_failed`). Without a refresh at the re-scan a
+        retired specialist keeps answering `render`/`inspect` after the
+        failure."""
+        import agent_registry
+        import reload as reload_mod
+
+        runtime = _make_runtime()
+        runtime.specialist_registry = self._Registry(
+            before={"mtg": self._spec_cfg()}, after={})
+        runtime.refresh_personality_maps()
+        assert self._counts(runtime) == (1, 1, 1, 1)  # precondition: it answers
+
+        async def _no_teardown(actions, rt, role, *, suffix=""):
+            return None
+
+        def _build_fails(**kwargs):
+            raise ValueError("rebuild says no")
+
+        monkeypatch.setattr(reload_mod, "_teardown_disabled_specialist", _no_teardown)
+        monkeypatch.setattr(agent_registry.AgentRegistry, "build", _build_fails)
+
+        with pytest.raises(reload_mod.ReloadError) as excinfo:
+            await reload_mod._retire_disabled_specialist(
+                [], runtime, "mtg", roles_dir="/x", context="test")
+
+        assert excinfo.value.kind == "agent_registry_rebuild_failed"
+        assert runtime.specialist_registry.loads == 1
+        assert self._counts(runtime) == (0, 0, 0, 0)
+
+    async def test_agent_scope_publishes_before_a_failing_bus_registration(
+        self, tmp_path, monkeypatch,
+    ):
+        """`reload_agent`'s specialist arm re-scans inside its swap window;
+        the bus registration between that scan and `_refresh_role_map` can
+        raise, and then the catch-all never runs."""
+        import reload as reload_mod
+
+        agents_dir = tmp_path / "agents"
+        (agents_dir / "specialists" / "mtg").mkdir(parents=True)
+        # The loader's return feeds `AgentRegistry.build`, which reads
+        # `character` — a bare namespace would fail there instead of at the
+        # seam under test.
+        monkeypatch.setattr("agent_loader.load_agent_from_dir",
+                            lambda *a, **kw: self._spec_cfg())
+        monkeypatch.setattr("policies.load_policies", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(reload_mod, "_construct_agent", lambda **kw: MagicMock())
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        runtime.specialist_registry = self._Registry(after={"mtg": self._spec_cfg()})
+        runtime.bus.register = MagicMock(side_effect=ValueError("bus says no"))
+        runtime.refresh_personality_maps()
+        assert self._counts(runtime) == (0, 0, 0, 0)  # precondition
+
+        with pytest.raises(ValueError, match="bus says no"):
+            await reload_mod.reload_agent(runtime, role="mtg")
+
+        assert runtime.specialist_registry.loads == 1
+        assert self._counts(runtime) == (1, 1, 1, 1)
+
+    async def test_agents_sweep_publishes_before_the_registry_rebuild(
+        self, tmp_path, monkeypatch,
+    ):
+        """The sweep's own catch-all sits at the END, behind the backfill and
+        the retirement teardowns; the AgentRegistry rebuild it runs right after
+        the committed re-scan raises before any of them. The resident add and
+        evict arms of this same sweep already refresh in the synchronous
+        stretch of their mutation (`reload.py:1977`, `:2022`) — this pins the
+        specialist arm to the same rule."""
+        import agent_registry
+        import reload as reload_mod
+
+        agents_dir = tmp_path / "agents"
+        (agents_dir / "specialists" / "mtg").mkdir(parents=True)
+        monkeypatch.setattr("policies.load_policies", lambda *a, **kw: MagicMock())
+
+        def _build_fails(**kwargs):
+            raise ValueError("rebuild says no")
+
+        monkeypatch.setattr(agent_registry.AgentRegistry, "build", _build_fails)
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        runtime.specialist_registry = self._Registry(after={"mtg": self._spec_cfg()})
+        runtime.refresh_personality_maps()
+        assert self._counts(runtime) == (0, 0, 0, 0)  # precondition
+
+        with pytest.raises(reload_mod.ReloadError) as excinfo:
+            await reload_mod.reload_agents(runtime)
+
+        assert excinfo.value.kind == "agent_registry_rebuild_failed"
+        assert runtime.specialist_registry.loads == 1
+        assert self._counts(runtime) == (1, 1, 1, 1)
+
+    async def test_a_failing_refresh_is_a_named_row_and_never_aborts_its_caller(
+        self, tmp_path, monkeypatch,
+    ):
+        """The added refresh is guarded log-don't-fail with a named row, the
+        way `_refresh_role_map` already guards this same call (`:1070`). An
+        unguarded call would abort the agents sweep before its
+        disabled-specialist retirement arm — so this pins the guard, not the
+        style."""
+        agents_dir = tmp_path / "agents"
+        (agents_dir / "specialists" / "mtg").mkdir(parents=True)
+        monkeypatch.setattr("policies.load_policies", lambda *a, **kw: MagicMock())
+        import reload as reload_mod
+        monkeypatch.setattr(reload_mod, "_construct_agent", lambda **kw: MagicMock())
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        runtime.specialist_registry = self._Registry(after={"mtg": self._spec_cfg()})
+
+        def _boom():
+            raise ValueError("derivation says no")
+
+        runtime.refresh_personality_maps = _boom
+
+        result = await reload_mod.reload_agents(runtime)
+
+        assert "refresh_personality_maps_failed" in result
+        # The sweep still reached everything downstream of the refresh.
+        assert "rebuild_agent_registry" in result
+        assert "added_specialist_mtg" in result
+
+    async def test_a_failing_refresh_is_a_named_row_on_the_triggers_scope_too(
+        self, tmp_path, monkeypatch,
+    ):
+        from types import SimpleNamespace
+
+        from reload import dispatch, register_handler, reload_triggers
+        register_handler("triggers", reload_triggers)
+
+        agents_dir = tmp_path / "agents"
+        (agents_dir / "specialists" / "mtg").mkdir(parents=True)
+        monkeypatch.setattr("agent_loader.load_agent_from_dir",
+                            lambda *a, **kw: SimpleNamespace(triggers=[], channels=[]))
+        monkeypatch.setattr("policies.load_policies", lambda *a, **kw: MagicMock())
+
+        runtime = _make_runtime()
+        runtime.config_dir = str(tmp_path)
+        runtime.agents_dir = str(agents_dir)
+        runtime.specialist_registry = self._Registry(after={"mtg": self._spec_cfg()})
+        runtime.trigger_registry.reregister_for = MagicMock()
+
+        def _boom():
+            raise ValueError("derivation says no")
+
+        runtime.refresh_personality_maps = _boom
+
+        result = await dispatch("triggers", runtime=runtime, role="mtg")
+
+        assert result["status"] == "ok", result
+        assert "refresh_personality_maps_failed" in result["actions"]

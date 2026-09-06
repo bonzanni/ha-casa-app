@@ -787,6 +787,11 @@ async def _reload_triggers_locked(runtime: Any, *, role: str) -> list[str]:
             await asyncio.to_thread(runtime.specialist_registry.load, roles_dir=roles_dir)
         except Exception as exc:  # noqa: BLE001
             raise ReloadError("specialist_reload_failed", str(exc)) from exc
+        # #673: this scope RETURNS from here — it reaches no `_refresh_role_map`
+        # on any path — so without this the maps describe the generation this
+        # branch has already replaced, until some later reload happens to run.
+        _refresh_personality_maps(
+            runtime, secret_actions, context=f"triggers role={role}")
 
     # G-2 hotfix carry-forward: drain pending-reload guard if any.
     try:
@@ -1039,6 +1044,35 @@ def _schedule_prompt_refresh(agent: Any, role: str) -> bool:
     _PROMPT_REFRESH_TASKS.add(task)
     task.add_done_callback(_PROMPT_REFRESH_TASKS.discard)
     return True
+
+
+def _refresh_personality_maps(
+    runtime: Any, actions: list[str], *, context: str,
+) -> None:
+    """#673: publish a just-committed specialist registry generation to the
+    four personality maps.
+
+    The maps derive from the registry's ENABLED snapshot as well as from
+    ``role_configs``, so a generation that is committed but never published to
+    them leaves the persona admin surface answering from the previous one — a
+    retired specialist that still renders, or a live one that 404s. Every
+    caller invokes this once its awaited ``specialist_registry.load`` has
+    RETURNED, on the loop, with no await in between; the derivation is pure
+    and synchronous, so nothing can interleave.
+
+    GUARDED log-don't-fail with a named row, exactly as ``_refresh_role_map``
+    guards this same call below: a map refresh must never decide whether its
+    caller's remaining work runs. An unguarded call here aborts the agents
+    sweep before its disabled-specialist retirement arm — reproduced by both
+    reviewers under fault injection, 2026-09-06 — and INV-CFG-012 records the
+    matching published choice that the personality maps are not among the five
+    states a retirement must remove or report.
+    """
+    try:
+        runtime.refresh_personality_maps()
+    except Exception as exc:  # noqa: BLE001 — log but don't fail the caller
+        logger.warning("personality-map refresh failed (%s): %s", context, exc)
+        actions.append("refresh_personality_maps_failed")
 
 
 def _refresh_role_map(runtime: Any, *, context: str) -> list[str]:
@@ -1347,6 +1381,10 @@ async def _retire_disabled_specialist(
             f"failed, so the registry and the delegation map may still name "
             f"it: {exc}",
         ) from exc
+    # #673: BEFORE the rebuild below, which RAISES past the catch-all refresh
+    # at the end of this function — a retirement whose AgentRegistry rebuild
+    # fails would otherwise leave the retired specialist still renderable.
+    _refresh_personality_maps(runtime, actions, context=context)
     from agent_registry import AgentRegistry
     try:
         runtime.agent_registry = AgentRegistry.build(
@@ -1534,6 +1572,11 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
                 runtime.specialist_registry.load, roles_dir=roles_dir)
         except Exception as exc:  # noqa: BLE001
             raise ReloadError("specialist_reload_failed", str(exc)) from exc
+        # #673: same synchronous stretch as the resident arm's refresh below.
+        # The catch-all at the end of this handler is reached only if the bus
+        # registration and the loop start in between do not raise.
+        _refresh_personality_maps(
+            runtime, actions, context=f"role={role}")
     old_agent = runtime.agents.get(role)  # AR-7: capture before overwrite
     # A:§3.3/§3.4 (r2-B5 enumerated seam): purge+cancel BEFORE the
     # replacement agent becomes dispatchable.
@@ -2064,6 +2107,16 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # admitted from it — a stale "disabled" must not retire a role whose
         # file was meanwhile set back to enabled.
         actions.append("specialist_scan_failed")
+
+    # #673: publish the generation this sweep just committed BEFORE the
+    # rebuild, the backfill and the retirement teardowns below — the sweep's
+    # own catch-all sits at the very end, behind the AgentRegistry rebuild
+    # (which raises) and four await points, and the resident add and evict
+    # arms above already refresh in the synchronous stretch of their own
+    # mutation for exactly this reason.
+    if scan_committed:
+        _refresh_personality_maps(
+            runtime, actions, context="agents sweep re-scan")
 
     # O-2b (v0.37.9): surface per-specialist load failures so casactl
     # callers see them. The registry's load() catches per-dir LoadError
