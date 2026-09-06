@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.283.0] - 2026-09-06
+
+### Fixed
+
+- Shutting the app down, reloading an agent or resetting a conversation no longer
+  leaves a Claude CLI process running behind it when the timing is unlucky. If a
+  conversation was opening a new client at the moment one of those happened, the
+  shutdown closed a placeholder instead of the real client, and the real one —
+  along with its CLI process — stayed connected with nothing able to reclaim it.
+  A reset now flushes the client that actually holds the transcript.
+
 ## [0.282.0] - 2026-09-06
 
 ### Fixed

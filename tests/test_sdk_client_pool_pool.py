@@ -1616,3 +1616,575 @@ async def test_schedule_agent_close_task_ends_at_the_drain_timeout_with_the_lock
         assert old.lock.locked() and not invalidation.done()
     finally:
         await _drain_test_tasks(pool, old, invalidation)
+
+
+# --- #866: a replacement client is recorded BEFORE it connects -------------
+# Declares INV-TURN-011. Every arm asserts COUNTS, never statuses, and every
+# arm is red at the pre-fix tree: there, `turn` publishes the freshly opened
+# client into `_entries` only AFTER `open()` returns, so a close path that
+# enumerated the map first closes the transportless stub, returns, and leaves
+# the real client connected and unreachable.
+
+
+class GatedConnectClient(CountedDisconnectClient):
+    """SDK-boundary fake whose ``connect()`` parks on ``release_connect``.
+
+    Counts COMPLETED connects separately from starts, and tracks ``live`` — 1
+    while a transport exists — as its own field rather than as
+    ``connects - disconnects``, so a disconnect that lands BEFORE the connect
+    completes cannot hide a resurrection (the whole point of arm 8).
+    """
+
+    def __init__(self, options):
+        super().__init__(options)
+        self.connect_completions = 0
+        self.live = 0
+        self.cancels_seen = 0
+        self.connect_started = asyncio.Event()
+        self.release_connect = asyncio.Event()
+        self.suppress_cancel = False
+        self.connect_raises: BaseException | None = None
+
+    async def connect(self):
+        self.connect_started.set()
+        try:
+            await self.release_connect.wait()
+        except asyncio.CancelledError:
+            self.cancels_seen += 1
+            if not self.suppress_cancel:
+                raise
+            await self.release_connect.wait()
+        if self.connect_raises is not None:
+            raise self.connect_raises
+        self.connected = True
+        self.connect_completions += 1
+        self.live = 1
+
+    async def disconnect(self):
+        await super().disconnect()
+        self.live = 0
+
+
+def _mk_gated_pool(registry=None, **kw):
+    """A pool whose SDK clients are ``GatedConnectClient``s, plus the list of
+    the ones actually constructed (``_make_client`` runs inside ``open()``, so
+    an empty list means no connect was ever attempted)."""
+    pool = _mk_pool(registry or FakeRegistry(), **kw)
+    made: list[GatedConnectClient] = []
+
+    def factory(options):
+        made.append(GatedConnectClient(options))
+        return made[-1]
+
+    pool._make_client = factory
+    return pool, made
+
+
+def _start_turn(pool, key, *, binding_digest="", release_options=None):
+    """Start one pooled turn as a task. ``release_options``, when given, is an
+    Event the options build parks on — the window before any reservation."""
+
+    async def build_options(is_fresh, resume_sid):
+        if release_options is not None:
+            await release_options.wait()
+        return {"resume": resume_sid}
+
+    async def on_message(_message):
+        return None
+
+    async def go():
+        return await pool.turn(
+            channel_key=key, channel="voice", prompt="p", origin={}, cid="c",
+            build_options=build_options,
+            on_stale_old=lambda snapshot, generation=None: None,
+            on_message=on_message, binding_digest=binding_digest,
+        )
+
+    return asyncio.create_task(go())
+
+
+def _counts(client, pool, returns):
+    """(completed connects, completed disconnects, live transports, queries,
+    mapped entries, normal returns from the close operation)."""
+    return (
+        client.connect_completions, client.disconnect_completions,
+        client.live, len(client.queries), len(pool._entries), returns[0],
+    )
+
+
+async def _await_started(client):
+    await asyncio.wait_for(client.connect_started.wait(), timeout=1)
+
+
+async def _await_made(made, n=1):
+    async def wait():
+        while len(made) < n:
+            await asyncio.sleep(0)
+    await asyncio.wait_for(wait(), timeout=1)
+
+
+async def _await_gone(pool, key):
+    """Wait until a close path has removed ``key`` from the entry map."""
+    async def wait():
+        while key in pool._entries:
+            await asyncio.sleep(0)
+    await asyncio.wait_for(wait(), timeout=1)
+
+
+def _hold_retry(pool):
+    """Gate the turn's SECOND ``_entry_stub`` call, so an arm measures the
+    retired generation rather than a legitimate replacement. Returns the Event
+    that releases it."""
+    gate = asyncio.Event()
+    original = pool._entry_stub
+    calls = [0]
+
+    async def gated(channel_key):
+        calls[0] += 1
+        if calls[0] > 1:
+            await gate.wait()
+        return await original(channel_key)
+
+    pool._entry_stub = gated
+    return gate
+
+
+async def _cleanup_866(pool, made, *tasks, gates=()):
+    """Release every fake gate, give the tasks a bounded chance to finish,
+    cancel what is still pending, consume every result, and drop the pool from
+    the fleet list. Never releases an entry lock a live turn still holds."""
+    from sdk_client_pool import SdkClientPool
+    for gate in gates:
+        gate.set()
+    for client in made:
+        client.release_connect.set()
+        if client.release_disconnect is not None:
+            client.release_disconnect.set()
+    live = [t for t in tasks if t is not None]
+    if live:
+        await asyncio.wait(live, timeout=1)
+        for t in live:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*live, return_exceptions=True)
+    if pool in SdkClientPool._instances:
+        SdkClientPool._instances.remove(pool)
+
+
+async def test_866_arm1_cold_connect_overlapping_pool_close_is_disconnected():
+    """Arm 1 — ``aclose`` overlapping a COLD connect, released only after the
+    close has returned. Kills: deleting the pre-open reservation; deleting the
+    connect cancellation."""
+    pool, made = _mk_gated_pool()
+    key, returns = "voice-cold", [0]
+    turn = _start_turn(pool, key)
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+
+        async def close():
+            await pool.aclose(drain_timeout=0.05)
+            returns[0] += 1
+
+        closing = asyncio.create_task(close())
+        done, pending = await asyncio.wait({closing}, timeout=2)
+        assert (len(done), len(pending)) == (1, 0), "pool close did not return"
+        assert closing.exception() is None
+        assert _counts(client, pool, returns) == (0, 1, 0, 0, 0, 1)
+
+        client.release_connect.set()
+        await asyncio.wait({turn}, timeout=2)
+        assert _counts(client, pool, returns) == (0, 1, 0, 0, 0, 1)
+        assert client.cancels_seen == 1
+    finally:
+        await _cleanup_866(pool, made, turn, closing)
+
+
+async def test_866_arm2_warm_replacement_overlapping_pool_close_is_disconnected():
+    """Arm 2 — the same window entered by a WARM entry made non-reusable by a
+    ``binding_digest`` change. A fix scoped to a cold connect misses this."""
+    reg = FakeRegistry()
+    reg.data["voice-warm"] = {"sdk_session_id": "sid", "last_active": "x",
+                              "binding_digest": "old"}
+    pool, made = _mk_gated_pool(reg)
+    key, returns = "voice-warm", [0]
+
+    old_entry = await pool._entry_stub(key)
+    old_client = GatedConnectClient(None)
+    old_client.connected = True
+    old_client.connect_completions = 1
+    old_client.live = 1
+    old_entry._client = old_client
+    old_entry.state = "warm"
+    old_entry.sid = "sid"
+    old_entry.binding_digest = "old"
+
+    turn = _start_turn(pool, key, binding_digest="new")
+    closing = None
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+        # The old generation was flushed before the retain, as it always was.
+        assert (old_client.connect_completions, old_client.disconnect_completions,
+                old_client.live, len(old_client.queries)) == (1, 1, 0, 0)
+
+        async def close():
+            await pool.aclose(drain_timeout=0.05)
+            returns[0] += 1
+
+        closing = asyncio.create_task(close())
+        done, pending = await asyncio.wait({closing}, timeout=2)
+        assert (len(done), len(pending)) == (1, 0), "pool close did not return"
+        assert _counts(client, pool, returns) == (0, 1, 0, 0, 0, 1)
+
+        client.release_connect.set()
+        await asyncio.wait({turn}, timeout=2)
+        assert _counts(client, pool, returns) == (0, 1, 0, 0, 0, 1)
+    finally:
+        await _cleanup_866(pool, made + [old_client], turn, closing)
+
+
+async def test_866_arm3_invalidate_all_overlapping_connect_disconnects_it():
+    """Arm 3 — ``invalidate_all`` overlapping a connect. It never sets the
+    closing flag, so a closing-flag re-check does not reach this arm. The
+    retry is held at the second ``_entry_stub`` so the counts describe the
+    RETIRED generation, not a legitimate replacement."""
+    pool, made = _mk_gated_pool()
+    key, returns = "voice-inv", [0]
+    retry = _hold_retry(pool)
+    turn = _start_turn(pool, key)
+    invalidating = None
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+
+        async def invalidate():
+            await pool.invalidate_all()
+            returns[0] += 1
+
+        invalidating = asyncio.create_task(invalidate())
+        await _await_gone(pool, key)
+
+        client.release_connect.set()
+        done, pending = await asyncio.wait({invalidating}, timeout=2)
+        assert (len(done), len(pending)) == (1, 0), "invalidate_all did not return"
+        assert invalidating.exception() is None
+        assert _counts(client, pool, returns) == (1, 1, 0, 0, 0, 1)
+    finally:
+        await _cleanup_866(pool, made, turn, invalidating, gates=(retry,))
+
+
+async def test_866_arm4_close_key_overlapping_connect_disconnects_it():
+    """Arm 4 — ``close_key``, the /new reset listener, overlapping a connect.
+    It never sets the closing flag either, and AR-4's guarantee is that the
+    disconnect is what flushes the transcript — so the object it disconnects
+    must be the one that holds it."""
+    pool, made = _mk_gated_pool()
+    key, returns = "voice-reset", [0]
+    retry = _hold_retry(pool)
+    turn = _start_turn(pool, key)
+    resetting = None
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+
+        async def reset():
+            await pool.close_key(key)
+            returns[0] += 1
+
+        resetting = asyncio.create_task(reset())
+        await _await_gone(pool, key)
+
+        client.release_connect.set()
+        done, pending = await asyncio.wait({resetting}, timeout=2)
+        assert (len(done), len(pending)) == (1, 0), "close_key did not return"
+        assert resetting.exception() is None
+        assert _counts(client, pool, returns) == (1, 1, 0, 0, 0, 1)
+    finally:
+        await _cleanup_866(pool, made, turn, resetting, gates=(retry,))
+
+
+async def test_866_arm5_close_cancelled_mid_drain_still_leaves_no_live_client():
+    """Arm 5 — the pool close is CANCELLED during its lock drain (what
+    ``_shutdown_cleanup``'s outer bound does). The turn, having lost ownership,
+    must still disconnect the client it opened. Kills: deleting ``_drop`` from
+    the failed post-open ownership branch."""
+    pool, made = _mk_gated_pool()
+    key, returns = "voice-cancel", [0]
+    turn = _start_turn(pool, key)
+    closing = None
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+
+        async def close():
+            await pool.aclose(drain_timeout=5)
+            returns[0] += 1
+
+        closing = asyncio.create_task(close())
+
+        async def draining():
+            while not pool._draining:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(draining(), timeout=1)
+
+        closing.cancel()
+        await asyncio.gather(closing, return_exceptions=True)
+
+        client.release_connect.set()
+        await asyncio.wait({turn}, timeout=2)
+        assert _counts(client, pool, returns) == (1, 1, 0, 0, 0, 0)
+    finally:
+        await _cleanup_866(pool, made, turn, closing)
+
+
+async def test_866_arm6_force_close_hook_receives_the_connecting_generation():
+    """Arm 6 — the force-close hook (#853's seam, and #847's prospective
+    consumer) must be handed the client that actually holds a transport, not
+    the transportless stub. Pins hook identity, not log wording."""
+    hook_calls: list[tuple] = []
+    pool, made = _mk_gated_pool(
+        on_force_close=lambda key, entry: hook_calls.append(
+            (key, entry, entry._client)),
+    )
+    key, returns = "voice-hook", [0]
+    turn = _start_turn(pool, key)
+    closing = None
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+
+        async def close():
+            await pool.aclose(drain_timeout=0.05)
+            returns[0] += 1
+
+        closing = asyncio.create_task(close())
+        done, pending = await asyncio.wait({closing}, timeout=2)
+        assert (len(done), len(pending)) == (1, 0), "pool close did not return"
+
+        assert len(hook_calls) == 1
+        assert sum(k == key and raw is client for k, _entry, raw in hook_calls) == 1
+        assert _counts(client, pool, returns) == (0, 1, 0, 0, 0, 1)
+
+        client.release_connect.set()
+        await asyncio.wait({turn}, timeout=2)
+        assert _counts(client, pool, returns) == (0, 1, 0, 0, 0, 1)
+    finally:
+        await _cleanup_866(pool, made, turn, closing)
+
+
+async def test_866_arm7_closing_set_while_membership_remains_refuses_the_turn():
+    """Arm 7 — the closing flag is set with the reservation STILL mapped (the
+    window between ``aclose``'s unlocked write and its snapshot). This is the
+    only arm that can kill a mutant deleting the closing conjunct of the
+    post-open ownership check: ``aclose`` clears the map before its first drain
+    wait, so every other arm is decided by map identity alone."""
+    from sdk_client_pool import PoolUnavailable
+
+    pool, made = _mk_gated_pool()
+    key, returns = "voice-flag", [0]
+    turn = _start_turn(pool, key)
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+
+        pool._closing = True                 # no close is running
+        client.release_connect.set()
+        await asyncio.wait({turn}, timeout=2)
+        assert _counts(client, pool, returns) == (1, 1, 0, 0, 0, 0)
+        assert isinstance(turn.exception(), PoolUnavailable)
+    finally:
+        await _cleanup_866(pool, made, turn)
+
+
+async def test_866_arm8_a_connect_that_suppresses_cancellation_is_still_cut():
+    """Arm 8 — the connect catches the cancellation and completes anyway. The
+    only arm that kills a mutant deleting the join on the connect task: without
+    it the close disconnects and returns BEFORE the transport exists, and the
+    connect then establishes a live one nobody owns."""
+    pool, made = _mk_gated_pool()
+    key, returns = "voice-suppress", [0]
+    hook = asyncio.Event()
+    pool.on_force_close = lambda k, e: hook.set()
+    turn = _start_turn(pool, key)
+    closing = None
+    try:
+        await _await_made(made)
+        client = made[0]
+        client.suppress_cancel = True
+        await _await_started(client)
+
+        async def close():
+            await pool.aclose(drain_timeout=0.05)
+            returns[0] += 1
+
+        closing = asyncio.create_task(close())
+        await asyncio.wait_for(hook.wait(), timeout=2)
+        # Give the close a bounded window to (wrongly) finish while the
+        # connect is still gated. Waiting on the cancellation being *seen*
+        # would make the base red for an incidental timeout instead.
+        await asyncio.wait({closing}, timeout=0.2)
+        assert (returns[0], client.connect_completions,
+                client.disconnect_completions, client.live,
+                client.cancels_seen) == (0, 0, 0, 0, 1)
+        assert len(client.queries) == 0
+        assert len(pool._entries) == 0
+
+        client.release_connect.set()
+        done, pending = await asyncio.wait({closing}, timeout=2)
+        assert (len(done), len(pending)) == (1, 0), "pool close did not return"
+        await asyncio.wait({turn}, timeout=2)
+        assert _counts(client, pool, returns) == (1, 1, 0, 0, 0, 1)
+    finally:
+        await _cleanup_866(pool, made, turn, closing)
+
+
+async def test_866_arm9_closing_before_the_reservation_opens_no_client():
+    """Arm 9 — the closing flag is set while the turn is still building its
+    options, before any reservation. Nothing may be connected at all. Kills a
+    mutant deleting the closing conjunct of the PRE-open reservation."""
+    from sdk_client_pool import PoolUnavailable
+
+    pool, made = _mk_gated_pool()
+    key = "voice-preclose"
+    options = asyncio.Event()
+    turn = _start_turn(pool, key, release_options=options)
+    try:
+        async def building():
+            while key not in pool._entries:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(building(), timeout=1)
+
+        pool._closing = True                 # the stub is still mapped
+        options.set()
+        await asyncio.wait({turn}, timeout=2)
+        # No SDK client was ever constructed, so none can leak.
+        assert (len(made), len(pool._entries)) == (0, 1)
+        assert isinstance(turn.exception(), PoolUnavailable)
+    finally:
+        await _cleanup_866(pool, made, turn, gates=(options,))
+
+
+async def test_866_arm10_a_reset_before_the_reservation_opens_no_client():
+    """Arm 10 — ``close_key`` pops the stub while the turn is still building
+    its options. Kills a mutant deleting the identity conjunct of the PRE-open
+    reservation."""
+    pool, made = _mk_gated_pool()
+    key = "voice-prereset"
+    options = asyncio.Event()
+    retry = _hold_retry(pool)
+    turn = _start_turn(pool, key, release_options=options)
+    resetting = None
+    try:
+        async def building():
+            while key not in pool._entries:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(building(), timeout=1)
+
+        resetting = asyncio.create_task(pool.close_key(key))
+        await _await_gone(pool, key)
+
+        options.set()
+        done, pending = await asyncio.wait({resetting}, timeout=2)
+        # No SDK client was ever constructed, so none can leak.
+        assert (len(made), len(pool._entries)) == (0, 0)
+        assert (len(done), len(pending)) == (1, 0), "close_key did not return"
+        assert resetting.exception() is None
+    finally:
+        await _cleanup_866(pool, made, turn, resetting, gates=(options, retry))
+
+
+async def test_866_arm11_a_failed_connect_strands_no_map_entry():
+    """Arm 11 — the connect raises. The reservation must not be left behind as
+    a dead map entry. Kills a mutant deleting ``_drop`` from the open-failure
+    branch. Red at the pre-fix tree too, where the STUB is stranded instead."""
+    pool, made = _mk_gated_pool()
+    key = "voice-openfail"
+    turn = _start_turn(pool, key)
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+        client.connect_raises = RuntimeError("connect failed")
+        client.release_connect.set()
+
+        await asyncio.wait({turn}, timeout=2)
+        assert isinstance(turn.exception(), RuntimeError)
+        assert (client.connect_completions, client.disconnect_completions,
+                client.live, len(pool._entries)) == (0, 1, 0, 0)
+    finally:
+        await _cleanup_866(pool, made, turn)
+
+
+async def test_force_close_warning_says_whether_there_was_a_transport(caplog):
+    """#866: the force-close warning named a key and claimed a cut it had
+    often not made — the object it force-closed was the transportless stub.
+    It now reports which, so an operator reading the line can tell an
+    interrupted turn from a bookkeeping close. Not part of the frozen red
+    case; the arms there pin hook identity, not log wording."""
+    import logging
+
+    # (a) a turn parked BEFORE its reservation: the stub is what gets forced.
+    pool, made = _mk_gated_pool()
+    options = asyncio.Event()
+    turn = _start_turn(pool, "voice-stub", release_options=options)
+    try:
+        async def mapped():
+            while "voice-stub" not in pool._entries:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(mapped(), timeout=1)
+        with caplog.at_level(logging.WARNING, logger="sdk_client_pool"):
+            await pool.aclose(drain_timeout=0.05)
+        lines = [r.getMessage() for r in caplog.records
+                 if "force close" in r.getMessage()]
+        assert lines == ["pool aclose: drain timeout on voice-stub; "
+                         "force close (transport=False)"]
+        assert len(made) == 0
+    finally:
+        await _cleanup_866(pool, made, turn, gates=(options,))
+
+    # (b) a turn that has connected and is parked in its query, still holding
+    # the entry lock: the reserved client is what gets forced.
+    caplog.clear()
+
+    class _QueryParkingClient(GatedConnectClient):
+        def __init__(self, options):
+            super().__init__(options)
+            self.release_query = asyncio.Event()
+
+        async def query(self, prompt, session_id="default"):
+            await super().query(prompt, session_id)
+            await self.release_query.wait()
+
+    pool, made = _mk_gated_pool()
+    pool._make_client = lambda options: (
+        made.append(_QueryParkingClient(options)) or made[-1])
+    turn = _start_turn(pool, "voice-live")
+    try:
+        await _await_made(made)
+        client = made[0]
+        await _await_started(client)
+        client.release_connect.set()
+
+        async def querying():
+            while not client.queries:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(querying(), timeout=1)
+
+        with caplog.at_level(logging.WARNING, logger="sdk_client_pool"):
+            await pool.aclose(drain_timeout=0.05)
+        lines = [r.getMessage() for r in caplog.records
+                 if "force close" in r.getMessage()]
+        assert lines == ["pool aclose: drain timeout on voice-live; "
+                         "force close (transport=True)"]
+        assert (client.disconnect_completions, client.live) == (1, 0)
+    finally:
+        client.release_query.set()
+        await _cleanup_866(pool, made, turn)

@@ -85,6 +85,17 @@ class ManagedSdkClient:
         # #853: completion of the one transport disconnect this entry ever
         # runs; a later closer joins it (see _disconnect).
         self._close_done: asyncio.Future[None] | None = None
+        # #866: the in-flight connect, for the duration of open(). A closer
+        # that arrives while it runs has no transport to cut yet, so it
+        # cancels and JOINS this task instead (see aclose).
+        self._connect_task: "asyncio.Task | None" = None
+
+    @property
+    def has_transport(self) -> bool:
+        """Is there a live SDK client attached right now? A stub entry and a
+        closed one both answer False — which is what a force-close log line
+        must say rather than claiming a cut it did not make."""
+        return self._client is not None
 
     async def open(self) -> None:
         """Connect under a context that binds origin/cid holders.
@@ -111,6 +122,10 @@ class ManagedSdkClient:
         task = asyncio.get_running_loop().create_task(
             self._connect(), context=ctx,
         )
+        # #866: published for aclose() to cancel and join. Until this returns
+        # there is no transport, so a closer that only disconnected would
+        # return before the transport it meant to cut came into existence.
+        self._connect_task = task
         try:
             await task
         except BaseException:
@@ -119,6 +134,17 @@ class ManagedSdkClient:
             # it via the same path a mid-turn failure uses.
             await self._invalidate()
             raise
+        finally:
+            self._connect_task = None
+        if self._client is None:
+            # #866: a closer detached (and disconnected) this client while the
+            # connect was in flight — it joined the task above, so what it cut
+            # is what this connect established. There is nothing to be warm
+            # about, and the turn must not query it. No red-case arm kills the
+            # removal of this branch (the caller's ownership re-check refuses
+            # the turn anyway); it is here so the lifecycle state stays
+            # coherent, not as a claimed guard.
+            raise asyncio.CancelledError()
         self.state = "warm"
 
     async def _connect(self) -> None:
@@ -265,7 +291,20 @@ class ManagedSdkClient:
         """Idempotent close. Disconnects the transport if this call owns it;
         otherwise joins a disconnect another owner (``_invalidate`` inside the
         turn, an invalidation closer, a concurrent ``aclose``) already
-        started, whatever the lifecycle state."""
+        started, whatever the lifecycle state.
+
+        #866: a connect still in flight is cancelled and JOINED first. Without
+        the join a connect that suppresses the cancellation completes after
+        this call returned and establishes a live transport nobody owns —
+        measured: one live transport, zero queries, and a close that reported
+        success."""
+        task = self._connect_task
+        if task is not None and not task.done():
+            task.cancel()
+            # wait() never cancels its awaitables and never raises the task's
+            # exception; it only tells us the connect has stopped being able
+            # to establish a transport.
+            await asyncio.wait({task})
         if self.state != "closed":
             client, self._client = self._client, None
             self.state = "closed"
@@ -470,8 +509,35 @@ class SdkClientPool:
                     )
                     fresh_client.lock = entry.lock    # keep the held lock
                     fresh_client.sid = resume_sid
+                    # #866: RESERVE this generation in the map BEFORE
+                    # connecting, and never re-create that membership
+                    # afterwards. Every close path removes its target from
+                    # _entries under _pool_lock and only then awaits the entry
+                    # lock, so a client opened while the key was unreserved
+                    # was invisible to a close that had already enumerated —
+                    # it closed the transportless stub, returned, and left a
+                    # live client and its CLI subprocess with no reclaim path.
+                    # Reserving first puts every client the pool opens inside
+                    # the enumeration of any close that follows (INV-TURN-011).
+                    # This is a REPLACEMENT, not an addition: one map entry and
+                    # one lock per key, so a drain pass never meets the same
+                    # lock twice.
+                    reserved = False
+                    async with self._pool_lock:
+                        if (not self._closing
+                                and self._entries.get(channel_key) is entry):
+                            self._entries[channel_key] = fresh_client
+                            reserved = True
+                    if not reserved:
+                        continue      # a close took the key; nothing is open
+                    entry = fresh_client
                     connect_started_ms = self._monotonic() * 1000
-                    await fresh_client.open()
+                    try:
+                        await fresh_client.open()
+                    except BaseException:
+                        # The reservation must not outlive a failed connect.
+                        await self._drop(channel_key, fresh_client)
+                        raise
                     # Finding 4 (final-review): one INFO per successful cold
                     # connect; warm reuse stays silent (hot path).
                     logger.info(
@@ -480,9 +546,24 @@ class SdkClientPool:
                         bool(resume_sid),
                         int(self._monotonic() * 1000 - connect_started_ms),
                     )
+                    # #866: a close may have taken the reservation while the
+                    # connect was in flight. It owns this client and is
+                    # blocked on the lock we still hold, so hand it over
+                    # closed rather than querying a generation something
+                    # already retired. _drop is the with-the-lock-held close
+                    # helper and is generation-checked, so it removes the key
+                    # only in the one case where the key is still ours (the
+                    # window between aclose's unlocked _closing write and its
+                    # snapshot).
+                    still_ours = False
                     async with self._pool_lock:
-                        self._entries[channel_key] = fresh_client
-                    entry = fresh_client
+                        if (not self._closing
+                                and self._entries.get(channel_key)
+                                is fresh_client):
+                            still_ours = True
+                    if not still_ours:
+                        await self._drop(channel_key, fresh_client)
+                        continue
                 if decision.action == "resume":
                     await self._registry.touch(channel_key)
                 publishing = False
@@ -620,7 +701,10 @@ class SdkClientPool:
         unwinds ``aclose`` (it would leave every remaining entry open — the
         defect this helper exists to close). ``entry.aclose()`` is idempotent
         and joins a disconnect already in flight."""
-        logger.warning("pool aclose: drain timeout on %s; force close", key)
+        logger.warning(
+            "pool aclose: drain timeout on %s; force close (transport=%s)",
+            key, entry.has_transport,
+        )
         try:
             self.on_force_close(key, entry)
         except Exception:  # noqa: BLE001 — a hook must not hold the pool open

@@ -119,6 +119,12 @@ keys while the old one drains, so this is an inner ordering only — INV-CONC-00
 the authority that spans pools, and the two together are what make same-key serialization
 true in general. Also not covered: the bus layer above (INV-CONC-001).
 
+Nor does the lock decide *which* generation the map holds. Admission to the map and
+publication of a session id are separate acts inside one unbroken hold of that lock: a
+turn admits its replacement client before connecting (INV-TURN-011) and publishes the
+session id after the turn, so a closer that removes the key always removes the client
+that exists rather than the placeholder that preceded it.
+
 **INV-CONC-004**: Every turn serializes under one per-session-key write gate, held from the resume decision through the session-id publish, regardless of which turn path it takes.
 
 Enforced by `session_write_gate`, a module-level refcounted gate keyed by channel key. Two
