@@ -41,11 +41,14 @@ the artifacts themselves; this module owns only the delivery half of it:
 * **Timed wake** — the worker waits on the kick event with a timeout derived
   from the nearest due ``next_nudge_ts``. A kick-only worker cannot generate
   scheduled work, and the schedule is durable, so a restart resumes it.
-* **Notes** — deliberately asymmetric (spec §10). The budget-exhaustion note
-  is **mark-then-notify** (at-most-once: a lost advisory note beats a
-  crash-looped duplicate, and the unacked attempt file stays visible anyway);
-  a **removal** note is **notify-then-mark** (at-least-once: once the removal
-  record prunes, the note was the operator's only surface).
+* **Notes** — the budget-exhaustion note and the **removal** note are both
+  **notify-then-mark** (at-least-once): the send is OBSERVED and only a
+  confirmed one flips the durable flag, so a note that could not be delivered
+  stays owed and a later pass retries it. The exhaustion note was
+  mark-then-notify until #643 — and its one advisory note died at every boot
+  where the operator channel was not yet ready, which is exactly when the
+  notifier raises. The no-target note stays best-effort (:func:`_note`): its
+  durable backstop is the deferral streak in the attempt file.
 
 **Request-path discipline.** :func:`kick` is O(1) and touches no file: it
 records an in-memory hint and signals the worker. Correctness never depends
@@ -102,6 +105,14 @@ _pending_hints: set[tuple[str, str]] = set()
 # Cleared only on a confirmed mark; lost to a crash = one duplicate DM.
 _removal_sent_unmarked: "set[str]" = set()
 
+# #643: the same discipline for the EXHAUSTION note, keyed ``(plugin, hash)``.
+# Plugin-qualified because two plugins can hold the same flow handle, and a
+# hash-only key would swallow the second one's note. The key goes in BEFORE the
+# mark is awaited, so a cancellation there cannot lose the fact that the note
+# already left. A stale key can never block a NEW record: a handle is
+# ``sha256(state)`` over a freshly minted state, so no later attempt reuses one.
+_exhaustion_sent_unmarked: "set[tuple[str, str]]" = set()
+
 
 def configure(*, dispatch, resolve_registry_entry, get_spool,
               notify_operator=None, sleep=asyncio.sleep) -> None:
@@ -119,9 +130,10 @@ def configure(*, dispatch, resolve_registry_entry, get_spool,
     _get_spool = get_spool
     _sleep = sleep
     _next_due = None
-    # #532: per-wiring state — a fresh boot's empty set costs at most the
+    # #532/#643: per-wiring state — a fresh boot's empty sets cost at most the
     # documented one-duplicate-per-crash, never a lost notice.
     _removal_sent_unmarked.clear()
+    _exhaustion_sent_unmarked.clear()
     if _kick is None:
         _kick = asyncio.Event()
 
@@ -196,6 +208,28 @@ def _select_nudgeable(spool: Any, now: float) -> list[tuple[str, str, dict]]:
         for h, rec in spool.list_attempts(plugin):
             if _is_nudgeable(spool, plugin, h, rec, now):
                 out.append((plugin, h, rec))
+    return out
+
+
+def _select_unnoted_exhaustions(spool: Any) -> list[tuple[str, str]]:
+    """Every attempt that has spent its budget and still owes its operator
+    note, in the ledger's own deterministic order. Blocking — always called
+    through :func:`asyncio.to_thread`.
+
+    Deliberately NOT :func:`_is_nudgeable`, which excludes exactly these
+    records (the budget gate): folding the two predicates together would make
+    an owed note re-dispatch a seventh nudge. The predicate records HISTORICAL
+    budget exhaustion, so it asks for no due timestamp, no surviving result and
+    no particular outcome — an attempt that spent six dispatches owes the note
+    whatever became of it afterwards. ``noted`` is a real bool in every
+    validated record (``callback_attempts.validate_attempt``), so ``is False``
+    is total."""
+    out: list[tuple[str, str]] = []
+    for plugin in spool.plugins():
+        for h, rec in spool.list_attempts(plugin):
+            if (rec.get("nudges", 0) >= callback_attempts.MAX_NUDGES
+                    and rec.get("noted") is False):
+                out.append((plugin, h))
     return out
 
 
@@ -295,6 +329,7 @@ async def _worker_pass() -> None:
             logger.exception("callback nudge failed unexpectedly (plugin=%s)",
                              plugin)
 
+    await _process_unnoted_exhaustions(spool)
     await _process_removal_records(spool)
 
     try:
@@ -409,13 +444,9 @@ async def _accept(spool: Any, plugin: str, h: str, rec: dict) -> None:
     nxt = callback_attempts.next_nudge_after_accept(rec, now=now,
                                                     anchor_ts=anchor)
     nudges = int(rec.get("nudges", 0)) + 1
-    ok = await asyncio.to_thread(
+    await asyncio.to_thread(
         spool.update_attempt_nudge, plugin, h,
         nudges=nudges, last_nudge_ts=now, next_nudge_ts=nxt, deferrals=0)
-    if not ok:
-        return
-    if nudges >= callback_attempts.MAX_NUDGES and not rec.get("noted"):
-        await _exhaustion_note(spool, plugin, h)
 
 
 async def _defer(spool: Any, plugin: str, h: str, rec: dict) -> None:
@@ -430,25 +461,69 @@ async def _defer(spool: Any, plugin: str, h: str, rec: dict) -> None:
         deferrals=int(rec.get("deferrals", 0)) + 1)
 
 
-async def _exhaustion_note(spool: Any, plugin: str, h: str) -> None:
-    """The budget-exhaustion note: MARK-then-notify (spec §8/§10).
+def _exhaustion_text(plugin: str, h: str) -> str:
+    return (f"Plugin {plugin}: the authorization delivery nudge for handle "
+            f"{h} went unanswered after "
+            f"{callback_attempts.MAX_NUDGES} attempts. The outcome is in "
+            "the plugin's attempt list; ask the agent to read it.")
 
-    ``noted`` goes durable first, so a crash in the window loses one advisory
-    note rather than crash-looping duplicates onto the operator — acceptable
-    precisely because the unacked attempt file itself stays visible to the
-    consumer until its ack or its retention bound. A failed mark therefore
-    suppresses the note as well; there is nothing to retry against, the entry
-    having spent its budget."""
-    marked = await asyncio.to_thread(spool.update_attempt_nudge, plugin, h,
-                                     noted=True)
-    if not marked:
-        logger.warning("callback-attempts: exhaustion mark failed; the "
-                       "operator note is skipped (plugin=%s)", plugin)
-        return
-    await _note(f"Plugin {plugin}: the authorization delivery nudge for handle "
-                f"{h} went unanswered after "
-                f"{callback_attempts.MAX_NUDGES} attempts. The outcome is in "
-                "the plugin's attempt list; ask the agent to read it.")
+
+async def _process_unnoted_exhaustions(spool: Any) -> None:
+    """#643: deliver the budget-exhaustion note for every attempt still owing
+    one — NOTIFY then mark, exactly as the removal path below and as the
+    sibling ``event_episodes._process_unnoted_exhaustions`` (#532).
+
+    Until #643 this was mark-then-notify through the failure-swallowing
+    :func:`_note`, on the argument that a lost advisory note beat a
+    crash-looped duplicate. The argument did not survive contact with the
+    seam: ``casa_core.operator_notify`` RAISES by design whenever the telegram
+    channel is absent or not ready, and the worker's first pass runs before the
+    channels start, so the one window where the note mattered was the one
+    window where it was guaranteed to be swallowed.
+
+    So delivery is OBSERVED: :data:`_notify_operator` is awaited directly, and
+    an absent notifier — which cannot have delivered anything — or a raised
+    send leaves ``noted`` false for a later pass. Only a confirmed send is
+    marked. A note that SENT but whose mark then failed is keyed in
+    :data:`_exhaustion_sent_unmarked`, and later passes retry ONLY the mark;
+    the key is recorded BEFORE the mark is awaited, so a cancellation there
+    cannot lose the fact that the note already left. The key is in memory on
+    purpose: a crash in that window costs the one documented duplicate, never
+    silence. The retry is bounded by the attempt file's own life — the
+    seven-day retention and the ``MAX_ATTEMPTS`` cap retire an owed note with
+    the record it belongs to."""
+    try:
+        owed = await asyncio.to_thread(_select_unnoted_exhaustions, spool)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — a bad plugin dir must not stop the pass
+        logger.exception("callback exhaustion scan failed")
+        owed = []
+    for plugin, h in owed:
+        key = (plugin, h)
+        if key not in _exhaustion_sent_unmarked:
+            if _notify_operator is None:
+                continue                  # undeliverable: leave it un-noted
+            try:
+                await _notify_operator(_exhaustion_text(plugin, h))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — un-noted, retried next pass
+                logger.exception("callback exhaustion note failed (plugin=%s)",
+                                 plugin)
+                continue
+            _exhaustion_sent_unmarked.add(key)
+        try:
+            marked = await asyncio.to_thread(spool.update_attempt_nudge,
+                                             plugin, h, noted=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — sent; only the mark is retried
+            logger.exception("callback exhaustion mark failed (plugin=%s)",
+                             plugin)
+            marked = False
+        if marked:
+            _exhaustion_sent_unmarked.discard(key)
 
 
 # ---------------------------------------------------------------------------
@@ -544,9 +619,11 @@ def _resolve(plugin: str) -> dict | None:
 
 
 async def _note(text: str) -> None:
-    """Best-effort operator note — for the ADVISORY notes only (no-target,
-    budget exhaustion), whose durable record is the attempt file itself. The
-    removal note does NOT come through here: it needs observed delivery."""
+    """Best-effort operator note — for the ADVISORY no-target note ALONE,
+    whose durable record is the deferral streak in the attempt file. Neither
+    the removal note nor (since #643) the budget-exhaustion note comes through
+    here: both need observed delivery, and a swallowed failure would mark a
+    note as sent that never left."""
     if _notify_operator is None:
         return
     try:

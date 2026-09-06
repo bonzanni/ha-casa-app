@@ -521,6 +521,31 @@ async def test_the_sent_unmarked_key_is_plugin_qualified(wired, monkeypatch):
     assert wired.attempt(HASH, plugin=other)["noted"] is False
 
 
+async def test_the_owed_note_does_not_depend_on_which_outcome_ended_it(
+        wired):
+    """The selector records HISTORICAL budget exhaustion, not an outcome: a
+    selector narrowed to one terminal label silently drops the others.
+
+    Added after the red case was accepted, on the acceptor's own measurement —
+    a mutant adding ``outcome == "expired"`` passed all six accepted arms while
+    losing an `expired_unread` attempt's note. The six arms are unchanged.
+    """
+    rec = wired.seed_terminal(outcome="expired_unread",
+                              nudges=callback_attempts.MAX_NUDGES - 1)
+    wired.clock = rec["ended_ts"] + callback_attempts.OUTCOME_PHASE_OFFSETS[0]
+    wired.note_error = RuntimeError("operator notify: telegram channel "
+                                    "not ready")
+    await ce._worker_pass()
+    assert len(wired.dispatches) == 1
+    assert wired.delivered == 0
+    assert wired.attempt(HASH)["noted"] is False
+
+    wired.note_error = None
+    await ce._worker_pass()
+    assert wired.delivered == 1
+    assert wired.attempt(HASH)["noted"] is True
+
+
 async def test_a_cancelled_mark_never_resends_a_delivered_note(
         wired, monkeypatch):
     """Cancellation between a confirmed send and its durable mark: the sent
