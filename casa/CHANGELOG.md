@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.279.0] - 2026-09-06
+
+### Fixed
+
+- When a specialist's failed change leaves clean-up unfinished, Casa now refuses
+  further changes to that specialist instead of accepting one that the next
+  restart would silently undo. The refusal names the unfinished clean-up and says
+  that restarting is what lets start-up recovery finish it, and the message
+  reporting the failed clean-up says the same. While the clean-up is outstanding,
+  every change to that specialist is refused, including repair attempts.
+
 ## [0.278.0] - 2026-09-06
 
 ### Fixed
