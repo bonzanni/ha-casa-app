@@ -69,11 +69,13 @@ itself, while it still holds the spans: the page is emitted with each destinatio
 in the same `label (url)` form, inline while it fits the page's budget and otherwise as the
 page's own text followed by destination-only pages. The spans are page-relative Python
 offsets, so this needs no UTF-16 round trip — the round trip is what the surrogate breaks.
-Those pages also have their lone surrogates replaced one code point for one: the client sends
-a request as UTF-8 form data, so a page still carrying one raises before any request leaves
-the process. Only the pages this arm emits are treated that way. A SINGLE-page reply is
-outside the arm — it is emitted untouched, entities and bytes both, and its senders fall back
-to the text the agent authored, address and all.
+Those pages also have their lone surrogates replaced one code point for one, which keeps the
+inline-fit measurement exact. That replacement is not what makes a reply deliverable, though:
+a SINGLE-page reply is outside the arm — emitted untouched, entities and bytes both, its
+senders falling back to the text the agent authored, address and all — and a page with no
+spans never enters it. Whatever a page still carries, the surrogate is replaced where the
+text leaves for the Bot API, at the channel's request boundary, which
+[`architecture/telegram.md`](telegram.md) owns (INV-TG-009).
 
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
@@ -103,8 +105,10 @@ log line rather than cut into fragments of an address.
 
 What it does not cover: a single-page reply, whose senders fall back to the text the agent
 authored, address and all; a page whose entities Telegram merely rejects, which is the
-sender-side path above; and a page with no spans at all, which does not enter this path and
-keeps its bytes — including a lone surrogate — exactly as before.
+sender-side path above; and a page with no spans at all, which does not enter this path.
+None of those exclusions is a lost reply: a lone surrogate on any page, this arm's or not, is
+replaced at the channel's request boundary before the text is encoded (INV-TG-009 in
+[`architecture/telegram.md`](telegram.md)).
 
 ## Failure behavior
 

@@ -87,6 +87,19 @@ reply. Consumption is tied to success: a send that fails or is cancelled restore
 so the next successful output still threads, and restoring never overwrites a newer target
 set by a later envelope.
 
+**Text leaves for the Bot API through one request seam, and a character the platform cannot
+carry is replaced there.** The client library sends every request as UTF-8 form data, so a
+string parameter still carrying a lone surrogate — a JSON `\ud800` escape in a model or tool
+result decodes to one — would raise before any request left the process: the whole reply in
+block mode, the first page of a streamed one, and the loss classed as unknown so the health
+notice is not re-offered. The channel therefore installs its own request class on the
+ordinary Bot API pool, below every sender — plain and rich, streamed edits, narration, media
+captions — and it replaces each surrogate code point with one U+FFFD, one code point for
+one, so entity offsets computed upstream stay valid. Nothing is normalised at the send
+sites, so a new sender cannot forget it. A value nested inside a JSON-encoded parameter (an
+entity address, a button label) is already an ASCII escape by the time it is serialised and
+is left for the platform to judge; a bot injected for a test is outside the seam.
+
 **A tap is authorised against the request it answers.** Callback data is versioned and
 carries the namespace and request id; resolution is bound to the operator the request was
 posted for. A tap from someone else is refused. Note that the parser still accepts a legacy
@@ -206,6 +219,18 @@ in transport leaves the keyboard standing, and the failure is logged rather than
 (INV-TG-003's caveat applies here too). A tap on such a keyboard is still refused by the
 broker as stale, so what survives is a misleading display, never a wrong outcome.
 
+**INV-TG-009**: The Telegram channel's configured request replaces every surrogate code point in a serialized form-parameter value with one U+FFFD before HTTP encoding, preserving every other character and all multipart file data.
+
+Enforced in the request class the channel installs when it builds its application, which
+hands the client library's transport a view of each request whose string values are
+normalised. It is pinned against the real client library over a mock transport, asserting
+the requests that reach it per sender, and its installation on every rebuild is pinned
+in-process.
+
+What it does not cover: a bot injected from outside the channel; values nested inside
+JSON-encoded parameters, which the library escapes and the platform judges; where the
+surrogate came from; and the polling pool, which carries no Casa-authored text.
+
 **A plain DM message retires the questions this conversation asked, and only those.** The
 order in the DM path is fixed and each step is there for a measured reason: `/new` is
 intercepted first and takes its own reset, which retires both halves of the operator's
@@ -282,6 +307,7 @@ send is available and is not prevented.
 
 **Source**
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel`
+- `casa/rootfs/opt/casa/channels/telegram.py::_SurrogateSafeRequest`
 - `casa/rootfs/opt/casa/channels/telegram.py::_parse_callback_data`
 - `casa/rootfs/opt/casa/casa_core.py::_make_telegram_update_handler`
 - `casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer`
@@ -297,6 +323,8 @@ send is available and is not prevented.
 - `tests/test_telegram_new_reset.py`
 - `tests/test_telegram_supervisor.py`
 - `tests/test_telegram_topic_stream.py`
+- `tests/test_telegram_reconnect.py`
+- `tests/test_telegram_surrogate_boundary.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

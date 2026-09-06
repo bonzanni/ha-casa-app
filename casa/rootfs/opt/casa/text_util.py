@@ -72,6 +72,27 @@ def utf16_len(s: str) -> int:
     return sum(2 if ord(ch) >= 0x10000 else 1 for ch in s)
 
 
+def replace_lone_surrogates(text: str) -> str:
+    """*text* with every surrogate code point (U+D800-U+DFFF) replaced by U+FFFD.
+
+    ONE code point for one, so every Python offset and every UTF-16 unit is
+    preserved: entities computed before the replacement stay valid after it,
+    and a budget measured by :func:`utf16_len` (which counts a lone surrogate
+    and U+FFFD as one unit each) is invariant under it. Deleting instead of
+    replacing would break both.
+
+    Why it exists: python-telegram-bot sends every request as UTF-8 FORM data,
+    so a string parameter still carrying a lone surrogate — a JSON ``\\ud800``
+    escape in a model or tool result decodes to one — raises
+    ``NetworkError(UnicodeEncodeError)`` before any request leaves the process.
+    Two callers: the paginating renderer's conversion-failure arm (#834) and
+    the channel's request boundary below every sender (#846, INV-TG-009)."""
+    if not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join(
+        "\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
+
+
 def utf16_prefix_end(s: str, start: int, budget: int) -> int:
     """Largest index ``end`` such that ``s[start:end]`` fits *budget* UTF-16
     units. Because the budget is spent per-codepoint, the boundary can never

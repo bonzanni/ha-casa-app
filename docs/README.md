@@ -21,7 +21,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | When you are changing… | Read |
 |---|---|
 | Telegram message rendering, pagination and its budgets, link-destination fallback, or the UTF-16 measurement | [`architecture/telegram-rendering.md`](architecture/telegram-rendering.md) |
-| Telegram transport, callback namespaces, or topic output ordering | [`architecture/telegram.md`](architecture/telegram.md) |
+| Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary | [`architecture/telegram.md`](architecture/telegram.md) |
 | a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
 | a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule | [`architecture/scheduled-asks.md`](architecture/scheduled-asks.md) |
