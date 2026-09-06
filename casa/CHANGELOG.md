@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.273.0] - 2026-09-06
+
+### Fixed
+
+- An engagement's closing notice, and the notice posted when an engagement dies
+  during launch, now list every inbound message they could read even when the
+  count of reserved messages could not be read, and say that the number is
+  unknown instead of printing a count that contradicts the messages listed
+  under it — or, when a message was the only thing that could be read, dropping
+  it silently. On today's drivers the count and the messages are read together,
+  so this corrects the seam a driver reports through rather than a notice an
+  operator has seen; the published guarantee for that notice now says exactly
+  what holds when the count read fails. The generated invariant index, which had
+  grown past its size ceiling, is split into three shards.
+
 ## [0.272.0] - 2026-09-06
 
 ### Fixed
