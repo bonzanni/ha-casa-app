@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.278.0] - 2026-09-06
+
+### Fixed
+
+- The reminder tool now states, in its own description, that the text it is
+  given is delivered to the operator exactly as written. Nothing said so before,
+  so a reminder created for a question could store an instruction about a message
+  — buttons and all — and the operator received that instruction as the message.
+  The corpus states the same contract.
+
 ## [0.277.0] - 2026-09-06
 
 ### Fixed
