@@ -1859,3 +1859,58 @@ async def test_expire_due_deletion_preserves_prior_snapshot_on_write_failure(
         _862_TASK, _862_CONTEXT, _862_RESULT,
     )
     assert _862_sentinel_counts(jobs_path) == [1, 1, 1]
+
+
+# ---------------------------------------------------------------------------
+# #688 / INV-JOB-015 — the completion retry carries the SAME answer
+# ---------------------------------------------------------------------------
+
+_ANSWER_688 = "ZQX-answer-688-sentinel"
+
+
+async def test_completion_reconciliation_retries_the_same_answer_after_first_write_failure(
+    tmp_path,
+):
+    """A failed terminal write must not lose the answer after the live notice
+    has already gone out: the registry-owned retry lands the same bounded text,
+    its availability and its obligation."""
+    path = tmp_path / "jobs.json"
+    registry = JobRegistry(
+        path, clock=lambda: 200.0, reconciliation_retry_interval=0.01,
+    )
+    await registry.load()
+    await registry.create(make_job(
+        creator_peer="telegram",
+        creator_user_id=None,
+        origin_route_id=None,
+        origin_device_id=None,
+        execution_state=ExecutionState.RUNNING,
+        started_at=101.0,
+    ))
+
+    seen = []
+    real = registry.finish_compat
+
+    async def _flaky(job_id, result="", *, announce_creator=False):
+        seen.append(result)
+        if len(seen) == 1:
+            raise OSError("snapshot write failed")
+        return await real(job_id, result, announce_creator=announce_creator)
+
+    registry.finish_compat = _flaky
+    registry.schedule_completion_reconciliation(
+        "job-1", _ANSWER_688, announce_creator=True,
+    )
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if registry.get("job-1").execution_state is ExecutionState.SUCCEEDED:
+            break
+    await registry.close()
+
+    assert len(seen) == 2
+    assert seen == [_ANSWER_688, _ANSWER_688]
+    row = registry.get("job-1")
+    assert row.result == _ANSWER_688
+    assert row.result_available is True
+    assert row.terminal_notification_pending is True
+    assert path.read_bytes().count(_ANSWER_688.encode()) == 1

@@ -88,7 +88,8 @@ async def test_a_row_without_the_terminal_marker_decodes_as_owing_nothing(
 
 async def test_an_armed_terminal_survives_the_snapshot(tmp_path):
     registry = await _registry(tmp_path, make_job())
-    await registry.finish_compat("job-1", "", announce_creator=True)
+    await registry.finish_compat(
+        "job-1", "the balance is 12", announce_creator=True)
     assert registry.get("job-1").terminal_notification_pending is True
 
     reloaded = JobRegistry(tmp_path / "jobs.json")
@@ -96,8 +97,12 @@ async def test_an_armed_terminal_survives_the_snapshot(tmp_path):
     row = reloaded.get("job-1")
     assert row.execution_state is ExecutionState.SUCCEEDED
     assert row.terminal_notification_pending is True
-    # #688: the answer text itself is NOT what survives.
-    assert row.result == ""
+    # #688 (was: "the answer text itself is NOT what survives"). It is now
+    # exactly what survives, because it is what the owed announcement has to
+    # carry — and it survives in the SAME snapshot as the marker, so a boot can
+    # never find one without the other.
+    assert row.result == "the balance is 12"
+    assert row.result_available is True
 
 
 # ---------------------------------------------------------------------------
@@ -191,11 +196,26 @@ async def _replay(registry):
     return bus
 
 
+async def _strip_retained_answer(path):
+    """Rewrite the snapshot as a row written BEFORE `result_available` existed.
+
+    #688: this is what "a success that retained no answer" now means. The field
+    defaults False, so a legacy row replays exactly as every row did before the
+    feature — the fail-closed direction.
+    """
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert "result_available" in snapshot[0]
+    snapshot[0].pop("result_available")
+    snapshot[0]["result"] = ""
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+
 async def test_a_success_lost_in_a_stop_is_announced_without_an_answer(
     tmp_path,
 ):
     registry = await _registry(tmp_path, make_job())
     await registry.finish_compat("job-1", "", announce_creator=True)
+    await _strip_retained_answer(tmp_path / "jobs.json")
 
     reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
     await reloaded.load()
@@ -230,9 +250,15 @@ async def test_a_failure_lost_in_a_stop_replays_its_own_kind(tmp_path):
 
 async def test_the_replayed_success_is_narrated_as_a_lost_answer(tmp_path):
     """The synthesized resident turn must never present the empty stored
-    result as the specialist's answer."""
+    result as the specialist's answer.
+
+    #688: the row this replays is one that retained NO answer — a legacy row.
+    A row that did retain one is narrated by
+    `test_answered_terminal_replays_the_retained_answer_after_restart`.
+    """
     registry = await _registry(tmp_path, make_job())
     await registry.finish_compat("job-1", "", announce_creator=True)
+    await _strip_retained_answer(tmp_path / "jobs.json")
     reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
     await reloaded.load()
     bus = await _replay(reloaded)
@@ -318,7 +344,7 @@ async def _drive_completion_callback(monkeypatch, outcome, *, cancelled_row=Fals
 
     class _JobRegistry:
         async def finish_compat(self, did, result="", *, announce_creator=False):
-            writes.append(("finish", did, announce_creator))
+            writes.append(("finish", did, announce_creator, result))
             return make_job(
                 id=did,
                 execution_state=(
@@ -348,9 +374,11 @@ async def _drive_completion_callback(monkeypatch, outcome, *, cancelled_row=Fals
     class _Registry:
         job_registry = _JobRegistry()
 
-        async def complete_delegation(self, did, *, announce_creator=False):
+        async def complete_delegation(
+            self, did, result="", *, announce_creator=False,
+        ):
             return await self.job_registry.finish_compat(
-                did, "", announce_creator=announce_creator)
+                did, result, announce_creator=announce_creator)
 
         async def cancel_delegation(self, did):
             writes.append(("cancel", did, False))
@@ -492,3 +520,196 @@ async def test_the_reconciliation_retry_lands_the_obligation(tmp_path):
     row = registry.get("job-1")
     assert row.execution_state is ExecutionState.SUCCEEDED
     assert row.terminal_notification_pending is True
+
+
+# ---------------------------------------------------------------------------
+# #688 / INV-JOB-015 — a delegated answer is retained exactly while it is owed
+#
+# Red case, specified by the design round's reviewer. The answer that was in
+# hand when a delegation completed must survive the restart that interrupts its
+# delivery, and must stop being retained once a delivery has been acknowledged.
+# ---------------------------------------------------------------------------
+
+# A sentinel that appears in no fixture field, so a byte count over the snapshot
+# is a count of the ANSWER and of nothing else.
+_ANSWER_688 = "ZQX-answer-688-sentinel"
+
+
+async def test_answered_terminal_replays_the_retained_answer_after_restart(
+    tmp_path,
+):
+    """The ruling's recovery arm: an answer completed, the process stopped
+    between the terminal write and delivery, and the boot replay carries the
+    ANSWER rather than a rerun offer."""
+    registry = await _registry(tmp_path, make_job())
+    await registry.finish_compat("job-1", _ANSWER_688, announce_creator=True)
+
+    reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
+    await reloaded.load()
+    owed = await reloaded.recover_after_restart()
+    assert len(owed) == 1
+    bus = _BusProbe()
+    from casa_core import _notify_recovered_delegations
+    await _notify_recovered_delegations(
+        owed, reloaded, bus, assistant_role="concierge",
+    )
+
+    assert len(bus.sent) == 1
+    complete = bus.sent[0].content
+    assert complete.status == "ok"
+    assert complete.text == _ANSWER_688
+    assert complete.result_available is True
+
+    from unittest.mock import Mock
+    from agent import Agent
+    body = Agent._synthesize_delegation_turn(Mock(), bus.sent[0]).content
+    assert f"Result text from finance:\n{_ANSWER_688}" in body
+    assert "offer to run it again" not in body
+
+
+async def test_empty_answer_is_available_and_replays_as_an_empty_answer(
+    tmp_path,
+):
+    """A specialist that legitimately answered with nothing is not the same as
+    a row that retained nothing: availability is a persisted fact, never
+    `bool(row.result)`."""
+    registry = await _registry(tmp_path, make_job())
+    await registry.finish_compat("job-1", "", announce_creator=True)
+
+    reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
+    await reloaded.load()
+    owed = await reloaded.recover_after_restart()
+    bus = _BusProbe()
+    from casa_core import _notify_recovered_delegations
+    await _notify_recovered_delegations(
+        owed, reloaded, bus, assistant_role="concierge",
+    )
+
+    assert len(bus.sent) == 1
+    complete = bus.sent[0].content
+    assert complete.text == ""
+    assert complete.result_available is True
+
+    from unittest.mock import Mock
+    from agent import Agent
+    body = Agent._synthesize_delegation_turn(Mock(), bus.sent[0]).content
+    assert "Result text from" in body
+    assert "does not carry its answer" not in body
+
+
+async def test_ack_drops_answer_bytes_but_unacknowledged_row_keeps_them(
+    tmp_path,
+):
+    """The drop rule, measured in the file's BYTES: an acknowledged delivery
+    removes the answer, an unacknowledged one keeps it."""
+    import stat as _stat
+
+    registry = await _registry(tmp_path, make_job())
+    await registry.finish_compat("job-1", _ANSWER_688, announce_creator=True)
+
+    path = tmp_path / "jobs.json"
+    assert _stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert path.read_bytes().count(_ANSWER_688.encode()) == 1
+
+    reloaded = JobRegistry(path, clock=lambda: 300.0)
+    await reloaded.load()
+    owed = await reloaded.recover_after_restart()
+    bus = _BusProbe()
+    from casa_core import _notify_recovered_delegations
+    await _notify_recovered_delegations(
+        owed, reloaded, bus, assistant_role="concierge",
+    )
+    assert len(bus.sent) == 1
+    # Enqueued, not delivered: the answer is still owed and still on disk.
+    assert path.read_bytes().count(_ANSWER_688.encode()) == 1
+
+    await bus.sent[0].on_delivery()
+    assert path.read_bytes().count(_ANSWER_688.encode()) == 0
+    row = reloaded.get("job-1")
+    assert row.terminal_notification_pending is False
+    assert row.result == ""
+    assert row.result_available is False
+
+
+async def _drive_answer_carrying_callback(monkeypatch, raw_text):
+    """`_attach_completion_callback` over one successful task, with fakes
+    permissive enough to record what the production caller actually forwards.
+
+    The terminal write RAISES, so the registry-owned reconciliation is
+    scheduled and its arguments are recorded too — the seam where one failed
+    write can silently lose the answer after the live notice has gone out.
+    """
+    import tools
+    from specialist_registry import DelegationRecord
+
+    terminal = []
+    retries = []
+    notified = []
+
+    class _JobRegistry:
+        def schedule_completion_reconciliation(
+            self, did, result="", *, announce_creator=False,
+        ):
+            retries.append((did, result, announce_creator))
+
+        def schedule_failure_reconciliation(self, did, failure=None, **kw):
+            raise AssertionError("the ok arm does not fail")
+
+        async def ack_terminal_notification(self, did):
+            return None
+
+    class _Registry:
+        job_registry = _JobRegistry()
+
+        async def complete_delegation(
+            self, did, result="", *, announce_creator=False,
+        ):
+            terminal.append((did, result, announce_creator))
+            raise OSError("terminal snapshot write failed")
+
+        async def cancel_delegation(self, did):
+            raise AssertionError("not cancelled")
+
+    class _Bus:
+        async def notify(self, message):
+            notified.append(message)
+
+    monkeypatch.setattr(tools, "_specialist_registry", _Registry())
+    monkeypatch.setattr(tools, "_bus", _Bus())
+
+    async def _run():
+        return _FakeDelegatedOutput(text=raw_text)
+
+    record = DelegationRecord(
+        id="d-1", agent="finance", started_at=0.0,
+        origin={"role": "concierge", "channel": "telegram", "chat_id": "c-1"},
+    )
+    task = asyncio.create_task(_run())
+    await asyncio.gather(task, return_exceptions=True)
+    tools._attach_completion_callback(task, record)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    return terminal, retries, notified
+
+
+async def test_completion_callback_forwards_the_bounded_answer_to_terminal_and_retry(
+    monkeypatch,
+):
+    """The production caller forwards the BOUNDED answer — the same text the
+    live notice carries — to the terminal write and to the retry that lands the
+    obligation when that write fails."""
+    import specialist_limits
+
+    raw = "A" * (specialist_limits._MAX_OUTPUT_CHARS + 500)
+    bounded, truncated = specialist_limits.truncate_output(raw)
+    assert truncated is True
+
+    terminal, retries, notified = await _drive_answer_carrying_callback(
+        monkeypatch, raw)
+
+    assert len(terminal) == 1
+    assert terminal[0] == ("d-1", bounded, True)
+    assert len(retries) == 1
+    assert retries[0] == ("d-1", bounded, True)
+    assert len(notified) == 1
+    assert notified[0].content.text == bounded

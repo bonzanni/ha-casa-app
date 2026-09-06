@@ -1132,10 +1132,18 @@ class Agent:
         user_text = origin.get("user_text", "")
 
         if complete.status == "ok" and not complete.result_available:
-            # #701/#688: a recovery replay of work that really did succeed. Its
-            # answer text is not carried here, so there is nothing to quote and
+            # #701/#688: a replay of work that really did succeed whose notice
+            # does not carry an answer. There is nothing to quote and
             # `complete.text` is empty — narrating that as the answer would
             # report an empty answer as the specialist's.
+            #
+            # #688 narrowed which notices reach here without narrowing the
+            # branch. A replayed DELEGATION whose row retained its answer now
+            # carries it and takes the ordinary success branch below; what
+            # still arrives here is a delegation row that retained none (a
+            # legacy row, an orphan conversion) and every replayed ENGAGEMENT
+            # outcome, whose producer carries no answer at all. So the branch
+            # stays, and only its delegation-specific promise had to go.
             #
             # #766: the wording is timing- and storage-NEUTRAL because there is
             # now a second producer. A delegation row is converted at boot and
@@ -1152,8 +1160,7 @@ class Agent:
                 "The work finished. This notice carries the outcome only, not "
                 "the result text. Tell the user it completed, and offer to run "
                 "it again if they want the detail — do NOT promise to look the "
-                "answer up, because on the delegation arm nothing was retained "
-                "to look up.\n"
+                "answer up, because this notice is all there is.\n"
             )
         elif complete.status == "ok":
             body = (

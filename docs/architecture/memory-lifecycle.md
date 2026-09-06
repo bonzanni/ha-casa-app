@@ -193,7 +193,11 @@ one turn survived admission.
 
 What it does not cover: documents already stored. This narrows what is written
 from here on; it does not inspect or repair anything the bank already holds, and
-the only removal authority remains the operator-consented wipe.
+the only removal authority remains the operator-consented wipe. Nor is it the
+rule for the delegation's *delivery* copy: a job row keeps its answer only while
+that answer is owed to its creator, and drops it on delivery (INV-JOB-015). One
+rule, two purposes — the bank keeps what is worth remembering, the row keeps
+what has not yet been said.
 
 **INV-MEM-006**: A session save or removal keyed by channel acts only on the session id its caller snapshotted — a registration carrying a different id in that window is released, not retained or deleted; an explicit reset deliberately removes its snapshotted session even when re-registered.
 
