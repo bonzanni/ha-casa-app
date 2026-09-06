@@ -1230,3 +1230,155 @@ async def test_on_stale_old_receives_decisions_fence_generation():
     await t
     assert received == [41]
     await pool.aclose()
+
+
+# --- #853: the drain timeout bounds every generation, invalidated ones included ---
+
+
+class CountedDisconnectClient(ScriptedClient):
+    """SDK-boundary fake that counts disconnect STARTS and COMPLETIONS
+    separately: a completion is recorded only after ``disconnect()`` returned,
+    so a cancelled disconnect can never masquerade as a completed one. When
+    ``release_disconnect`` is an Event the disconnect parks on it."""
+
+    def __init__(self, options):
+        super().__init__(options)
+        self.disconnect_starts = 0
+        self.disconnect_completions = 0
+        self.disconnect_started = asyncio.Event()
+        self.release_disconnect = None
+
+    async def disconnect(self):
+        self.disconnect_starts += 1
+        self.disconnect_started.set()
+        if self.release_disconnect is not None:
+            await self.release_disconnect.wait()
+        await super().disconnect()
+        self.disconnect_completions += 1
+
+
+async def _drain_test_tasks(pool, old, *tasks):
+    """Cleanup for the #853 pins: release the held lock, give every task a
+    bounded chance to finish, cancel only what is still pending, consume every
+    result, and drop the pool from the fleet list."""
+    from sdk_client_pool import SdkClientPool
+    if old.lock.locked():
+        old.lock.release()
+    live = [t for t in tasks if t is not None]
+    if live:
+        await asyncio.wait(live, timeout=1)
+        for t in live:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*live, return_exceptions=True)
+    if pool in SdkClientPool._instances:
+        SdkClientPool._instances.remove(pool)
+
+
+async def test_pool_close_force_disconnects_invalidated_generation_without_waiting_for_turn_lock():
+    """Red case for #853 (declares INV-TURN-010): a generation handed to
+    ``invalidate_all`` whose turn still holds the entry lock when the drain
+    window ends is force-disconnected and ``aclose`` returns — the closer is
+    neither cancelled nor waited on further, and finishes its bookkeeping
+    when the turn releases."""
+    pool = _mk_pool(FakeRegistry())
+    key = "voice-same"
+    old = await pool._entry_stub(key)
+    client = CountedDisconnectClient(None)
+    old._client = client
+    old.state = "warm"
+    await old.lock.acquire()                      # the wedged turn
+    invalidation = asyncio.create_task(pool.invalidate_all())
+    closing = None
+    workers = set()
+    try:
+        async def handed_off():
+            while key in pool._entries:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(handed_off(), timeout=1)
+        workers = set(pool._invalidation_closes[key])
+        barrier = pool._invalidation_barriers[key]
+
+        assert len(pool._entries) == 0
+        assert len(workers) == 1
+        assert len(pool._invalidation_groups) == 1
+
+        # P0: invalidation alone must not disconnect the held generation.
+        await asyncio.sleep(0.1)
+        assert (client.disconnect_starts, client.disconnect_completions) == (0, 0)
+        assert sum(t.done() for t in workers) == 0
+        assert not barrier.done()
+
+        closing = asyncio.create_task(pool.aclose(drain_timeout=0.05))
+
+        # A1: observe completion without cancelling the operation under test.
+        done, pending = await asyncio.wait({closing}, timeout=1)
+        assert (len(done), len(pending)) == (1, 0)
+        assert closing.result() is None
+
+        # A2: shutdown neither cancels nor finishes the held-lock closer.
+        assert sum(t.done() for t in workers) == 0
+        assert sum(bool(t.cancelled() or t.cancelling()) for t in workers) == 0
+        assert not invalidation.done()
+
+        # A3: transport disconnect completed exactly once.
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 1)
+
+        # A4: shutdown did not release the turn's lock.
+        assert old.lock.locked()
+
+        # A5: the original closer remains registered for close_key to join.
+        assert pool._invalidation_closes.get(key) == workers
+        assert len(pool._invalidation_groups) == 1
+
+        old.lock.release()
+        await asyncio.wait_for(asyncio.shield(invalidation), timeout=1)
+
+        # A6: eventual closer completion neither repeats disconnect nor leaks
+        # ownership.
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 1)
+        assert (len(pool._invalidation_groups),
+                len(pool._invalidation_closes)) == (0, 0)
+        assert sum(t.cancelled() for t in workers) == 0
+        assert all(t.result() is None for t in workers)
+    finally:
+        await _drain_test_tasks(pool, old, invalidation, closing, *workers)
+
+
+async def test_pool_close_joins_invalidated_generation_disconnect_already_started():
+    """#853 join regression (passes at base, where the unbounded gather joined
+    everything): a closer already inside its transport disconnect when the
+    drain window ends is JOINED — ``aclose`` returns only after that disconnect
+    completes, and the disconnect runs exactly once."""
+    pool = _mk_pool(FakeRegistry())
+    key = "voice-same"
+    old = await pool._entry_stub(key)
+    client = CountedDisconnectClient(None)
+    client.release_disconnect = asyncio.Event()
+    old._client = client
+    old.state = "warm"
+    invalidation = asyncio.create_task(pool.invalidate_all())
+    closing = None
+    workers = set()
+    try:
+        await asyncio.wait_for(client.disconnect_started.wait(), timeout=1)
+        workers = set(pool._invalidation_closes.get(key, ()))
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 0)
+
+        closing = asyncio.create_task(pool.aclose(drain_timeout=0.05))
+        done, pending = await asyncio.wait({closing}, timeout=0.2)
+        # J1: the window has passed; shutdown still waits on the disconnect.
+        assert (len(done), len(pending)) == (0, 1)
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 0)
+
+        client.release_disconnect.set()
+        await asyncio.wait_for(asyncio.shield(closing), timeout=1)
+        await asyncio.wait_for(asyncio.shield(invalidation), timeout=1)
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 1)
+        assert (len(pool._invalidation_groups),
+                len(pool._invalidation_closes)) == (0, 0)
+        assert sum(t.cancelled() for t in workers) == 0
+    finally:
+        client.release_disconnect.set()
+        await _drain_test_tasks(pool, old, invalidation, closing, *workers)
