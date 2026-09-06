@@ -117,7 +117,10 @@ routes exist only on the internal Unix socket, and the explain route withholds s
 prompt and memory fields unless the request both asks for them and confirms. Both gate
 fields must be JSON booleans; a request that sends anything else is refused with
 `invalid_args` and a `detail` naming the offending field and the JSON type received —
-never the value.
+never the value. Those routes answer for an installed specialist whose binding has been
+activated exactly as they do for a resident, and for one whose binding has not been
+activated they answer for nothing at all; where a specialist's persona reference collides
+with a resident's, the resident's pack is the one inspect describes.
 
 ## Contracts & invariants
 

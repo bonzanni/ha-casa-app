@@ -45,6 +45,17 @@ return rather than at each step's own swap, and on the failing exit as well as t
 one — so the earliest a replaced agent's still-busy client can be cut is one drain window after
 the reload finished, whichever step replaced it.
 
+**A scope that re-scans the specialist registry republishes the persona views in the same
+synchronous stretch.** The four personality maps the persona admin surface serves are
+derived from the loaded resident configs *and* from the registry's enabled snapshot, so each
+of the four scopes that commits a registry generation rebinds them once its awaited re-scan
+returns, before its next await — otherwise a retired specialist keeps answering and a
+just-installed one does not. Two spans are outside that guarantee and are not defects to
+report: the registry publishes its generation inside a worker thread, so the maps lag from
+that publication until the reload coroutine resumes, and a reload cancelled while suspended
+in that hand-off skips its rebind entirely. A rebind that fails is a named row, never an
+aborted reload.
+
 **Three scopes reach plugin state, and they are locked from outside the dispatcher.** The
 executors scope and the plugin-environment scope each regenerate the plugin health report,
 and the full scope reaches both through its cascade; all three therefore take the
