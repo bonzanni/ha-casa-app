@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import uuid
 
 import yaml
@@ -54,6 +55,13 @@ SCHEMA_VERSION = 1
 JOURNAL_NAME_RE = re.compile(
     r"^(?P<slug>[a-z0-9][a-z0-9-]{0,31})\.(?P<opid>[0-9a-f]{32})\.json$"
 )
+
+# #838: what `_fsync_write` leaves behind when a process dies between its open
+# and its os.replace. ONE rule, because two consumers must agree on it: boot's
+# pre-scan sweep DELETES such a file, and `recovery_debt` must therefore not
+# report it as debt — a copy of this pattern is how the fence would come to
+# refuse every specialist mutation over residue boot throws away.
+JOURNAL_TMP_RE = re.compile(r"\.tmp-[0-9a-f]{32}$")
 
 # The fixed set of bare filenames a bundle transaction may ever record in
 # `before.tuple_files` — written ONLY under specialists_dir/<slug>/, never a
@@ -576,6 +584,83 @@ def classify_journal(path: Path) -> "tuple[str, str | None, dict | None]":
     return JOURNAL_REPLAY, slug, payload
 
 
+# #838 (INV-SPEC-014) — the verdicts under which a journal standing in the ops
+# directory would make the next boot damage a generation committed AFTER it.
+# REPLAY restores its capture over that generation; INVALID and UNREADABLE make
+# boot quarantine the slug, dropping its owned rows; UNPARSEABLE carries no
+# trustworthy slug and makes boot quarantine EVERY owned entry there is.
+# COMPLETE (pruned) and IGNORED (skipped) resolve without restoring or removing
+# anything, so they are not debt.
+DEBT_VERDICTS = frozenset({
+    JOURNAL_REPLAY, JOURNAL_INVALID, JOURNAL_UNREADABLE, JOURNAL_UNPARSEABLE,
+})
+
+
+def recovery_debt(*, ops_dir: Path = OPS_DIR) -> "list[dict]":
+    """#838 (INV-SPEC-014): every entry in *ops_dir* whose boot disposition
+    would damage a specialist generation committed after it —
+    ``[{"slug": str | None, "journal": str | None, "verdict": str}]``, ordered
+    by entry name. ``slug is None`` means the damage is not attributable to one
+    slug (boot's ``quarantine_all``) and therefore concerns every slug.
+
+    This is a READER. It never writes, deletes, repairs or completes anything:
+    the debt is boot's to resolve, and a fence that resolved it by completing a
+    journal it had not replayed would break P1-1 at every writer.
+
+    `classify_journal` is the authority (#543), never copied — the whole reason
+    the same function answers boot and the persona reference scan is that three
+    consumers of one rule cannot drift apart. The only thing decided here is
+    which of its verdicts are DEBT, and that follows boot's own dispositions:
+
+    * a write temporary is skipped, because boot's pre-scan sweep DELETES it
+      (`JOURNAL_TMP_RE`, the same constant that sweep reads). Named residual: if
+      that unlink fails, boot falls through to classification and the
+      unparseable name quarantines every owned row — including a generation
+      admitted here. Refusing every specialist mutation, for every slug,
+      whenever a process died mid-write is the worse trade.
+    * an entry positively established as NOT a regular file is skipped, because
+      boot's own scan skips it (`if not path.is_file(): continue`); leaving it
+      in would be a refusal a restart could never clear.
+    * but "could not tell" is never read as "not there": a listed entry whose
+      stat fails for any reason other than having vanished is debt, and so is an
+      ops directory that cannot be enumerated. An ops directory that is simply
+      ABSENT is a real answer — boot would find nothing there either.
+
+    Never raises. An unreadable directory is reported as debt rather than as an
+    exception so that the fence and the report cannot disagree about it.
+    """
+    ops_dir = Path(ops_dir)
+    rows: "list[dict]" = []
+    try:
+        entries = sorted(ops_dir.iterdir())
+    except FileNotFoundError:
+        return rows
+    except OSError as exc:
+        logger.warning("recovery_debt: %s could not be listed (%s); treating it "
+                       "as recovery debt", ops_dir, exc)
+        return [{"slug": None, "journal": None, "verdict": JOURNAL_UNREADABLE}]
+    for path in entries:
+        if JOURNAL_TMP_RE.search(path.name):
+            continue
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            continue          # gone between the listing and the stat
+        except OSError as exc:
+            match = JOURNAL_NAME_RE.match(path.name)
+            logger.warning("recovery_debt: %s could not be examined (%s); "
+                           "treating it as recovery debt", path, exc)
+            rows.append({"slug": match.group("slug") if match else None,
+                         "journal": path.name, "verdict": JOURNAL_UNREADABLE})
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue          # boot's scan skips it too
+        verdict, slug, _payload = classify_journal(path)
+        if verdict in DEBT_VERDICTS:
+            rows.append({"slug": slug, "journal": path.name, "verdict": verdict})
+    return rows
+
+
 def replayable_tuple_files(path: Path) -> "dict[str, Any] | None":
     """#543: the captured tuple files this journal file would ACTUALLY have
     restored, or None when it would restore nothing.
@@ -800,7 +885,7 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
     for path in sorted(ops_dir.iterdir()):
         if not path.is_file():
             continue
-        if re.search(r"\.tmp-[0-9a-f]{32}$", path.name):
+        if JOURNAL_TMP_RE.search(path.name):
             try:
                 path.unlink()
                 logger.warning(

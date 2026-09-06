@@ -44,7 +44,20 @@ def _stub_bundle_sequencer(monkeypatch):
                 "reload_errors": [], "removed_artifact_ids": list(removed_artifact_ids)}
 
     monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq)
-    monkeypatch.setattr(specialist_bundle_journal, "complete", lambda p: None)
+    real_complete = specialist_bundle_journal.complete
+
+    def _complete(path):
+        # #838 (INV-SPEC-014): this used to no-op unconditionally, which left
+        # the handler's journal standing — and a standing journal now refuses
+        # the NEXT writer for that slug, which is exactly what the tool layer's
+        # own completion exists to prevent. Completing it is part of the wiring
+        # these tests exercise. A journal that is not there is still a no-op, so
+        # the "don't touch real files" intent is unchanged.
+        from pathlib import Path as _Path
+        if _Path(path).exists():
+            real_complete(path)
+
+    monkeypatch.setattr(specialist_bundle_journal, "complete", _complete)
 
 
 @pytest.mark.asyncio

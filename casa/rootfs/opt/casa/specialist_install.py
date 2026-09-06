@@ -56,6 +56,71 @@ def validate_specialist_slug(slug: object) -> str:
     return slug  # type: ignore[return-value]
 
 
+def require_no_recovery_debt(slug: str, *, ops_dir: "Path | None" = None) -> Path:
+    """#838 (INV-SPEC-014): refuse a new generation of *slug* while the next
+    boot still owes recovery for it, and return the ops directory that was
+    inspected.
+
+    `tools._bundle_compensate` and every journaled writer's sync-phase except
+    arm leave an in-progress journal on disk ON PURPOSE when `rollback_disk()`
+    raises (P1-1: never complete a journal you did not replay). That journal
+    means *undo me at boot*. Nothing used to stop a later generation committing
+    beside it, and the next `reconcile_boot` then restored the older capture
+    over the newer generation — or, on a second rollback failure, quarantined
+    the slug and dropped the newer generation's owned rows.
+
+    Every lifecycle writer calls this ONCE, above its journaled/unjournaled
+    branch and before its own first durable write. Above the branch because the
+    unjournaled arms commit generations too — `rollback_specialist(bundle=False)`,
+    `uninstall_specialist(bundle=False)`, `apply_persona_override(bundle=False)`,
+    the receiptless install/upgrade paths — so a check keyed on `begin()` would
+    leave exactly those outside it. Before the first durable write because
+    `rollback_specialist` completes a pending tuple/sidecar rotation, and
+    `uninstall_specialist` retires the slug's consent acks, BEFORE they journal.
+
+    The RETURN VALUE is the point of the return value: the writer passes it
+    straight to `begin(ops_dir=...)`, so the directory inspected and the
+    directory journalled into are the same object. Read the same directory the
+    writer will write to is otherwise a property that has to be reviewed rather
+    than one that holds by construction.
+
+    This resolves nothing. Boot still replays or quarantines exactly what it
+    would have; recovery has one site and it is `reconcile_boot`.
+    """
+    import specialist_bundle_journal
+
+    if ops_dir is None:
+        ops_dir = specialist_bundle_journal.OPS_DIR
+    ops_dir = Path(ops_dir)
+    for row in specialist_bundle_journal.recovery_debt(ops_dir=ops_dir):
+        if row["slug"] is not None and row["slug"] != slug:
+            continue
+        if row["journal"] is None:
+            detail = (
+                f"the bundle journal directory {ops_dir} could not be read, so "
+                f"whether a specialist transaction is still awaiting recovery "
+                f"cannot be established; {slug!r} is not mutated while that is "
+                f"unknown. Restart Casa so boot reconciliation can read it.")
+        elif row["slug"] is None:
+            detail = (
+                f"{row['journal']!r} in {ops_dir} is not a journal this system "
+                f"can attribute to a specialist, and the next boot quarantines "
+                f"every owned plugin row when it finds one — so no specialist "
+                f"may be mutated, {slug!r} included, until it is gone. Restart "
+                f"Casa so boot reconciliation can act on it.")
+        else:
+            detail = (
+                f"{slug!r} has an unfinished bundle transaction: {row['journal']!r} "
+                f"({row['verdict']}) is still standing in {ops_dir}, and the next "
+                f"boot will roll it back or quarantine the specialist. A change "
+                f"committed now would be undone by that boot, so nothing was "
+                f"written. Restart Casa so boot reconciliation can finish it; if "
+                f"the plugin registry is itself unreadable the journal is kept "
+                f"and retried at the boot after that.")
+        raise SpecialistInstallError("recovery_pending", detail)
+    return ops_dir
+
+
 def is_safe_corpus_identifier(identifier: object) -> bool:
     """F4: a corpus dependency's ``identifier`` is schema-unconstrained
     (specialist-component.v1.json only requires ``minLength: 1``) yet it is
@@ -1695,6 +1760,11 @@ def commit_specialist_install(
     # agrees (mirroring upgrade_specialist's slug_mismatch treatment).
     validate_specialist_slug(inspection.slug)
 
+    # #838 (INV-SPEC-014): above the journaled/unjournaled branch and before this
+    # function's first durable write. The returned directory is what `begin` is
+    # handed below, so the directory inspected IS the directory journalled into.
+    ops_dir = require_no_recovery_debt(inspection.slug, ops_dir=ops_dir)
+
     # Whole-branch D: bind the supplied receipt to the approved inspection
     # BEFORE consent — fail closed on any id/digest/slug/row-set drift.
     _assert_receipt_matches_inspection(receipt, inspection)
@@ -1967,7 +2037,6 @@ def commit_specialist_install(
             before_owned = plugin_registry.owned_entries_for(inspection.slug, _reg)
             before_tuple_files = _tuple_files_snapshot(slug_dir)
             ack_records = acks.snapshot_slug(inspection.slug)
-            _begin_kwargs = {} if ops_dir is None else {"ops_dir": ops_dir}
             journal = specialist_bundle_journal.begin(
                 "install", inspection.slug, before_entries=before_owned,
                 before_tuple_files=before_tuple_files, ack_records=ack_records,
@@ -1975,7 +2044,7 @@ def commit_specialist_install(
                 target_root=component_root_string(
                     component_id=inspection.component_id, version=inspection.version,
                     component_checksum=inspection.root_digest),
-                **_begin_kwargs)
+                ops_dir=ops_dir)
             rollback_txn = BundleTxn(
                 journal_path=journal, slug=inspection.slug,
                 before_entries=before_owned, before_tuple_files=before_tuple_files,
@@ -2265,6 +2334,11 @@ def upgrade_specialist(
     import specialist_materialize
     from personality_binding import InstanceDir
 
+    # #838 (INV-SPEC-014): above the journaled/unjournaled branch and before this
+    # function's first durable write. The returned directory is what `begin` is
+    # handed below, so the directory inspected IS the directory journalled into.
+    ops_dir = require_no_recovery_debt(slug, ops_dir=ops_dir)
+
     if receipt is None:
         instance = _upgrade_core(
             slug=slug, inspection=inspection, config=config,
@@ -2297,7 +2371,6 @@ def upgrade_specialist(
         before_owned = plugin_registry.owned_entries_for(slug, _reg)
         before_tuple_files = _tuple_files_snapshot(slug_dir)
         ack_records = acks.snapshot_slug(slug)
-        _begin_kwargs = {} if ops_dir is None else {"ops_dir": ops_dir}
         journal = specialist_bundle_journal.begin(
             "upgrade", slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
@@ -2309,7 +2382,7 @@ def upgrade_specialist(
             target_root=component_root_string(
                 component_id=inspection.component_id, version=inspection.version,
                 component_checksum=inspection.root_digest),
-            **_begin_kwargs)
+            ops_dir=ops_dir)
         rollback_txn = BundleTxn(
             journal_path=journal, slug=slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
@@ -3087,6 +3160,11 @@ def rollback_specialist(
     import specialist_materialize
 
     validate_specialist_slug(slug)
+
+    # #838 (INV-SPEC-014): above the journaled/unjournaled branch and before this
+    # function's first durable write. The returned directory is what `begin` is
+    # handed below, so the directory inspected IS the directory journalled into.
+    ops_dir = require_no_recovery_debt(slug, ops_dir=ops_dir)
     slug_dir = specialists_dir / slug
 
     # #810 (INV-SPEC-011, F1): a prior promotion that failed left the retained
@@ -3184,11 +3262,10 @@ def rollback_specialist(
     before_owned = plugin_registry.owned_entries_for(slug, _reg)
     before_tuple_files = _tuple_files_snapshot(slug_dir)
     ack_records = acks.snapshot_slug(slug)
-    _begin_kwargs = {} if ops_dir is None else {"ops_dir": ops_dir}
     journal = specialist_bundle_journal.begin(
         "rollback", slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
-        **_begin_kwargs)
+        ops_dir=ops_dir)
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
@@ -3500,6 +3577,11 @@ def uninstall_specialist(
     outright when owned entries exist rather than silently stranding them."""
     import plugin_registry
 
+    # #838 (INV-SPEC-014): above the journaled/unjournaled branch and before this
+    # function's first durable write. The returned directory is what `begin` is
+    # handed below, so the directory inspected IS the directory journalled into.
+    ops_dir = require_no_recovery_debt(slug, ops_dir=ops_dir)
+
     if not bundle:
         _existing_owned = plugin_registry.owned_entries_for(
             slug, plugin_registry.load_registry(
@@ -3547,7 +3629,6 @@ def uninstall_specialist(
     # any FUTURE install of this slug computes a different identity and never
     # matches it (the stale record can authorize nothing).
     ack_records = acks.retire_slug(slug)
-    _begin_kwargs = {} if ops_dir is None else {"ops_dir": ops_dir}
     # P2-5: retire_slug already removed the records from the live ledger; if
     # begin() now raises (an unwritable ops dir, say) those retired records
     # would be lost with no journal to restore them from. Restore exactly the
@@ -3557,7 +3638,7 @@ def uninstall_specialist(
         journal = specialist_bundle_journal.begin(
             "uninstall", slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
-            **_begin_kwargs)
+            ops_dir=ops_dir)
     except BaseException:
         acks.restore_records(ack_records)
         raise
