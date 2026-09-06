@@ -657,6 +657,79 @@ def test_a_malformed_invariant_tests_field_is_a_finding_not_a_traceback(tmp_path
     assert any("invariant_tests" in p and "mapping" in p for p in verify_docs.verify(root))
 
 
+# --- only a document may declare an invariant (#705) ----------------------------------
+
+def _kind_flip(manifest: str, kind: str) -> str:
+    """Give the declaring entry a non-document `kind`, changing nothing else."""
+    return manifest.replace(
+        "- doc: architecture/turn-loop.md",
+        f"- doc: architecture/turn-loop.md\n  kind: {kind}",
+    )
+
+
+def _refusal(doc: str, kind: str) -> str:
+    return (
+        f"{doc}: kind {kind!r} may not carry non-empty `defines_invariants` or "
+        f"`invariant_tests` — only a document is rendered into the generated invariant "
+        f"index, so an invariant declared here would count as defined for every corpus "
+        f"check and appear in no index at all"
+    )
+
+
+@pytest.mark.parametrize("kind", ["index", "generated", "meta"])
+@pytest.mark.parametrize("shape", ["declaration", "binding"])
+def test_invariant_metadata_on_a_non_document_entry_is_refused(tmp_path, kind, shape):
+    """A declaration on a non-document entry escaped BOTH the binding check and the
+    index (#705): `verify()` gated the anchors-no-source check and the whole four-arm
+    `_check_invariant_tests` on `kind in DOCUMENT_KINDS`, while `_invariant_rows` renders
+    from `_documents()` only. All three non-document kinds escaped, and so did a binding
+    carried without a declaration, so each is its own arm — a single arm would leave the
+    others unpinned.
+
+    The count assertions are exact on purpose: widening `_check_invariant_tests` to every
+    kind would produce a *different* finding for the declaration arms and none at all for
+    the binding arms, and must not pass this."""
+    if shape == "declaration":
+        manifest, docs, also = _inv_manifest(), INV_DOC, []
+    else:
+        # `DOC`, not `INV_DOC`: a document defining INV-X-001 that the entry does not
+        # declare draws the base's own declared-vs-actual finding, which would satisfy a
+        # loose assertion for a reason that has nothing to do with this rule. With `DOC`
+        # nothing defines INV-X-001, so the base's reference-resolution check fires
+        # instead — measured, not predicted, and asserted by name below rather than
+        # tolerated by an inexact count.
+        manifest = ENTRY + "  invariant_tests:\n    INV-X-001: [tests/test_a.py::test_b]\n"
+        docs = DOC
+        also = ["manifest.yaml: INV-X-001 is referenced but never defined"]
+
+    root = _corpus(tmp_path, _kind_flip(manifest, kind), docs=docs)
+    problems = verify_docs.verify(root)
+    expected = _refusal("architecture/turn-loop.md", kind)
+    assert problems.count(expected) == 1, problems
+    assert sorted(problems) == sorted([expected] + also), problems
+
+
+@pytest.mark.parametrize("kind", ["index", "generated", "meta"])
+def test_a_non_document_entry_carrying_no_invariant_metadata_is_untouched(tmp_path, kind):
+    """The rule fires on the metadata, not on the kind: the twelve real non-document
+    entries carry none of it and must stay clean."""
+    root = _corpus(tmp_path, _kind_flip(ENTRY, kind), docs=DOC)
+    assert verify_docs.verify(root) == []
+
+
+def test_an_unknown_kind_declaring_an_invariant_keeps_the_document_treatment(tmp_path):
+    """An unknown kind is reported and COERCED to `document` before any kind-conditional
+    check runs, so it is not in the escaping class and must not be diverted into the
+    non-document refusal — it still owes a pinning test."""
+    root = _corpus(tmp_path, _kind_flip(_inv_manifest(), "spreadsheet"), docs=INV_DOC)
+    problems = verify_docs.verify(root)
+    assert any("unknown kind 'spreadsheet'" in p for p in problems), problems
+    assert any(
+        "INV-X-001" in p and "no pinning test" in p for p in problems
+    ), problems
+    assert not any("may not carry non-empty" in p for p in problems), problems
+
+
 # --- generated navigation ------------------------------------------------------------
 
 def test_llms_links_resolve_relative_to_the_docs_directory(tmp_path):
