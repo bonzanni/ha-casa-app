@@ -79,6 +79,7 @@ REQUIRED_SKELETON = {
     "llms.txt",
     "manifest.yaml",
     "doctrine/invariants.md",
+    "doctrine/invariants-f-m.md",
     "doctrine/invariants-n-z.md",
     "doctrine/publishing.md",
     "contributing/doc-contract.md",
@@ -1254,8 +1255,17 @@ def _invariant_rows(repo_root: Path) -> list[tuple[str, str, str]]:
 # The index outgrew the 40 KB ceiling once the corpus passed ~200 invariants, so
 # it shards by FAMILY letter — the same A-M / N-Z convention the manifest shards
 # already use (#367). The split point is mechanical on purpose: an index that
-# shards by meaning would need re-deciding every time a family is added.
-_INV_SHARD_SPLIT = "N"
+# shards by meaning would need re-deciding every time a family is added. Three
+# shards since the A-M shard outgrew the ceiling in turn (#843): each row is
+# (range label, corpus path, exclusive upper bound on the family string), and a
+# family lands in the FIRST shard whose bound it sorts below — the last shard
+# has no bound and takes the rest. Adding a shard is adding a row; the first
+# path is kept so every inbound link to the index still resolves.
+_INV_SHARDS: tuple[tuple[str, str, str | None], ...] = (
+    ("A-E", "doctrine/invariants.md", "F"),
+    ("F-M", "doctrine/invariants-f-m.md", "N"),
+    ("N-Z", "doctrine/invariants-n-z.md", None),
+)
 
 
 def _invariant_family(inv: str) -> str:
@@ -1264,9 +1274,19 @@ def _invariant_family(inv: str) -> str:
     return parts[1] if len(parts) > 2 else ""
 
 
+def _invariant_shard_path(family: str) -> str:
+    """The corpus path of the shard that holds `family`: the first whose bound it
+    sorts below; the unbounded last shard takes whatever is left."""
+    for _label, path, bound in _INV_SHARDS:
+        if bound is None or family < bound:
+            return path
+    raise AssertionError("the last invariant shard must be unbounded")
+
+
 def _render_invariant_table(
-    rows: list[tuple[str, str, str]], title: str, sibling: tuple[str, str],
+    rows: list[tuple[str, str, str]], title: str, siblings: list[tuple[str, str]],
 ) -> str:
+    see_also = ", ".join(f"[`{doc}`]({href})" for doc, href in siblings)
     out = [
         f"# {title}",
         "",
@@ -1276,7 +1296,7 @@ def _render_invariant_table(
         "",
         "Every invariant is defined in exactly one file and referenced by id elsewhere.",
         "",
-        f"The index is sharded by family letter: see also [`{sibling[0]}`]({sibling[1]}).",
+        f"The index is sharded by family letter: see also {see_also}.",
         "",
         "| Id | Statement | Defined in |",
         "|---|---|---|",
@@ -1286,22 +1306,20 @@ def _render_invariant_table(
     return "\n".join(out) + "\n"
 
 
+def render_invariant_shard(repo_root: Path, path: str) -> str:
+    """One shard of the index: one row per INV-* id whose family the shard table
+    assigns to `path`, its statement, its defining file; the see-also line names
+    every OTHER shard, in table order."""
+    label = next(lbl for lbl, p, _b in _INV_SHARDS if p == path)
+    rows = [r for r in _invariant_rows(repo_root)
+            if _invariant_shard_path(_invariant_family(r[0])) == path]
+    siblings = [(p, Path(p).name) for _lbl, p, _b in _INV_SHARDS if p != path]
+    return _render_invariant_table(rows, f"Invariants ({label})", siblings)
+
+
 def render_invariants(repo_root: Path) -> str:
-    """Families A-M: one row per INV-* id, its statement, its defining file."""
-    rows = [r for r in _invariant_rows(repo_root)
-            if _invariant_family(r[0]) < _INV_SHARD_SPLIT]
-    return _render_invariant_table(
-        rows, "Invariants (A-M)",
-        ("doctrine/invariants-n-z.md", "invariants-n-z.md"))
-
-
-def render_invariants_n_z(repo_root: Path) -> str:
-    """Families N-Z. Same contract as :func:`render_invariants`."""
-    rows = [r for r in _invariant_rows(repo_root)
-            if _invariant_family(r[0]) >= _INV_SHARD_SPLIT]
-    return _render_invariant_table(
-        rows, "Invariants (N-Z)",
-        ("doctrine/invariants.md", "invariants.md"))
+    """The first shard (families A-E). Kept as the historical entry point."""
+    return render_invariant_shard(repo_root, _INV_SHARDS[0][1])
 
 
 def render_sourcemap(entry: dict) -> str:
@@ -1340,9 +1358,9 @@ def nav_targets(repo_root: Path) -> dict[str, str]:
     docs_dir = repo_root / "docs"
     targets = {
         "llms.txt": render_llms(repo_root),
-        "doctrine/invariants.md": render_invariants(repo_root),
-        "doctrine/invariants-n-z.md": render_invariants_n_z(repo_root),
     }
+    for _label, shard, _bound in _INV_SHARDS:
+        targets[shard] = render_invariant_shard(repo_root, shard)
     readme = docs_dir / "README.md"
     if readme.is_file():
         targets["README.md"] = _splice(

@@ -89,7 +89,7 @@ could destroy a message a turn had just consumed.
 
 **INV-ENG-016**: A `claude_code` engagement's inbound ledger — its durable envelopes and its message generation — outlives the CLI incarnation that serves it: a session teardown retires the delivery runtime and keeps the ledger, so unread and in-flight state stays visible to the completion gate and to every terminal disclosure across a respawn, and so do the evicted envelopes still awaiting their eviction notice, which every terminal disclosure quotes and no veto counts. Where no incarnation of this process ever attached, a terminal disclosure hook still answers from the durable spool file it can read, and that file-sourced answer discloses without ever refusing a completion. An engagement for which nothing was ever enqueued answers empty.
 
-**INV-ENG-017**: An ingress reservation taken for an operator message carries that message's text from the moment the message is accepted until that reservation is released or the engagement is terminally cancelled, on a ledger that survives a session teardown and never on the spool; the reservation-ledger contribution to a terminal disclosure is deduplicated by message id, limited by the same disclosure-count clamp as text-less reservations, then excludes ids whose printable spool envelope — queued, in flight, or evicted and awaiting its notice — is in that disclosure, so it quotes at most one text per id; it does not deduplicate the unread or in-flight spool populations; and the count and its "up to" hedge stay exactly as a text-less reservation would have produced them.
+**INV-ENG-017**: An ingress reservation taken for an operator message carries that message's text from the moment the message is accepted until that reservation is released or the engagement is terminally cancelled, on a ledger that survives a session teardown and never on the spool; the reservation-ledger contribution to a terminal disclosure is deduplicated by message id, limited by the same disclosure-count clamp as text-less reservations, then excludes ids whose printable spool envelope — queued, in flight, or evicted and awaiting its notice — is in that disclosure, so, while that exclusion read succeeds, it quotes at most one text per id; it does not deduplicate the unread or in-flight spool populations; and while the reservation count reads, the count and its "up to" hedge stay exactly as a text-less reservation would have produced them — when that read raises, every reservation text that was read still reaches the disclosure's bullets under the same excerpt budget and overflow line as every other population, and the disclosure states no number in place of one it cannot evidence, so a terminal notice never quotes more messages than it counts and never drops a text it read for want of a count.
 
 **A message that dies with the engagement is disclosed, not swallowed.** Every terminal
 outcome posts the messages no turn ever took up into the topic — all three spool text
@@ -147,7 +147,11 @@ still anonymous to the count, it can alias a text the disclosure already excerpt
 is durably spooled before its reservation is released, and a terminal landing inside that
 window sees the same message in both populations. A total that includes reservations
 therefore reads "up to N", which is true in that window; a text-only total keeps the exact
-claim. One reservation is excluded
+claim. When the reservation count could not be read at all, the texts of the reservations it
+would have counted are still quoted and the sentence above them names no number: "up to" would
+be false whenever a text-less reservation the failed read would have counted exists, and "at
+least" would be false when the exclusion read also failed and a held text sits beside its own
+spool envelope — the disclosure gives up the number rather than risk a false one. One reservation is excluded
 by construction: the one a recognized command (`/cancel`, `/complete`, `/silent`) holds for
 itself while the handler processes it — classified at the reservation's birth, so the
 exclusion holds under *every* terminal winner, not only the command's own finalize — still
@@ -256,7 +260,12 @@ than wedging termination: a driver that cannot answer one question does not get 
 engagement unendable — and does not get to answer for the other reads either. Each of the
 terminal hook's reads is guarded on its own and contributes only its own value, so a completion
 is still refused over the unread depth, in-flight work or reservations the gate could still
-read, and every terminal still discloses the populations that did read.
+read, and every terminal still discloses the populations that did read — including reservation
+texts read beside a count that raised, which are posted under a sentence naming no number. That
+arm needs the observed failure as well as a text: a raising count read with nothing else read
+posts no paragraph, and a count that answered zero, is absent or answers a non-integer beside a
+reservation text is a driver answering off its own clamp, which the renderers do not correct and
+this document does not cover.
 
 **An inbound accessor is absent.** The same contribution, without the warning: an optional
 accessor a driver never implements answers empty because nothing failed, so there is nothing to
