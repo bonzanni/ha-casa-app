@@ -847,7 +847,11 @@ def _schedule_agent_close(old_agent, *, runtime=None, role=None) -> None:
     Background is load-bearing: casa_reload runs as a casa-framework tool
     INSIDE a warm client's turn — a synchronous drain would deadlock on
     that turn's own entry lock. The drain task waits for in-flight turns
-    (bounded by the pool's drain timeout) then disconnects.
+    then disconnects, bounded by the pool's drain timeout for EVERY
+    generation (#853): the pool's live entries serially, then one further
+    window for any generation an earlier invalidation is still draining;
+    an entry still locked when its window ends is force-closed, and its
+    closer is left to finish its bookkeeping when the turn releases.
 
     Sol #4: when ``runtime``+``role`` are supplied, the draining agent's plugin
     binding is tracked on ``runtime.draining`` for the duration of the drain so

@@ -82,6 +82,9 @@ class ManagedSdkClient:
         self.created_at = monotonic()
         self.last_used = monotonic()
         self._client: Any = None
+        # #853: completion of the one transport disconnect this entry ever
+        # runs; a later closer joins it (see _disconnect).
+        self._close_done: asyncio.Future[None] | None = None
 
     async def open(self) -> None:
         """Connect under a context that binds origin/cid holders.
@@ -235,25 +238,43 @@ class ManagedSdkClient:
                     self.sid = s
                 return
 
+    async def _disconnect(self, client, what: str) -> None:
+        """The ONE transport-disconnect path (#853). Records completion in
+        ``_close_done`` so a second closer — ``aclose`` force-closing at the
+        pool's drain timeout while this owner's disconnect is still in
+        flight — JOINS it instead of returning with the transport open. A
+        client is detached exactly once, so at most one future exists per
+        entry; the owner's own cancellation resolves it in ``finally`` so a
+        joiner never waits on a disconnect nobody is running."""
+        done = self._close_done = asyncio.get_running_loop().create_future()
+        try:
+            await client.disconnect()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning("pool client %s failed: %s", what, exc)
+        finally:
+            if not done.done():
+                done.set_result(None)
+
     async def _invalidate(self) -> None:
         self.state = "invalid"
         client, self._client = self._client, None
         if client is not None:
-            try:
-                await client.disconnect()
-            except Exception as exc:  # noqa: BLE001 — best-effort
-                logger.warning("pool client disconnect failed: %s", exc)
+            await self._disconnect(client, "disconnect")
 
     async def aclose(self) -> None:
-        if self.state == "closed":
-            return
-        client, self._client = self._client, None
-        self.state = "closed"
-        if client is not None:
-            try:
-                await client.disconnect()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("pool client close failed: %s", exc)
+        """Idempotent close. Disconnects the transport if this call owns it;
+        otherwise joins a disconnect another owner (``_invalidate`` inside the
+        turn, an invalidation closer, a concurrent ``aclose``) already
+        started, whatever the lifecycle state."""
+        if self.state != "closed":
+            client, self._client = self._client, None
+            self.state = "closed"
+            if client is not None:
+                await self._disconnect(client, "close")
+                return
+        pending = self._close_done
+        if pending is not None and not pending.done():
+            await asyncio.shield(pending)
 
 
 def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
@@ -274,6 +295,20 @@ class PoolTurnResult(NamedTuple):
     is_fresh: bool
 
 
+class DrainOwner(NamedTuple):
+    """#853: who is draining an entry that has left ``_entries``. ``closer``
+    is the ``invalidate_all`` close task that owns it, or ``None`` when an
+    ``aclose`` drain loop does. The class matters: a concurrent second
+    ``aclose`` must never treat another drain loop's live entry as a closer
+    that timed out (that would force-close it before ITS window)."""
+    key: str
+    closer: "asyncio.Task | None"
+
+
+def _no_force_close_hook(key: str, entry: "ManagedSdkClient") -> None:
+    """Default ``SdkClientPool.on_force_close``: nothing to record."""
+
+
 class SdkClientPool:
     """Per-Agent cache of warm conversation clients, keyed by channel_key.
 
@@ -286,7 +321,8 @@ class SdkClientPool:
 
     def __init__(self, session_registry, *, decide, origin_ctxvar, cid_ctxvar,
                  engagement_ctxvar, freshness=None, make_client=None,
-                 monotonic=time.monotonic, wall_now=None) -> None:
+                 monotonic=time.monotonic, wall_now=None,
+                 on_force_close=None) -> None:
         if freshness is None:
             from session_saver import freshness_window as freshness
         self._registry = session_registry
@@ -309,6 +345,16 @@ class SdkClientPool:
         # not just its turn-lock handoff barrier. A set per key tolerates
         # overlapping invalidate_all() generations.
         self._invalidation_closes: dict[str, set[asyncio.Task]] = {}
+        # #853: every entry that has left _entries but is not yet closed —
+        # owned by an invalidation closer or by an aclose drain loop — so that
+        # aclose can SEE (and force-close at the drain timeout) what a closer
+        # owns, and a later caller can enumerate what is still draining.
+        self._draining: dict[ManagedSdkClient, DrainOwner] = {}
+        # #853: fired by _force_close, synchronously, BEFORE the transport is
+        # cut — a seam for a consumer to record why an in-flight turn is about
+        # to be interrupted. Exceptions it raises are contained. Injected, so
+        # the pool imports nothing of its consumers.
+        self.on_force_close = on_force_close or _no_force_close_hook
         self._pool_lock = asyncio.Lock()
         self._closing = False
         self._sweeper: asyncio.Task | None = None
@@ -555,12 +601,33 @@ class SdkClientPool:
         async with entry.lock:
             await entry.aclose()
 
-    def _discard_invalidation_close(self, key: str, task: asyncio.Task) -> None:
+    def _discard_invalidation_close(
+        self, key: str, entry: "ManagedSdkClient", task: asyncio.Task,
+    ) -> None:
         tasks = self._invalidation_closes.get(key)
         if tasks is not None:
             tasks.discard(task)
             if not tasks:
                 del self._invalidation_closes[key]
+        if self._draining.get(entry) is not None and self._draining[entry].closer is task:
+            del self._draining[entry]
+
+    async def _force_close(self, key: str, entry: "ManagedSdkClient") -> None:
+        """The ONE force-close site (#853): an entry whose lock is still held
+        when the drain timeout expires is disconnected from OUTSIDE its lock.
+        Fires ``on_force_close`` first so a cause can be recorded before the
+        transport cut ends the turn; a raising hook is logged and never
+        unwinds ``aclose`` (it would leave every remaining entry open — the
+        defect this helper exists to close). ``entry.aclose()`` is idempotent
+        and joins a disconnect already in flight."""
+        logger.warning("pool aclose: drain timeout on %s; force close", key)
+        try:
+            self.on_force_close(key, entry)
+        except Exception:  # noqa: BLE001 — a hook must not hold the pool open
+            logger.warning(
+                "pool aclose: on_force_close hook raised on %s", key, exc_info=True,
+            )
+        await entry.aclose()
 
     async def close_key(self, channel_key: str) -> None:
         """AR-4 reset-hook target: close (flush) the key's warm client.
@@ -639,8 +706,12 @@ class SdkClientPool:
         for key, entry in entries.items():
             task = asyncio.create_task(_close(key, entry, barriers[key]))
             self._invalidation_closes.setdefault(key, set()).add(task)
+            # #853: same synchronous run as the pop above — an aclose snapshot
+            # (under _pool_lock) sees a generation wholly or not at all.
+            self._draining[entry] = DrainOwner(key, task)
             task.add_done_callback(
-                lambda t, _key=key: self._discard_invalidation_close(_key, t)
+                lambda t, _key=key, _entry=entry:
+                    self._discard_invalidation_close(_key, _entry, t)
             )
             close_tasks.append(task)
         close_group = asyncio.gather(*close_tasks, return_exceptions=True)
@@ -658,18 +729,31 @@ class SdkClientPool:
             self._sweeper.cancel()
             self._sweeper = None
         async with self._pool_lock:
-            entries = dict(self._entries)
+            entries = list(self._entries.items())
             self._entries.clear()
             barriers = list(self._invalidation_barriers.values())
             self._invalidation_barriers.clear()
             invalidation_groups = tuple(self._invalidation_groups)
+            # #853: everything still draining — what the invalidation closers
+            # own (force-closed below at the drain timeout) and what an
+            # EARLIER aclose left mid-drain when an outer bound cancelled it
+            # (closer None: re-drained by the loop below with a full window
+            # each, and popped there, so the invalidated arm never reaches
+            # it as a timed-out closer).
+            draining = dict(self._draining)
+            orphans = [
+                (owner.key, entry) for entry, owner in draining.items()
+                if owner.closer is None
+            ]
+            for key, entry in entries:
+                self._draining[entry] = DrainOwner(key, None)
         # Wake same-key waiters only after closing is visible. Their next
         # _entry_stub loop raises PoolUnavailable instead of constructing a
         # post-shutdown generation.
         for barrier in barriers:
             if not barrier.done():
                 barrier.set_result(None)
-        for key, entry in entries.items():
+        for key, entry in entries + orphans:
             try:
                 await asyncio.wait_for(entry.lock.acquire(), timeout=drain_timeout)
                 try:
@@ -677,16 +761,24 @@ class SdkClientPool:
                 finally:
                     entry.lock.release()
             except (asyncio.TimeoutError, TimeoutError):
-                logger.warning("pool aclose: drain timeout on %s; force close", key)
-                await entry.aclose()
+                await self._force_close(key, entry)
+            # Reached only when THIS call closed it: a cancellation above
+            # leaves the record for a later call to re-drain.
+            self._draining.pop(entry, None)
         if invalidation_groups:
-            # These workers own entries already removed from _entries, so
-            # normal shutdown must drain them too. Shield preserves their
-            # lock-handoff invariant if an outer shutdown timeout cancels us.
-            await asyncio.shield(asyncio.gather(
-                *invalidation_groups,
-                return_exceptions=True,
-            ))
+            # #853: the closers own entries already removed from _entries, so
+            # shutdown must drain them too — but bounded. asyncio.wait never
+            # cancels its awaitables, on timeout or on our own cancellation,
+            # so the closers keep their lock-handoff bookkeeping and finish
+            # when the turn releases; they are not awaited past this window.
+            await asyncio.wait(invalidation_groups, timeout=drain_timeout)
+        for entry, owner in draining.items():
+            if entry not in self._draining:
+                continue          # its closer finished, or the loop closed it
+            if entry.state == "closed":
+                await entry.aclose()           # join the disconnect in flight
+            else:
+                await self._force_close(owner.key, entry)
         if self in SdkClientPool._instances:
             SdkClientPool._instances.remove(self)
 
