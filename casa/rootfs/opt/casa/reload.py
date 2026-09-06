@@ -1697,7 +1697,7 @@ async def _reload_role_after_policies(
     _start_bus_loop(runtime, role)
     # F12: drain/close the replaced Agent's SDK client pool in the
     # background so no warm subprocess outlives this swap.
-    _schedule_agent_close(old_agent)
+    _schedule_agent_close(old_agent, runtime=runtime, role=role)
 
 
 async def reload_policies(runtime: Any, *, role: str | None = None) -> list[str]:
@@ -2021,7 +2021,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # teardown awaits — an evicted resident must not stay inspectable.
         runtime.refresh_personality_maps()
         old_agent = runtime.agents.pop(r, None)  # AR-7: capture before drop
-        _schedule_agent_close(old_agent)  # F12
+        _schedule_agent_close(old_agent, runtime=runtime, role=r)  # F12
         incomplete = await _teardown_role(runtime, r)
         actions.append(f"evicted_{r}")
         # #786 (INV-CFG-012, diff review r1): the teardown names the steps
@@ -2165,7 +2165,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # the role is about to become undispatchable entirely.
         _invalidate_role_grants(s)
         old_agent = runtime.agents.pop(s, None)  # AR-7: capture before drop
-        _schedule_agent_close(old_agent)  # F12
+        _schedule_agent_close(old_agent, runtime=runtime, role=s)  # F12
         incomplete = await _teardown_role(runtime, s)
         _note_retirement_outcome(s, incomplete)
         # S-3: the registry diff above already reported registry-known
