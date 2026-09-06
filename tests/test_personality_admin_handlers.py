@@ -622,6 +622,30 @@ _SS_OBJ = {"marker": "SHOW_SENSITIVE_OBJECT_SENTINEL"}
 _CF_OBJ = {"marker": "CONFIRMED_OBJECT_SENTINEL"}
 
 
+@pytest.mark.parametrize("value, expected", [
+    (None, "null"),
+    # `isinstance(True, int)` is true, so the bool arm must precede the numeric
+    # one or a JSON `true` would read as "number". `_explain` itself never
+    # reaches the helper with a bool (a bool passes the gate), so this arm is
+    # what keeps the mapping total for any future caller.
+    (True, "boolean"),
+    (False, "boolean"),
+    (0, "number"),
+    (314159265, "number"),
+    (1.5, "number"),
+    ("", "string"),
+    ("true", "string"),
+    ([], "array"),
+    ([1], "array"),
+    ({}, "object"),
+    ({"a": 1}, "object"),
+])
+def test_json_type_name_maps_every_json_type_with_bool_before_number(value, expected):
+    from personality_admin_handlers import _json_type_name
+
+    assert _json_type_name(value) == expected
+
+
 @pytest.mark.parametrize(
     "payload_extra, field, json_type, sentinels",
     [
