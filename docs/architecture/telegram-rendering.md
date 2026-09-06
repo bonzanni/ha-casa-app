@@ -106,6 +106,14 @@ authored, address and all; a page whose entities Telegram merely rejects, which 
 sender-side path above; and a page with no spans at all, which does not enter this path and
 keeps its bytes — including a lone surrogate — exactly as before.
 
+## Failure behavior
+
+**Formatting is refused, or cannot be expressed.** Both cases are described under the
+mental model: a message whose entities the platform refuses is re-sent plain exactly once,
+and a page whose spans cannot be converted is emitted with its link destinations
+re-attached. The paginating renderer itself never raises — a page whose destinations could
+not be reconstructed is emitted as plain text with a log line.
+
 ## Extension points
 
 **A new rich response** belongs on the paginating path. The plain splitter measures the same
