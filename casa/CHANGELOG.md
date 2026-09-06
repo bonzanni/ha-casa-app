@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.276.0] - 2026-09-06
+
+### Fixed
+
+- A refused `explain` request on the internal admin socket now says which field
+  was wrong and that a JSON boolean was expected. Both gate fields were checked
+  by one combined test that returned the same bare refusal either way, so a
+  caller sending a quoted `"false"` instead of `false` was told only that its
+  arguments were invalid, with nothing to say which one or what shape was wanted.
+  The same requests are refused as before.
+
 ## [0.275.0] - 2026-09-06
 
 ### Fixed
