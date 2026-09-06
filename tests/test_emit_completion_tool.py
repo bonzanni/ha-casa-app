@@ -2075,16 +2075,13 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
                                  "up to 4"),
         "inbound_reservations": (("q-text", "f-text", "e-text", "r-text"),
                                  "up to 4"),
-        # The COUNT is deliberately not asserted for this row. Its text read
-        # succeeds while its count read fails, and `lost_reservations` is the
-        # only count unit the reservation population contributes — so the
-        # renderer quotes four bullets under an exact count of three. That
-        # incoherence is PRE-EXISTING (it is reachable at the base with this
-        # same driver, unchanged by this fix) and is filed as #848; pinning
-        # it as observed would codify an undercount, so this row pins only the
-        # containment #807 is about: every readable bullet survives.
+        # #848: the text read succeeds while the count read fails, so the
+        # reservation population is quoted and cannot be counted — the
+        # renderer says so instead of quoting four bullets under an exact
+        # count of three (the base's undercount, INV-ENG-017's failed-count
+        # clause).
         "inbound_message_reservations": (
-            ("q-text", "f-text", "e-text", "r-text"), None),
+            ("q-text", "f-text", "e-text", "r-text"), "An unknown number of"),
         "inbound_reservation_texts": (("q-text", "f-text", "e-text"),
                                       "up to 4"),
         "inbound_in_flight_texts": (("q-text", "e-text", "r-text"), "up to 3"),
@@ -2133,6 +2130,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
         ("absent", "inbound_unread_texts"),
         ("raises", "inbound_in_flight_texts"),
         ("raises", "inbound_in_flight_blocking"),
+        ("raises", "inbound_message_reservations"),
     ])
     async def test_an_unreadable_accessor_with_no_other_evidence_fails_open(
             self, tmp_path, condition):
@@ -2183,3 +2181,265 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
 
         assert result is FinalizeResult.PRECONDITION_FAILED
         assert rec.status not in ("completed", "error", "cancelled")
+
+
+UNKNOWN_COUNT_SENTENCE = (
+    "⚠️ An unknown number of inbound message(s) had no turn start "
+    "recorded before this engagement ended — they may never have been "
+    "read"
+)
+
+LAUNCH_DEATH_BASE_SENTENCE = (
+    "⚠️ This engagement stopped before reporting a result "
+    "(test detail). Its task may be incomplete — inspect any partial "
+    "changes before retrying."
+)
+
+
+class TestAFailedCountReadStillDisclosesTheTextsItRead:
+    """#848 RED CASES — INV-ENG-017's failed-count clause, on BOTH terminal
+    renderers, each driven DIRECTLY with the shipped eight-accessor duck
+    driver: `_finalize_engagement` on an ungated cancel, and
+    `_report_launch_death` with a channel exposing the async
+    `_post_engagement_notice` seam (never through `_abort_launch_on_cancel`,
+    which another change owns).
+
+    The state: the reservation-COUNT read raises while the reservation-TEXT
+    read answers. At the base both renderers derive the paragraph's existence
+    and its count from `lost_reservations` alone, which the count read's
+    except arm sets to 0 — so with a spool population present the operator
+    sees four bullets under an exact `3 inbound message(s)`, and with only a
+    reservation text known no paragraph is posted at all and the text that
+    WAS read is dropped silently. The fix posts the paragraph whenever the
+    failed count sits beside a read text, and states no number in place of
+    one it cannot evidence.
+
+    Specified by terra (round `redcase-specify`); accepted by astra.
+    Registry and channel wiring borrowed from the #807 class above, unchanged.
+    """
+
+    _setup = TestOneFailingAccessorCostsOnlyItsOwnInput._setup
+    _finalize = staticmethod(TestOneFailingAccessorCostsOnlyItsOwnInput._finalize)
+    _posted = staticmethod(TestOneFailingAccessorCostsOnlyItsOwnInput._posted)
+    _FULL = TestOneFailingAccessorCostsOnlyItsOwnInput._FULL
+
+    @staticmethod
+    def _paragraph(posted: str) -> str:
+        """The inbound paragraph the finalize tail posted, from its warning
+        sign to the end of the posted text, so equality is on the WHOLE
+        paragraph rather than on a substring a contradictory copy could
+        also contain."""
+        i = posted.find("⚠️")
+        assert i >= 0, posted
+        return posted[i:]
+
+    @staticmethod
+    def _finalize_text(tch) -> str:
+        """The one text the ungated cancel posted into the topic."""
+        calls = (list(tch.send_to_topic.call_args_list)
+                 + list(tch.send_response_to_topic.call_args_list))
+        assert len(calls) == 1, calls
+        return next(a for a in calls[0].args if isinstance(a, str))
+
+    @staticmethod
+    def _launch_death_channel():
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            _post_engagement_notice=AsyncMock(), close_topic=AsyncMock())
+
+    @staticmethod
+    async def _launch_death(rec, drv, channel):
+        from tools import _report_launch_death
+
+        return await _report_launch_death(
+            channel, rec, rec.topic_id, kind="test", detail="test detail",
+            driver=drv)
+
+    async def _render(self, renderer, rec, drv, tch) -> str:
+        if renderer == "finalize":
+            from tools import FinalizeResult
+            result = await self._finalize(rec, drv, outcome="cancelled",
+                                          gate=False)
+            assert result is FinalizeResult.FINALIZED
+            return self._posted(tch)
+        from tools import LaunchDeathResult
+        channel = self._launch_death_channel()
+        result = await self._launch_death(rec, drv, channel)
+        assert result is LaunchDeathResult.REPORTED
+        assert channel._post_engagement_notice.await_count == 1
+        (_rec, notice), _kw = channel._post_engagement_notice.await_args
+        return notice
+
+    # ---- the four red arms ------------------------------------------
+
+    async def test_finalize_names_no_count_over_the_four_bullets_it_quotes(
+            self, tmp_path):
+        """ARM 1. Red at the base: four bullets under an exact
+        `3 inbound message(s)` — more bullets than the count above them."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_message_reservations",
+                             **self._FULL)
+
+        result = await self._finalize(rec, drv, outcome="cancelled", gate=False)
+
+        assert result is FinalizeResult.FINALIZED
+        assert drv.calls["inbound_reservation_texts"] == 1
+        posted = self._finalize_text(tch)
+        assert self._paragraph(posted) == (
+            UNKNOWN_COUNT_SENTENCE
+            + ":\n• f-text\n• q-text\n• e-text\n• r-text")
+        assert posted.count(UNKNOWN_COUNT_SENTENCE) == 1, posted
+        for sentinel in ("f-text", "q-text", "e-text", "r-text"):
+            assert posted.count("• " + sentinel) == 1, (sentinel, posted)
+        assert "3 inbound message(s)" not in posted, posted
+        assert "up to" not in posted, posted
+
+    async def test_finalize_quotes_a_reservation_text_that_was_all_it_could_read(
+            self, tmp_path):
+        """ARM 2. Red at the base: the renderer's predicate is false with no
+        spool population and a zeroed count, so NO `inbound message(s)`
+        paragraph is posted and the read text is dropped silently."""
+        from tools import FinalizeResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_message_reservations",
+                             message_reservations=1,
+                             reservation_texts=["r-text"])
+
+        result = await self._finalize(rec, drv, outcome="cancelled", gate=False)
+
+        assert result is FinalizeResult.FINALIZED
+        assert drv.calls["inbound_reservation_texts"] == 1
+        posted = self._finalize_text(tch)
+        assert posted.count("inbound message(s)") == 1, posted
+        assert self._paragraph(posted) == (
+            UNKNOWN_COUNT_SENTENCE + ":\n• r-text")
+        assert posted.count(UNKNOWN_COUNT_SENTENCE) == 1, posted
+        assert posted.count("• r-text") == 1, posted
+
+    async def test_launch_death_names_no_count_over_the_four_bullets_it_quotes(
+            self, tmp_path):
+        """ARM 3. Red at the base: the sole notice says
+        `3 inbound message(s)` over four bullets."""
+        from tools import LaunchDeathResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_message_reservations",
+                             **self._FULL)
+        channel = self._launch_death_channel()
+
+        result = await self._launch_death(rec, drv, channel)
+
+        assert result is LaunchDeathResult.REPORTED
+        assert drv.calls["inbound_reservation_texts"] == 1
+        assert channel._post_engagement_notice.await_count == 1
+        (_rec, notice), _kw = channel._post_engagement_notice.await_args
+        assert notice == (
+            LAUNCH_DEATH_BASE_SENTENCE + "\n\n" + UNKNOWN_COUNT_SENTENCE
+            + ":\n• f-text\n• q-text\n• e-text\n• r-text"), notice
+
+    async def test_launch_death_quotes_a_reservation_text_that_was_all_it_could_read(
+            self, tmp_path):
+        """ARM 4. Red at the base: one notice, no inbound paragraph — the
+        text that was read is dropped silently."""
+        from tools import LaunchDeathResult
+
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_message_reservations",
+                             message_reservations=1,
+                             reservation_texts=["r-text"])
+        channel = self._launch_death_channel()
+
+        result = await self._launch_death(rec, drv, channel)
+
+        assert result is LaunchDeathResult.REPORTED
+        assert drv.calls["inbound_reservation_texts"] == 1
+        assert channel._post_engagement_notice.await_count == 1
+        (_rec, notice), _kw = channel._post_engagement_notice.await_args
+        assert notice == (
+            LAUNCH_DEATH_BASE_SENTENCE + "\n\n" + UNKNOWN_COUNT_SENTENCE
+            + ":\n• r-text"), notice
+
+    # ---- the alias witness: why the copy names no number -----------
+
+    @pytest.mark.parametrize("renderer", ["finalize", "launch_death"])
+    async def test_an_alias_beside_its_envelope_is_quoted_twice_under_no_count(
+            self, tmp_path, renderer):
+        """The shipped exclusion read fails OPEN to "suppress nothing", so a
+        held reservation's text can be quoted beside the spool envelope of
+        the same message. With the count read also failed, a lower-bound copy
+        would claim two messages for one; the copy names no number. Red at
+        the base on the copy (`1 inbound message(s)`)."""
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_message_reservations",
+                             message_reservations=1, texts=["hello"],
+                             reservation_texts=["hello"])
+
+        posted = await self._render(renderer, rec, drv, tch)
+
+        assert posted.count("• hello") == 2, posted
+        assert posted.count(UNKNOWN_COUNT_SENTENCE) == 1, posted
+        assert "at least" not in posted, posted
+        assert "1 inbound message(s)" not in posted, posted
+
+    # ---- mutation controls (GREEN at the base, not red cases) ---------
+
+    @pytest.mark.parametrize("renderer", ["finalize", "launch_death"])
+    @pytest.mark.parametrize("count", [
+        ("absent", None), ("non-int", "1"), ("zero", 0)])
+    async def test_a_count_that_did_not_raise_beside_a_text_alone_keeps_the_base_output(
+            self, tmp_path, renderer, count):
+        """A successful zero, an absent accessor and a non-int answer are not
+        failures: the flag stays down and a reservation text beside them is
+        the off-contract state (texts are clamped to the count) the renderer
+        does not re-clamp — no paragraph, exactly as at the base. Kills a
+        flag raised on the wrong fallback, and a predicate that reads the
+        texts without the flag."""
+        mode, value = count
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(
+            absent="inbound_message_reservations" if mode == "absent" else (),
+            message_reservations=0 if value is None else value,
+            reservation_texts=["r"])
+
+        posted = await self._render(renderer, rec, drv, tch)
+
+        assert "inbound message(s)" not in posted, posted
+        assert "An unknown number" not in posted, posted
+
+    @pytest.mark.parametrize("renderer", ["finalize", "launch_death"])
+    async def test_a_successful_zero_beside_a_spool_text_and_a_reservation_text_keeps_the_base_copy(
+            self, tmp_path, renderer):
+        """The off-contract state with a spool population present: pinned as
+        UNCHANGED, not endorsed — the base's exact `1` over two bullets, no
+        unknown-number copy. Kills deriving "the read failed" from
+        `lost_reservations == 0 and reservation_texts`."""
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(message_reservations=0, texts=["q"],
+                             reservation_texts=["r"])
+
+        posted = await self._render(renderer, rec, drv, tch)
+
+        assert posted.count("1 inbound message(s)") == 1, posted
+        assert posted.count("• q") == 1, posted
+        assert posted.count("• r") == 1, posted
+        assert "An unknown number" not in posted, posted
+
+    @pytest.mark.parametrize("renderer", ["finalize", "launch_death"])
+    async def test_a_failed_count_beside_spool_text_only_keeps_the_exact_count(
+            self, tmp_path, renderer):
+        """The failed count with NO reservation text: the base's exact
+        numeric paragraph, byte for byte — the new arm needs the text as
+        well as the flag, and the count copy is untouched without one."""
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_message_reservations",
+                             texts=["q"])
+
+        posted = await self._render(renderer, rec, drv, tch)
+
+        assert posted.count("1 inbound message(s)") == 1, posted
+        assert posted.count("• q") == 1, posted
+        assert "An unknown number" not in posted, posted
+        assert "up to" not in posted, posted
