@@ -58,7 +58,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
 | the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker | [`architecture/callback-delivery.md`](architecture/callback-delivery.md) |
-| the completion gate or a driver's inbound accessors | [`architecture/engagement-completion-gate.md`](architecture/engagement-completion-gate.md) |
+| the completion gate, or a driver's inbound count accessors — its unread depth, its in-flight blocking answer, its reservation count | [`architecture/engagement-completion-gate.md`](architecture/engagement-completion-gate.md) |
 | the contribution rules, the verification discipline, or how documentation is kept honest | [`doctrine/working-on-casa.md`](doctrine/working-on-casa.md) |
 | the delegation ACL or alias resolution, the delegates block, the delegation depth cap, or the agent-spawn cap | [`architecture/delegation.md`](architecture/delegation.md) |
 | the documentation rules themselves, or adding a document to the corpus | [`contributing/doc-contract.md`](contributing/doc-contract.md) |
@@ -72,7 +72,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed | [`architecture/engagement-turn-admission.md`](architecture/engagement-turn-admission.md) |
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |
 | what a terminal engagement's topic or its engager is told, the outcome mark, the unconfirmed-post disclosure, or the durable obligation to notify | [`architecture/engagement-terminal-telling.md`](architecture/engagement-terminal-telling.md) |
-| what a terminal outcome discloses about inbound messages, the evicted-message population, or a reservation's disclosed text and the count over it | [`architecture/engagement-inbound-disclosure.md`](architecture/engagement-inbound-disclosure.md) |
+| what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, the evicted-message population, or a reservation's disclosed text and the count over it | [`architecture/engagement-inbound-disclosure.md`](architecture/engagement-inbound-disclosure.md) |
 | who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
 <!-- END ROUTING -->
 
