@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.277.0] - 2026-09-06
+
+### Fixed
+
+- When a callback's retry budget is spent, the one note the operator gets is now
+  delivered before it is recorded as sent. It was recorded first, so a note that
+  could not be delivered was lost rather than retried — and the window was open
+  at every boot, because the worker's first pass runs before the Telegram channel
+  is started. An undelivered note is now retried on a later pass.
+
 ## [0.276.0] - 2026-09-06
 
 ### Fixed
