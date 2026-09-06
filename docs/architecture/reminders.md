@@ -23,6 +23,19 @@ listing — is the ordinary trigger path. One-off reminders use the point-in-tim
 type, because cron has no year field and a dated one-shot written as cron is an *annual*
 trigger in disguise.
 
+**The reminder's text is the message, not an instruction about one.** What the creating
+agent passes as `text` is what the operator reads: the writer strips surrounding whitespace
+and stores the text inside a generated prompt telling the fire-time turn to send exactly
+that, and both delivery paths — the scheduled job and the overdue sweep — replay the stored
+prompt verbatim. That prompt names the plain-text send, so a reminder arrives as plain text
+with no buttons. Text composed at creation time as an *instruction* ("ask them with
+Approve/Deny buttons whether …") therefore reaches the operator as that instruction, and a
+tappable choice promised while the reminder was being set cannot be honoured when it fires.
+The tool's own description is where this contract is stated, because nothing in the code can
+state it: the writer inspects `text` only for emptiness, and deciding whether prose is
+operator-facing is a heuristic with false positives, so the surface a model reads *before*
+calling is the only place the guarantee can be made.
+
 **One file, ownership per entry.** A reminder is an ordinary entry in the role's
 `triggers.yaml`, marked `managed_by: agent`. Reminders once had a file of their own,
 because reconciliation resolved an edited image-owned file against a changed shipped

@@ -6655,16 +6655,20 @@ def _reminder_origin_role() -> str:
 
 @tool(
     "set_reminder",
-    "Set a durable reminder that survives restarts and updates. `at` is the "
-    "first (or only) occurrence as an ISO-8601 time WITH a UTC offset — "
-    "resolve it yourself from what the user said, and echo the absolute time "
-    "back to them so a misreading is caught immediately. `repeat` is one of "
-    "none (default), daily, weekdays, weekly, monthly; when the user's "
-    "request is genuinely ambiguous about repeating, ask them with tappable "
-    "buttons before calling this. A repeating reminder must land on a whole "
-    "minute, and a monthly one on day 28 or earlier — later days are missing "
-    "from some months, so ask the user for a different day rather than "
-    "guessing. Own-role only.",
+    "Set a durable reminder that survives restarts and updates. `text` is the "
+    "message the operator will receive: apart from surrounding whitespace it "
+    "is delivered to them exactly as written, as plain text with no buttons — "
+    "so write the words you want them to read, never an instruction about "
+    "what to send and never a promise of a tappable choice this tool cannot "
+    "deliver. `at` is the first (or only) occurrence as an ISO-8601 time WITH "
+    "a UTC offset — resolve it yourself from what the user said, and echo the "
+    "absolute time back to them so a misreading is caught immediately. "
+    "`repeat` is one of none (default), daily, weekdays, weekly, monthly; "
+    "when the user's request is genuinely ambiguous about repeating, ask them "
+    "with tappable buttons before calling this. A repeating reminder must "
+    "land on a whole minute, and a monthly one on day 28 or earlier — later "
+    "days are missing from some months, so ask the user for a different day "
+    "rather than guessing. Own-role only.",
     {"at": str, "text": str, "repeat": str},
 )
 async def set_reminder(args: dict) -> dict:
