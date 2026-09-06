@@ -582,7 +582,10 @@ async def test_expire_due_applies_result_delivery_ttl(tmp_path):
         now=100.0,
     )
     await registry.expire_due()
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    # #862: the due row is deleted rather than marked. The delivery TTL is
+    # still what decides the moment; only what it leaves behind changed.
+    assert registry.get("job-1") is None
+    assert len(registry.all()) == 0
 
 
 async def test_snapshot_without_control_identity_keeps_legacy_scope_auth(tmp_path):

@@ -31,10 +31,13 @@ until it expires. Different devices progress independently, and the same device 
 serialized even across route reconnects.
 
 **The bounds are fixed and small.** A disconnected route stays fresh for sixty seconds; a
-completed result is retained at most fifteen minutes (a specialist's shorter privacy
-expiry wins); a route holds at most five live-or-ready jobs; a claim leases for fifteen
-seconds with five-second renewals, and a nacked endpoint parks re-offers for thirty. These
-decide admission, expiry and redelivery latency — none is operator-configurable.
+completed result is deliverable for at most fifteen minutes (a specialist's shorter privacy
+expiry wins), and that same deadline is when the record is deleted — see
+[what Casa keeps about a finished delegation](jobs-and-delivery.md#what-casa-keeps-about-a-finished-delegation),
+which owns the retention rule; a route holds at most five live-or-ready jobs; a claim leases
+for fifteen seconds with five-second renewals, and a nacked endpoint parks re-offers for
+thirty. These decide admission, expiry and redelivery latency — none is
+operator-configurable.
 
 **Cancellation has a physical boundary.** Ready or claimed work cancels; authorized work
 enters a stopping/revocation handshake; playing or delivered is too late — a cancellation
@@ -77,8 +80,15 @@ ignored; current-protocol frames that fail validation or the CAS receive a revok
 and the *requested* transition mutates nothing — though the handler's pre-validation
 reconciliation pass may independently expire or requeue jobs that were already due.
 
-**The result outlives its TTL.** Delivery becomes expired, the attempt and lease are
-cleared, and the audit row is preserved — expiry deletes nothing.
+**The result outlives its TTL.** The next expiry pass deletes the durable row outright,
+with the request, its context and the answer; a live attempt on it is reconciled exactly as
+a non-deliverable one is, with one revoke and the attempt reclaimed. Nothing is kept as an
+expired audit record, so `voice_job_status`, `cancel_voice_job` and `continue_voice_job`
+answer for that id with *job not found* rather than reporting an expired job — the record
+is gone, and saying so is the truthful answer. The one exception is a row that still owes
+its creator an announcement, which is kept until the notice is delivered; the retention
+rule and its exemption are stated in
+[what Casa keeps about a finished delegation](jobs-and-delivery.md#what-casa-keeps-about-a-finished-delegation).
 
 ## Extension points
 

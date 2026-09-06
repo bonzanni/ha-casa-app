@@ -561,7 +561,9 @@ async def test_result_ttl_expiring_across_restart_never_emits_ready_frame(
     coordinator = VoiceDeliveryCoordinator(restarted, routes, clock=lambda: now[0])
     await coordinator.route_connected(route)
 
-    assert restarted.get("job-expiring").delivery_state is DeliveryState.EXPIRED
+    # #862: the row is deleted at its deadline, so the no-offer guarantee now
+    # holds by absence — `_offer_heads_locked` iterates the surviving rows.
+    assert restarted.get("job-expiring") is None
     assert _offered(route) == []
 
 
@@ -866,7 +868,7 @@ async def test_ttl_expiry_revokes_offer_and_never_offers_followup_early(delivery
     now[0] = 106.0
     await coordinator.sweep_once()
 
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    assert registry.get("job-1") is None                      # #862
     assert route.sent[-2]["type"] == "job_revoke"
     assert route.sent[-1]["type"] == "job_ready"
     assert route.sent[-1]["job_id"] == "job-2"
@@ -881,7 +883,7 @@ async def test_route_reconnect_never_offers_a_result_past_ttl(delivery):
     await coordinator.route_connected(route)
 
     assert _offered(route) == []
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    assert registry.get("job-1") is None                      # #862
 
 
 async def test_ready_cancellation_revokes_offer_and_releases_fifo(delivery):
@@ -1085,7 +1087,7 @@ async def test_satellite_mapping_park_still_expires_at_ttl(delivery):
     now[0] = 106.0
     await coordinator.sweep_once()
 
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    assert registry.get("job-1") is None                      # #862
     assert len(_offered(route)) == 1
     await coordinator.stop()
     await old_coordinator.stop()

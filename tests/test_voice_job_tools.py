@@ -613,9 +613,9 @@ async def test_expired_job_is_removed_before_route_capacity_is_counted(tool_env)
     payload = tool_payload(await tool_env.invoke_delegate())
 
     assert payload["status"] == "pending"
-    assert tool_env.job_registry.get("job-0").delivery_state is (
-        DeliveryState.EXPIRED
-    )
+    # #862: the expired row is now removed outright, which is what the test's
+    # name has always claimed; it no longer holds a backlog slot as a marked row.
+    assert tool_env.job_registry.get("job-0") is None
 
 
 @pytest.mark.asyncio
@@ -1537,8 +1537,12 @@ async def test_expired_continuation_is_rejected_without_child(tool_env):
         voice_origin(),
         {"input": "too late", "job_id": "job-expired"},
     ))
-    assert payload["kind"] == "job_not_continuable"
-    assert len(tool_env.job_registry.all()) == 1
+    # #862: `continue_voice_job` expires before it resolves, so a parent past
+    # its deadline is GONE rather than present-and-refused — the refusal shape
+    # changes from "not continuable" to "not found", and the count of zero says
+    # both that no child was created and that the parent was deleted.
+    assert payload["kind"] == "job_not_found"
+    assert len(tool_env.job_registry.all()) == 0
 
 
 @pytest.mark.asyncio

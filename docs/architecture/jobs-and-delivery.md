@@ -189,17 +189,40 @@ deferred no-op would change nothing.
 ## What Casa keeps about a finished delegation
 
 The durable row holds the *caller's* prose — the request as it was made — the specialist's
-role, the origin, the terminal state and its typed failure envelope, for the terminal
-result TTL (24 h; a trusted voice-delivery row uses the shorter voice TTL). The file is
-written 0600.
+role, the origin, the terminal state and its typed failure envelope. The file is written
+0600.
+
+**It is kept until its deadline, and then it is deleted.** Every terminal write stamps the
+row with a deadline: 24 h for an ordinary delegation, the shorter voice TTL for a trusted
+voice-delivery row, which can be as little as thirty seconds. The first expiry pass at or
+after that deadline REMOVES the row from the file — the request, its context and, on the
+voice arm, the answer go with it, out of the file's bytes rather than out of a field. That
+happens whatever state the delivery reached, a delivered or cancelled one included; there
+is no marked-and-retained audit record, and a row with no deadline is a live job and is
+never touched. This is the one statement of the retention rule; the delivery side points
+here rather than restating it.
+
+**One record is exempt: one that still owes its creator an announcement.** A terminal that
+Casa has not yet been able to tell its creator about carries a durable marker until the
+notice reaches the transport (INV-JOB-010), and such a row is kept — with its content —
+past its deadline, so the boot replay still finds it. Its delivery still expires on time;
+only the record survives. The first pass after the notice is acknowledged deletes it. This
+is deliberately the same shape as INV-ENG-018's engagement-record exemption.
+
+**Deletion is opportunistic, and this is a stated limit rather than an oversight.** The
+passes are a delegation launch, the three voice job tools, and the delivery coordinator's
+reconciliation — its one-second sweep, a route connecting, and each inbound job frame.
+Nothing sweeps at boot or on a wall clock, so on an install where no delegation is launched
+and no voice channel is running, a due row waits in the file until something runs a pass.
 
 What it does **not** hold, on the Telegram and synchronous arms, is the specialist's
 **answer**: the completion writes an empty result deliberately, and nothing since has
 changed that. The decision was taken explicitly rather than inherited (#688): a truthful
 boot announcement needs the role, the request, the terminal time and the execution state,
 all of which are already on the row, so retaining the answer would buy quality of outcome
-and cost a widened retention posture on a file that backups and config-git snapshots
-reach. The empty string is also load-bearing — the registry-owned completion retry treats
+and cost a widened retention posture. That posture was described here as "a file that
+backups and config-git snapshots reach", which was never true of it: `config_git` versions
+`/config`, and the job file lives under `/data`. The empty string is also load-bearing — the registry-owned completion retry treats
 it as *not a stored result to clobber* — so making it meaningful would change that contract
 with it.
 
