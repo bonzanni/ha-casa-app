@@ -689,3 +689,174 @@ class TestTranscriptReaper:
             ("sdk-a", "/home/assistant"),
             ("sdk-b", "/home/butler"),
         ]
+
+
+# ---------------------------------------------------------------------------
+# INV-MEM-017 — the sweep never destroys a conversation whose retention is
+# still owed. Red case for #886 (specified by the red-case reviewer).
+# ---------------------------------------------------------------------------
+
+
+class TestRetentionOwedIsNeverDestroyed:
+    """A bank-writable channel's entry that names a transcript is neither
+    evicted nor reaped, whatever its age, provenance, claims or timestamp.
+
+    Every arm asserts a COUNT PAIR ``(delete-seam calls, surviving entries)``,
+    never a status. At the base tree each red arm produces ``(1, 0)``.
+    """
+
+    @staticmethod
+    async def _seed_owed(reg, monkeypatch, key, sid, now, **overrides):
+        """Seed a never-banked telegram entry 31 days stale, with usable
+        provenance, at the shipped TTL defaults."""
+        from speaker_provenance import provenance_mapping
+
+        monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
+        await _seed(reg, key, sid, now - timedelta(days=31))
+        # _seed overwrites the whole entry, so the provenance and any claim
+        # marker are applied AFTER it, never before.
+        reg._data[key].update(
+            binding_digest=STUB_BINDING_DIGEST,
+            speaker_provenance=provenance_mapping(STUB_SPEAKER_PROV),
+            user_provenance=provenance_mapping(STUB_USER_PROV),
+        )
+        reg._data[key].update(**overrides)
+        await reg.save()
+
+    @staticmethod
+    def _record_deletes(monkeypatch):
+        import session_sweeper
+
+        calls: list[tuple[str, str | None]] = []
+        monkeypatch.setattr(
+            session_sweeper, "_sdk_delete_session",
+            lambda session_id, directory=None: calls.append((session_id, directory)),
+        )
+        return calls
+
+    @staticmethod
+    def _default_sweeper(reg, now):
+        """Constructed with NO TTL arguments — the shipped defaults are the
+        configuration under test, and they are asserted, not assumed."""
+        sweeper = SessionSweeper(registry=reg, now=lambda: now)
+        assert (sweeper._session_ttl.days, sweeper._webhook_ttl.days) == (30, 1)
+        return sweeper
+
+    async def test_ttl_preserves_never_banked_telegram(self, tmp_path, monkeypatch):
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        await self._seed_owed(reg, monkeypatch, "telegram-017", "sdk-never-banked", now)
+        calls = self._record_deletes(monkeypatch)
+
+        await self._default_sweeper(reg, now)._sweep_once()
+
+        assert (len(calls), len(reg.all_entries())) == (0, 1)
+
+    async def test_ttl_preserves_telegram_during_reset_notify(self, tmp_path, monkeypatch):
+        """Swept inside _reset_locked's notify_reset await window, with the
+        reset's retirement claim live on the snapshotted sid."""
+        import session_saver
+
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        key, sid = "telegram-017", "sdk-never-banked"
+        await self._seed_owed(reg, monkeypatch, key, sid, now)
+        calls = self._record_deletes(monkeypatch)
+        sweeper = self._default_sweeper(reg, now)
+
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def listener(channel_key):
+            entered.set()
+            await release.wait()
+
+        unsubscribe = reg.add_reset_listener(listener)
+        task = asyncio.create_task(
+            session_saver._reset_locked(key, reg, AsyncMock(), channel="telegram")
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            # The claim is live and names the snapshotted sid — assertions stay
+            # OUT of the listener, whose exceptions notify_reset swallows.
+            assert len(reg._retirements.get(key, {})) == 1
+            assert sum(s == sid for s in reg._retirements[key].values()) == 1
+
+            await sweeper._sweep_once()
+
+            # Counted while the reset is still suspended: letting it finish
+            # would measure the reset's own intentional removal instead.
+            assert (len(calls), len(reg.all_entries())) == (0, 1)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            unsubscribe()
+
+    async def test_ttl_preserves_telegram_with_inflight_save_claim(self, tmp_path, monkeypatch):
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        await self._seed_owed(
+            reg, monkeypatch, "telegram-017", "sdk-never-banked", now,
+            consolidated_at=now.isoformat(),
+        )
+        calls = self._record_deletes(monkeypatch)
+
+        await self._default_sweeper(reg, now)._sweep_once()
+
+        assert (len(calls), len(reg.all_entries())) == (0, 1)
+
+    async def test_ttl_preserves_telegram_with_unparseable_last_active(self, tmp_path, monkeypatch):
+        """Protection wins over the malformed-timestamp eviction arm."""
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        await self._seed_owed(
+            reg, monkeypatch, "telegram-017", "sdk-never-banked", now,
+            last_active="not-a-date",
+        )
+        calls = self._record_deletes(monkeypatch)
+
+        await self._default_sweeper(reg, now)._sweep_once()
+
+        assert (len(calls), len(reg.all_entries())) == (0, 1)
+
+    async def test_ttl_preserves_telegram_with_missing_last_active(self, tmp_path, monkeypatch):
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        await self._seed_owed(reg, monkeypatch, "telegram-017", "sdk-never-banked", now)
+        reg._data["telegram-017"].pop("last_active")
+        await reg.save()
+        calls = self._record_deletes(monkeypatch)
+
+        await self._default_sweeper(reg, now)._sweep_once()
+
+        assert (len(calls), len(reg.all_entries())) == (0, 1)
+
+    async def test_ttl_preserves_telegram_without_provenance(self, tmp_path, monkeypatch):
+        """Protection does not depend on provenance: an entry Casa cannot
+        attribute still names the only copy of a real conversation."""
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
+        await _seed(reg, "telegram-017", "sdk-never-banked", now - timedelta(days=31))
+        calls = self._record_deletes(monkeypatch)
+
+        await self._default_sweeper(reg, now)._sweep_once()
+
+        assert (len(calls), len(reg.all_entries())) == (0, 1)
+
+    async def test_ttl_still_evicts_a_sidless_telegram_pointer(self, tmp_path, monkeypatch):
+        """A pointer that names NO transcript stays TTL-eligible — protecting
+        it would accumulate a registry entry and protect no bytes."""
+        reg = SessionRegistry(str(tmp_path / "sessions.json"))
+        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        await self._seed_owed(
+            reg, monkeypatch, "telegram-017", "sdk-never-banked", now,
+            sdk_session_id="",
+        )
+        calls = self._record_deletes(monkeypatch)
+
+        await self._default_sweeper(reg, now)._sweep_once()
+
+        assert (len(calls), len(reg.all_entries())) == (0, 0)
