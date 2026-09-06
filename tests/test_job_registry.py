@@ -582,7 +582,10 @@ async def test_expire_due_applies_result_delivery_ttl(tmp_path):
         now=100.0,
     )
     await registry.expire_due()
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    # #862: the due row is deleted rather than marked. The delivery TTL is
+    # still what decides the moment; only what it leaves behind changed.
+    assert registry.get("job-1") is None
+    assert len(registry.all()) == 0
 
 
 async def test_snapshot_without_control_identity_keeps_legacy_scope_auth(tmp_path):
@@ -1622,3 +1625,237 @@ async def test_recovered_orphan_enqueue_without_consumer_stays_durably_owed(
 
     reannounced = await reloaded.recover_after_restart()
     assert len(reannounced) == 1
+
+
+# --- #862: terminal records are deleted once their retention deadline passes ---
+#
+# The red case for #862. Two properties, one DECLARED by the change and one
+# PINNED at the base:
+#
+#   (1) declared — a terminal row is DELETED from the snapshot on the first
+#       ``expire_due`` pass at or after its own ``expires_at``, whatever its
+#       delivery state, and its task/context/answer text is gone from the file
+#       BYTES rather than merely from a field;
+#   (2) pinned (INV-JOB-010) — a row that still owes its creator an
+#       announcement is EXEMPT from that deletion, keeps its content, is still
+#       returned by ``recover_after_restart``, and is deleted only by the first
+#       pass after its marker has been cleared by delivery.
+#
+# Specified by terra, accepted by astra. Assertions are counts and byte counts,
+# never statuses.
+
+_862_TASK = "SENTINEL-862-TASK-yb8c"
+_862_CONTEXT = "SENTINEL-862-CONTEXT-q4tz"
+_862_RESULT = "SENTINEL-862-RESULT-m7rk"
+_862_SENTINELS = (_862_TASK, _862_CONTEXT, _862_RESULT)
+
+
+def _862_sentinel_counts(jobs_path):
+    raw = jobs_path.read_bytes()
+    return [raw.count(text.encode("utf-8")) for text in _862_SENTINELS]
+
+
+def _862_voice_job(**changes):
+    """A trusted voice-provenance job carrying all three sentinels."""
+    return make_job(
+        creator_peer="voice",
+        task=_862_TASK,
+        context=_862_CONTEXT,
+        **changes,
+    )
+
+
+async def test_expire_due_deletes_a_due_terminal_row_and_its_text(tmp_path):
+    """#862 arm 1: the row and its text leave the file at the deadline."""
+    now = [100.0]
+    jobs_path = tmp_path / "jobs.json"
+    registry = JobRegistry(jobs_path, clock=lambda: now[0])
+    await registry.load()
+    await registry.create(_862_voice_job())
+    finished = await registry.finish_voice_result(
+        "job-1", _862_RESULT, awaiting_input=False, delivery_ttl_s=30,
+    )
+
+    assert _862_sentinel_counts(jobs_path) == [1, 1, 1]
+    assert finished.expires_at is not None
+
+    now[0] = finished.expires_at
+    await registry.expire_due()
+
+    reloaded = JobRegistry(jobs_path, clock=lambda: now[0])
+    await reloaded.load()
+
+    assert len(registry.all()) == 0
+    assert len(reloaded.all()) == 0
+    assert _862_sentinel_counts(jobs_path) == [0, 0, 0]
+
+    settled = jobs_path.read_bytes()
+    await registry.expire_due()
+    assert jobs_path.read_bytes() == settled
+
+
+@pytest.mark.parametrize("delivery_state", [
+    DeliveryState.DELIVERED,
+    DeliveryState.CANCELLED,
+    DeliveryState.EXPIRED,
+    DeliveryState.READY,
+    DeliveryState.NONE,
+])
+async def test_expire_due_deletes_a_due_row_in_every_terminal_delivery_state(
+    tmp_path, delivery_state,
+):
+    """#862 arm 2: the old DELIVERED/CANCELLED/EXPIRED skip set cannot return."""
+    now = [200.0]
+    jobs_path = tmp_path / "jobs.json"
+    registry = JobRegistry(jobs_path, clock=lambda: now[0])
+    await registry.load()
+    await registry.create(_862_voice_job(
+        execution_state=ExecutionState.SUCCEEDED,
+        delivery_state=delivery_state,
+        terminal_at=150.0,
+        expires_at=180.0,
+        result=_862_RESULT,
+        delivery_sequence=1,
+    ))
+
+    assert _862_sentinel_counts(jobs_path) == [1, 1, 1]
+
+    await registry.expire_due()
+    reloaded = JobRegistry(jobs_path, clock=lambda: now[0])
+    await reloaded.load()
+
+    assert len(registry.all()) == 0
+    assert len(reloaded.all()) == 0
+    assert _862_sentinel_counts(jobs_path) == [0, 0, 0]
+
+
+@pytest.mark.parametrize("expires_at", [None, 260.0])
+async def test_expire_due_keeps_a_live_or_not_yet_due_row(tmp_path, expires_at):
+    """#862 control: only a DUE row is deleted."""
+    now = [200.0]
+    jobs_path = tmp_path / "jobs.json"
+    registry = JobRegistry(jobs_path, clock=lambda: now[0])
+    await registry.load()
+    await registry.create(_862_voice_job(
+        execution_state=(
+            ExecutionState.ACCEPTED if expires_at is None
+            else ExecutionState.SUCCEEDED
+        ),
+        terminal_at=None if expires_at is None else 150.0,
+        expires_at=expires_at,
+        result=None if expires_at is None else _862_RESULT,
+    ))
+
+    await registry.expire_due()
+    reloaded = JobRegistry(jobs_path, clock=lambda: now[0])
+    await reloaded.load()
+
+    assert len(registry.all()) == 1
+    assert len(reloaded.all()) == 1
+    expected = [1, 1, 1] if expires_at is not None else [1, 1, 0]
+    assert _862_sentinel_counts(jobs_path) == expected
+
+
+@pytest.mark.parametrize("marker", ["terminal", "orphan"])
+async def test_expire_due_keeps_an_owed_announcement_until_it_is_delivered(
+    tmp_path, marker,
+):
+    """#862 arm 3, INV-JOB-010: an owed row survives expiry with its text.
+
+    Parameterised over BOTH durable markers. `recover_after_restart`
+    (job_registry.py:1247-1251) selects on either one, so an exemption that
+    names only the terminal marker still destroys an owed announcement — a row
+    orphaned by a restart and still owing its notice. astra measured exactly
+    that mutant passing the single-marker version of this test 11/11.
+    """
+    now = [100.0]
+    jobs_path = tmp_path / "jobs.json"
+    registry = JobRegistry(jobs_path, clock=lambda: now[0])
+    await registry.load()
+    await registry.create(make_job(
+        creator_peer="telegram",
+        creator_user_id=77,
+        origin_route_id=None,
+        origin_device_id=None,
+        task=_862_TASK,
+        context=_862_CONTEXT,
+    ))
+
+    if marker == "terminal":
+        owed = await registry.finish_compat(
+            "job-1", _862_RESULT, announce_creator=True,
+        )
+        assert owed.terminal_notification_pending is True
+        assert owed.orphan_notification_pending is False
+        expected_counts = [1, 1, 1]
+    else:
+        assert len(await registry.recover_after_restart()) == 1
+        owed = registry.get("job-1")
+        assert owed.orphan_notification_pending is True
+        assert owed.terminal_notification_pending is False
+        expected_counts = [1, 1, 0]
+    assert owed.expires_at is not None
+
+    now[0] = owed.expires_at
+    await registry.expire_due()
+
+    reloaded = JobRegistry(jobs_path, clock=lambda: now[0])
+    await reloaded.load()
+    recovered = await reloaded.recover_after_restart()
+
+    assert len(registry.all()) == 1
+    assert len(reloaded.all()) == 1
+    assert len(recovered) == 1
+    assert recovered[0].id == "job-1"
+    kept = reloaded.get("job-1")
+    assert (kept.task, kept.context) == (_862_TASK, _862_CONTEXT)
+    assert _862_sentinel_counts(jobs_path) == expected_counts
+
+    if marker == "terminal":
+        assert kept.result == _862_RESULT
+        await registry.ack_terminal_notification("job-1")
+    else:
+        await registry.ack_orphan_notification("job-1")
+    await registry.expire_due()
+
+    after_ack = JobRegistry(jobs_path, clock=lambda: now[0])
+    await after_ack.load()
+    assert len(registry.all()) == 0
+    assert len(after_ack.all()) == 0
+    assert _862_sentinel_counts(jobs_path) == [0, 0, 0]
+
+
+async def test_expire_due_deletion_preserves_prior_snapshot_on_write_failure(
+    tmp_path, monkeypatch,
+):
+    """#862, INV-JOB-001: the deletion arm commits through the same boundary."""
+    import atomic_io
+
+    now = [200.0]
+    jobs_path = tmp_path / "jobs.json"
+    registry = JobRegistry(jobs_path, clock=lambda: now[0])
+    await registry.load()
+    await registry.create(_862_voice_job(
+        execution_state=ExecutionState.SUCCEEDED,
+        delivery_state=DeliveryState.READY,
+        terminal_at=150.0,
+        expires_at=180.0,
+        result=_862_RESULT,
+        delivery_sequence=1,
+    ))
+    prior_bytes = jobs_path.read_bytes()
+
+    def fail_replace(*_args, **_kwargs):
+        raise RuntimeError("simulated crash before replace")
+
+    monkeypatch.setattr(atomic_io.os, "replace", fail_replace)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await registry.expire_due()
+
+    assert jobs_path.read_bytes() == prior_bytes
+    assert len(registry.all()) == 1
+    kept = registry.get("job-1")
+    assert (kept.task, kept.context, kept.result) == (
+        _862_TASK, _862_CONTEXT, _862_RESULT,
+    )
+    assert _862_sentinel_counts(jobs_path) == [1, 1, 1]

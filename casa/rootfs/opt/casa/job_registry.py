@@ -789,8 +789,9 @@ class JobRegistry:
 
         #321: DELIVERED is excluded alongside CANCELLED/EXPIRED — a job whose
         result already reached the device but whose handoff frame was lost
-        has nothing left to hand off, and ``expire_due`` skips DELIVERED jobs
-        so nothing else would ever retire the replay."""
+        has nothing left to hand off. #862: such a row is now deleted outright
+        by the first expiry pass past its deadline, so the replay it offered
+        ends with the record rather than outliving it."""
         if not isinstance(route_id, str) or not route_id.strip():
             return []
         return [
@@ -1174,14 +1175,52 @@ class JobRegistry:
             )
             return await self._persist_job_locked(updated)
 
+    @staticmethod
+    def _owes_announcement_still(job: VoiceJob) -> bool:
+        """#862: does this row still owe its creator an announcement?
+
+        Either durable marker. ``recover_after_restart`` selects on both,
+        regardless of delivery state, so a retention rule that names only one
+        of them destroys the other's owed turn.
+        """
+        return bool(
+            job.orphan_notification_pending or job.terminal_notification_pending
+        )
+
     async def expire_due(self) -> list[VoiceJob]:
-        """Apply terminal result/delivery TTL without deleting audit records."""
+        """Expire due deliveries and delete terminal rows past their deadline.
+
+        #862. Two arms over the same due predicate, one candidate snapshot:
+
+        * a due row that owes NO announcement is DELETED — whatever its
+          delivery state, including DELIVERED, CANCELLED and an already-EXPIRED
+          row, which are exactly the states that used to accumulate. Its task,
+          context and answer leave the file with it; nothing here retains an
+          audit record.
+        * a due row that still owes its creator an announcement
+          (INV-JOB-010) is retained WITH its content until that announcement is
+          DELIVERED. Its delivery still expires exactly as before, and the
+          first pass after the marker is cleared deletes it.
+
+        A row whose ``expires_at`` is None is live and is never touched.
+        Deletion is opportunistic: it happens on a pass, and every caller of
+        this method is a delegation launch, a voice tool or the delivery
+        coordinator's reconciliation — nothing sweeps on a wall clock.
+
+        The returned list is what this pass CHANGED: a deleted row contributes
+        its last persisted value, an expired one its replacement. No caller
+        inspects it beyond "something happened".
+        """
         async with self._lock:
             now = self._now()
             changed: list[VoiceJob] = []
             candidate = dict(self._jobs)
             for job_id, current in self._jobs.items():
                 if current.expires_at is None or current.expires_at > now:
+                    continue
+                if not self._owes_announcement_still(current):
+                    candidate.pop(job_id)
+                    changed.append(current)
                     continue
                 if current.delivery_state in {
                     DeliveryState.DELIVERED,

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.274.0] - 2026-09-06
+
+### Fixed
+
+- A finished delegation's record — the request, its context and, on the voice
+  arm, the answer — is now deleted from the on-disk job file once its retention
+  deadline passes, instead of being kept for the life of the install. Expiry
+  used to mark such a row and leave its text in place, so nothing ever removed
+  it. A record that still owes the operator a notice is exempt: it is kept, with
+  its content, until that notice has been delivered, and is deleted on the first
+  pass after that. A test fails if a due record's text survives a pass, and
+  another fails if an owed notice is ever deleted before delivery.
+
 ## [0.273.0] - 2026-09-06
 
 ### Fixed

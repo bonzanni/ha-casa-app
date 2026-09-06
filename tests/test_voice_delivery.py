@@ -561,7 +561,9 @@ async def test_result_ttl_expiring_across_restart_never_emits_ready_frame(
     coordinator = VoiceDeliveryCoordinator(restarted, routes, clock=lambda: now[0])
     await coordinator.route_connected(route)
 
-    assert restarted.get("job-expiring").delivery_state is DeliveryState.EXPIRED
+    # #862: the row is deleted at its deadline, so the no-offer guarantee now
+    # holds by absence — `_offer_heads_locked` iterates the surviving rows.
+    assert restarted.get("job-expiring") is None
     assert _offered(route) == []
 
 
@@ -866,7 +868,7 @@ async def test_ttl_expiry_revokes_offer_and_never_offers_followup_early(delivery
     now[0] = 106.0
     await coordinator.sweep_once()
 
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    assert registry.get("job-1") is None                      # #862
     assert route.sent[-2]["type"] == "job_revoke"
     assert route.sent[-1]["type"] == "job_ready"
     assert route.sent[-1]["job_id"] == "job-2"
@@ -881,7 +883,7 @@ async def test_route_reconnect_never_offers_a_result_past_ttl(delivery):
     await coordinator.route_connected(route)
 
     assert _offered(route) == []
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    assert registry.get("job-1") is None                      # #862
 
 
 async def test_ready_cancellation_revokes_offer_and_releases_fifo(delivery):
@@ -1085,7 +1087,7 @@ async def test_satellite_mapping_park_still_expires_at_ttl(delivery):
     now[0] = 106.0
     await coordinator.sweep_once()
 
-    assert registry.get("job-1").delivery_state is DeliveryState.EXPIRED
+    assert registry.get("job-1") is None                      # #862
     assert len(_offered(route)) == 1
     await coordinator.stop()
     await old_coordinator.stop()
@@ -1271,3 +1273,48 @@ async def test_a_notification_that_never_left_is_reoffered_not_lost(delivery):
     await coordinator.handle(route, _frame("job_delivered", retry))
 
     assert registry.get("job-t").delivery_state is DeliveryState.DELIVERED
+
+
+async def test_deleted_row_mid_attempt_is_revoked_and_never_offered(delivery):
+    """#862: retention deletes a row a local attempt still references.
+
+    The deletion must be handled exactly as the EXPIRED flip was — one
+    `job_revoke` for that id, the local attempt reclaimed, no further offer —
+    so a record leaving the file at its deadline cannot strand a live delivery.
+
+    The coordinator is built with the fixture's clock: the shared fixture's own
+    coordinator reads `time.monotonic`, so advancing `now` would not reach its
+    reclamation window (astra, red-case acceptance round 1).
+    """
+    registry, routes, route, old_coordinator, now = delivery
+    coordinator = VoiceDeliveryCoordinator(
+        registry, routes, lease_s=15, renew_s=5, clock=lambda: now[0],
+    )
+    await registry.create(_ready_job(
+        "job-1", sequence=1, device="kitchen", expires_at=105.0,
+    ))
+    await coordinator.route_connected(route)
+    offer = _offered(route)[0]
+    await coordinator.handle(route, _frame("job_claimed", offer))
+
+    now[0] = 106.0
+    await coordinator.sweep_once()
+
+    assert len(registry.all()) == 0
+    assert registry.get("job-1") is None
+    assert len([
+        frame for frame in route.sent
+        if frame["type"] == "job_revoke" and frame["job_id"] == "job-1"
+    ]) == 1
+    assert len([
+        frame for frame in _offered(route) if frame["job_id"] == "job-1"
+    ]) == 1
+
+    now[0] = 130.0
+    await coordinator.sweep_once()
+    assert "job-1" not in coordinator._attempts
+    assert len([
+        frame for frame in _offered(route) if frame["job_id"] == "job-1"
+    ]) == 1
+    await coordinator.stop()
+    await old_coordinator.stop()
