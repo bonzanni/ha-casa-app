@@ -40,7 +40,10 @@ common wrong expectation in this area.
 other reload, then runs its steps in order — and there is no rollback across them. A failure
 partway leaves earlier steps applied. The lock prevents interleaving, not partial
 application. It also omits the on-disk reconciliation entirely, and omits plugin environment
-unless explicitly asked.
+unless explicitly asked. The agents its steps replace are drained together, at the dispatcher's
+return rather than at each step's own swap, and on the failing exit as well as the successful
+one — so the earliest a replaced agent's still-busy client can be cut is one drain window after
+the reload finished, whichever step replaced it.
 
 **Three scopes reach plugin state, and they are locked from outside the dispatcher.** The
 executors scope and the plugin-environment scope each regenerate the plugin health report,

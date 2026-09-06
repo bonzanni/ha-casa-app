@@ -111,10 +111,18 @@ it are established from code, and they differ in kind. The first is the drain of
 agent's pool: that drain is backgrounded on purpose (see
 [`architecture/turn-loop.md`](turn-loop.md)), the launching entry stays locked for the whole
 launch, and it is force-closed once the drain timeout expires — a default, spent serially per
-entry. That clock starts at the swap, not at the reload's return, and the reload's remaining
-work — the rest of its cascade, the executor registry's load, a per-role pass for every role —
-carries no encompassing deadline of its own, so the interval an operator sees between a reload
-returning and a launch being cut is not bounded by this timeout. The second is eviction of the
+entry. That clock starts when the reload RETURNS — the dispatcher records every agent its cascade
+replaced and starts their drains as it exits, after its locks are released — not at the swap
+that replaced the agent, so the reload's remaining work (the rest of its cascade, the executor
+registry's load, a per-role pass for every role) is no longer spent out of the launch's window.
+The interval an operator sees between a reload returning and a launch being cut is therefore
+one drain timeout per still-locked entry, spent serially, counted from that return: two locked
+entries of different keys mean the second is cut two timeouts after the return, and a
+generation an earlier invalidation left mid-drain adds one further collective window on top.
+The fuse may also belong to an EARLIER reload of the same launch turn: a resident swapped by
+one reload and again by a later one is cut by the FIRST reload's fuse, so measure a cut from
+the first swap of that turn's host, never from the reload nearest it — a cut can land seconds
+after a second reload returned. The second is eviction of the
 launching resident itself, which cancels its in-flight dispatch tasks at once, with no drain to
 wait through; it is exotic, because a launcher is always a resident and a resident is evicted
 only when its own directory goes away. These two are what the code establishes, not a closed

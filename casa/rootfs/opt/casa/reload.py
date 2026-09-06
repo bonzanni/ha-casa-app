@@ -17,6 +17,7 @@ other scopes via the ``_GLOBAL_LOCK`` mechanism.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import logging
 import threading
@@ -345,119 +346,136 @@ async def dispatch(
             "actions": [],
         }
 
-    rw = _global_rw()
-    if scope == "full":
-        await rw.acquire_write()
-    else:
-        await rw.acquire_read()
+    # #854: the replaced agents of THIS dispatch. Their drains start in the
+    # finally below — after both locks are released and after the post-lock
+    # secret report — so a still-locked entry of a replaced pool is force-closed
+    # no earlier than one full drain window after this call returns. The ledger
+    # is per task, so a concurrent dispatch of another scope-key cannot record
+    # onto it, and a task spawned inside this one inherits it.
+    ledger = _CloseLedger()
+    ledger_token = _CLOSE_LEDGER.set(ledger)
     try:
-        lock_key = _lock_key(scope, role)
-        lock = _get_lock(lock_key)
-        async with lock:
-            try:
-                actions = await handler(
-                    runtime, role=role, include_env=include_env,
-                ) if scope == "full" else await handler(runtime, role=role)
-                # Release B: a reload that can change trigger routing inputs
-                # (a resident's channels/triggers, the agent set, or the whole
-                # runtime) must re-derive the plugin-trigger overlay — e.g. a
-                # resident LOSING its webhook channel must unroute the plugin
-                # triggers that targeted it. Failure is non-fatal: the reload
-                # itself succeeded; the stale overlay heals on the next
-                # reconcile (any plugin mutation / reload).
-                if scope in _TRIGGER_RECONCILE_SCOPES:
-                    try:
-                        import trigger_reconcile
-                        await trigger_reconcile.reconcile_from_runtime(runtime)
-                        actions = [*actions, "plugin_triggers_reconciled"]
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "plugin-trigger reconcile after reload failed",
-                            exc_info=True)
-                    # Pair the callback reconcile at the SAME
-                    # scopes with the SAME runtime — a resident losing/gaining a
-                    # role changes callback assignment (callback_no_target) just
-                    # as it changes trigger routing. Independent + non-fatal.
-                    try:
-                        import callback_reconcile
-                        await callback_reconcile.reconcile_from_runtime(runtime)
-                        actions = [*actions, "plugin_callbacks_reconciled"]
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "plugin-callback reconcile after reload failed",
-                            exc_info=True)
-                    # Pair the EVENT reconcile at the SAME scopes with the
-                    # SAME runtime — a resident losing/gaining a role changes
-                    # a subscriber's own delivery target (event_no_target)
-                    # just as it changes trigger/callback routing.
-                    # ``reconcile_plugin_events`` takes ``runtime`` directly
-                    # (no separate ``reconcile_from_runtime`` wrapper).
-                    # Independent + non-fatal.
-                    try:
-                        import event_reconcile
-                        await event_reconcile.reconcile_plugin_events(runtime)
-                        actions = [*actions, "plugin_events_reconciled"]
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "plugin-event reconcile after reload failed",
-                            exc_info=True)
-                # #423 r3 (Sol r2-3): ANY successful reload can change
-                # setup-episode readiness — plugin_env lands secrets,
-                # agent/agents/policies/full reconstruct agents (stale
-                # binding → lazy-ready). One kick here covers every scope,
-                # present and future, instead of per-handler arms; the
-                # worker re-checks its gates, so a spurious kick is a no-op.
-                # Never turns a successful reload into an error.
-                try:
-                    import plugin_setup_episodes
-                    plugin_setup_episodes.kick()
-                except Exception:  # noqa: BLE001
-                    logger.exception("post-reload setup-episode kick failed")
-                ms = int(time.monotonic() * 1000 - started_ms)
-                logger.info(
-                    "casa_reload scope=%s role=%s ms=%d ok=True actions=%s",
-                    scope, role, ms, actions,
-                )
-                envelope = {
-                    "status": "ok", "scope": scope, "role": role,
-                    "ms": ms, "actions": actions,
-                }
-            except ReloadError as exc:
-                ms = int(time.monotonic() * 1000 - started_ms)
-                logger.warning(
-                    "casa_reload scope=%s role=%s ms=%d ok=False kind=%s msg=%s",
-                    scope, role, ms, exc.kind, exc.message,
-                )
-                envelope = {
-                    "status": "error", "kind": exc.kind,
-                    "message": exc.message, "scope": scope, "role": role,
-                    "ms": ms, "actions": [],
-                }
-            except Exception as exc:  # noqa: BLE001 — surface as error envelope
-                ms = int(time.monotonic() * 1000 - started_ms)
-                logger.warning(
-                    "casa_reload scope=%s role=%s ms=%d ok=False kind=unexpected msg=%s",
-                    scope, role, ms, exc,
-                    exc_info=True,
-                )
-                envelope = {
-                    "status": "error", "kind": "unexpected",
-                    "message": str(exc), "scope": scope, "role": role,
-                    "ms": ms, "actions": [],
-                }
-            # #609: the IN-MEMORY half of the secret report, taken under the
-            # lock on every arm so it describes the same instant the reload
-            # left behind. The filesystem half runs below, after BOTH locks
-            # are released — see `_trigger_secret_probe`.
-            if scope in _SECRET_REPORT_SCOPES:
-                secret_snapshot = _trigger_secret_snapshot(runtime, role)
-    finally:
+        rw = _global_rw()
         if scope == "full":
-            await rw.release_write()
+            await rw.acquire_write()
         else:
-            await rw.release_read()
-    envelope.update(await _trigger_secret_probe(secret_snapshot))
-    return envelope
+            await rw.acquire_read()
+        try:
+            lock_key = _lock_key(scope, role)
+            lock = _get_lock(lock_key)
+            async with lock:
+                try:
+                    actions = await handler(
+                        runtime, role=role, include_env=include_env,
+                    ) if scope == "full" else await handler(runtime, role=role)
+                    # Release B: a reload that can change trigger routing inputs
+                    # (a resident's channels/triggers, the agent set, or the whole
+                    # runtime) must re-derive the plugin-trigger overlay — e.g. a
+                    # resident LOSING its webhook channel must unroute the plugin
+                    # triggers that targeted it. Failure is non-fatal: the reload
+                    # itself succeeded; the stale overlay heals on the next
+                    # reconcile (any plugin mutation / reload).
+                    if scope in _TRIGGER_RECONCILE_SCOPES:
+                        try:
+                            import trigger_reconcile
+                            await trigger_reconcile.reconcile_from_runtime(runtime)
+                            actions = [*actions, "plugin_triggers_reconciled"]
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "plugin-trigger reconcile after reload failed",
+                                exc_info=True)
+                        # Pair the callback reconcile at the SAME
+                        # scopes with the SAME runtime — a resident losing/gaining a
+                        # role changes callback assignment (callback_no_target) just
+                        # as it changes trigger routing. Independent + non-fatal.
+                        try:
+                            import callback_reconcile
+                            await callback_reconcile.reconcile_from_runtime(runtime)
+                            actions = [*actions, "plugin_callbacks_reconciled"]
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "plugin-callback reconcile after reload failed",
+                                exc_info=True)
+                        # Pair the EVENT reconcile at the SAME scopes with the
+                        # SAME runtime — a resident losing/gaining a role changes
+                        # a subscriber's own delivery target (event_no_target)
+                        # just as it changes trigger/callback routing.
+                        # ``reconcile_plugin_events`` takes ``runtime`` directly
+                        # (no separate ``reconcile_from_runtime`` wrapper).
+                        # Independent + non-fatal.
+                        try:
+                            import event_reconcile
+                            await event_reconcile.reconcile_plugin_events(runtime)
+                            actions = [*actions, "plugin_events_reconciled"]
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "plugin-event reconcile after reload failed",
+                                exc_info=True)
+                    # #423 r3 (Sol r2-3): ANY successful reload can change
+                    # setup-episode readiness — plugin_env lands secrets,
+                    # agent/agents/policies/full reconstruct agents (stale
+                    # binding → lazy-ready). One kick here covers every scope,
+                    # present and future, instead of per-handler arms; the
+                    # worker re-checks its gates, so a spurious kick is a no-op.
+                    # Never turns a successful reload into an error.
+                    try:
+                        import plugin_setup_episodes
+                        plugin_setup_episodes.kick()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("post-reload setup-episode kick failed")
+                    ms = int(time.monotonic() * 1000 - started_ms)
+                    logger.info(
+                        "casa_reload scope=%s role=%s ms=%d ok=True actions=%s",
+                        scope, role, ms, actions,
+                    )
+                    envelope = {
+                        "status": "ok", "scope": scope, "role": role,
+                        "ms": ms, "actions": actions,
+                    }
+                except ReloadError as exc:
+                    ms = int(time.monotonic() * 1000 - started_ms)
+                    logger.warning(
+                        "casa_reload scope=%s role=%s ms=%d ok=False kind=%s msg=%s",
+                        scope, role, ms, exc.kind, exc.message,
+                    )
+                    envelope = {
+                        "status": "error", "kind": exc.kind,
+                        "message": exc.message, "scope": scope, "role": role,
+                        "ms": ms, "actions": [],
+                    }
+                except Exception as exc:  # noqa: BLE001 — surface as error envelope
+                    ms = int(time.monotonic() * 1000 - started_ms)
+                    logger.warning(
+                        "casa_reload scope=%s role=%s ms=%d ok=False kind=unexpected msg=%s",
+                        scope, role, ms, exc,
+                        exc_info=True,
+                    )
+                    envelope = {
+                        "status": "error", "kind": "unexpected",
+                        "message": str(exc), "scope": scope, "role": role,
+                        "ms": ms, "actions": [],
+                    }
+                # #609: the IN-MEMORY half of the secret report, taken under the
+                # lock on every arm so it describes the same instant the reload
+                # left behind. The filesystem half runs below, after BOTH locks
+                # are released — see `_trigger_secret_probe`.
+                if scope in _SECRET_REPORT_SCOPES:
+                    secret_snapshot = _trigger_secret_snapshot(runtime, role)
+        finally:
+            if scope == "full":
+                await rw.release_write()
+            else:
+                await rw.release_read()
+        envelope.update(await _trigger_secret_probe(secret_snapshot))
+        return envelope
+    finally:
+        # Every exit: the ok envelope, a ReloadError or unexpected envelope,
+        # and a cancellation propagating out of the body. The tasks are created
+        # before the caller resumes — before the entry points' post-dispatch
+        # plugin-health regeneration, which then runs concurrently with the
+        # drain — and none of them is cancelled by a cancellation here.
+        _CLOSE_LEDGER.reset(ledger_token)
+        ledger.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -841,6 +859,95 @@ def _drop_draining(runtime, entry) -> None:
             pass
 
 
+class _CloseLedger:
+    """The replaced agents of ONE ``dispatch`` call, whose drains start when
+    that dispatch RETURNS (#854).
+
+    The fuse is the pool's per-entry drain window, and it used to start at the
+    swap — so a reload that kept working after the swap (the executors load,
+    the fan-out re-swap, the per-role pass, the paired reconciles, the
+    post-lock secret report) spent that window before returning, and the
+    force-close of the entry still hosting the caller's own turn landed at
+    ``drain_timeout`` MINUS the reload's post-swap time from the return:
+    anywhere from the whole window down to zero or negative.
+
+    ``closed`` is what makes this safe for a continuation: a task spawned
+    inside the dispatch inherits this ledger through the context, and if it
+    swaps AFTER the flush its ``record`` is refused and the caller starts the
+    close at once. A bare list would swallow that close forever.
+    """
+
+    __slots__ = ("_pending", "_seen", "closed")
+
+    def __init__(self) -> None:
+        self._pending: list[tuple] = []
+        self._seen: set[int] = set()
+        self.closed = False
+
+    def record(self, old_agent, runtime, role, draining_entry) -> bool:
+        """True when this ledger took ownership of the close."""
+        if self.closed:
+            return False
+        if id(old_agent) in self._seen:
+            # One replaced agent, one drain window. The duplicate's own
+            # disclosure entry goes with it; the first record's stands.
+            _drop_draining(runtime, draining_entry)
+            return True
+        self._seen.add(id(old_agent))
+        # The agent object is retained until the flush, so its id cannot be
+        # reused by another object while it is the dedupe key.
+        self._pending.append((old_agent, runtime, role, draining_entry))
+        return True
+
+    def flush(self) -> None:
+        """Start every recorded close. Runs on EVERY exit of the dispatcher —
+        ok, ReloadError, an unexpected exception, and cancellation — because a
+        cascade step that raises after its swap would otherwise leave a pool
+        never closed and ``runtime.draining`` disclosed forever."""
+        self.closed = True
+        pending, self._pending = self._pending, []
+        for old_agent, runtime, role, entry in pending:
+            try:
+                _start_agent_close(
+                    old_agent, runtime=runtime, role=role, draining_entry=entry)
+            except Exception:  # noqa: BLE001 — one stand-in must not strand the rest
+                logger.warning(
+                    "agent close could not be started at reload exit",
+                    exc_info=True)
+                _drop_draining(runtime, entry)
+
+
+# The ledger of the dispatch running in THIS task. A contextvar, so it reaches
+# the cascade's direct calls and any task spawned inside the dispatch (the
+# context is copied at create_task), and cannot leak into a concurrent
+# dispatch of another scope-key.
+_CLOSE_LEDGER: contextvars.ContextVar["_CloseLedger | None"] = (
+    contextvars.ContextVar("casa_reload_close_ledger", default=None))
+
+
+def _start_agent_close(
+    old_agent, *, runtime=None, role=None, draining_entry=None,
+) -> None:
+    """Create the background drain task for one replaced Agent, now."""
+    aclose = getattr(old_agent, "aclose", None)
+    if aclose is None:
+        return
+    try:
+        coro = aclose()
+    except Exception:  # noqa: BLE001 — best-effort teardown, never block reload
+        logger.warning("agent aclose() raised while scheduling close", exc_info=True)
+        _drop_draining(runtime, draining_entry)
+        return
+    task = asyncio.create_task(coro, name="agent-pool-close")
+    _AGENT_CLOSE_TASKS.add(task)
+
+    def _done(t):
+        _AGENT_CLOSE_TASKS.discard(t)
+        _drop_draining(runtime, draining_entry)
+
+    task.add_done_callback(_done)
+
+
 def _schedule_agent_close(old_agent, *, runtime=None, role=None) -> None:
     """Background-drain a replaced/evicted Agent's SDK client pool (F12).
 
@@ -853,9 +960,20 @@ def _schedule_agent_close(old_agent, *, runtime=None, role=None) -> None:
     an entry still locked when its window ends is force-closed, and its
     closer is left to finish its bookkeeping when the turn releases.
 
+    #854: WHEN that drain starts depends on where the swap happened. Inside a
+    ``dispatch`` the replaced agent is RECORDED on that dispatch's ledger and
+    every recorded drain starts when the dispatcher returns — after both locks
+    are released and after the post-lock secret report — so the reload's own
+    post-swap work is never spent out of the replaced pool's window. The
+    guarantee is per DISPATCH, not per handler: a recorded agent is started
+    whatever the exit, including a cascade step that raises after its swap.
+    Outside a dispatch (shutdown, a direct handler call) the drain starts at
+    the call, as before.
+
     Sol #4: when ``runtime``+``role`` are supplied, the draining agent's plugin
-    binding is tracked on ``runtime.draining`` for the duration of the drain so
-    verify can disclose the still-running old turn (cleared on close).
+    binding is tracked on ``runtime.draining`` at the SWAP — not at the start —
+    for the duration of the drain, so verify can disclose the still-running old
+    turn for the whole deferral (cleared on close).
 
     Tolerates non-Agent stand-ins used throughout the reload test suite:
     objects with no ``aclose`` at all (``getattr`` default). A real
@@ -865,20 +983,10 @@ def _schedule_agent_close(old_agent, *, runtime=None, role=None) -> None:
     if aclose is None:
         return
     entry = _track_draining(runtime, role, old_agent)
-    try:
-        coro = aclose()
-    except Exception:  # noqa: BLE001 — best-effort teardown, never block reload
-        logger.warning("agent aclose() raised while scheduling close", exc_info=True)
-        _drop_draining(runtime, entry)
+    ledger = _CLOSE_LEDGER.get()
+    if ledger is not None and ledger.record(old_agent, runtime, role, entry):
         return
-    task = asyncio.create_task(coro, name="agent-pool-close")
-    _AGENT_CLOSE_TASKS.add(task)
-
-    def _done(t):
-        _AGENT_CLOSE_TASKS.discard(t)
-        _drop_draining(runtime, entry)
-
-    task.add_done_callback(_done)
+    _start_agent_close(old_agent, runtime=runtime, role=role, draining_entry=entry)
 
 
 _PROMPT_REFRESH_TASKS: set[asyncio.Task] = set()
@@ -1589,7 +1697,7 @@ async def _reload_role_after_policies(
     _start_bus_loop(runtime, role)
     # F12: drain/close the replaced Agent's SDK client pool in the
     # background so no warm subprocess outlives this swap.
-    _schedule_agent_close(old_agent)
+    _schedule_agent_close(old_agent, runtime=runtime, role=role)
 
 
 async def reload_policies(runtime: Any, *, role: str | None = None) -> list[str]:
@@ -1913,7 +2021,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # teardown awaits — an evicted resident must not stay inspectable.
         runtime.refresh_personality_maps()
         old_agent = runtime.agents.pop(r, None)  # AR-7: capture before drop
-        _schedule_agent_close(old_agent)  # F12
+        _schedule_agent_close(old_agent, runtime=runtime, role=r)  # F12
         incomplete = await _teardown_role(runtime, r)
         actions.append(f"evicted_{r}")
         # #786 (INV-CFG-012, diff review r1): the teardown names the steps
@@ -2057,7 +2165,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # the role is about to become undispatchable entirely.
         _invalidate_role_grants(s)
         old_agent = runtime.agents.pop(s, None)  # AR-7: capture before drop
-        _schedule_agent_close(old_agent)  # F12
+        _schedule_agent_close(old_agent, runtime=runtime, role=s)  # F12
         incomplete = await _teardown_role(runtime, s)
         _note_retirement_outcome(s, incomplete)
         # S-3: the registry diff above already reported registry-known
