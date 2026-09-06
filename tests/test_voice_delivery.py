@@ -1271,3 +1271,39 @@ async def test_a_notification_that_never_left_is_reoffered_not_lost(delivery):
     await coordinator.handle(route, _frame("job_delivered", retry))
 
     assert registry.get("job-t").delivery_state is DeliveryState.DELIVERED
+
+
+async def test_deleted_row_mid_attempt_is_revoked_and_never_offered(delivery):
+    """#862: retention deletes a row a local attempt still references.
+
+    The deletion must be handled exactly as the EXPIRED flip was — one
+    `job_revoke` for that id, the local attempt reclaimed, no further offer —
+    so a record leaving the file at its deadline cannot strand a live delivery.
+    """
+    registry, _, route, coordinator, now = delivery
+    await registry.create(_ready_job(
+        "job-1", sequence=1, device="kitchen", expires_at=105.0,
+    ))
+    await coordinator.route_connected(route)
+    offer = _offered(route)[0]
+    await coordinator.handle(route, _frame("job_claimed", offer))
+
+    now[0] = 106.0
+    await coordinator.sweep_once()
+
+    assert len(registry.all()) == 0
+    assert registry.get("job-1") is None
+    assert len([
+        frame for frame in route.sent
+        if frame["type"] == "job_revoke" and frame["job_id"] == "job-1"
+    ]) == 1
+    assert len([
+        frame for frame in _offered(route) if frame["job_id"] == "job-1"
+    ]) == 1
+
+    now[0] = 130.0
+    await coordinator.sweep_once()
+    assert "job-1" not in coordinator._attempts
+    assert len([
+        frame for frame in _offered(route) if frame["job_id"] == "job-1"
+    ]) == 1
