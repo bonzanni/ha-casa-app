@@ -1103,11 +1103,15 @@ def _build_executor_memory(block: dict[str, Any]) -> "ExecutorMemoryConfig":
 
 logger = logging.getLogger(__name__)
 
-# Default signature header per auth mode (spec A1).
+# Default signature header per auth mode (spec A1). Keyed on the MODE alone —
+# there is no owner branch — so a default naming one vendor is served to every
+# caller of that mode, whoever owns the secret (#655). These names are neutral
+# on purpose; an operator whose provider mandates a particular header sets
+# `header` explicitly, which is always preserved.
 _DEFAULT_AUTH_HEADER = {
     "hmac_body": "X-Webhook-Signature",
     "static_header": "X-API-Key",
-    "timestamped_hmac": "ElevenLabs-Signature",
+    "timestamped_hmac": "X-Webhook-Signature",
 }
 
 

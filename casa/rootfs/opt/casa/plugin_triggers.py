@@ -21,10 +21,13 @@ from typing import Any
 # Scope (Release B): only Casa-owned secrets. ``provider`` (import-based) is
 # deferred; reject it intrinsically with an actionable message.
 _MODES = ("hmac_body", "static_header", "timestamped_hmac")
+# Must stay identical to agent_loader._DEFAULT_AUTH_HEADER: a neutral name at
+# one site and a vendor's at the other is the same defect relocated (#655).
+# This table is also the RECOVERY value for an invalid header token below.
 _DEFAULT_HEADER = {
     "hmac_body": "X-Webhook-Signature",
     "static_header": "X-API-Key",
-    "timestamped_hmac": "ElevenLabs-Signature",
+    "timestamped_hmac": "X-Webhook-Signature",
 }
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # RFC 7230 header field-name token.

@@ -127,7 +127,11 @@ returns `401` rather than serving open.
   `X-API-Key`), for services that can only send static headers. The per-trigger
   secret lives at `/data/webhook_secrets/<trigger-name>`.
 - `timestamped_hmac` — a `t=<unix>,v0=<hex>` signature (default header
-  `ElevenLabs-Signature`) within a tolerance window.
+  `X-Webhook-Signature`) within a tolerance window.
+
+No default header names a particular service. If the caller can only sign under
+a header of its own choosing, set the trigger's `header` explicitly — an
+explicit value is always used as written.
 
 A Casa-owned per-trigger secret is generated when its trigger is registered — at
 startup and on any reload that installs triggers — so it exists before the first
