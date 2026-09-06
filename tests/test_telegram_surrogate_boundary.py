@@ -29,8 +29,8 @@ REPO = Path(__file__).resolve().parents[1]
 CASA = REPO / "casa" / "rootfs" / "opt" / "casa"
 
 _SCRIPT = textwrap.dedent(
-    r'''
-    import asyncio, sys, types
+    r"""
+    import asyncio, email, sys, types
     from urllib.parse import parse_qs
 
     import httpx
@@ -66,38 +66,43 @@ _SCRIPT = textwrap.dedent(
         return {k: v[0] for k, v in parse_qs(
             r.content.decode("utf-8"), keep_blank_values=True).items()}
 
-    def surrogates(s):
-        return sum(1 for c in s if 0xD800 <= ord(c) <= 0xDFFF)
+    def multipart(r):
+        msg = email.message_from_bytes(
+            b"Content-Type: " + r.headers["content-type"].encode("ascii")
+            + b"\r\n\r\n" + r.content)
+        return [(part.get_param("name", header="content-disposition"),
+                 part.get_param("filename", header="content-disposition"),
+                 part.get_payload(decode=True)) for part in msg.get_payload()]
 
+    R = "�"
     MEDIA = b"\x00casa-media\xff"
     CTX = lambda: {"chat_id": "42"}
     failures = []
 
-    def check(name, expect_counts, texts_fffd=None, outcome=None, got_outcome=None, exc=None):
-        got = counts()
+    def check(name, expect, outcome, got_outcome, exc):
+        # `expect`: the exact ordered (endpoint, text) list of the text requests
+        # that must have reached the transport — position and every other
+        # character included, so deletion, a shifted replacement or a rewritten
+        # neighbour all fail here, not only a wrong count.
+        got = [(endpoint(r), flat(r).get("text")) for r in seen
+               if endpoint(r) in ("sendMessage", "editMessageText")]
         reason = (f"{type(exc).__name__}(cause={type(exc.__cause__).__name__})"
                   if exc is not None else "no raise")
-        line = f"{name}: {got} outcome={got_outcome} raise={reason}"
+        line = f"{name}: {counts()} outcome={got_outcome} raise={reason}"
         print(line)
-        ok = got == expect_counts and exc is None
-        if outcome is not None:
-            ok = ok and got_outcome is outcome
-        flats = [flat(r) for r in seen if endpoint(r) in ("sendMessage", "editMessageText")]
-        for f in flats:
-            for k, v in f.items():
-                if surrogates(v):
-                    ok = False
-                    print(f"  {name}: form value {k!r} still carries a surrogate")
-        if texts_fffd is not None:
-            got_fffd = [f["text"].count("�") for f in flats]
-            if got_fffd != texts_fffd:
+        ok = exc is None and got == expect and got_outcome is outcome
+        if got != expect:
+            print(f"  {name}: texts differ: got {[(e, len(t or ''), (t or '')[:8]) for e, t in got]}"
+                  f" expected {[(e, len(t), t[:8]) for e, t in expect]}")
+        for r in seen:
+            if endpoint(r) in ("sendMessage", "editMessageText") and flat(r).get("chat_id") != "42":
                 ok = False
-                print(f"  {name}: U+FFFD per text {got_fffd} != {texts_fffd}")
+                print(f"  {name}: chat_id was not 42")
         if not ok:
             failures.append(line)
-        return flats
+        return [flat(r) for r in seen if endpoint(r) in ("sendMessage", "editMessageText")]
 
-    async def run_arm(name, coro, expect_counts, texts_fffd=None, outcome=None):
+    async def run_arm(name, coro, expect, outcome=None):
         seen.clear()
         exc = None
         got_outcome = None
@@ -105,7 +110,7 @@ _SCRIPT = textwrap.dedent(
             got_outcome = await coro
         except telegram.error.TelegramError as e:
             exc = e
-        return check(name, expect_counts, texts_fffd, outcome, got_outcome, exc)
+        return check(name, expect, outcome, got_outcome, exc)
 
     async def main():
         bot = telegram.Bot("1:AA", request=Request(
@@ -120,50 +125,65 @@ _SCRIPT = textwrap.dedent(
             a1 = ("\ud800" + "x" * 4095 + "\n" + "\ud800" + "y" * 4095
                   + "\n" + "\ud800" + "z" * 4095)
             await run_arm("spanless-3-pages", ch.send_response(a1, CTX()),
-                          {"sendMessage": 3, "editMessageText": 0, "sendDocument": 0},
-                          texts_fffd=[1, 1, 1], outcome=DeliveryOutcome.DELIVERED)
+                          [("sendMessage", R + "x" * 4095),
+                           ("sendMessage", R + "y" * 4095),
+                           ("sendMessage", R + "z" * 4095)],
+                          outcome=DeliveryOutcome.DELIVERED)
 
             # ARM2 — one page whose link converts and a surrogate after it.
             a2 = "[link](https://example.test/a) \ud800"
             flats = await run_arm("single-page-link", ch.send_response(a2, CTX()),
-                          {"sendMessage": 1, "editMessageText": 0, "sendDocument": 0},
-                          texts_fffd=[1], outcome=DeliveryOutcome.DELIVERED)
-            if flats and "text_link" not in flats[0].get("entities", ""):
+                          [("sendMessage", "link " + R)],
+                          outcome=DeliveryOutcome.DELIVERED)
+            if flats and ("text_link" not in flats[0].get("entities", "")
+                          or "https://example.test/a" not in flats[0].get("entities", "")):
                 failures.append("single-page-link: link entity missing from the request")
 
             # ARM3 — plain send with a LOW surrogate (kills high-only cleaning).
             await run_arm("plain-send-low-surrogate", ch.send("\udc00 hello", CTX()),
-                          {"sendMessage": 1, "editMessageText": 0, "sendDocument": 0},
-                          texts_fffd=[1], outcome=DeliveryOutcome.DELIVERED)
+                          [("sendMessage", R + " hello")],
+                          outcome=DeliveryOutcome.DELIVERED)
 
             # ARM5 — two pages whose bold spans convert, surrogate after each.
             a5 = ("**bold** " + "x" * 4080 + "\ud800\n"
                   + "**bold** " + "y" * 4080 + "\ud800")
             flats = await run_arm("convertible-2-pages", ch.send_response(a5, CTX()),
-                          {"sendMessage": 2, "editMessageText": 0, "sendDocument": 0},
-                          texts_fffd=[1, 1], outcome=DeliveryOutcome.DELIVERED)
+                          [("sendMessage", "bold " + "x" * 4080 + R),
+                           ("sendMessage", "bold " + "y" * 4080 + R)],
+                          outcome=DeliveryOutcome.DELIVERED)
             if flats and '"bold"' not in flats[0].get("entities", ""):
                 failures.append("convertible-2-pages: page 1 lost its bold entity")
 
-            # ARM6 — streamed reply: page 1 is an EDIT of the streamed message.
+            # ARM6 — streamed reply: page 1 is an EDIT of the streamed message;
+            # pages 2-3 lose their spans to the surrogate and take the
+            # conversion-failure arm, which already replaced it at the base.
             a6 = ("**bold** " + "a" * 4080 + "\ud800\n"
                   + "".join("**\ud800" + "b" * 4093 + "**\n" for _ in range(2)))
             state = {"message_id": 99}
             async def on_token(_t):
                 state  # a closure CELL: the finalizer peeks the message id there
-            await run_arm("stream-finalize",
+            flats = await run_arm("stream-finalize",
                           ch.finalize_response_stream(a6, CTX(), on_token),
-                          {"sendMessage": 2, "editMessageText": 1, "sendDocument": 0},
-                          texts_fffd=[1, 1, 1], outcome=DeliveryOutcome.DELIVERED)
+                          [("editMessageText", "bold " + "a" * 4080 + R),
+                           ("sendMessage", R + "b" * 4093),
+                           ("sendMessage", R + "b" * 4093 + "\n")],
+                          outcome=DeliveryOutcome.DELIVERED)
+            if flats and flats[0].get("message_id") != "99":
+                failures.append("stream-finalize: the edit did not target the streamed message")
 
             # Media — the caption is a form value too; the bytes are not.
             await run_arm("media-caption",
                           ch.send_media(MEDIA, "document", "x.bin", CTX(), caption="\ud800"),
-                          {"sendMessage": 0, "editMessageText": 0, "sendDocument": 1})
-            if seen:
-                body = seen[-1].content
-                if "�".encode("utf-8") not in body or MEDIA not in body:
-                    failures.append("media-caption: caption not replaced or media bytes altered")
+                          [])
+            docs = [r for r in seen if endpoint(r) == "sendDocument"]
+            parts = multipart(docs[0]) if docs else []
+            got = {(n, f, payload) for n, f, payload in parts}
+            print(f"media-caption: parts={[(n, f, len(p)) for n, f, p in parts]}")
+            if len(docs) != 1 or got != {
+                    ("chat_id", None, b"42"),
+                    ("caption", None, R.encode("utf-8")),
+                    ("document", "x.bin", MEDIA)}:
+                failures.append(f"media-caption: {len(docs)} sendDocument, parts {got!r}")
 
             # Nested control — a JSON-encoded value keeps its literal escape.
             seen.clear()
@@ -171,14 +191,16 @@ _SCRIPT = textwrap.dedent(
                 MessageEntity(type="text_link", offset=0, length=1, url="\ud800")])
             f = flat(seen[-1])
             print(f"nested-escape-control: {counts()} entities={f.get('entities')!r}")
-            if counts()["sendMessage"] != 1 or "\\ud800" not in f.get("entities", ""):
+            if (counts()["sendMessage"] != 1 or f.get("text") != "x"
+                    or "\\ud800" not in f.get("entities", "")):
                 failures.append("nested-escape-control: literal escape was rewritten")
 
     asyncio.run(main())
     assert not failures, "\n".join(failures)
     print("OK")
-    '''
+    """
 )
+
 
 
 def test_pin_inv_tg_009_no_request_leaves_with_a_surrogate_code_point():
