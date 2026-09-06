@@ -46,7 +46,10 @@ SKELETON_MANIFEST = """
   summary: Generated index.
 - doc: doctrine/invariants.md
   kind: generated
-  summary: Generated invariant index (families A-M).
+  summary: Generated invariant index (families A-E).
+- doc: doctrine/invariants-f-m.md
+  kind: generated
+  summary: Generated invariant index (families F-M).
 - doc: doctrine/invariants-n-z.md
   kind: generated
   summary: Generated invariant index (families N-Z).
@@ -62,6 +65,7 @@ SKELETON_FILES = {
     "README.md": "# Docs\n\n<!-- BEGIN ROUTING -->\n<!-- END ROUTING -->\n",
     "llms.txt": "",
     "doctrine/invariants.md": "",
+    "doctrine/invariants-f-m.md": "",
     "doctrine/invariants-n-z.md": "",
     "doctrine/publishing.md": CODE_WINS + SOURCEMAP,
     "contributing/doc-contract.md": CODE_WINS + SOURCEMAP,
@@ -922,6 +926,83 @@ def test_a_doc_duplicated_between_root_and_shard_is_caught(tmp_path):
     assert any("listed twice" in p for p in verify_docs.verify(root))
 
 
+# --- the invariant index shards by family letter (#843) ---------------------------
+
+INV_SHARD_ENTRY = """
+- doc: architecture/turn-loop.md
+  summary: How one inbound message becomes one agent turn.
+  when_changing: the turn lifecycle or turn timeouts
+  covers: [casa/a.py::A.b]
+  tests: [tests/test_a.py::test_b]
+  related: [doctrine/publishing.md]
+  defines_invariants: [INV-EVAL-001, INV-F-001, INV-MEM-001, INV-N-001, INV-OBS-001]
+  invariant_tests:
+    INV-EVAL-001: [tests/test_a.py::test_b]
+    INV-F-001: [tests/test_a.py::test_b]
+    INV-MEM-001: [tests/test_a.py::test_b]
+    INV-N-001: [tests/test_a.py::test_b]
+    INV-OBS-001: [tests/test_a.py::test_b]
+"""
+
+INV_SHARD_DOC = {
+    "architecture/turn-loop.md": (
+        "# Turn loop\n" + CODE_WINS + "\n\n"
+        "**INV-EVAL-001**: last family of the first shard.\n\n"
+        "**INV-F-001**: first family of the second shard.\n\n"
+        "**INV-MEM-001**: last family of the second shard.\n\n"
+        "**INV-N-001**: first family of the third shard.\n\n"
+        "**INV-OBS-001**: an ordinary family of the third shard.\n"
+        + SOURCEMAP
+    )
+}
+
+
+def _shard_rows(root: Path) -> dict[str, list[str]]:
+    targets = verify_docs.nav_targets(root)
+    return {
+        path: [line.split("`")[1] for line in targets[path].splitlines()
+               if line.startswith("| `INV-")]
+        for _label, path, _bound in verify_docs._INV_SHARDS
+    }
+
+
+def test_every_family_lands_in_exactly_one_shard_at_the_f_and_n_boundaries(tmp_path):
+    """#843: the A-M shard outgrew the index ceiling and the index now shards three
+    ways. A family sorting exactly AT a boundary (`F`, `N`) opens the later shard,
+    one sorting just below it (`EVAL`, `MEM`) closes the earlier one, and every
+    row appears exactly once across the three — so a boundary compared with the
+    wrong inequality, or a family the table assigns nowhere, is caught here."""
+    root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
+    rows = _shard_rows(root)
+    assert rows == {
+        "doctrine/invariants.md": ["INV-EVAL-001"],
+        "doctrine/invariants-f-m.md": ["INV-F-001", "INV-MEM-001"],
+        "doctrine/invariants-n-z.md": ["INV-N-001", "INV-OBS-001"],
+    }
+    assert sorted(sum(rows.values(), [])) == [
+        "INV-EVAL-001", "INV-F-001", "INV-MEM-001", "INV-N-001", "INV-OBS-001"]
+
+
+def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
+    """A reader landing on any shard can reach the other two in one hop, and the
+    title states the range the shard actually holds."""
+    root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
+    targets = verify_docs.nav_targets(root)
+    first = targets["doctrine/invariants.md"]
+    assert first.startswith("# Invariants (A-E)\n")
+    assert first.count("[`doctrine/invariants-f-m.md`](invariants-f-m.md)") == 1
+    assert first.count("[`doctrine/invariants-n-z.md`](invariants-n-z.md)") == 1
+    assert first.count("invariants.md`](invariants.md)") == 0
+    middle = targets["doctrine/invariants-f-m.md"]
+    assert middle.startswith("# Invariants (F-M)\n")
+    assert middle.count("[`doctrine/invariants.md`](invariants.md)") == 1
+    assert middle.count("[`doctrine/invariants-n-z.md`](invariants-n-z.md)") == 1
+    last = targets["doctrine/invariants-n-z.md"]
+    assert last.startswith("# Invariants (N-Z)\n")
+    assert last.count("[`doctrine/invariants.md`](invariants.md)") == 1
+    assert last.count("[`doctrine/invariants-f-m.md`](invariants-f-m.md)") == 1
+
+
 # --- a manifest that fails to load renders nothing (#812) ---------------------------
 
 BROKEN_SHARD = "- doc: [unclosed\n"
@@ -930,6 +1011,7 @@ GENERATED = [
     "README.md",
     "architecture/turn-loop.md",
     "contributing/doc-contract.md",
+    "doctrine/invariants-f-m.md",
     "doctrine/invariants-n-z.md",
     "doctrine/invariants.md",
     "doctrine/publishing.md",
