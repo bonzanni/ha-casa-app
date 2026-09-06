@@ -262,10 +262,27 @@ def _install_telegram_stubs() -> None:
     # ext stubs are a MagicMock above, so this just lives there too.
     tg_ext.CallbackQueryHandler = MagicMock()
 
+    # INV-TG-009 (#846): the channel subclasses the library's request class so
+    # every serialized form value is normalised below every sender. A plain
+    # base class (no behaviour) lets that subclass be defined at import time
+    # under the stub; its ``do_request`` is never reached in-process — the
+    # real one is pinned by tests/test_telegram_surrogate_boundary.py in a
+    # subprocess against the real library.
+    tg_req = types.ModuleType("telegram.request")
+
+    class _FakeHTTPXRequest:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    tg_req.HTTPXRequest = _FakeHTTPXRequest
+    tg.request = tg_req
+
     sys.modules["telegram"] = tg
     sys.modules["telegram.constants"] = tg_const
     sys.modules["telegram.error"] = tg_err
     sys.modules["telegram.ext"] = tg_ext
+    sys.modules["telegram.request"] = tg_req
 
 
 _install_telegram_stubs()

@@ -656,3 +656,64 @@ class TestRebuildCancellation:
         assert app.stop.await_count == 1
         assert app.shutdown.await_count == 1
         assert ch._app is None
+
+
+class TestRequestBoundaryWiring:
+    """INV-TG-009 (#846): every Application the channel builds — the first and
+    each reconnect rebuild — installs the surrogate-replacing request class on
+    the ordinary Bot API pool, exactly once, and leaves the getUpdates pool
+    alone. This is the one place the request-layer boundary can silently
+    regress to the base (a builder that forgets ``.request(...)``), so it is
+    pinned in-process; what the request class DOES is pinned against the real
+    library by tests/test_telegram_surrogate_boundary.py."""
+
+    async def test_every_built_application_installs_the_request_boundary_once(
+        self, patched_application_builder, mock_bus,
+    ):
+        from channels.telegram import TelegramChannel, _SurrogateSafeRequest
+        import channels.telegram as telegram_mod
+        telegram_mod._RECONNECT_INITIAL_MS = 1
+        telegram_mod._RECONNECT_CAP_MS = 4
+        telegram_mod._PROBE_INTERVAL = 0.05
+        telegram_mod._PROBE_TIMEOUT = 0.05
+
+        chains: list[MagicMock] = []
+
+        def builder_override():
+            chain = MagicMock()
+            chain.token = MagicMock(return_value=chain)
+
+            def build_once():
+                app = _make_fake_application()
+                patched_application_builder.append(app)
+                return app
+
+            chain.build = build_once
+            chains.append(chain)
+            return chain
+
+        from telegram.ext import Application
+        Application.builder = builder_override  # type: ignore[assignment]
+
+        ch = TelegramChannel(
+            bot_token="t", chat_id="123",
+            default_agent="assistant", bus=mock_bus,
+        )
+        await ch.start()
+        # Force one reconnect rebuild: the probe's get_me fails on app 1.
+        patched_application_builder[0].bot.get_me = AsyncMock(
+            side_effect=_FakeNetworkError("connection reset"),
+        )
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if len(patched_application_builder) >= 2:
+                break
+        await ch.stop()
+
+        assert len(chains) >= 2, "the supervisor should have rebuilt at least once"
+        for chain in chains:
+            assert chain.request.call_count == 1
+            (installed,), kwargs = chain.request.call_args
+            assert isinstance(installed, _SurrogateSafeRequest)
+            assert kwargs == {}
+            chain.get_updates_request.assert_not_called()
