@@ -118,12 +118,34 @@ Schedule and `noted` flag live in the attempt file, so a restart resumes rather 
 and the worker waits on a timeout derived from the nearest due entry — the request-path `kick`
 is an optimization, not the source of work. A `collected` attempt never nudges.
 
+The note itself is **notify-then-mark**, on its own pass-scoped scan rather than inline in the
+accept: every attempt whose budget is spent and whose `noted` flag is still false is selected —
+a predicate deliberately separate from the nudge selector, which excludes exactly those records,
+and deliberately blind to the outcome that ended the attempt — and the operator send is awaited
+DIRECTLY, so a raise is observed rather than swallowed. Only a confirmed send flips `noted`, and
+until it does the note stays owed and every later pass retries it. That matters because the
+operator seam raises by design whenever the Telegram channel is absent or not ready, and the
+worker's first pass runs before the channels start: the one window in which the note was most
+likely to fail was, until then, the window in which it was silently discarded. A send whose
+durable mark then fails is remembered in memory for the process's life, so later passes retry
+the mark alone and never resend.
+
 What it does not cover: acceptance is still the per-dispatch mark, so a crash between it and the
 ledger write costs one duplicate nudge — collection is idempotent for the consumer by contract.
 The budget bounds delivery attempts, not success: an attempt whose consumer never runs spends
 its six dispatches, draws the note, then rests as a terminal unacked record until the retention
 bound. Where no assigned role resolves, the nudge stays due and the operator is noted once per
-streak.
+streak. The note's own count is exact on the ordinary path and errs toward repetition, never
+silence, at three named edges: a crash or a re-wiring between a confirmed send and its durable
+mark, which loses the in-memory record of the send and repeats it once; a transport that
+delivers and then raises, which is indistinguishable from one that did not; and a re-derivation
+that contradicts the record, which resets `noted` with the rest of the worker's bookkeeping. A
+repeated note names the same handle, and two notes for one handle are one flow, not two. The
+retry is bounded by the attempt file it belongs to rather than by a timer of its own: the
+seven-day retention, the `MAX_ATTEMPTS` cap and the consumer's ack each retire an owed note with
+its record, so an operator channel down for longer than the record lives never receives it.
+Nothing is retried for a note lost before this behaviour existed — the flag cannot say which
+`noted` records were delivered.
 
 **INV-CB-009**: The consumer's `meta` is size-capped, stored and echoed value-preserving, never interpreted, and never reaches a log surface.
 
@@ -171,7 +193,8 @@ record that will not go durable, or a listing or metadata read that faults, defe
 reading as empty — at removal and at the orphan GC alike, which writes the same record before
 purging a quiescent directory holding unacked attempts. The worker turns each
 un-noted record into one operator note, notifying first and marking only a confirmed send, so a
-crash there costs a duplicate rather than silence (INV-CB-007).
+crash there costs a duplicate rather than silence (INV-CB-007) — the same discipline the
+budget-exhaustion note follows under INV-CB-008.
 
 ## Extension points
 
