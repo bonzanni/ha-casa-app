@@ -469,3 +469,24 @@ async def test_a_name_collision_cannot_destroy_an_existing_reminder(env, monkeyp
     assert _reminder_names(env.path) == [first["name"]], \
         "the pre-existing reminder must survive"
     assert "heartbeat" in [t["name"] for t in _entries(env.path)]
+
+
+# ---------------------------------------------------------------------------
+# The tool surface's delivery contract (#636)
+# ---------------------------------------------------------------------------
+
+
+def test_set_reminder_description_states_the_delivery_contract():
+    """The pre-call tool surface must not frame `text` as an instruction:
+    scheduled delivery is plain text, without buttons."""
+    from tools import set_reminder
+
+    desc = set_reminder.description.casefold()
+    required = (
+        "`text` is the message",
+        "plain text",
+        "no buttons",
+        "never an instruction about what to send",
+        "never a promise of a tappable choice",
+    )
+    assert sum(fragment in desc for fragment in required) == len(required)
