@@ -2427,6 +2427,20 @@ class TestAFailedCountReadStillDisclosesTheTextsItRead:
         assert posted.count("• r") == 1, posted
         assert "An unknown number" not in posted, posted
 
+    async def test_launch_death_with_a_failed_count_and_nothing_else_read_posts_the_base_notice(
+            self, tmp_path):
+        """The launch-death twin of the fail-open case: a raising count read
+        with NOTHING else read is not evidence, so the notice is the base
+        sentence alone, byte for byte — no `0 inbound message(s)` paragraph.
+        Kills a launch-death predicate that fires on the flag alone (the
+        finalize side is killed by the fail-open case's new arm)."""
+        reg, rec, tch = await self._setup(tmp_path)
+        drv = _AccessorProbe(broken="inbound_message_reservations")
+
+        notice = await self._render("launch_death", rec, drv, tch)
+
+        assert notice == LAUNCH_DEATH_BASE_SENTENCE, notice
+
     @pytest.mark.parametrize("renderer", ["finalize", "launch_death"])
     async def test_a_failed_count_beside_spool_text_only_keeps_the_exact_count(
             self, tmp_path, renderer):
