@@ -288,6 +288,16 @@ def _load_or_refuse(docs_dir: Path) -> list[dict]:
     return entries
 
 
+def _declares_or_binds_invariants(entry: dict) -> bool:
+    """Does this entry carry invariant metadata at all?
+
+    A predicate rather than a widened ``DOCUMENT_KINDS``: ``_budget_for`` reads that
+    constant for the 25 KB / 40 KB ceiling split, so redefining it to answer a question
+    about invariants would silently move every index's ceiling.
+    """
+    return bool(entry.get("defines_invariants") or entry.get("invariant_tests"))
+
+
 def _check_entry_shape(entry: dict, seen: set[str]) -> list[str]:
     doc = entry["doc"]
     problems: list[str] = []
@@ -307,6 +317,24 @@ def _check_entry_shape(entry: dict, seen: set[str]) -> list[str]:
         problems.append(f"{doc}: unknown kind {kind!r}")
         entry["kind"] = "document"
         kind = "document"
+
+    # #705: only a document may declare an invariant or bind one. `verify()` runs the
+    # anchors-no-source check and the whole four-arm `_check_invariant_tests` inside
+    # `if kind in DOCUMENT_KINDS:`, so a non-document entry escaped both — while
+    # `_corpus_invariants` still counted its declaration as DEFINED for every corpus check
+    # and `_invariant_rows`, which renders from `_documents()`, put it in no index shard.
+    # An invariant that is defined everywhere and visible nowhere is worse than one that is
+    # merely unbound. Refusing the shape closes both faces with one rule and touches no
+    # renderer; widening the two checks would close only the first, and widening the
+    # renderer's seam is a change to generated output. This runs AFTER the coercion above,
+    # so an unknown kind keeps the full document treatment rather than being diverted here.
+    if kind not in DOCUMENT_KINDS and _declares_or_binds_invariants(entry):
+        problems.append(
+            f"{doc}: kind {kind!r} may not carry non-empty `defines_invariants` or "
+            f"`invariant_tests` — only a document is rendered into the generated invariant "
+            f"index, so an invariant declared here would count as defined for every corpus "
+            f"check and appear in no index at all"
+        )
 
     required = ("summary", "when_changing") if kind in DOCUMENT_KINDS else ("summary",)
     for field in required:

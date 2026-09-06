@@ -91,7 +91,11 @@ pull-request check is the enforcing caller; allowlist exactness in both directio
 and containment; the marker pair in every document; invariant define-once, reference
 resolution, and declaration accuracy; that an invariant id cited in a comment or a PEP 258
 docstring of a tracked Python file outside `docs/` — a file named `*.py` or carrying a Python
-shebang — resolves, when its family is one the corpus defines; that every declared invariant carries at least one
+shebang — resolves, when its family is one the corpus defines; that only a `document` entry declares an
+invariant or binds one, `defines_invariants` and `invariant_tests` on an `index`, `generated` or `meta`
+entry being refused as a manifest-shape problem — the generated invariant index is rendered from documents
+alone, so a declaration anywhere else would count as defined for every corpus check and appear in no index
+at all; that every declared invariant carries at least one
 `invariant_tests` binding to a tracked file that is not the missing-test sentinel, with any
 named test node resolved structurally against the file — module-level functions and
 class-qualified `Class::method` identifiers both, always by the *unparametrised* node id:
