@@ -222,7 +222,7 @@
 - item: casa/rootfs/opt/casa/session_saver.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/session_sweeper.py
-  doc: architecture/persistent-state.md
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/speaker_provenance.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_bundle_journal.py

@@ -203,6 +203,7 @@
     - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.delete_bank
     - casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once
     - casa/rootfs/opt/casa/delegated_memory.py::retain_delegated
+    - casa/rootfs/opt/casa/session_sweeper.py::SessionSweeper._sweep_once
   tests:
     - tests/test_session_saver.py
     - tests/test_channel_policy.py
@@ -216,8 +217,9 @@
     - tests/test_memory_provenance.py
     - tests/test_time_envelope.py
     - tests/test_specialist_memory_tiers.py
+    - tests/test_session_sweeper.py
   related: [architecture/memory.md, architecture/turn-loop.md, architecture/persistent-state.md]
-  defines_invariants: [INV-MEM-004, INV-MEM-005, INV-MEM-006, INV-MEM-009, INV-MEM-012, INV-MEM-013, INV-MEM-014, INV-MEM-016]
+  defines_invariants: [INV-MEM-004, INV-MEM-005, INV-MEM-006, INV-MEM-009, INV-MEM-012, INV-MEM-013, INV-MEM-014, INV-MEM-016, INV-MEM-017]
   invariant_tests:
     INV-MEM-004: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_004_reserved_tags_refused_before_io]
     INV-MEM-009: [tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_same_utterance_two_timestamps_is_one_document, tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_timestamp_survives_out_of_band, tests/test_time_envelope.py::TestComposeStripPair::test_round_trip_is_identity_on_the_raw_text]
@@ -227,6 +229,7 @@
     INV-MEM-006: [tests/test_session_saver.py::test_save_session_expected_sid_mismatch_releases_claim, tests/test_session_saver.py::test_reset_channel_trailing_remove_spares_follow_up_session, tests/test_session_registry.py::test_remove_with_stale_expected_sid_spares_newer_session, tests/test_freshness_reaper.py::test_sweep_passes_cold_snapshot_sid_to_save]
     INV-MEM-013: [tests/test_sdk_client_pool_pool.py::test_retirement_steers_turn_fresh_and_skips_stale_retain, tests/test_sdk_client_pool_pool.py::test_no_retirement_resumes_normally_on_same_registry, tests/test_retirement_claims.py::TestClaimSet::test_pending_while_any_claim_live, tests/test_retirement_claims.py::TestRegisterRefusal::test_dying_sid_refused_other_sids_proceed, tests/test_reset_channel_retirement.py::test_racing_fresh_registration_survives_reset, tests/test_reset_channel_retirement.py::test_sidless_entry_rederives_and_retires_materialized_session, tests/test_reset_channel_retirement.py::test_claim_released_when_save_raises]
     INV-MEM-014: [tests/test_wipe_memory_tool.py::TestConsentFlow::test_approve_runs_orchestrator_once_and_reports, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_tap_deletes_nothing, tests/test_wipe_memory_tool.py::TestConsentFlow::test_non_operator_tap_cannot_claim, tests/test_wipe_memory_tool.py::TestGates::test_refused_without_configured_operator, tests/test_memory_wipe.py::TestWipeOrchestrator::test_removes_without_any_retain, tests/test_memory_wipe.py::TestWipeOrchestrator::test_steered_fresh_session_survives, tests/test_memory_wipe.py::TestWipeOrchestrator::test_spool_dropped_before_bank_delete, tests/test_retain_fence_writers.py::test_cold_retain_failure_after_wipe_does_not_respool, tests/test_retain_fence_writers.py::test_spool_replay_discards_and_drops_record, tests/test_admin_memory_wipe_route.py::test_requires_explicit_confirm]
+    INV-MEM-017: [tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_never_banked_telegram, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_during_reset_notify, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_with_inflight_save_claim, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_with_unparseable_last_active, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_with_missing_last_active, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_without_provenance, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_still_evicts_a_sidless_telegram_pointer]
 
 - doc: architecture/observability.md
   summary: How work is traced across components, what reaches a log, and what the health surfaces actually assert.

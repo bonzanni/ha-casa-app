@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.284.0] - 2026-09-06
+
+### Fixed
+
+- A Telegram conversation that has not yet been saved to long-term memory is no
+  longer deleted when its session ages out. The clean-up decided what to delete
+  from the age of the session alone, and then deleted the only copy of the
+  conversation with it — so precisely the conversations still waiting to be saved
+  were the ones destroyed. They are now kept until they are saved, an operator
+  starts a fresh conversation, or memory is wiped, and each one held back is
+  reported in the log.
+
 ## [0.283.0] - 2026-09-06
 
 ### Fixed
