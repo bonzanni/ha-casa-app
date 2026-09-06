@@ -584,6 +584,33 @@ async def test_explain_nonboolean_gate_values_rejected_400(
 # ---------------------------------------------------------------------------
 # GH #634: the explain gate's refusal names the offending field and the type
 # ---------------------------------------------------------------------------
+#
+# These arms drive the REGISTERED handler directly instead of going through
+# ``TestClient(TestServer(app))``: the reviewer sandbox denies socket creation
+# (``PermissionError: [Errno 1]`` at listener setup), so a loopback-bound arm
+# is unrunnable for the acceptor. The route is still looked up through the real
+# ``app.router`` after the real ``register_personality_admin_routes`` call, so
+# the closure under test is the shipped one, and the response object is the
+# real ``web.json_response`` the client would have received.
+
+
+def _explain_handler(runtime):
+    """The real ``/admin/explain`` POST handler, via the real router."""
+    app = _make_app(runtime)
+    matches = [r for r in app.router.routes()
+               if r.method == "POST" and r.resource.canonical == "/admin/explain"]
+    assert len(matches) == 1, f"expected one POST /admin/explain, got {matches!r}"
+    return matches[0].handler
+
+
+class _JsonRequest:
+    """The only thing ``_explain`` reads off the request is ``await .json()``."""
+
+    def __init__(self, body):
+        self._body = body
+
+    async def json(self):
+        return self._body
 
 
 _SS_STR = "SHOW_SENSITIVE_STRING_SENTINEL"
@@ -640,19 +667,17 @@ async def test_explain_nonboolean_gate_values_report_safe_first_field_before_sto
     store_get = Mock(side_effect=AssertionError(
         "ExplanationStore.get must not be reached by a refused request"))
     monkeypatch.setattr(store, "get", store_get)
-    runtime = _FakeRuntime(explanation_store=store)
-    app = _make_app(runtime)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.post(
-            "/admin/explain",
-            json={"correlation_id": record.correlation_id, **payload_extra},
-        )
-        assert resp.status == 400
-        body = await resp.json()
-        assert body == {
-            "error": "invalid_args",
-            "detail": f"{field} must be a JSON boolean; received {json_type}",
-        }
+    handler = _explain_handler(_FakeRuntime(explanation_store=store))
+
+    resp = await handler(_JsonRequest(
+        {"correlation_id": record.correlation_id, **payload_extra}))
+
+    assert resp.status == 400
+    body = json.loads(resp.body)
+    assert body == {
+        "error": "invalid_args",
+        "detail": f"{field} must be a JSON boolean; received {json_type}",
+    }
     rendered = json.dumps(body)
     assert "SENSITIVE PERSONA PROSE" not in rendered
     for sentinel in sentinels:
