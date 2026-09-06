@@ -254,7 +254,15 @@ holds one of its own entry locks deadlocks. A new teardown path must background 
 the same way. That drain is bounded per entry, though not pool-wide: each entry's lock is
 awaited up to a drain timeout — a default the caller may override, spent serially per
 entry — and an entry still locked when it expires is force-closed rather than waited on
-further.
+further. WHEN that window opens depends on where the agent was replaced. A swap performed
+inside a reload dispatch does not start the drain: the dispatcher records the replaced agent
+and starts every drain it recorded as it returns, after its locks are released and after its
+post-lock secret report — so the window is counted from the reload's return, not from the
+swap, and the reload's own remaining work is never spent out of it. That start happens on
+every exit of the dispatcher, a failing or cancelled reload included, so a replaced pool is
+never left unclosed; it happens before the caller's post-reload plugin-health regeneration,
+which then runs concurrently with the drain. A swap outside a dispatch — shutdown, a direct
+handler call — starts its drain at the swap, as before.
 
 **INV-TURN-010**: The pool's drain timeout bounds every generation, invalidated ones included: an entry whose lock an invalidation closer still cannot acquire when the drain window ends is force-closed — its transport disconnected — and the closer is neither cancelled nor waited on further. The bound is on the lock wait, not on transport I/O.
 
