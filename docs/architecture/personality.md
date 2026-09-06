@@ -114,7 +114,10 @@ behavior written only outside the core never reaches the voice surface.
 
 **The admin surface is internal-only and redacts by default.** The personality admin
 routes exist only on the internal Unix socket, and the explain route withholds sensitive
-prompt and memory fields unless the request both asks for them and confirms.
+prompt and memory fields unless the request both asks for them and confirms. Both gate
+fields must be JSON booleans; a request that sends anything else is refused with
+`invalid_args` and a `detail` naming the offending field and the JSON type received —
+never the value.
 
 ## Contracts & invariants
 
