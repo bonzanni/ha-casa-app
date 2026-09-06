@@ -1279,8 +1279,15 @@ async def test_deleted_row_mid_attempt_is_revoked_and_never_offered(delivery):
     The deletion must be handled exactly as the EXPIRED flip was — one
     `job_revoke` for that id, the local attempt reclaimed, no further offer —
     so a record leaving the file at its deadline cannot strand a live delivery.
+
+    The coordinator is built with the fixture's clock: the shared fixture's own
+    coordinator reads `time.monotonic`, so advancing `now` would not reach its
+    reclamation window (astra, red-case acceptance round 1).
     """
-    registry, _, route, coordinator, now = delivery
+    registry, routes, route, old_coordinator, now = delivery
+    coordinator = VoiceDeliveryCoordinator(
+        registry, routes, lease_s=15, renew_s=5, clock=lambda: now[0],
+    )
     await registry.create(_ready_job(
         "job-1", sequence=1, device="kitchen", expires_at=105.0,
     ))
@@ -1307,3 +1314,5 @@ async def test_deleted_row_mid_attempt_is_revoked_and_never_offered(delivery):
     assert len([
         frame for frame in _offered(route) if frame["job_id"] == "job-1"
     ]) == 1
+    await coordinator.stop()
+    await old_coordinator.stop()

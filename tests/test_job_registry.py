@@ -1753,10 +1753,18 @@ async def test_expire_due_keeps_a_live_or_not_yet_due_row(tmp_path, expires_at):
     assert _862_sentinel_counts(jobs_path) == expected
 
 
+@pytest.mark.parametrize("marker", ["terminal", "orphan"])
 async def test_expire_due_keeps_an_owed_announcement_until_it_is_delivered(
-    tmp_path,
+    tmp_path, marker,
 ):
-    """#862 arm 3, INV-JOB-010: an owed row survives expiry with its text."""
+    """#862 arm 3, INV-JOB-010: an owed row survives expiry with its text.
+
+    Parameterised over BOTH durable markers. `recover_after_restart`
+    (job_registry.py:1247-1251) selects on either one, so an exemption that
+    names only the terminal marker still destroys an owed announcement — a row
+    orphaned by a restart and still owing its notice. astra measured exactly
+    that mutant passing the single-marker version of this test 11/11.
+    """
     now = [100.0]
     jobs_path = tmp_path / "jobs.json"
     registry = JobRegistry(jobs_path, clock=lambda: now[0])
@@ -1769,13 +1777,23 @@ async def test_expire_due_keeps_an_owed_announcement_until_it_is_delivered(
         task=_862_TASK,
         context=_862_CONTEXT,
     ))
-    finished = await registry.finish_compat(
-        "job-1", _862_RESULT, announce_creator=True,
-    )
-    assert finished.terminal_notification_pending is True
-    assert finished.expires_at is not None
 
-    now[0] = finished.expires_at
+    if marker == "terminal":
+        owed = await registry.finish_compat(
+            "job-1", _862_RESULT, announce_creator=True,
+        )
+        assert owed.terminal_notification_pending is True
+        assert owed.orphan_notification_pending is False
+        expected_counts = [1, 1, 1]
+    else:
+        assert len(await registry.recover_after_restart()) == 1
+        owed = registry.get("job-1")
+        assert owed.orphan_notification_pending is True
+        assert owed.terminal_notification_pending is False
+        expected_counts = [1, 1, 0]
+    assert owed.expires_at is not None
+
+    now[0] = owed.expires_at
     await registry.expire_due()
 
     reloaded = JobRegistry(jobs_path, clock=lambda: now[0])
@@ -1787,12 +1805,14 @@ async def test_expire_due_keeps_an_owed_announcement_until_it_is_delivered(
     assert len(recovered) == 1
     assert recovered[0].id == "job-1"
     kept = reloaded.get("job-1")
-    assert (kept.task, kept.context, kept.result) == (
-        _862_TASK, _862_CONTEXT, _862_RESULT,
-    )
-    assert _862_sentinel_counts(jobs_path) == [1, 1, 1]
+    assert (kept.task, kept.context) == (_862_TASK, _862_CONTEXT)
+    assert _862_sentinel_counts(jobs_path) == expected_counts
 
-    await registry.ack_terminal_notification("job-1")
+    if marker == "terminal":
+        assert kept.result == _862_RESULT
+        await registry.ack_terminal_notification("job-1")
+    else:
+        await registry.ack_orphan_notification("job-1")
     await registry.expire_due()
 
     after_ack = JobRegistry(jobs_path, clock=lambda: now[0])
