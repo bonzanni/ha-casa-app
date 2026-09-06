@@ -37,9 +37,12 @@ Declare webhook triggers in `.claude-plugin/plugin.json`:
 - **Auth modes** (Casa-owned secrets only — `secret_owner: "provider"` is
   rejected at publish in this release): `static_header` (default header
   `X-API-Key`), `timestamped_hmac` (`t=<unix>,v0=<hmac>`, default header
-  `ElevenLabs-Signature`, `tolerance_secs` 60–3600), `hmac_body` (global
-  webhook secret). Invalid declarations refuse the PUBLISH — fix the
-  manifest, don't ask the operator to override.
+  `X-Webhook-Signature`, `tolerance_secs` 60–3600), `hmac_body` (global
+  webhook secret). No default names a vendor — declare `header` explicitly
+  when your caller mandates a particular name, and note that the header is
+  part of the consent identity, so changing it re-prompts the operator.
+  Invalid declarations refuse the PUBLISH — fix the manifest, don't ask the
+  operator to override.
 
 ## Nothing routes until the operator consents
 

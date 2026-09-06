@@ -48,7 +48,9 @@ inside Casa, leaving every other entry exactly as it was.
         clearance="public",        # public|friends|family — memory tiers this
                                    # webhook's turns may recall (NEVER private).
         auth={"mode": "static_header",   # hmac_body|static_header|timestamped_hmac
-              "header": "X-API-Key",     # static_header / timestamped_hmac
+              "header": "X-API-Key",     # OPTIONAL — omit to take the mode's
+                                         # default; set it when the caller
+                                         # mandates a particular header name.
               "tolerance_secs": 300})    # timestamped_hmac only
 
 Read the file first if you need to see what is already there — reads are fine.
@@ -108,7 +110,9 @@ Five fields: minute hour day month day_of_week. "0 7 * * 1-5" = 7:00 on weekdays
     webhooks). The secret is auto-generated at `/data/webhook_secrets/<name>`;
     read it and give it to the caller.
   - `timestamped_hmac` — caller sends `t=<unix>,v0=<hmac>` (default header
-    `ElevenLabs-Signature`). For providers using a timestamped signature.
+    `X-Webhook-Signature`). For providers using a timestamped signature. The
+    default names no vendor: if the caller mandates its own header name —
+    `ElevenLabs-Signature`, say — write that name into `header` explicitly.
 - **Containment:** a webhook turn is UNTRUSTED third-party content. It runs in a
   restricted runtime (no shell/filesystem/network tools, no plugins) and reads
   memory only at the declared `clearance` (never private). It can notify the

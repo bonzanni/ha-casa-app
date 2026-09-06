@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.275.0] - 2026-09-06
+
+### Fixed
+
+- A webhook trigger the configurator writes no longer needs a `path` field that
+  Casa then reports as deprecated on every boot. The assistant's shipped trigger
+  document declared schema version 1, whose rules require that field, while the
+  configurator's own recipe writes version 2 — so the two disagreed on a fresh
+  install and the loader logged a deprecation for a field it was handed. The
+  shipped document now declares version 2. An install whose trigger document
+  already exists keeps its own version and its triggers.
+
+- No webhook authentication mode defaults to a particular vendor's header name
+  any more. A `timestamped_hmac` trigger that does not name a header is now
+  served under `X-Webhook-Signature` instead of `ElevenLabs-Signature`, for
+  triggers you write and for triggers a plugin declares. Two consequences worth
+  knowing before you upgrade: a plugin-declared timestamped-HMAC trigger that
+  never named a header will ask for approval once more, because the header is
+  part of what an approval covers; and a trigger of your own that never named a
+  header changes header at the first reload after the upgrade — if the caller
+  posting to it mandates a particular name, set `header` explicitly on that
+  trigger.
+
 ## [0.274.0] - 2026-09-06
 
 ### Fixed

@@ -365,9 +365,11 @@ def _read_doc(path: str) -> "tuple[str | None, dict]":
     overdue reminders would go undelivered.
     """
     if not os.path.exists(path):
-        # A role's first reminder creates the file. schema_version 2 is what the
-        # configurator's own add recipe writes, and it keeps #402's future
-        # tightening from being boot-fatal on a file this writer created.
+        # A role's first reminder creates the file. schema_version 2 is what
+        # the shipped assistant default declares (#654), and it keeps #402's
+        # future tightening from being boot-fatal on a file this writer
+        # created. (The add recipe writes no version at all — it hands this
+        # module an entry, never a document.)
         return None, {"schema_version": 2, "triggers": []}
     with open(path, encoding="utf-8") as fh:
         text = fh.read()

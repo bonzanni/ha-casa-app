@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+import agent_loader
 from agent_loader import _build_triggers
 
 
@@ -29,8 +30,27 @@ def test_static_header_defaults_header_and_owner():
 
 def test_timestamped_hmac_defaults():
     spec = _webhook(auth={"mode": "timestamped_hmac"})
-    assert spec.auth["header"] == "ElevenLabs-Signature"
+    assert spec.auth["header"] == "X-Webhook-Signature"
     assert spec.auth["tolerance_secs"] == 300
+    # No entry in the table names a vendor (#655).
+    assert agent_loader._DEFAULT_AUTH_HEADER == {
+        "hmac_body": "X-Webhook-Signature",
+        "static_header": "X-API-Key",
+        "timestamped_hmac": "X-Webhook-Signature",
+    }
+
+
+def test_timestamped_hmac_provider_owned_defaults_neutral_header():
+    """The default is keyed on MODE alone: a provider-owned entry that omits
+    `header` gets the same neutral name, not a vendor's (#655)."""
+    spec = _webhook(auth={"mode": "timestamped_hmac",
+                          "secret_owner": "provider"})
+    assert spec.auth == {
+        "mode": "timestamped_hmac",
+        "header": "X-Webhook-Signature",
+        "tolerance_secs": 300,
+        "secret_owner": "provider",
+    }
 
 
 def test_explicit_values_preserved():
