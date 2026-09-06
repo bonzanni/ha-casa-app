@@ -3716,9 +3716,10 @@ async def _notify_recovered_delegations(
 
     Two shapes are announced. A row carrying a failure envelope (a restart
     orphan, or a delegation that FAILED during the stop) replays its own typed
-    kind. A row that SUCCEEDED during the stop replays as a success whose
-    answer is unavailable: Casa does not retain a non-voice specialist's answer
-    (#688, decided), and the row carries everything a truthful notice needs.
+    kind. A row that SUCCEEDED during the stop replays as a success carrying
+    the answer the row retained for exactly this moment (#688, INV-JOB-015) —
+    or, when it retained none, as a success whose answer is unavailable, which
+    is what a legacy row and a row written by a non-announcing arm still do.
     """
     from specialist_registry import DelegationComplete
 
@@ -3736,22 +3737,26 @@ async def _notify_recovered_delegations(
             )
             continue
 
-        # This compatibility signal carries only the stable failure envelope
-        # and origin metadata. No specialist output is reintroduced into the
-        # resident's context during restart recovery. #688 decided that as a
-        # RETENTION posture too: a non-voice specialist's answer is not kept
-        # across a restart, so a successful replay reports the fact of the
-        # answer rather than the answer, and never presents its empty stored
-        # result as one.
+        # #688: the notice reports what the ROW holds, rather than a fixed
+        # retention posture. A delegation whose answer was in hand when it
+        # completed retained that answer on the row precisely so this replay
+        # could carry it; a row that retained none — a legacy row, an orphan
+        # conversion, a terminal written by an arm that owed no announcement —
+        # still replays as a success whose answer is unavailable, and its empty
+        # stored result is still never presented as the answer. Availability is
+        # the row's own durable fact, NEVER `bool(job.result)`: a specialist
+        # that legitimately answered with nothing is not a row that kept
+        # nothing.
         succeeded = job.failure is None
+        answer_available = bool(succeeded and job.result_available)
         synthetic = DelegationComplete(
             delegation_id=job.id,
             agent=job.specialist_role,
             status="ok" if succeeded else "error",
+            text=(job.result or "") if answer_available else "",
             kind="" if succeeded else job.failure.kind,
             message="" if succeeded else job.failure.message,
-            # No replay carries an answer: nothing was retained to carry.
-            result_available=False,
+            result_available=answer_available,
             origin={
                 "role": job.creating_role,
                 "channel": job.creator_peer,

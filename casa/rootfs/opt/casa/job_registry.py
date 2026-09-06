@@ -131,6 +131,14 @@ class VoiceJob:
     # case delivery must FAIL CLOSED rather than assume audio and announce a
     # phone's answer on a speaker.
     delivery_modality: str | None = None
+    # #688: does `result` hold a delegated answer this row is retaining for
+    # delivery? A FACT about the row, never `bool(result)` — a specialist that
+    # legitimately answered with nothing is not a row that retained nothing.
+    # Defaults False, which is the fail-closed direction: a row written before
+    # this field existed carries no answer, and replays exactly as it did
+    # before the feature. The voice arm does not use it: its result has its own
+    # lifecycle (`finish_voice_result` and the delivery TTL), unchanged here.
+    result_available: bool = False
     # #485: was this delegation created by a turn Casa's own schedule fired?
     # The live completion path carries that as an origin marker, but a restart
     # resumes through THIS row, whose origin is rebuilt field by field — so the
@@ -593,21 +601,25 @@ class JobRegistry:
         )
 
     def schedule_completion_reconciliation(
-        self, job_id: str, *, announce_creator: bool = False,
+        self, job_id: str, result: str = "",
+        *, announce_creator: bool = False,
     ) -> None:
         """#321: registry-owned retry completing a job whose result was
         already returned to the caller but whose terminal snapshot write
         failed — the answer must never be discarded by restart recovery
         (ORPHANED) just because the metadata write lost a race with disk.
 
-        NON-VOICE DELEGATION ONLY (Terra r4, widened by #701): the empty
-        result string here is not a placeholder — it reproduces
-        ``complete_delegation``'s intended terminal exactly
-        (``finish_compat(id, "")``). No non-voice delegation persists its
-        answer, sync or async (#688, decided: answer text is not retained), so
-        there is no stored result to clobber on either arm. Voice results go
-        through ``finish_voice_result`` and the ``_persist_voice_terminal``
-        fallback, never this method.
+        NON-VOICE DELEGATION ONLY (Terra r4, widened by #701): this retry
+        reproduces ``complete_delegation``'s intended terminal exactly, which
+        since #688 means it must carry the ANSWER as well as the obligation.
+        The caller passes the same bounded text it passed to the write that
+        failed; without that, one failed write would silently lose the answer
+        after the live notice had already gone out, and the boot replay would
+        announce an outcome it could not produce. The default `""` remains
+        correct for a caller with no answer to land (the synchronous arm),
+        and `finish_compat` itself refuses to store an answer on a row that
+        owes no announcement. Voice results go through ``finish_voice_result``
+        and the ``_persist_voice_terminal`` fallback, never this method.
 
         #701: the ASYNC arm reaches here too, and passes
         ``announce_creator=True`` — its caller was promised a notification, so
@@ -616,7 +628,7 @@ class JobRegistry:
         self._schedule_terminal_reconciliation(
             job_id,
             lambda: self.finish_compat(
-                job_id, "", announce_creator=announce_creator),
+                job_id, result, announce_creator=announce_creator),
         )
 
     def schedule_cancel_reconciliation(self, job_id: str) -> None:
@@ -874,8 +886,19 @@ class JobRegistry:
                         ExecutionState.ACCEPTED, ExecutionState.RUNNING,
                     }):
                 return current
+            # #688: the answer is written only when this terminal will OWE its
+            # creator an announcement — the same predicate that arms the
+            # marker, evaluated once. That makes the retention rule true by
+            # construction rather than by caller discipline: a delegation that
+            # owes nobody a notice (the synchronous arm, any non-Telegram
+            # creator) cannot leave an answer on disk even if a caller passes
+            # one, and nothing then has to remember to clear it.
+            owed = self._owes_announcement(current, announce_creator)
             return await self._finish_current_locked(
-                current, result, announce_creator=announce_creator)
+                current, result if owed else "",
+                announce_creator=announce_creator,
+                result_available=owed,
+            )
 
     async def fail_compat(
         self, job_id: str, failure: JobFailure | BaseException,
@@ -1397,13 +1420,32 @@ class JobRegistry:
         The same contract as :meth:`ack_orphan_notification` for the marker a
         terminal write arms (#701): idempotent, lock-held, durable, and reached
         only from a delivery signal.
+
+        #688: the retained answer is dropped HERE, in the same snapshot as the
+        marker. This is the one site both delivery paths already reach — the
+        live announcement's `on_delivery` and the recovery notice's — so they
+        cannot implement two different rules, and it composes with #862 rather
+        than competing with it: clearing the marker is exactly what makes the
+        row deletable, so dropping the text at the acknowledgement and deleting
+        the row at its deadline are one rule at two granularities. The early
+        return on an already-clear marker keeps it idempotent, so a duplicate
+        acknowledgement writes nothing. `result` returns to `""` — the shape
+        every row that never retained an answer already carries — and
+        `result_available` is what distinguishes the two.
+
+        `ack_orphan_notification` deliberately does NOT do this. It acks an
+        ORPHANED row, which is a converted LIVE row and has never held an
+        answer, so the clear would be a no-op that implied a second rule.
         """
         async with self._lock:
             current = self._require_job(job_id)
             if not current.terminal_notification_pending:
                 return current
             return await self._persist_job_locked(replace(
-                current, terminal_notification_pending=False,
+                current,
+                terminal_notification_pending=False,
+                result="",
+                result_available=False,
             ))
 
     async def close(self) -> None:
@@ -1499,6 +1541,7 @@ class JobRegistry:
                 terminal_notification_pending=bool(
                     row.get("terminal_notification_pending", False)
                 ),
+                result_available=bool(row.get("result_available", False)),
                 prompted_delivery=bool(row.get("prompted_delivery", False)),
                 job_control_id=JobRegistry._optional_str(
                     row.get("job_control_id")
@@ -1565,6 +1608,7 @@ class JobRegistry:
             "cancel_pending": job.cancel_pending,
             "orphan_notification_pending": job.orphan_notification_pending,
             "terminal_notification_pending": job.terminal_notification_pending,
+            "result_available": job.result_available,
             "prompted_delivery": job.prompted_delivery,
             "job_control_id": job.job_control_id,
             "handoff_id": job.handoff_id,
@@ -1658,7 +1702,7 @@ class JobRegistry:
 
     async def _finish_current_locked(
         self, current: VoiceJob, result: str,
-        *, announce_creator: bool = False,
+        *, announce_creator: bool = False, result_available: bool = False,
     ) -> VoiceJob:
         now = self._now()
         if current.cancel_pending:
@@ -1685,6 +1729,11 @@ class JobRegistry:
                 terminal_at=now,
                 expires_at=now + self._terminal_result_ttl_seconds(current),
                 result=str(result),
+                # #688: the answer, its availability and the obligation land in
+                # ONE snapshot — the same `replace()` — because a boot that
+                # finds the marker without the answer would announce an answer
+                # it cannot produce (INV-JOB-001, INV-JOB-015).
+                result_available=result_available,
                 failure=None,
                 delivery_state=delivery,
                 delivery_sequence=sequence,

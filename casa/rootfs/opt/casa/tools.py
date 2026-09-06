@@ -3401,7 +3401,9 @@ async def _fail_delegation_durably(
     return None
 
 
-async def _complete_delegation_durably(delegation_id: str) -> VoiceJob | None:
+async def _complete_delegation_durably(
+    delegation_id: str, result: str = "",
+) -> VoiceJob | None:
     """The ok arm's durable terminal, with the announcement obligation armed.
 
     #321's rule holds unchanged: the specialist's work is DONE and its answer
@@ -3409,10 +3411,16 @@ async def _complete_delegation_durably(delegation_id: str) -> VoiceJob | None:
     away — the registry-owned retry completes the row instead. #701 adds only
     that the retry carries the obligation, since this caller was promised a
     notification.
+
+    #688: ``result`` is the BOUNDED answer this caller's live notice carries,
+    and it rides BOTH the direct write and the retry. If the retry did not
+    carry it, a single failed write would lose the answer silently after the
+    operator had already been told a notice was coming, and the boot replay
+    would announce an outcome whose answer it could not produce.
     """
     try:
         return await _specialist_registry.complete_delegation(
-            delegation_id, announce_creator=True)
+            delegation_id, result, announce_creator=True)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -3423,7 +3431,7 @@ async def _complete_delegation_durably(delegation_id: str) -> VoiceJob | None:
         try:
             (_specialist_registry.job_registry
              .schedule_completion_reconciliation(
-                 delegation_id, announce_creator=True))
+                 delegation_id, result, announce_creator=True))
         except Exception:  # noqa: BLE001 — restart recovery remains authoritative
             logger.error(
                 "Delegation %s completion reconciliation scheduling failed; "
@@ -3577,7 +3585,7 @@ def _attach_completion_callback(
                     elapsed_s=time.time() - record.started_at,
                     output_truncated=output_truncated,
                 )
-                settle = _complete_delegation_durably(record.id)
+                settle = _complete_delegation_durably(record.id, bounded)
         except Exception as exc:
             kind = _classify_error(exc).value
             complete = DelegationComplete(

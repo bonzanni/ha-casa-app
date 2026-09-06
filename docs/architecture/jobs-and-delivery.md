@@ -147,12 +147,38 @@ a terminal whose snapshot write failed and was landed afterwards by the registry
 retry. Boot never waits for any of it — a resident's turn can take minutes — so recovery
 enqueues its notices and returns.
 
-A terminal replayed at boot carries no answer text. Casa does not retain a non-voice
-specialist's answer (see *What Casa keeps about a finished delegation* below), so a
-delegation that succeeded during a stop is announced truthfully as having completed with
-its answer unavailable — never as an empty answer, and never laundered into a failure. A
-delegation that *failed* replays its own durable typed kind, exactly as the live path would
-have reported it.
+A terminal replayed at boot carries the answer the row kept for it, when it kept one. A
+delegation whose answer was in hand when it completed retained that answer for exactly this
+moment (INV-JOB-015 below), and the replay quotes it just as the live announcement would
+have. A row that kept none — one written before the field existed, or by an arm that owed no
+announcement — is still announced truthfully as having completed with its answer
+unavailable, never as an empty answer and never laundered into a failure. Which of the two a
+notice is, is the row's own durable fact and never "is the stored text empty": a specialist
+that legitimately answered with nothing is not a row that kept nothing. A delegation that
+*failed* replays its own durable typed kind, exactly as the live path would have reported it.
+
+That changes what the accepted duplicate above costs. A process lost between the delivery
+and the durable acknowledgement now announces the same outcome again **with its answer** —
+there is no dedupe on the resident's side, and none was added, because hiding the duplicate
+would mean tracking delivery of content Casa deliberately does not inspect. Repeating an
+answer the operator has already read is the price of never losing one.
+
+**INV-JOB-015**: A non-voice delegated answer is retained on the durable row exactly while its announcement is owed — it is written in the same snapshot that arms the obligation and only when the obligation is armed, and it is removed in the same snapshot that clears the obligation on DELIVERY — so an answer that was in hand when a delegation completed reaches its creator across a restart, and stops being retained once a delivery has been acknowledged.
+
+One predicate decides both ends, and it is the one that already decides whether the
+announcement is owed at all: a terminal that owes no notice cannot store an answer, whatever
+its caller passes, so the synchronous arm and any non-Telegram creator keep exactly the
+posture they had. One method drops it, `ack_terminal_notification`, which is where the LIVE
+announcement's acknowledgement and the boot replay's already both arrive — so the two paths
+cannot drift into two rules, and a drop that fails leaves the answer owed rather than gone.
+The voice arm is outside this: its result has its own lifecycle and its own TTL, and an
+acknowledged voice delivery still keeps its answer for the continuations that replay it.
+
+Two limits are stated rather than designed away. A narration whose HEAD reached the transport
+discharges the obligation even if its tail then raised, by the rule above, and the answer is
+dropped with it — Casa does not re-narrate a turn the operator has already begun reading. And
+a delegation still executing when a stop begins boots as a lost row, which never held an
+answer: what this retains is an answer that had already been written, not one that never was.
 
 **INV-JOB-011**: At the graceful stop's job-ledger close boundary, every delegation that has already produced a success or non-cancellation verdict has had its completion callback run, its terminal-write attempt made, and every resulting settle tail awaited — so a delegation that finished during the stop reaches the ledger as its real outcome, never as a live row the next boot converts to lost on restart — and a verdict that had already landed when the stop began is written, and its announcement enqueued, before any resident's `aclose()` is entered, while a resident can still tell it. A delegation still running at that boundary, and a terminal write whose registry-owned retry is still pending there (whenever the failed attempt occurred), are outside this guarantee and remain governed by INV-JOB-009's boot reconciliation.
 
@@ -215,16 +241,27 @@ reconciliation — its one-second sweep, a route connecting, and each inbound jo
 Nothing sweeps at boot or on a wall clock, so on an install where no delegation is launched
 and no voice channel is running, a due row waits in the file until something runs a pass.
 
-What it does **not** hold, on the Telegram and synchronous arms, is the specialist's
-**answer**: the completion writes an empty result deliberately, and nothing since has
-changed that. The decision was taken explicitly rather than inherited (#688): a truthful
-boot announcement needs the role, the request, the terminal time and the execution state,
-all of which are already on the row, so retaining the answer would buy quality of outcome
-and cost a widened retention posture. That posture was described here as "a file that
-backups and config-git snapshots reach", which was never true of it: `config_git` versions
-`/config`, and the job file lives under `/data`. The empty string is also load-bearing — the registry-owned completion retry treats
-it as *not a stored result to clobber* — so making it meaningful would change that contract
-with it.
+**It also holds the specialist's answer, for as long as that answer is owed.** The decision
+was taken explicitly (#688) and then reversed explicitly: Casa used to write an empty result
+on the Telegram and synchronous arms, so a delegation that finished while Casa was restarting
+could only ever be announced as "it completed, the answer is gone, shall I run it again?" —
+which is a worse outcome than the live path's for the same work. What that posture was
+protecting against was a widened retention cost, and the cost is now bounded and stated on
+both ends: an answer is written only onto a row that owes its creator an announcement, and it
+is removed at the moment that announcement is acknowledged as delivered — before, and
+independently of, the deadline that deletes the row itself (INV-JOB-015).
+
+The window is therefore the delivery window, not a TTL: the answer is on the row from the
+terminal write until the operator has been told, and a stop in the middle is precisely the
+case it exists for. The synchronous arm still keeps nothing, because its answer went back to
+the caller in-band and no notice is owed. The file is written 0600 under `/data`; the earlier
+description of it here as "a file that backups and config-git snapshots reach" was never true
+of it, because `config_git` versions `/config`.
+
+**What Casa does not claim is that dropping the row's copy is forgetting.** The answer that
+was delivered reached the operator's channel and the narrating resident's own turn, exactly
+as a live delegation's does, and whatever those are retained in is governed by memory's rules
+rather than by this one. This rule is about the durable delivery record.
 
 The voice arm is the stated exception, and the asymmetry is deliberate rather than
 accidental: a voice answer is persisted because the device delivery protocol and its

@@ -459,9 +459,16 @@ class TestTheReplayOwnerCannotStopBootOrLie:
         assert broken.terminal_notification_pending is True
 
     async def test_the_recovery_narration_promises_no_lookup(self, tmp_path):
-        """The shared branch also serves the DELEGATION replay, where #688
-        decided nothing is retained — so offering to "look it up" sends the
-        resident after something that provably does not exist."""
+        """This branch carries no answer, whichever producer reached it — so
+        offering to "look it up" sends the resident after something that is not
+        there.
+
+        #688 changed which notices reach here without changing this test's
+        subject. A replayed DELEGATION whose row retained its answer now takes
+        the ordinary success branch instead; what still arrives here is the
+        ENGAGEMENT producer, which never carries an answer, and a delegation row
+        that retained none. The promise is refused for the same reason as
+        before: this notice is all there is."""
         from types import SimpleNamespace
 
         import casa_core

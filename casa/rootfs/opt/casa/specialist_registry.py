@@ -87,11 +87,14 @@ class DelegationComplete:
     # `_MAX_OUTPUT_CHARS` before this notification was assembled, so the
     # narrating resident can disclose the answer was cut short.
     output_truncated: bool = False
-    # #701/#688: False when this is a BOOT REPLAY of a delegation that really
-    # did succeed but whose answer text was never retained (Casa does not
-    # persist a non-voice specialist's answer). `status` stays truthful — the
-    # work succeeded — and the empty `text` must never be narrated as if it
-    # were the answer.
+    # #701/#688: False when this notice does not carry the delegation's answer
+    # — a boot replay of a row that retained none (a legacy row, an orphan
+    # conversion), or a replayed ENGAGEMENT outcome, whose producer never
+    # carries one. `status` stays truthful — the work succeeded — and the empty
+    # `text` must never be narrated as if it were the answer. Since #688 a
+    # replayed delegation whose row DID retain its answer sets this True and
+    # carries the text, so this states a fact about the notice rather than a
+    # retention posture.
     result_available: bool = True
 
 
@@ -364,7 +367,8 @@ class SpecialistRegistry:
     # delegate_to_agent. (Interactive engagements, which have no task done-
     # callback, DO release in EngagementRegistry terminal transitions.)
     async def complete_delegation(
-        self, delegation_id: str, *, announce_creator: bool = False,
+        self, delegation_id: str, result: str = "",
+        *, announce_creator: bool = False,
     ) -> VoiceJob | None:
         """Persist the successful terminal; return the durable row.
 
@@ -374,10 +378,16 @@ class SpecialistRegistry:
         CANCELLED and the creator is deliberately not told it completed.
         ``announce_creator`` arms the durable obligation to announce; only the
         path that actually posts a notification passes it.
+
+        #688: ``result`` is the BOUNDED answer the announcing caller already
+        holds — the same text its live notice carries. It is defaulted because
+        the synchronous arm has nothing to land: its answer went back to the
+        caller in-band, it arms no obligation, and the registry refuses to
+        store an answer on a row that owes no announcement (INV-JOB-015).
         """
         await self._job_registry.load()
         return await self._job_registry.finish_compat(
-            delegation_id, "", announce_creator=announce_creator)
+            delegation_id, result, announce_creator=announce_creator)
 
     async def fail_delegation(
         self, delegation_id: str, exc: Exception,

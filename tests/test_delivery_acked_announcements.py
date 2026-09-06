@@ -88,7 +88,8 @@ async def test_a_row_without_the_terminal_marker_decodes_as_owing_nothing(
 
 async def test_an_armed_terminal_survives_the_snapshot(tmp_path):
     registry = await _registry(tmp_path, make_job())
-    await registry.finish_compat("job-1", "", announce_creator=True)
+    await registry.finish_compat(
+        "job-1", "the balance is 12", announce_creator=True)
     assert registry.get("job-1").terminal_notification_pending is True
 
     reloaded = JobRegistry(tmp_path / "jobs.json")
@@ -96,8 +97,12 @@ async def test_an_armed_terminal_survives_the_snapshot(tmp_path):
     row = reloaded.get("job-1")
     assert row.execution_state is ExecutionState.SUCCEEDED
     assert row.terminal_notification_pending is True
-    # #688: the answer text itself is NOT what survives.
-    assert row.result == ""
+    # #688 (was: "the answer text itself is NOT what survives"). It is now
+    # exactly what survives, because it is what the owed announcement has to
+    # carry — and it survives in the SAME snapshot as the marker, so a boot can
+    # never find one without the other.
+    assert row.result == "the balance is 12"
+    assert row.result_available is True
 
 
 # ---------------------------------------------------------------------------
@@ -191,11 +196,26 @@ async def _replay(registry):
     return bus
 
 
+async def _strip_retained_answer(path):
+    """Rewrite the snapshot as a row written BEFORE `result_available` existed.
+
+    #688: this is what "a success that retained no answer" now means. The field
+    defaults False, so a legacy row replays exactly as every row did before the
+    feature — the fail-closed direction.
+    """
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert "result_available" in snapshot[0]
+    snapshot[0].pop("result_available")
+    snapshot[0]["result"] = ""
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+
 async def test_a_success_lost_in_a_stop_is_announced_without_an_answer(
     tmp_path,
 ):
     registry = await _registry(tmp_path, make_job())
     await registry.finish_compat("job-1", "", announce_creator=True)
+    await _strip_retained_answer(tmp_path / "jobs.json")
 
     reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
     await reloaded.load()
@@ -230,9 +250,15 @@ async def test_a_failure_lost_in_a_stop_replays_its_own_kind(tmp_path):
 
 async def test_the_replayed_success_is_narrated_as_a_lost_answer(tmp_path):
     """The synthesized resident turn must never present the empty stored
-    result as the specialist's answer."""
+    result as the specialist's answer.
+
+    #688: the row this replays is one that retained NO answer — a legacy row.
+    A row that did retain one is narrated by
+    `test_answered_terminal_replays_the_retained_answer_after_restart`.
+    """
     registry = await _registry(tmp_path, make_job())
     await registry.finish_compat("job-1", "", announce_creator=True)
+    await _strip_retained_answer(tmp_path / "jobs.json")
     reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
     await reloaded.load()
     bus = await _replay(reloaded)
@@ -318,7 +344,7 @@ async def _drive_completion_callback(monkeypatch, outcome, *, cancelled_row=Fals
 
     class _JobRegistry:
         async def finish_compat(self, did, result="", *, announce_creator=False):
-            writes.append(("finish", did, announce_creator))
+            writes.append(("finish", did, announce_creator, result))
             return make_job(
                 id=did,
                 execution_state=(
@@ -348,9 +374,11 @@ async def _drive_completion_callback(monkeypatch, outcome, *, cancelled_row=Fals
     class _Registry:
         job_registry = _JobRegistry()
 
-        async def complete_delegation(self, did, *, announce_creator=False):
+        async def complete_delegation(
+            self, did, result="", *, announce_creator=False,
+        ):
             return await self.job_registry.finish_compat(
-                did, "", announce_creator=announce_creator)
+                did, result, announce_creator=announce_creator)
 
         async def cancel_delegation(self, did):
             writes.append(("cancel", did, False))

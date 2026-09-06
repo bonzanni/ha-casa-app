@@ -768,7 +768,9 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
     class _Registry:
         job_registry = _JobRegistry()
 
-        async def complete_delegation(self, did, *, announce_creator=False):
+        async def complete_delegation(
+            self, did, result="", *, announce_creator=False,
+        ):
             completed.append(did)
             return None
 
