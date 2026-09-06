@@ -19,6 +19,28 @@ import asyncio
 from aiohttp import web
 
 
+def _json_type_name(value: object) -> str:
+    """The JSON type name of a value decoded by ``await request.json()``.
+
+    Domain: exactly what ``json.loads`` produces — ``None``, ``bool``, ``int``
+    or ``float``, ``str``, ``list``, ``dict`` — which is why ``dict`` is the
+    final arm rather than a tested one. ``bool`` is checked BEFORE the numeric
+    arm because ``isinstance(True, int)`` is true, so a bare ``1`` must read as
+    "number" and never as "boolean".
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    return "object"
+
+
 def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
     from specialist_registry import get_installed_instance
 
@@ -154,8 +176,21 @@ def register_personality_admin_routes(
         # system_prompt/memory_text. casactl sends real booleans.
         show_sensitive = body.get("show_sensitive", False)
         confirmed = body.get("confirmed", False)
-        if not isinstance(show_sensitive, bool) or not isinstance(confirmed, bool):
-            return web.json_response({"error": "invalid_args"}, status=400)
+        # GH #634: one or-joined predicate and one constant payload threw away
+        # WHICH field was rejected, so a caller hand-building a POST on the
+        # socket got the same bare `invalid_args` for either field and for both
+        # at once. Refuse per field, in this source order, naming the field and
+        # the JSON TYPE received — never the value, which is caller-supplied
+        # and would be a new leak class. `casactl` relays the body verbatim to
+        # stderr, so the detail reaches whoever is reading.
+        for field, value in (("show_sensitive", show_sensitive),
+                             ("confirmed", confirmed)):
+            if not isinstance(value, bool):
+                return web.json_response({
+                    "error": "invalid_args",
+                    "detail": (f"{field} must be a JSON boolean; received "
+                               f"{_json_type_name(value)}"),
+                }, status=400)
         if show_sensitive and not confirmed:
             return web.json_response({"error": "confirmation_required"}, status=400)
         if not isinstance(cid, str) or not cid:
