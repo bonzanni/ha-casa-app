@@ -810,7 +810,10 @@ async def test_pool_close_wakes_barrier_waiters_without_reopening_generation():
         await asyncio.sleep(0)
         assert not replacement.done()
 
-        closing = asyncio.create_task(pool.aclose(drain_timeout=0.01))
+        # #853: a 1 s window, so the "still draining" observation below is
+        # about the mechanism (no force-close before the window ends), not a
+        # race against a 10 ms fuse.
+        closing = asyncio.create_task(pool.aclose(drain_timeout=1.0))
         with pytest.raises(PoolUnavailable, match="pool closing"):
             await asyncio.wait_for(replacement, timeout=1)
         assert "voice-same" not in pool._entries
@@ -1382,3 +1385,234 @@ async def test_pool_close_joins_invalidated_generation_disconnect_already_starte
     finally:
         client.release_disconnect.set()
         await _drain_test_tasks(pool, old, invalidation, closing, *workers)
+
+
+async def _held_warm_entry(pool, key):
+    """A warm entry at ``key`` with a counted fake attached and its lock HELD
+    (the wedged turn). Returns (entry, client)."""
+    entry = await pool._entry_stub(key)
+    client = CountedDisconnectClient(None)
+    entry._client = client
+    entry.state = "warm"
+    await entry.lock.acquire()
+    return entry, client
+
+
+async def test_force_close_hook_fires_before_disconnect_at_both_sites():
+    """#853: BOTH force-close sites — the live-entry drain loop and the
+    invalidated-generation arm — go through the one helper, which fires
+    ``on_force_close(key, entry)`` before the transport is cut. A bypass of
+    either site drops one pair."""
+    seen = []
+
+    def hook(key, entry):
+        # Before the disconnect: nothing started yet on this entry's client.
+        seen.append((key, entry, entry._client.disconnect_starts))
+
+    pool = _mk_pool(FakeRegistry(), on_force_close=hook)
+    invalidated, inv_client = await _held_warm_entry(pool, "voice-inv")
+    invalidation = asyncio.create_task(pool.invalidate_all())
+    closing = None
+    try:
+        while "voice-inv" in pool._entries:
+            await asyncio.sleep(0)
+        live, live_client = await _held_warm_entry(pool, "voice-live")
+        closing = asyncio.create_task(pool.aclose(drain_timeout=0.05))
+        done, _pending = await asyncio.wait({closing}, timeout=1)
+        assert len(done) == 1 and closing.result() is None
+        assert seen == [("voice-live", live, 0), ("voice-inv", invalidated, 0)]
+        assert (live_client.disconnect_completions,
+                inv_client.disconnect_completions) == (1, 1)
+        assert live.lock.locked() and invalidated.lock.locked()
+    finally:
+        if "live" in locals() and live.lock.locked():
+            live.lock.release()
+        await _drain_test_tasks(pool, invalidated, invalidation, closing)
+
+
+async def test_force_close_hook_exception_is_contained():
+    """#853: a raising hook never unwinds ``aclose`` — both entries are still
+    force-closed and the pool close completes."""
+    calls = []
+
+    def hook(key, entry):
+        calls.append(key)
+        raise RuntimeError("consumer not ready")
+
+    pool = _mk_pool(FakeRegistry(), on_force_close=hook)
+    invalidated, inv_client = await _held_warm_entry(pool, "voice-inv")
+    invalidation = asyncio.create_task(pool.invalidate_all())
+    closing = None
+    try:
+        while "voice-inv" in pool._entries:
+            await asyncio.sleep(0)
+        live, live_client = await _held_warm_entry(pool, "voice-live")
+        closing = asyncio.create_task(pool.aclose(drain_timeout=0.05))
+        done, _pending = await asyncio.wait({closing}, timeout=1)
+        assert len(done) == 1 and closing.result() is None
+        assert calls == ["voice-live", "voice-inv"]
+        assert (live_client.disconnect_completions,
+                inv_client.disconnect_completions) == (1, 1)
+    finally:
+        if "live" in locals() and live.lock.locked():
+            live.lock.release()
+        await _drain_test_tasks(pool, invalidated, invalidation, closing)
+
+
+async def test_pool_close_default_hook_is_a_noop_and_injectable():
+    from sdk_client_pool import _no_force_close_hook
+    pool = _mk_pool(FakeRegistry())
+    assert pool.on_force_close is _no_force_close_hook
+    assert _no_force_close_hook("k", object()) is None
+    marks = []
+    pool.on_force_close = lambda key, entry: marks.append(key)
+    live, client = await _held_warm_entry(pool, "voice-live")
+    try:
+        await asyncio.wait_for(pool.aclose(drain_timeout=0.05), timeout=1)
+        assert marks == ["voice-live"] and client.disconnect_completions == 1
+    finally:
+        live.lock.release()
+
+
+async def test_concurrent_pool_close_does_not_force_close_the_other_drains_live_entry_early():
+    """#853 (seam round): a second ``aclose`` overlapping the first — reload
+    teardown overlapping container shutdown; ``Agent.aclose`` is documented
+    safe to call twice — must NOT treat the first call's under-drain live
+    entry as a timed-out closer and force-close it before ITS window."""
+    from sdk_client_pool import DrainOwner
+    pool = _mk_pool(FakeRegistry())
+    live, client = await _held_warm_entry(pool, "voice-live")
+    close_a = asyncio.create_task(pool.aclose(drain_timeout=0.3))
+    close_b = None
+    try:
+        while live not in pool._draining:
+            await asyncio.sleep(0)
+        assert pool._draining[live] == DrainOwner("voice-live", None)
+        close_b = asyncio.create_task(pool.aclose(drain_timeout=0.3))
+        done, _pending = await asyncio.wait({close_a, close_b}, timeout=0.15)
+        # Before either window: neither close finished, nothing disconnected.
+        assert len(done) == 0
+        assert (client.disconnect_starts, client.disconnect_completions) == (0, 0)
+        assert live.lock.locked()
+        done, _pending = await asyncio.wait({close_a, close_b}, timeout=1)
+        assert len(done) == 2
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 1)
+        assert live not in pool._draining
+    finally:
+        live.lock.release()
+        await _drain_test_tasks(pool, live, close_a, close_b)
+
+
+async def test_pool_close_re_drains_an_entry_a_cancelled_close_left_mid_drain():
+    """#853: an outer bound (the container's 15 s ``wait_for``) that cancels a
+    close mid-drain leaves its live entries recorded; a later close re-drains
+    them with its own full window, then force-closes."""
+    pool = _mk_pool(FakeRegistry())
+    live, client = await _held_warm_entry(pool, "voice-live")
+    close_a = asyncio.create_task(pool.aclose(drain_timeout=5))
+    close_b = None
+    try:
+        while live not in pool._draining:
+            await asyncio.sleep(0)
+        close_a.cancel()
+        await asyncio.gather(close_a, return_exceptions=True)
+        assert close_a.cancelled()
+        assert live in pool._draining and client.disconnect_starts == 0
+        close_b = asyncio.create_task(pool.aclose(drain_timeout=0.2))
+        done, _pending = await asyncio.wait({close_b}, timeout=0.1)
+        assert len(done) == 0 and client.disconnect_starts == 0
+        done, _pending = await asyncio.wait({close_b}, timeout=1)
+        assert len(done) == 1 and close_b.result() is None
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 1)
+        assert live not in pool._draining and live.lock.locked()
+    finally:
+        live.lock.release()
+        await _drain_test_tasks(pool, live, close_a, close_b)
+
+
+async def test_pool_close_joins_a_turn_owned_disconnect_already_started():
+    """#853 (seam round): the disconnect a FAILED TURN started through
+    ``_invalidate`` (state ``invalid``, client detached, no lock release yet)
+    is joined by the force-close — ``aclose`` returns only once it completes,
+    and it runs exactly once."""
+    pool = _mk_pool(FakeRegistry())
+    old, client = await _held_warm_entry(pool, "voice-same")
+    client.release_disconnect = asyncio.Event()
+    turn_invalidate = asyncio.create_task(old._invalidate())   # under the held lock
+    invalidation = closing = None
+    try:
+        await asyncio.wait_for(client.disconnect_started.wait(), timeout=1)
+        assert old.state == "invalid" and old._client is None
+        invalidation = asyncio.create_task(pool.invalidate_all())
+        while "voice-same" in pool._entries:
+            await asyncio.sleep(0)
+        closing = asyncio.create_task(pool.aclose(drain_timeout=0.05))
+        done, _pending = await asyncio.wait({closing}, timeout=0.2)
+        assert (len(done), client.disconnect_starts, client.disconnect_completions) == (0, 1, 0)
+        client.release_disconnect.set()
+        await asyncio.wait_for(asyncio.shield(closing), timeout=1)
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 1)
+        assert old.state == "closed" and old.lock.locked()
+    finally:
+        client.release_disconnect.set()
+        await _drain_test_tasks(pool, old, turn_invalidate, invalidation, closing)
+
+
+async def test_draining_records_name_the_closer_task_then_the_drain_loop():
+    """#853: the retained ownership a later change enumerates — an
+    invalidated entry's record names its closer task (the one registered for
+    ``close_key`` to join); an entry the close loop popped names none."""
+    from sdk_client_pool import DrainOwner
+    pool = _mk_pool(FakeRegistry())
+    old, _client = await _held_warm_entry(pool, "voice-inv")
+    invalidation = asyncio.create_task(pool.invalidate_all())
+    closing = None
+    try:
+        while "voice-inv" in pool._entries:
+            await asyncio.sleep(0)
+        (closer,) = pool._invalidation_closes["voice-inv"]
+        assert pool._draining[old] == DrainOwner("voice-inv", closer)
+        live, _c = await _held_warm_entry(pool, "voice-live")
+        closing = asyncio.create_task(pool.aclose(drain_timeout=0.05))
+        while live not in pool._draining:
+            await asyncio.sleep(0)
+        assert pool._draining[live] == DrainOwner("voice-live", None)
+        await asyncio.wait_for(asyncio.shield(closing), timeout=1)
+        assert live not in pool._draining          # closed by the loop
+        assert pool._draining[old].closer is closer  # still owned by the closer
+        old.lock.release()
+        await asyncio.wait_for(asyncio.shield(invalidation), timeout=1)
+        assert pool._draining == {}
+    finally:
+        if "live" in locals() and live.lock.locked():
+            live.lock.release()
+        await _drain_test_tasks(pool, old, invalidation, closing)
+
+
+async def test_schedule_agent_close_task_ends_at_the_drain_timeout_with_the_lock_still_held():
+    """#853 ARM3 through the real ``reload._schedule_agent_close``: the
+    ``agent-pool-close`` background task leaves ``_AGENT_CLOSE_TASKS`` within
+    the drain window while the invalidated generation's turn still holds its
+    lock — the reload report no longer shows the role draining forever."""
+    import reload as R
+    pool = _mk_pool(FakeRegistry())
+    old, client = await _held_warm_entry(pool, "voice-same")
+    invalidation = asyncio.create_task(pool.invalidate_all())
+
+    class AgentLike:
+        async def aclose(self):
+            await pool.aclose(drain_timeout=0.05)
+
+    try:
+        while "voice-same" in pool._entries:
+            await asyncio.sleep(0)
+        before = set(R._AGENT_CLOSE_TASKS)
+        R._schedule_agent_close(AgentLike())
+        (task,) = set(R._AGENT_CLOSE_TASKS) - before
+        done, _pending = await asyncio.wait({task}, timeout=1)
+        assert len(done) == 1 and task.result() is None
+        assert task not in R._AGENT_CLOSE_TASKS
+        assert (client.disconnect_starts, client.disconnect_completions) == (1, 1)
+        assert old.lock.locked() and not invalidation.done()
+    finally:
+        await _drain_test_tasks(pool, old, invalidation)

@@ -356,3 +356,33 @@ async def test_cancel_with_failing_interrupt_invalidates():
     with pytest.raises(asyncio.CancelledError):
         await t
     assert c.state == "invalid"
+
+
+async def test_aclose_joins_a_disconnect_already_in_flight():
+    """#853: a second aclose() — or an aclose() after _invalidate() detached
+    the client — does not return while the first disconnect is still running;
+    the transport is disconnected exactly once."""
+    release = asyncio.Event()
+    starts = []
+
+    class SlowDisconnect(ScriptedClient):
+        async def disconnect(self):
+            starts.append(1)
+            await release.wait()
+            await super().disconnect()
+
+    c = _client()
+    c._make_client = SlowDisconnect
+    await c.open()
+    inner = c._client
+    first = asyncio.create_task(c._invalidate())
+    await asyncio.sleep(0)
+    assert c.state == "invalid" and c._client is None and starts == [1]
+    second = asyncio.create_task(c.aclose())
+    done, _pending = await asyncio.wait({first, second}, timeout=0.1)
+    assert len(done) == 0 and c.state == "closed" and not inner.disconnected
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+    assert inner.disconnected and starts == [1]
+    await c.aclose()                       # idempotent after completion
+    assert starts == [1]

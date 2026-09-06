@@ -254,11 +254,25 @@ holds one of its own entry locks deadlocks. A new teardown path must background 
 the same way. That drain is bounded per entry, though not pool-wide: each entry's lock is
 awaited up to a drain timeout — a default the caller may override, spent serially per
 entry — and an entry still locked when it expires is force-closed rather than waited on
-further. The bound reaches only the entries the pool still holds. A generation already
-handed to an in-flight invalidation has left that map, and the closers that own it take the
-entry lock with no timeout at all, so a turn wedged on one of those holds shutdown open
-until it releases, whatever the drain timeout is set to. What that force-close can reach
-when the turn holding the lock is hosting an engagement launch is in
+further.
+
+**INV-TURN-010**: The pool's drain timeout bounds every generation, invalidated ones included: an entry whose lock an invalidation closer still cannot acquire when the drain window ends is force-closed — its transport disconnected — and the closer is neither cancelled nor waited on further. The bound is on the lock wait, not on transport I/O.
+
+A generation already handed to an in-flight invalidation has left the pool's map, and the
+closer that owns it takes the entry lock with no timeout — that is what lets a replacement
+turn start the moment the old one releases. So the pool retains what each closer owns, and
+shutdown, after its serial pass over the live entries, waits one further drain window for
+every closer together, then disconnects whatever a closer still could not lock. The closer
+is not cancelled: it finishes its handoff bookkeeping when the wedged turn releases, and a
+key reset that arrives meanwhile still joins it. Both force-close sites — the live-entry
+drain and the invalidated arm — go through one helper, which first fires the pool's
+injectable force-close hook (a no-op by default, and a raising hook is contained) so a
+later consumer can record why a turn is about to be cut. A second close overlapping the
+first, or one that resumes after an outer bound cancelled an earlier one, re-drains that
+call's live entries with its own window rather than cutting them early. What the transport
+cut itself waits for is unchanged: a client's disconnect is awaited, and a closer already
+inside its disconnect is joined rather than skipped. What that force-close can reach when
+the turn holding the lock is hosting an engagement launch is in
 [`architecture/engagements.md`](engagements.md).
 
 ## Source & test map
@@ -273,6 +287,8 @@ when the turn holding the lock is hosting an engagement launch is in
 - `casa/rootfs/opt/casa/agent.py::Agent.aclose`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.close_key`
+- `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.invalidate_all`
+- `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.aclose`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::ManagedSdkClient`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::PoolUnavailable`
 - `casa/rootfs/opt/casa/retry.py::retry_sdk_call`
