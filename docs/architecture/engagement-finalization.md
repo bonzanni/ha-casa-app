@@ -42,9 +42,12 @@ retry.
 completion requested through the completion tool is refused while inbound messages are
 unread, in flight or reserved; failure, cancellation and the operator's own complete command
 deliberately bypass it, and every terminal outcome discloses what it committed past. What
-each driver counts, why "unread" and "in flight" are
-different questions, and how a message that dies with the engagement is disclosed are in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003).
+each driver counts and why "unread" and "in flight" are
+different questions are in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003); how
+a message that dies with the engagement is disclosed is in
+[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md)
+(INV-ENG-017).
 
 ## Contracts & invariants
 
@@ -284,6 +287,7 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - [`architecture/engagements.md`](../architecture/engagements.md)
 - [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
+- [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/engagement-terminal-telling.md`](../architecture/engagement-terminal-telling.md)
 - [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
