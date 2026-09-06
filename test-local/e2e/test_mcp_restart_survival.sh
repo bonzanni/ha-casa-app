@@ -253,6 +253,70 @@ sys.exit(0 if d.get("_probe_token") == os.environ["TOKEN"] else 1)
     return 1
 }
 
+# Wait for casa-main's internal socket to be SERVING, bounded (#613).
+# `test -S` is the same check the M-9 preamble has always used; this only makes
+# it reusable and gives it a return value, so a caller that NEEDS the socket can
+# say so instead of falling through.
+wait_for_internal_socket() {
+    local timeout="${1:-20}" i
+    for i in $(seq 1 "$timeout"); do
+        if MSYS_NO_PATHCONV=1 docker exec "$NAME" test -S /run/casa/internal.sock; then
+            echo "  internal socket serving after ${i}s"
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Classify ONE recorded response, once it is readable, and echo the verdict
+# (#613). The mock CLI writes a response file exactly once per call and never
+# rewrites it, so the answer in that file is FINAL — re-reading it is not a wait
+# for anything. What CAN legitimately still be in flight is the write itself
+# (`_record_casa_call` opens, dumps and closes, without a rename), so the only
+# condition worth waiting on is the file becoming parseable JSON.
+#
+# Verdicts:
+#   DISPATCHED         a `result` — the call reached casa-main and it answered.
+#   COLD_BOOT_WINDOW   EXACTLY the bridge's socket-unreachable -32000. The whole
+#                      message is matched, never the code alone: the bridge
+#                      returns -32000 for a forwarding error and for a timeout
+#                      too, and neither of those means the call never reached
+#                      casa-main.
+#   ERROR:<code>:<msg> / MOCK_ERROR:<text> / NO_ANSWER  everything else, named.
+# Returns non-zero if the file never became parseable within `timeout`.
+classify_casa_call() {
+    local file="$1" timeout="${2:-30}" v
+    local end=$(( $(date +%s) + timeout ))
+    while :; do
+        v="$(in_c sh -c "cat /data/engagements/$EID/$file" 2>/dev/null | python3 -c '
+import json, sys
+# The bridge message, verbatim and in ONE piece — pinned against
+# svc_casa_mcp.py by tests/test_mcp_restart_survival.py.
+WINDOW = "casa_temporarily_unavailable: casa-main internal socket unreachable"
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if "mock_error" in d:
+    print("MOCK_ERROR:%s" % d["mock_error"])
+elif "error" in d:
+    err = d["error"] or {}
+    code, msg = err.get("code"), err.get("message", "")
+    if code == -32000 and msg == WINDOW:
+        print("COLD_BOOT_WINDOW")
+    else:
+        print("ERROR:%s:%s" % (code, msg))
+elif "result" in d:
+    print("DISPATCHED")
+else:
+    print("NO_ANSWER")
+')" && { printf '%s\n' "$v"; return 0; }
+        [ "$(date +%s)" -lt "$end" ] || return 1
+        sleep 1
+    done
+}
+
 # Echo the engagement's blocking inbound envelopes — those in state `queued` or
 # `delivered`, the two that `_InboundSpool.on_spawn` redelivers on the next CLI
 # spawn. "" means the spool holds nothing that a bounce could redeliver.
@@ -440,13 +504,11 @@ pass "M-8 provisioned engagement ${EID:0:8} with a turn queued"
 echo "=== M-9: casa-main back up — the redelivered turn must carry authority ==="
 BEFORE_M9="$(casa_call_files)"
 MSYS_NO_PATHCONV=1 docker exec "$NAME" s6-rc -u change svc-casa
-for i in $(seq 1 20); do
-    if MSYS_NO_PATHCONV=1 docker exec "$NAME" test -S /run/casa/internal.sock; then
-        echo "  socket ready after ${i}s"
-        break
-    fi
-    sleep 1
-done
+# Not fatal here, deliberately: casa-main may still be booting, and M-9a below
+# is the assertion that it came up at all. The window arm re-waits and DOES
+# insist, because a turn injected before the socket serves can only take the
+# same -32000.
+wait_for_internal_socket 20 || echo "  socket not serving yet after 20s"
 
 # The record must actually have BEEN idled — otherwise this step could pass
 # without ever exercising the defect.
@@ -455,23 +517,77 @@ if ! wait_for_text_in_log "$NAME" "boot reconcile: engagement ${EID:0:8}" 30; th
 fi
 pass "M-9a boot reconcile idled the record (the state the defect needs)"
 
-# A turn redelivered before casa-main's internal socket is serving gets the
-# designed retryable -32000, so wait for a DISPATCHED answer rather than
-# asserting on the first file to appear. Redelivery is at-least-once by
-# construction (an envelope clears only on positive turn_start evidence), so
-# there may legitimately be more than one.
+# The redelivered turn makes exactly ONE tool call, and whatever answer it got
+# is already final: the mock CLI records the response and never retries, and
+# Casa's redelivery is at-least-once for ENVELOPES only — `on_turn_start`
+# consumes the envelope on the init frame, before the call is even answered, so
+# nothing re-issues it. This block used to re-poll that immutable file ten times
+# for a `"result"` and then fail; when the answer was the cold-boot -32000 it was
+# failing a CORRECT product run (#613, CI 32551836403). Classify the answer once
+# instead, and branch.
 M9_FILE="$(wait_for_new_casa_call "$BEFORE_M9" 60)" \
     || fail "M-9 the redelivered turn produced no MCP call at all"
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if in_c sh -c "cat /data/engagements/$EID/$M9_FILE" | grep -q '"result"'; then
-        break
-    fi
-    sleep 2
-    M9_FILE="$(casa_call_files | tail -1)"
-done
-echo "  m-9 response file: $M9_FILE"
-assert_own_workspace "M-9" "$M9_FILE"
-pass "M-9 redelivered turn dispatched a granted non-terminal tool as itself"
+M9_VERDICT="$(classify_casa_call "$M9_FILE" 30)" \
+    || fail "M-9 response file $M9_FILE never became readable JSON"
+echo "  m-9 response file: $M9_FILE ($M9_VERDICT)"
+
+case "$M9_VERDICT" in
+    DISPATCHED)
+        assert_own_workspace "M-9" "$M9_FILE"
+        M9_ARM="the redelivered turn's own call"
+        ;;
+    COLD_BOOT_WINDOW)
+        # THE BOOT-ORDERING WINDOW, and it belongs to the product, not to this
+        # step (#613). `casa_core.main` awaits the boot replay — which respawns
+        # this engagement's CLI — hundreds of lines before it creates
+        # /run/casa/internal.sock, and svc-casa-mcp waits for nothing, so the
+        # redelivered turn's call can reach the bridge before casa-main is
+        # listening. The bridge then answers its DESIGNED retryable -32000 and
+        # retry is the model's to make; the mock CLI models a model that does
+        # not retry. That call never reached casa-main, so no grant and no
+        # liveness check ever ran and it can witness NOTHING about authority.
+        #
+        # What can still be witnessed, on a condition that CAN become true: the
+        # socket is serving now, so a nonce-bound turn injected into this same
+        # engagement must dispatch as itself. That is not M-10 arriving early —
+        # an injected turn goes straight into the control FIFO, bypassing
+        # `_write_to_fifo`, so it can only dispatch if the record is LIVE, and
+        # the only thing that made it live is the redelivered turn's own
+        # `begin_turn_delivery` (nothing else re-arms a boot-reconciled record
+        # here: `update_user_turn` needs an inbound Telegram message). A #588
+        # regression is therefore still caught, one step removed.
+        #
+        # It is weaker than the arm above and is announced as such: this arm no
+        # longer witnesses the redelivered turn's own traversal of forwarder ->
+        # Unix socket -> casa-main. A tier that takes this arm every night is
+        # visible in the log rather than silent.
+        echo "  M-9 NOTE (#613): the redelivered turn's call landed in the" \
+             "cold-boot window and took the designed -32000; asserting on a" \
+             "nonce-bound turn instead."
+        # The socket MUST be serving before the replacement turn is injected.
+        # Without this the arm re-runs the same race it just excused: on a slow
+        # boot the injected call takes the identical -32000 and the step fails a
+        # correct run all over again, one indirection further down.
+        wait_for_internal_socket 60 \
+            || fail "M-9 cold-boot window: casa-main's internal socket was \
+still not serving 60s after the restart, so a replacement turn could only take \
+the same -32000. That is a boot that never finished serving, not a redelivery \
+failure."
+        M9_TOKEN="m9w-$$-$(date +%s)"
+        MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c \
+            "printf '/mock casa_call list_engagement_workspaces $M9_TOKEN\n' > /data/engagement-ctl/$EID/stdin.fifo"
+        M9_FILE="$(wait_for_token_casa_call "$M9_TOKEN" 30)" \
+            || fail "M-9 cold-boot window: the nonce-bound turn produced no answer of its own"
+        assert_own_workspace "M-9" "$M9_FILE"
+        M9_ARM="a nonce-bound turn (the redelivered call fell in the cold-boot window)"
+        ;;
+    *)
+        in_c sh -c "cat /data/engagements/$EID/$M9_FILE" >&2
+        fail "M-9 the redelivered turn's call was answered $M9_VERDICT — not a \
+dispatched result, and not the designed cold-boot -32000 either"
+        ;;
+esac
+pass "M-9 the redelivered turn conferred authority, witnessed by $M9_ARM"
 
 echo "=== M-10: the same call on a live record ==="
 BEFORE_M10="$(casa_call_files)"
