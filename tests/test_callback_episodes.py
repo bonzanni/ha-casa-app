@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 
 import callback_attempts
 import callback_episodes as ce
@@ -45,6 +46,9 @@ class _Wired:
         self.dispatches: list[tuple[str, str, dict]] = []
         self.dispatch_ok = True
         self.notes: list[str] = []
+        #: Notes whose send RETURNED — ``notes`` counts ATTEMPTS (it appends
+        #: before the double raises), so only this counts DELIVERIES.
+        self.delivered = 0
         self.note_error: Exception | None = None
         self.sleeps: list[float] = []
         self.fired = asyncio.Event()
@@ -121,6 +125,7 @@ def wired(tmp_path, monkeypatch):
         state.notes.append(text)
         if state.note_error is not None:
             raise state.note_error
+        state.delivered += 1
 
     async def fake_sleep(s):
         state.sleeps.append(s)
@@ -362,7 +367,7 @@ async def test_wake_timeout_tracks_the_schedule_and_floors(wired):
 
 
 # ---------------------------------------------------------------------------
-# exhaustion note — MARK then notify, once (plan amendment 13)
+# exhaustion note — NOTIFY then mark, retried until delivered (#643)
 # ---------------------------------------------------------------------------
 
 
@@ -405,23 +410,148 @@ async def test_noted_survives_a_restart(wired):
     assert wired.attempt(HASH)["noted"] is True
 
 
-async def test_failed_exhaustion_mark_suppresses_the_note(wired, monkeypatch):
-    """Mark-then-notify: an unmarked exhaustion emits nothing, because an
-    un-suppressible duplicate note is worse than a lost advisory one."""
+async def test_a_failed_exhaustion_note_stays_owed_and_is_retried(wired):
+    """#643, INV-CB-008: the note is DELIVERED before it is recorded as sent.
+
+    The production notifier raises by design while the telegram channel is
+    absent or not ready — a window open at every boot — so a swallowed raise
+    after a durable ``noted=True`` loses the operator's one note for good."""
+    wired.note_error = RuntimeError("operator notify: telegram channel "
+                                    "not ready")
+    await _spend_budget(wired)
+    rec = wired.attempt(HASH)
+    assert rec["nudges"] == callback_attempts.MAX_NUDGES
+    assert len(wired.dispatches) == 1          # the sixth accept, this pass
+    assert len(wired.notes) == 1               # attempted
+    assert wired.delivered == 0                # and never arrived
+    assert rec["noted"] is False               # so it is still owed
+
+    wired.note_error = None
+    await ce._worker_pass()
+    assert len(wired.dispatches) == 1          # no seventh nudge
+    assert len(wired.notes) == 2
+    assert wired.delivered == 1
+    assert wired.attempt(HASH)["noted"] is True
+
+
+def _mark_gate(wired, monkeypatch, fail: dict):
+    """Make only the ``noted=True`` write fail, on demand."""
     real = wired.spool.update_attempt_nudge
-    calls: list[dict] = []
 
     def flaky(plugin, h, **fields):
-        calls.append(fields)
-        if "noted" in fields:
+        if fail["on"] and "noted" in fields:
             return False
         return real(plugin, h, **fields)
 
     monkeypatch.setattr(wired.spool, "update_attempt_nudge", flaky)
+    return real
+
+
+async def test_exhaustion_note_sent_but_unmarked_retries_only_the_mark(
+        wired, monkeypatch):
+    """The removal path's discipline (#532), now on the exhaustion note: a
+    note whose SEND was confirmed but whose durable mark failed must never be
+    sent again — later passes retry the mark alone."""
+    fail = {"on": True}
+    _mark_gate(wired, monkeypatch, fail)
+
     await _spend_budget(wired)
-    assert any("noted" in f for f in calls)
+    assert wired.delivered == 1
+    assert wired.attempt(HASH)["noted"] is False
+
+    await ce._worker_pass()
+    assert wired.delivered == 1                # mark retried, nothing resent
+    assert wired.attempt(HASH)["noted"] is False
+
+    fail["on"] = False
+    await ce._worker_pass()
+    assert wired.delivered == 1
+    assert wired.attempt(HASH)["noted"] is True
+
+
+async def test_exhaustion_without_a_notifier_is_never_marked(wired):
+    """An absent notifier cannot have delivered anything, so the note stays
+    owed — the removal precedent, applied to the exhaustion note."""
+    wired.wire(notify_operator=None)
+    await _spend_budget(wired)
     assert wired.notes == []
     assert wired.attempt(HASH)["noted"] is False
+
+    wired.wire()
+    await ce._worker_pass()
+    assert wired.delivered == 1
+    assert wired.attempt(HASH)["noted"] is True
+
+
+async def test_a_rewire_after_an_unmarked_send_costs_one_duplicate(
+        wired, monkeypatch):
+    """The sent-unmarked key is in-memory on purpose: a restart in the window
+    between a confirmed send and its durable mark costs exactly one duplicate
+    note, never a lost one."""
+    fail = {"on": True}
+    _mark_gate(wired, monkeypatch, fail)
+
+    await _spend_budget(wired)
+    assert wired.delivered == 1
+    assert wired.attempt(HASH)["noted"] is False
+
+    fail["on"] = False
+    wired.wire()                               # simulated restart
+    await ce._worker_pass()
+    assert wired.delivered == 2                # the documented one duplicate
+    assert wired.attempt(HASH)["noted"] is True
+
+
+async def test_the_sent_unmarked_key_is_plugin_qualified(wired, monkeypatch):
+    """Two plugins can hold the same handle; a hash-only key would swallow the
+    second plugin's note."""
+    other = "second"
+    rec = None
+    for plugin in (PLUGIN, other):
+        rec = wired.seed_terminal(
+            plugin=plugin, outcome="expired",
+            nudges=callback_attempts.MAX_NUDGES - 1)
+    wired.clock = rec["ended_ts"] + callback_attempts.OUTCOME_PHASE_OFFSETS[0]
+    _mark_gate(wired, monkeypatch, {"on": True})
+
+    await ce._worker_pass()
+    assert len(wired.dispatches) == 2
+    assert wired.delivered == 2
+    assert wired.attempt(HASH, plugin=PLUGIN)["noted"] is False
+    assert wired.attempt(HASH, plugin=other)["noted"] is False
+
+
+async def test_a_cancelled_mark_never_resends_a_delivered_note(
+        wired, monkeypatch):
+    """Cancellation between a confirmed send and its durable mark: the sent
+    fact is recorded BEFORE the mark is awaited, so the next pass in the same
+    wiring retries the mark alone."""
+    real = wired.spool.update_attempt_nudge
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking(plugin, h, **fields):
+        if "noted" in fields:
+            entered.set()
+            release.wait(30.0)
+            return False
+        return real(plugin, h, **fields)
+
+    monkeypatch.setattr(wired.spool, "update_attempt_nudge", blocking)
+    task = asyncio.create_task(_spend_budget(wired))
+    try:
+        assert await asyncio.to_thread(entered.wait, 30.0)
+        assert wired.delivered == 1            # the send already landed
+        task.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    monkeypatch.setattr(wired.spool, "update_attempt_nudge", real)
+    await ce._worker_pass()
+    assert wired.delivered == 1                # not resent
+    assert wired.attempt(HASH)["noted"] is True
 
 
 # ---------------------------------------------------------------------------
