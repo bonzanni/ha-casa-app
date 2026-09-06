@@ -114,7 +114,12 @@ writes the artifacts a dropped engagement must load, so private call sites opt i
 **Session pointers are actively reaped, and webhook sessions never survive a boot.** A
 six-hour sweep removes expired entries and any with malformed or missing activity
 timestamps, hard-deleting their SDK transcripts best-effort — a stored pointer is not
-indefinitely durable. The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
+indefinitely durable. With one exception, and it is not storage hygiene: an entry that
+names a transcript on a bank-writable channel is held back however stale it is, because a
+successful retain would have removed the entry, so one that is still here is a conversation
+that never reached long-term memory and whose transcript is its only copy
+(INV-MEM-017, `architecture/memory-lifecycle.md`). Such an entry stays until the retain
+succeeds or the operator resets or wipes it, and each sweep says so. The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
 and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time purge drops *every* webhook-scoped session
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.

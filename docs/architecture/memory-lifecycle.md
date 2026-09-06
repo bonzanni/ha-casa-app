@@ -296,11 +296,37 @@ backend applies retains it accepted before the delete on its own schedule;
 and the bank deletion itself is the backend's — Casa does not verify
 emptiness afterwards.
 
+**INV-MEM-017**: The time-to-live sweep neither evicts nor reaps a session entry that names a transcript on a bank-writable channel, whatever its age, provenance, claims, or activity timestamp.
+
+The sweep is Casa's only transcript deleter, and a transcript is the only
+copy of a conversation's turns; the property that licenses deleting it is
+that the conversation's retention is no longer owed, never the age of its
+pointer. On a bank-writable channel the entry's own survival *is* that
+fact: a successful retain removes the entry, a failed one keeps it, so an
+entry still present at its time-to-live was never banked. The sweep holds
+it back and says so — one warning per held-back entry per pass, which is
+the only place the retention debt is reported. Enforced inside the sweep's
+existing registry-lock block by reading data already in hand: the guard
+takes no second lock and awaits nothing, so the sweep stays outside the
+global lock order (INV-CONC-004, INV-CONC-005) rather than becoming a
+participant in it.
+
+What it does not cover: it is a rule about this sweep, not a promise that
+the conversation is eventually banked, and not a bound on how much
+transcript storage a long backend outage accumulates. A pointer that names
+no session id stays evictable — it can protect no bytes. And a transcript
+no pointer names at all is beyond the sweep entirely, so it is neither
+protected nor deleted by this rule: a resumed session's predecessor, a
+pointer whose session id was cleared, and a *successfully* retained
+session all leave one behind.
+
 ## Failure behavior
 
 **Saving a session fails.** The save is abandoned, its claim is released —
 including when the failure is a cancellation at shutdown — and the entry
-stays for a later sweep to retry. An explicit reset is the exception — it
+stays for the next freshness sweep to retry. The time-to-live sweep does
+not take it away in the meantime, however long the retries go on
+(INV-MEM-017). An explicit reset is the exception — it
 drops the pointer whether or not the save succeeded, unless a newer session
 registered meanwhile (INV-MEM-006), in which case the newer registration
 stands.
@@ -389,6 +415,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.delete_bank`
 - `casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once`
 - `casa/rootfs/opt/casa/delegated_memory.py::retain_delegated`
+- `casa/rootfs/opt/casa/session_sweeper.py::SessionSweeper._sweep_once`
 
 **Tests**
 - `tests/test_session_saver.py`
@@ -403,6 +430,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `tests/test_memory_provenance.py`
 - `tests/test_time_envelope.py`
 - `tests/test_specialist_memory_tiers.py`
+- `tests/test_session_sweeper.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)
