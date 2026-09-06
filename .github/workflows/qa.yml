@@ -36,7 +36,7 @@ jobs:
       || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # pyflakes powers tests/test_no_undefined_names.py, which importorskips
@@ -107,7 +107,7 @@ jobs:
       || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # pyflakes powers tests/test_no_undefined_names.py, which importorskips
@@ -124,7 +124,7 @@ jobs:
       || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # pyflakes powers tests/test_no_undefined_names.py, which importorskips
