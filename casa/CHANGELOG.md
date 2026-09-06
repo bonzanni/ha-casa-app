@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.272.0] - 2026-09-06
+
+### Fixed
+
+- After a configuration reload, the replaced agent's still-running turn now gets
+  its full drain window counted from the moment the reload finished, instead of
+  from the moment that agent was swapped out. A reload does substantial work
+  after the swap — loading executors, re-swapping roles, reconciling triggers —
+  and all of it used to be spent out of the old turn's window, so a slow reload
+  could cut a turn early, and a long enough one could cut it while the reload
+  was still running. The window is now started when the reload returns, on every
+  reload scope, including the paths where a step fails after its swap. A test
+  fails if the drain ever starts at the swap again.
+
+- A reload that replaces an agent through the policy cascade, or that evicts or
+  retires a role, now records that agent as still draining while its last turn
+  finishes — as the other reload paths already did. Verification of a
+  configuration change could previously report that nothing was still using the
+  previous artifacts while one of those agents was in fact still working, and
+  this release makes that window longer, so the three paths that were silent now
+  disclose. A test fails if any of them stops disclosing again.
+
 ## [0.271.0] - 2026-09-06
 
 ### Fixed
