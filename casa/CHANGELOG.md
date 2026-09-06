@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.270.0] - 2026-09-06
+
+### Fixed
+
+- A resident that has been replaced by a reload, or that is shutting down, no
+  longer keeps its old session open forever when that session is wedged on a
+  turn it never finished. The pool that holds a resident's sessions bounds every
+  session by the same drain window, including a session that had already been
+  handed to the background invalidation a prompt refresh or a boot repair
+  triggers — the case that used to wait with no bound, so the reload report
+  showed the role draining forever and the old process was never disconnected.
+  When the window ends, the wedged session is disconnected. A second close that
+  overlaps a first one no longer cuts a live turn before its own window, and a
+  close that was cancelled part-way is finished by the next one. A test now
+  fails if an invalidated session can outlive the drain window again.
+
 ## [0.269.0] - 2026-09-05
 
 ### Fixed
