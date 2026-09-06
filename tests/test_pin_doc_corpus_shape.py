@@ -428,3 +428,43 @@ def test_reload_launch_explanation_keeps_its_reviewed_claims():
         owners = [doc for doc in corpus if normalized[doc].count(claim)]
         total = sum(normalized[doc].count(claim) for doc in corpus)
         assert (owners, total) == ([expected_owner], 1), (marker, owners, total)
+
+
+def test_the_completion_veto_and_the_inbound_disclosure_declare_from_two_documents():
+    """#873: the refusal of a successful completion and the disclosure of
+    inbound messages that died with the engagement are two subjects, so
+    INV-ENG-003 and INV-ENG-017 are declared by two different documents.
+
+    DECLARED under D34 rather than pinned from prior support: the base tree
+    does not have this property — one document declared both — and that is
+    the defect. Its evidence is the code the two documents map. In
+    ``casa/rootfs/opt/casa/tools.py`` at e42cb59c the completion veto and the
+    inbound disclosure are two distinct operations with different guards and
+    different inputs: ``_terminal_hook`` (:9035) refuses the transition by
+    returning a non-None reason built from the COUNT reads, while a separate
+    rendering block (:9457) posts what died with the engagement, guarded on
+    the text snapshots and the disclosure reservation count alone and feeding
+    no veto. Two operations, two subjects, two declaring documents.
+
+    Scope, stated so the declaration claims no more than the change
+    guarantees: this pins the OWNERSHIP SPLIT and nothing else. It does not
+    claim either document's prose is correct, one-hop sufficient, or that the
+    payload moved byte-identically — ``docs/contributing/doc-contract.md``
+    assigns each of those to a reviewer on purpose, "because a machine test
+    for 'a split happened' would prescribe the shape of the fix". Both owners
+    are resolved through the MANIFEST, never a hard-coded path, so this
+    follows either invariant if it is ever rehoused.
+
+    Red case demonstrated at e42cb59c, the pre-split base: both ids resolve to
+    ``architecture/engagement-completion-gate.md`` — they are the first and
+    third entries of one row's ``defines_invariants`` — so the two owners are
+    equal and this fails. Not an import or missing-path failure: the new
+    document is never named here.
+
+    Mutation-checked: returning INV-ENG-017 to the completion-gate row fails
+    this test alone.
+
+    Specified by **terra** in the drive red-case round; accepted by **astra**.
+    """
+    assert (_declaring_document("INV-ENG-003")
+            != _declaring_document("INV-ENG-017"))

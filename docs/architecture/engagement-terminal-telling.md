@@ -16,7 +16,7 @@ delivery, replayed at boot. The terminal transition that wins, its strictness, t
 effects behind the flip and the ordering of topic output are in
 [`architecture/engagement-finalization.md`](engagement-finalization.md); what a terminal
 outcome discloses about inbound messages nobody read is in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md); what a restart
+[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md); what a restart
 replays is in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md).
 
@@ -147,6 +147,7 @@ not the record, and no predicate over a record can infer it.
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
+- [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/engagement-failure-and-restart.md`](../architecture/engagement-failure-and-restart.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
 <!-- END SOURCEMAP -->

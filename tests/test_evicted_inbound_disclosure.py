@@ -6,7 +6,8 @@ Specified by **terra** in the drive red-case round (MODE: SPECIFY) against
 
 The invariants this module pins are the WIDENED clauses (declared under D34 —
 the base bytes do not support them, which is the defect) of two existing ids
-owned by ``docs/architecture/engagement-completion-gate.md``:
+owned by ``docs/architecture/engagement-completion-gate.md`` (INV-ENG-016) and
+``docs/architecture/engagement-inbound-disclosure.md`` (INV-ENG-017):
 
   * INV-ENG-016 — the evicted envelopes still awaiting their eviction notice
     stay visible to every terminal disclosure (they disclose, never veto);
