@@ -15,7 +15,7 @@ Terminus (`terminus_check` exit 0 before this file existed):
 this exact condition: ref, found, pinned, and no tool),
 `personality_binding.py:834-840` (the refusal is computed here),
 `personality_binding.py:515-518` (`discard_desired` early-returns, so the reason
-has no carrier), `docs/architecture/personality.md:185-188` (INV-PERS-003 —
+has no carrier), `docs/architecture/personality.md:139-142` (INV-PERS-003 —
 boot-fatal, not a degraded mode), `tools.py:13492-13495`
 (`_resolve_resident_role` answers `runtime_unavailable`, so a persona tool cannot
 be run at this failure point).

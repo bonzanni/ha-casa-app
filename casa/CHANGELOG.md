@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.287.0] - 2026-09-07
+
+### Fixed
+
+- The comment beside Casa's resume-fault limit sent a reader to the wrong
+  document for the SDK retry knobs it names. The knob list and its defaults had
+  moved to another architecture document when that page was split, and the
+  comment kept pointing at the half it left behind, so anyone following it landed
+  one hop short of the values they were looking for. No runtime behaviour
+  changes; this is developer-facing material only.
+- Two test docstrings cited documentation that had moved or been settled since
+  they were written. One pointed at line numbers that now hold unrelated prose;
+  the other described a question as unresolved that has since been decided the
+  other way, so a reader checking the test's premise was told the opposite of
+  what the documentation says.
+
 ## [0.286.0] - 2026-09-07
 
 ### Fixed

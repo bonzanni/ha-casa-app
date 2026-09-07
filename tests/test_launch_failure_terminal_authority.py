@@ -23,9 +23,12 @@ Pre-fix terminus, read at ``f414c4c6``:
     with a ROLLED-BACK persist".
   - ``tools.py:8488-8499`` — ``_abort_engagement_topic``, the irreversible act
     performed unconditionally after the discarded mark.
-  - ``docs/architecture/engagement-failure-and-restart.md:104-108`` — the
-    corpus states in terms that whether the best-effort mark "may authorize an
-    irreversible topic close" is UNSETTLED and is #757.
+  - ``docs/architecture/engagement-failure-and-restart.md:39`` — INV-ENG-019,
+    which SETTLES what #757 left open: the abort rides only on a terminal
+    transition this call both won and durably persisted. `:123` says so in
+    terms — the named-fault exemption "buys these arms their silence, never the
+    authority to close a topic on a transition they did not win or did not
+    persist".
 
 **Every assertion here is on an OUTCOME**, never on an arrangement: painted /
 closed / ledger-appended counts, and the status read back OUT OF THE TOMBSTONE
