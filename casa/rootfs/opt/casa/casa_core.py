@@ -5896,7 +5896,27 @@ async def _shutdown_cleanup(
         await semantic_memory.close()
     except Exception:  # noqa: BLE001
         logger.warning("semantic memory close failed", exc_info=True)
-    logger.info("Casa core shutdown complete")
+    # #895 (INV-CONC-006): the stop cancels and gathers the bus's CONSUMER
+    # tasks; every turn runs in a DISPATCH task, in a map nothing above reads.
+    # So this line used to be written while turns the process had admitted were
+    # still running, with `asyncio.run`'s final sweep their only remaining
+    # owner. It still is — nothing here awaits or cancels them, deliberately:
+    # every delivery surface is already closed and `fail_pending` above cleared
+    # `pending`, so a drain would recover no answer, and a cancel would push a
+    # "flush what we have" path into turn tails whose writes are atomic today.
+    # What changes is that the record says so. Counted HERE, after the last
+    # cleanup await and with no await before the log call, because turns finish
+    # during the broker drain, the ingress cleanup and the delegation settle:
+    # the honest number is the one true at the instant the line is written.
+    _abandoned = len(bus.live_dispatch_tasks())
+    logger.info(
+        "Casa core shutdown complete (%d dispatched turn(s) still running)",
+        _abandoned,
+        extra={"event": "casa_shutdown_complete",
+               "abandoned_turns": _abandoned,
+               "abandoned_reason": "neither awaited nor cancelled by the stop; "
+                                   "any answer they produce is discarded"},
+    )
 
 
 def run() -> None:

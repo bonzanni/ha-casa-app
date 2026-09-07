@@ -185,7 +185,8 @@ raises produces an error response.
 
 **Accepted is not delivered.** Enqueueing reports only that the target had a registered
 queue and the message went onto it; the consumer spawns the turn later and nothing gathers
-those dispatch tasks at shutdown. A producer holding a durable obligation to announce
+those dispatch tasks at shutdown — the stop counts them and says so, but it does not wait
+for them (see below). A producer holding a durable obligation to announce
 something therefore cannot treat acceptance as delivery — it attaches a process-local
 acknowledgement to the message, which the consuming agent invokes once its channel reports
 the output reached the transport. The bus itself is unchanged by this: it neither invokes
@@ -197,6 +198,31 @@ about to be cancelled, and after the consumers are gone every still-pending requ
 future is resolved with the same error so no ingress handler waits out the bus timeout.
 Notifications and plain sends are deliberately not gated — outbound operator messages
 keep flowing during the drain.
+
+Cancelling the consumers does not end the turns they had already dispatched: a turn runs
+in its own task, in a set the cancel never reads, and the stop neither waits for it nor
+cancels it. That is a deliberate position rather than an oversight. Waiting would recover
+nothing — every delivery surface is closed by then and the pending futures have already
+been settled and dropped, so an answer produced afterwards has nowhere to go — and
+cancelling would push an interruption into turn tails whose writes are atomic today.
+What the stop owes instead is an honest account of it, which is the last thing it does:
+the completion record carries how many dispatched turns were still running at the instant
+it was written, and states that they were neither awaited nor cancelled. The count is
+taken after the final cleanup step, because turns finish during the broker drain, the
+ingress teardown and the delegation settle; a number taken any earlier would describe a
+moment that has passed. From there the runtime's own final task sweep owns them.
+
+**INV-CONC-006**: The graceful stop's completion record carries the number of turns the bus had dispatched and had not finished at the instant it was written, together with the reason they were left — that they are neither awaited nor cancelled — and exactly one record in a stop carries that count.
+
+Enforced by a bus-wide set of live dispatch tasks, entered at the single site that creates
+one and left only by a task's own completion, so an evicted role's still-unwinding turn
+stays counted after its per-role entry is gone.
+
+What it does not cover: uniqueness of completion *prose* — a record is recognisable only
+by its wording or by its fields, so "no other line could be read as announcing
+completion" is not a property anything can hold. It also promises nothing about the turn
+itself: not that it finishes, not that its answer is delivered, and not that its tail
+completes before the process exits.
 
 **The pool cannot serve.** The turn raises pool-unavailable and the agent falls back to a
 one-shot client (the turn loop's contract); a failure mid-publication drops that pool
@@ -227,6 +253,7 @@ critical section and belongs to the owning subsystem's contract.
 - `casa/rootfs/opt/casa/bus.py::MessageBus.run_agent_loop`
 - `casa/rootfs/opt/casa/bus.py::MessageBus.register`
 - `casa/rootfs/opt/casa/bus.py::MessageBus.start_agent_loop`
+- `casa/rootfs/opt/casa/bus.py::MessageBus.live_dispatch_tasks`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn`
 - `casa/rootfs/opt/casa/reload.py::_RWLock`
 - `casa/rootfs/opt/casa/session_gate.py::session_write_gate`
@@ -235,6 +262,7 @@ critical section and belongs to the owning subsystem's contract.
 
 **Tests**
 - `tests/test_bus.py`
+- `tests/test_shutdown_pool_and_refusal.py`
 - `tests/test_sdk_client_pool_pool.py`
 - `tests/test_scheduled_ask_user.py`
 - `tests/test_session_gate.py`

@@ -20,6 +20,8 @@ No socket is opened (D1 2026-09-06) and no shipped file is copied.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -168,17 +170,24 @@ class _FastWaitForAsyncio:
         return asyncio.wait_for(coro, timeout)
 
 
-async def _shutdown(runtime, *, bound: float = 0.05):
+async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
+                   semantic_memory=None):
     """Run the production ``_shutdown_cleanup`` over ``runtime``'s agents, with
-    every unrelated subsystem doubled and the AR-9 bound shortened."""
+    every unrelated subsystem doubled and the AR-9 bound shortened.
+
+    ``bus`` and ``semantic_memory`` default to the doubles #881/#882 use. #895
+    passes a REAL ``MessageBus`` (the defect is invisible to a bus double whose
+    task lists are empty) and a real coroutine for the last cleanup await (the
+    count the completion record must carry is the one true AFTER it)."""
     import casa_core
     import tools
 
     cm = MagicMock()
     cm.stop_all = AsyncMock()
-    bus = MagicMock(begin_shutdown=MagicMock(),
-                    agent_loop_tasks=MagicMock(return_value=[]),
-                    fail_pending=MagicMock())
+    if bus is None:
+        bus = MagicMock(begin_shutdown=MagicMock(),
+                        agent_loop_tasks=MagicMock(return_value=[]),
+                        fail_pending=MagicMock())
     engagement_registry = MagicMock()
     engagement_registry.begin_launch_shutdown = MagicMock(return_value=0)
     engagement_registry.drain_launches = AsyncMock()
@@ -206,7 +215,8 @@ async def _shutdown(runtime, *, bound: float = 0.05):
                 loop_tasks=[],
                 channel_manager=cm,
                 runners=[],
-                semantic_memory=MagicMock(close=AsyncMock()),
+                semantic_memory=(semantic_memory
+                                 or MagicMock(close=AsyncMock())),
             )
     finally:
         casa_core.asyncio = real_asyncio
@@ -478,3 +488,274 @@ async def test_a_transient_pool_refusal_is_still_served_during_a_stop(tmp_path):
         assert text == "pong" and CountingClient.constructed - before == 1
     finally:
         _drop_pool(agent)
+
+
+# --- #895 -------------------------------------------------------------------
+#
+# The stop cancels and gathers the bus's CONSUMER tasks only. Every turn runs
+# in a DISPATCH task, in a structurally disjoint map the stop never reads — so
+# "Casa core shutdown complete" is written while admitted turns are still
+# running. INV-CONC-006 makes that record truthful: the stop's completion
+# record carries how many turns the bus had dispatched and had not finished at
+# the instant it was written, together with the reason they were left — that
+# they are neither awaited nor cancelled — and exactly one record in a stop
+# carries that count.
+#
+# What that deliberately does NOT say, after four acceptance rounds: that no
+# other record could be read as announcing completion. A record is recognisable
+# to a test only by its wording or by its fields, so "no second completion
+# record, identified by neither" is not a property any test can hold — and a
+# declaration that cannot be pinned is one this loop must not make.
+#
+# These drive a REAL ``MessageBus``: the four ``test_graceful_shutdown_*.py``
+# files all double the bus with an empty task list, so a step that reads the
+# dispatch map is invisible to them.
+
+
+class _RecordAt(logging.Handler):
+    """Capture, AT EMIT TIME, every record, plus a caller-supplied probe.
+
+    A caplog assertion made after the fact cannot tell whether a callback ran
+    between the snapshot and the log call; this can, because ``probe`` is read
+    inside ``emit``."""
+
+    def __init__(self, needle: str, probe=lambda: None):
+        super().__init__()
+        self.needle, self.probe = needle, probe
+        self.all: list[logging.LogRecord] = []
+        self.records: list[logging.LogRecord] = []
+        self.probed: list[object] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.all.append(record)
+        if self.needle in record.getMessage():
+            self.records.append(record)
+            self.probed.append(self.probe())
+
+    @property
+    def enriched(self) -> list[logging.LogRecord]:
+        """Every record carrying a turn count, whatever its message says.
+
+        Counting only records that match the needle would let an
+        implementation emit the enriched line AND a second completion record
+        with different wording — "exactly one completion record" would be false
+        while the test stayed green."""
+        return [r for r in self.all if hasattr(r, "abandoned_turns")]
+
+
+@contextlib.contextmanager
+def _completion_watch(needle="Casa core shutdown complete", probe=lambda: None):
+    """Attach a ``_RecordAt`` to casa_core's own logger for the block's
+    duration, at a level that lets the completion line through whichever
+    severity it is written at (the count arm and the zero arm differ)."""
+    import casa_core
+    watch = _RecordAt(needle, probe)
+    log = logging.getLogger(casa_core.__name__)
+    previous = log.level
+    log.setLevel(logging.INFO)
+    log.addHandler(watch)
+    try:
+        yield watch
+    finally:
+        log.removeHandler(watch)
+        log.setLevel(previous)
+
+
+def _bus_msg(target, kind):
+    return BusMessage(type=kind, source="tester", target=target, content="x")
+
+
+async def _blocking_role(bus, name, *, entered, release, unwound=None):
+    """Register a role whose handler blocks until *release*, recording its own
+    dispatch task. When *unwound* is given the handler also parks INSIDE its
+    cancellation unwind — the state ``unregister`` leaves a dispatch in."""
+    box: dict[str, asyncio.Task] = {}
+
+    async def handler(msg):
+        box["task"] = asyncio.current_task()
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            if unwound is not None:
+                unwound[0].set()
+                await unwound[1].wait()
+            raise
+        return None
+
+    bus.register(name, handler)
+    bus.start_agent_loop(name)
+    return box
+
+
+async def test_the_completion_record_counts_the_turns_the_stop_leaves_running():
+    """#895's red case, on a real bus: four dispatched turns, one of them
+    parked inside the unwind of a reload eviction and one finishing during the
+    stop's LAST await. The completion record must say THREE.
+
+    Base: zero enriched completion records — the line is written with no count
+    and no reason while three turns are still running."""
+    from bus import MessageBus
+
+    bus = MessageBus()
+    boxes, entered, release = {}, {}, {}
+    unwound = [asyncio.Event(), asyncio.Event()]
+    plan = [("req", MessageType.REQUEST), ("chan", MessageType.CHANNEL_IN),
+            ("evicted", MessageType.NOTIFICATION),
+            ("finisher", MessageType.NOTIFICATION)]
+    for name, _kind in plan:
+        entered[name], release[name] = asyncio.Event(), asyncio.Event()
+        boxes[name] = await _blocking_role(
+            bus, name, entered=entered[name], release=release[name],
+            unwound=unwound if name == "evicted" else None)
+    try:
+        for name, kind in plan:
+            await bus.send(_bus_msg(name, kind))
+        for name, _kind in plan:
+            await asyncio.wait_for(entered[name].wait(), timeout=5)
+
+        # The evict: `unregister` pops the role's dispatch set and cancels the
+        # task, which then parks in its unwind. Still unfinished work this bus
+        # owns — and invisible to every per-role enumeration.
+        bus.unregister("evicted")
+        await asyncio.wait_for(unwound[0].wait(), timeout=5)
+        assert bus.dispatch_tasks_for("evicted") == []
+
+        # One turn finishes during the stop's last cleanup await, so a count
+        # taken any earlier is a different (wrong) number.
+        async def _close_and_let_one_finish():
+            release["finisher"].set()
+            await asyncio.wait_for(boxes["finisher"]["task"], timeout=5)
+
+        with _completion_watch() as watch:
+            await _shutdown(
+                SimpleNamespace(agents={}, claude_code_driver=None),
+                bus=bus,
+                semantic_memory=SimpleNamespace(close=_close_and_let_one_finish))
+
+        # Exactly one record carries a count, and it is the one carrying the
+        # completion phrase.
+        assert len(watch.records) == 1, watch.records
+        assert watch.enriched == watch.records, watch.enriched
+        record = watch.records[0]
+        assert getattr(record, "abandoned_turns", None) == 3
+        # The NEGATED meaning, not merely the two words: "the stop awaits and
+        # cancels them" contains both and contradicts the invariant.
+        assert "neither awaited nor cancelled" in getattr(
+            record, "abandoned_reason", ""), record.__dict__
+
+        # The scenario really does separate the two enumerations: a fix that
+        # unioned the per-role maps instead would have reported 2.
+        by_role = {t for s in bus._dispatch_by_agent.values() for t in s}
+        assert len([t for t in by_role if not t.done()]) == 2
+
+        # Nothing was awaited and nothing was cancelled by the stop: the three
+        # are still blocked, and only the pre-existing evict asked for a cancel.
+        still = [boxes[n]["task"] for n in ("req", "chan", "evicted")]
+        assert [t.done() for t in still] == [False, False, False]
+        assert sum(t.cancelling() for t in still) == 1
+    finally:
+        for name, _kind in plan:
+            release[name].set()
+        unwound[1].set()
+        tasks = [b["task"] for b in boxes.values() if "task" in b]
+        tasks += [t for t in bus.agent_loop_tasks()]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_the_completion_record_says_zero_when_no_turn_was_dispatched():
+    """The ordinary stop still writes the completion line, with a count of 0 —
+    the record is unconditional, so its absence is never ambiguous.
+
+    Base: zero enriched completion records."""
+    from bus import MessageBus
+
+    bus = MessageBus()
+    with _completion_watch() as watch:
+        await _shutdown(SimpleNamespace(agents={}, claude_code_driver=None),
+                        bus=bus)
+    assert len(watch.records) == 1, watch.records
+    assert watch.enriched == watch.records, watch.enriched
+    assert getattr(watch.records[0], "abandoned_turns", None) == 0
+    assert "Casa core shutdown complete" in watch.records[0].getMessage()
+
+
+async def test_a_completed_dispatch_is_retained_until_its_callback_and_uncounted():
+    """A finished task's removal callback is only SCHEDULED, so the raw set
+    still holds it while ``done()`` is already true. The accessor filters it;
+    the set releases it when the callback runs.
+
+    Base: the accessor does not exist."""
+    from bus import MessageBus
+
+    bus = MessageBus()
+    seen: list[int] = []
+    done_evt = asyncio.Event()
+
+    async def handler(msg):
+        # Observe from a call_soon scheduled in the handler's last synchronous
+        # segment: it runs after the task finishes, before its done callbacks.
+        asyncio.get_running_loop().call_soon(
+            lambda: (seen.append(len(bus.live_dispatch_tasks())),
+                     seen.append(len([t for t in bus._live_dispatches
+                                      if t.done()])),
+                     done_evt.set()))
+        return None
+
+    bus.register("solo", handler)
+    loop_task = bus.start_agent_loop("solo")
+    try:
+        await bus.send(_bus_msg("solo", MessageType.NOTIFICATION))
+        await asyncio.wait_for(done_evt.wait(), timeout=5)
+        assert seen == [0, 1], seen           # filtered 0, retained-done 1
+        await asyncio.sleep(0)
+        assert len(bus._live_dispatches) == 0
+    finally:
+        loop_task.cancel()
+        await asyncio.gather(loop_task, return_exceptions=True)
+
+
+async def test_nothing_runs_between_the_snapshot_and_the_completion_record():
+    """The snapshot is a copy, and no scheduled callback can interleave between
+    taking it and writing the record — a yield in between would let a turn
+    finish and make the number stale.
+
+    Base: the accessor does not exist."""
+    from bus import MessageBus
+
+    bus = MessageBus()
+    entered, release = asyncio.Event(), asyncio.Event()
+    box = await _blocking_role(bus, "solo", entered=entered, release=release)
+    marker: list[int] = []
+    try:
+        await bus.send(_bus_msg("solo", MessageType.NOTIFICATION))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+
+        # A returned snapshot is the caller's own list.
+        first = bus.live_dispatch_tasks()
+        first.clear()
+        assert len(bus.live_dispatch_tasks()) == 1
+
+        real = bus.live_dispatch_tasks
+
+        def _observed():
+            result = real()
+            asyncio.get_running_loop().call_soon(lambda: marker.append(1))
+            return result
+
+        bus.live_dispatch_tasks = _observed
+        with _completion_watch(probe=lambda: len(marker)) as watch:
+            await _shutdown(SimpleNamespace(agents={}, claude_code_driver=None),
+                            bus=bus)
+        assert watch.probed == [0], watch.probed
+        await asyncio.sleep(0)
+        assert marker == [1]
+        assert getattr(watch.records[0], "abandoned_turns", None) == 1
+    finally:
+        release.set()
+        tasks = [box["task"]] + list(bus.agent_loop_tasks())
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

@@ -96,6 +96,16 @@ class MessageBus:
         # running (asyncio would otherwise be free to GC an unreferenced
         # task mid-flight).
         self._dispatch_by_agent: dict[str, set[asyncio.Task]] = {}
+        # #895: every live dispatch task, across every role, in ONE place.
+        # The per-role map above cannot answer "what is still running on this
+        # bus": `unregister` pops a role's set while its dispatch is still
+        # unwinding its cancellation (handler `except CancelledError` arms and
+        # `agent._process`'s `finally` both run work there), so a union over
+        # `_dispatch_by_agent` reports zero unfinished turns while a turn is
+        # still running. Measured. Entries leave here ONLY by a task's own done
+        # callback, never by eviction: an evicted role's unwinding dispatch is
+        # still unfinished work this bus owns.
+        self._live_dispatches: set[asyncio.Task] = set()
         # #316: once set, request() refuses with BusShutdownError.
         self._shutting_down = False
         self._log: collections.deque[BusMessage] = collections.deque(
@@ -211,6 +221,20 @@ class MessageBus:
                     f"bus shutting down; request {msg_id} abandoned"
                 ))
         self.pending.clear()
+
+    def live_dispatch_tasks(self) -> list[asyncio.Task]:
+        """Snapshot of the dispatch tasks that have not finished, bus-wide.
+
+        A fresh list, taken synchronously: the caller owns it, and no
+        completion or creation can interleave before it returns.
+
+        The ``done()`` filter is load-bearing rather than defensive. A task's
+        removal callback is SCHEDULED on the loop, so a task that has already
+        finished is still in ``_live_dispatches`` at the instant a caller reads
+        it; counting it would over-report, which is a different untruth from
+        the one #895 removes but an untruth all the same.
+        """
+        return [t for t in list(self._live_dispatches) if not t.done()]
 
     def agent_loop_tasks(self) -> list[asyncio.Task]:
         """Snapshot of every tracked consumer task (boot-time and
@@ -394,6 +418,11 @@ class MessageBus:
                 queue.task_done()
                 continue
             task = asyncio.create_task(_dispatch(msg))
+            # #895: the bus-wide set, entered HERE — the single creation site
+            # every producer funnels through — with no await between the
+            # create and the add, so the task cannot run before it is tracked.
+            self._live_dispatches.add(task)
+            task.add_done_callback(self._live_dispatches.discard)
             if msg.type == MessageType.REQUEST:
                 self._dispatch_tasks[msg.id] = task
             # #343(b): strong per-agent reference for cancel-on-evict (and

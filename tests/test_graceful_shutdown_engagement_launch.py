@@ -922,6 +922,13 @@ def _run_delegation_stop(monkeypatch, tmp_path, *, late_pair: bool,
         def agent_loop_tasks(self):
             return []
 
+        # #895: the stop reads the bus's live DISPATCH tasks too, at the
+        # completion record. This double has no consumer and no dispatch;
+        # the record's count is pinned on a REAL bus in
+        # tests/test_shutdown_pool_and_refusal.py, never here.
+        def live_dispatch_tasks(self):
+            return []
+
         def fail_pending(self):
             pass
 
