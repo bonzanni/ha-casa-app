@@ -515,13 +515,25 @@ class _RecordAt(logging.Handler):
     def __init__(self, needle: str, probe=lambda: None):
         super().__init__()
         self.needle, self.probe = needle, probe
+        self.all: list[logging.LogRecord] = []
         self.records: list[logging.LogRecord] = []
         self.probed: list[object] = []
 
     def emit(self, record: logging.LogRecord) -> None:
+        self.all.append(record)
         if self.needle in record.getMessage():
             self.records.append(record)
             self.probed.append(self.probe())
+
+    @property
+    def enriched(self) -> list[logging.LogRecord]:
+        """Every record carrying a turn count, whatever its message says.
+
+        Counting only records that match the needle would let an
+        implementation emit the enriched line AND a second completion record
+        with different wording — "exactly one completion record" would be false
+        while the test stayed green."""
+        return [r for r in self.all if hasattr(r, "abandoned_turns")]
 
 
 @contextlib.contextmanager
@@ -615,6 +627,7 @@ async def test_the_completion_record_counts_the_turns_the_stop_leaves_running():
                 semantic_memory=SimpleNamespace(close=_close_and_let_one_finish))
 
         assert len(watch.records) == 1, watch.records
+        assert watch.enriched == watch.records, watch.enriched
         record = watch.records[0]
         assert getattr(record, "abandoned_turns", None) == 3
         # The NEGATED meaning, not merely the two words: "the stop awaits and
@@ -655,6 +668,7 @@ async def test_the_completion_record_says_zero_when_no_turn_was_dispatched():
         await _shutdown(SimpleNamespace(agents={}, claude_code_driver=None),
                         bus=bus)
     assert len(watch.records) == 1, watch.records
+    assert watch.enriched == watch.records, watch.enriched
     assert getattr(watch.records[0], "abandoned_turns", None) == 0
     assert "Casa core shutdown complete" in watch.records[0].getMessage()
 
