@@ -1,9 +1,10 @@
 """The docs CI workflow carries the sync-enforcement steps.
 
-The sync property the corpus machinery provides: a PR that adds a substantial
-module, an option, a tool, a route or an s6 unit goes red until the coverage
-ledger assigns it; a PR that breaks a pinned invariant goes red in the unit
-suite; a PR that moves a documented symbol goes red in the anchor check. This
+The sync property the corpus machinery provides: a PR that adds a module, an
+option, a tool, a route or an s6 unit goes red until the coverage ledger assigns
+it (every `.py` under the code root — the ledger applies no size floor); a PR
+that breaks a pinned invariant goes red in the unit suite; a PR that moves a
+documented symbol goes red in the anchor check. This
 test pins that the workflow actually runs the pieces — deleting a step from
 docs.yml must fail here, not pass silently.
 """
