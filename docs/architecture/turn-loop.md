@@ -331,7 +331,7 @@ those take the bypass because of what they are, so no heartbeat, reminder or
 trigger can be silenced by it. A turn already admitted when the stop is declared
 is outside this: it runs to its end as before.
 
-**INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership; the pool additionally retains every client it has opened until that client's transport cut has settled. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows, and no such path returns — or propagates a cancellation — while a client it removed the key for is still connected.
+**INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership; the pool additionally retains every client it has opened until that client's transport cut has settled. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows; no such path returns while a client it removed the key for is still connected; and a path whose caller cancels it cuts what it removed inside a bounded window before propagating, rather than abandoning it — what a window that expires leaves is retained for the next close, with a warning, never forgotten.
 
 The cancelled close is the second half of that, and it used to be the hole. A
 close of the pool clears the entry map and writes its drain records before its
@@ -341,6 +341,12 @@ task sweep reaching a reload's background close — left what it had already
 removed for a later call that, on those paths, does not come. A cancelled close
 now stops waiting for locks and cuts, concurrently and inside one bounded
 window, every client it still owes, and only then propagates the cancellation.
+That window is a real bound and it is where the promise stops: a stop that
+cannot be finished must still finish, so a cut the window cannot complete is
+abandoned with a warning rather than held open, and its client stays in what the
+pool retains for the next close to take. The alternative — waiting until every
+transport is provably cut — is a stop with no bound at all, which is the one
+thing teardown may not be.
 The same forced cut is what an agent close reaches for when its own cancellation
 arrives before it ever entered the pool. What is promised is completion of the
 SDK's close protocol — the disconnect that flushes the transcript is started and

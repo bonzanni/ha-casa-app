@@ -2340,3 +2340,43 @@ async def test_a_cancelled_reset_leaves_the_turn_to_reclaim_its_connect():
         assert _counts(client, pool, returns) == (1, 1, 0, 0, 0, 0)
     finally:
         await _cleanup_866(pool, made, turn, resetting, gates=(retry,))
+
+
+async def test_an_exhausted_retry_while_closing_refuses_AS_closing():
+    """#882 (diff review): both attempts can be spent without ever meeting the
+    loop-head closing check — attempt 1 loses its entry to a reset, attempt 2
+    loses its reservation to a close — and the exhausted refusal then wore the
+    TRANSIENT refusal's name while the pool was closing. The agent's fallback
+    reads that name: a teardown refusal misnamed is a turn served on the bypass
+    after the stop. It must refuse AS closing."""
+    from sdk_client_pool import PoolClosing, PoolUnavailable
+
+    pool, made = _mk_gated_pool()
+    key = "voice-exhausted"
+    stale = await pool._entry_stub(key)
+    stale.state = "invalid"                    # attempt 1 drops it and retries
+    gate = asyncio.Event()
+    calls = [0]
+
+    async def build_options(is_fresh, resume_sid):
+        calls[0] += 1
+        if calls[0] == 1:                      # inside attempt 2, before the
+            pool._closing = True               # reservation is taken
+            gate.set()
+        return {"resume": resume_sid}
+
+    async def on_message(_message):
+        return None
+
+    with pytest.raises(PoolUnavailable) as caught:
+        await pool.turn(
+            channel_key=key, channel="voice", prompt="p", origin={}, cid="c",
+            build_options=build_options,
+            on_stale_old=lambda snapshot, generation=None: None,
+            on_message=on_message,
+        )
+    assert isinstance(caught.value, PoolClosing)
+    assert (calls[0], len(made)) == (1, 0)     # no client was ever constructed
+    from sdk_client_pool import SdkClientPool
+    if pool in SdkClientPool._instances:
+        SdkClientPool._instances.remove(pool)

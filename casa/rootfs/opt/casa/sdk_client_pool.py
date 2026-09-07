@@ -707,6 +707,15 @@ class SdkClientPool:
             if result is not None:
                 await self._enforce_caps(channel_key)  # outside entry.lock
                 return result
+        # #882 (diff review): both attempts can be spent WITHOUT meeting the
+        # loop-head closing check — a reset takes attempt 1's entry, a close
+        # takes attempt 2's reservation, and the second `continue` falls
+        # straight out of the loop. The refusal is then a teardown wearing the
+        # transient refusal's name, and the agent's fallback serves the turn on
+        # the bypass after the stop. Reported as: 1 client constructed, 1
+        # query, 1 answer, after shutdown completed.
+        if self._closing:
+            raise PoolClosing("pool closing")
         raise PoolUnavailable("entry unstable after retry")
 
     async def _entry_stub(self, channel_key: str) -> ManagedSdkClient:
