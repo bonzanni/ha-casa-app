@@ -617,8 +617,10 @@ async def test_the_completion_record_counts_the_turns_the_stop_leaves_running():
         assert len(watch.records) == 1, watch.records
         record = watch.records[0]
         assert getattr(record, "abandoned_turns", None) == 3
-        reason = getattr(record, "abandoned_reason", "")
-        assert "await" in reason and "cancel" in reason, reason
+        # The NEGATED meaning, not merely the two words: "the stop awaits and
+        # cancels them" contains both and contradicts the invariant.
+        assert "neither awaited nor cancelled" in getattr(
+            record, "abandoned_reason", ""), record.__dict__
 
         # The scenario really does separate the two enumerations: a fix that
         # unioned the per-role maps instead would have reported 2.
