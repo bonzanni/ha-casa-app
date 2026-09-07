@@ -370,7 +370,7 @@ RELOAD_LAUNCH_CLAIMS = [
     ),
     (
         "drain-timeout-is-a-caller-overridable-default",
-        "architecture/turn-loop.md",
+        "architecture/sdk-client-pool.md",
         "each entry's lock is awaited up to a drain timeout — a default the "
         "caller may override",
     ),
@@ -468,3 +468,47 @@ def test_the_completion_veto_and_the_inbound_disclosure_declare_from_two_documen
     """
     assert (_declaring_document("INV-ENG-003")
             != _declaring_document("INV-ENG-017"))
+
+
+def test_turn_conduct_and_warm_client_life_have_distinct_owners():
+    """#899: the conduct of one turn and the life of the warm client that turn
+    runs on are two subjects, so INV-TURN-004 and INV-TURN-001 are declared by
+    two different documents.
+
+    DECLARED under D34 rather than pinned from prior support: the base tree
+    does not have this property — one document declared all eleven INV-TURN
+    ids — and that is the defect the split repairs. Its evidence is what the
+    two ids say at ``f291d1d9``. ``docs/architecture/turn-loop.md:37``
+    declares INV-TURN-001: the resume-versus-fresh decision is re-derived
+    under the POOL ENTRY'S LOCK and a cached client is reused only on an exact
+    session-id match — a statement about a client that outlives the turn.
+    ``:74`` declares INV-TURN-004: a memory read that raises does not fail the
+    turn, which proceeds with an empty memory block — a statement about what
+    one turn assembles and how far it gets. Two subjects, two declaring
+    documents.
+
+    Scope, stated so the declaration claims no more than the change
+    guarantees: this pins the OWNERSHIP SPLIT and nothing else. It does not
+    claim either document's prose is correct, one-hop sufficient, or that the
+    payload moved byte-identically — ``docs/contributing/doc-contract.md``
+    assigns each of those to a reviewer on purpose, "because a machine test
+    for 'a split happened' would prescribe the shape of the fix". Both owners
+    are resolved through the MANIFEST, never a hard-coded path, so this
+    follows either invariant if it is ever rehoused — unlike
+    ``RELOAD_LAUNCH_CLAIMS`` above, whose hard-coded owner literal this same
+    change had to update by hand.
+
+    Red case demonstrated at f291d1d9, the pre-split base: both ids resolve to
+    ``architecture/turn-loop.md`` — they are the first and fourth entries of
+    one row's ``defines_invariants`` — so the two owners are equal and this
+    fails. Not an import or missing-path failure: the new document is never
+    named here.
+
+    Mutation-checked: returning INV-TURN-001 to the turn-loop row, and
+    separately moving INV-TURN-004 to the pool row, each fails this test
+    alone.
+
+    Specified by **astra** in the drive red-case round; accepted by **terra**.
+    """
+    assert (_declaring_document("INV-TURN-004")
+            != _declaring_document("INV-TURN-001"))

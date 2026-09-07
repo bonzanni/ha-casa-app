@@ -11,7 +11,7 @@
   tests:
     - tests/test_casa_core_agent_loading.py
     - tests/test_setup_nginx_ingress.py
-  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md]
+  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/sdk-client-pool.md]
   defines_invariants: [INV-SYS-001, INV-SYS-002]
   invariant_tests:
     INV-SYS-001: [tests/test_pin_g1_invariants.py::test_pin_inv_sys_001_materialisation_depends_on_validation]
