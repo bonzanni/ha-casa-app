@@ -575,3 +575,71 @@ def test_bridge_owner_documents_all_socket_unreachable_responses():
     section = _normalized(_section(owner, "Failure behavior"))
     counts = tuple(section.count(claim) for claim in SOCKET_UNREACHABLE_CLAIMS)
     assert counts == (1, 1, 1), (owner, counts)
+
+
+# #908: the two remaining conditions under which the bridge's hook-resolution
+# route answers `deny`. #903 covered the third (the internal socket being
+# unreachable) and nothing else — every bullet it published is prefixed "When
+# casa-main's internal socket is unreachable" — so a reader of the owning
+# document met one trigger and could reasonably read it as the only one. As
+# above, each entry is ONE complete response description: the trigger, the
+# transport status and the exact payload.
+OTHER_HOOK_REFUSAL_CLAIMS = (
+    'When the bridge cannot parse the request body as JSON, '
+    '`POST /hooks/resolve` returns HTTP 200 with '
+    '`hookSpecificOutput.hookEventName: "PreToolUse"`, '
+    '`permissionDecision: "deny"`, and '
+    '`permissionDecisionReason: "svc_casa_mcp /hooks/resolve: malformed JSON"`.',
+
+    'When hook forwarding raises `aiohttp.ClientError` other than '
+    '`aiohttp.ClientConnectorError`, or raises `asyncio.TimeoutError`, '
+    '`POST /hooks/resolve` returns HTTP 200 with '
+    '`hookSpecificOutput.hookEventName: "PreToolUse"`, '
+    '`permissionDecision: "deny"`, and '
+    '`permissionDecisionReason: "Permission relay failed: forwarder error '
+    'talking to casa-main ({type(exc).__name__}: {exc or \'no detail\'}). '
+    'The tool was not run."`, with the reason interpolated from the caught `exc`.',
+)
+
+
+def test_bridge_owner_documents_other_hook_refusals():
+    """#908: the document that owns the bridge module describes the route's
+    OTHER two deny triggers, not only the socket-unreachable one.
+
+    The behavioural subject is INV-MCP-011 — every refusal the route produces
+    itself is delivered as an HTTP 200 `deny`, because the calling shim reads
+    any non-2xx as a transport failure and answers allow. This test is corpus
+    SHAPE only: it asserts the owning document states each trigger's complete
+    response, and asserts nothing about the running handler. The behaviour is
+    pinned separately, by
+    ``tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_own_refusals_are_http_200``.
+
+    The declared id is deliberately NOT counted here. Counting it would give
+    this test a second, independent reason to fail and would establish neither
+    response description; the declaration and its test binding are already the
+    corpus verifier's own gates.
+
+    What the guarantee does not cover, and what the document says so: an
+    exception the handler does not catch escapes as aiohttp's own 500, which
+    the shim converts into an allow. That residual is #912, and neither this
+    test nor this change addresses it.
+
+    Red case demonstrated at c9e05f58: the counts are ``(0, 0)``. Ownership
+    resolves through the coverage ledger and the section is found — the two
+    descriptions are simply absent, so this is not an import or missing-path
+    failure.
+
+    Mutation-checked per description: deletion, duplication, changing the
+    status from 200 to 500, reversing the decision to allow, substituting the
+    socket-unreachable cause, altering the reason, and moving the description
+    out of Failure behavior each fail this test alone, leaving
+    ``SOCKET_UNREACHABLE_CLAIMS`` at ``(1, 1, 1)``. A pure whitespace reflow
+    does not, by construction: ``_normalized`` collapses runs of whitespace
+    before counting.
+
+    Specified by **astra** in the drive red-case round; accepted by **terra**.
+    """
+    owner = _ledger_owner("casa/rootfs/opt/casa/svc_casa_mcp.py")
+    section = _normalized(_section(owner, "Failure behavior"))
+    counts = tuple(section.count(claim) for claim in OTHER_HOOK_REFUSAL_CLAIMS)
+    assert counts == (1, 1), (owner, counts)

@@ -543,3 +543,117 @@ async def test_svc_channel_forward_socket_unreachable_returns_503() -> None:
         assert await resp.json() == {
             "ok": False, "error": "casa_temporarily_unavailable",
         }
+
+
+# #908 / INV-MCP-011. `scripts/hook_proxy.sh` calls this route with `curl -sf`
+# and converts ANY non-2xx into `{"decision": "allow"}` — a deliberate
+# fail-open, so a hook cannot block an engagement when Casa is unreachable.
+# Every refusal the route produces itself therefore has to ride on an HTTP 200,
+# or it stops being a refusal. Nothing asserted that status before: a change
+# answering `400` here would leave the deny sitting in the handler, correct
+# looking, while the shim turned it into a permission GRANT.
+#
+# Each row is (label, request body, forwarder, expected reason, expected
+# (call_count, await_count)). The counts are asserted rather than a "was it
+# called" boolean because the malformed arm's whole point is that the body
+# reaches casa-main NEVER.
+def _hook_refusal_cases():
+    import asyncio as _asyncio
+
+    import aiohttp as _aiohttp
+
+    valid = {"policy": "anything", "payload": {"tool_name": "Bash"}}
+    return [
+        (
+            "malformed",
+            b"{",
+            AsyncMock(),
+            "svc_casa_mcp /hooks/resolve: malformed JSON",
+            (0, 0),
+        ),
+        (
+            "socket-unreachable",
+            json.dumps(valid).encode(),
+            AsyncMock(side_effect=_aiohttp.ClientConnectorError(
+                connection_key=MagicMock(),
+                os_error=ConnectionRefusedError("simulated"),
+            )),
+            "Permission relay unavailable: casa-main internal socket is down. "
+            "The tool was not run. Retry shortly or check addon logs.",
+            (1, 1),
+        ),
+        (
+            "client-error",
+            json.dumps(valid).encode(),
+            AsyncMock(side_effect=_aiohttp.ClientPayloadError(
+                "simulated payload error")),
+            "Permission relay failed: forwarder error talking to casa-main "
+            "(ClientPayloadError: simulated payload error). The tool was not "
+            "run.",
+            (1, 1),
+        ),
+        (
+            "timeout",
+            json.dumps(valid).encode(),
+            AsyncMock(side_effect=_asyncio.TimeoutError()),
+            "Permission relay failed: forwarder error talking to casa-main "
+            "(TimeoutError: ). The tool was not run.",
+            (1, 1),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "label,payload,fwd,reason,counts",
+    _hook_refusal_cases(),
+    ids=[case[0] for case in _hook_refusal_cases()],
+)
+async def test_svc_hooks_resolve_own_refusals_are_http_200(
+    label, payload, fwd, reason, counts,
+) -> None:
+    """INV-MCP-011: every refusal this route produces itself is an HTTP 200
+    carrying a `deny` verdict — not a 4xx, not a 5xx.
+
+    The transport is the load-bearing half and the silent one. `hook_proxy.sh`
+    reads any non-2xx as a transport failure and answers `allow`; the deny only
+    reaches Claude Code because it arrives as a 200 with a body. So this
+    asserts the STATUS alongside the whole decoded body, on every arm the
+    handler answers itself.
+
+    The malformed arm's reason literal is asserted exactly, and it is
+    deliberately distinct from the far end's `internal/hooks/resolve: malformed
+    JSON`: the prefix is how an operator tells which layer refused. A change
+    collapsing the two turns this red.
+
+    The empty detail in the timeout arm's reason is fidelity to the code, not
+    an oversight — `exc or 'no detail'` selects the exception, which is truthy,
+    and `str(asyncio.TimeoutError())` is empty.
+
+    What this does not cover, on purpose: an exception the handler does NOT
+    catch escapes as aiohttp's own 500, which the shim converts into an allow.
+    That residual is #912; it is not this test's subject and is not fixed here.
+
+    This PINS behaviour the tree already has, so its red is a mutation, not a
+    pre-fix failure. Mutation-checked by its specifier across the three refusal
+    branches: HTTP 200 -> 400, `deny` -> `allow`, and an altered reason, nine
+    independent mutations, each caught. The change's pre-fix red lives in the
+    documentation arm,
+    ``tests/test_pin_doc_corpus_shape.py::test_bridge_owner_documents_other_hook_refusals``.
+
+    Specified by **astra** in the drive red-case round; accepted by **terra**.
+    """
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/hooks/resolve", data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 200
+        assert json.loads(await resp.text()) == {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            },
+        }
+    assert (fwd.call_count, fwd.await_count) == counts
