@@ -495,10 +495,17 @@ async def test_a_transient_pool_refusal_is_still_served_during_a_stop(tmp_path):
 # The stop cancels and gathers the bus's CONSUMER tasks only. Every turn runs
 # in a DISPATCH task, in a structurally disjoint map the stop never reads — so
 # "Casa core shutdown complete" is written while admitted turns are still
-# running. INV-CONC-006 makes that record truthful: exactly one record,
-# carrying how many turns the bus had dispatched and had not finished at the
-# instant it was written, together with the reason they were left — that the
-# stop neither awaits nor cancels them.
+# running. INV-CONC-006 makes that record truthful: the stop's completion
+# record carries how many turns the bus had dispatched and had not finished at
+# the instant it was written, together with the reason they were left — that
+# they are neither awaited nor cancelled — and exactly one record in a stop
+# carries that count.
+#
+# What that deliberately does NOT say, after four acceptance rounds: that no
+# other record could be read as announcing completion. A record is recognisable
+# to a test only by its wording or by its fields, so "no second completion
+# record, identified by neither" is not a property any test can hold — and a
+# declaration that cannot be pinned is one this loop must not make.
 #
 # These drive a REAL ``MessageBus``: the four ``test_graceful_shutdown_*.py``
 # files all double the bus with an empty task list, so a step that reads the
@@ -506,7 +513,7 @@ async def test_a_transient_pool_refusal_is_still_served_during_a_stop(tmp_path):
 
 
 class _RecordAt(logging.Handler):
-    """Capture, AT EMIT TIME, both the record and a caller-supplied probe.
+    """Capture, AT EMIT TIME, every record, plus a caller-supplied probe.
 
     A caplog assertion made after the fact cannot tell whether a callback ran
     between the snapshot and the log call; this can, because ``probe`` is read
@@ -626,6 +633,8 @@ async def test_the_completion_record_counts_the_turns_the_stop_leaves_running():
                 bus=bus,
                 semantic_memory=SimpleNamespace(close=_close_and_let_one_finish))
 
+        # Exactly one record carries a count, and it is the one carrying the
+        # completion phrase.
         assert len(watch.records) == 1, watch.records
         assert watch.enriched == watch.records, watch.enriched
         record = watch.records[0]
