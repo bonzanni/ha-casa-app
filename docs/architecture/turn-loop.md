@@ -272,7 +272,13 @@ turn start the moment the old one releases. So the pool retains what each closer
 shutdown, after its serial pass over the live entries, waits one further drain window for
 every closer together, then disconnects whatever a closer still could not lock.
 The stop runs its agents' closes together rather than one after another, so that
-bound is one window for the fleet rather than one per resident and specialist. The closer
+bound is one window for the fleet rather than one per resident and specialist.
+Stated as a number, because a stop that overruns its container's patience is
+killed rather than graceful: an agent close is given its graceful window, and a
+close cancelled at the end of it is given one further forced-cut window on top,
+so the stop's close step lasts at most the sum of the two — once, whatever the
+number of residents and specialists — against a container stop timeout several
+times that. The closer
 is not cancelled: it finishes its handoff bookkeeping when the wedged turn releases, and a
 key reset that arrives meanwhile still joins it. Both force-close sites — the live-entry
 drain and the invalidated arm — go through one helper, which first fires the pool's
@@ -331,7 +337,7 @@ those take the bypass because of what they are, so no heartbeat, reminder or
 trigger can be silenced by it. A turn already admitted when the stop is declared
 is outside this: it runs to its end as before.
 
-**INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership; the pool additionally retains every client it has opened until that client's transport cut has settled. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows; no such path returns while a client it removed the key for is still connected; and a path whose caller cancels it cuts what it removed inside a bounded window before propagating, rather than abandoning it — what a window that expires leaves is retained for the next close, with a warning, never forgotten.
+**INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership; the pool additionally retains every client it has opened until that client's transport cut has settled. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows; no such path returns while a client it removed the key for is still connected; a cancelled pool close attempts a bounded concurrent cut of what it removed before propagating, rather than abandoning it; and whatever that window could not finish — like whatever a cancelled reset, eviction or invalidation worker leaves — stays retained by the pool and discoverable by every later close, never forgotten.
 
 The cancelled close is the second half of that, and it used to be the hole. A
 close of the pool clears the entry map and writes its drain records before its

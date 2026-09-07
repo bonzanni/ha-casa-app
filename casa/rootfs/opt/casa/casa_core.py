@@ -5792,6 +5792,13 @@ async def _shutdown_cleanup(
     # container's own stop timeout. The position is unchanged: still before
     # bus.begin_shutdown() below, still every agent, still one bound and one
     # warning each.
+    #
+    # The bound this step actually spends, stated because 15 is only half of
+    # it: the wait_for cancels the close at 15 s, and a cancelled pool close
+    # then finishes its own bounded forced cut (SALVAGE_TIMEOUT) before it
+    # propagates — so the wait_for returns at up to 15 s + that window. Run
+    # concurrently, that sum is what the step costs for the WHOLE fleet, and it
+    # is well inside the container's own stop timeout (`casa/config.yaml`).
     async def _close_agent(role, agent) -> None:
         aclose = getattr(agent, "aclose", None)
         if aclose is None:
