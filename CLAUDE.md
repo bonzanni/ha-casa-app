@@ -6,11 +6,14 @@ Python + `aiohttp`, built on the **Claude Agent SDK**, Hindsight memory, the **M
 protocol, and **APScheduler**, all **s6-overlay**–supervised inside the container.
 
 ## Where things are
-- **Application code:** `casa/rootfs/opt/casa/` (~45 modules — this is the deep
-  HA-rootfs path; the add-on copies `rootfs/` into the image root).
+- **Application code:** `casa/rootfs/opt/casa/` — the deep HA-rootfs path; the add-on
+  copies `rootfs/` into the image root. For the module list, read `docs/coverage.yaml`:
+  it is derived from the code, so it cannot go stale the way a count written here would.
 - **App manifest:** `casa/config.yaml` (version lives here). User-facing app
   docs: `casa/DOCS.md`. App changelog: `casa/CHANGELOG.md`.
-- **Tests:** `tests/` (173 files). Container/e2e harness: `test-local/`. CI: `.github/workflows/qa.yml`.
+- **Tests:** `tests/` — every `test_*.py` sits at the top level, beside `conftest.py` and
+  a few shared helper modules; the only subdirectory is `tests/fixtures/`, which holds data
+  rather than tests. Container/e2e harness: `test-local/`. CI: `.github/workflows/qa.yml`.
 - **Agent-facing docs corpus:** `docs/` — the canonical, CI-enforced current-state
   documentation. **Before changing a subsystem, read the document that
   `docs/README.md`'s routing table names for it.** See the boundary note below.
@@ -22,7 +25,7 @@ make setup        # builds a WSL/Linux venv at venv_test/ + installs the git hoo
 ```
 Then:
 ```bash
-make test-unit    # fast unit tests, PARALLEL + memory-caged (~25s for ~7700)
+make test-unit    # the whole opt-out selection, PARALLEL + memory-caged (a minute or two)
 make test-unit-serial  # same suite, one process — for debugging a failure
 make test-docker  # docker-backed unit tests
 ```
@@ -30,7 +33,7 @@ make test-docker  # docker-backed unit tests
 distribution keeps a module's tests on one worker, which is what the suites that
 monkeypatch module-level state require. Iterate on targeted files
 (`venv_test/bin/pytest tests/test_x.py`) and save the full suite for before the
-gate — at ~25s it is cheap, but not free, and it is not a substitute for
+gate — a minute or two is cheap, but not free, and it is not a substitute for
 thinking about which tests your change can break.
 CI runs four tiers (tier1-smoke, tier2-functional, baseline-runtime, tier3-hardening);
 tier2 is the unit gate. The gate is **opt-out** (v0.64.2): unmarked tests run by
@@ -106,10 +109,11 @@ commit alone* — no operator, no production box, no private repository.
 published.** It is canonical and CI-enforced: every anchor must resolve against tracked
 code, every declared invariant must carry a tracked test binding (the red-case discipline
 in `docs/contributing/doc-contract.md` is what makes it a genuine pinning test), and a
-code-derived coverage ledger (`docs/coverage.yaml`) fails the build when a substantial
-module (≥100 lines), an option, a tool, a route or an s6 unit is neither assigned to a
-document nor excluded with a reason. Consult `docs/README.md`'s routing table before
-changing a subsystem, and update the corpus in the same change — the verifier
+code-derived coverage ledger (`docs/coverage.yaml`) fails the build when a module, an
+option, a tool, a route or an s6 unit is neither assigned to a document nor excluded with a
+reason — and *module* there means every `.py` under `casa/rootfs/opt/casa/`, with no size
+floor: a three-line module is ledgered like any other. Consult `docs/README.md`'s routing
+table before changing a subsystem, and update the corpus in the same change — the verifier
 (`python -m scripts.verify_docs .`) and `scripts/coverage_ledger.py check .` must stay
 green.
 
@@ -174,7 +178,7 @@ mid-2026). Keep it publish-ready at all times:
   branch too. No stray branches on origin.
 - **Every release**: bump `casa/config.yaml` version + a user-facing CHANGELOG
   entry (keepachangelog tone; deep engineering detail belongs in the PR body) + a
-  `translations/en.yaml` entry for any new/changed option + DOCS.md accuracy.
+  `casa/translations/en.yaml` entry for any new/changed option + DOCS.md accuracy.
 - **Nothing internal on any pushed ref**: no design specs, plans, reviews, audit or
   diagnosis ledgers, no `.claude/`. Internal artifacts live in a private repository
   outside this checkout; the public `docs/` corpus carries only what passes the
