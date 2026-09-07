@@ -512,3 +512,66 @@ def test_turn_conduct_and_warm_client_life_have_distinct_owners():
     """
     assert (_declaring_document("INV-TURN-004")
             != _declaring_document("INV-TURN-001"))
+
+
+# #903: the three responses the bridge returns when casa-main's internal socket
+# is unreachable. Each entry is ONE complete response description — the answer,
+# its transport status and its exact payload — not a mention of a concept, so a
+# document that names the condition without saying what a caller gets does not
+# satisfy it.
+SOCKET_UNREACHABLE_CLAIMS = (
+    "When casa-main's internal socket is unreachable, `tools/call` returns "
+    "JSON-RPC error `-32000` with message "
+    "`casa_temporarily_unavailable: casa-main internal socket unreachable`.",
+
+    "When casa-main's internal socket is unreachable, `POST /hooks/resolve` "
+    "returns HTTP 200 with "
+    '`hookSpecificOutput.hookEventName: "PreToolUse"`, '
+    '`permissionDecision: "deny"`, and '
+    '`permissionDecisionReason: "Permission relay unavailable: casa-main '
+    "internal socket is down. The tool was not run. Retry shortly or check "
+    'addon logs."`.',
+
+    "When casa-main's internal socket is unreachable, registered "
+    "`POST /internal/channel/*` routes return HTTP 503 with body "
+    '`{"ok": false, "error": "casa_temporarily_unavailable"}`.',
+)
+
+
+def test_bridge_owner_documents_all_socket_unreachable_responses():
+    """#903: the document that owns the bridge module describes every response
+    an unreachable casa-main socket produces, in its own Failure behavior.
+
+    The bridge answers that one condition three different ways — a retryable
+    JSON-RPC error to a tool call, a fail-closed permission verdict to a hook
+    resolution, and an HTTP 503 to an internal channel call. At the base the
+    owning document named only the first, and named it under a TIMEOUT cause;
+    a reader who arrived asking why a call was refused learned nothing about
+    the other two, and nothing about the socket-unreachable cause at all.
+
+    The owner is resolved through ``docs/coverage.yaml`` rather than
+    hard-coded, so this follows the module if it is ever reassigned — unlike
+    ``RELOAD_LAUNCH_CLAIMS`` above, whose hard-coded owner literal a recent
+    split had to update by hand.
+
+    This pins the RESPONSES, not the cold-boot window that is one occasion for
+    them. The same three answers are equally what a restart produces, so the
+    pin holds whichever way #880 rules on the window, and it declares no
+    invariant id: a known limitation is prose under this corpus's own contract,
+    never red-pinned.
+
+    Red case demonstrated at 06edfc56: the counts are ``(0, 0, 0)``. Ownership
+    resolves and the section is found, so this is not an import or missing-path
+    failure — the three descriptions are simply absent.
+
+    Mutation-checked: deleting any one description, reversing a polarity,
+    substituting the timeout cause for the socket-unreachable one, or moving a
+    description out of Failure behavior into another section each fails this
+    test alone.
+
+    Specified by **astra** in the drive red-case round; accepted by **terra**.
+    """
+    owner = _ledger_owner("casa/rootfs/opt/casa/svc_casa_mcp.py")
+    section = _normalized(_section(owner, "Failure behavior"))
+    counts = tuple(section.count(claim) for claim in SOCKET_UNREACHABLE_CLAIMS)
+    assert counts == (1, 1, 1), (owner, counts)

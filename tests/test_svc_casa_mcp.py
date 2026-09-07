@@ -146,7 +146,20 @@ async def test_svc_tools_call_internal_returns_error_object_passes_through_as_js
 
 
 async def test_svc_tools_call_socket_unreachable_returns_casa_unavailable() -> None:
-    """ClientConnectorError → -32000 casa_temporarily_unavailable."""
+    """ClientConnectorError -> the exact -32000 answer, on the response.
+
+    #903: this asserted `code == -32000` and `"casa" in message.lower()`, which
+    survives almost any rewording of the message. The only byte-exact check on
+    this literal is a SOURCE-TEXT cross-check in
+    `tests/test_mcp_restart_survival.py` — it greps this module and the
+    container probe's shell script for the same string so the probe cannot
+    drift from the bridge, and it asserts nothing about any response. So the
+    answer a caller actually receives was unpinned. It is pinned here, on the
+    decoded error object, which is what the model sees.
+
+    The whole object is compared rather than its fields one at a time: an extra
+    key appearing in the error is a change to the answer too.
+    """
     import aiohttp
 
     async def _fwd_raises(**_):
@@ -165,8 +178,11 @@ async def test_svc_tools_call_socket_unreachable_returns_casa_unavailable() -> N
             },
         )
         body = await resp.json()
-        assert body["error"]["code"] == -32000
-        assert "casa" in body["error"]["message"].lower()
+        assert body["error"] == {
+            "code": -32000,
+            "message": ("casa_temporarily_unavailable: "
+                        "casa-main internal socket unreachable"),
+        }
 
 
 async def test_svc_hooks_resolve_forwards_body_to_internal() -> None:
@@ -503,6 +519,14 @@ async def test_svc_admin_personality_not_reachable_on_8100() -> None:
 
 
 async def test_svc_channel_forward_socket_unreachable_returns_503() -> None:
+    """The third face of the same condition, asserted on its body.
+
+    #903: this checked the status and `ok is False` only, so the error string a
+    resumed engagement's channel server reads back could be reworded without a
+    test going red — and this face is the one the filing missed entirely. The
+    whole decoded body is compared, and the status with it: 503 without the
+    named error, or the named error at some other status, is a different answer.
+    """
     import aiohttp
 
     async def _fwd_raises(**_):
@@ -516,5 +540,6 @@ async def test_svc_channel_forward_socket_unreachable_returns_503() -> None:
             "/internal/channel/send_to_topic", json={"text": "hi"},
         )
         assert resp.status == 503
-        body = await resp.json()
-        assert body["ok"] is False
+        assert await resp.json() == {
+            "ok": False, "error": "casa_temporarily_unavailable",
+        }
