@@ -543,3 +543,110 @@ async def test_svc_channel_forward_socket_unreachable_returns_503() -> None:
         assert await resp.json() == {
             "ok": False, "error": "casa_temporarily_unavailable",
         }
+
+
+# #908 / INV-MCP-011. `scripts/hook_proxy.sh` calls this route with `curl -sf`
+# and converts ANY non-2xx into `{"decision": "allow"}` — a deliberate
+# fail-open, so a hook cannot block an engagement when Casa is unreachable.
+# Every refusal the route produces itself therefore has to ride on an HTTP 200,
+# or it stops being a refusal. Nothing asserted that status before: a change
+# answering `400` here would leave the deny sitting in the handler, correct
+# looking, while the shim turned it into a permission GRANT.
+#
+# Each row is (label, request body, forwarder, expected reason, expected
+# (call_count, await_count)). The counts are asserted rather than a "was it
+# called" boolean because the malformed arm's whole point is that the body
+# reaches casa-main NEVER.
+def _hook_refusal_cases():
+    import asyncio as _asyncio
+
+    import aiohttp as _aiohttp
+
+    valid = {"policy": "anything", "payload": {"tool_name": "Bash"}}
+    return [
+        (
+            "malformed",
+            b"{",
+            AsyncMock(),
+            "svc_casa_mcp /hooks/resolve: malformed JSON",
+            (0, 0),
+        ),
+        (
+            "socket-unreachable",
+            json.dumps(valid).encode(),
+            AsyncMock(side_effect=_aiohttp.ClientConnectorError(
+                connection_key=MagicMock(),
+                os_error=ConnectionRefusedError("simulated"),
+            )),
+            "Permission relay unavailable: casa-main internal socket is down. "
+            "The tool was not run. Retry shortly or check addon logs.",
+            (1, 1),
+        ),
+        (
+            "client-error",
+            json.dumps(valid).encode(),
+            AsyncMock(side_effect=_aiohttp.ClientPayloadError(
+                "simulated payload error")),
+            "Permission relay failed: forwarder error talking to casa-main "
+            "(ClientPayloadError: simulated payload error). The tool was not "
+            "run.",
+            (1, 1),
+        ),
+        (
+            "timeout",
+            json.dumps(valid).encode(),
+            AsyncMock(side_effect=_asyncio.TimeoutError()),
+            "Permission relay failed: forwarder error talking to casa-main "
+            "(TimeoutError: ). The tool was not run.",
+            (1, 1),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "label,payload,fwd,reason,counts",
+    _hook_refusal_cases(),
+    ids=[case[0] for case in _hook_refusal_cases()],
+)
+async def test_svc_hooks_resolve_own_refusals_are_http_200(
+    label, payload, fwd, reason, counts,
+) -> None:
+    """INV-MCP-011: pin bridge-owned refusal status, body and forward counts.
+
+    Resolve the registered POST route without a TCP listener. Request JSON
+    parsing and response construction are real; only the forwarder is mocked.
+
+    This pins existing behavior; its behavioral red is a mutation.
+    Uncaught exceptions (#912) are outside this test's scope.
+    """
+    import asyncio
+
+    import aiohttp
+    from aiohttp.test_utils import make_mocked_request
+
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    stream = aiohttp.streams.StreamReader(
+        MagicMock(), 2 ** 16, loop=asyncio.get_running_loop(),
+    )
+    stream.feed_data(payload)
+    stream.feed_eof()
+    request = make_mocked_request(
+        "POST",
+        "/hooks/resolve",
+        payload=stream,
+        app=app,
+        headers={"Content-Type": "application/json"},
+    )
+
+    match = await app.router.resolve(request)
+    resp = await match.handler(request)
+
+    assert resp.status == 200
+    assert json.loads(resp.body) == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+    assert (fwd.call_count, fwd.await_count) == counts
