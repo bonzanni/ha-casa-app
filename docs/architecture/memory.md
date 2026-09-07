@@ -81,7 +81,8 @@ tier classification, provenance, and the content addressing that deduplicates it
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md) owns the freshness windows, the
 save guard protocol (INV-MEM-006), the write-side tag and provenance gate (INV-MEM-004), the
 content-addressing contract (INV-MEM-009), the tier-classifier parse (INV-MEM-012), the
-retirement claims (INV-MEM-013), and the operator-consented wipe (INV-MEM-014). What this
+retirement claims (INV-MEM-013); the operator-consented wipe (INV-MEM-014) is
+[`architecture/memory-wipe.md`](memory-wipe.md)'s. What this
 document owns is the other direction: what comes back, and what a caller may claim from it.
 
 **Mental-model overlays cannot be tier-filtered at all**, because they are bank-wide
@@ -122,7 +123,8 @@ backend returned — the request's own tag filter is not treated as the access c
 write-side tag and provenance gate, write trust, the save/reset guard protocol, the
 content-addressing contract and the tier-classifier parse — are declared in
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the retirement
-claims (INV-MEM-013) and the wipe contract (INV-MEM-014).
+claims (INV-MEM-013); the wipe contract (INV-MEM-014) is declared in
+[`architecture/memory-wipe.md`](memory-wipe.md).
 
 One consequence of INV-MEM-004 belongs on the read side and is easy to miss: it protects the
 *write* path from its own callers, and does not authenticate what the backend returns. On

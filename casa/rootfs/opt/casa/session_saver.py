@@ -314,8 +314,20 @@ def _spool_cold_retain(
             "attempts": attempts,
         }, mode=PRIVATE)
     except Exception:  # noqa: BLE001 — spooling is best-effort
-        logger.warning(
-            "cold-retain retry: failed to spool sid=%s", old.sdk_session_id,
+        # #878: ERROR, and naming the directory. Best-effort is deliberate and
+        # unchanged — a spool failure must never crash the retain's caller —
+        # but every caller of this writer is already in a retain failure or
+        # cancellation arm, so reaching this line means the retain AND its
+        # durable record both failed. The session id and the transcript
+        # directory are then the only handle anyone has. This promises no
+        # recovery: it does not claim the transcript is still there, and it
+        # does not claim nothing retries (a record for the same sid left by an
+        # earlier failed attempt survives a write that fails before its
+        # rename).
+        logger.error(
+            "retain and retry-spool BOTH failed for sid=%s in %s — nothing "
+            "this call wrote will retry it; that session id and directory are "
+            "the only handle left", old.sdk_session_id, directory,
             exc_info=True,
         )
 
@@ -549,19 +561,43 @@ async def _reset_locked(
                 directory = agent_home_for_role_id(role)
             except ValueError:
                 directory = f"/config/agent-home/{role}"
-            # Task 10: the reduced save_session reads speaker/user provenance
-            # from the entry snapshot itself. save_session is idempotent and
-            # removes the entry on a successful retain; remove() afterwards
-            # guarantees the pointer is cleared even when the save was a
-            # no-op. Both carry the snapshot's sid (#317): a follow-up turn
-            # that re-registered this key mid-save keeps its fresh session.
-            # #526 deliberately NOT generation-guarded here: the reset's
-            # contract (INV-MEM-006) is to retain-and-drop exactly the
+            # #878: retain the snapshot DIRECTLY, registry-DECOUPLED, rather
+            # than re-acquiring this conversation through the registry slot.
+            # save_session reports six distinct non-save outcomes as one bool,
+            # so a reset that routed through it could not tell a failed retain
+            # from a claim declined by a concurrent freshness sweep — and the
+            # sweep takes neither the write gate nor turn admission, so its
+            # multi-second retain runs alongside a /new by construction. The
+            # reset then dropped the pointer regardless, the sweep failed into
+            # a registry with no entry, and the conversation was neither banked
+            # nor recorded anywhere. The reset had already decided WHICH
+            # conversation it is ending; retaining that snapshot is that
+            # decision, and it needs no claim to carry it out.
+            #
+            # retain_cold_session is the module's existing decoupled path and
+            # already carries what this needs: the write-trust and provenance
+            # guards, the durable failure spool, the cancellation spool, and
+            # the fence-generation guard on BOTH spool arms (INV-MEM-014 — a
+            # wipe completing here leaves no record either). The generation
+            # captured in the no-await block above is passed down, exactly as
+            # that contract requires (#411/#578); capturing it inside would be
+            # after an await that follows the decision.
+            #
+            # The cost, taken deliberately: without a claim, a concurrent
+            # sweep can submit the same transcript too. Retains are
+            # content-addressed and upsert, so the bank ends identical — what
+            # is duplicated is work, against a path that previously lost the
+            # conversation outright.
+            #
+            # remove() still carries the snapshot's sid (#317): a follow-up
+            # turn that re-registered this key mid-reset keeps its fresh
+            # session. #526 deliberately NOT generation-guarded here: the
+            # reset's contract (INV-MEM-006) is to drop exactly the
             # conversation the sid names.
-            await save_session(
-                channel_key, registry, semantic_memory,
-                directory=directory, channel=channel,
-                expected_sid=snapshot.sdk_session_id,
+            await retain_cold_session(
+                snapshot, directory=directory, channel=channel,
+                semantic_memory=semantic_memory,
+                retry_dir=_COLD_RETAIN_RETRY_DIR,
                 fence_generation=fence_generation,
             )
             await registry.remove(

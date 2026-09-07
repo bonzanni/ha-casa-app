@@ -119,7 +119,10 @@ names a transcript on a bank-writable channel is held back however stale it is, 
 successful retain would have removed the entry, so one that is still here is a conversation
 that never reached long-term memory and whose transcript is its only copy
 (INV-MEM-017, `architecture/memory-lifecycle.md`). Such an entry stays until the retain
-succeeds or the operator resets or wipes it, and each sweep says so. The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
+succeeds or the operator resets or wipes it, and each sweep says so. A reset
+does remove it, but it does not lose the conversation: the reset retains that
+session itself and, on failure, leaves a durable retry record in its place
+(`architecture/memory-lifecycle.md`). The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
 and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time purge drops *every* webhook-scoped session
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.

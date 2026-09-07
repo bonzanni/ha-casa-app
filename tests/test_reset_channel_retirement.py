@@ -63,16 +63,18 @@ async def test_racing_fresh_registration_survives_reset(tmp_path, monkeypatch):
 
     reg.add_reset_listener(racing_listener)
     sem = AsyncMock()
-    captured = {}
+    retained = []
 
-    async def capturing_save(channel_key, registry, semantic_memory, **kwargs):
-        captured.update(kwargs)
-        return False
+    # #878: the reset retains its snapshot registry-decoupled, so the seam this
+    # test observes is retain_cold_session rather than save_session. The
+    # property is unchanged — the reset acts on the session IT snapshotted.
+    async def capturing_retain(old, **kwargs):
+        retained.append(old)
 
-    monkeypatch.setattr(session_saver, "save_session", capturing_save)
+    monkeypatch.setattr(session_saver, "retain_cold_session", capturing_retain)
     await reset_channel("telegram-42", reg, sem, channel="telegram")
 
-    assert captured.get("expected_sid") == "sid-old"     # never sid-new
+    assert [s.sdk_session_id for s in retained] == ["sid-old"]   # never sid-new
     entry = reg.get("telegram-42")
     assert entry is not None and entry["sdk_session_id"] == "sid-new"
     assert not reg.retirement_pending("telegram-42")
@@ -122,16 +124,20 @@ async def test_no_entry_no_claim_no_retain(tmp_path):
     assert not reg.retirement_pending("telegram-99")
 
 
-async def test_claim_released_when_save_raises(tmp_path, monkeypatch):
-    """No exit path may leave the key steering fresh forever."""
+async def test_claim_released_when_the_retain_raises(tmp_path, monkeypatch):
+    """No exit path may leave the key steering fresh forever.
+
+    #878 retargeted the seam to ``retain_cold_session``; the property — the
+    retirement claim is released in the ``finally`` however the body exits —
+    is unchanged."""
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-old")
     sem = AsyncMock()
 
-    async def exploding_save(*a, **k):
+    async def exploding_retain(*a, **k):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(session_saver, "save_session", exploding_save)
+    monkeypatch.setattr(session_saver, "retain_cold_session", exploding_retain)
     with pytest.raises(RuntimeError):
         await reset_channel("telegram-42", reg, sem, channel="telegram")
     assert not reg.retirement_pending("telegram-42")

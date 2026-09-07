@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.285.0] - 2026-09-07
+
+### Fixed
+
+- Ending a Telegram conversation with `/new` while long-term memory is
+  unavailable no longer loses that conversation. The reset removed the one handle
+  that would have let the save be retried, so the exchange was never stored and
+  never tried again. The reset now queues the conversation for retry itself, and
+  says so if even that cannot be written.
+
 ## [0.284.0] - 2026-09-06
 
 ### Fixed

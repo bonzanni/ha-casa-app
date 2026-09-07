@@ -136,7 +136,7 @@
 - item: casa/rootfs/opt/casa/memory_provenance.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/memory_wipe.py
-  doc: architecture/memory-lifecycle.md
+  doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/observer.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/persona_install.py

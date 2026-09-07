@@ -1,5 +1,5 @@
-"""AR-4: /new must flush (close) the warm client BEFORE save_session reads
-the transcript from disk."""
+"""AR-4: /new must flush (close) the warm client BEFORE the reset's retain
+reads the transcript from disk."""
 from __future__ import annotations
 
 import pytest
@@ -36,7 +36,10 @@ async def test_notify_reset_survives_listener_error(tmp_path):
     assert seen == ["k"]
 
 
-async def test_reset_channel_notifies_before_save(tmp_path, monkeypatch):
+async def test_reset_channel_notifies_before_the_retain(tmp_path, monkeypatch):
+    """#878 retargeted the seam from save_session to retain_cold_session; the
+    ordering this test exists for — flush-close BEFORE the transcript read — is
+    unchanged, and so is the trailing pointer removal."""
     import session_saver
     reg = SessionRegistry(str(tmp_path / "sessions.json"))
     await reg.register("telegram-1", "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
@@ -45,12 +48,12 @@ async def test_reset_channel_notifies_before_save(tmp_path, monkeypatch):
     async def listener(key): order.append(f"reset:{key}")
     reg.add_reset_listener(listener)
 
-    async def fake_save(channel_key, registry, memory, **kw):
-        order.append("save")
-    monkeypatch.setattr(session_saver, "save_session", fake_save)
+    async def fake_retain(old, **kw):
+        order.append("retain")
+    monkeypatch.setattr(session_saver, "retain_cold_session", fake_retain)
 
     await session_saver.reset_channel(
         "telegram-1", reg, object(), channel="telegram",
     )
-    assert order == ["reset:telegram-1", "save"]
+    assert order == ["reset:telegram-1", "retain"]
     assert reg.get("telegram-1") is None
