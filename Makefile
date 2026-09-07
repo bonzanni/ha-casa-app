@@ -9,15 +9,26 @@ help: ## Show this help
 setup: ## One-time WSL dev setup (Linux venv + git hooks)
 	./scripts/setup-dev.sh
 
-# -n auto --maxprocesses=12 --dist loadfile: 12 workers take this from ~185s to ~25s, and
-# file-scoped distribution keeps every test in a module on one worker, so the
-# module-level state a few suites monkeypatch cannot straddle processes.
+# -n auto --maxprocesses=12 --dist loadfile: the suite parallelises well, so
+# the parallel run is several times faster than the serial one. Deliberately no
+# figure: the win is bounded by the box's core count while a wall clock drifts
+# with every test added, and nothing in this repository reads this file for
+# facts -- the pair of absolute figures that stood here had gone stale several
+# times over before anyone noticed. Measure it if you need a number.
+# File-scoped distribution keeps every test in a module on one worker, so the
+# module-level state a few suites monkeypatch cannot straddle processes -- that
+# is a correctness requirement, not a speed one, and it is the part of this
+# flag string a future optimisation must not drop. --maxprocesses=12 binds only
+# where there are more than 12 cores; below that -n auto decides alone.
 # Measured identical results over repeated runs; see test-unit-serial when a
-# failure needs readable, interleaving-free output.
+# failure needs readable, interleaving-free output -- it is this same suite in
+# one process, so budget several times as long.
 # CAGE := the documented systemd-run memory cage, applied automatically when
 # available. RLIMIT_AS in conftest bounds one process's ADDRESS SPACE; only this
 # bounds REAL memory across all workers, which is what actually killed the VM
-# twice. Degrades to running uncaged where systemd-run is absent (CI images).
+# twice. Where systemd-run cannot reach a user bus this expands to nothing, and
+# the suite targets then REFUSE to run rather than degrading silently -- see
+# CAGE_GUARD below.
 # Probe that the cage actually WORKS, not merely that the binary exists: in WSL,
 # containers and non-login SSH sessions /usr/bin/systemd-run is present while the
 # user bus is not, and prepending it there would make pytest never run at all —
@@ -38,15 +49,17 @@ SUITE_LOCK := /tmp/casa-suite.lock
 # shape as the cage below, which is why both now fail loudly instead.
 LOCK := flock -w 1800 $(SUITE_LOCK)
 
-# The cage DEGRADES to an uncaged 12-worker run wherever systemd-run cannot
-# reach a user bus. On a 23G box that is the OOM that has killed this VM twice,
-# so refuse by default. CI images legitimately have no user bus and opt out
-# explicitly rather than degrading silently.
+# Without this guard the cage would DEGRADE to an uncaged 12-worker run
+# wherever systemd-run cannot reach a user bus. On a 23G box that is the OOM
+# that has killed this VM twice, so refuse by default. A host that genuinely
+# has no user bus opts out explicitly rather than degrading silently. No caller
+# in this repository sets that opt-out: CI runs pytest directly (see
+# .github/workflows/qa.yml) and invokes no make target at all.
 CAGE_GUARD = $(if $(CAGE),,$(if $(CASA_ALLOW_UNCAGED),,$(error \
   refusing to run the unit suite uncaged: systemd-run --user --scope is \
   unavailable, and 12 uncaged workers have OOM-killed this machine. Run from a \
   session with a user bus, or set CASA_ALLOW_UNCAGED=1 if you know the host \
-  can take it (CI does this).)))
+  can take it.)))
 
 # SUITE := the ONLY way to start the unit suite. Every protection lives here
 # so that adding a suite target cannot forget one -- test-unit-serial ran
