@@ -431,7 +431,7 @@ def speaker_provenance_for_role(cfg: AgentConfig) -> SpeakerProvenance:
 #: #650: how many consecutive resumed trusted-ingress turns may evidence an
 #: SDK fault before the resume decision stops resuming that session (fresh
 #: WITH retain — continuity is saved, never cleared). Env-tunable alongside
-#: the retry knobs (SDK_RETRY_*); see docs/architecture/turn-loop.md.
+#: the retry knobs (SDK_RETRY_*); see docs/architecture/sdk-client-pool.md.
 RESUME_FAULT_LIMIT: int = _env_int("SDK_RESUME_FAULT_LIMIT", 2)
 
 
