@@ -7,6 +7,7 @@ import dataclasses
 import json
 import logging
 import time
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -63,6 +64,7 @@ from session_registry import (
 )
 from sdk_client_pool import (
     ManagedSdkClient,
+    PoolClosing,
     PoolUnavailable,
     SdkClientPool,
 )
@@ -84,6 +86,36 @@ from error_kinds import (  # noqa: F401 — selected names are re-exported
 from voice_turn_guard import VoiceTurnGuard
 
 logger = logging.getLogger(__name__)
+
+# #882: the container's graceful stop, as a fact about THE RUNNING RUNTIME.
+#
+# It is not per-Agent state: a generation a reload retired is no longer in
+# runtime.agents but can still be serving a dispatched turn, and a specialist
+# installed after the stop was declared must meet it too. It is not the pool's
+# closing flag either — that flag cannot tell a container stop from a
+# configuration reload, and reloads are routine, so keying a refusal on it
+# would silently drop turns during every reload.
+#
+# Scoped to the event loop that declared it, because that IS the runtime: a
+# later asyncio.run() in the same process is a different runtime and must not
+# inherit a stop it never declared. Production has exactly one.
+_STOPPING_RUNTIMES: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def begin_process_stop() -> None:
+    """Declare the graceful stop. Idempotent and monotonic for this runtime."""
+    try:
+        _STOPPING_RUNTIMES.add(asyncio.get_running_loop())
+    except RuntimeError:            # no running loop: nothing to declare it on
+        pass
+
+
+def process_stopping() -> bool:
+    """Has THIS runtime declared its graceful stop?"""
+    try:
+        return asyncio.get_running_loop() in _STOPPING_RUNTIMES
+    except RuntimeError:
+        return False
 
 
 # #573/#578/#579: the per-session-key write gate and the process-wide turn
@@ -1688,7 +1720,35 @@ class Agent:
                         response_text, sdk_session_id, usage, used_resume, \
                             session_published = \
                             await _attempt_with_stale_recovery(attempt)
-                    except PoolUnavailable:
+                    except PoolUnavailable as _refusal:
+                        # #882: a refusal that means THIS POOL IS CLOSING, once
+                        # the runtime has declared its graceful stop, is not a
+                        # reason to run the turn anyway. The bypass would start
+                        # a fresh CLI subprocess after the stop began, on a turn
+                        # nothing in the shutdown sequence bounds, whose answer
+                        # is delivered onto channels that close a few steps
+                        # later. Refuse instead, and refuse as silence: these
+                        # turns are notifications, and the bus's cancellation
+                        # arm resolves a REQUEST caller's future promptly.
+                        #
+                        # Both conjuncts are load-bearing. Without the stop
+                        # fact, every configuration reload's closing pool would
+                        # start refusing. Without the PoolClosing type, the
+                        # transient "entry unstable after retry" fallback —
+                        # nothing to do with shutdown — would be refused too.
+                        # Scheduled turns and webhook one-shots never reach
+                        # here at all (they take the bypass unconditionally,
+                        # by WHAT THEY ARE), so no heartbeat, reminder or
+                        # trigger can be silenced by this.
+                        if (isinstance(_refusal, PoolClosing)
+                                and process_stopping()):
+                            logger.info(
+                                "turn refused: casa is stopping "
+                                "(channel=%s, type=%s)",
+                                msg.channel, msg.type.value,
+                            )
+                            raise asyncio.CancelledError(
+                                "casa is stopping") from None
                         # Reachable from the primary attempt OR from the recovery
                         # retry after a clear (the clear is idempotent and guarded,
                         # so falling through to the bypass — which re-derives its
@@ -2575,11 +2635,30 @@ class Agent:
         # loop is still alive — cancelling here runs retain_cold_session's
         # CancelledError arm (a synchronous spool write) deterministically,
         # instead of relying on the runtime's final task-cancellation sweep.
-        for task in list(self._bg_tasks):
-            task.cancel()
-        if self._bg_tasks:
-            await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
-        await self._pool.aclose()
+        #
+        # #881: that settle is an await, and it is BEFORE the pool close, so a
+        # cancellation delivered there — which is exactly what the loop's final
+        # sweep does to a reload's background "agent-pool-close" task — used to
+        # end this call without the pool ever being entered, leaving its warm
+        # client connected with nothing left to reclaim it. Hold the
+        # cancellation, close the pool anyway, then propagate. force=True
+        # because nobody is waiting for this call any more: a graceful lock
+        # wait here would hang the sweep that is gathering it, so the pool goes
+        # straight to its bounded, concurrent cut.
+        cancelled: BaseException | None = None
+        try:
+            for task in list(self._bg_tasks):
+                task.cancel()
+            if self._bg_tasks:
+                await asyncio.gather(*list(self._bg_tasks),
+                                     return_exceptions=True)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        if cancelled is None:
+            await self._pool.aclose()
+        else:
+            await self._pool.aclose(force=True)
+            raise cancelled
 
     async def _maybe_prepend_health_notice(
         self, text: str,

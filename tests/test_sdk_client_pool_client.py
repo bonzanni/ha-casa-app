@@ -376,6 +376,10 @@ async def test_aclose_joins_a_disconnect_already_in_flight():
     await c.open()
     inner = c._client
     first = asyncio.create_task(c._invalidate())
+    # Two hops, not one: #881 runs the transport cut in a task of its own (so a
+    # cancelled caller cannot truncate it), which costs one extra scheduling
+    # round before disconnect() is entered.
+    await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert c.state == "invalid" and c._client is None and starts == [1]
     second = asyncio.create_task(c.aclose())

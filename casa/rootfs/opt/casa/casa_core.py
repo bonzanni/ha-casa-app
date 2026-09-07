@@ -5744,6 +5744,18 @@ async def _shutdown_cleanup(
     # needs is still up: Telegram, the bus, the drivers and the registry. Left
     # to `asyncio.run`'s final sweep instead, the launch is cancelled with no
     # cause (its workspace destroyed) and its reporter is killed mid-notice.
+    # #882: declare the graceful stop to the turn path BEFORE anything can
+    # await — synchronously, so no turn can be admitted in the window between
+    # entering this coroutine and the declaration. From here a turn the pool
+    # refuses because it is CLOSING is refused rather than served on the
+    # unpooled bypass, which would start a CLI subprocess after the stop began
+    # and answer onto channels this routine closes a few steps later. It is
+    # deliberately not job_registry's flag (that one is the ledger's) and not
+    # per-Agent state: a reload-retired generation still serving a dispatched
+    # turn, and a specialist installed after this point, must both see it.
+    import agent as _agent_mod
+    _agent_mod.begin_process_stop()
+
     import tools as _tools_mod
     await _tools_mod.stop_engagement_launches(engagement_registry)
 
@@ -5768,16 +5780,40 @@ async def _shutdown_cleanup(
     # drained below — would let an in-flight send_media fall through to a
     # dir_fd=None (CWD-relative) op. close() is for test teardown only.
 
-    # AR-9: close every resident/specialist Agent's SDK client pool so no
-    # warm subprocess outlives container shutdown. Bounded per-agent so one
-    # hung drain can't block the rest of the shutdown sequence.
-    for _role, _agent in list(getattr(runtime, "agents", {}).items()):
-        aclose = getattr(_agent, "aclose", None)
-        if aclose is not None:
-            try:
-                await asyncio.wait_for(aclose(), timeout=15)
-            except Exception:  # noqa: BLE001 — shutdown must complete
-                logger.warning("agent %s aclose failed/timed out", _role)
+    # AR-9: close every resident/specialist Agent's SDK client pool so no warm
+    # subprocess outlives container shutdown. Bounded per-agent so one hung
+    # drain can't block the rest of the shutdown sequence.
+    #
+    # #881, CONCURRENTLY: the bound is per agent, so a serial loop spends up to
+    # 15 s EACH and the close portion of the stop grows with the number of
+    # specialists — and a cancelled close now also finishes its own bounded
+    # cut, which would multiply the same way. Started together and gathered,
+    # the close portion is one window whatever the fleet size, well inside the
+    # container's own stop timeout. The position is unchanged: still before
+    # bus.begin_shutdown() below, still every agent, still one bound and one
+    # warning each.
+    #
+    # The bound this step actually spends, stated because 15 is only half of
+    # it: the wait_for cancels the close at 15 s, and a cancelled pool close
+    # then finishes its own bounded forced cut (SALVAGE_TIMEOUT) before it
+    # propagates — so the wait_for returns at up to 15 s + that window. Run
+    # concurrently, that sum is what the step costs for the WHOLE fleet, and it
+    # is well inside the container's own stop timeout (`casa/config.yaml`).
+    async def _close_agent(role, agent) -> None:
+        aclose = getattr(agent, "aclose", None)
+        if aclose is None:
+            return
+        try:
+            await asyncio.wait_for(aclose(), timeout=15)
+        except Exception:  # noqa: BLE001 — shutdown must complete
+            logger.warning("agent %s aclose failed/timed out", role)
+
+    _agent_closes = [
+        _close_agent(_role, _agent)
+        for _role, _agent in list(getattr(runtime, "agents", {}).items())
+    ]
+    if _agent_closes:
+        await asyncio.gather(*_agent_closes)
     await _close_tina_ha_facade(ha_facade)
 
     # #316: gate the bus BEFORE cancelling its consumers — the HTTP

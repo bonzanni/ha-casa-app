@@ -20,6 +20,12 @@ from typing import Any, Awaitable, Callable, NamedTuple
 
 logger = logging.getLogger(__name__)
 
+#: #881: how long a CANCELLED pool close may spend finishing the cleanup its
+#: caller's bound cut short, for the whole call rather than per entry (the
+#: salvage cuts concurrently). It bounds the SDK's own close protocol —
+#: stdin EOF, a grace wait, then terminate/kill — not a lock wait.
+SALVAGE_TIMEOUT = 20.0
+
 
 class _CidBox:
     """Mutable cid holder. Bound into ``log_cid.cid_var`` in the client's
@@ -43,6 +49,15 @@ class SdkTurnError(Exception):
 class PoolUnavailable(Exception):
     """Pool is closing or the entry vanished twice — caller must run the
     turn on the per-turn bypass path instead (AR-7)."""
+
+
+class PoolClosing(PoolUnavailable):
+    """The refusal specifically means THIS POOL IS CLOSING (#882).
+
+    One class with two meanings is what made the agent's fallback
+    undiscriminating: "pool closing" and "entry unstable after retry" arrive at
+    the same handler, and only the first is a teardown. Subclassing keeps every
+    existing ``except PoolUnavailable`` arm working unchanged."""
 
 
 def _default_make_client(options):
@@ -89,6 +104,32 @@ class ManagedSdkClient:
         # that arrives while it runs has no transport to cut yet, so it
         # cancels and JOINS this task instead (see aclose).
         self._connect_task: "asyncio.Task | None" = None
+        # #881: the one transport cut, as a task NOTHING cancels, plus the
+        # client it is cutting (retained until it has actually completed) and
+        # whether it did. A cut the loop's final sweep cancelled is restarted
+        # by the next closer rather than reported as done.
+        self._cut_task: "asyncio.Task | None" = None
+        self._cut_client: Any = None
+        self._cut_completed = False
+        self._cut_abandoned = False
+
+    @property
+    def cut_settled(self) -> bool:
+        """Is this entry closed and does it owe no further transport cut?
+
+        A stub that never held a client answers True. An entry whose cut was
+        cancelled answers False — that is what keeps it reclaimable, and what
+        keeps it in the pool's opened registry. An entry whose cut was
+        abandoned after the restart cap answers True: the warning is the
+        record, and re-attempting it on every later close would be a loop, not
+        a repair."""
+        if self.state != "closed":
+            return False
+        if self._cut_abandoned:
+            return True
+        if self._cut_client is not None:
+            return False
+        return self._cut_task is None or self._cut_completed
 
     @property
     def has_transport(self) -> bool:
@@ -268,18 +309,58 @@ class ManagedSdkClient:
         """The ONE transport-disconnect path (#853). Records completion in
         ``_close_done`` so a second closer — ``aclose`` force-closing at the
         pool's drain timeout while this owner's disconnect is still in
-        flight — JOINS it instead of returning with the transport open. A
-        client is detached exactly once, so at most one future exists per
-        entry; the owner's own cancellation resolves it in ``finally`` so a
-        joiner never waits on a disconnect nobody is running."""
-        done = self._close_done = asyncio.get_running_loop().create_future()
+        flight — JOINS it instead of returning with the transport open.
+
+        #881: the cut runs in a task of its own, and completion is recorded
+        only when ``disconnect()`` actually returned. The old shape published
+        ``_close_done`` from a ``finally`` that also ran while a cancellation
+        unwound through it, so a caller cancelled mid-disconnect left the
+        transport open AND made every later closer join a cut nobody was
+        running — measured: one disconnect start, zero completions, one live
+        client, forever. A cut that was cancelled is now restarted by the
+        next closer against the retained client."""
+        self._cut_client = client
+        await self._ensure_cut(what)
+
+    async def _ensure_cut(self, what: str = "close") -> None:
+        """Run, join, or restart the one transport cut until it completed.
+
+        ``asyncio.wait`` never cancels its awaitable, so a joiner that is
+        itself cancelled leaves the cut running for whoever comes next; and a
+        cut the event loop's own final sweep cancelled is started again here,
+        which is what makes a background close survive that sweep."""
+        for _attempt in range(3):
+            if self._cut_completed:
+                return
+            task = self._cut_task
+            if task is None or task.done():
+                task = self._cut_task = asyncio.get_running_loop().create_task(
+                    self._cut(what),
+                )
+            await asyncio.wait({task})
+            if not task.cancelled():
+                return
+        self._cut_abandoned = True
+        logger.warning("pool client %s: transport cut cancelled repeatedly", what)
+
+    async def _cut(self, what: str) -> None:
+        client, self._cut_client = self._cut_client, None
+        done = self._close_done
+        if done is None or done.done():
+            done = self._close_done = (
+                asyncio.get_running_loop().create_future()
+            )
         try:
-            await client.disconnect()
+            if client is not None:
+                await client.disconnect()
+        except asyncio.CancelledError:
+            self._cut_client = client      # not cut: leave it restartable
+            raise
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning("pool client %s failed: %s", what, exc)
-        finally:
-            if not done.done():
-                done.set_result(None)
+        self._cut_completed = True
+        if not done.done():
+            done.set_result(None)
 
     async def _invalidate(self) -> None:
         self.state = "invalid"
@@ -311,9 +392,11 @@ class ManagedSdkClient:
             if client is not None:
                 await self._disconnect(client, "close")
                 return
-        pending = self._close_done
-        if pending is not None and not pending.done():
-            await asyncio.shield(pending)
+        if self._cut_task is not None or self._cut_client is not None:
+            # #881: join the one cut — and restart it if the loop's final
+            # sweep cancelled it — rather than trusting a marker that a
+            # cancelled disconnect also sets.
+            await self._ensure_cut()
 
 
 def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
@@ -384,6 +467,17 @@ class SdkClientPool:
         # not just its turn-lock handoff barrier. A set per key tolerates
         # overlapping invalidate_all() generations.
         self._invalidation_closes: dict[str, set[asyncio.Task]] = {}
+        # #881: every client this pool has OPENED, until its transport cut has
+        # settled. Recording per removal site was tried and cut: four separate
+        # routes were found that such a record does not reach (a reset or an
+        # eviction cancelled between its map removal and its close; an
+        # invalidation worker the loop's final sweep cancels, whose done
+        # callback discards its drain record; the warm-replacement flush inside
+        # turn()). One registry, written where the pool opens a client and
+        # emptied only by a settled cut, covers every route by construction —
+        # including routes nobody has enumerated yet. Every close enumerates
+        # it; _draining and the #853 orphan arm are untouched by it.
+        self._opened: dict[ManagedSdkClient, str] = {}
         # #853: every entry that has left _entries but is not yet closed —
         # owned by an invalidation closer or by an aclose drain loop — so that
         # aclose can SEE (and force-close at the drain timeout) what a closer
@@ -425,7 +519,7 @@ class SdkClientPool:
         self._ensure_sweeper()
         for _attempt in (1, 2):                      # AR-7: one silent retry
             if self._closing:
-                raise PoolUnavailable("pool closing")
+                raise PoolClosing("pool closing")
             entry = await self._entry_stub(channel_key)
             result: PoolTurnResult | None = None
             async with entry.lock:
@@ -527,6 +621,11 @@ class SdkClientPool:
                         if (not self._closing
                                 and self._entries.get(channel_key) is entry):
                             self._entries[channel_key] = fresh_client
+                            # #881: the same non-awaiting critical section, so
+                            # a close sees the reservation and the registry
+                            # wholly or not at all.
+                            self._opened[fresh_client] = channel_key
+                            self._forget_settled()
                             reserved = True
                     if not reserved:
                         continue      # a close took the key; nothing is open
@@ -608,13 +707,22 @@ class SdkClientPool:
             if result is not None:
                 await self._enforce_caps(channel_key)  # outside entry.lock
                 return result
+        # #882 (diff review): both attempts can be spent WITHOUT meeting the
+        # loop-head closing check — a reset takes attempt 1's entry, a close
+        # takes attempt 2's reservation, and the second `continue` falls
+        # straight out of the loop. The refusal is then a teardown wearing the
+        # transient refusal's name, and the agent's fallback serves the turn on
+        # the bypass after the stop. Reported as: 1 client constructed, 1
+        # query, 1 answer, after shutdown completed.
+        if self._closing:
+            raise PoolClosing("pool closing")
         raise PoolUnavailable("entry unstable after retry")
 
     async def _entry_stub(self, channel_key: str) -> ManagedSdkClient:
         while True:
             async with self._pool_lock:
                 if self._closing:
-                    raise PoolUnavailable("pool closing")
+                    raise PoolClosing("pool closing")
                 barrier = self._invalidation_barriers.get(channel_key)
                 if barrier is None:
                     entry = self._entries.get(channel_key)
@@ -807,7 +915,28 @@ class SdkClientPool:
         close_group.add_done_callback(self._invalidation_groups.discard)
         await asyncio.shield(close_group)
 
-    async def aclose(self, *, drain_timeout: float = 120.0) -> None:
+    async def aclose(self, *, drain_timeout: float = 120.0,
+                     salvage_timeout: float = SALVAGE_TIMEOUT,
+                     force: bool = False) -> None:
+        """Close the pool. #881: this call OWNS its cleanup to the end.
+
+        Normally it drains: each recorded entry's lock awaited up to
+        ``drain_timeout``, force-closed when that expires, then one further
+        window for the invalidation closers. Two things now hold whatever
+        happens to the caller:
+
+        * a cancellation — the container's 15 s bound around ``Agent.aclose``,
+          or the event loop's own final sweep over a reload's background close
+          — stops the graceful waiting and runs ONE bounded, concurrent forced
+          cut over everything this pool has opened and not yet cut, and only
+          then propagates. Before this, a cancelled close left what it had
+          already removed from the entry map connected, with its transcript
+          unflushed and no later call on that path to reclaim it;
+        * ``force=True`` says the caller is already gone and there is no point
+          waiting for a lock — used by ``Agent.aclose`` when its own
+          cancellation arrived before it ever reached the pool. It runs the
+          SAME forced cut, so no teardown route reaches cleanup any other way.
+        """
         self._closing = True
         if self._sweeper is not None:
             self._sweeper.cancel()
@@ -837,7 +966,40 @@ class SdkClientPool:
         for barrier in barriers:
             if not barrier.done():
                 barrier.set_result(None)
-        for key, entry in entries + orphans:
+        pending = entries + orphans
+        cancelled: BaseException | None = None
+        drain = None
+        if force:
+            await self._forced_cut(None, pending, draining, salvage_timeout)
+        else:
+            drain = asyncio.ensure_future(
+                self._drain_recorded(pending, draining, invalidation_groups,
+                                     drain_timeout),
+            )
+            try:
+                # wait() never cancels its awaitable, so a cancellation
+                # delivered here leaves the drain to be stopped deliberately
+                # below rather than mid-disconnect.
+                await asyncio.wait({drain})
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+                drain.cancel()
+                await self._forced_cut(drain, pending, draining,
+                                       salvage_timeout)
+        if self in SdkClientPool._instances:
+            SdkClientPool._instances.remove(self)
+        if cancelled is not None:
+            raise cancelled
+        if drain is not None:
+            drain.result()
+
+    async def _drain_recorded(self, pending, draining, invalidation_groups,
+                              drain_timeout: float) -> None:
+        """The drain pass: each recorded entry's lock awaited up to the drain
+        timeout, force-closed when it expires, then one further window for
+        the invalidation closers. Unchanged from the shape #853 shipped; it
+        lives in its own coroutine so ``aclose`` can own it as a task."""
+        for key, entry in pending:
             try:
                 await asyncio.wait_for(entry.lock.acquire(), timeout=drain_timeout)
                 try:
@@ -859,12 +1021,93 @@ class SdkClientPool:
         for entry, owner in draining.items():
             if entry not in self._draining:
                 continue          # its closer finished, or the loop closed it
-            if entry.state == "closed":
-                await entry.aclose()           # join the disconnect in flight
-            else:
-                await self._force_close(owner.key, entry)
-        if self in SdkClientPool._instances:
-            SdkClientPool._instances.remove(self)
+            await self._finish_drain(owner.key, entry)
+        # #881: and finally anything this pool opened that is still uncut —
+        # what a cancelled reset, eviction, invalidation worker or
+        # warm-replacement flush left behind. None of those records a drain
+        # owner, so this sweep is the only thing that sees them.
+        for entry, key in list(self._opened.items()):
+            if entry.cut_settled:
+                continue
+            await self._finish_drain(key, entry)
+        self._forget_settled()
+
+    async def _finish_drain(self, key: str, entry: "ManagedSdkClient") -> None:
+        if entry.state == "closed":
+            await entry.aclose()               # join the disconnect in flight
+        else:
+            await self._force_close(key, entry)
+
+    def _forget_settled(self) -> None:
+        """Drop from the opened registry every client whose cut has settled.
+
+        Called where clients are added and after every forced cut, so the
+        registry holds only what still owes a transport cut."""
+        for entry in [e for e in self._opened if e.cut_settled]:
+            del self._opened[entry]
+
+    async def _forced_cut(self, drain, pending, draining,
+                          timeout: float) -> None:
+        """The ONE forced cut: cut, concurrently and inside ONE bounded window,
+        everything this pool has opened and not yet settled.
+
+        The work runs in a task created HERE — after the event loop's final
+        sweep has taken its snapshot, so nothing cancels it — and this frame
+        awaits it before returning or propagating. No cleanup outlives the
+        call, so no lifecycle owner above the pool is involved. Bounded because
+        a close that hangs the stop is not a repair: at the deadline the pass
+        is abandoned with a warning and whatever is still uncut stays in the
+        opened registry for a later close."""
+        work = asyncio.ensure_future(self._cut_everything(drain, pending,
+                                                          draining))
+        deadline = self._monotonic() + timeout
+        while not work.done():
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait({work}, timeout=remaining)
+            except asyncio.CancelledError:
+                continue           # a second cancellation does not shorten it
+        if not work.done():
+            work.cancel()
+            logger.warning(
+                "pool aclose: forced cut window (%.1fs) expired with clients "
+                "still uncut", timeout,
+            )
+
+    async def _cut_everything(self, drain, pending, draining) -> None:
+        if drain is not None:
+            try:
+                await asyncio.wait({drain})   # its unwind, before we touch the
+            except asyncio.CancelledError:    # same records
+                pass
+        cuts: dict[Any, str] = {}
+        for key, entry in pending:
+            if entry in self._draining:
+                cuts.setdefault(entry, key)
+        for entry, owner in draining.items():
+            if entry in self._draining:
+                cuts.setdefault(entry, owner.key)
+        for entry, key in self._opened.items():
+            if not entry.cut_settled:
+                cuts.setdefault(entry, key)
+        if not cuts:
+            return
+        # Concurrent, not serial: one window for the whole pool rather than one
+        # per entry, so the stop's close portion does not grow with the number
+        # of warm conversations.
+        await asyncio.gather(
+            *(self._finish_drain(key, entry) for entry, key in cuts.items()),
+            return_exceptions=True,
+        )
+        # A record is dropped only once its cut has settled, so a pass that
+        # could not finish still leaves a reclaimable entry rather than a
+        # forgotten live client.
+        for entry in cuts:
+            if entry.cut_settled:
+                self._draining.pop(entry, None)
+        self._forget_settled()
 
     def _channel_of(self, channel_key: str) -> str:
         return channel_key.partition("-")[0]
