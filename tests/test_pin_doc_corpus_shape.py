@@ -370,7 +370,7 @@ RELOAD_LAUNCH_CLAIMS = [
     ),
     (
         "drain-timeout-is-a-caller-overridable-default",
-        "architecture/turn-loop.md",
+        "architecture/sdk-client-pool.md",
         "each entry's lock is awaited up to a drain timeout — a default the "
         "caller may override",
     ),
