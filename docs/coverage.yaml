@@ -718,13 +718,13 @@
 - item: env:SDK_POOL_MAX_PER_AGENT
   doc: architecture/sdk-client-pool.md
 - item: env:SDK_RESUME_FAULT_LIMIT
-  doc: architecture/turn-loop.md
+  doc: architecture/sdk-client-pool.md
 - item: env:SDK_RETRY_CAP_MS
-  doc: architecture/turn-loop.md
+  doc: architecture/sdk-client-pool.md
 - item: env:SDK_RETRY_INITIAL_MS
-  doc: architecture/turn-loop.md
+  doc: architecture/sdk-client-pool.md
 - item: env:SDK_RETRY_MAX_ATTEMPTS
-  doc: architecture/turn-loop.md
+  doc: architecture/sdk-client-pool.md
 - item: env:SESSION_TTL_DAYS
   doc: architecture/persistent-state.md
 - item: env:SPECIALIST_COST_ALERT_THRESHOLD

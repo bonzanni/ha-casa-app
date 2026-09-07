@@ -149,6 +149,10 @@ registration (and its save-time retention). The retry resumes whatever survives 
 turn re-enters the normal fresh retry policy — up to the standard attempt limit, not a
 single extra try.
 
+**The pool cannot serve the turn.** It raises, and the turn creates its own client for this
+turn only. The two failures compose: a stale session id hit on that per-turn fallback
+re-enters the same stale-id recovery above, rather than surfacing raw.
+
 **The CLI does not match its pin.** Boot verifies the effective Claude CLI against a pinned
 path and exact pinned version, and a mismatch is *fatal at startup* — replacing or
 upgrading the CLI without moving the pin prevents Casa from starting rather than merely
@@ -170,10 +174,9 @@ be true for literally every turn belongs on the message-processing path around t
 not in the options assembly; anything that only needs to hold per client generation belongs
 in the options assembly, which is the one place that sees the fully-resolved context.
 
-Retry is tunable by environment too — `SDK_RETRY_MAX_ATTEMPTS` (3),
-`SDK_RETRY_INITIAL_MS` (500), `SDK_RETRY_CAP_MS` (8000) —
-and a server-supplied retry hint is honoured only up to ten times the backoff cap, never
-unboundedly — as is the resume-fault streak bound, `SDK_RESUME_FAULT_LIMIT` (2).
+Retry and the resume-fault streak are tuned by environment, alongside the pool's own
+bounds and in the same place a new bound belongs; the knobs and their defaults are
+listed in [`architecture/sdk-client-pool.md`](sdk-client-pool.md).
 
 ## Source & test map
 

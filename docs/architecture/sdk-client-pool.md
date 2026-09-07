@@ -192,11 +192,6 @@ started again by the next closer rather than reported as done.
 
 ## Failure behavior
 
-**The pool cannot serve the turn.** It raises, and the turn creates its own client for this
-turn only. The two failures compose: a stale session id hit on that per-turn fallback
-re-enters the same stale-id recovery the turn loop runs
-([`architecture/turn-loop.md`](turn-loop.md)), rather than surfacing raw.
-
 **The turn is cancelled.** The cancellation is re-raised after a bounded, shielded
 interrupt-and-drain cleanup of the pool entry — drained back to warm, or invalidated.
 
@@ -205,7 +200,10 @@ interrupt-and-drain cleanup of the pool entry — drained back to warm, or inval
 The pool is bounded three ways — a per-agent cap, a fleet-wide cap shared across agents, and
 an idle/age sweeper — and all three are environment-tunable: `SDK_POOL_MAX_PER_AGENT`
 (default 4), `SDK_POOL_FLEET_CAP` (8), `SDK_POOL_IDLE_SECONDS` (1800) and
-`SDK_POOL_MAX_AGE_SECONDS` (43200). A new
+`SDK_POOL_MAX_AGE_SECONDS` (43200). Retry is tunable the same way —
+`SDK_RETRY_MAX_ATTEMPTS` (3), `SDK_RETRY_INITIAL_MS` (500), `SDK_RETRY_CAP_MS` (8000) —
+and a server-supplied retry hint is honoured only up to ten times the backoff cap, never
+unboundedly — as is the resume-fault streak bound, `SDK_RESUME_FAULT_LIMIT` (2). A new
 bound belongs alongside these rather than in the turn body, so that eviction stays in one
 place.
 
