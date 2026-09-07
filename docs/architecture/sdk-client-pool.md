@@ -156,7 +156,9 @@ to do with teardown — keeps serving. And it lives where the pooled path's
 refusal is handled, which scheduled work and webhook one-shots never reach:
 those take the bypass because of what they are, so no heartbeat, reminder or
 trigger can be silenced by it. A turn already admitted when the stop is declared
-is outside this: it runs to its end as before.
+is outside this: it runs to its end as before, neither awaited nor cancelled —
+what the stop does with it is count it and say so
+([`concurrency-model.md`](concurrency-model.md), INV-CONC-006).
 
 **INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership; the pool additionally retains every client it has opened until that client's transport cut has settled. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows; no such path returns while a client it removed the key for is still connected; a cancelled pool close attempts a bounded concurrent cut of what it removed before propagating, rather than abandoning it; and whatever that window could not finish — like whatever a cancelled reset, eviction or invalidation worker leaves — stays retained by the pool and discoverable by every later close, never forgotten.
 
