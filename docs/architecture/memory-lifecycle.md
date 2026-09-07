@@ -167,8 +167,9 @@ re-register the slot at any suspension point. Every step therefore carries
 the session id its caller judged (the reaper's cold snapshot, a reset's own
 snapshot): the save entry point releases a claim that landed on a different
 session, `finish_save` and `clear_save_claim` decline when the stored id
-moved, and an explicit reset — which takes no claim at all, retaining its
-snapshot directly — has its trailing removal decline the same way — as do the reaper's direct removals
+moved, and an explicit reset — which takes no *save* claim, retaining its
+snapshot directly under the retirement claim it already holds — has its
+trailing removal decline the same way — as do the reaper's direct removals
 of unusable and recall-only entries (a snapshot without a session id guards
 on that absence).
 
