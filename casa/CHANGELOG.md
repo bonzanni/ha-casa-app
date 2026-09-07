@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.288.0] - 2026-09-07
+
+### Fixed
+
+- The shutdown log no longer reports a clean stop over turns that were still
+  running. When Casa stops, any turn the message bus had already dispatched keeps
+  running to its end — it is neither waited for nor cancelled — and until now the
+  completion record said nothing about them, so a stop that abandoned work in
+  flight looked identical to one that had none. The record now carries how many
+  such turns there were and why they were left.
+
 ## [0.287.0] - 2026-09-07
 
 ### Fixed
