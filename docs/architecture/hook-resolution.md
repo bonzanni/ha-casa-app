@@ -188,7 +188,13 @@ place for a constraint that must never be bypassed.
 
 **The bridge is up but the main application is not.** The opposite of the case above: the
 bridge answers hook resolution with an explicit deny, and the shim relays it. Hook-gated
-calls fail closed for the duration of a main-application restart.
+calls fail closed for as long as the main application is not serving on its internal
+socket. A restart is one such interval and a first boot is another: on a cold boot the
+socket has never been opened, and boot replay restarts the engagements that were mid-flight
+before it is opened, so an engagement the system has just resumed can be denied here. The
+deny is one of three answers that condition produces, one per surface;
+[`architecture/mcp-and-tools.md`](mcp-and-tools.md) carries all three and the window they
+share.
 
 **A hook runs long.** Hook forwarding is deliberately unbounded at the transport, governed
 by per-policy timeouts instead.

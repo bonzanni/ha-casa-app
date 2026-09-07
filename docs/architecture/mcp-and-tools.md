@@ -210,6 +210,38 @@ as a transport error, so a failing tool is a result, not a broken connection.
 answers temporarily-unavailable past it — the server side may still be executing. Hook forwarding's
 timeout behavior lives with hook resolution.
 
+**The main application is not reachable.** The bridge binds its port immediately and never
+waits for the main application, so a call can arrive with no internal socket to forward it
+to. A restart is one interval in which that happens; a first boot is another, and the
+corpus is easy to misread on this point. On a cold boot the socket has never been opened
+at all, and boot replay restarts the engagements that were mid-flight before it is opened,
+so an engagement the system has just resumed can act inside the interval and be refused.
+The window opens when replay starts those engagements and closes when the main application
+opens its internal socket. The interval itself is tracked as #880.
+
+The refusal wears three faces, one per surface, and a caller sees only its own:
+
+- When casa-main's internal socket is unreachable, `tools/call` returns JSON-RPC error
+  `-32000` with message
+  `casa_temporarily_unavailable: casa-main internal socket unreachable`. That is a
+  retryable condition the model handles; the bridge itself has no retry loop in the data
+  path.
+- When casa-main's internal socket is unreachable, `POST /hooks/resolve` returns HTTP 200
+  with `hookSpecificOutput.hookEventName: "PreToolUse"`, `permissionDecision: "deny"`, and
+  `permissionDecisionReason: "Permission relay unavailable: casa-main internal socket is
+  down. The tool was not run. Retry shortly or check addon logs."`. That is a verdict
+  rather than a retryable condition — the tool did not run — and the shim's own opposite,
+  fail-open behavior lives in [`architecture/hook-resolution.md`](hook-resolution.md).
+- When casa-main's internal socket is unreachable, registered `POST /internal/channel/*`
+  routes return HTTP 503 with body
+  `{"ok": false, "error": "casa_temporarily_unavailable"}`. A resumed engagement whose
+  first act is to post to its operator topic or raise an ask arrives here.
+
+None of the three is a defect the bridge failed to prevent; they are the price of the
+bridge never waiting. The alternative is a dropped connection, which the engagement's MCP
+client surfaces as a fatal handshake failure on its next request rather than as a
+recoverable answer.
+
 A wholly optional MCP server rides on the environment too: setting `N8N_URL` registers an
 n8n workflow server (bearer-authenticated when `N8N_API_KEY` is set); unset, nothing is
 registered. No manifest option exposes it — these variables are its only switch.
