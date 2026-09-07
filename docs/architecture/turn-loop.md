@@ -270,7 +270,9 @@ A generation already handed to an in-flight invalidation has left the pool's map
 closer that owns it takes the entry lock with no timeout — that is what lets a replacement
 turn start the moment the old one releases. So the pool retains what each closer owns, and
 shutdown, after its serial pass over the live entries, waits one further drain window for
-every closer together, then disconnects whatever a closer still could not lock. The closer
+every closer together, then disconnects whatever a closer still could not lock.
+The stop runs its agents' closes together rather than one after another, so that
+bound is one window for the fleet rather than one per resident and specialist. The closer
 is not cancelled: it finishes its handoff bookkeeping when the wedged turn releases, and a
 key reset that arrives meanwhile still joins it. Both force-close sites — the live-entry
 drain and the invalidated arm — go through one helper, which first fires the pool's
@@ -305,12 +307,55 @@ than adds, so a drain pass still meets one lock per key. A turn whose record is
 taken retries, and during shutdown that retry meets the same closing refusal
 every other post-shutdown turn meets.
 
-**INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows, and no such path returns while a client it removed the key for is still connected.
+What a refused turn then does is a decision, not a default. Ordinarily the
+refusal falls to the per-turn bypass, which builds a one-shot client of its
+own — the right answer while a configuration reload swaps a generation, because
+the runtime is not going anywhere and the refusal is momentary. Once the
+container has declared its graceful stop it is the wrong answer: it starts a
+fresh CLI subprocess after the stop began, on a turn nothing in the shutdown
+sequence bounds, whose answer is delivered onto channels the stop closes a few
+steps later. So the stop is declared to the turn path as a fact about the
+running runtime — not per agent, since a retired generation may still be serving
+a dispatched turn and a specialist may be installed after the stop — and from
+that point a refusal that means *this pool is closing* ends the turn instead of
+serving it. It ends as silence: these turns are notifications, and a caller
+waiting on a reply is resolved by the bus rather than left to time out.
 
-What this does not cover: a close whose own caller cancels it before it finishes.
-The container shutdown bounds each agent's close well below the pool's own drain
-default, and a cancelled close leaves what it had already removed for a later
-call that, on that path, does not come.
+The refusal is narrow in three ways, each of which is the difference between it
+and a turn nobody meant to drop. It is keyed on the stop, so every configuration
+reload keeps serving. It is keyed on the closing refusal specifically, so the
+transient *entry unstable after retry* refusal — an eviction race with nothing
+to do with teardown — keeps serving. And it lives where the pooled path's
+refusal is handled, which scheduled work and webhook one-shots never reach:
+those take the bypass because of what they are, so no heartbeat, reminder or
+trigger can be silenced by it. A turn already admitted when the stop is declared
+is outside this: it runs to its end as before.
+
+**INV-TURN-011**: A pool turn records its replacement client in the pool's entry map before it connects, and completing that connect never re-creates the membership; the pool additionally retains every client it has opened until that client's transport cut has settled. So every client the pool has opened is inside the enumeration of any close, invalidation or key reset that follows, and no such path returns — or propagates a cancellation — while a client it removed the key for is still connected.
+
+The cancelled close is the second half of that, and it used to be the hole. A
+close of the pool clears the entry map and writes its drain records before its
+first lock wait, so a caller that cancels it — the container bounding each
+agent's close well below the pool's own drain default, or the runtime's final
+task sweep reaching a reload's background close — left what it had already
+removed for a later call that, on those paths, does not come. A cancelled close
+now stops waiting for locks and cuts, concurrently and inside one bounded
+window, every client it still owes, and only then propagates the cancellation.
+The same forced cut is what an agent close reaches for when its own cancellation
+arrives before it ever entered the pool. What is promised is completion of the
+SDK's close protocol — the disconnect that flushes the transcript is started and
+awaited — not that the protocol never escalates to terminating the CLI, which is
+the SDK's own behaviour and not Casa's to promise.
+
+Retaining what the pool opened is what makes that cover routes no drain record
+reaches: a key reset or an eviction cancelled between removing its entry and
+closing it, an invalidation worker the final sweep cancels, the flush of a warm
+client a turn is replacing. Recording each of those sites separately was tried
+and dropped — four such routes were found one at a time, which is the shape of a
+mechanism that enumerates rather than encloses. And one transport cut runs per
+client, in its own task, so a cancelled closer cannot truncate it: completion is
+recorded when the disconnect actually returned, and a cut that was cancelled is
+started again by the next closer rather than reported as done.
 
 ## Source & test map
 
@@ -328,6 +373,7 @@ call that, on that path, does not come.
 - `casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.aclose`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::ManagedSdkClient`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::PoolUnavailable`
+- `casa/rootfs/opt/casa/sdk_client_pool.py::PoolClosing`
 - `casa/rootfs/opt/casa/retry.py::retry_sdk_call`
 - `casa/rootfs/opt/casa/retry.py::compute_backoff_ms`
 
@@ -335,6 +381,8 @@ call that, on that path, does not come.
 - `tests/test_agent_process.py::test_session_id_is_channel_plus_role`
 - `tests/test_agent_process.py::test_telegram_channel_autorecalls_on_fresh_session`
 - `tests/test_sdk_client_pool_pool.py`
+- `tests/test_pool_close_final_sweep.py`
+- `tests/test_shutdown_pool_and_refusal.py`
 - `tests/test_retry.py`
 - `tests/test_agent_api_error_message.py`
 
