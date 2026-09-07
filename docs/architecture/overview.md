@@ -138,4 +138,5 @@ is what the host renders.
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
 <!-- END SOURCEMAP -->

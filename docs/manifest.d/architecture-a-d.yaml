@@ -107,7 +107,7 @@
     - tests/test_scheduled_ask_user.py
     - tests/test_session_gate.py
     - tests/test_session_key_authority.py
-  related: [architecture/turn-loop.md, architecture/configuration.md, architecture/engagements.md, architecture/jobs-and-delivery.md]
+  related: [architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/configuration.md, architecture/engagements.md, architecture/jobs-and-delivery.md]
   defines_invariants: [INV-CONC-001, INV-CONC-002, INV-CONC-003, INV-CONC-004, INV-CONC-005]
   invariant_tests:
     INV-CONC-001: [tests/test_bus.py::test_handlers_dispatch_concurrently, tests/test_bus.py::test_priority_ordering]

@@ -109,7 +109,7 @@ engagement's client belongs to no pool, and the driver's own closers are the onl
 follow-up turn is unreachable from a reload and only the launch turn is exposed. Two edges to
 it are established from code, and they differ in kind. The first is the drain of the replaced
 agent's pool: that drain is backgrounded on purpose (see
-[`architecture/turn-loop.md`](turn-loop.md)), the launching entry stays locked for the whole
+[`architecture/sdk-client-pool.md`](sdk-client-pool.md)), the launching entry stays locked for the whole
 launch, and it is force-closed once the drain timeout expires — a default, spent serially per
 entry. That clock starts when the reload RETURNS — the dispatcher records every agent its cascade
 replaced and starts their drains as it exits, after its locks are released — not at the swap
@@ -305,6 +305,7 @@ persisting ledger checks it — is answered in the same document.
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)

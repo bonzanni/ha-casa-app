@@ -67,7 +67,8 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
 | the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused | [`architecture/prompt-file-guards.md`](architecture/prompt-file-guards.md) |
 | the setup tool's dispatch, its consent gating, or the route gate a setup obligation passes through | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
-| the turn lifecycle, the warm client pool, retry behaviour, or turn teardown | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
+| the turn lifecycle, retry behaviour, or how a turn's output and faults are classified | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
+| the warm client pool, client reuse or invalidation, a key reset, or pool teardown | [`architecture/sdk-client-pool.md`](architecture/sdk-client-pool.md) |
 | trigger types, resident webhook routing, one-shot firing and cleanup, scheduling, or who may write a resident's trigger file | [`architecture/triggers.md`](architecture/triggers.md) |
 | turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed | [`architecture/engagement-turn-admission.md`](architecture/engagement-turn-admission.md) |
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |

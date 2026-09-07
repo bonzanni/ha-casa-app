@@ -20,7 +20,7 @@ on the way back out — rendering and what a caller may claim from a result — 
 [`architecture/memory.md`](memory.md), and who may read it back is
 [`architecture/memory-scoping.md`](memory-scoping.md); the warm-client pool
 whose resume decision this lifecycle steers is
-[`architecture/turn-loop.md`](turn-loop.md).
+[`architecture/sdk-client-pool.md`](sdk-client-pool.md).
 
 ## Mental model
 
@@ -368,5 +368,6 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - [`architecture/memory.md`](../architecture/memory.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 <!-- END SOURCEMAP -->

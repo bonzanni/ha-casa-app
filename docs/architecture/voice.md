@@ -247,5 +247,6 @@ not the route's capabilities. Those answer different questions.
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/http-surface.md`](../architecture/http-surface.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
 - [`architecture/personality.md`](../architecture/personality.md)
 <!-- END SOURCEMAP -->
