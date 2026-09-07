@@ -8,6 +8,8 @@ import re
 import sys
 from io import StringIO
 
+import pytest
+
 from log_cid import (
     CidFilter,
     HumanFormatter,
@@ -20,7 +22,11 @@ from log_cid import (
 # #898: install_logging mutates process-global logging state; the guard fails
 # any test in this module that leaves that state altered for the next test on
 # its xdist worker. Autouse applies only where the name is imported.
-from logging_state import casa_logging_guard  # noqa: F401
+from logging_state import (  # noqa: F401 — autouse where imported
+    casa_logging_guard,
+    casa_logging_restored,
+    restore,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -175,22 +181,18 @@ class TestInstallLogging:
             if getattr(h, "_casa_owned", False)
         ]
 
+    @pytest.fixture(autouse=True)
+    def _entry_state(self, casa_logging_guard):
+        """The logging state this test started from, for ``_cleanup_casa``."""
+        self._entry = casa_logging_guard
+
     def _cleanup_casa(self) -> None:
         """Restore the process-global logging state so one test cannot
-        contaminate the next: drop Casa-owned handlers, restore the
-        original LogRecord factory if install_logging wrapped it, and
-        (belt-and-braces) strip any Casa-owned root filters left by
-        earlier plan iterations."""
-        root = logging.getLogger()
-        for h in list(root.handlers):
-            if getattr(h, "_casa_owned", False):
-                root.removeHandler(h)
-        factory = logging.getLogRecordFactory()
-        if getattr(factory, "_casa_owned", False):
-            logging.setLogRecordFactory(factory._wrapped)
-        for f in list(root.filters):
-            if getattr(f, "_casa_owned", False):
-                root.removeFilter(f)
+        contaminate the next: drop Casa-owned handlers and root filters and put
+        back the LogRecord factory — and, since #898, the root level and the
+        ``httpx``/``opentelemetry`` levels, which this helper used to leave
+        wherever ``install_logging`` had set them."""
+        restore(self._entry)
 
     def test_human_format_default(self, monkeypatch):
         monkeypatch.setenv("LOG_FORMAT", "human")
@@ -284,9 +286,10 @@ class TestInstallLogging:
                 f"got {logging.getLevelName(otel_logger.getEffectiveLevel())}"
             )
         finally:
+            # #898: _cleanup_casa now restores the level this test found the
+            # logger at, so the explicit reset that used to live here would
+            # itself be the residue.
             self._cleanup_casa()
-            # Restore default for subsequent tests.
-            otel_logger.setLevel(logging.NOTSET)
 
 
 class TestFormatDefaultIsJson:
@@ -296,9 +299,10 @@ class TestFormatDefaultIsJson:
         self, monkeypatch, capsys
     ):
         monkeypatch.delenv("LOG_FORMAT", raising=False)
-        install_logging(level=logging.INFO)
-        logging.getLogger("casa.test").info("hello")
-        line = capsys.readouterr().out.strip().splitlines()[-1]
+        with casa_logging_restored():           # #898: it is process-global
+            install_logging(level=logging.INFO)
+            logging.getLogger("casa.test").info("hello")
+            line = capsys.readouterr().out.strip().splitlines()[-1]
         payload = json.loads(line)
         assert payload["level"] == "INFO"
         assert payload["msg"] == "hello"
@@ -307,9 +311,10 @@ class TestFormatDefaultIsJson:
         self, monkeypatch, capsys
     ):
         monkeypatch.setenv("LOG_FORMAT", "human")
-        install_logging(level=logging.INFO)
-        logging.getLogger("casa.test").info("hello")
-        line = capsys.readouterr().out.strip().splitlines()[-1]
+        with casa_logging_restored():           # #898: it is process-global
+            install_logging(level=logging.INFO)
+            logging.getLogger("casa.test").info("hello")
+            line = capsys.readouterr().out.strip().splitlines()[-1]
         # human format starts with an ISO timestamp and has bracketed level
         assert "[INFO]" in line
         assert "hello" in line
