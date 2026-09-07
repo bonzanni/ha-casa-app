@@ -495,9 +495,10 @@ async def test_a_transient_pool_refusal_is_still_served_during_a_stop(tmp_path):
 # The stop cancels and gathers the bus's CONSUMER tasks only. Every turn runs
 # in a DISPATCH task, in a structurally disjoint map the stop never reads — so
 # "Casa core shutdown complete" is written while admitted turns are still
-# running. INV-CONC-003 makes that record truthful: it carries how many turns
-# the bus had dispatched and had not finished at that instant, and why they
-# were left. Nothing is awaited and nothing is cancelled.
+# running. INV-CONC-006 makes that record truthful: exactly one record,
+# carrying how many turns the bus had dispatched and had not finished at the
+# instant it was written, together with the reason they were left — that the
+# stop neither awaits nor cancels them.
 #
 # These drive a REAL ``MessageBus``: the four ``test_graceful_shutdown_*.py``
 # files all double the bus with an empty task list, so a step that reads the
