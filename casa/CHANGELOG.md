@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.286.0] - 2026-09-07
+
+### Fixed
+
+- Stopping the app, or reloading an agent, no longer leaves a Claude CLI
+  connection uncut when the stop runs out of time. The close removed each client
+  from the pool before waiting for it, so a client whose turn was still holding
+  its lock when the stop's deadline passed was never disconnected and nothing
+  later reclaimed it. What was lost was the graceful disconnect that flushes the
+  conversation, not the process itself.
+- A turn that arrives after the stop has been declared is now refused rather than
+  served on an unpooled fallback. A turn already running when the stop began is
+  unaffected and still runs to its end.
+
 ## [0.285.0] - 2026-09-07
 
 ### Fixed
