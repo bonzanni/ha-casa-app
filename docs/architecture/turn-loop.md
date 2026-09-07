@@ -171,7 +171,7 @@ not in the options assembly; anything that only needs to hold per client generat
 in the options assembly, which is the one place that sees the fully-resolved context.
 
 Retry is tunable by environment too — `SDK_RETRY_MAX_ATTEMPTS` (3),
-`SDK_RETRY_MAX_ATTEMPTS` (3), `SDK_RETRY_INITIAL_MS` (500), `SDK_RETRY_CAP_MS` (8000) —
+`SDK_RETRY_INITIAL_MS` (500), `SDK_RETRY_CAP_MS` (8000) —
 and a server-supplied retry hint is honoured only up to ten times the backoff cap, never
 unboundedly — as is the resume-fault streak bound, `SDK_RESUME_FAULT_LIMIT` (2).
 
