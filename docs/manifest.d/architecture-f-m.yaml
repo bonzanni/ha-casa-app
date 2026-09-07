@@ -87,7 +87,7 @@
     - tests/test_mcp_envelope.py
     - tests/test_casa_engagement_channel.py
   related: [architecture/plugins.md, architecture/hook-resolution.md, architecture/http-surface.md]
-  defines_invariants: [INV-MCP-001, INV-MCP-002, INV-MCP-003, INV-MCP-004, INV-MCP-005, INV-MCP-009, INV-MCP-010]
+  defines_invariants: [INV-MCP-001, INV-MCP-002, INV-MCP-003, INV-MCP-004, INV-MCP-005, INV-MCP-009, INV-MCP-010, INV-MCP-011]
   invariant_tests:
     INV-MCP-001: [tests/test_pin_g4_invariants.py::test_pin_inv_mcp_001_internal_dispatch_enforces_engagement_grant, tests/test_bridge_tools_allowed_gate.py::test_ungranted_tool_is_rejected, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_authenticated_but_unbindable_says_not_live, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_bound_but_ungranted_still_says_not_granted, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_unbound_caller_still_says_not_granted]
     INV-MCP-002: [tests/test_unix_socket_runner.py::test_unix_runner_creates_socket_with_mode_0600, tests/test_casa_engagement_channel.py::TestChannelServerTransportIsTcp8100::test_channel_server_posts_to_8100_not_unix_socket, tests/test_svc_casa_mcp.py::test_svc_admin_reload_not_reachable_on_8100]
@@ -96,6 +96,7 @@
     INV-MCP-005: [tests/test_engagement_auth_token.py::test_peek_refuses_to_return_mcp_json_contents]
     INV-MCP-009: [tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_cannot_reach_forbidden_casa_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_keeps_allowlisted_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_executor_record_is_not_ceilinged, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_unbound_caller_is_not_ceilinged]
     INV-MCP-010: [tests/test_workspace_tools_self_binding.py::test_peek_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_peek_allows_own_workspace_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_delete_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_list_filters_to_own_entry_when_engagement_bound]
+    INV-MCP-011: [tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_own_refusals_are_http_200, tests/test_pin_doc_corpus_shape.py::test_bridge_owner_documents_other_hook_refusals]
 
 - doc: architecture/hook-resolution.md
   summary: The hook-resolution path — credential-bound identity, per-executor policy maps and their fail-closed fallbacks, and the claude_code containment floor.

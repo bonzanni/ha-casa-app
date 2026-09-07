@@ -199,6 +199,22 @@ What it does not cover: unbound callers (the resident's in-process turns, the op
 own surfaces) keep full-range access — the binding constrains engagements, not the
 operator's agents.
 
+**INV-MCP-011**: Every refusal the bridge's hook-resolution route produces itself is delivered as an HTTP 200 body carrying a `deny` permission decision — an unparseable request body, an unreachable internal socket and a forwarder error alike — because the calling shim reads any non-2xx as a transport failure and answers allow.
+
+The shim is deliberately fail-open on transport: it is what stops a hook from blocking an
+engagement when Casa is unreachable, and its side of the arrangement is described in
+[`architecture/hook-resolution.md`](hook-resolution.md). The consequence is that the status
+code carries the refusal here. A deny answered as a `400` still reads as a deny in the
+handler and still carries its reason; the shim turns it into an allow, and the tool runs. The
+route therefore never sets a status on its own answers: the framework's 200 default is the
+contract, and the far end's status is not relayed either — a response from casa-main comes
+back as its body under the bridge's own 200.
+
+What it does not cover: an exception the handler does not catch, which escapes as the
+framework's own HTTP 500 and reaches the shim as a transport failure, tracked as #912. The
+far end is outside this rule entirely — it answers over the internal socket in its own status
+codes, and it is the bridge that flattens them.
+
 ## Failure behavior
 
 **An unknown tool name.** Resolution fails and the call is refused; nothing is invoked.
@@ -241,6 +257,33 @@ None of the three is a defect the bridge failed to prevent; they are the price o
 bridge never waiting. The alternative is a dropped connection, which the engagement's MCP
 client surfaces as a fatal handshake failure on its next request rather than as a
 recoverable answer.
+
+**Other bridge hook refusals.** These triggers are independent of socket availability, and
+each is a refusal the route produces itself, under INV-MCP-011.
+
+- When the bridge cannot parse the request body as JSON, `POST /hooks/resolve` returns HTTP
+  200 with `hookSpecificOutput.hookEventName: "PreToolUse"`, `permissionDecision: "deny"`,
+  and `permissionDecisionReason: "svc_casa_mcp /hooks/resolve: malformed JSON"`. The
+  forwarder is not reached at all, so an unparseable body never travels to casa-main.
+- When hook forwarding raises `aiohttp.ClientError` other than
+  `aiohttp.ClientConnectorError`, or raises `asyncio.TimeoutError`, `POST /hooks/resolve`
+  returns HTTP 200 with `hookSpecificOutput.hookEventName: "PreToolUse"`,
+  `permissionDecision: "deny"`, and `permissionDecisionReason: "Permission relay failed:
+  forwarder error talking to casa-main ({type(exc).__name__}: {exc or 'no detail'}). The
+  tool was not run."`, with the reason interpolated from the caught `exc`. The exception's
+  class name is part of the reason on purpose — it is the only handle an operator gets on
+  which transport failure occurred.
+
+The shipped shim cannot produce the first of those: it builds the request with `jq` and
+answers locally when the payload is not JSON, and repointing it through
+`CASA_HOOK_RESOLVE_URL` changes its destination, not that construction. The trigger belongs
+to another loopback client inside the container, or to an operator probing the port directly.
+
+A body that is valid JSON but is not an object is not a bridge refusal at all. The identity
+rebuild is skipped, the body is forwarded verbatim, and the internal handler answers
+`internal/hooks/resolve: body must be a JSON object`. The two malformed-request prefixes are
+deliberately different: they are how an operator reading a refusal tells which layer produced
+it.
 
 A wholly optional MCP server rides on the environment too: setting `N8N_URL` registers an
 n8n workflow server (bearer-authenticated when `N8N_API_KEY` is set); unset, nothing is
