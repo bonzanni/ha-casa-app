@@ -35,6 +35,14 @@ import callback_http
 import callback_spool
 from casa_core_middleware import CasaAccessLogger, cid_middleware
 
+# #898: install_logging mutates process-global logging state; the guard fails
+# any test in this module that leaves that state altered for the next test on
+# its xdist worker. Autouse applies only where the name is imported.
+from logging_state import (  # noqa: F401 — autouse where imported
+    casa_logging_guard,
+    casa_logging_restored,
+)
+
 # ``asyncio_mode = auto`` (pytest.ini) runs the async tests; the module mixes
 # them with sync unit tests, so no module-level asyncio mark.
 
@@ -931,19 +939,23 @@ class TestLogHygiene:
         from log_cid import install_logging
 
         monkeypatch.delenv("LOG_FORMAT", raising=False)   # JSON is the default
-        install_logging(level=logging.DEBUG)
-        callback_http.install_callback_log_redaction()
-        app = _build_app(middlewares=[cid_middleware])
-        async with _client(app, access_log=True) as client:
-            try:
-                await _get(
-                    client,
-                    f"/callback/{EFFECTIVE}?code=SECRETVALUE&pad="
-                    + "p" * 9000)
-            except Exception:  # noqa: BLE001 — the connection is dropped
-                pass
-            await asyncio.sleep(0.05)
-        out = capsys.readouterr().out
+        # #898: install_logging is process-global. Undo it here, or every later
+        # test on this xdist worker logs at DEBUG through a handler bound to
+        # this test's (by then closed) capture object.
+        with casa_logging_restored():
+            install_logging(level=logging.DEBUG)
+            callback_http.install_callback_log_redaction()
+            app = _build_app(middlewares=[cid_middleware])
+            async with _client(app, access_log=True) as client:
+                try:
+                    await _get(
+                        client,
+                        f"/callback/{EFFECTIVE}?code=SECRETVALUE&pad="
+                        + "p" * 9000)
+                except Exception:  # noqa: BLE001 — the connection is dropped
+                    pass
+                await asyncio.sleep(0.05)
+            out = capsys.readouterr().out
         assert "SECRETVALUE" not in out
         server_lines = [
             json.loads(line) for line in out.splitlines()

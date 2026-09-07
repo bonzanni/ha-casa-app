@@ -11,6 +11,14 @@ import pytest
 from casa_core_middleware import CasaAccessLogger
 from log_cid import cid_var, install_logging
 
+# #898: install_logging mutates process-global logging state; the guard fails
+# any test in this module that leaves that state altered for the next test on
+# its xdist worker. Autouse applies only where the name is imported.
+from logging_state import (  # noqa: F401 — autouse where imported
+    casa_logging_guard,
+    casa_logging_restored,
+)
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -221,19 +229,21 @@ class TestCidInRecord:
     """
 
     def test_cid_from_request_dict(self, caplog):
-        install_logging(level=logging.INFO)
-        logger = logging.getLogger("casa.access")
-        access = CasaAccessLogger(logger)
-        caplog.set_level(logging.INFO, logger="casa.access")
-        access.log(_fake_request(cid="abcdef01"), _fake_response(), 0.010)
+        with casa_logging_restored():           # #898: it is process-global
+            install_logging(level=logging.INFO)
+            logger = logging.getLogger("casa.access")
+            access = CasaAccessLogger(logger)
+            caplog.set_level(logging.INFO, logger="casa.access")
+            access.log(_fake_request(cid="abcdef01"), _fake_response(), 0.010)
         assert caplog.records[0].cid == "abcdef01"
 
     def test_missing_request_cid_falls_back_to_dash(self, caplog):
-        install_logging(level=logging.INFO)
-        logger = logging.getLogger("casa.access")
-        access = CasaAccessLogger(logger)
-        caplog.set_level(logging.INFO, logger="casa.access")
-        access.log(_fake_request(), _fake_response(), 0.010)
+        with casa_logging_restored():           # #898: it is process-global
+            install_logging(level=logging.INFO)
+            logger = logging.getLogger("casa.access")
+            access = CasaAccessLogger(logger)
+            caplog.set_level(logging.INFO, logger="casa.access")
+            access.log(_fake_request(), _fake_response(), 0.010)
         assert caplog.records[0].cid == "-"
 
     def test_ignores_contextvar(self, caplog):
@@ -241,15 +251,17 @@ class TestCidInRecord:
         nested test), the access logger reads from the request dict.
         This pins the behaviour against the aiohttp lifecycle quirk.
         """
-        install_logging(level=logging.INFO)
-        logger = logging.getLogger("casa.access")
-        access = CasaAccessLogger(logger)
-        token = cid_var.set("deadbeef")
-        try:
-            caplog.set_level(logging.INFO, logger="casa.access")
-            access.log(_fake_request(cid="abcdef01"), _fake_response(), 0.010)
-        finally:
-            cid_var.reset(token)
+        with casa_logging_restored():           # #898: it is process-global
+            install_logging(level=logging.INFO)
+            logger = logging.getLogger("casa.access")
+            access = CasaAccessLogger(logger)
+            token = cid_var.set("deadbeef")
+            try:
+                caplog.set_level(logging.INFO, logger="casa.access")
+                access.log(_fake_request(cid="abcdef01"), _fake_response(),
+                           0.010)
+            finally:
+                cid_var.reset(token)
         # request["cid"] wins, not cid_var
         assert caplog.records[0].cid == "abcdef01"
 
@@ -279,12 +291,13 @@ class TestJsonMode:
         self, monkeypatch, capsys
     ):
         monkeypatch.setenv("LOG_FORMAT", "json")
-        install_logging(level=logging.INFO)
-        logger = logging.getLogger("casa.access")
-        access = CasaAccessLogger(logger)
-        access.log(_fake_request("POST", "/healthz", cid="facefeed"),
-                   _fake_response(200, 5), 0.002)
-        captured = capsys.readouterr().out
+        with casa_logging_restored():           # #898: it is process-global
+            install_logging(level=logging.INFO)
+            logger = logging.getLogger("casa.access")
+            access = CasaAccessLogger(logger)
+            access.log(_fake_request("POST", "/healthz", cid="facefeed"),
+                       _fake_response(200, 5), 0.002)
+            captured = capsys.readouterr().out
         last = [line for line in captured.splitlines() if line.strip()][-1]
         payload = json.loads(last)
         assert payload["level"] == "INFO"
