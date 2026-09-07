@@ -611,49 +611,42 @@ def _hook_refusal_cases():
 async def test_svc_hooks_resolve_own_refusals_are_http_200(
     label, payload, fwd, reason, counts,
 ) -> None:
-    """INV-MCP-011: every refusal this route produces itself is an HTTP 200
-    carrying a `deny` verdict — not a 4xx, not a 5xx.
+    """INV-MCP-011: pin bridge-owned refusal status, body and forward counts.
 
-    The transport is the load-bearing half and the silent one. `hook_proxy.sh`
-    reads any non-2xx as a transport failure and answers `allow`; the deny only
-    reaches Claude Code because it arrives as a 200 with a body. So this
-    asserts the STATUS alongside the whole decoded body, on every arm the
-    handler answers itself.
+    Resolve the registered POST route without a TCP listener. Request JSON
+    parsing and response construction are real; only the forwarder is mocked.
 
-    The malformed arm's reason literal is asserted exactly, and it is
-    deliberately distinct from the far end's `internal/hooks/resolve: malformed
-    JSON`: the prefix is how an operator tells which layer refused. A change
-    collapsing the two turns this red.
-
-    The empty detail in the timeout arm's reason is fidelity to the code, not
-    an oversight — `exc or 'no detail'` selects the exception, which is truthy,
-    and `str(asyncio.TimeoutError())` is empty.
-
-    What this does not cover, on purpose: an exception the handler does NOT
-    catch escapes as aiohttp's own 500, which the shim converts into an allow.
-    That residual is #912; it is not this test's subject and is not fixed here.
-
-    This PINS behaviour the tree already has, so its red is a mutation, not a
-    pre-fix failure. Mutation-checked by its specifier across the three refusal
-    branches: HTTP 200 -> 400, `deny` -> `allow`, and an altered reason, nine
-    independent mutations, each caught. The change's pre-fix red lives in the
-    documentation arm,
-    ``tests/test_pin_doc_corpus_shape.py::test_bridge_owner_documents_other_hook_refusals``.
-
-    Specified by **astra** in the drive red-case round; accepted by **terra**.
+    This pins existing behavior; its behavioral red is a mutation.
+    Uncaught exceptions (#912) are outside this test's scope.
     """
+    import asyncio
+
+    import aiohttp
+    from aiohttp.test_utils import make_mocked_request
+
     app = _make_svc_app(tools=[], forward_call=fwd)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.post(
-            "/hooks/resolve", data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        assert resp.status == 200
-        assert json.loads(await resp.text()) == {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            },
-        }
+    stream = aiohttp.streams.StreamReader(
+        MagicMock(), 2 ** 16, loop=asyncio.get_running_loop(),
+    )
+    stream.feed_data(payload)
+    stream.feed_eof()
+    request = make_mocked_request(
+        "POST",
+        "/hooks/resolve",
+        payload=stream,
+        app=app,
+        headers={"Content-Type": "application/json"},
+    )
+
+    match = await app.router.resolve(request)
+    resp = await match.handler(request)
+
+    assert resp.status == 200
+    assert json.loads(resp.body) == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
     assert (fwd.call_count, fwd.await_count) == counts
