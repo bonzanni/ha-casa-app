@@ -35,6 +35,11 @@ import callback_http
 import callback_spool
 from casa_core_middleware import CasaAccessLogger, cid_middleware
 
+# #898: install_logging mutates process-global logging state; the guard fails
+# any test in this module that leaves that state altered for the next test on
+# its xdist worker. Autouse applies only where the name is imported.
+from logging_state import casa_logging_guard  # noqa: F401
+
 # ``asyncio_mode = auto`` (pytest.ini) runs the async tests; the module mixes
 # them with sync unit tests, so no module-level asyncio mark.
 

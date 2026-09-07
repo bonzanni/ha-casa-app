@@ -17,6 +17,11 @@ from log_cid import (
     new_cid,
 )
 
+# #898: install_logging mutates process-global logging state; the guard fails
+# any test in this module that leaves that state altered for the next test on
+# its xdist worker. Autouse applies only where the name is imported.
+from logging_state import casa_logging_guard  # noqa: F401
+
 
 # ---------------------------------------------------------------------------
 # cid_var + new_cid
