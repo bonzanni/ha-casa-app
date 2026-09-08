@@ -161,33 +161,40 @@ def restore(before: LoggingState) -> None:
     position it held. Handlers and filters that are not ``_casa_owned`` are never
     touched; a suite-wide restorer that swept them would be deleting state that
     belongs to whoever installed it.
+
+    THE WHOLE FUNCTION IS ONE CRITICAL SECTION under logging's own structural
+    lock. Two review rounds found two different interleavings against a narrower
+    section — a concurrent emitter seeing a half-moved handler list, then a
+    concurrent removal between deciding what was missing and putting it back —
+    so the section was generalised to cover the entire read-decide-write rather
+    than sharpened around each window in turn. Everything called inside
+    (``removeHandler``, ``setLevel``) takes that same lock re-entrantly, it is an
+    ``RLock``, and no user code runs in here, so there is nothing to deadlock
+    against. The lock is reached through ``getattr`` because it is private: a
+    restore helper must degrade to no locking rather than break outright if an
+    interpreter renames it.
     """
     root = logging.getLogger()
-    keep = [h for _, h in before.handlers]
-    for h in casa_handlers():
-        if not any(h is k for k in keep):
-            root.removeHandler(h)
-    missing = [(idx, h) for idx, h in before.handlers
-               if not any(h is existing for existing in root.handlers)]
-    if missing:
-        # Position matters, and ``addHandler`` can only APPEND: adding first and
-        # reordering afterwards publishes a list in the wrong order for as long
-        # as it takes to fix it, and a record emitted from another thread in that
-        # window reaches the handlers in an order this function never intends
-        # (terra, review round 1). So build the ordered list and REBIND it in a
-        # single assignment — a concurrent ``callHandlers`` iterating the old
-        # list holds its own reference and sees one consistent order or the
-        # other. Under logging's own structural lock, so that a concurrent
-        # ``addHandler``/``removeHandler`` cannot be lost between the read and
-        # the write; ``getattr`` because that lock is private and this must
-        # degrade rather than break on an interpreter that renames it.
-        with getattr(logging, "_lock", None) or nullcontext():
+    with getattr(logging, "_lock", None) or nullcontext():
+        keep = [h for _, h in before.handlers]
+        for h in casa_handlers():
+            if not any(h is k for k in keep):
+                root.removeHandler(h)
+        missing = [(idx, h) for idx, h in before.handlers
+                   if not any(h is existing for existing in root.handlers)]
+        if missing:
+            # Position matters, and ``addHandler`` can only APPEND: adding first
+            # and reordering afterwards would publish a list in an order this
+            # function never intends. Build the ordered list and REBIND it in a
+            # single assignment instead — a ``callHandlers`` already iterating
+            # the old list holds its own reference and sees one consistent order
+            # or the other.
             ordered = list(root.handlers)
             for idx, h in missing:
                 if not any(h is existing for existing in ordered):
                     ordered.insert(min(idx, len(ordered)), h)
             root.handlers = ordered
-    _apply(before)
+        _apply(before)
 
 
 @contextmanager

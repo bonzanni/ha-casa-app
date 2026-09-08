@@ -325,3 +325,73 @@ class TestReinstatementDoesNotDisturbTheLiveHandlerList:
             for x in (h, foreign):
                 if x in root.handlers:
                     root.removeHandler(x)
+
+    def test_restore_reconciles_the_whole_state_in_one_critical_section(
+            self, monkeypatch):
+        """Review round 2 (terra, S2): a narrower section left a window between
+        deciding which handlers were missing and putting them back, in which a
+        concurrent removal defeated the reinstatement silently. The section was
+        GENERALISED to the whole read-decide-write rather than sharpened again,
+        and this is that generalisation as an assertion: every logging mutation
+        `restore` performs is made while `restore` itself already holds
+        logging's structural lock, so nothing observes a partial restoration and
+        nothing is lost between the read and the write."""
+        import threading
+
+        real = threading.RLock()
+        depth = {"now": 0, "min_seen": None}
+
+        class Recording:
+            def __enter__(self):
+                real.acquire()
+                depth["now"] += 1
+                return self
+
+            def __exit__(self, *exc):
+                depth["now"] -= 1
+                real.release()
+                return False
+
+            # `logging._acquireLock`/`_releaseLock` still call these directly.
+            def acquire(self):
+                self.__enter__()
+
+            def release(self):
+                self.__exit__()
+
+        def note():
+            seen = depth["now"]
+            if depth["min_seen"] is None or seen < depth["min_seen"]:
+                depth["min_seen"] = seen
+
+        root = logging.getLogger()
+        keep, stale = _casa_handler(), _casa_handler()
+        root.addHandler(keep)
+        try:
+            before = snapshot()
+            root.removeHandler(keep)
+            root.addHandler(stale)
+            real_remove = logging.Logger.removeHandler
+            real_set_level = logging.Logger.setLevel
+
+            def remove_spy(self, hdlr):
+                note()
+                real_remove(self, hdlr)
+
+            def set_level_spy(self, level):
+                note()
+                real_set_level(self, level)
+
+            monkeypatch.setattr(logging, "_lock", Recording())
+            monkeypatch.setattr(logging.Logger, "removeHandler", remove_spy)
+            monkeypatch.setattr(logging.Logger, "setLevel", set_level_spy)
+            restore(before)
+            # Both the removal of the handler that was not in the snapshot and
+            # the level restoration ran INSIDE restore's own acquisition.
+            assert depth["min_seen"] is not None and depth["min_seen"] >= 1
+            assert any(h is keep for h in root.handlers)
+            assert not any(h is stale for h in root.handlers)
+        finally:
+            for x in (keep, stale):
+                if x in root.handlers:
+                    root.removeHandler(x)
