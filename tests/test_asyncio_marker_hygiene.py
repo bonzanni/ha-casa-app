@@ -11,7 +11,8 @@ three things is true of the SOURCE:
    class, where a base counts only when it is written as an unqualified name
    whose exact spelling is a ``class`` statement in the same module's flattened
    suite (following is transitive over such bases, and cycle-safe);
-3. the marker decorates the test.
+3. the marker decorates the test, or decorates a class that lexically encloses
+   it.
 
 The marker itself is recognised by two spellings and no others: an attribute
 ``asyncio`` whose owner is an attribute named ``mark`` (so ``pytest.mark.asyncio``
@@ -68,9 +69,13 @@ Scoped, and the scope is a limit rather than coverage claimed:
   ``Test*`` classes (``pytest.ini`` overrides neither ``python_functions`` nor
   ``python_classes``), minus anything opted out with ``__test__ = False`` on the
   module, on the class or on the function — because a name this rule policed
-  that pytest never collects would be a false accusation. It does not claim to
-  model every collection rule pytest has; it models the ones this tree can
-  express.
+  that pytest never collects would be a false accusation. An opt-out counts only
+  when it is UNMISTAKABLE: exactly one ``__test__`` assignment in the suite, a
+  direct statement of that suite's own body, bound to the literal ``False``. A
+  conditional, repeated or computed one leaves the suite in scope, because an
+  opt-out is the one clause where reading the source too readily makes the guard
+  fall SILENT rather than accuse. It does not claim to model every collection
+  rule pytest has; it models the ones this tree can express.
 - The rule is **syntactic by definition**, not an attempt to work out what a
   ``pytestmark`` binding evaluates to: a synchronous test is in violation when
   the marker is NAMED in a ``pytestmark`` assignment somewhere in its module
@@ -169,37 +174,58 @@ def _is_asyncio_mark(node: ast.expr, aliases: frozenset[str]) -> bool:
     return isinstance(owner, ast.Name) and owner.id in aliases
 
 
-def _opted_out(stmts: list[ast.stmt]) -> bool:
-    """Does this suite set ``__test__ = False``?
+def _opted_out(direct: list[ast.stmt], stmts: list[ast.stmt]) -> bool:
+    """Is this suite UNCONDITIONALLY and UNAMBIGUOUSLY opted out of collection?
 
-    pytest honours that attribute and skips the module or class entirely, so a
-    name under it is never collected and accusing it would be a false
-    accusation — the acceptor returned an earlier draft of this red case on
-    exactly that input.
+    pytest honours ``__test__ = False`` and skips the module or class entirely,
+    so a name under it is never collected and accusing it would be a false
+    accusation. But an opt-out is the one clause where believing the source too
+    readily makes the guard MISS a violation rather than invent one, and a
+    reviewer reproduced both ways of exploiting that: a ``__test__ = False``
+    nested in an ``if``, and one later reset to ``True``. Either would silence
+    this guard over a module pytest still collects.
+
+    So the opt-out is honoured only when it is unmistakable: exactly one
+    ``__test__`` assignment anywhere in the suite, written as a direct statement
+    of the suite's own body rather than inside an ``if``/``try``/``with``, and
+    bound to the literal ``False``. Anything else — conditional, repeated,
+    computed — leaves the suite IN scope, which is the conservative direction:
+    the guard accuses and a human looks, instead of falling silent.
     """
-    return any(isinstance(stmt, ast.Assign)
-               and any(isinstance(t, ast.Name) and t.id == "__test__"
-                       for t in stmt.targets)
-               and isinstance(stmt.value, ast.Constant)
-               and stmt.value.value is False
-               for stmt in stmts)
+    assignments = [stmt for stmt in stmts
+                   if isinstance(stmt, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "__test__"
+                           for t in stmt.targets)]
+    if len(assignments) != 1:
+        return False
+    only = assignments[0]
+    return (any(only is stmt for stmt in direct)
+            and isinstance(only.value, ast.Constant)
+            and only.value.value is False)
 
 
-def _functions_opted_out(stmts: list[ast.stmt]) -> set[str]:
-    """Names this suite opts out with a post-definition ``f.__test__ = False``."""
-    out: set[str] = set()
+def _functions_opted_out(direct: list[ast.stmt],
+                         stmts: list[ast.stmt]) -> set[str]:
+    """Names this suite opts out with a post-definition ``f.__test__ = False``.
+
+    Held to the same bar as ``_opted_out``: exactly one assignment to that
+    name's ``__test__`` in the suite, a direct statement of the suite's body,
+    bound to the literal ``False``.
+    """
+    seen: dict[str, list[ast.Assign]] = {}
     for stmt in stmts:
         if not isinstance(stmt, ast.Assign):
-            continue
-        if not (isinstance(stmt.value, ast.Constant)
-                and stmt.value.value is False):
             continue
         for target in stmt.targets:
             if (isinstance(target, ast.Attribute)
                     and target.attr == "__test__"
                     and isinstance(target.value, ast.Name)):
-                out.add(target.value.id)
-    return out
+                seen.setdefault(target.value.id, []).append(stmt)
+    return {name for name, rows in seen.items()
+            if len(rows) == 1
+            and any(rows[0] is stmt for stmt in direct)
+            and isinstance(rows[0].value, ast.Constant)
+            and rows[0].value.value is False}
 
 
 def _marks(value: ast.expr) -> list[ast.expr]:
@@ -287,19 +313,24 @@ def marked_sync_tests(source: bytes, filename: str) -> list[str]:
     aliases = _mark_aliases(module_stmts)
     classes = _classes_in(module_stmts)
 
-    def visit(stmts: list[ast.stmt], prefix: str, inherited: str | None) -> None:
-        skip = _functions_opted_out(stmts)
+    def visit(direct: list[ast.stmt], stmts: list[ast.stmt], prefix: str,
+              inherited: str | None) -> None:
+        skip = _functions_opted_out(direct, stmts)
         for stmt in stmts:
             if isinstance(stmt, ast.ClassDef):
                 if not stmt.name.startswith("Test") or stmt.name in skip:
                     continue
                 inner = _suite_statements(stmt.body)
-                if _opted_out(inner):
+                if _opted_out(stmt.body, inner):
                     continue
-                source_of = ("class-level pytestmark"
-                             if _class_marked(stmt, classes, aliases)
-                             else inherited)
-                visit(inner, f"{prefix}{stmt.name}.", source_of)
+                if any(_is_asyncio_mark(d, aliases)
+                       for d in stmt.decorator_list):
+                    source_of = "class decorator"
+                elif _class_marked(stmt, classes, aliases):
+                    source_of = "class-level pytestmark"
+                else:
+                    source_of = inherited
+                visit(stmt.body, inner, f"{prefix}{stmt.name}.", source_of)
             elif isinstance(stmt, ast.FunctionDef):
                 if not stmt.name.startswith("test") or stmt.name in skip:
                     continue
@@ -312,12 +343,12 @@ def marked_sync_tests(source: bytes, filename: str) -> list[str]:
                         f"{filename}:{stmt.lineno}:{prefix}{stmt.name} "
                         f"({source_of})")
 
-    if _opted_out(module_stmts):
+    if _opted_out(tree.body, module_stmts):
         return found
     module_source = ("module-level pytestmark"
                      if _suite_pytestmark_is_asyncio(module_stmts, aliases)
                      else None)
-    visit(module_stmts, "", module_source)
+    visit(tree.body, module_stmts, "", module_source)
     return found
 
 
@@ -445,6 +476,37 @@ class TestTheDetectorDetects:
                + "\ndef test_sync():\n    pass\n").encode()
         assert marked_sync_tests(src, "test_annotation_probe.py") == [
             "test_annotation_probe.py:4:test_sync (decorator)"]
+
+    def test_a_class_decorator_is_a_source(self) -> None:
+        """A diff reviewer's finding: pytest unpacks a class DECORATOR as a mark
+        on every test in the class, and only function decorators were read."""
+        decorator = "@" + "pytest.mark.asyncio"
+        src = ("import pytest\n" + decorator + "\nclass TestA:\n"
+               "    def test_sync(self):\n        pass\n").encode()
+        assert marked_sync_tests(src, "m.py") == [
+            "m.py:4:TestA.test_sync (class decorator)"]
+
+    @pytest.mark.parametrize("opt_out", [
+        b"    if True:\n        __test__ = False\n",
+        b"    __test__ = False\n    __test__ = True\n",
+        b"    __test__ = 0\n",
+    ])
+    def test_an_ambiguous_opt_out_leaves_the_suite_in_scope(
+            self, opt_out: bytes) -> None:
+        """The same reviewer, second half: an opt-out is the one clause where
+        believing the source makes the guard fall SILENT instead of accusing, so
+        a conditional, repeated or computed `__test__` does not silence it."""
+        src = (b"import pytest\npytestmark = pytest.mark.asyncio\n"
+               b"class TestA:\n" + opt_out
+               + b"    def test_sync(self):\n        pass\n")
+        assert len(marked_sync_tests(src, "m.py")) == 1, opt_out
+
+    def test_a_reset_function_opt_out_leaves_the_test_in_scope(self) -> None:
+        src = (b"import pytest\npytestmark = pytest.mark.asyncio\n"
+               b"def test_x():\n    pass\n"
+               b"test_x.__test__ = False\ntest_x.__test__ = True\n")
+        assert marked_sync_tests(src, "m.py") == [
+            "m.py:3:test_x (module-level pytestmark)"]
 
     def test_a_decorator_is_a_source(self) -> None:
         # Assembled rather than written out: the repository's pre-commit hook
