@@ -285,6 +285,31 @@ def _build_hooks_handler(*, forward_to_internal: ForwardCallable):
                     "permissionDecisionReason": reason,
                 }},
             )
+        except Exception as exc:  # noqa: BLE001
+            # #912: anything else escaping here is rendered by aiohttp as its
+            # own HTTP 500, and hook_proxy.sh's `curl -sf ... || { echo allow; }`
+            # converts every non-2xx into the byte-identical fail-open ALLOW it
+            # emits when Casa is unreachable — so a bridge defect would become a
+            # permission GRANT. Refuse instead, and put the traceback where an
+            # operator can find it. `Exception`, never `BaseException`: a
+            # cancelled request delivers nothing to any shim, so a verdict for
+            # it would be a verdict nobody reads. The class name rides in the
+            # reason; the message does not, because a decode error's message
+            # quotes the far end's body into a reason the model reads.
+            logger.exception(
+                "svc_casa_mcp /hooks/resolve: unexpected forwarding error "
+                "— refusing fail-closed",
+            )
+            return web.json_response(
+                {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason":
+                        f"Permission relay failed: unexpected bridge error "
+                        f"({type(exc).__name__}). The tool was not run. "
+                        f"Check addon logs.",
+                }},
+            )
 
         return web.json_response(result)
 

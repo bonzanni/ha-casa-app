@@ -599,6 +599,19 @@ OTHER_HOOK_REFUSAL_CLAIMS = (
     '`permissionDecisionReason: "Permission relay failed: forwarder error '
     'talking to casa-main ({type(exc).__name__}: {exc or \'no detail\'}). '
     'The tool was not run."`, with the reason interpolated from the caught `exc`.',
+
+    # #912: the arm that keeps a bridge DEFECT from becoming a permission
+    # grant. Its diagnostic half is part of the description on purpose — an
+    # ERROR-with-traceback is what distinguishes it from the two WARN arms
+    # above, and a reader who cannot make that distinction cannot tell a
+    # programming error from a transport failure.
+    'When hook forwarding raises any other exception, '
+    '`POST /hooks/resolve` returns HTTP 200 with '
+    '`hookSpecificOutput.hookEventName: "PreToolUse"`, '
+    '`permissionDecision: "deny"`, and '
+    '`permissionDecisionReason: "Permission relay failed: unexpected bridge '
+    'error ({type(exc).__name__}). The tool was not run. Check addon logs."`, '
+    'and the exception is logged at ERROR with its traceback.',
 )
 
 
@@ -619,10 +632,12 @@ def test_bridge_owner_documents_other_hook_refusals():
     response description; the declaration and its test binding are already the
     corpus verifier's own gates.
 
-    What the guarantee does not cover, and what the document says so: an
-    exception the handler does not catch escapes as aiohttp's own 500, which
-    the shim converts into an allow. That residual is #912, and neither this
-    test nor this change addresses it.
+    #912 closed the residual this docstring used to record as open: an
+    exception the handler does not catch no longer escapes as aiohttp's own
+    500 for the shim to convert into an allow, and the third claim above is
+    that arm's description. What the guarantee still does not cover is stated
+    by the document rather than here: `asyncio.CancelledError` and anything
+    else outside `Exception` still propagates.
 
     Red case demonstrated at c9e05f58: the counts are ``(0, 0)``. Ownership
     resolves through the coverage ledger and the section is found — the two
@@ -642,4 +657,4 @@ def test_bridge_owner_documents_other_hook_refusals():
     owner = _ledger_owner("casa/rootfs/opt/casa/svc_casa_mcp.py")
     section = _normalized(_section(owner, "Failure behavior"))
     counts = tuple(section.count(claim) for claim in OTHER_HOOK_REFUSAL_CLAIMS)
-    assert counts == (1, 1), (owner, counts)
+    assert counts == (1, 1, 1), (owner, counts)

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.289.0] - 2026-09-08
+
+### Fixed
+
+- An unexpected internal error while resolving a tool-permission hook now refuses
+  the tool instead of letting it run. The bridge that relays permission decisions
+  caught the two transport errors it expected and let anything else escape, where
+  it became a generic server error — and the shim that calls it treats every such
+  error as "Casa is unreachable" and allows the tool, by design. So a defect in
+  the bridge could turn a refusal into a grant. Any unexpected error there is now
+  answered as an explicit refusal, with the failure recorded in the add-on logs.
+
 ## [0.288.0] - 2026-09-07
 
 ### Fixed

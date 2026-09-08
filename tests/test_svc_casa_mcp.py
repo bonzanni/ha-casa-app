@@ -617,7 +617,10 @@ async def test_svc_hooks_resolve_own_refusals_are_http_200(
     parsing and response construction are real; only the forwarder is mocked.
 
     This pins existing behavior; its behavioral red is a mutation.
-    Uncaught exceptions (#912) are outside this test's scope.
+    The route's fourth arm — any other exception escaping the forwarder, #912 —
+    is pinned by
+    ``test_svc_hooks_resolve_unexpected_forwarder_exception_denies`` below,
+    which asserts an ERROR record and a traceback this table does not read.
     """
     import asyncio
 
@@ -650,3 +653,260 @@ async def test_svc_hooks_resolve_own_refusals_are_http_200(
         },
     }
     assert (fwd.call_count, fwd.await_count) == counts
+
+
+# ---------------------------------------------------------------------------
+# #912 — an unexpected exception escaping the forwarder must not become a
+# permission GRANT. Specified by **astra** in the drive red-case round.
+# ---------------------------------------------------------------------------
+
+
+class _BridgeFault(Exception):
+    """A direct Exception subclass with no aiohttp ancestry.
+
+    Structural fault injection, NOT a claim that any shipped path raises it:
+    it stands for the class of programming errors a future edit can introduce
+    between the forwarder call and its return.
+    """
+
+
+async def _real_aiohttp_decode_error(body: bytes):
+    """Return the exception aiohttp 3.x's OWN decoder raises for `body`.
+
+    The far end's bytes are decoded by ``ClientResponse.json``, whose final
+    step is ``loads(stripped.decode(encoding))`` — so a body advertised as
+    ``application/json`` raises ``UnicodeDecodeError`` from ``.decode()`` or
+    ``json.JSONDecodeError`` from ``loads()``. Neither is an
+    ``aiohttp.ClientError``.
+
+    aiohttp's real implementation is executed here against a minimal response
+    stand-in rather than re-derived, so the exception instance handed to the
+    route is the one the shipped decode path at ``svc_casa_mcp.py``'s
+    ``await resp.json()`` would produce. No socket, no session, no listener.
+    """
+    from types import SimpleNamespace
+
+    from aiohttp import ClientResponse
+
+    async def _read():
+        raise AssertionError("body is preloaded; read() must not be reached")
+
+    resp = SimpleNamespace(
+        _body=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        status=200,
+        history=(),
+        request_info=None,
+        get_encoding=lambda: "utf-8",
+        read=_read,
+    )
+    try:
+        await ClientResponse.json(resp)
+    except Exception as exc:      # noqa: BLE001 — the exception IS the fixture
+        return exc
+    raise AssertionError(f"aiohttp decoded {body!r} without raising")
+
+
+async def _unexpected_forwarder_cases():
+    """(label, exception instance) for every class that escapes at the base."""
+    return [
+        ("json-decode", await _real_aiohttp_decode_error(b"{")),
+        ("unicode-decode", await _real_aiohttp_decode_error(b'"\xff"')),
+        ("runtime-error", RuntimeError("boom")),
+        ("bridge-fault", _BridgeFault("boom")),
+    ]
+
+
+def _hooks_request(app, body: dict):
+    """A /hooks/resolve request resolved through the app's OWN router.
+
+    No listening socket is opened — the sandbox the reviewers run in denies
+    one, and a status read back through a listener is not available here by
+    construction.
+    """
+    import asyncio
+
+    import aiohttp
+    from aiohttp.test_utils import make_mocked_request
+
+    stream = aiohttp.streams.StreamReader(
+        MagicMock(), 2 ** 16, loop=asyncio.get_running_loop(),
+    )
+    stream.feed_data(json.dumps(body).encode())
+    stream.feed_eof()
+    return make_mocked_request(
+        "POST",
+        "/hooks/resolve",
+        payload=stream,
+        app=app,
+        headers={"Content-Type": "application/json"},
+    )
+
+
+_HOOK_REQUEST_BODY = {
+    "policy": "engagement_permission_relay",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "true"}},
+}
+
+
+async def test_svc_hooks_resolve_unexpected_forwarder_exception_denies(
+    caplog,
+) -> None:
+    """#912: an ordinary exception escaping the forwarder is answered as a
+    200 `deny`, never allowed to escape.
+
+    At the base the route catches only ``aiohttp.ClientConnectorError`` and
+    ``(aiohttp.ClientError, asyncio.TimeoutError)``. Anything else escapes the
+    coroutine; aiohttp renders it as its own HTTP 500; and
+    ``scripts/hook_proxy.sh``'s ``curl -sf ... || { echo allow; }`` converts
+    every non-2xx into the byte-identical fail-open ALLOW it emits when Casa
+    is unreachable. A bridge defect therefore becomes a permission GRANT.
+
+    Pre-fix red, measured: 4 escapes / 0 responses — the four exceptions leave
+    ``match.handler(request)``. The 500 itself is NOT observed here and cannot
+    be: it is rendered one layer out by aiohttp, and a red case may not open a
+    listening socket. The escape is the assertion.
+
+    Two of the four instances come from aiohttp's own ``ClientResponse.json``
+    executed on real far-end bytes; the other two are structural fault
+    injection standing for programming errors, not claims about shipped paths.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    import logging
+
+    escaped: list[BaseException] = []
+    responses: list = []
+    calls: list[tuple[int, int]] = []
+    logged: list[tuple] = []
+
+    cases = await _unexpected_forwarder_cases()
+    for label, exc in cases:
+        fwd = AsyncMock(side_effect=exc)
+        app = _make_svc_app(tools=[], forward_call=fwd)
+        request = _hooks_request(app, _HOOK_REQUEST_BODY)
+        match = await app.router.resolve(request)
+        caplog.clear()
+        with caplog.at_level(logging.ERROR, logger="svc_casa_mcp"):
+            try:
+                responses.append((label, await match.handler(request)))
+            except BaseException as raised:      # noqa: BLE001
+                escaped.append(raised)
+        calls.append((fwd.call_count, fwd.await_count))
+        tracebacks = [
+            rec for rec in caplog.records
+            if rec.levelno == logging.ERROR and rec.exc_info is not None
+        ]
+        logged.append(
+            (len(tracebacks), tracebacks[0].name if tracebacks else None))
+
+    # Counts, not statuses: the forwarder ran exactly once per case (so this
+    # is the post-forward arm, not the malformed-body arm), nothing escaped,
+    # and each case produced exactly one ERROR record carrying a traceback.
+    assert (len(escaped), len(responses), calls) == (
+        0, 4, [(1, 1), (1, 1), (1, 1), (1, 1)],
+    ), [type(e).__name__ for e in escaped]
+    assert logged == [(1, "svc_casa_mcp")] * 4, logged
+
+    for (label, exc), (rlabel, resp) in zip(cases, responses):
+        assert rlabel == label
+        assert resp.status == 200
+        assert json.loads(resp.body) == {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "Permission relay failed: unexpected bridge error "
+                    f"({type(exc).__name__}). The tool was not run. "
+                    "Check addon logs."
+                ),
+            },
+        }, label
+
+
+async def test_svc_hooks_resolve_unexpected_arm_forwards_header_identity_only(
+) -> None:
+    """#912's arm must not disturb what reaches casa-main (#366, E-1).
+
+    The forwarded call is still one call to ``/internal/hooks/resolve`` with a
+    body REBUILT from request headers — the caller's own body credentials are
+    dropped — and still carries ``timeout_s=None`` so a human-in-the-loop
+    relay is not truncated.
+    """
+    fwd = AsyncMock(side_effect=RuntimeError("boom"))
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    request = _hooks_request(app, {
+        **_HOOK_REQUEST_BODY,
+        "engagement_id": "SPOOFED",
+        "engagement_token": "SPOOFED",
+    })
+    match = await app.router.resolve(request)
+    resp = await match.handler(request)
+
+    assert resp.status == 200
+    assert (fwd.call_count, fwd.await_count, len(fwd.call_args.args)) == (1, 1, 0)
+    assert fwd.call_args.kwargs == {
+        "path": "/internal/hooks/resolve",
+        "body": {
+            "policy": "engagement_permission_relay",
+            "payload": {"tool_name": "Bash", "tool_input": {"command": "true"}},
+            "engagement_id": None,
+            "engagement_token": None,
+        },
+        "timeout_s": None,
+    }
+
+
+async def test_svc_hooks_resolve_cancellation_still_propagates(caplog) -> None:
+    """#912's arm catches ``Exception``, never ``BaseException``.
+
+    A cancelled request delivers nothing to any shim, so converting it into a
+    deny would invent a verdict nobody reads. The identical instance must
+    escape, with no response and no ERROR record.
+    """
+    import asyncio
+    import logging
+
+    sentinel = asyncio.CancelledError("gone")
+    fwd = AsyncMock(side_effect=sentinel)
+    app = _make_svc_app(tools=[], forward_call=fwd)
+    request = _hooks_request(app, _HOOK_REQUEST_BODY)
+    match = await app.router.resolve(request)
+
+    escaped: list[BaseException] = []
+    responses: list = []
+    with caplog.at_level(logging.ERROR, logger="svc_casa_mcp"):
+        try:
+            responses.append(await match.handler(request))
+        except BaseException as raised:      # noqa: BLE001
+            escaped.append(raised)
+
+    assert (len(escaped), len(responses), len(caplog.records)) == (1, 0, 0)
+    assert escaped[0] is sentinel
+    assert (fwd.call_count, fwd.await_count) == (1, 1)
+
+
+async def test_svc_hooks_resolve_adjacent_answers_are_unchanged() -> None:
+    """#912's arm must not touch what the route already answers.
+
+    Two adjacent behaviours, pinned so a catch cannot alter them silently:
+    a far-end verdict (including an ALLOW) comes back as the body under the
+    bridge's own 200, and a far end answering an EMPTY body — for which
+    aiohttp's decoder returns ``None`` rather than raising — still yields a
+    200 with body ``null``. The second is deliberately preserved, not fixed:
+    it is a different mechanism and is not #912.
+    """
+    allow = {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "allow",
+    }}
+    seen = []
+    for far_end in (allow, None):
+        fwd = AsyncMock(return_value=(200, far_end))
+        app = _make_svc_app(tools=[], forward_call=fwd)
+        request = _hooks_request(app, _HOOK_REQUEST_BODY)
+        match = await app.router.resolve(request)
+        resp = await match.handler(request)
+        seen.append((resp.status, json.loads(resp.body),
+                     fwd.call_count, fwd.await_count))
+
+    assert seen == [(200, allow, 1, 1), (200, None, 1, 1)]
