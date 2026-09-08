@@ -12,8 +12,12 @@ re-open the abort. The first test here refuses that.
 from __future__ import annotations
 
 import ast
+import inspect
+import io
 import logging
 from pathlib import Path
+
+import pytest
 
 from log_cid import install_logging
 from logging_state import (  # noqa: F401 — autouse where imported
@@ -97,3 +101,52 @@ class TestGuardArms:
         before = snapshot()
         logging.getLogger("casa.test").debug("nothing global here")
         assert residue(before) == []
+
+
+class TestContainmentNestsOutsideTheGuard:
+    """#911: ``tests/conftest.py`` makes ``casa_logging_containment`` autouse for
+    every test, so a test that reaches ``install_logging`` transitively — through
+    the real ``casa_core.main()``, which no syntactic scan can see — gives the
+    state back at its own boundary.
+
+    Two restorers of the same process-global state now sit side by side, and
+    their ORDER is the whole risk: the guard must compute residue and ASSERT
+    while containment is still open. Reverse them and the guard is retired in
+    silence, which is the one outcome #898 exists to prevent. The nesting is
+    therefore declared (the guard takes the containment fixture as a parameter)
+    rather than inherited from pytest's conftest-before-module ordering, and both
+    halves of that are pinned here."""
+
+    def test_the_guard_declares_containment_as_a_dependency(self):
+        params = inspect.signature(casa_logging_guard.__wrapped__).parameters
+        assert "casa_logging_containment" in params, sorted(params)
+
+    def test_containment_is_set_up_before_the_guard(self, request):
+        # Resolution order IS setup order, and teardown is its reverse — so this
+        # is the property, read out of pytest's own fixture closure rather than
+        # out of a belief about where conftest sits relative to a module.
+        names = list(request.fixturenames)
+        assert "casa_logging_containment" in names, names
+        assert names.index("casa_logging_containment") < names.index(
+            "casa_logging_guard"), names
+
+    def test_the_guard_still_accuses_a_genuine_handler_leak(self):
+        """Prohibition against blinding the guard, as an executable test rather
+        than a promise: drive the guard's own generator around a body that leaks
+        one ``_casa_owned`` handler and require the accusation. Blind the handler
+        arm in ``residue`` and this test goes green — which is what makes it
+        worth having."""
+        guard = casa_logging_guard.__wrapped__
+        # Its parameters are fixtures this call does not need; the count is read
+        # from the signature so the test does not itself assume the dependency
+        # it is not the one pinning.
+        gen = guard(*[None] * len(inspect.signature(guard).parameters))
+        next(gen)
+        root = logging.getLogger()
+        leaked = logging.StreamHandler(io.StringIO())
+        leaked._casa_owned = True              # type: ignore[attr-defined]
+        root.addHandler(leaked)
+        with pytest.raises(AssertionError) as excinfo:
+            next(gen, None)
+        assert "_casa_owned handler" in str(excinfo.value)
+        assert leaked not in root.handlers     # the guard restored as it accused
