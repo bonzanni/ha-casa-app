@@ -12,8 +12,6 @@ import memory_wipe
 import verdict_broker
 from verdict_broker import VerdictBroker
 
-pytestmark = pytest.mark.asyncio
-
 WIPE_TOOL = "mcp__casa-framework__wipe_memory"
 
 # #682: the literal the tool must answer with when its consent request was

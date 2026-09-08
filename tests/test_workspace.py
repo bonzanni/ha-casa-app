@@ -13,7 +13,7 @@ try:
 except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 
 class TestRenderRunScript:

@@ -7,8 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def configurator_origin():

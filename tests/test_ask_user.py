@@ -23,8 +23,6 @@ import verdict_broker
 from authz_grants import GrantKey, GrantStore
 from verdict_broker import VerdictBroker
 
-pytestmark = pytest.mark.asyncio
-
 REPO = Path(__file__).resolve().parents[1]
 CASA = REPO / "casa" / "rootfs" / "opt" / "casa"
 AGENTS = CASA / "defaults" / "agents"

@@ -9,7 +9,7 @@ import pytest
 
 from engagement_registry import EngagementRegistry
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 _ARTIFACTS = [
     {"name": "superpowers", "artifact_id": "a" * 64,

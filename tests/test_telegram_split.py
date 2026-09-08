@@ -138,8 +138,6 @@ import pytest
 from bus import BusMessage, MessageBus
 from channels.telegram import TelegramChannel
 
-pytestmark = pytest.mark.asyncio
-
 
 def _fake_update(text: str = "hello") -> object:
     user = _types.SimpleNamespace(first_name="User", id=1)

@@ -2,10 +2,6 @@
 """Unit tests for mcp_envelope.py (extracted from test_mcp_bridge.py)."""
 from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.asyncio  # required Casa convention; safe even though no async here
-
 
 def test_jsonrpc_ok_shape() -> None:
     from mcp_envelope import _jsonrpc_ok

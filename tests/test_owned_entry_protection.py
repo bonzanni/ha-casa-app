@@ -13,7 +13,7 @@ import pytest
 import test_plugin_tools as tpt
 from plugin_fixtures import mk_registry, owned_entry
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 
 def _wire_real_registry(monkeypatch, tmp_path, reg_path, *, with_runtime=True):

@@ -4,8 +4,6 @@ import pytest
 
 from hooks import block_dangerous_commands
 
-pytestmark = pytest.mark.asyncio
-
 
 # The SDK passes {"signal": None} as context. Hooks must not rely on it.
 CTX: dict = {"signal": None}

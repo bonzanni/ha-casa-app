@@ -24,8 +24,6 @@ from bus import BusMessage, MessageBus
 from channels.telegram import TelegramChannel
 from ingress_identity import IngressIdentityError
 
-pytestmark = pytest.mark.asyncio
-
 
 class _FakeBot:
     async def send_message(self, **kwargs: Any) -> Any:

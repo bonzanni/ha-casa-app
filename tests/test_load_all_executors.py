@@ -5,11 +5,7 @@ from __future__ import annotations
 import os
 import textwrap
 
-import pytest
-
 from config import MODEL_MAP
-
-pytestmark = pytest.mark.asyncio
 
 
 def _write_exec(base, name, defn_yaml=None, prompt="Hi."):
