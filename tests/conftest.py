@@ -409,6 +409,94 @@ async def engagement_fixture(tmp_path):
 # another file. Clear both maps around every test (production-inert — nothing
 # imports this fixture; it only resets in-memory test state).
 @pytest.fixture(autouse=True)
+def _agent_active_singletons_restored():
+    """#818, generalised for #911 (defect B): snapshot EVERY ``active_*`` name
+    on the ``agent`` module at each test's setup and restore THE SNAPSHOT at its
+    teardown — restoring names the test deleted and removing names it added.
+
+    ``agent.py`` declares six of them ("written by ``casa_core.main`` so tool
+    handlers can reach them without circular imports": ``active_engagement_driver``,
+    ``active_executor_registry``, ``active_claude_code_driver``, ``active_runtime``,
+    ``active_semantic_memory``, ``active_session_registry``) and ``casa_core.main``
+    writes a seventh, ``active_observer``, that ``agent.py`` does not declare at
+    all. Every consumer resolves them at CALL time with
+    ``getattr(agent_mod, "<name>", None)`` and gates each use on ``hasattr`` — a
+    predicate a ``MagicMock`` satisfies unconditionally — so a leaked mock does
+    not fail loudly: it reaches an ``await`` inside a log-and-continue arm and
+    the caller degrades to its fallback text.
+
+    That is #818's defect twice over. #818 covered ``active_runtime``: a leaked
+    ``CasaRuntime`` whose ``trigger_registry`` is a ``MagicMock`` made two
+    truthiness probes fire in later, unpatched tests. #911 defect B is the same
+    shape on ``active_engagement_driver``:
+    ``tests/test_delegate_to_agent_interactive.py`` bare-assigns a ``MagicMock``
+    at four points and restores none of them, and
+    ``tests/test_emit_completion_tool.py``'s partial-marker test then reads the
+    finalize funnel's fallback text (measured: those two files in that order,
+    ``1 failed, 127 passed in 5.29s``; the reverse order and each file alone are
+    green). ``tests/test_requires_contract.py`` leaks the same global and bites
+    nobody today only because it sorts after the victim.
+
+    A SWEEP rather than a list of names, deliberately: the seventh name is not
+    declared in ``agent.py`` at all, so any enumeration is already incomplete on
+    the day it is written, and the eighth would leak silently. ``--dist loadfile``
+    hides this class by scheduling accident, not by isolation, so a leak can sit
+    green for months and then turn a gate red on a rename.
+
+    Restore-to-snapshot, never force-``None``: a module- or session-scoped
+    baseline bound before this function-scoped fixture runs must come back
+    exactly (a ``monkeypatch.setattr`` inside a test is fine — it restores
+    first, to the same value). Same defect class and the same shape as the
+    broker fixture below (#783); pinned by
+    ``tests/test_active_runtime_isolation.py`` (#818's own pairs) and
+    ``tests/test_active_singleton_isolation.py`` (the family, the deletion arm,
+    the introduced-name arm and the degraded lane).
+
+    Test-only: production binds each global once and never rebinds it.
+
+    **The NAME matters: this must sort first among this file's autouse fixtures,
+    and `tests/test_agent_singleton_restore_order.py` pins that it does.** Its
+    teardown DELETES the ``active_*`` names a test introduced, and
+    ``monkeypatch``'s undo of a ``setattr(..., raising=False)`` is an
+    unconditional ``delattr`` — whichever of the two runs second raises
+    ``AttributeError``. Teardown is the reverse of setup, and pytest builds the
+    autouse list from ``dir(conftest)``, which is SORTED
+    (`_pytest/fixtures.py:parsefactories`) — so a name sorting before every
+    autouse fixture that requests ``monkeypatch`` is set up before the
+    ``monkeypatch`` instance exists, and torn down after its undo. Measured:
+    named ``_restore_...`` it sorted after ``_fresh_reload_locks(monkeypatch)``
+    and all 29 tests of ``tests/test_topic_cleanup_tool.py`` — whose module
+    autouse fixture pins ``active_observer`` to ``None`` with ``raising=False``
+    — ERRORed in ``monkeypatch.undo``.
+
+    Guarded like ``_fresh_reload_locks`` above, and for a reason that is not
+    hypothetical: ``qa.yml``'s root lane runs
+    ``tests/test_private_state_dropped_uid.py`` in a bare ``python:3.11-slim``
+    with only pytest installed, where ``agent``'s ``from claude_agent_sdk
+    import ...`` has no SDK to find — and this fixture still runs at each of
+    that file's tests' setup. Nothing to snapshot there, so nothing to
+    restore. Pinned by ``TestRestoreFixtureWithoutAgent`` in each of the two
+    files above."""
+    try:
+        import agent as _agent
+    except ImportError:
+        yield
+        return
+
+    snapshot = {n: v for n, v in vars(_agent).items() if n.startswith("active_")}
+    try:
+        yield
+    finally:
+        for name, value in snapshot.items():
+            setattr(_agent, name, value)
+        # Materialised BEFORE mutating: `vars()` is the module's live `__dict__`,
+        # and deleting from it while iterating raises.
+        for name in [n for n in vars(_agent) if n.startswith("active_")]:
+            if name not in snapshot:
+                delattr(_agent, name)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_engagement_control_root(tmp_path_factory, monkeypatch):
     """Containment stage 2, Task 4: ``drivers.workspace.CONTROL_ROOT``
     defaults to the real ``/data/engagement-ctl`` in production. Without
@@ -538,49 +626,6 @@ def _fresh_reload_locks(monkeypatch):
     # sweep retry a role it never touched.
     monkeypatch.setattr(_reload, "_INCOMPLETE_RETIREMENTS", set())
     yield
-
-
-@pytest.fixture(autouse=True)
-def _restore_active_runtime():
-    """#818: snapshot ``agent.active_runtime`` at every test's setup and
-    restore THE SNAPSHOT at its teardown.
-
-    The module global (``agent.py``) is ``None`` until ``casa_core.main`` binds
-    the runtime once per process; every consumer reads it at call time. Tests
-    that drive the reload tool handlers bare-assign a ``CasaRuntime`` to it and
-    nothing restored it, so the leaked runtime — whose ``trigger_registry`` is a
-    ``MagicMock`` — made two truthiness probes fire in later, unpatched tests
-    (``callback_reconcile``'s routing row and ``_tool_plugin_status``'s
-    ``routing_unavailable`` key), breaking exact-shape assertions elsewhere.
-    ``--dist loadfile`` hid it by placing the leaker and its victims on different
-    workers; the default serial order was red.
-
-    Restore-to-snapshot, never force-``None``: a module-scoped baseline bound
-    before this function-scoped fixture runs must come back exactly (a
-    ``monkeypatch.setattr`` inside a test is fine — it restores first, to the
-    same value). Same defect class and the same shape as the broker fixture
-    below (#783); pinned by ``tests/test_active_runtime_isolation.py``.
-
-    Test-only: production binds the global once and never rebinds it.
-
-    Guarded like ``_fresh_reload_locks`` above, and for a reason that is not
-    hypothetical: ``qa.yml``'s root lane runs
-    ``tests/test_private_state_dropped_uid.py`` in a bare ``python:3.11-slim``
-    with only pytest installed, where ``agent``'s ``from claude_agent_sdk
-    import ...`` has no SDK to find — and this fixture still runs at each of
-    that file's tests' setup. Nothing to snapshot there, so nothing to
-    restore. Pinned by ``TestRestoreFixtureWithoutAgent`` in the same file."""
-    try:
-        import agent as _agent
-    except ImportError:
-        yield
-        return
-
-    snapshot = _agent.active_runtime
-    try:
-        yield
-    finally:
-        _agent.active_runtime = snapshot
 
 
 @pytest.fixture(autouse=True)

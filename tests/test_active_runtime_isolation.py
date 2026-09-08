@@ -118,9 +118,10 @@ class TestRestoreFixtureWithoutAgent:
     `PYTHONPATH=casa/rootfs/opt/casa`. `agent` cannot be imported there (its
     `from claude_agent_sdk import ...` has no SDK to find), yet every autouse
     fixture in `tests/conftest.py` still runs at each of that file's tests'
-    setup. An unguarded `import agent` in `_restore_active_runtime` made all
-    nine ERROR at setup; the sibling `_fresh_reload_locks` guards its own
-    import and degrades to a bare yield, and this fixture must do the same.
+    setup. An unguarded `import agent` in
+    `_agent_active_singletons_restored` made all nine ERROR at setup; the
+    sibling `_fresh_reload_locks` guards its own import and degrades to a bare
+    yield, and this fixture must do the same.
 
     The arrangement drives the fixture through pytest itself, as the lane
     does: a class-scoped fixture — a higher scope, so pytest sets it up BEFORE
@@ -147,7 +148,7 @@ class TestRestoreFixtureWithoutAgent:
     def test_restore_fixture_yields_when_agent_cannot_be_imported(self):
         with pytest.raises(ImportError):
             import agent  # noqa: F401 — the premise, measured where the fixture ran
-        # Reaching here IS the outcome: `_restore_active_runtime` set up and
-        # yielded with `agent` unimportable. The module object this file holds
+        # Reaching here IS the outcome: `_agent_active_singletons_restored`
+        # set up and yielded with `agent` unimportable. The module object this file holds
         # is untouched by the degraded fixture.
         assert agent_mod.__name__ == "agent"
