@@ -1,20 +1,43 @@
 """#915: no synchronous test is placed under `pytest.mark.asyncio`.
 
-The rule, exactly: **in no `tests/test_*.py` module does the source place a
-synchronous test under the asyncio marker** — the marker is not named in a
-`pytestmark` assignment in the test's own module body, nor in the body of an
-enclosing class or of a class that class inherits from IN THE SAME MODULE
-(wherever in that module it is defined), nor in a decorator on the test itself.
+The rule, exactly. A synchronous test is placed under the marker when any of
+three things is true of the SOURCE:
+
+1. the marker is named in a ``pytestmark`` assignment in the test's own suite —
+   its module body, or the body of a class that lexically encloses it, reading
+   each of those bodies flattened through ``if``/``try``/``with``/``for``/
+   ``while``/``match`` and never into a nested ``def``/``class``;
+2. the marker is named in a ``pytestmark`` assignment in the body of a base
+   class, where a base counts only when it is written as an unqualified name
+   whose exact spelling is a ``class`` statement in the same module's flattened
+   suite (following is transitive over such bases, and cycle-safe);
+3. the marker decorates the test.
+
+The marker itself is recognised by two spellings and no others: an attribute
+``asyncio`` whose owner is an attribute named ``mark`` (so ``pytest.mark.asyncio``
+and ``pt.mark.asyncio`` both count, with or without a call), or an attribute
+``asyncio`` on a bare name that this module introduced directly in its flattened
+suite by ``from pytest import mark`` (plain or aliased) or by an assignment,
+annotated or not, whose value is an attribute named ``mark``.
+
+**One sentence governs all three: this rule follows no rebinding.** Every name it
+reads — the marker's receiver, a base class, a ``__test__`` opt-out target — is
+matched by its exact spelling at the site where it is used, never through an
+alias of an alias or a chain of assignments. So ``p = pytest.mark; n = p`` and
+``Alias = MarkedBase; class TestChild(Alias)`` are both outside the rule, are
+both measured and pinned below as things it does NOT accuse, and are both
+declared here rather than left to be discovered. A future clause is subject to
+the same sentence.
 
 That is a property of the SOURCE TEXT, and it is stated that way on purpose. It
-is not a model of pytest's marker resolution, and an earlier draft that tried to
-be one was returned four times: a rule about what a marker EVALUATES to at
-collection can always be made to disagree with a rule that reads a file, and the
-disagreements are unbounded (a rebound `pytestmark`, an assignment nested in an
-`if`, a class opted out with `__test__ = False`, a base class in another module).
-The named limit is the last of those: a `pytestmark` on a base class IMPORTED
-from elsewhere is not followed, because deciding it means resolving imports.
-Nothing in this tree does that today.
+is not a model of pytest's marker resolution. An earlier draft tried to be one —
+it worked out what a ``pytestmark`` binding would evaluate to, last assignment
+winning — and the disagreements between such a rule and a rule that reads a file
+proved unbounded: a rebound ``pytestmark``, an assignment nested in an ``if``, a
+class opted out with ``__test__ = False``, a base class in another module, a base
+class behind an alias, an alias of an alias. Each one cost a round. The modelling
+was cut rather than sharpened, and each time the CLAIM was narrowed to what the
+rule decides rather than the rule stretched toward what it cannot.
 
 `pytest.ini` sets `asyncio_mode = auto`, so pytest-asyncio binds every `async
 def` test itself and an explicit `pytest.mark.asyncio` adds nothing to an async
@@ -66,45 +89,106 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _is_asyncio_mark(node: ast.expr) -> bool:
+def _suite_statements(body: list[ast.stmt]) -> list[ast.stmt]:
+    """Every statement BELONGING to this suite, flattened.
+
+    A module or class body executes its ``if``, ``try``, ``with``, ``for``,
+    ``while`` and ``match`` branches in its own namespace, so a ``pytestmark``,
+    a ``class`` or a ``def`` written inside one of those belongs to this suite
+    exactly as a top-level statement does. A nested ``def``/``class`` body does
+    NOT: names bound there belong to that suite.
+
+    There is ONE flattener because there were three, and they disagreed. The
+    acceptor and a diff reviewer each reproduced the same shape from a different
+    direction — a base class inside a module-level ``if`` escaped the base-class
+    index while the marker scan descended into it; a ``def test_sync`` inside a
+    module-level ``if`` escaped test discovery while both of the others
+    descended. Every walk below now starts here, so the nesting rule cannot
+    diverge between them again.
+    """
+    out: list[ast.stmt] = []
+    for stmt in body:
+        out.append(stmt)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            inner = getattr(stmt, field, None)
+            if isinstance(inner, list):
+                out.extend(_suite_statements(
+                    [st for st in inner if isinstance(st, ast.stmt)]))
+        for handler in getattr(stmt, "handlers", []) or []:
+            out.extend(_suite_statements(handler.body))
+        for case in getattr(stmt, "cases", []) or []:
+            out.extend(_suite_statements(case.body))
+    return out
+
+
+def _mark_aliases(stmts: list[ast.stmt]) -> frozenset[str]:
+    """Names this module binds to `pytest.mark`.
+
+    `from pytest import mark` binds `mark`; `from pytest import mark as p` binds
+    `p`; `m = pytest.mark` and `m: object = pytest.mark` both bind `m`. A diff
+    reviewer reproduced the aliased import reaching collection as a live warning
+    while the guard stayed green, and the specifier reproduced the annotated
+    assignment doing the same, so the marker is recognised through whatever name
+    the module gave it rather than through one spelling of the binding.
+    """
+    names = set()
+    for stmt in stmts:
+        if isinstance(stmt, ast.ImportFrom) and stmt.module == "pytest":
+            names.update(a.asname or a.name for a in stmt.names
+                         if a.name == "mark")
+            continue
+        targets: list[ast.expr] = []
+        if isinstance(stmt, ast.Assign):
+            targets = list(stmt.targets)
+        elif isinstance(stmt, ast.AnnAssign):
+            targets = [stmt.target]
+        value = getattr(stmt, "value", None)
+        if isinstance(value, ast.Attribute) and value.attr == "mark":
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return frozenset(names)
+
+
+def _is_asyncio_mark(node: ast.expr, aliases: frozenset[str]) -> bool:
     """True for `pytest.mark.asyncio`, with or without a call, any receiver.
 
-    `pytest.mark.asyncio`, `pytest.mark.asyncio(...)` and a `mark.asyncio`
-    reached through `from pytest import mark` all answer True; `pytest.mark.unit`
-    and a bare name `asyncio` (the module) do not.
+    `pytest.mark.asyncio`, `pytest.mark.asyncio(...)` and `pt.mark.asyncio` all
+    answer True through the `.mark.` chain; `p.asyncio` answers True when the
+    module bound `p` to `pytest.mark`. `pytest.mark.unit` and a bare name
+    `asyncio` (the module) do not.
     """
     while isinstance(node, ast.Call):
         node = node.func
     if not isinstance(node, ast.Attribute) or node.attr != "asyncio":
         return False
     owner = node.value
-    return isinstance(owner, ast.Attribute) and owner.attr == "mark" or (
-        isinstance(owner, ast.Name) and owner.id == "mark")
+    if isinstance(owner, ast.Attribute):
+        return owner.attr == "mark"
+    return isinstance(owner, ast.Name) and owner.id in aliases
 
 
-def _opted_out(body: list[ast.stmt]) -> bool:
-    """Does this module or class body set ``__test__ = False``?
+def _opted_out(stmts: list[ast.stmt]) -> bool:
+    """Does this suite set ``__test__ = False``?
 
     pytest honours that attribute and skips the module or class entirely, so a
     name under it is never collected and accusing it would be a false
     accusation — the acceptor returned an earlier draft of this red case on
     exactly that input.
     """
-    for stmt in body:
-        if not isinstance(stmt, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "__test__"
-                   for t in stmt.targets):
-            continue
-        if isinstance(stmt.value, ast.Constant) and stmt.value.value is False:
-            return True
-    return False
+    return any(isinstance(stmt, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "__test__"
+                       for t in stmt.targets)
+               and isinstance(stmt.value, ast.Constant)
+               and stmt.value.value is False
+               for stmt in stmts)
 
 
-def _functions_opted_out(body: list[ast.stmt]) -> set[str]:
+def _functions_opted_out(stmts: list[ast.stmt]) -> set[str]:
     """Names this suite opts out with a post-definition ``f.__test__ = False``."""
     out: set[str] = set()
-    for stmt in body:
+    for stmt in stmts:
         if not isinstance(stmt, ast.Assign):
             continue
         if not (isinstance(stmt.value, ast.Constant)
@@ -125,14 +209,12 @@ def _marks(value: ast.expr) -> list[ast.expr]:
     return [value]
 
 
-def _suite_pytestmark_is_asyncio(body: list[ast.stmt]) -> bool:
-    """Does this module or class body assign a `pytestmark` naming the marker?
+def _suite_pytestmark_is_asyncio(stmts: list[ast.stmt],
+                                 aliases: frozenset[str]) -> bool:
+    """Does this suite assign a `pytestmark` naming the marker?
 
-    ANY such assignment, at any statement nesting — inside an ``if``, a ``try``,
-    a ``with`` — counts, and the rule is syntactic by definition rather than an
-    attempt to work out what the binding would evaluate to. Nested ``def`` and
-    ``class`` bodies are NOT searched: a ``pytestmark`` there belongs to that
-    suite, not this one.
+    ANY such assignment counts, and the rule is syntactic by definition rather
+    than an attempt to work out what the binding would evaluate to.
 
     Deliberately blunt, and this is the second design. The first one modelled the
     effective value — last plain assignment wins, augmented assignment extends —
@@ -145,115 +227,97 @@ def _suite_pytestmark_is_asyncio(body: list[ast.stmt]) -> bool:
     marks nothing at collection. That module does not exist in this tree, and the
     rule is that it should not.
     """
-    for stmt in body:
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
+    for stmt in stmts:
         targets: list[ast.expr] = []
         if isinstance(stmt, ast.Assign):
             targets = list(stmt.targets)
         elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
             targets = [stmt.target]
-        if any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
-            value = getattr(stmt, "value", None)
-            if value is not None and any(_is_asyncio_mark(m) for m in _marks(value)):
-                return True
-        for field in ("body", "orelse", "finalbody"):
-            inner = getattr(stmt, field, None)
-            if isinstance(inner, list) and _suite_pytestmark_is_asyncio(
-                    [st for st in inner if isinstance(st, ast.stmt)]):
-                return True
-        for handler in getattr(stmt, "handlers", []) or []:
-            if _suite_pytestmark_is_asyncio(handler.body):
-                return True
+        if not any(isinstance(t, ast.Name) and t.id == "pytestmark"
+                   for t in targets):
+            continue
+        value = getattr(stmt, "value", None)
+        if value is not None and any(_is_asyncio_mark(m, aliases)
+                                     for m in _marks(value)):
+            return True
     return False
 
 
-def _classes_in(body: list[ast.stmt]) -> dict[str, ast.ClassDef]:
-    """Every class this module body DEFINES, at any statement nesting.
-
-    Built with the same nesting rule ``_suite_pytestmark_is_asyncio`` uses, and
-    for the same reason: a `class` inside a module-level ``if`` is defined just
-    as a top-level one is. Indexing only ``tree.body`` while descending into
-    nesting for the marker is an inconsistency the acceptor reproduced — a base
-    class in an ``if`` block escaped the base-class lookup entirely. Nested
-    ``def``/``class`` bodies are not searched: a class defined there is not a
-    module-level name.
-    """
+def _classes_in(stmts: list[ast.stmt]) -> dict[str, ast.ClassDef]:
+    """Every class this module body DEFINES, first definition of each name."""
     out: dict[str, ast.ClassDef] = {}
-    for stmt in body:
+    for stmt in stmts:
         if isinstance(stmt, ast.ClassDef):
             out.setdefault(stmt.name, stmt)
-            continue
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for field in ("body", "orelse", "finalbody"):
-            inner = getattr(stmt, field, None)
-            if isinstance(inner, list):
-                for name, node in _classes_in(
-                        [st for st in inner if isinstance(st, ast.stmt)]).items():
-                    out.setdefault(name, node)
-        for handler in getattr(stmt, "handlers", []) or []:
-            for name, node in _classes_in(handler.body).items():
-                out.setdefault(name, node)
     return out
 
 
 def _class_marked(node: ast.ClassDef, classes: dict[str, ast.ClassDef],
+                  aliases: frozenset[str],
                   seen: frozenset[str] = frozenset()) -> bool:
     """Is this class placed under the marker, its same-module bases included?
 
     pytest unpacks `pytestmark` through the class MRO, so a `pytestmark` on a
     base class reaches the child's tests; the acceptor returned a draft that read
     only the child's own body. Bases named by a plain identifier defined in the
-    same module are followed, transitively and cycle-safely. A base reached
-    through an import is NOT followed — see the module docstring's named limit.
+    A base is followed only when it is written as an unqualified name whose exact
+    spelling is a ``class`` statement in this module's flattened suite; following
+    is transitive over such bases and cycle-safe. An imported base, an aliased one
+    (``Alias = MarkedBase``) and any other base expression are NOT followed — see
+    the module docstring's governing sentence about rebinding.
     """
-    if _suite_pytestmark_is_asyncio(node.body):
+    if _suite_pytestmark_is_asyncio(_suite_statements(node.body), aliases):
         return True
     seen = seen | {node.name}
     return any(base.id in classes and base.id not in seen
-               and _class_marked(classes[base.id], classes, seen)
+               and _class_marked(classes[base.id], classes, aliases, seen)
                for base in node.bases if isinstance(base, ast.Name))
 
 
 def marked_sync_tests(source: bytes, filename: str) -> list[str]:
-    """Every synchronous test in `source` that carries the asyncio marker.
+    """Every synchronous test in `source` placed under the asyncio marker.
 
     Each entry is ``<filename>:<lineno>:<qualname> (<source of the mark>)``, so
-    a failure names the file, the function AND which of the three inheritance
-    paths delivered the mark.
+    a failure names the file, the function AND which of the three paths placed
+    the test under the mark.
     """
     tree = ast.parse(source, filename)
     found: list[str] = []
-    classes = _classes_in(tree.body)
+    module_stmts = _suite_statements(tree.body)
+    aliases = _mark_aliases(module_stmts)
+    classes = _classes_in(module_stmts)
 
-    def visit(body: list[ast.stmt], prefix: str, inherited: str | None) -> None:
-        skip = _functions_opted_out(body)
-        for stmt in body:
+    def visit(stmts: list[ast.stmt], prefix: str, inherited: str | None) -> None:
+        skip = _functions_opted_out(stmts)
+        for stmt in stmts:
             if isinstance(stmt, ast.ClassDef):
                 if not stmt.name.startswith("Test") or stmt.name in skip:
                     continue
-                if _opted_out(stmt.body):
+                inner = _suite_statements(stmt.body)
+                if _opted_out(inner):
                     continue
                 source_of = ("class-level pytestmark"
-                             if _class_marked(stmt, classes) else inherited)
-                visit(stmt.body, f"{prefix}{stmt.name}.", source_of)
+                             if _class_marked(stmt, classes, aliases)
+                             else inherited)
+                visit(inner, f"{prefix}{stmt.name}.", source_of)
             elif isinstance(stmt, ast.FunctionDef):
                 if not stmt.name.startswith("test") or stmt.name in skip:
                     continue
                 source_of = inherited
-                if any(_is_asyncio_mark(d) for d in stmt.decorator_list):
+                if any(_is_asyncio_mark(d, aliases)
+                       for d in stmt.decorator_list):
                     source_of = "decorator"
                 if source_of is not None:
                     found.append(
                         f"{filename}:{stmt.lineno}:{prefix}{stmt.name} "
                         f"({source_of})")
 
-    if _opted_out(tree.body):
+    if _opted_out(module_stmts):
         return found
     module_source = ("module-level pytestmark"
-                     if _suite_pytestmark_is_asyncio(tree.body) else None)
-    visit(tree.body, "", module_source)
+                     if _suite_pytestmark_is_asyncio(module_stmts, aliases)
+                     else None)
+    visit(module_stmts, "", module_source)
     return found
 
 
@@ -347,6 +411,41 @@ class TestTheDetectorDetects:
         assert marked_sync_tests(src, "m.py") == [
             "m.py:4:TestA.test_x (class-level pytestmark)"]
 
+    def test_a_test_defined_inside_a_statement_is_still_discovered(self) -> None:
+        """A diff reviewer's finding: a `def test_sync` inside a module-level
+        ``if`` is collected by pytest, and the marker scan already descended
+        into that ``if`` — so test discovery must too, or the guard passes a
+        violation of its own declared property."""
+        src = (b"import pytest\npytestmark = pytest.mark.asyncio\n"
+               b"if True:\n    def test_sync():\n        pass\n")
+        assert marked_sync_tests(src, "m.py") == [
+            "m.py:4:test_sync (module-level pytestmark)"]
+
+    def test_a_class_defined_inside_a_statement_is_still_discovered(self) -> None:
+        src = (b"import pytest\npytestmark = pytest.mark.asyncio\n"
+               b"if True:\n    class TestNested:\n"
+               b"        def test_sync(self):\n            pass\n")
+        assert marked_sync_tests(src, "m.py") == [
+            "m.py:5:TestNested.test_sync (module-level pytestmark)"]
+
+    def test_an_aliased_mark_decorator_is_a_source(self) -> None:
+        """A diff reviewer's finding: `from pytest import mark as p` then
+        `p.asyncio` reaches collection as the real warning."""
+        decorator = "@" + "p.asyncio"
+        src = ("from pytest import mark as p\n" + decorator
+               + "\ndef test_sync():\n    pass\n").encode()
+        assert marked_sync_tests(src, "m.py") == ["m.py:3:test_sync (decorator)"]
+
+    def test_an_annotated_alias_binding_is_still_an_alias(self) -> None:
+        """The specifier's re-specification: `m: object = pytest.mark` binds `m`
+        exactly as `m = pytest.mark` does, and only the un-annotated form was
+        read."""
+        decorator = "@" + "m.asyncio"
+        src = ("import pytest\nm: object = pytest.mark\n" + decorator
+               + "\ndef test_sync():\n    pass\n").encode()
+        assert marked_sync_tests(src, "test_annotation_probe.py") == [
+            "test_annotation_probe.py:4:test_sync (decorator)"]
+
     def test_a_decorator_is_a_source(self) -> None:
         # Assembled rather than written out: the repository's pre-commit hook
         # reads a literal "@" followed by a dotted name as an email address.
@@ -361,7 +460,11 @@ class TestTheDetectorDetects:
         b"pytestmark = [pytest.mark.asyncio, pytest.mark.unit]",
         b"pytestmark = (pytest.mark.unit, pytest.mark.asyncio)",
         b"pytestmark: object = pytest.mark.asyncio",
-        b"pytestmark = mark.asyncio",
+        b"from pytest import mark\npytestmark = mark.asyncio",
+        b"from pytest import mark as p\npytestmark = p.asyncio",
+        b"m = pytest.mark\npytestmark = m.asyncio",
+        b"m: object = pytest.mark\npytestmark = m.asyncio",
+        b"import pytest as pt\npytestmark = pt.mark.asyncio",
         b"pytestmark = [pytest.mark.unit]\npytestmark += [pytest.mark.asyncio]",
         b"pytestmark = [pytest.mark.unit]\npytestmark = [pytest.mark.asyncio]",
         b"pytestmark = pytest.mark.asyncio\npytestmark = pytest.mark.unit",
@@ -374,6 +477,7 @@ class TestTheDetectorDetects:
 
     @pytest.mark.parametrize("source", [
         b"import pytest\npytestmark = pytest.mark.unit\ndef test_x():\n    pass\n",
+        b"pytestmark = mark.asyncio\ndef test_x():\n    pass\n",
         b"import pytest\npytestmark: list = []\ndef test_x():\n    pass\n",
         b"import pytest\nimport asyncio\npytestmark = pytest.mark.unit\ndef test_x():\n    pass\n",
         b"import pytest\npytestmark = pytest.mark.asyncio\nasync def test_x():\n    pass\n",
@@ -389,9 +493,18 @@ class TestTheDetectorDetects:
         b"    def test_x(self):\n        pass\nTestA.__test__ = False\n",
         b"from base import MarkedBase\nclass TestChild(MarkedBase):\n"
         b"    def test_x(self):\n        pass\n",
+        b"import pytest\nclass MarkedBase:\n"
+        b"    pytestmark = pytest.mark.asyncio\nAlias = MarkedBase\n"
+        b"class TestChild(Alias):\n    def test_x(self):\n        pass\n",
+        b"import pytest\np = pytest.mark\nn = p\npytestmark = n.asyncio\n"
+        b"def test_x():\n    pass\n",
     ])
     def test_what_the_rule_does_not_accuse(self, source: bytes) -> None:
-        """An async test, a non-test function, a class pytest does not collect,
+        """The two limits the rule DECLARES — a base class reached through an
+        import or through an alias, and an alias of an alias of `pytest.mark` —
+        pinned here so they stay visible rather than living only in prose. Then a
+        `mark` this module never bound to `pytest.mark`, an async test, a
+        non-test function, a class pytest does not collect,
         a bare annotation that binds nothing, a module whose only `asyncio` is
         the stdlib import, and the four `__test__ = False` opt-outs — module,
         class, function attribute and class attribute — that pytest honours and
