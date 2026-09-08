@@ -66,16 +66,24 @@ class LoggingState:
     ``handlers`` carries the ``_casa_owned`` root handlers as ``(index, handler)``
     pairs — by OBJECT IDENTITY and by position in ``logging.getLogger().handlers``.
     Identity, because a same-count replacement is a change that a count cannot
-    see; position, because restoring a handler somewhere else changes the order
-    records are emitted in. Never the whole handler list: pytest adds and removes
-    its own ``LogCaptureHandler``/``_LiveLoggingNullHandler`` around every test,
-    and this must not fight that lifecycle.
+    see; position, because ORDER IS OBSERVABLE STATE here: Casa's handler carries
+    ``log_redact.RedactingFilter``, which rewrites ``record.msg`` IN PLACE, so a
+    handler that runs before it sees the unredacted text and one that runs after
+    it does not (terra, gate-owned review).
+
+    ``order`` carries the whole root handler list — foreign handlers included —
+    for the same reason, since a Casa handler's position is only meaningful
+    relative to the handlers around it. That is a READ of the list and never a
+    mutation of anybody else's handler: no foreign handler is ever added,
+    removed, or given a different slot by anything here, so pytest's own
+    ``LogCaptureHandler``/``_LiveLoggingNullHandler`` lifecycle is untouched.
     """
 
     root_level: int
     factory: Any
     pinned: tuple[tuple[str, int], ...]
     handlers: tuple[tuple[int, logging.Handler], ...] = ()
+    order: tuple[logging.Handler, ...] = ()
 
 
 def casa_handlers() -> list[logging.Handler]:
@@ -99,6 +107,7 @@ def snapshot() -> LoggingState:
             (i, h) for i, h in enumerate(root.handlers)
             if getattr(h, "_casa_owned", False)
         ),
+        order=tuple(root.handlers),
     )
 
 
@@ -134,6 +143,12 @@ def residue(before: LoggingState) -> list[str]:
             f"removed from the root logger since the snapshot (install_logging "
             f"adds one at log_cid.py:230 and removes it only on a later call). "
             f"Compared by identity, so a same-count replacement counts as both")
+    if _reordered(before, now):
+        left.append(
+            "a _casa_owned handler moved within the root handler list "
+            "(order decides which handler sees a record BEFORE Casa's "
+            "RedactingFilter rewrites it in place, so the order a test found is "
+            "the order it must leave)")
     if now.factory is not before.factory:
         left.append(
             f"the LogRecord factory is {now.factory!r}, not the "
@@ -150,6 +165,24 @@ def residue(before: LoggingState) -> list[str]:
                 f"logger {name!r} is at {logging.getLevelName(level)}, not the "
                 f"{logging.getLevelName(was[name])} it was before the test")
     return left
+
+
+def _common_pair(before: LoggingState,
+                 current: list[logging.Handler]) -> tuple[list, list]:
+    """The handlers present BOTH at the snapshot and now, in each list's own
+    order. Comparing these two is what makes "moved" mean something: handlers
+    that arrived or left since the snapshot say nothing about order."""
+    then_ = [h for h in before.order if any(h is c for c in current)]
+    now_ = [h for h in current if any(h is t for t in before.order)]
+    return then_, now_
+
+
+def _reordered(before: LoggingState, now: LoggingState) -> bool:
+    then_, now_ = _common_pair(before, list(now.order))
+    if len(then_) != len(now_) or all(
+            a is b for a, b in zip(then_, now_)):
+        return False
+    return any(getattr(h, "_casa_owned", False) for h in then_)
 
 
 def restore(before: LoggingState) -> None:
@@ -194,6 +227,21 @@ def restore(before: LoggingState) -> None:
                 if not any(h is existing for existing in ordered):
                     ordered.insert(min(idx, len(ordered)), h)
             root.handlers = ordered
+        # Put the surviving handlers back in the order the snapshot found them,
+        # WITHOUT moving anything that arrived since: each newcomer keeps the
+        # exact slot it occupies, and only the slots collectively held by the
+        # handlers that were already there are re-laid in snapshot order. So a
+        # test that reordered a Casa handler is undone, and pytest's own
+        # handlers are neither added, removed, nor displaced.
+        current = list(root.handlers)
+        then_, now_ = _common_pair(before, current)
+        if len(then_) == len(now_) and not all(
+                a is b for a, b in zip(then_, now_)):
+            it = iter(then_)
+            root.handlers = [
+                next(it) if any(h is t for t in before.order) else h
+                for h in current
+            ]
         _apply(before)
 
 

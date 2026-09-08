@@ -395,3 +395,77 @@ class TestReinstatementDoesNotDisturbTheLiveHandlerList:
             for x in (keep, stale):
                 if x in root.handlers:
                     root.removeHandler(x)
+
+
+class TestOrderIsPartOfTheState:
+    """Gate-owned review, terra S2: a Casa handler MOVED within the root handler
+    list was neither reported nor put back, while the snapshot claimed position
+    was state. Order is observable state here for a concrete reason, pinned by
+    the first test below: Casa's handler carries ``log_redact.RedactingFilter``,
+    which rewrites ``record.msg`` IN PLACE, so whichever handler runs first
+    decides whether anything else on the root logger sees the raw text."""
+
+    def test_a_handler_before_casas_sees_what_one_after_it_does_not(self):
+        from log_redact import RedactingFilter
+
+        seen: list[str] = []
+
+        class Recorder(logging.Handler):
+            def emit(self, record):
+                seen.append(record.getMessage())
+
+        root = logging.getLogger()
+        casa = _casa_handler()
+        casa.addFilter(RedactingFilter())
+        first, second = Recorder(), Recorder()
+        level = root.level
+        try:
+            root.setLevel(logging.DEBUG)
+            for h in (first, casa, second):
+                root.addHandler(h)
+            logging.getLogger("casa.order").warning("token=supersecretvalue")
+            assert seen == ["token=supersecretvalue", "token=supersec***"]
+        finally:
+            for h in (first, casa, second):
+                root.removeHandler(h)
+            root.setLevel(level)
+
+    def test_a_moved_casa_handler_is_residue_and_is_put_back(self):
+        root = logging.getLogger()
+        casa = _casa_handler()
+        foreign = logging.StreamHandler(io.StringIO())
+        root.addHandler(casa)
+        root.addHandler(foreign)
+        newcomer = logging.StreamHandler(io.StringIO())
+        try:
+            before = snapshot()
+            root.removeHandler(casa)
+            root.addHandler(casa)              # same object, now AFTER foreign
+            root.addHandler(newcomer)          # arrived since; must not move
+            assert [r for r in residue(before) if "moved" in r] != []
+            assert len(residue(before)) == 1
+            restore(before)
+            i, j = root.handlers.index(casa), root.handlers.index(foreign)
+            assert i < j, root.handlers
+            assert root.handlers[-1] is newcomer
+            assert residue(before) == []
+        finally:
+            for h in (casa, foreign, newcomer):
+                if h in root.handlers:
+                    root.removeHandler(h)
+
+    def test_a_foreign_only_reorder_is_not_casas_business(self):
+        root = logging.getLogger()
+        a = logging.StreamHandler(io.StringIO())
+        b = logging.StreamHandler(io.StringIO())
+        root.addHandler(a)
+        root.addHandler(b)
+        try:
+            before = snapshot()
+            root.removeHandler(a)
+            root.addHandler(a)
+            assert residue(before) == []
+        finally:
+            for h in (a, b):
+                if h in root.handlers:
+                    root.removeHandler(h)
