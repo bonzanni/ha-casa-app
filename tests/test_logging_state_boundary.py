@@ -286,3 +286,42 @@ class TestContainmentAcrossTheBoundary:
         assert logging.getLogger().level == BASELINE_ROOT
         assert [logging.getLogger(n).level for n in PINNED_LOGGERS] == [
             BASELINE_PINNED[n] for n in PINNED_LOGGERS]
+
+
+class TestReinstatementDoesNotDisturbTheLiveHandlerList:
+    """Added after review round 1 (terra, S2), and deliberately NOT an edit to
+    any accepted red-case test above.
+
+    ``restore`` used to reinstate a snapshotted handler with ``addHandler`` and
+    then move it into place, which publishes the root handler list in an order
+    the function never intends for as long as the move takes; a record emitted
+    from another thread in that window is delivered in that wrong order. The
+    reinstatement is now one rebind under logging's own lock, and this pins the
+    absence of the transient append deterministically rather than by racing a
+    thread against it."""
+
+    def test_restore_reinstates_without_a_transient_append(self, monkeypatch):
+        root = logging.getLogger()
+        h = _casa_handler()
+        foreign = logging.StreamHandler(io.StringIO())
+        root.addHandler(h)
+        root.addHandler(foreign)
+        try:
+            before = snapshot()
+            root.removeHandler(h)
+            appended: list[logging.Handler] = []
+            real_add = logging.Logger.addHandler
+
+            def spy(self, hdlr):
+                appended.append(hdlr)
+                real_add(self, hdlr)
+
+            monkeypatch.setattr(logging.Logger, "addHandler", spy)
+            restore(before)
+            assert appended == []
+            i = root.handlers.index(h)
+            assert root.handlers[i + 1] is foreign
+        finally:
+            for x in (h, foreign):
+                if x in root.handlers:
+                    root.removeHandler(x)

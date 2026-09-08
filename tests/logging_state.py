@@ -41,7 +41,7 @@ removes handlers around every test.
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Iterator
 
@@ -167,17 +167,25 @@ def restore(before: LoggingState) -> None:
     for h in casa_handlers():
         if not any(h is k for k in keep):
             root.removeHandler(h)
-    for idx, h in before.handlers:
-        if any(h is existing for existing in root.handlers):
-            continue
-        root.addHandler(h)                # locked append, and dedups
-        if root.handlers and root.handlers[-1] is h and idx < len(root.handlers) - 1:
-            # Position matters and ``addHandler`` can only append. Rebuild the
-            # list and REBIND it in one assignment rather than mutating in
-            # place: a concurrent ``callHandlers`` iterating the old list keeps
-            # its own reference and cannot see a half-moved handler.
-            ordered = [x for x in root.handlers if x is not h]
-            ordered.insert(min(idx, len(ordered)), h)
+    missing = [(idx, h) for idx, h in before.handlers
+               if not any(h is existing for existing in root.handlers)]
+    if missing:
+        # Position matters, and ``addHandler`` can only APPEND: adding first and
+        # reordering afterwards publishes a list in the wrong order for as long
+        # as it takes to fix it, and a record emitted from another thread in that
+        # window reaches the handlers in an order this function never intends
+        # (terra, review round 1). So build the ordered list and REBIND it in a
+        # single assignment — a concurrent ``callHandlers`` iterating the old
+        # list holds its own reference and sees one consistent order or the
+        # other. Under logging's own structural lock, so that a concurrent
+        # ``addHandler``/``removeHandler`` cannot be lost between the read and
+        # the write; ``getattr`` because that lock is private and this must
+        # degrade rather than break on an interpreter that renames it.
+        with getattr(logging, "_lock", None) or nullcontext():
+            ordered = list(root.handlers)
+            for idx, h in missing:
+                if not any(h is existing for existing in ordered):
+                    ordered.insert(min(idx, len(ordered)), h)
             root.handlers = ordered
     _apply(before)
 
