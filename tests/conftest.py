@@ -628,6 +628,22 @@ def _fresh_reload_locks(monkeypatch):
     yield
 
 
+# #911: process-global LOGGING state, the same defect class as the two fixtures
+# below and the one above. `log_cid.install_logging` adds a `_casa_owned` root
+# handler, wraps the LogRecord factory, sets the root level and pins two loggers,
+# and it has no uninstall — so any test that reaches it, including transitively
+# through `casa_core.main()`, left all four for the next test on its worker. That
+# is what made `make test-unit-serial` red while `make test-unit` stayed green:
+# not isolation, but the accident that `--dist loadfile` scheduled the polluter
+# last. Importing the fixture here is what makes it autouse suite-wide; it lives
+# in `tests/logging_state.py` beside the residue guard it must nest outside of,
+# so the two restorers are defined and reviewed together. `logging_state` imports
+# only the standard library and pytest, so this import is safe in qa.yml's
+# SDK-less root lane and needs no ImportError guard — one would silently disable
+# containment, which is the opposite of what a fail-closed mechanism wants.
+from logging_state import casa_logging_containment  # noqa: E402,F401
+
+
 @pytest.fixture(autouse=True)
 def _isolate_verdict_broker_and_challenges():
     """#783: clear the two process-global request registries at every test

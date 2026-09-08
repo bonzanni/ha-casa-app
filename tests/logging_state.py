@@ -24,6 +24,14 @@ Three test modules call the installer (``tests/test_callback_http.py``,
 test that left it; ``tests/test_logging_state_hygiene.py`` refuses a fourth
 caller that does not.
 
+That accusation is opt-in per module, and it only ever covered LITERAL callers.
+:func:`casa_logging_containment` (#911) covers the rest: ``tests/conftest.py``
+imports it, which makes it autouse for the whole suite, and it restores — without
+accusing — whatever a test changed, including a test that reaches the installer
+transitively through ``casa_core.main()``. The two nest, deliberately and
+explicitly: the guard takes containment as a parameter, so the accusation is
+computed and raised while containment is still open.
+
 Only ``_casa_owned`` markers and the named pinned loggers are inspected — never
 the root handler list as a whole — so this cannot fight pytest's own
 ``LogCaptureHandler``/``_LiveLoggingNullHandler`` lifecycle, which adds and
@@ -53,11 +61,21 @@ GUARD_PINNED_LEVELS = {"httpx": logging.DEBUG, "opentelemetry": logging.CRITICAL
 
 @dataclass(frozen=True)
 class LoggingState:
-    """Exactly what ``install_logging`` mutates, and nothing else."""
+    """Exactly what ``install_logging`` mutates, and nothing else.
+
+    ``handlers`` carries the ``_casa_owned`` root handlers as ``(index, handler)``
+    pairs — by OBJECT IDENTITY and by position in ``logging.getLogger().handlers``.
+    Identity, because a same-count replacement is a change that a count cannot
+    see; position, because restoring a handler somewhere else changes the order
+    records are emitted in. Never the whole handler list: pytest adds and removes
+    its own ``LogCaptureHandler``/``_LiveLoggingNullHandler`` around every test,
+    and this must not fight that lifecycle.
+    """
 
     root_level: int
     factory: Any
     pinned: tuple[tuple[str, int], ...]
+    handlers: tuple[tuple[int, logging.Handler], ...] = ()
 
 
 def casa_handlers() -> list[logging.Handler]:
@@ -70,11 +88,16 @@ def casa_handlers() -> list[logging.Handler]:
 
 def snapshot() -> LoggingState:
     """The current value of every field ``install_logging`` writes."""
+    root = logging.getLogger()
     return LoggingState(
-        root_level=logging.getLogger().level,
+        root_level=root.level,
         factory=logging.getLogRecordFactory(),
         pinned=tuple(
             (name, logging.getLogger(name).level) for name in PINNED_LOGGERS
+        ),
+        handlers=tuple(
+            (i, h) for i, h in enumerate(root.handlers)
+            if getattr(h, "_casa_owned", False)
         ),
     )
 
@@ -92,15 +115,25 @@ def residue(before: LoggingState) -> list[str]:
     Empty means the process-global logging state is as ``before`` describes it.
     The factory is compared by IDENTITY, not by its ``_casa_owned`` flag: a
     wrapper that forgot to mark itself is still a wrapper.
+
+    Every arm is a DIFFERENCE against ``before``, the handler arm included
+    (#911). It used to be an absolute count, and that asymmetry is how a test
+    that added nothing came to be told, in print, that it "left Casa logging
+    residue": it had merely INHERITED a handler from a test on the same worker
+    that reached ``install_logging`` through ``casa_core.main()``.
     """
     now = snapshot()
     left: list[str] = []
-    n = len(casa_handlers())
-    if n:
+    was = [h for _, h in before.handlers]
+    have = [h for _, h in now.handlers]
+    added = [h for h in have if not any(h is b for b in was)]
+    gone = [b for b in was if not any(b is h for h in have)]
+    if added or gone:
         left.append(
-            f"{n} _casa_owned handler(s) still on the root logger "
-            f"(install_logging adds one at log_cid.py:230 and removes it only "
-            f"on a later call)")
+            f"{len(added)} _casa_owned handler(s) added to and {len(gone)} "
+            f"removed from the root logger since the snapshot (install_logging "
+            f"adds one at log_cid.py:230 and removes it only on a later call). "
+            f"Compared by identity, so a same-count replacement counts as both")
     if now.factory is not before.factory:
         left.append(
             f"the LogRecord factory is {now.factory!r}, not the "
@@ -120,13 +153,32 @@ def residue(before: LoggingState) -> list[str]:
 
 
 def restore(before: LoggingState) -> None:
-    """Undo every effect ``install_logging`` has, back to ``before``."""
+    """Put back exactly the state ``before`` describes — never a default.
+
+    Both directions, because ``before`` is a snapshot and not an assumption that
+    the world started clean: a ``_casa_owned`` handler that was NOT in the
+    snapshot is removed, and one that WAS in it and has gone is reinstated at the
+    position it held. Handlers and filters that are not ``_casa_owned`` are never
+    touched; a suite-wide restorer that swept them would be deleting state that
+    belongs to whoever installed it.
+    """
     root = logging.getLogger()
+    keep = [h for _, h in before.handlers]
     for h in casa_handlers():
-        root.removeHandler(h)
-    for f in list(root.filters):          # belt, from the helper this replaces
-        if getattr(f, "_casa_owned", False):
-            root.removeFilter(f)
+        if not any(h is k for k in keep):
+            root.removeHandler(h)
+    for idx, h in before.handlers:
+        if any(h is existing for existing in root.handlers):
+            continue
+        root.addHandler(h)                # locked append, and dedups
+        if root.handlers and root.handlers[-1] is h and idx < len(root.handlers) - 1:
+            # Position matters and ``addHandler`` can only append. Rebuild the
+            # list and REBIND it in one assignment rather than mutating in
+            # place: a concurrent ``callHandlers`` iterating the old list keeps
+            # its own reference and cannot see a half-moved handler.
+            ordered = [x for x in root.handlers if x is not h]
+            ordered.insert(min(idx, len(ordered)), h)
+            root.handlers = ordered
     _apply(before)
 
 
@@ -141,7 +193,34 @@ def casa_logging_restored() -> Iterator[LoggingState]:
 
 
 @pytest.fixture(autouse=True)
-def casa_logging_guard() -> Iterator[LoggingState]:
+def casa_logging_containment() -> Iterator[LoggingState]:
+    """Give back the process-global logging state this test changed (#911).
+
+    Made autouse for the WHOLE suite by one import in ``tests/conftest.py``, and
+    it is deliberately not the guard below: it establishes no distinctive state
+    and it never asserts. Containment and accusation are separate jobs.
+
+    It exists because the hazard is REACHABILITY, not a literal call.
+    ``casa_core.main()``'s first statement is ``install_logging`` and there is no
+    uninstall, so ``tests/test_ingress_identity_boot_check.py`` — which runs the
+    real ``main()`` early and unconditionally, as a declared INV-HTTP-005
+    binding — left a handler, a wrapped ``LogRecord`` factory, a root level and
+    two pinned levels for whichever test the scheduler ran next on that worker.
+    The AST scan in ``tests/test_logging_state_hygiene.py`` cannot see that: it
+    enumerates ``install_logging(...)`` call nodes, and no scan decides
+    reachability. Making the polluter import the guard is not the fix either —
+    the guard asserts, so the polluter would simply go red at a new node id.
+
+    Test-only, and it changes no production behaviour: ``install_logging`` still
+    removes only its own handlers and still wraps the factory at most once, on
+    the single boot call production makes.
+    """
+    with casa_logging_restored() as before:
+        yield before
+
+
+@pytest.fixture(autouse=True)
+def casa_logging_guard(casa_logging_containment) -> Iterator[LoggingState]:
     """Fail any test in the importing module that leaves logging residue.
 
     Autouse applies only where this name is imported, which is the three
@@ -150,12 +229,22 @@ def casa_logging_guard() -> Iterator[LoggingState]:
     hide behind an ambient value that happens to match, and it restores that
     state before asserting, so one leaking test fails alone instead of turning
     every later test in the file into a confusing failure.
+
+    It takes :func:`casa_logging_containment` as a parameter, and that parameter
+    is the whole point rather than a formality: two restorers of the same
+    process-global state now sit side by side, and the guard MUST compute its
+    residue and raise while containment is still open. Declaring the dependency
+    makes that nesting a fact of pytest's fixture graph instead of an inherited
+    conftest-before-module ordering — reversed, containment would restore the
+    ambient state first and the guard would find a world already clean, retiring
+    #898's detector in silence. Pinned by ``TestContainmentNestsOutsideTheGuard``.
     """
     ambient = snapshot()
     established = LoggingState(
         root_level=GUARD_ROOT_LEVEL,
         factory=ambient.factory,
         pinned=tuple(GUARD_PINNED_LEVELS.items()),
+        handlers=ambient.handlers,
     )
     _apply(established)
     try:
