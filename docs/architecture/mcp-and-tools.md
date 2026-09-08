@@ -199,7 +199,7 @@ What it does not cover: unbound callers (the resident's in-process turns, the op
 own surfaces) keep full-range access — the binding constrains engagements, not the
 operator's agents.
 
-**INV-MCP-011**: Every refusal the bridge's hook-resolution route produces itself is delivered as an HTTP 200 body carrying a `deny` permission decision — an unparseable request body, an unreachable internal socket and a forwarder error alike — because the calling shim reads any non-2xx as a transport failure and answers allow.
+**INV-MCP-011**: Every refusal the bridge's hook-resolution route produces itself is delivered as an HTTP 200 body carrying a `deny` permission decision — an unparseable request body, an unreachable internal socket, a forwarder transport error and any other ordinary exception escaping the forwarder alike — because the calling shim reads any non-2xx as a transport failure and answers allow.
 
 The shim is deliberately fail-open on transport: it is what stops a hook from blocking an
 engagement when Casa is unreachable, and its side of the arrangement is described in
@@ -210,9 +210,21 @@ route therefore never sets a status on its own answers: the framework's 200 defa
 contract, and the far end's status is not relayed either — a response from casa-main comes
 back as its body under the bridge's own 200.
 
-What it does not cover: an exception the handler does not catch, which escapes as the
-framework's own HTTP 500 and reaches the shim as a transport failure, tracked as #912. The
-far end is outside this rule entirely — it answers over the internal socket in its own status
+The last of those is why the route holds an unnarrowed catch. An escaping exception is
+not a refusal the route decided to make; it is a defect, and the shim would read the
+framework's own HTTP 500 as a transport failure and answer allow. So a defect on this
+route would grant the permission the route exists to withhold, and the fail-closed logic
+would still be sitting there looking correct. The catch converts that into the same 200
+deny as the arms around it, and pays for it at the diagnostic layer instead: the arm
+logs at ERROR with the traceback, where the transport arms log at WARN, and its reason
+names the exception's class and calls the failure a bridge error rather than a relay
+one. The exception's message is deliberately not interpolated — a decode failure quotes
+the far end's body, and a decision reason is read by the model.
+
+What it does not cover: `asyncio.CancelledError` and anything else outside `Exception`,
+which still propagates — a cancelled request has no shim left to answer — and a failure
+in delivering the response itself, which is not a refusal the route produced. The far
+end is outside this rule entirely — it answers over the internal socket in its own status
 codes, and it is the bridge that flattens them.
 
 ## Failure behavior
@@ -273,6 +285,12 @@ each is a refusal the route produces itself, under INV-MCP-011.
   tool was not run."`, with the reason interpolated from the caught `exc`. The exception's
   class name is part of the reason on purpose — it is the only handle an operator gets on
   which transport failure occurred.
+- When hook forwarding raises any other exception, `POST /hooks/resolve` returns HTTP 200
+  with `hookSpecificOutput.hookEventName: "PreToolUse"`, `permissionDecision: "deny"`, and
+  `permissionDecisionReason: "Permission relay failed: unexpected bridge error
+  ({type(exc).__name__}). The tool was not run. Check addon logs."`, and the exception is
+  logged at ERROR with its traceback. The message is not interpolated into the reason,
+  only the class: a decode failure's message quotes the far end's body.
 
 The shipped shim cannot produce the first of those: it builds the request with `jq` and
 answers locally when the payload is not JSON, and repointing it through

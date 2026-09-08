@@ -96,7 +96,7 @@
     INV-MCP-005: [tests/test_engagement_auth_token.py::test_peek_refuses_to_return_mcp_json_contents]
     INV-MCP-009: [tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_cannot_reach_forbidden_casa_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_keeps_allowlisted_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_executor_record_is_not_ceilinged, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_unbound_caller_is_not_ceilinged]
     INV-MCP-010: [tests/test_workspace_tools_self_binding.py::test_peek_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_peek_allows_own_workspace_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_delete_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_list_filters_to_own_entry_when_engagement_bound]
-    INV-MCP-011: [tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_own_refusals_are_http_200, tests/test_pin_doc_corpus_shape.py::test_bridge_owner_documents_other_hook_refusals]
+    INV-MCP-011: [tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_own_refusals_are_http_200, tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_unexpected_forwarder_exception_denies, tests/test_pin_doc_corpus_shape.py::test_bridge_owner_documents_other_hook_refusals]
 
 - doc: architecture/hook-resolution.md
   summary: The hook-resolution path — credential-bound identity, per-executor policy maps and their fail-closed fallbacks, and the claude_code containment floor.

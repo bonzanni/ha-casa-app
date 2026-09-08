@@ -617,7 +617,10 @@ async def test_svc_hooks_resolve_own_refusals_are_http_200(
     parsing and response construction are real; only the forwarder is mocked.
 
     This pins existing behavior; its behavioral red is a mutation.
-    Uncaught exceptions (#912) are outside this test's scope.
+    The route's fourth arm — any other exception escaping the forwarder, #912 —
+    is pinned by
+    ``test_svc_hooks_resolve_unexpected_forwarder_exception_denies`` below,
+    which asserts an ERROR record and a traceback this table does not read.
     """
     import asyncio
 
