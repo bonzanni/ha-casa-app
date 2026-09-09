@@ -1072,6 +1072,81 @@ _DENY_NOT_OPERATOR = (
 )
 
 
+@dataclass(frozen=True)
+class GrantIdentity:
+    """Who may consume a grant for the current turn's call — ``GrantKey``
+    minus the call's own ``tool_name``/``args_hash`` (#792). Derived by
+    :func:`resolve_grant_identity`, the ONE derivation both the authz hook
+    and the result broker use, so the two cannot drift: a capability
+    reference is redeemable by exactly whoever could consume a grant for the
+    same call."""
+    operator_id: int
+    chat_id: int
+    enforcement_role: str
+    artifact_id: str
+    engagement_id: str
+    # Advisory routing for the challenge continuation, never identity:
+    # excluded from equality so a reference minted on one turn compares equal
+    # to the identity derived on a later turn of the same operator/chat/role/
+    # artifact/engagement.
+    target_role: str | None = field(default=None, compare=False)
+
+
+def resolve_grant_identity(role: str, artifact_id: str = ""):
+    """The authz hook's identity derivation, factored (#792).
+
+    Returns ``(identity, reason)``: ``identity`` is a :class:`GrantIdentity`
+    (with ``artifact_id`` filled from the argument) and ``reason`` is
+    ``None``; or ``identity`` is ``None`` and ``reason`` is one of
+    ``"engagement_unavailable"`` (engagement path: no active specialist
+    record with a topic and an operator origin), ``"unsupported_origin"``
+    (not a DM/button turn executed directly or by delegation, or no
+    operator/chat id), ``"role_mismatch"`` (the closure's role is not the
+    turn's execution role). Every branch is the hook's own, in its order;
+    the hook maps the reason to its deny text.
+    """
+    import agent as agent_mod
+    from provenance import strict_positive_id, turn_provenance
+
+    prov = turn_provenance()
+    if prov.execution == "engagement":
+        import tools as tools_mod
+        rec = tools_mod.engagement_var.get(None)
+        if (rec is None
+                or not getattr(rec, "id", "")
+                or getattr(rec, "kind", None) != "specialist"
+                or getattr(rec, "status", None) != "active"
+                or strict_positive_id(
+                    getattr(rec, "topic_id", None)) is None):
+            return None, "engagement_unavailable"
+        eng_origin = getattr(rec, "origin", None) or {}
+        operator_id = strict_positive_id(eng_origin.get("user_id"))
+        chat_id = strict_positive_id(eng_origin.get("chat_id"))
+        if operator_id is None or chat_id is None:
+            return None, "engagement_unavailable"
+        return GrantIdentity(
+            operator_id=operator_id, chat_id=chat_id,
+            enforcement_role=role, artifact_id=artifact_id,
+            engagement_id=str(rec.id),
+            target_role=getattr(rec, "role_or_type", None),
+        ), None
+    if (prov.transport not in ("dm", "button")
+            or prov.execution not in ("direct", "delegated")):
+        return None, "unsupported_origin"
+    origin = agent_mod.origin_var.get(None) or {}
+    if role != origin.get("execution_role"):
+        return None, "role_mismatch"
+    operator_id = strict_positive_id(origin.get("user_id"))
+    chat_id = strict_positive_id(origin.get("chat_id"))
+    if operator_id is None or chat_id is None:
+        return None, "unsupported_origin"
+    return GrantIdentity(
+        operator_id=operator_id, chat_id=chat_id,
+        enforcement_role=role, artifact_id=artifact_id,
+        engagement_id="", target_role=origin.get("role"),
+    ), None
+
+
 def make_resident_authz_hook(
     role: str,
     protected: dict[str, dict],
@@ -1189,74 +1264,40 @@ def make_resident_authz_hook(
                     return _deny(_DENY_INACTIVE)
                 return _deny(_DENY_POSTED)
 
-            # 1. ENGAGEMENT path (#400) FIRST — an interactive specialist
-            # engagement's protected call routes through the DM authorization
-            # challenge, bound to THIS engagement. NO closure-role assertion:
-            # an in_casa specialist inherits the outer execution_role, so the
-            # rec.kind gate + engagement-bound key contain it (never assert).
-            # Fail-closed unless the record is an ACTIVE SPECIALIST with a topic
-            # and a reachable operator DM (read from the record's own origin —
-            # the operator who started the engagement, not the caller-supplied
-            # turn origin, which for an engagement is not a DM).
-            if prov.execution == "engagement":
-                import tools as tools_mod
-                rec = tools_mod.engagement_var.get(None)
-                # A non-empty id is REQUIRED: it becomes the GrantKey's
-                # engagement_id AND the finish hook's routing discriminator
-                # (empty ⇒ the DM/bus-role path), so an id-less record must never
-                # reach the engagement-bound path — fail closed.
-                if (rec is None
-                        or not getattr(rec, "id", "")
-                        or getattr(rec, "kind", None) != "specialist"
-                        or getattr(rec, "status", None) != "active"
-                        or strict_positive_id(
-                            getattr(rec, "topic_id", None)) is None):
+            # 1./2./3. Identity — the ONE derivation shared with the result
+            # broker (#792): engagement path first (an interactive specialist
+            # engagement's protected call binds to THIS engagement; fail-closed
+            # unless the record is an ACTIVE SPECIALIST with a topic and a
+            # reachable operator origin), else the transport/execution gate
+            # (provenance is consulted BEFORE any grant lookup — a copied
+            # chat_id/user_id on a webhook turn can never consume a grant),
+            # then the explicit role-mismatch deny (defense in depth).
+            identity, why = resolve_grant_identity(role)
+            if identity is None:
+                if why == "engagement_unavailable":
                     return _deny(_DENY_ENGAGEMENT_UNAVAILABLE)
-                eng_origin = getattr(rec, "origin", None) or {}
-                operator_id = strict_positive_id(eng_origin.get("user_id"))
-                chat_id = strict_positive_id(eng_origin.get("chat_id"))
-                if operator_id is None or chat_id is None:
-                    return _deny(_DENY_ENGAGEMENT_UNAVAILABLE)
-                deps = deps_factory()
-                if deps is None:
-                    return _deny(_DENY_ENGAGEMENT_UNAVAILABLE)
-                return await _authorize(
-                    deps=deps, operator_id=operator_id, chat_id=chat_id,
-                    engagement_id=rec.id,
-                    target_role=getattr(rec, "role_or_type", None),
-                )
-
-            # 2. Transport/execution gate — no challenge. Provenance is consulted
-            # BEFORE any grant lookup (a copied chat_id/user_id on a webhook turn
-            # can never consume a grant).
-            if (prov.transport not in ("dm", "button")
-                    or prov.execution not in ("direct", "delegated")):
+                if why == "role_mismatch":
+                    return _deny(_DENY_ROLE_MISMATCH)
                 return _deny(_DENY_UNSUPPORTED_ORIGIN)
 
-            origin = agent_mod.origin_var.get(None) or {}
-
-            # 3. Explicit role-mismatch deny (defense in depth) — an explicit
-            # deny, never an assert.
-            if role != origin.get("execution_role"):
-                return _deny(_DENY_ROLE_MISMATCH)
-
-            # 4. Resolve the DM channel + stores lazily. None ⇒ no DM reachable.
+            # 4. Resolve the DM channel + stores lazily. None ⇒ no DM reachable
+            # (the engagement path's unavailable deny; the DM path's
+            # unsupported-origin deny — unchanged texts).
             deps = deps_factory()
             if deps is None:
-                return _deny(_DENY_UNSUPPORTED_ORIGIN)
+                return _deny(
+                    _DENY_ENGAGEMENT_UNAVAILABLE if identity.engagement_id
+                    else _DENY_UNSUPPORTED_ORIGIN)
 
-            operator_id = strict_positive_id(origin.get("user_id"))
-            chat_id = strict_positive_id(origin.get("chat_id"))
-            if operator_id is None or chat_id is None:
-                # The transport gate already guarantees these; stay fail-closed.
-                return _deny(_DENY_UNSUPPORTED_ORIGIN)
-
-            # target_role is the ORIGINATING resident (for a delegated specialist
-            # this is origin.role, i.e. Ellen — the continuation routes back to
-            # her; B1 ruling).
+            # target_role is the ORIGINATING resident on the DM path (for a
+            # delegated specialist this is origin.role, i.e. Ellen — the
+            # continuation routes back to her; B1 ruling) and the engagement's
+            # role_or_type on the engagement path.
             return await _authorize(
-                deps=deps, operator_id=operator_id, chat_id=chat_id,
-                engagement_id="", target_role=origin.get("role"),
+                deps=deps, operator_id=identity.operator_id,
+                chat_id=identity.chat_id,
+                engagement_id=identity.engagement_id,
+                target_role=identity.target_role,
             )
         except asyncio.CancelledError:
             raise

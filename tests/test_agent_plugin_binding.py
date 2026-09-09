@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -31,6 +32,19 @@ except ImportError:
 
 pytestmark = pytest.mark.unit
 
+
+
+def _plugin_env(opts) -> dict:
+    """The env a plugin-bearing SDK session gets, MINUS the two result-broker
+    keys (#792) every such session now carries — asserted here once, in
+    shape, so the #429 pinning assertions below keep comparing exactly the
+    declared-variable overlay they were written for."""
+    env = dict(opts.env or {})
+    if opts.plugins:
+        client = env.pop("CASA_BROKER_CLIENT")
+        assert re.fullmatch(r"[0-9a-f]{32}", client), client
+        assert env.pop("CASA_BROKER_SOCKET") == "/run/casa/internal.sock"
+    return env
 
 def _make_agent(tmp_path, role="assistant", agent_registry=None) -> Agent:
     cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT,
@@ -622,7 +636,7 @@ def test_specialist_options_pin_declared_vars_to_empty_strings(
     import tools as tools_mod
     _bankfeed_registry(tmp_path, monkeypatch, ["specialist:finance"])
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
-    assert opts.env == {"CASA_PLUGIN_BANKFEED_PRIVATE_KEY": ""}
+    assert _plugin_env(opts) == {"CASA_PLUGIN_BANKFEED_PRIVATE_KEY": ""}
     # Never an overlay for a var that is actually wired.
     assert "OP_SERVICE_ACCOUNT_TOKEN" not in opts.env
 
@@ -633,7 +647,7 @@ def test_specialist_options_stop_pinning_once_setup_has_run(
     _bankfeed_registry(tmp_path, monkeypatch, ["specialist:finance"])
     monkeypatch.setenv("CASA_PLUGIN_BANKFEED_PRIVATE_KEY", "-----BEGIN KEY-----")
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
-    assert opts.env == {}
+    assert _plugin_env(opts) == {}
 
 
 def test_specialist_options_still_withhold_an_undeclared_missing_secret(
@@ -646,7 +660,7 @@ def test_specialist_options_still_withhold_an_undeclared_missing_secret(
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
     assert opts.plugins == []
-    assert opts.env == {}
+    assert _plugin_env(opts) == {}
 
 
 def test_specialist_options_undeclared_plugin_gets_no_env_overlay(
@@ -664,7 +678,7 @@ def test_specialist_options_undeclared_plugin_gets_no_env_overlay(
     monkeypatch.setenv("FIN_API_KEY", "resolved")
     opts = tools_mod._build_specialist_options(_spec_cfg("finance"))
     assert len(opts.plugins) == 1
-    assert opts.env == {}
+    assert _plugin_env(opts) == {}
 
 
 def test_resident_options_load_and_pin_the_declared_vars(tmp_path, monkeypatch):
@@ -689,7 +703,7 @@ def test_resident_options_load_and_pin_the_declared_vars(tmp_path, monkeypatch):
             channel="telegram", channel_key="k", is_fresh=True,
             resume_sid=None, user_text="hi")
         assert opts.plugins == [{"type": "local", "path": str(art)}]
-        assert opts.env == {"CASA_PLUGIN_BANKFEED_PRIVATE_KEY": ""}
+        assert _plugin_env(opts) == {"CASA_PLUGIN_BANKFEED_PRIVATE_KEY": ""}
         # In the published binding, so _setup_execution_ready can pass.
         assert a.active_plugin_binding == {"bank-feed": e["artifact_id"]}
 

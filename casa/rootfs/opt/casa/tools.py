@@ -1796,9 +1796,9 @@ def _build_specialist_options(
     )
     from plugin_grants import protected_map
     _protected = protected_map(resolution)
+    _authz_role = getattr(cfg, "role", "unknown")
+    _authz_hook = None
     if _protected:
-        from claude_agent_sdk import HookMatcher
-        _authz_role = getattr(cfg, "role", "unknown")
 
         def _authz_deps_factory():
             ch = (_channel_manager.get("telegram")
@@ -1815,11 +1815,23 @@ def _build_specialist_options(
                 display_name=getattr(_char, "name", None),
             )
 
-        resolved_hooks["PreToolUse"] = [
-            *resolved_hooks.get("PreToolUse", []),
-            HookMatcher(hooks=[make_resident_authz_hook(
-                _authz_role, _protected, _authz_deps_factory)]),
-        ]
+        _authz_hook = make_resident_authz_hook(
+            _authz_role, _protected, _authz_deps_factory)
+
+    # #792: the plugin result contract — the same composite admission,
+    # replacement and failure matchers the resident builder appends (see
+    # agent.py), for the delegated specialist AND the specialist engagement
+    # (this one builder serves both). Executor sessions get none (#923).
+    _broker_env: dict[str, str] = {}
+    if resolution.plugins:
+        import result_broker
+        _client_id = result_broker.new_client_id()
+        for _event, _matchers in result_broker.broker_matchers(
+                _authz_role, resolution, client_id=_client_id,
+                authz_hook=_authz_hook, protected=_protected).items():
+            resolved_hooks[_event] = [
+                *resolved_hooks.get(_event, []), *_matchers]
+        _broker_env = result_broker.broker_env(_client_id)
 
     agent_home = (cfg.cwd
                   or f"/config/agent-home/{getattr(cfg, 'role', 'unknown')}")
@@ -1907,7 +1919,7 @@ def _build_specialist_options(
         # to "" so a plugin the withhold gate now admits cannot reach its MCP
         # server as a literal ${VAR} placeholder (#423). Derived from the
         # SAME filtered resolution the plugins list came from.
-        env=sanitized_env_for_resolution(resolution),
+        env={**sanitized_env_for_resolution(resolution), **_broker_env},
         output_format=output_format,
         stderr=(_discard_structured_stderr if output_format is not None else None),
         # P-5b: no relay exists on this path — deny ungranted tools fast
@@ -13063,6 +13075,12 @@ def _invalidate_lifecycle(*, artifact_id: "str | None" = None,
     if artifact_id:
         GRANTS.purge_artifact(artifact_id)
         CHALLENGES.cancel_matching(artifact=artifact_id)
+        # #792: a capability reference outlives neither the artifact that
+        # minted it nor (below) the role it was minted for — an engagement
+        # that resumes from its RECORDED artifact path after an update cannot
+        # redeem a reference minted under the old artifact.
+        import result_broker
+        result_broker.STORE.purge_artifact(artifact_id)
         # Release B: an artifact change/removal drops its webhook-trigger
         # consents (the ack identity is artifact-bound) and retires the
         # per-trigger secrets — live + .next + rotation state — BEFORE any
@@ -13086,6 +13104,8 @@ def _invalidate_lifecycle(*, artifact_id: "str | None" = None,
         role = normalize_role(target)
         GRANTS.purge_role(role)
         CHALLENGES.cancel_matching(role=role)
+        import result_broker
+        result_broker.STORE.purge_role(role)
 
 
 def _setup_fields(manifest: dict) -> dict:
