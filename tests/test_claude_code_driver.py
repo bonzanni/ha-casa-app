@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 
 def _make_defn(tmp_path, plugins=None):

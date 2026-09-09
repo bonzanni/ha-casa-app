@@ -20,8 +20,6 @@ from retry import (
 from agent import ErrorKind
 
 
-pytestmark = pytest.mark.asyncio
-
 
 @contextmanager
 def patch_retry_sleep():

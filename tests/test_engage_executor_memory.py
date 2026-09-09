@@ -24,8 +24,6 @@ import sys
 import pytest
 
 
-pytestmark = pytest.mark.asyncio
-
 
 def test_substitutes_executor_memory_slot_when_memory_enabled(monkeypatch, tmp_path):
     """engage_executor build_prompt path interpolates {executor_memory}.

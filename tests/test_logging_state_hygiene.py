@@ -1,5 +1,8 @@
 """#898 — the residue guard covers every module that calls the installer, and
-the guard's own four arms each detect the effect they name.
+each of ``residue``'s five arms detects the effect it names. Four of those arms
+are exercised here; the fifth, which detects a _casa_owned handler MOVING within
+the root handler list, is pinned next door in
+``tests/test_logging_state_boundary.py::TestOrderIsPartOfTheState``.
 
 `log_cid.install_logging` is process-global (a `_casa_owned` root handler, the
 root level, a wrapped LogRecord factory, and the `httpx`/`opentelemetry`
@@ -134,8 +137,16 @@ class TestContainmentNestsOutsideTheGuard:
         """Prohibition against blinding the guard, as an executable test rather
         than a promise: drive the guard's own generator around a body that leaks
         one ``_casa_owned`` handler and require the accusation. Blind the handler
-        arm in ``residue`` and this test goes green — which is what makes it
-        worth having."""
+        arm in ``residue`` and this test goes RED — ``Failed: DID NOT RAISE
+        AssertionError`` at the ``pytest.raises`` below — which is what makes it
+        worth having.
+
+        Four other tests redden under that same mutation, so this is not the
+        arm's only detector. What is distinctive is narrower: it is the only one
+        of the five that drives the SHIPPED fixture end to end — establish,
+        yield, compute residue, restore, raise — rather than calling ``residue``
+        or ``snapshot`` directly, so it is the only one that would catch a break
+        in the ORDER of those steps."""
         guard = casa_logging_guard.__wrapped__
         # Its parameters are fixtures this call does not need; the count is read
         # from the signature so the test does not itself assume the dependency

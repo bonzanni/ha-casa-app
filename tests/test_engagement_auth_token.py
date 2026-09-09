@@ -23,7 +23,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 
 class _FakeRecord:

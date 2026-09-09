@@ -74,7 +74,7 @@ def logging_baseline():
 
 
 class TestResidueAttributesHandlersToTheTestThatChangedThem:
-    """The handler arm is a DIFFERENCE against ``before``, like its three
+    """The handler arm is a DIFFERENCE against ``before``, like its four
     siblings — not an absolute count. Four cases, because a one-sided test
     passes both for an arm that never fires and for one that always fires."""
 

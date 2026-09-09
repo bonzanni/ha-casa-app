@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 
 async def _drain_turns(ch) -> None:

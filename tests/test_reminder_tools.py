@@ -11,7 +11,7 @@ import pytest
 import yaml
 from aiohttp import web
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 FUTURE = "2099-08-03T08:00:00+02:00"
 FUTURE_THURSDAY = "2099-08-06T07:00:00+02:00"   # 2099-08-06 is a Thursday

@@ -52,7 +52,7 @@ except ImportError:
         _RecordingFinalDeliveryChannel,
     )
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 _KEY = "k1"
 

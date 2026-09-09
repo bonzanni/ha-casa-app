@@ -28,8 +28,6 @@ import verdict_broker
 from broker_helpers import deliver, wait_until
 from verdict_broker import VerdictBroker
 
-pytestmark = pytest.mark.asyncio
-
 OPERATOR = 4242
 LABEL = "cron-invoices"
 

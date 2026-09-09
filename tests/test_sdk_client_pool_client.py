@@ -13,8 +13,6 @@ from claude_agent_sdk import (
     TextBlock as _SDKTextBlock,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 def test_cidbox_str_and_default():
     from sdk_client_pool import _CidBox

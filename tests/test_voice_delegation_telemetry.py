@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 
 def _voice_origin(**overrides):

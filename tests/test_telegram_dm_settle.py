@@ -28,8 +28,6 @@ import pytest
 from telegram import InlineKeyboardMarkup
 from telegram.error import BadRequest
 
-pytestmark = pytest.mark.asyncio
-
 CHAT = 4242
 MESSAGE_ID = 7007
 

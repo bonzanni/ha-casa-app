@@ -21,8 +21,6 @@ import event_spool
 from event_acks import EventAckStore
 from plugin_events import ack_identity, subscribe_declaration_digest
 
-pytestmark = pytest.mark.asyncio
-
 EMITTER = "gmail"
 EVENT = "mail_in"
 SUBSCRIBER_A = "finance"
