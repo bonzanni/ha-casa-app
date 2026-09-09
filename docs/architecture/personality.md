@@ -153,10 +153,15 @@ rule that has to bind the agent that fetches something and the agent that
 relays it.
 
 What it does not cover: enforcement. It asserts presence in the served prompt
-and nothing about the model obeying it. There is no taint path, no outbound
-scrubber and no per-value provenance anywhere in Casa; a rule about handling a
+and nothing about the model obeying it. There is no outbound scrubber and no
+per-value provenance on the delivery path; a rule about handling a
 credential-bearing artifact is a judgement instruction, and treating it as a
 boundary would be the same mistake as believing a `response_shape.yaml` edit.
+The boundary that does exist sits one step earlier, at the plugin tool result:
+a declared capability is deposited with Casa and reaches the model as a
+reference, and a plugin that has not adopted that contract has its tools
+refused before they run ([`plugin-result-contract.md`](plugin-result-contract.md)).
+The prose rule still binds what the model does with everything else.
 
 **INV-PERS-016**: An installed specialist whose active binding's role checksum differs from the role the loader materialized — with the component root, persona identity triple, configuration and dependency closure unchanged — is activated on a binding re-derived for that role; on a committing load of an enabled specialist the re-derived binding replaces the active tuple in place, leaving the retained prior and any staged candidate untouched, while a validation-only load and a disabled specialist write nothing; and a binding whose persona identity or agent id differs from what the loader resolved is refused, never re-derived.
 

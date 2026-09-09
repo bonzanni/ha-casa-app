@@ -162,12 +162,17 @@ pass such an artifact only to the operation meant to consume it, and where there
 that the step could not be completed rather than handing the artifact to someone to finish by
 hand.
 
-Nothing enforces this. There is no taint tracking and no outbound filter anywhere in the
-system, so this is a judgement rule and is worth stating as one. The mechanism that *is*
-enforced covers a different thing: a protected tool's approval is single-use and bound to one
-argument set, so a repeat call needs a fresh one. Where a tool is not declared protected, no
-such gate exists — which is why the rule beside it matters: an earlier agreement to fetch or
-send is not authority for the next one, and the absence of a refusal is not consent.
+On the delivery path nothing enforces this: there is no taint tracking and no outbound
+filter between an agent's text and the chat, so it is a judgement rule and is worth
+stating as one. What *is* enforced sits at the plugin tool boundary: a plugin declares
+which of its tools return a capability, the capability is deposited with Casa and the
+model is handed a single-use reference instead, and a plugin that has not adopted that
+contract has its tools refused before they run
+([`architecture/plugin-result-contract.md`](../architecture/plugin-result-contract.md)).
+Beside it, a protected tool's approval is single-use and bound to one argument set, so a
+repeat call needs a fresh one. Where a tool is neither protected nor a declared capability,
+no gate exists — which is why the rule above matters: an earlier agreement to fetch or send
+is not authority for the next one, and the absence of a refusal is not consent.
 
 **A page someone has to open is delivered, not withheld — and its shape is the work.** An
 authorization or consent page is not the same class of thing as an artifact whose possession

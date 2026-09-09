@@ -64,6 +64,14 @@ are hard-denied, Bash is hard-denied unless the declaration allows it, and guard
 protect managed components and agent-home settings. A plugin declaring protected tools
 protects resident and specialist calls; it creates no equivalent gate on the executor path.
 
+**A third producer declaration sits beside protected tools and the setup tool.** The
+result contract names which of a plugin's tools return a live capability; those values are
+deposited with Casa and reach the model as references, and a plugin that has not adopted
+the contract has its non-setup tools refused before they run. Its store is the shape of
+the grant store — memory-only, single-use, bound to the same identity a grant binds to —
+and it is purged in the same lifecycle step. It is
+[`plugin-result-contract.md`](plugin-result-contract.md)'s subject, not this file's.
+
 ## Contracts & invariants
 
 **INV-PLUG-001**: A registry entry is usable only when its recorded artifact id equals the id computed from its own source coordinates.

@@ -835,6 +835,59 @@ template in the manifest:
 "Alex (finance) wants to: Delete the invoice draft for 2025-05" — the exact
 arguments still always appear below, unabridged.
 
+### The result contract: capabilities never pass through the chat
+
+A plugin tool can return a live capability — a sign-in link, a one-time
+code, a token. Before this release nothing but the assistant's judgement
+stood between such a value and your chat history. Now a plugin **declares**
+which of its tools return one, and hands the value to Casa instead of
+returning it:
+
+```json
+"casa": {
+  "resultContract": {
+    "version": 1,
+    "tools": {
+      "list_accounts":    {"result": "safe"},
+      "fetch_login_link": {"result": "capability", "provides": ["login_link"]},
+      "complete_login":   {"result": "safe", "consumes": {"link": "login_link"}}
+    }
+  }
+}
+```
+
+- `tools` must list **every** tool the plugin's MCP servers expose, except
+  its `casa.setupTool`; a call to an unlisted tool is refused before it runs.
+- A `safe` tool's result is delivered unchanged — the author asserts it
+  carries no live capability.
+- A `capability` tool deposits each value it `provides` with Casa **during
+  the call** and returns the reference Casa hands back, in that field:
+  `POST` `{"client": $CASA_BROKER_CLIENT, "slot": "login_link", "value": "…"}`
+  to `http://localhost/internal/broker/deposit` over the Unix socket named by
+  `$CASA_BROKER_SOCKET` (both are in the server's environment), then return a
+  JSON object such as `{"account": "ops", "login_link": "<reference>"}`. The
+  reference looks like `casa-cap-<32 hex>`; the value itself never enters the
+  tool result, the assistant's context or the transcript.
+- A tool that `consumes` a reference receives it in the named parameter as
+  `<reference>:<ticket>` and redeems both:
+  `POST {"client": $CASA_BROKER_CLIENT, "reference": …, "ticket": …}` to
+  `/internal/broker/redeem`, which answers `{"value": …}` exactly once.
+  A reference is single-use, expires after fifteen minutes, is bound to the
+  operator and agent that fetched it, and is lost when Casa restarts.
+- Return a JSON **object** from a capability tool (a `dict` in FastMCP); a
+  plain string has no fields to carry a reference. Never place a capability
+  in an error message — an error is shown to the assistant unchanged.
+- The setup tool is exempt: its consent page is meant to be opened by you.
+
+**What changes for an installed plugin.** A plugin that has not adopted the
+contract has every tool except its setup tool refused, from this release on,
+until the plugin is updated; the assistant is told to ask you to update it.
+There is no grace period — a permissive window is exactly what would stop
+this being a boundary. Skill-only plugins (no MCP server) are unaffected, and
+so are executor engagements, which are outside the contract for now.
+Casa validates the declaration's shape and never guesses one for a plugin
+that lacks it; a plugin whose declaration is malformed is refused at install.
+
 ### Plugins that set themselves up (v0.154.0)
 
 Casa refuses to start a plugin whose `.mcp.json` needs an environment

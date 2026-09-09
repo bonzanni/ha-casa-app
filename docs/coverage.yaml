@@ -243,6 +243,8 @@
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/supervisor_discovery.py
   doc: architecture/home-assistant-control.md
+- item: casa/rootfs/opt/casa/result_broker.py
+  doc: architecture/plugin-result-contract.md
 - item: casa/rootfs/opt/casa/svc_casa_mcp.py
   doc: architecture/mcp-and-tools.md
 - item: casa/rootfs/opt/casa/system_requirements/orchestrator.py
@@ -463,6 +465,10 @@
   doc: architecture/memory-lifecycle.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/reload
   doc: architecture/configuration.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/deposit
+  doc: architecture/plugin-result-contract.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/redeem
+  doc: architecture/plugin-result-contract.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/hooks/resolve
   doc: architecture/mcp-and-tools.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/tools/call
