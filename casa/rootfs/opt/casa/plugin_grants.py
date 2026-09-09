@@ -17,6 +17,7 @@ tests/test_agent_plugin_binding.py (Task 7), not here.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -406,6 +407,115 @@ def protected_map(resolution) -> dict[str, dict]:
                 out[full] = {"artifact_id": rp.artifact_id,
                              "summary": tool_entry["summary"]}
     return out
+
+
+# ---------------------------------------------------------------------------
+# #792: the result-contract map — what the result broker keys every plugin
+# tool call on. Derived from the RESOLVED artifacts exactly like protected_map.
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class ToolContract:
+    """One non-setup tool's contract entry, keyed by its FULL runtime name."""
+    artifact_id: str
+    plugin_seg: str
+    kind: str                      # "safe" | "capability"
+    provides: tuple[str, ...]      # capability slots this tool deposits
+    consumes: dict                 # {param: slot} references this tool redeems
+
+
+@dataclasses.dataclass(frozen=True)
+class PluginContract:
+    """One resolved MCP-bearing plugin: adopted or not, and its exempt
+    setup-tool names (expanded to full names across its servers)."""
+    artifact_id: str
+    adopted: bool
+    setup_tools: frozenset
+
+
+@dataclasses.dataclass(frozen=True)
+class ResultContractMap:
+    tools: dict          # full tool name -> ToolContract (adopting plugins only)
+    plugins: dict        # plugin_seg -> PluginContract (every MCP-bearing plugin)
+
+    def plugin_seg_of(self, tool_name: str) -> str | None:
+        """The ``<plugin>`` segment of ``mcp__plugin_<plugin>_<server>__<tool>``
+        — resolved against the KNOWN plugin segments (longest match), because
+        ``_`` is legal inside a plugin name and inside a server name alike, so
+        the name cannot be split by counting underscores."""
+        if not tool_name.startswith("mcp__plugin_"):
+            return None
+        rest = tool_name[len("mcp__plugin_"):]
+        best = None
+        for seg in self.plugins:
+            if rest == seg or rest.startswith(seg + "_"):
+                if best is None or len(seg) > len(best):
+                    best = seg
+        return best
+
+
+def result_contract_map(resolution) -> ResultContractMap:
+    """Build the :class:`ResultContractMap` for a RESOLVED ``ResolutionResult``
+    (#792). Every resolved plugin that declares at least one MCP server is
+    represented in ``plugins`` — adopting or not — so the broker can tell
+    "non-adopting plugin" from "unknown tool" and refuse both. Tool names are
+    expanded across every server the plugin declares, namespaced on the
+    runtime identity exactly like ``grants_for_resolved`` / ``protected_map``.
+
+    PER-PLUGIN DEGRADATION: a malformed ``casa.resultContract`` (or a
+    malformed ``casa.setupTool``) in one plugin's manifest represents that
+    plugin as NOT adopted (logged at WARNING) — under the broker its non-setup
+    tools are then refused, never passed. Never raises."""
+    from plugin_store import (
+        StoreError, manifest_result_contract, manifest_setup_tool,
+    )
+    tools: dict = {}
+    plugins: dict = {}
+    for rp in getattr(resolution, "plugins", None) or []:
+        servers = sorted(_mcp_servers(Path(rp.path) / ".mcp.json"))
+        if not servers:
+            continue
+        plugin_seg = sanitize_segment(runtime_name(rp))
+        manifest = getattr(rp, "manifest", None)
+        manifest = manifest if isinstance(manifest, dict) else {}
+        artifact_id = str(getattr(rp, "artifact_id", "") or "")
+        setup_names: set[str] = set()
+        try:
+            setup = manifest_setup_tool(manifest)
+        except StoreError:
+            setup = None
+        if setup:
+            for server in servers:
+                setup_names.add(f"mcp__plugin_{plugin_seg}_"
+                                f"{sanitize_segment(server)}__"
+                                f"{sanitize_segment(setup)}")
+        contract = None
+        try:
+            contract = manifest_result_contract(manifest)
+        except StoreError:
+            logger.warning(
+                "result_contract_invalid: %s (artifact_id=%s) is treated as "
+                "NOT adopting the result contract", rp.name, artifact_id)
+            contract = None
+        adopted = contract is not None and bool(artifact_id)
+        plugins[plugin_seg] = PluginContract(
+            artifact_id=artifact_id, adopted=adopted,
+            setup_tools=frozenset(setup_names))
+        if not adopted:
+            continue
+        for name, entry in contract["tools"].items():
+            tool_seg = sanitize_segment(name)
+            for server in servers:
+                full = (f"mcp__plugin_{plugin_seg}_"
+                        f"{sanitize_segment(server)}__{tool_seg}")
+                if full in setup_names:
+                    continue  # the setup tool is exempt, never contracted
+                tools[full] = ToolContract(
+                    artifact_id=artifact_id, plugin_seg=plugin_seg,
+                    kind=entry["result"], provides=tuple(entry["provides"]),
+                    consumes=dict(entry["consumes"]))
+    return ResultContractMap(tools=tools, plugins=plugins)
 
 
 def make_fail_closed_can_use_tool(role: str):

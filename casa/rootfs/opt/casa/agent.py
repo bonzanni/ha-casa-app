@@ -2322,8 +2322,8 @@ class Agent:
         )
         from plugin_grants import protected_map
         _protected = protected_map(resolution)
+        _authz_hook = None
         if _protected:
-            from claude_agent_sdk import HookMatcher
             _cm = self._channel_manager
 
             def _authz_deps_factory(_cm=_cm):
@@ -2338,11 +2338,28 @@ class Agent:
                     display_name=self.config.character.name,
                 )
 
-            hooks["PreToolUse"] = [
-                *hooks.get("PreToolUse", []),
-                HookMatcher(hooks=[make_resident_authz_hook(
-                    self.config.role, _protected, _authz_deps_factory)]),
-            ]
+            _authz_hook = make_resident_authz_hook(
+                self.config.role, _protected, _authz_deps_factory)
+
+        # #792: the plugin result contract. Every session that loads a plugin
+        # carries — code-side, beside the guards above, never from a hooks
+        # document — ONE composite PreToolUse admission callback (contract
+        # admission → the authz decision above for a protected tool → arming
+        # of capability references; one callback because the SDK dispatches
+        # same-event matchers concurrently) plus the PostToolUse replacement
+        # and the PostToolUseFailure housekeeping matchers. A plugin that has
+        # not adopted casa.resultContract has its non-setup tools refused
+        # before they run. The per-client id binds this client's hooks to the
+        # environment its stdio MCP servers inherit.
+        _broker_env: dict[str, str] = {}
+        if resolution.plugins:
+            import result_broker
+            _client_id = result_broker.new_client_id()
+            for _event, _matchers in result_broker.broker_matchers(
+                    self.config.role, resolution, client_id=_client_id,
+                    authz_hook=_authz_hook, protected=_protected).items():
+                hooks[_event] = [*hooks.get(_event, []), *_matchers]
+            _broker_env = result_broker.broker_env(_client_id)
 
         # Skills are enabled via the `skills="all"` option below, NOT by
         # putting "Skill" in allowed_tools ((f) v0.69.9: bare "Skill" is
@@ -2401,7 +2418,7 @@ class Agent:
             # sees a genuinely empty value instead of a placeholder
             # credential. Never overrides a wired value (the helper emits
             # only unresolved vars), so this is {} on a fully-wired system.
-            env=sanitized_env_for_resolution(resolution),
+            env={**sanitized_env_for_resolution(resolution), **_broker_env},
             # P-5b: in-casa agents have no permission relay — fail closed on
             # ungranted tools instead of hanging on CC's prompt. New closure
             # per build is fine: the pool reuses clients, not options objects.

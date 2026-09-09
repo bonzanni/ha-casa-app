@@ -38,6 +38,7 @@ Code is the source of truth; these files are a map.
 - [architecture/plugin-events.md](architecture/plugin-events.md): Plugin-emitted domain events — casa-minted generations, per-subscriber delivery receipts, and consent-gated headless wakes.
 - [architecture/plugin-health.md](architecture/plugin-health.md): How a plugin's problems reach the operator — the standing health report, the notice and DM with their dedup marks, and the status tool.
 - [architecture/plugin-mutation-tools.md](architecture/plugin-mutation-tools.md): What the plugin and specialist mutation tools guarantee — the commit-then-converge ordering, what an envelope may claim about an integration, and what a committed removal discloses.
+- [architecture/plugin-result-contract.md](architecture/plugin-result-contract.md): The plugin result contract and the escrow broker — non-adopters refused before they run, a declared capability deposited with Casa and redeemed by reference.
 - [architecture/plugin-runtime.md](architecture/plugin-runtime.md): The environment a plugin's MCP servers need before an agent can use it, plus the env-conf and media side channels.
 - [architecture/plugin-setup.md](architecture/plugin-setup.md): Who runs a plugin's declared setup tool — the single-runner obligation, the consent verdict that releases it, and the applied-state gate it passes through.
 - [architecture/plugin-triggers.md](architecture/plugin-triggers.md): What a plugin's declared webhook must satisfy before it routes — the overlay, its preconditions, and the operator approval gating them.

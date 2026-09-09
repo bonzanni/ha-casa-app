@@ -148,6 +148,20 @@ async def start_internal_unix_runner(
             engagement_registry=engagement_registry,
         ),
     )
+    # #792: the result broker's two routes — a plugin's MCP server (a child of
+    # the SDK-spawned CLI, running as casa-main's user) deposits a capability
+    # here during a declared tool call and a declared consumer redeems it.
+    # Unix-socket-only (0600, root): never registered on the public 8099 app
+    # and never forwarded by the 8100 bridge.
+    from result_broker import (
+        build_broker_deposit_handler, build_broker_redeem_handler,
+    )
+    internal_app.router.add_post(
+        "/internal/broker/deposit", build_broker_deposit_handler(),
+    )
+    internal_app.router.add_post(
+        "/internal/broker/redeem", build_broker_redeem_handler(),
+    )
     # Task E.1 (granular-reload plan): casactl operator CLI POSTs here
     # over the unix socket. Same dispatch path as the casa_reload MCP tool.
     internal_app.router.add_post(
