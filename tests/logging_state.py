@@ -18,11 +18,11 @@ inflate one test's report section from 27,616 B to 2,948,376 B, and on CI past
 the 6 GiB per-worker address-space cap ``tests/conftest.py`` sets, aborting a
 required check.
 
-Three test modules call the installer (``tests/test_callback_http.py``,
-``tests/test_log_cid.py``, ``tests/test_casa_access_logger.py``). Each imports
-:func:`casa_logging_guard` from here, which makes the residue a FAILURE of the
-test that left it; ``tests/test_logging_state_hygiene.py`` refuses a fourth
-caller that does not.
+Four test modules call the installer (``tests/test_callback_http.py``,
+``tests/test_log_cid.py``, ``tests/test_casa_access_logger.py`` and
+``tests/test_logging_state_hygiene.py``). Each imports :func:`casa_logging_guard`
+from here, which makes the residue a FAILURE of the test that left it, and the
+hygiene module's own scan refuses any caller that does not.
 
 That accusation is opt-in per module, and it only ever covered LITERAL callers.
 :func:`casa_logging_containment` (#911) covers the rest: ``tests/conftest.py``
@@ -286,7 +286,7 @@ def casa_logging_containment() -> Iterator[LoggingState]:
 def casa_logging_guard(casa_logging_containment) -> Iterator[LoggingState]:
     """Fail any test in the importing module that leaves logging residue.
 
-    Autouse applies only where this name is imported, which is the three
+    Autouse applies only where this name is imported, which is the four
     modules that call ``install_logging``. It establishes a distinctive state
     first (see :data:`GUARD_ROOT_LEVEL`) so that an unrestored effect cannot
     hide behind an ambient value that happens to match, and it restores that
