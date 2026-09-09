@@ -654,6 +654,14 @@ def artifact_verdict(path: Path, *, name: str, repo: str, revision: str,
         manifest_setup_provides(manifest)
     except StoreError as _exc:
         return _exc.reason_code
+    # #792: same upgrade-path posture for casa.resultContract — a stored
+    # artifact carrying a malformed declaration is excluded from resolution
+    # (per-plugin degradation); under the broker an excluded plugin's tools
+    # are REFUSED, never passed.
+    try:
+        manifest_result_contract(manifest)
+    except StoreError as _exc:
+        return _exc.reason_code
     return None
 
 
@@ -1166,6 +1174,153 @@ def manifest_setup_provides(manifest: dict) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# #792: the plugin RESULT CONTRACT — a producer's declaration of which of its
+# tools return a live capability, and which of its tools consume one.
+# ---------------------------------------------------------------------------
+#
+# Shape (plugin.json):
+#   "casa": {"resultContract": {"version": 1, "tools": {
+#       "list_accounts":    {"result": "safe"},
+#       "fetch_login_link": {"result": "capability", "provides": ["login_link"]},
+#       "complete_login":   {"result": "safe", "consumes": {"link": "login_link"}}
+#   }}}
+#
+# `tools` is EXHAUSTIVE over the plugin's non-setup MCP tools: a call to a tool
+# absent from it is refused before it runs (result_broker). A `capability` tool
+# DEPOSITS each declared slot's value with Casa's broker during the call and
+# returns a reference in its place; a `consumes` parameter accepts such a
+# reference and the tool redeems it from the broker. The exact `casa.setupTool`
+# is exempt from the contract and may not consume. Casa validates the SHAPE of
+# this declaration and never infers or supplements it (#785).
+_RESULT_CONTRACT_VERSION = 1
+_RC_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_RC_SLOT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_RC_PARAM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_RC_MAX_TOOLS = 64
+_RC_MAX_SLOTS = 16
+_RC_RESULT_KINDS = ("safe", "capability")
+_RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes"})
+
+
+def _rc_error(msg: str) -> "StoreError":
+    return StoreError("casa.resultContract invalid: " + msg,
+                      reason_code="result_contract_invalid")
+
+
+def manifest_result_contract(manifest: dict) -> dict | None:
+    """Guarded + STRICT ``casa.resultContract`` extraction (#792). ABSENT →
+    ``None`` (the plugin has NOT adopted the contract). PRESENT-but-malformed
+    is a plugin-author error: raises ``StoreError(reason_code=
+    "result_contract_invalid")`` — validated on every artifact-verification
+    path like ``casa.setupTool`` (install/update refused; a stored artifact
+    excluded from resolution; the map derivation excludes that plugin, which
+    under the broker means REFUSED, never passed).
+
+    Returns the NORMALIZED declaration ``{"version": 1, "tools": {name:
+    {"result": "safe"|"capability", "provides": [slot, ...], "consumes":
+    {param: slot, ...}}}}`` with declaration order preserved. Rules: version
+    is exactly 1; tool names are unique AFTER ``text_util.sanitize_segment``
+    (the runtime tool id's sanitization); a ``capability`` tool declares a
+    non-empty ``provides``; a ``safe`` tool declares none; every ``consumes``
+    slot is provided by SOME tool of this plugin; the ``casa.setupTool`` may
+    appear only as ``safe`` with no ``consumes`` (it is exempt from the
+    contract, so a declaration on it would promise what the broker never
+    enforces); bounded counts so a hostile manifest cannot make every session
+    build walk an arbitrarily long declaration."""
+    casa = manifest.get("casa")
+    if not isinstance(casa, dict) or "resultContract" not in casa:
+        return None
+    raw = casa.get("resultContract")
+    if not isinstance(raw, dict):
+        raise _rc_error(f"must be an object, got {type(raw).__name__}")
+    unknown = sorted(set(raw) - {"version", "tools"})
+    if unknown:
+        raise _rc_error(f"unknown member(s) {unknown}; allowed: version, tools")
+    if raw.get("version") != _RESULT_CONTRACT_VERSION:
+        raise _rc_error(
+            f"version must be {_RESULT_CONTRACT_VERSION}, got {raw.get('version')!r}")
+    tools = raw.get("tools")
+    if not isinstance(tools, dict):
+        raise _rc_error("tools must be an object mapping tool name to entry")
+    if len(tools) > _RC_MAX_TOOLS:
+        raise _rc_error(f"at most {_RC_MAX_TOOLS} tools (got {len(tools)})")
+    from text_util import sanitize_segment
+    setup_tool = None
+    try:
+        setup_tool = manifest_setup_tool(manifest)
+    except StoreError:
+        setup_tool = None  # its own verdict reason fires first on every path
+    out: dict = {}
+    seen_sanitized: dict[str, str] = {}
+    provided: set[str] = set()
+    for name, entry in tools.items():
+        if not isinstance(name, str) or not _RC_TOOL_NAME_RE.fullmatch(name):
+            raise _rc_error(f"tool name {name!r} is not a tool name")
+        sanitized = sanitize_segment(name)
+        if sanitized in seen_sanitized:
+            raise _rc_error(
+                f"tool {name!r} collides with {seen_sanitized[sanitized]!r} "
+                "after sanitization")
+        seen_sanitized[sanitized] = name
+        if not isinstance(entry, dict):
+            raise _rc_error(f"tool {name!r}: entry must be an object")
+        unknown = sorted(set(entry) - _RC_ENTRY_KEYS)
+        if unknown:
+            raise _rc_error(
+                f"tool {name!r}: unknown member(s) {unknown}; allowed: "
+                "result, provides, consumes")
+        kind = entry.get("result")
+        if kind not in _RC_RESULT_KINDS:
+            raise _rc_error(
+                f"tool {name!r}: result must be one of {list(_RC_RESULT_KINDS)}, "
+                f"got {kind!r}")
+        provides_raw = entry.get("provides")
+        if kind == "capability":
+            if not isinstance(provides_raw, list) or not provides_raw:
+                raise _rc_error(
+                    f"tool {name!r}: a capability tool must declare a non-empty "
+                    "provides list")
+        elif provides_raw is not None:
+            raise _rc_error(f"tool {name!r}: a safe tool declares no provides")
+        provides: list[str] = []
+        for slot in provides_raw or []:
+            if not isinstance(slot, str) or not _RC_SLOT_RE.fullmatch(slot):
+                raise _rc_error(f"tool {name!r}: provides entry {slot!r} is not a slot name")
+            if slot in provides:
+                raise _rc_error(f"tool {name!r}: slot {slot!r} declared twice")
+            provides.append(slot)
+        if len(provides) > _RC_MAX_SLOTS:
+            raise _rc_error(f"tool {name!r}: at most {_RC_MAX_SLOTS} provided slots")
+        consumes_raw = entry.get("consumes")
+        consumes: dict[str, str] = {}
+        if consumes_raw is not None:
+            if not isinstance(consumes_raw, dict):
+                raise _rc_error(f"tool {name!r}: consumes must be an object mapping parameter to slot")
+            if len(consumes_raw) > _RC_MAX_SLOTS:
+                raise _rc_error(f"tool {name!r}: at most {_RC_MAX_SLOTS} consumed parameters")
+            for param, slot in consumes_raw.items():
+                if not isinstance(param, str) or not _RC_PARAM_RE.fullmatch(param):
+                    raise _rc_error(f"tool {name!r}: consumes key {param!r} is not a parameter name")
+                if not isinstance(slot, str) or not _RC_SLOT_RE.fullmatch(slot):
+                    raise _rc_error(f"tool {name!r}: consumes[{param!r}] {slot!r} is not a slot name")
+                consumes[param] = slot
+        if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
+            if kind != "safe" or consumes:
+                raise _rc_error(
+                    f"tool {name!r} is the casa.setupTool: it is exempt from the "
+                    "contract and may be listed only as safe with no consumes")
+        provided.update(provides)
+        out[name] = {"result": kind, "provides": provides, "consumes": consumes}
+    for name, entry in out.items():
+        for param, slot in entry["consumes"].items():
+            if slot not in provided:
+                raise _rc_error(
+                    f"tool {name!r}: consumes[{param!r}] names slot {slot!r}, "
+                    "which no tool of this plugin provides")
+    return {"version": _RESULT_CONTRACT_VERSION, "tools": out}
+
+
 def manifest_protected_tools(manifest: dict) -> list:
     """Guarded + STRICT casa.protectedTools extraction (A:§3.7, extended
     v0.78.0 W1), beside manifest_sysreqs. An ABSENT ``casa.protectedTools``
@@ -1324,6 +1479,9 @@ def validate_manifest(root: Path, expected_name: str, *,
     # v0.112.0: a PRESENT-but-malformed casa.setupTool refuses the
     # install/update outright (strict; raises setup_tool_invalid).
     manifest_setup_tool(manifest)
+    # #792: casa.resultContract is validated at install/update like the
+    # declarations above (strict; raises result_contract_invalid).
+    manifest_result_contract(manifest)
     # #429: same for casa.setupProvides — it RELAXES the withholding gate,
     # so an install must never accept one Casa would have to interpret.
     manifest_setup_provides(manifest)
