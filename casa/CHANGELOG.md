@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.290.0] - 2026-09-09
+
+### Added
+
+- Plugin tool results are now brokered. A plugin declares in its manifest which of
+  its tools return a live capability — a sign-in link, a one-time code, a
+  pre-signed URL — and, when such a tool runs, deposits the capability with Casa
+  instead of returning it. The tool's result then carries a reference, and only
+  the operation the plugin designated can redeem it: once, within a bounded
+  window, and only for the same operator, chat and role that made the call. The
+  capability itself never enters the model's context, the delivered chat message,
+  or the session transcript on disk. Until now the only thing standing between
+  such a value and the operator's chat history was an instruction in the
+  resident's prompt.
+
+### Changed
+
+- A plugin that has not adopted the result contract has its tools refused before
+  they run — except its declared setup tool — until it is updated. The refusal
+  names the plugin and the reason. This applies to the resident, delegated
+  specialists and specialist engagements; plugin tools inside executor
+  engagements are not covered yet and are tracked separately.
+
 ## [0.289.0] - 2026-09-08
 
 ### Fixed
