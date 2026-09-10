@@ -815,3 +815,44 @@ async def test_plugin_remove_retires_before_its_first_await(
     assert rows[0]["status"] == "stale"
     assert pse._removal_mark(rows[0]) is not None
     assert len(pse.episodes("pending")) == 0
+
+
+async def test_plugin_remove_cancelled_on_its_core_await_still_retires(
+        episodes_store, monkeypatch):
+    """#928 (handback review, terra S2): the registry write runs in a thread,
+    so a cancellation landing on the FIRST await — while the core is still
+    running — could not stop the removal from committing, and used to leave
+    the committed removal with its setup row untouched. Reproduced: the core
+    is held at a barrier, the tool call is cancelled there, the barrier is
+    released; the call still ends cancelled AND the row is retired and
+    stamped — through a second cancellation as well."""
+    import threading
+    import tools
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    entered, release = threading.Event(), threading.Event()
+
+    def held_core(name):
+        entered.set()
+        assert release.wait(5.0)
+        return {"ok": True, "name": name, "artifact_id": "art-1",
+                "targets": []}
+
+    async def unreachable_seq(name, targets, expect):
+        raise AssertionError("the cancelled call must not reach the reload")
+
+    monkeypatch.setattr(tools, "_plugin_remove_sync", held_core)
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", unreachable_seq)
+    task = asyncio.create_task(tools.plugin_remove.handler({"name": "gmail"}))
+    await asyncio.to_thread(entered.wait, 5.0)
+    task.cancel()
+    await asyncio.sleep(0)                     # the first cancel is delivered
+    task.cancel()                              # and a second one, while held
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "stale"
+    assert pse._removal_mark(rows[0]) is not None
+    assert len(pse.episodes("pending")) == 0
