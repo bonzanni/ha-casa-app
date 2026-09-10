@@ -856,3 +856,37 @@ async def test_plugin_remove_cancelled_on_its_core_await_still_retires(
     assert rows[0]["status"] == "stale"
     assert pse._removal_mark(rows[0]) is not None
     assert len(pse.episodes("pending")) == 0
+
+
+async def test_plugin_remove_cancelled_on_a_failing_core_is_not_swallowed(
+        episodes_store, monkeypatch):
+    """#928: the shielded core drains on the failure path too, and a
+    cancellation delivered while it ran is re-raised rather than swallowed
+    into a normal tool result. Nothing committed, so nothing is retired:
+    the row is left exactly as it was."""
+    import threading
+    import tools
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    entered, release = threading.Event(), threading.Event()
+
+    def held_failing_core(name):
+        entered.set()
+        assert release.wait(5.0)
+        return {"ok": False, "name": name, "error": "absent"}
+
+    async def unreachable_seq(name, targets, expect):
+        raise AssertionError("the cancelled call must not reach the reload")
+
+    monkeypatch.setattr(tools, "_plugin_remove_sync", held_failing_core)
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", unreachable_seq)
+    task = asyncio.create_task(tools.plugin_remove.handler({"name": "gmail"}))
+    await asyncio.to_thread(entered.wait, 5.0)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "pending"
+    assert pse._removal_mark(rows[0]) is None

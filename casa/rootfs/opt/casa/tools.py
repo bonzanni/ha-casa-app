@@ -14352,13 +14352,38 @@ async def plugin_unassign(args: dict) -> dict:
 )
 async def plugin_remove(args: dict) -> dict:
     async with _PLUGIN_TOOLS_LOCK:
-        core = await asyncio.to_thread(_plugin_remove_sync, name=args["name"])
+        # #928 (handback review r2, astra+terra S2): the registry write runs
+        # in a THREAD, and a thread cannot be cancelled. A cancellation that
+        # lands on this await therefore cannot stop the removal committing —
+        # it only stops US from reaching the retire below, which left a
+        # committed removal with a live `pending` row (the #494 window) and
+        # an unstamped `failed` row (no same-download reinstall signal). So
+        # the core is shielded and drained to settlement through EVERY
+        # further cancellation, the durable consequences of a committed
+        # removal are recorded, and only then is the cancellation
+        # re-raised. The mutation lock is held throughout: the tool does not
+        # return — cancelled or not — while the core is still in flight.
+        core_task = asyncio.ensure_future(
+            asyncio.to_thread(_plugin_remove_sync, name=args["name"]))
+        cancelled: BaseException | None = None
+        while True:
+            try:
+                core = await asyncio.shield(core_task)
+                break
+            except asyncio.CancelledError as exc:
+                # Ours, not the core's: `shield` leaves `core_task` running.
+                # Re-await it (a settled task returns without suspending, so
+                # this loop cannot spin on a redelivered cancellation).
+                cancelled = exc
         if core.get("ok") is not True:
             # Spec §E: the pinned payload shape holds on EVERY path.
             core.setdefault("kind", "unknown")
             core.setdefault("activation_committed", False)
             core.setdefault("runtime_ready", False)
             core.setdefault("verify", {})
+            if cancelled is not None:
+                # Nothing committed — there is nothing to settle.
+                raise cancelled
             return _result(core)
         # #494: retire the plugin's setup obligation + round durably. Without
         # this, an approval racing this removal could re-arm a `pending`
@@ -14386,6 +14411,11 @@ async def plugin_remove(args: dict) -> dict:
         # (retained-for-GC) artifact AND by every former target's role.
         _invalidate_lifecycle(artifact_id=core.get("artifact_id"),
                               roles=core.get("targets"))
+        if cancelled is not None:
+            # The removal committed and its durable consequences are now
+            # recorded; the reload below is a caller-visible continuation and
+            # the caller is gone. Propagate rather than run it.
+            raise cancelled
         seq = await _reload_and_verify_targets(
             core["name"], core["targets"], expect="absent")
         core.update(seq)
