@@ -3771,6 +3771,10 @@ async def _notify_recovered_delegations(
             kind="" if succeeded else job.failure.kind,
             message="" if succeeded else job.failure.message,
             result_available=answer_available,
+            # #926: the one producer that knows this notice is a replay says
+            # so, on every shape it builds; which arm renders the fact is the
+            # synthesizer's decision. A live producer never sets this.
+            replayed_after_restart=True,
             origin={
                 "role": job.creating_role,
                 "channel": job.creator_peer,

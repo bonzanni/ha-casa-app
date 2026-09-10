@@ -96,6 +96,14 @@ class DelegationComplete:
     # carries the text, so this states a fact about the notice rather than a
     # retention posture.
     result_available: bool = True
+    # #926: True only on a notice the BOOT REPLAY of a delegation row built
+    # (`casa_core._notify_recovered_delegations`); no live producer sets it.
+    # It states where the notice came from, not what reached the screen: the
+    # relay the restart interrupted may have shown the user nothing, a partial
+    # streamed draft, or the whole answer whose acknowledgement was lost with
+    # the process. The answer-carrying synthesis arm reads it to tell the
+    # resident that full delivery was not confirmed (INV-JOB-016).
+    replayed_after_restart: bool = False
 
 
 # ---------------------------------------------------------------------------

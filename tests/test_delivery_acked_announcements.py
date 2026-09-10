@@ -430,6 +430,8 @@ async def test_each_terminal_arm_arms_the_obligation_before_announcing(
     # enqueue is not delivery.
     assert notified[0].on_delivery is not None
     assert acks == []
+    # #926: a live producer never marks its notice as a boot replay.
+    assert notified[0].content.replayed_after_restart is False
 
     await notified[0].on_delivery()
     assert acks == ["d-1"]
@@ -791,6 +793,103 @@ async def test_retained_answer_replay_adds_only_the_restart_reannouncement(
     again = JobRegistry(path, clock=lambda: 400.0)
     await again.load()
     assert await again.recover_after_restart() == []
+
+
+# #926 regression guards (green at the base or not base-red; no receipt):
+# the marker is read by the answer-carrying arm ONLY, every other arm renders
+# its previous prompt byte-for-byte whatever the marker says, and two owed rows
+# acknowledge independently.
+
+_TAIL_926_GENERIC = (
+    "\nThe original user question was: q\n\n"
+    "Reply to the user via their original channel. Be concise.\n"
+)
+_OTHER_ARMS_926 = {
+    "legacy-no-answer": (
+        dict(status="ok", result_available=False),
+        "[System notification: your delegation to finance (id job-1) "
+        "finished, and this recovery notice does not carry its answer]\n\n"
+        "The work finished. This notice carries the outcome only, not the "
+        "result text. Tell the user it completed, and offer to run it again "
+        "if they want the detail — do NOT promise to look the answer up, "
+        "because this notice is all there is.\n",
+    ),
+    "failed": (
+        dict(status="error", kind="timeout", message="took too long"),
+        "[System notification: your delegation to finance (id job-1) has "
+        "returned with status=error]\n\n"
+        "Delegation failed (timeout): took too long\n",
+    ),
+    "failed-with-available-flag": (
+        dict(status="error", kind="timeout", message="took too long",
+             result_available=True, text="stale"),
+        "[System notification: your delegation to finance (id job-1) has "
+        "returned with status=error]\n\n"
+        "Delegation failed (timeout): took too long\n",
+    ),
+    "orphan": (
+        dict(status="error", kind="restart_orphan", message="lost"),
+        "[System notification: your delegation to finance (id job-1) was "
+        "orphaned by a Casa restart]\n\n"
+        "I lost track of this delegation during a Casa restart. Tell the user "
+        "and offer to retry.\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_OTHER_ARMS_926))
+@pytest.mark.parametrize("marker", [False, True], ids=["live", "replay"])
+def test_every_other_arm_renders_its_previous_prompt_whatever_the_marker_says(
+    shape, marker,
+):
+    from unittest.mock import Mock
+    from agent import Agent
+    from bus import BusMessage, MessageType
+    from specialist_registry import DelegationComplete
+
+    fields, expected = _OTHER_ARMS_926[shape]
+    complete = DelegationComplete(
+        delegation_id="job-1", agent="finance", origin={"user_text": "q"},
+        replayed_after_restart=marker, **fields,
+    )
+    msg = BusMessage(
+        type=MessageType.NOTIFICATION, source="finance", target="concierge",
+        content=complete, channel="telegram", context={},
+    )
+    body = Agent._synthesize_delegation_turn(Mock(), msg).content
+    assert body == expected + _TAIL_926_GENERIC
+    assert body.count("re-announcement") == 0
+
+
+async def test_two_owed_rows_replay_as_two_notices_and_acknowledge_apart(
+    tmp_path,
+):
+    from casa_core import _notify_recovered_delegations
+
+    registry = await _registry(
+        tmp_path, make_job(id="job-1"), make_job(id="job-2"))
+    await registry.finish_compat("job-1", "one", announce_creator=True)
+    await registry.finish_compat("job-2", "two", announce_creator=True)
+    reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
+    await reloaded.load()
+    owed = await reloaded.recover_after_restart()
+    assert sorted(j.id for j in owed) == ["job-1", "job-2"]
+    bus = _BusProbe()
+    await _notify_recovered_delegations(
+        owed, reloaded, bus, assistant_role="concierge",
+    )
+    assert len(bus.sent) == 2
+    assert [m.content.replayed_after_restart for m in bus.sent] == [True, True]
+
+    first = next(m for m in bus.sent if m.content.delegation_id == "job-1")
+    await first.on_delivery()
+    assert reloaded.get("job-1").terminal_notification_pending is False
+    assert reloaded.get("job-1").result == ""
+    assert reloaded.get("job-2").terminal_notification_pending is True
+    assert reloaded.get("job-2").result == "two"
+    again = JobRegistry(tmp_path / "jobs.json", clock=lambda: 400.0)
+    await again.load()
+    assert [j.id for j in await again.recover_after_restart()] == ["job-2"]
 
 
 async def _drive_answer_carrying_callback(monkeypatch, raw_text, *, record=None):

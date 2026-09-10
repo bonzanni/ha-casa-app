@@ -485,3 +485,71 @@ class TestTheReplayOwnerCannotStopBootOrLie:
 
         assert "look it up" not in body.split("do NOT promise")[0], body
         assert "offer to run it again" in body, body
+
+
+# ---------------------------------------------------------------------------
+# #926 regression guards: neither the live engagement finalization nor the
+# engagement-outcome replay marks its notice as a delegation boot replay, and
+# neither prompt carries the delegation re-announcement statement.
+# ---------------------------------------------------------------------------
+
+
+def _synth_body(msg) -> str:
+    from unittest.mock import Mock
+    from agent import Agent
+    return Agent._synthesize_delegation_turn(Mock(), msg).content
+
+
+async def test_live_engagement_finalization_is_not_marked_as_a_boot_replay(
+    tmp_path,
+):
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement, init_tools
+
+    reg = EngagementRegistry(
+        tombstone_path=str(tmp_path / "engagements.json"), bus=None)
+    channel = MagicMock()
+    channel.send_to_topic = AsyncMock()
+    channel.send_response_to_topic = AsyncMock()
+    channel.close_topic = AsyncMock()
+    channel.update_topic_state = AsyncMock()
+    cm = MagicMock()
+    cm.get.return_value = channel
+    bus = _RecordingBus()
+    init_tools(
+        channel_manager=cm, bus=bus,
+        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=reg,
+    )
+    eng = await reg.create(
+        kind="specialist", role_or_type="finance", driver="in_casa",
+        task="plan Q2",
+        origin={"role": "assistant", "channel": "telegram",
+                "chat_id": "chat-B", "cid": "route-B",
+                "user_text": "plan Q2 please"},
+        topic_id=None)
+    await _finalize_engagement(
+        eng, outcome="completed", text="the plan", artifacts=[],
+        next_steps=[], driver=_driver_double())
+
+    assert len(bus.sent) == 1
+    assert bus.sent[0].content.replayed_after_restart is False
+    body = _synth_body(bus.sent[0])
+    assert body.count("re-announcement") == 0
+    assert body.count("Result text from finance:\nthe plan\n") == 1
+
+
+async def test_the_engagement_outcome_replay_is_not_marked_as_a_delegation_replay(
+    tmp_path,
+):
+    import casa_core
+
+    reg, _tombstone, _a, _b, _c, _told = await _owing_records(tmp_path)
+    bus = _RecordingBus()
+    await casa_core._notify_recovered_engagement_outcomes(
+        reg, bus, assistant_role="assistant")
+    assert len(bus.sent) == 3
+    for msg in bus.sent:
+        assert msg.content.replayed_after_restart is False
+        assert msg.content.result_available is False
+        assert _synth_body(msg).count("re-announcement") == 0

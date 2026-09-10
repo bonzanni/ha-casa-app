@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-01
+last_reviewed: 2026-09-10
 ---
 
 # Durable jobs
@@ -160,8 +160,17 @@ that legitimately answered with nothing is not a row that kept nothing. A delega
 That changes what the accepted duplicate above costs. A process lost between the delivery
 and the durable acknowledgement now announces the same outcome again **with its answer** —
 there is no dedupe on the resident's side, and none was added, because hiding the duplicate
-would mean tracking delivery of content Casa deliberately does not inspect. Repeating an
-answer the operator has already read is the price of never losing one.
+would mean tracking delivery of content Casa deliberately does not inspect. What the replay
+does instead is say what it is. The resident is told that this is a post-restart
+re-announcement whose full delivery was not confirmed — the interrupted relay may have shown
+the operator nothing, a partial streamed draft, or the whole answer with only its
+acknowledgement lost — and that the complete result is still owed; a live completion is never
+so marked, and the two prompts differ in exactly that statement. Repeating an answer the
+operator may already have read is the price of never losing one, and a resident that read
+the replay as a duplicate and narrated a fragment discharged the whole answer by the rule
+above, which is why it is now told not to.
+
+**INV-JOB-016**: A retained answer replayed at boot is handed to the consuming resident as a post-restart re-announcement whose full delivery was not confirmed, with the instruction to relay the whole answer — a completion announced live is never so marked, and the two synthesized prompts differ in exactly that statement.
 
 **INV-JOB-015**: A non-voice delegated answer is retained on the durable row exactly while its announcement is owed — it is written in the same snapshot that arms the obligation and only when the obligation is armed, and it is removed in the same snapshot that clears the obligation on DELIVERY — so an answer that was in hand when a delegation completed reaches its creator across a restart, and stops being retained once a delivery has been acknowledged.
 
@@ -176,7 +185,9 @@ acknowledged voice delivery still keeps its answer for the continuations that re
 
 Two limits are stated rather than designed away. A narration whose HEAD reached the transport
 discharges the obligation even if its tail then raised, by the rule above, and the answer is
-dropped with it — Casa does not re-narrate a turn the operator has already begun reading. And
+dropped with it — Casa does not re-narrate a turn the operator has already begun reading. That
+head is the one the channel's finalize reports; a streamed draft stamps nothing, which is why a
+replay cannot say what, if anything, was seen. And
 a delegation still executing when a stop begins boots as a lost row, which never held an
 answer: what this retains is an answer that had already been written, not one that never was.
 
@@ -312,6 +323,8 @@ compatibility is decided.
 - `casa/rootfs/opt/casa/job_registry.py::JobRegistry`
 - `casa/rootfs/opt/casa/job_registry.py::VoiceJob`
 - `casa/rootfs/opt/casa/job_registry.py::JobRegistry.recover_after_restart`
+- `casa/rootfs/opt/casa/casa_core.py::_notify_recovered_delegations`
+- `casa/rootfs/opt/casa/agent.py::Agent._synthesize_delegation_turn`
 
 **Tests**
 - `tests/test_job_registry.py`
