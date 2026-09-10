@@ -1064,8 +1064,13 @@ async def test_a_cancellation_during_the_reload_finds_the_settlement_done(
     while "reload-entered" not in log:
         await asyncio.sleep(0)
     task.cancel()
+    # BOUNDED on purpose: the mutation this test exists to reject is shielding
+    # the reload too, under which the cancellation never lands and a bare
+    # `await task` would hang the suite instead of failing it.
+    await asyncio.wait([task], timeout=5.0)
+    assert task.done(), "the reload is not abandoned on cancellation"
     with pytest.raises(asyncio.CancelledError):
-        await task
+        task.result()
     assert log == ["retire", "teardown", "reload-entered"]
     # The lock the tool held is free again — nothing is drained on this path.
     assert not tools._PLUGIN_TOOLS_LOCK.locked()

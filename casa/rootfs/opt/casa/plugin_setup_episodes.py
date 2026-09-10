@@ -159,9 +159,9 @@ _dispatch: Callable[[str, str, dict], Awaitable[bool]] | None = None
 _notify_operator: Callable[[str], Awaitable[None]] | None = None
 _resolve_registry_entry: Callable[[str], Any] | None = None
 # #928: ``(plugin) -> entry | None`` from a FRESH read of the registry file —
-# not the cached snapshot ``_resolve_registry_entry`` serves, which the
-# mutation sequencer refreshes only at its first await AFTER a removal has
-# committed and stamped the row. See ``_resolves_reinstalled``.
+# not the cached snapshot ``_resolve_registry_entry`` serves, which is
+# refreshed only by the reload a removal runs AFTER it has committed and
+# stamped the row. See ``_resolves_reinstalled``.
 _registry_entry_fresh: Callable[[str], Any] | None = None
 _ack_lookup: Callable[[str], str | None] | None = None
 _routes_live: Callable[[str], bool] | None = None
@@ -718,10 +718,10 @@ def _resolves_reinstalled(plugin: str, artifact_id: str) -> bool:
     """Whether the plugin is installed at this exact artifact RIGHT NOW, by
     both resolutions this module can make (#928, seam round): the cached
     snapshot the worker also reads, AND a fresh read of the registry file.
-    The second is what makes a removal mark safe to consume: the mutation
-    sequencer stamps the row before its first await and refreshes the snapshot
-    only after it, so a sweep overlapping that window still sees the removed
-    plugin resolve from the cache. Absent hooks, a raise, an unreadable or
+    The second is what makes a removal mark safe to consume: the removal stamps
+    the row in the settlement that completes before its reload, and only that
+    reload refreshes the snapshot, so a sweep overlapping that window still
+    sees the removed plugin resolve from the cache. Absent hooks, a raise, an unreadable or
     invalid file, a missing entry or another artifact all answer False — the
     row is RETAINED as it is and the next sweep asks again."""
     resolved_ok, entry = _resolve_entry(plugin)

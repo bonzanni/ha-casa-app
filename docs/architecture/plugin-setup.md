@@ -221,9 +221,10 @@ would both overwrite that and let it decay — and the sweep re-arms a stamped r
 first time it resolves the plugin at that artifact again. The decision runs at the sweep
 and nowhere earlier, for the same reason an approval racing a removal is declined: a
 pending row for a plugin the registry cannot resolve can never be sealed or released. And
-because the removal path stamps the row before its first await while the resolver's
-cached snapshot is refreshed only after it, the sweep consumes a stamp only when a fresh
-read of the registry file agrees with the snapshot that the artifact is installed; any
+because the removal stamps the row as part of the settlement that completes before its
+reload, while the resolver's cached snapshot is refreshed only by that reload, the sweep
+consumes a stamp only when a fresh read of the registry file agrees with the snapshot
+that the artifact is installed; any
 disagreement leaves the row as it is for the next pass to ask again. The re-armed row is
 a fresh attempt — its own bounded execution budget and its own exhaustion note, holding
 for the sweep's positive seal like any other — and carries the earlier failure with it,
