@@ -430,6 +430,8 @@ async def test_each_terminal_arm_arms_the_obligation_before_announcing(
     # enqueue is not delivery.
     assert notified[0].on_delivery is not None
     assert acks == []
+    # #926: a live producer never marks its notice as a boot replay.
+    assert notified[0].content.replayed_after_restart is False
 
     await notified[0].on_delivery()
     assert acks == ["d-1"]
@@ -631,7 +633,266 @@ async def test_ack_drops_answer_bytes_but_unacknowledged_row_keeps_them(
     assert row.result_available is False
 
 
-async def _drive_answer_carrying_callback(monkeypatch, raw_text):
+# ---------------------------------------------------------------------------
+# #926 / INV-JOB-016 — a retained answer replayed at boot is told apart from a
+# live completion by exactly one statement
+#
+# Red case, specified by astra (redcase-specify, run 2026-09-10 cluster B).
+# The two prompts a resident receives — the live announcement of a completion,
+# and the boot replay of the same retained answer after a restart interrupted
+# its delivery — must differ in exactly a post-restart re-announcement
+# statement, and in nothing else. At the base they are byte-identical.
+# ---------------------------------------------------------------------------
+
+_ANSWER_926 = "ZQX-answer-926-sentinel"
+
+# Test-owned literal: the expected wording is NOT derived from the production
+# constant, so a drift in either is a failure here rather than a silent match.
+_REANNOUNCEMENT_926 = (
+    "This is a post-restart re-announcement. The delegation finished before a "
+    "Casa restart, and full delivery of its result to the user has NOT been "
+    "confirmed: they may have seen nothing, a partial draft, or the whole "
+    "answer. The complete result text below is still owed to them — relay "
+    "all of it, even if it appears in your conversation history. Do not "
+    "dismiss it as a duplicate, summarise it, or supply only an ending; keep "
+    "only your own framing concise.\n\n"
+)
+_HEAD_926 = (
+    "[System notification: your delegation to finance "
+    "(id job-1) has returned with status=ok]\n\n"
+)
+_RESULT_926 = "Result text from finance:\n"
+_TAIL_926 = (
+    "\nThe original user question was: what is my bank balance\n\n"
+    "Reply to the user via their original channel. Be concise.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "answer", [_ANSWER_926, ""], ids=["nonempty", "empty"],
+)
+async def test_retained_answer_replay_adds_only_the_restart_reannouncement(
+    tmp_path, monkeypatch, answer,
+):
+    """INV-JOB-016: the boot replay of a retained answer and the live
+    announcement of the same completion differ in exactly the re-announcement
+    statement; the replay carries it once, the live prompt never."""
+    from unittest.mock import Mock
+    from agent import Agent
+    from casa_core import _notify_recovered_delegations
+    from specialist_registry import DelegationRecord
+
+    row = make_job()
+
+    # LIVE arm: the real producer, over a record whose every non-marker input
+    # matches the durable row the replay arm will announce from.
+    record = DelegationRecord(
+        id=row.id,
+        agent=row.specialist_role,
+        started_at=row.started_at,
+        origin={
+            "role": "concierge",
+            "channel": "telegram",
+            "chat_id": "chat-1",
+            "cid": "route-1",
+            "user_text": row.task,
+        },
+    )
+    terminal, retries, notified = await _drive_answer_carrying_callback(
+        monkeypatch, answer, record=record)
+    assert terminal == [(row.id, answer, True)]
+    assert retries == [(row.id, answer, True)]
+    assert len(notified) == 1
+    live_notice = notified[0]
+
+    # REPLAY arm: the durable row, reloaded from disk, recovered, announced.
+    registry = await _registry(tmp_path, row)
+    await registry.finish_compat(row.id, answer, announce_creator=True)
+    reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
+    await reloaded.load()
+    owed = await reloaded.recover_after_restart()
+    assert [j.id for j in owed] == ["job-1"]
+    bus = _BusProbe()
+    await _notify_recovered_delegations(
+        owed, reloaded, bus, assistant_role="concierge",
+    )
+    assert len(bus.sent) == 1
+    replay_notice = bus.sent[0]
+
+    # Existing-contract preconditions: the two payloads agree on everything a
+    # prompt is rendered from.
+    for notice in (live_notice, replay_notice):
+        assert notice.content.delegation_id == "job-1"
+        assert notice.content.agent == "finance"
+        assert notice.content.origin["user_text"] == row.task
+        assert notice.content.text == answer
+        assert notice.content.status == "ok"
+        assert notice.content.result_available is True
+
+    live_body = Agent._synthesize_delegation_turn(Mock(), live_notice).content
+    replay_msg = Agent._synthesize_delegation_turn(Mock(), replay_notice)
+    replay_body = replay_msg.content
+
+    # THE PIN. At the base the first line fails: the bodies are byte-identical.
+    assert replay_body != live_body
+    assert live_body.count(_REANNOUNCEMENT_926) == 0
+    assert replay_body.count(_REANNOUNCEMENT_926) == 1
+    assert replay_body.replace(_REANNOUNCEMENT_926, "", 1) == live_body
+
+    # Placement, and the live template preserved byte-for-byte.
+    assert live_body == _HEAD_926 + _RESULT_926 + answer + "\n" + _TAIL_926
+    assert replay_body == (
+        _HEAD_926 + _REANNOUNCEMENT_926 + _RESULT_926 + answer + "\n" + _TAIL_926
+    )
+
+    # Structural answer checks — the empty slot is pinned by partition, never
+    # by `str.count("")`.
+    for body in (live_body, replay_body):
+        assert body.count(_RESULT_926) == 1
+        assert body.partition(_RESULT_926)[2] == answer + "\n" + _TAIL_926
+        if answer:
+            assert body.count(answer) == 1
+        else:
+            assert body.partition(_RESULT_926)[2] == (
+                "\n\nThe original user question was: what is my bank balance\n\n"
+                "Reply to the user via their original channel. Be concise.\n"
+            )
+
+    # The marker: set by the boot replay, never by the live producer.
+    assert live_notice.content.replayed_after_restart is False
+    assert replay_notice.content.replayed_after_restart is True
+    assert replay_body.count("offer to run it again") == 0
+
+    # Acknowledgement regression (INV-JOB-010/015 unchanged): the obligation
+    # rides synthesis, and delivery clears marker and answer in one snapshot.
+    assert live_notice.on_delivery is not None
+    assert replay_notice.on_delivery is not None
+    live_msg = Agent._synthesize_delegation_turn(Mock(), live_notice)
+    assert live_msg.on_delivery is live_notice.on_delivery
+    assert replay_msg.on_delivery is replay_notice.on_delivery
+
+    path = tmp_path / "jobs.json"
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    assert [r["id"] for r in rows] == ["job-1"]
+    assert rows[0]["result"] == answer
+    assert rows[0]["result_available"] is True
+    assert rows[0]["terminal_notification_pending"] is True
+    if answer:
+        assert path.read_bytes().count(answer.encode()) == 1
+
+    await replay_msg.on_delivery()
+
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    assert [r["id"] for r in rows] == ["job-1"]
+    assert rows[0]["result"] == ""
+    assert rows[0]["result_available"] is False
+    assert rows[0]["terminal_notification_pending"] is False
+    if answer:
+        assert path.read_bytes().count(answer.encode()) == 0
+
+    again = JobRegistry(path, clock=lambda: 400.0)
+    await again.load()
+    assert await again.recover_after_restart() == []
+
+
+# #926 regression guards (green at the base or not base-red; no receipt):
+# the marker is read by the answer-carrying arm ONLY, every other arm renders
+# its previous prompt byte-for-byte whatever the marker says, and two owed rows
+# acknowledge independently.
+
+_TAIL_926_GENERIC = (
+    "\nThe original user question was: q\n\n"
+    "Reply to the user via their original channel. Be concise.\n"
+)
+_OTHER_ARMS_926 = {
+    "legacy-no-answer": (
+        dict(status="ok", result_available=False),
+        "[System notification: your delegation to finance (id job-1) "
+        "finished, and this recovery notice does not carry its answer]\n\n"
+        "The work finished. This notice carries the outcome only, not the "
+        "result text. Tell the user it completed, and offer to run it again "
+        "if they want the detail — do NOT promise to look the answer up, "
+        "because this notice is all there is.\n",
+    ),
+    "failed": (
+        dict(status="error", kind="timeout", message="took too long"),
+        "[System notification: your delegation to finance (id job-1) has "
+        "returned with status=error]\n\n"
+        "Delegation failed (timeout): took too long\n",
+    ),
+    "failed-with-available-flag": (
+        dict(status="error", kind="timeout", message="took too long",
+             result_available=True, text="stale"),
+        "[System notification: your delegation to finance (id job-1) has "
+        "returned with status=error]\n\n"
+        "Delegation failed (timeout): took too long\n",
+    ),
+    "orphan": (
+        dict(status="error", kind="restart_orphan", message="lost"),
+        "[System notification: your delegation to finance (id job-1) was "
+        "orphaned by a Casa restart]\n\n"
+        "I lost track of this delegation during a Casa restart. Tell the user "
+        "and offer to retry.\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_OTHER_ARMS_926))
+@pytest.mark.parametrize("marker", [False, True], ids=["live", "replay"])
+async def test_every_other_arm_renders_its_previous_prompt_whatever_the_marker_says(
+    shape, marker,
+):
+    from unittest.mock import Mock
+    from agent import Agent
+    from bus import BusMessage, MessageType
+    from specialist_registry import DelegationComplete
+
+    fields, expected = _OTHER_ARMS_926[shape]
+    complete = DelegationComplete(
+        delegation_id="job-1", agent="finance", origin={"user_text": "q"},
+        replayed_after_restart=marker, **fields,
+    )
+    msg = BusMessage(
+        type=MessageType.NOTIFICATION, source="finance", target="concierge",
+        content=complete, channel="telegram", context={},
+    )
+    body = Agent._synthesize_delegation_turn(Mock(), msg).content
+    assert body == expected + _TAIL_926_GENERIC
+    assert body.count("re-announcement") == 0
+
+
+async def test_two_owed_rows_replay_as_two_notices_and_acknowledge_apart(
+    tmp_path,
+):
+    from casa_core import _notify_recovered_delegations
+
+    registry = await _registry(
+        tmp_path, make_job(id="job-1"), make_job(id="job-2"))
+    await registry.finish_compat("job-1", "one", announce_creator=True)
+    await registry.finish_compat("job-2", "two", announce_creator=True)
+    reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 300.0)
+    await reloaded.load()
+    owed = await reloaded.recover_after_restart()
+    assert sorted(j.id for j in owed) == ["job-1", "job-2"]
+    bus = _BusProbe()
+    await _notify_recovered_delegations(
+        owed, reloaded, bus, assistant_role="concierge",
+    )
+    assert len(bus.sent) == 2
+    assert [m.content.replayed_after_restart for m in bus.sent] == [True, True]
+
+    first = next(m for m in bus.sent if m.content.delegation_id == "job-1")
+    await first.on_delivery()
+    assert reloaded.get("job-1").terminal_notification_pending is False
+    assert reloaded.get("job-1").result == ""
+    assert reloaded.get("job-2").terminal_notification_pending is True
+    assert reloaded.get("job-2").result == "two"
+    again = JobRegistry(tmp_path / "jobs.json", clock=lambda: 400.0)
+    await again.load()
+    assert [j.id for j in await again.recover_after_restart()] == ["job-2"]
+
+
+async def _drive_answer_carrying_callback(monkeypatch, raw_text, *, record=None):
     """`_attach_completion_callback` over one successful task, with fakes
     permissive enough to record what the production caller actually forwards.
 
@@ -680,10 +941,11 @@ async def _drive_answer_carrying_callback(monkeypatch, raw_text):
     async def _run():
         return _FakeDelegatedOutput(text=raw_text)
 
-    record = DelegationRecord(
-        id="d-1", agent="finance", started_at=0.0,
-        origin={"role": "concierge", "channel": "telegram", "chat_id": "c-1"},
-    )
+    if record is None:
+        record = DelegationRecord(
+            id="d-1", agent="finance", started_at=0.0,
+            origin={"role": "concierge", "channel": "telegram", "chat_id": "c-1"},
+        )
     task = asyncio.create_task(_run())
     await asyncio.gather(task, return_exceptions=True)
     tools._attach_completion_callback(task, record)

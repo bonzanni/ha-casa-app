@@ -752,6 +752,23 @@ def build_restricted_webhook_options(
     )
 
 
+# #926: the ONE statement that distinguishes the boot replay of a retained
+# delegated answer from its live announcement. It must be true on every arm the
+# replay can reach: the interrupted relay may have shown the user nothing (it
+# died before its first token), a partial streamed draft (it died after one),
+# or the whole answer whose acknowledgement was lost with the process
+# (INV-JOB-010's accepted duplicate). "Not confirmed" is true of all three;
+# "nothing was sent" would be false of two.
+_REPLAY_REANNOUNCEMENT = (
+    "This is a post-restart re-announcement. The delegation finished before a "
+    "Casa restart, and full delivery of its result to the user has NOT been "
+    "confirmed: they may have seen nothing, a partial draft, or the whole "
+    "answer. The complete result text below is still owed to them — relay "
+    "all of it, even if it appears in your conversation history. Do not "
+    "dismiss it as a duplicate, summarise it, or supply only an ending; keep "
+    "only your own framing concise.\n\n"
+)
+
 class Agent:
     """A Casa agent backed by the Claude Agent SDK."""
 
@@ -1198,8 +1215,17 @@ class Agent:
             body = (
                 f"[System notification: your delegation to {complete.agent} "
                 f"(id {short_id}) has returned with status=ok]\n\n"
-                f"Result text from {complete.agent}:\n{complete.text}\n"
             )
+            if complete.replayed_after_restart:
+                # #926: a boot replay of a retained answer is otherwise
+                # byte-identical to the live announcement, and a resident that
+                # read it as a duplicate narrated a fragment whose delivery
+                # discharged the whole answer (INV-JOB-010/015 are content
+                # blind by design, and stay so). Only what the resident is
+                # TOLD changes; the statement is the one difference between
+                # the two prompts (INV-JOB-016).
+                body += _REPLAY_REANNOUNCEMENT
+            body += f"Result text from {complete.agent}:\n{complete.text}\n"
         elif complete.kind == "restart_orphan":
             body = (
                 f"[System notification: your delegation to {complete.agent} "
