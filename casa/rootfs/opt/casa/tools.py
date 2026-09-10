@@ -14352,82 +14352,92 @@ async def plugin_unassign(args: dict) -> dict:
 )
 async def plugin_remove(args: dict) -> dict:
     async with _PLUGIN_TOOLS_LOCK:
-        # #928 (handback review r2, astra+terra S2): the registry write runs
-        # in a THREAD, and a thread cannot be cancelled. A cancellation that
-        # lands on this await therefore cannot stop the removal committing —
-        # it only stops US from reaching the retire below, which left a
-        # committed removal with a live `pending` row (the #494 window) and
-        # an unstamped `failed` row (no same-download reinstall signal). So
-        # the core is shielded and drained to settlement through EVERY
-        # further cancellation, the durable consequences of a committed
-        # removal are recorded, and only then is the cancellation
-        # re-raised. The mutation lock is held throughout: the tool does not
-        # return — cancelled or not — while the core is still in flight.
-        core_task = asyncio.ensure_future(
-            asyncio.to_thread(_plugin_remove_sync, name=args["name"]))
-        cancelled: BaseException | None = None
-        while True:
-            try:
-                core = await asyncio.shield(core_task)
-                break
-            except asyncio.CancelledError as exc:
-                # Ours, not the core's: `shield` leaves `core_task` running.
-                # Re-await it (a settled task returns without suspending, so
-                # this loop cannot spin on a redelivered cancellation).
-                cancelled = exc
+        # #928 (design + seam round, astra + terra): the registry write runs in
+        # a THREAD, and a thread cannot be cancelled — a cancellation on that
+        # await cannot stop the removal committing, it only stops US from
+        # continuing. So the commit and EVERYTHING IT OWES DURABLY are one
+        # child unit, drained through repeated cancellation; only the runtime
+        # reload below is abandonable.
+        #
+        # Two review rounds found the same shape here — a cancellation
+        # stranding one piece of a committed removal's teardown (the setup
+        # retire, then the callback revocation) — because the settlement used
+        # to be SPLIT ACROSS the reload. Naming the unit is what stops a third.
+        core = await _settle_through_cancellation(
+            _remove_and_settle(args["name"]))
         if core.get("ok") is not True:
             # Spec §E: the pinned payload shape holds on EVERY path.
             core.setdefault("kind", "unknown")
             core.setdefault("activation_committed", False)
             core.setdefault("runtime_ready", False)
             core.setdefault("verify", {})
-            if cancelled is not None:
-                # Nothing committed — there is nothing to settle.
-                raise cancelled
             return _result(core)
-        # #494: retire the plugin's setup obligation + round durably. Without
-        # this, an approval racing this removal could re-arm a `pending`
-        # obligation nothing can ever seal or release (a `pending` row never
-        # decays out of health). Called SYNCHRONOUSLY on the event loop —
-        # never via to_thread — so it serializes with the loop-confined
-        # episode-store writers (consent commit steps, the decision feed); a
-        # threaded retire could interleave a feed's load/save and let the
-        # feed's stale `pending` snapshot overwrite the retirement (Sol
-        # diff-gate r1).
-        # #928: and called HERE, before this coroutine's first await, rather
-        # than after the reload as it used to be: the registry write has
-        # already committed, and a cancellation anywhere in the reload below
-        # left the entry gone with the row untouched — no `stale` conversion
-        # (the #494 window, reopened) and no removal stamp, so a later
-        # same-download reinstall could not tell it was one. Nothing between
-        # here and the old position reads or writes this plugin's episode row.
-        try:
-            import plugin_setup_episodes
-            plugin_setup_episodes.retire_for_removed(core["name"])
-        except Exception:  # noqa: BLE001 — teardown must never fail removal
-            logger.warning("plugin_remove: setup-obligation retire failed "
-                           "(%s)", core["name"], exc_info=True)
-        # A:§3.3 (r1-B8): the plugin is gone entirely — invalidate by its
-        # (retained-for-GC) artifact AND by every former target's role.
-        _invalidate_lifecycle(artifact_id=core.get("artifact_id"),
-                              roles=core.get("targets"))
-        if cancelled is not None:
-            # The removal committed and its durable consequences are now
-            # recorded; the reload below is a caller-visible continuation and
-            # the caller is gone. Propagate rather than run it.
-            raise cancelled
         seq = await _reload_and_verify_targets(
             core["name"], core["targets"], expect="absent")
         core.update(seq)
-        # The plugin is gone entirely — make its callback removal
-        # DURABLE. The paired callback reconcile inside the sequencer already
-        # swept the overlay + retired ready/index by absence; this drops the
-        # persisted operator consents (unlike a plugin_update, a REMOVAL DOES
-        # revoke — the declaration is gone, not merely re-digested) and purges
-        # the spool dir so a later reinstall starts clean instead of inheriting
-        # stale results/claims.
-        await _remove_plugin_callbacks(core["name"])
         return _result(core)
+
+
+async def _remove_and_settle(name: str) -> dict:
+    """The registry removal and every durable consequence it owes, as ONE unit
+    (#928). Runs as a CHILD of `plugin_remove` under `_settle_through_
+    cancellation`, so a cancelled caller cannot strand any of it.
+
+    Nothing here acquires `_PLUGIN_TOOLS_LOCK` or enters `_plugin_tools_guard`,
+    and nothing here dispatches a reload: the parent holds the RAW lock (so no
+    task-identity owner is recorded) and a child that re-entered a guard keyed
+    on task identity would deadlock against its own parent — the helper's own
+    docstring. Every step is BOUNDED: two synchronous calls and two `to_thread`
+    disk operations. The reload is deliberately NOT here. Shielding it was
+    measured (astra, refutation round): with a reload held, it leaves the
+    removal task unfinished, the plugin lock held, a reload reader and an agent
+    reload lock held, and STILL performs no teardown — a stranded revocation
+    traded for a stranded shutdown.
+
+    A refused core settles NOTHING: nothing committed, so nothing is owed.
+
+    Ordering is the mechanism, and the callback teardown now runs BEFORE the
+    reload rather than after it. That is safe because the plugin is already
+    absent from the registry when the core returns and the callback reconcile
+    computes from registry resolution — for an absent plugin, earlier
+    revocation can create no route and no pending consent (measured both
+    orderings: zero routes, pending consents, valid ack identities and
+    republications either way). It is NOT an equivalence: the later prune may
+    now remove zero records, the ready marker may already be gone with the
+    purged dir, and the spool's abort notice lands earlier. And settlement
+    UNROUTES NOTHING — the old runtime overlay stands until the reload."""
+    core = await asyncio.to_thread(_plugin_remove_sync, name=name)
+    if core.get("ok") is not True:
+        return core
+    # #494: retire the plugin's setup obligation + round durably. Without
+    # this, an approval racing this removal could re-arm a `pending`
+    # obligation nothing can ever seal or release (a `pending` row never
+    # decays out of health). Called SYNCHRONOUSLY on the event loop —
+    # never via to_thread — so it serializes with the loop-confined
+    # episode-store writers (consent commit steps, the decision feed); a
+    # threaded retire could interleave a feed's load/save and let the
+    # feed's stale `pending` snapshot overwrite the retirement (Sol
+    # diff-gate r1). FIRST, and before this coroutine's first await: the
+    # registry write has already committed.
+    try:
+        import plugin_setup_episodes
+        plugin_setup_episodes.retire_for_removed(core["name"])
+    except Exception:  # noqa: BLE001 — teardown must never fail removal
+        logger.warning("plugin_remove: setup-obligation retire failed "
+                       "(%s)", core["name"], exc_info=True)
+    # A:§3.3 (r1-B8): the plugin is gone entirely — invalidate by its
+    # (retained-for-GC) artifact AND by every former target's role.
+    _invalidate_lifecycle(artifact_id=core.get("artifact_id"),
+                          roles=core.get("targets"))
+    # The plugin is gone entirely — make its callback removal DURABLE: drop
+    # the persisted operator consents (unlike a plugin_update, a REMOVAL DOES
+    # revoke — the declaration is gone, not merely re-digested) and purge the
+    # spool dir so a later reinstall starts clean instead of inheriting stale
+    # results/claims. A reinstall that inherited a surviving ack was measured
+    # to make the re-armed setup round empty and authoritative, releasing a
+    # setup dispatch on a consent this removal was supposed to revoke.
+    await _remove_plugin_callbacks(name)
+    return core
 
 
 @tool(
