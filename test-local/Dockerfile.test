@@ -4,19 +4,28 @@
 # Build: docker build -f test-local/Dockerfile.test -t casa-test .
 # Run:   docker run --rm -p 8080:8080 casa-test
 
-# Base: ghcr.io/home-assistant/amd64-base-debian:bookworm
+# Base: MIRRORS casa/Dockerfile's own `ARG BUILD_FROM=` default, byte for byte.
+# The release build supplies no BUILD_FROM (deploy.yml passes no build-args at
+# all), so that default IS the base every published image is built on; anything
+# else here means the e2e tiers certify an image the product never ships.
+# `tests/test_build_from_parity.py` fails the push gate if the two lines drift.
 # Migrated from alpine-python:3.12 in v0.8.5 — mirrors the main
 # casa/Dockerfile migration shipped in v0.8.1 (originally to get
 # onnxruntime manylinux wheels, which Alpine/musl couldn't install). The
 # ONNX dependency was retired with scope-routing; the glibc base is kept.
 #
-# Digest pinned 2026-04-21. Refresh deliberately:
-#   docker buildx imagetools inspect \
-#     ghcr.io/home-assistant/amd64-base-debian:bookworm \
-#     --format '{{ json . }}' | jq -r '.manifest.digest'
-# Rationale: floating tags let a silent base-image update change
-# test behaviour with no record in this repo. See 5.3 spec §4.
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian@sha256:8dca988e5ecd0e890792d3d0c73333977314b177265108e4b559f2d9d22e85aa
+# This line was a 2026-04-21 digest pin (docker-base 2026.04.0), so that a
+# silent base update could not change test behaviour with no record in this
+# repo. #937 measured the cost of buying that record with a pin: the release
+# base floated to 2026.08.0 on 2026-08-19 and the e2e image did not follow, so
+# for three weeks every tier ran green on s6-overlay 3.2.2.0 while every
+# released image was on 3.2.3.0 — and #925, which broke every claude_code
+# launch on 3.2.3.0, was invisible to CI. The record the pin bought is bought
+# instead from the image itself: the workflow's image-build steps print the
+# built image's `io.hass.version` label, so the base a run actually used is in
+# that run's log. Under buildx the multi-arch tag still resolves to the
+# runner's own platform layer, and TARGETARCH below still defaults to amd64.
+ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm
 FROM ${BUILD_FROM}
 
 # --- Mirrors casa/Dockerfile (Debian bookworm) ---
