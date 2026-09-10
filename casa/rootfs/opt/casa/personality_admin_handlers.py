@@ -51,7 +51,52 @@ def _json_type_name(value: object) -> str:
     return "object"
 
 
-def _pending_commit_inputs(slug: str, desired) -> dict[str, object]:
+def _candidate_snapshot(slug_dir: "Path") -> "tuple[str | None, str | None]":
+    """#929 (terra, candidate review): the candidate's own root string and its
+    `pending-receipt.json`, read as ONE snapshot of the tree — under the lock
+    every writer of those two files holds.
+
+    They are written together and only together: `_record_pending_receipt`
+    immediately before `stage_desired`, and `_clear_pending_receipt` in the
+    same scope as `commit_desired_to_active`, each inside
+    `specialist_materialize.MATERIALIZE_LOCK` (`specialist_install.py`). An
+    unlocked reader can therefore see the marker of one candidate beside the
+    root of another — and so can a reader that takes the ROOT from the
+    published index, which is a snapshot no pending write republishes (a
+    pending candidate is never loaded, so no reload follows it). Either
+    pairing advertises five inputs the re-commit refuses `checksum_changed`,
+    which is the one route this disclosure exists to keep an engagement out
+    of. Taking the writers' lock for the two reads makes the pair untearable
+    in both directions; the receipt sidecar the marker names is write-once
+    and is loaded outside it.
+
+    Loop-safety (the lock's own contract): MATERIALIZE_LOCK is never acquired
+    on the event loop — the only caller is `specialist_status_payload`, which
+    the route offloads with `asyncio.to_thread`. It is the innermost of the
+    three specialist locks and nothing is taken while it is held here.
+    """
+    import personality_binding
+    import specialist_materialize
+
+    root: str | None = None
+    marker: str | None = None
+    with specialist_materialize.MATERIALIZE_LOCK:
+        try:
+            desired = personality_binding.InstanceDir(slug_dir).desired()
+        except Exception:  # noqa: BLE001
+            # A candidate that will not load — bad YAML, a schema failure, a
+            # #372 tombstone — has no root to disclose, and the route must
+            # still answer for exactly the slug an operator is diagnosing.
+            desired = None
+        root = getattr(desired, "root", None)
+        try:
+            marker = (slug_dir / "pending-receipt.json").read_text(encoding="utf-8")
+        except OSError:
+            marker = None
+    return root, marker
+
+
+def _pending_commit_inputs(slug: str) -> dict[str, object]:
     """#929 (INV-SPEC-015): the five arguments a re-commit of this slug's
     desired candidate takes, each member `None` when it is no longer
     derivable.
@@ -62,7 +107,8 @@ def _pending_commit_inputs(slug: str, desired) -> dict[str, object]:
     refuses the now-occupied slug, so a later engagement that was not told
     these values had no route at all. Three of them are already on disk in
     the candidate's own root string; the other two come from the marker and
-    the receipt it names.
+    the receipt it names — read as one locked snapshot of the tree, never
+    the index's root beside the tree's marker (`_candidate_snapshot`).
 
     Every step degrades to `None` rather than raising: a pending slug that
     predates the marker has none (the boot reader tolerates exactly that,
@@ -80,20 +126,23 @@ def _pending_commit_inputs(slug: str, desired) -> dict[str, object]:
     out: dict[str, object] = {
         "receipt_id": None, "staged_dir": None,
         "component_id": None, "version": None, "root_digest": None}
+
+    specialists_dir = live_specialists_dir()
+    if specialists_dir is None:
+        return out
+    root, marker_text = _candidate_snapshot(Path(specialists_dir) / slug)
     try:
-        component_id, version, root_digest = parse_component_root(desired.root)
+        component_id, version, root_digest = parse_component_root(root)
     except (ValueError, AttributeError, TypeError):
         pass
     else:
         out.update(component_id=component_id, version=version, root_digest=root_digest)
 
-    specialists_dir = live_specialists_dir()
-    if specialists_dir is None:
+    if marker_text is None:
         return out
-    marker = Path(specialists_dir) / slug / "pending-receipt.json"
     try:
-        raw = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = json.loads(marker_text)
+    except ValueError:
         return out
     receipt_id = raw.get("receipt_id") if isinstance(raw, dict) else None
     if not isinstance(receipt_id, str) or not receipt_id:
@@ -121,8 +170,9 @@ def _pending_commit_inputs(slug: str, desired) -> dict[str, object]:
 
 
 def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
-    """Blocking: reads the pending marker and receipt sidecar off disk. Callers
-    on the event loop offload it (see `_specialist_status`)."""
+    """Blocking: reads the pending candidate, its marker and its receipt
+    sidecar off disk, the first two under MATERIALIZE_LOCK. Callers on the
+    event loop offload it (see `_specialist_status`)."""
     from specialist_registry import get_installed_instance
 
     instance = get_installed_instance(slug)
@@ -152,9 +202,12 @@ def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
     }
     # #929: on the DESIRED CANDIDATE, not on the state string — a pending
     # UPGRADE keeps its active tuple, so the reloaded index calls that slug
-    # `active` while the candidate is exactly what a resume re-commits.
+    # `active` while the candidate is exactly what a resume re-commits. The
+    # index decides only WHETHER there is a candidate to disclose; the five
+    # values are read from the tree, so a snapshot older than the tree
+    # cannot contribute one of them (terra, candidate review).
     if instance.desired is not None:
-        payload["pending_commit"] = _pending_commit_inputs(slug, instance.desired)
+        payload["pending_commit"] = _pending_commit_inputs(slug)
     return payload
 
 

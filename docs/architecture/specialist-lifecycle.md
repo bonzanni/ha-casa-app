@@ -207,7 +207,11 @@ that slug active. Each member is reported as null rather than raised on: a pendi
 predating the marker has none, an abandoned receipt is swept, and a staged tree can be
 reclaimed under a still-standing candidate — the operator diagnosing exactly that must still
 get an answer. The staged directory is named only while it still exists, since a reclaimed
-path would send the next engagement to a route that refuses.
+path would send the next engagement to a route that refuses. The status reads the candidate
+and its retained receipt as ONE snapshot of the specialist tree, taken under the lock every
+lifecycle writer holds — never an in-memory index snapshot's candidate beside the tree's
+marker, and never between a stage's two writes; either pairing could name one candidate's
+root beside another's receipt, which is the refusal this disclosure exists to prevent.
 
 What it does not cover: that the re-commit will SUCCEED. The inputs are named; the bytes
 they point at are re-validated by the commit tool as they always were, and a closure that

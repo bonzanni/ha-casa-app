@@ -1572,3 +1572,163 @@ def test_a_receipt_whose_staged_path_is_not_a_usable_string_discloses_none(
     assert pending_commit["receipt_id"] == ctx.receipt.receipt_id
     assert {k for k, v in pending_commit.items() if v is not None} == {
         "receipt_id", "component_id", "version", "root_digest"}
+
+
+@pytest.mark.asyncio
+async def test_the_disclosed_inputs_never_pair_a_stale_root_with_a_newer_receipt(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """Two inspected roots, one slug: candidate A is what the PUBLISHED INDEX
+    holds, candidate B is what the tree holds — B's commit wrote B's marker,
+    and the index is a snapshot nothing republished (a pending candidate is
+    never loaded, so no reload follows it).
+
+    Reading the root from that snapshot and the marker off disk pairs them
+    across a write: the payload named A's component id, version and root digest
+    beside B's receipt id and staged directory. That mapping is not merely
+    inconsistent — handed straight to the PUBLIC re-commit tool it is refused
+    `checksum_changed`, which is exactly the route this disclosure exists to
+    keep an engagement out of. Asserted as the OUTCOME: the five values the
+    payload discloses complete the install.
+    """
+    from test_tools_specialist_install import _stub_bundle_sequencer
+
+    import specialist_install
+    import specialist_install_consent
+    import specialist_receipt
+    import tools as tools_mod
+    from personality_admin_handlers import specialist_status_payload
+    from tools import specialist_install_commit
+
+    first = _pending_install(tmp_path, monkeypatch)
+    index = _publish(first, restore_installed_index, monkeypatch)
+
+    # A leaves the tree; a second inspected root takes the freed slug and lands
+    # pending too. Both steps are the real library calls; neither republishes.
+    specialist_install.uninstall_specialist(
+        slug="mtg", specialists_dir=first.kw["specialists_dir"],
+        agents_specialists_dir=first.kw["agents_specialists_dir"],
+        registry_path=first.kw["registry_path"], ops_dir=first.kw["ops_dir"])
+    second = _install(tmp_path, monkeypatch, home=tmp_path / "b", slug="mtg",
+                      version="0.2.0")
+    assert second.state == "pending-configuration"
+    assert second.specialists_dir == first.specialists_dir
+    assert second.expected["root_digest"] != first.expected["root_digest"]
+    assert second.expected["receipt_id"] != first.expected["receipt_id"]
+
+    # The premise, asserted before it is read: the index still holds A.
+    stale = index.get_instance("mtg")
+    assert stale.desired is not None
+    assert stale.desired.root.endswith(first.expected["root_digest"])
+    assert not stale.desired.root.endswith(second.expected["root_digest"])
+    assert json.loads(second.marker.read_text())["receipt_id"] == second.receipt.receipt_id
+
+    disclosed = specialist_status_payload(object(), slug="mtg")["pending_commit"]
+
+    real_commit = specialist_install.commit_specialist_install
+    real_load = specialist_receipt.load
+    core_calls: list[dict] = []
+
+    def _commit(**kw):
+        core_calls.append(kw)
+        return real_commit(**dict(kw, specialists_dir=second.kw["specialists_dir"],
+                                  agents_specialists_dir=second.kw["agents_specialists_dir"],
+                                  registry_path=second.kw["registry_path"],
+                                  plugin_store_root=second.kw["plugin_store_root"],
+                                  ops_dir=second.kw["ops_dir"]))
+
+    monkeypatch.setattr(specialist_install, "commit_specialist_install", _commit)
+    monkeypatch.setattr(specialist_receipt, "load",
+                        lambda rid, *a, **k: real_load(rid, receipts_dir=second.receipts_dir))
+    monkeypatch.setattr(specialist_install_consent, "SpecialistInstallAckStore",
+                        lambda *a, **k: second.acks)
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
+    _stub_bundle_sequencer(monkeypatch)
+
+    result = await specialist_install_commit.handler(
+        {"slug": "mtg", **disclosed, "config": {"region": "EU"}})
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload.get("kind") is None       # pre-fix: "checksum_changed"
+    assert payload["ok"] is True and payload["state"] == "active"
+    assert len(core_calls) == 1
+    # And the five are the tree's candidate throughout, not a mixture of two.
+    assert disclosed == second.expected
+
+
+def test_the_marker_and_the_candidate_root_are_read_as_one_locked_snapshot(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The narrow form of the same pairing, against the real writer: a pending
+    stage writes `pending-receipt.json` and THEN `desired.yaml`, both inside
+    MATERIALIZE_LOCK (`specialist_install.py`). A reader that does not take
+    that lock can land between the two writes and pair the incoming
+    candidate's receipt with the outgoing candidate's root.
+
+    Driven by a second pending upgrade paused inside its own `stage_desired`,
+    with the marker already written: the unlocked read in the middle of this
+    test SHOWS the torn tree, and the payload built while it is torn must
+    still be one candidate's five values.
+    """
+    import threading
+
+    import personality_binding
+    import yaml as _yaml
+    from personality_admin_handlers import specialist_status_payload
+
+    active = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                      required_config=(), config={})
+    assert active.state == "active"
+    first = _install(tmp_path, monkeypatch, home=tmp_path / "b", slug="mtg",
+                     version="0.2.0")
+    assert first.state == "pending-configuration"
+    _publish(first, restore_installed_index, monkeypatch)
+
+    reached, released = threading.Event(), threading.Event()
+    real_stage = personality_binding.InstanceDir.stage_desired
+
+    def _pausing_stage(self, tuple_):
+        reached.set()
+        released.wait(30)
+        return real_stage(self, tuple_)
+
+    monkeypatch.setattr(personality_binding.InstanceDir, "stage_desired", _pausing_stage)
+
+    done: dict[str, object] = {}
+
+    def _second_upgrade():
+        try:
+            done["ctx"] = _install(tmp_path, monkeypatch, home=tmp_path / "c",
+                                   slug="mtg", version="0.3.0")
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the main thread
+            done["error"] = exc
+        finally:
+            reached.set()
+
+    writer = threading.Thread(target=_second_upgrade, name="pending-stage")
+    writer.start()
+    assert reached.wait(60)
+    assert "error" not in done
+
+    # The tree AS THE ROUTE WOULD FIND IT, read without the lock on purpose:
+    # the marker has moved to the incoming candidate, the tuple has not.
+    torn_receipt = json.loads(first.marker.read_text(encoding="utf-8"))["receipt_id"]
+    torn_root = _yaml.safe_load(
+        (first.specialists_dir / "mtg" / "desired.yaml").read_text(encoding="utf-8"))["root"]
+    assert torn_receipt != first.receipt.receipt_id
+    assert torn_root.endswith(first.expected["root_digest"])
+
+    timer = threading.Timer(0.5, released.set)
+    timer.start()
+    try:
+        disclosed = specialist_status_payload(object(), slug="mtg")["pending_commit"]
+    finally:
+        timer.cancel()
+        released.set()
+        writer.join(60)
+
+    assert done.get("error") is None
+    second = done["ctx"]
+    assert not writer.is_alive()
+    assert second.state == "pending-configuration"
+    assert torn_receipt == second.receipt.receipt_id
+    assert disclosed == second.expected
