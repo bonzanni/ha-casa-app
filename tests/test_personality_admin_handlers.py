@@ -1547,3 +1547,28 @@ async def test_the_status_route_builds_its_payload_off_the_event_loop(
     assert len(threads) == 1
     assert threads.count(loop_thread) == 0
     assert json.loads(response.text)["pending_commit"] == ctx.expected
+
+
+@pytest.mark.parametrize("staged_path", [None, 7, "", "   "], ids=["null", "number", "empty", "blank"])
+def test_a_receipt_whose_staged_path_is_not_a_usable_string_discloses_none(
+        tmp_path, monkeypatch, restore_installed_index, staged_path) -> None:
+    """`component_staged_path` is not covered by the receipt digest, so a
+    truncated or hand-edited sidecar loads as valid with anything there.
+    `Path("")` is `Path(".")` — a directory that always exists — so an empty
+    value would be disclosed as a resumable `"."` and send the next engagement
+    to commit against the process working directory (terra, diff review r2).
+    A blank string is kept alongside it: it is a real path that will not be a
+    directory, so it must null for the ordinary reason.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _rewrite_receipt(ctx, component_staged_path=staged_path)
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    pending_commit = specialist_status_payload(object(), slug="mtg")["pending_commit"]
+
+    assert pending_commit["staged_dir"] is None
+    assert pending_commit["receipt_id"] == ctx.receipt.receipt_id
+    assert {k for k, v in pending_commit.items() if v is not None} == {
+        "receipt_id", "component_id", "version", "root_digest"}

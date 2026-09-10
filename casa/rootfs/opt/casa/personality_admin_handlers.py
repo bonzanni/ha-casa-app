@@ -105,13 +105,16 @@ def _pending_commit_inputs(slug: str, desired) -> dict[str, object]:
     receipt = specialist_receipt.load(receipt_id, Path(receipts_dir))
     if receipt is None:
         return out
-    try:
-        staged = Path(receipt.component_staged_path)
-    except TypeError:
-        # `component_staged_path` is NON-attested runtime state: the receipt's
-        # digest does not cover it, so a hand-edited sidecar can load with a
-        # null or non-string value there and still be a valid receipt.
+    # `component_staged_path` is NON-attested runtime state: the receipt's
+    # digest does not cover it, so a hand-edited or truncated sidecar can load
+    # with a null, non-string or EMPTY value there and still be a valid
+    # receipt. Empty is checked because `Path("")` is `Path(".")`, a directory
+    # that always exists — it would be disclosed as a resumable ".", and the
+    # recipe reads any non-null member as resumable (terra, diff review r2).
+    staged_path = receipt.component_staged_path
+    if not isinstance(staged_path, str) or not staged_path:
         return out
+    staged = Path(staged_path)
     if staged.is_dir():
         out["staged_dir"] = str(staged)
     return out
