@@ -211,8 +211,8 @@ is what lets a reinstall that fails again be announced once more rather than sil
 **A removal is recorded on the row it keeps, and a reinstall from the same download is
 owed setup again.** The failed row's exhausted budget belonged to the installation the
 operator removed, not to the one they installed next — but the reconcile sweep keys
-obligations by artifact, and the same download is the same artifact, so until v0.291.0 the
-sweep read the retained row as settled and the reinstalled plugin never retried: the old
+obligations by artifact, and the same download is the same artifact, so the sweep used to
+read the retained row as settled and the reinstalled plugin never retried: the old
 failure re-entered health as though it were this installation's, and the only routes
 out were an update to a different commit or a manual run of a tool that may not load.
 Removal now stamps the failed row rather than rewriting it — the error, its counters and
