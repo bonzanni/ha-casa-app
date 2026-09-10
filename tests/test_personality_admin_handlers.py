@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -1147,3 +1149,392 @@ def test_persona_pack_collision_resolves_to_the_resident_then_the_greatest_slug(
     # only, so each specialist keeps its own bundle and binding.
     assert with_resident.compiled_prompt_bundles["specialist:alpha"] is alpha.compiled_prompt_bundle
     assert with_resident.compiled_prompt_bundles["specialist:zulu"] is zulu.compiled_prompt_bundle
+
+
+# ---------------------------------------------------------------------------
+# #929 (INV-SPEC-015): `casactl specialist status` names a pending slug's
+# resume inputs.
+#
+# A first install that lands pending-configuration retains its receipt, its
+# staging tree and the `pending-receipt.json` marker, and the SAME
+# (inspection, receipt) pair re-commits to active — but nothing a LATER
+# engagement can consult carried the five values that re-commit takes, and
+# every carrier pointed at a re-inspect that refuses the occupied slug. The
+# payload now names them, each member null rather than raising when the
+# marker, the receipt, the staged tree or the tuple root no longer yields it.
+# ---------------------------------------------------------------------------
+
+_RESUME_KEYS = {"receipt_id", "staged_dir", "component_id", "version", "root_digest"}
+
+
+@pytest.fixture
+def restore_installed_index():
+    """The installed index is process-global. Publish into it, then put back
+    whatever the rest of the session had — a leaked index makes a later
+    module's status test depend on file order."""
+    import specialist_registry as specialist_registry_mod
+
+    before = specialist_registry_mod._active_index
+    yield specialist_registry_mod
+    specialist_registry_mod.set_active_installed_index(before)
+
+
+def _install(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
+             required_config=("region",), config=None):
+    """Drive the REAL install path to one generation of `slug`.
+
+    Not the existing retention fixture: that one commits without a receipt, so
+    the journaled `_record_pending_receipt` write never happens and the marker
+    this payload reads would not exist. `required_config` with nothing supplied
+    is what lands the commit in pending-configuration; supplying the values
+    activates instead.
+    """
+    import json as _json
+    from types import SimpleNamespace
+
+    import specialist_bundle_journal
+    import specialist_install
+    import specialist_receipt
+    from specialist_fixtures import write_minimal_component
+    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_registry import InstalledSpecialistIndex
+
+    comp, mpath = write_minimal_component(home, slug=slug,
+                                          required_config=list(required_config))
+    if version is not None:
+        manifest = _json.loads(mpath.read_text(encoding="utf-8"))
+        manifest["version"] = version
+        mpath.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    def _fetch(repo, ref, subdir, dest, *, expected_revision=None):
+        import shutil
+        # Bytes, never modes: the candidate gate runs on a read-only tree.
+        shutil.copytree(comp / subdir if subdir else comp, dest,
+                        copy_function=shutil.copyfile)
+        return "a" * 40
+
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", _fetch)
+    receipts_dir = tmp_path / "receipts"
+    specialists_dir = tmp_path / "specialists"
+    idx = InstalledSpecialistIndex(specialists_dir=str(specialists_dir))
+    idx.load()
+    upgrade = slug in idx.installed_slugs()
+    inspection = specialist_install.inspect_specialist_repo(
+        "org/repo", "main", staging_root=home / "staging",
+        installed_index=idx, receipts_dir=receipts_dir,
+        specialists_dir=specialists_dir,
+        **({"mode": "upgrade", "target_slug": slug} if upgrade else {}))
+    receipt = specialist_receipt.load(inspection.receipt_id, receipts_dir=receipts_dir)
+    assert receipt is not None
+
+    acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
+    identity = install_consent_identity(
+        component_id=inspection.component_id, version=inspection.version,
+        root_digest=inspection.root_digest, slug=inspection.slug,
+        receipt_digest=inspection.receipt_digest)
+    acks.record(identity=identity, component_id=inspection.component_id,
+                version=inspection.version, component_checksum=inspection.root_digest,
+                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
+
+    kw = dict(inspection=inspection, receipt=receipt, config=dict(config or {}),
+              secret_names_provided=frozenset(), acks=acks,
+              specialists_dir=specialists_dir,
+              agents_specialists_dir=tmp_path / "agents",
+              registry_path=tmp_path / "registry.json",
+              plugin_store_root=tmp_path / "store",
+              ops_dir=tmp_path / "ops")
+    if upgrade:
+        instance, txn = specialist_install.upgrade_specialist(slug=slug, **kw)
+    else:
+        instance, txn = specialist_install.commit_specialist_install(**kw)
+    specialist_bundle_journal.complete(txn.journal_path)
+    return SimpleNamespace(
+        slug=slug, state=instance.state, inspection=inspection, receipt=receipt,
+        acks=acks, kw=kw,
+        specialists_dir=specialists_dir, receipts_dir=receipts_dir,
+        marker=specialists_dir / slug / "pending-receipt.json",
+        expected={"receipt_id": receipt.receipt_id,
+                  "staged_dir": str(inspection.staged_dir),
+                  "component_id": inspection.component_id,
+                  "version": inspection.version,
+                  "root_digest": inspection.root_digest})
+
+
+def _pending_install(tmp_path, monkeypatch, *, slug="mtg"):
+    ctx = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug=slug)
+    assert ctx.state == "pending-configuration"
+    return ctx
+
+
+def _pending_upgrade(tmp_path, monkeypatch, *, slug="mtg"):
+    """An ACTIVE generation A, then an upgrade to B that lands pending: the
+    active tuple stays in place, so the reloaded index reports state="active"
+    while a desired candidate — B's — is what a resume would re-commit."""
+    active = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug=slug,
+                      required_config=(), config={})
+    assert active.state == "active"
+    pending = _install(tmp_path, monkeypatch, home=tmp_path / "b", slug=slug,
+                       version="0.2.0")
+    assert pending.state == "pending-configuration"
+    return active, pending
+
+
+def _publish(ctx, registry_mod, monkeypatch):
+    """Load a fresh real index off the pending tree, publish it, and point the
+    receipts seam at this test's receipts directory."""
+    import personality_admin_handlers
+    from specialist_registry import InstalledSpecialistIndex
+
+    index = InstalledSpecialistIndex(specialists_dir=str(ctx.specialists_dir))
+    index.load()
+    registry_mod.set_active_installed_index(index)
+    monkeypatch.setattr(personality_admin_handlers, "SPECIALIST_RECEIPTS_DIR",
+                        ctx.receipts_dir, raising=False)
+    return index
+
+
+def test_specialist_status_names_a_pending_slugs_resume_inputs(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The five values a later engagement needs, read off a REAL pending tree:
+    the marker's receipt id, the receipt's staged path, and the component id /
+    version / root digest the pending tuple's own root string records."""
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    index = _publish(ctx, restore_installed_index, monkeypatch)
+
+    # The state the disclosure is about, asserted by count before it is read.
+    instance = index.get_instance("mtg")
+    assert len(index.installed_slugs()) == 1
+    assert (instance.active, instance.desired is not None) == (None, True)
+    assert instance.state == "pending-configuration"
+    assert json.loads(ctx.marker.read_text())["receipt_id"] == ctx.receipt.receipt_id
+    assert len(list(ctx.receipts_dir.glob("*.json"))) == 1
+    assert Path(ctx.inspection.staged_dir).is_dir()
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert len(payload) == 7
+    assert set(payload["pending_commit"]) == _RESUME_KEYS
+    assert payload["pending_commit"] == ctx.expected
+    # Every pre-existing key survives.
+    assert payload["slug"] == "mtg" and payload["state"] == "pending-configuration"
+    assert payload["stable_agent_id"] == "specialist:mtg"
+    assert payload["active"] is None and payload["desired"] is not None
+    assert "last_activation_error" in payload
+
+
+def test_specialist_status_names_the_desired_upgrades_resume_inputs(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """A pending UPGRADE leaves the active tuple in place, so the reloaded
+    index calls the slug `active` — the disclosure follows the desired
+    candidate, not the state string, and names B's inputs, not A's."""
+    from personality_admin_handlers import specialist_status_payload
+
+    active, pending = _pending_upgrade(tmp_path, monkeypatch)
+    index = _publish(pending, restore_installed_index, monkeypatch)
+
+    instance = index.get_instance("mtg")
+    assert (instance.active is not None, instance.desired is not None) == (True, True)
+    assert instance.active.root != instance.desired.root
+    assert instance.state == "active"
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert payload["pending_commit"] == pending.expected
+    assert payload["pending_commit"]["version"] == "0.2.0"
+    assert payload["pending_commit"]["root_digest"] != active.inspection.root_digest
+
+
+def _write_json(path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+
+
+def _break_root(ctx) -> None:
+    """Leave the desired tuple LOADABLE but give it a root string that the
+    checked parser refuses — an unloadable tuple would remove `instance.desired`
+    and exercise a different predicate entirely."""
+    import yaml as _yaml
+
+    path = ctx.specialists_dir / ctx.slug / "desired.yaml"
+    raw = _yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["root"] = "not-a-component-root"
+    path.write_text(_yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+
+def _rewrite_receipt(ctx, **fields) -> None:
+    path = ctx.receipts_dir / f"{ctx.receipt.receipt_id}.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw.update(fields)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+_MARKER_AND_RECEIPT = {"receipt_id", "staged_dir"}
+_FROM_ROOT = {"component_id", "version", "root_digest"}
+
+_ARMS = [
+    ("marker deleted", lambda c: c.marker.unlink(), _FROM_ROOT),
+    ("marker is not JSON", lambda c: _write_json(c.marker, "{not json"), _FROM_ROOT),
+    ("marker is a JSON list", lambda c: _write_json(c.marker, "[]"), _FROM_ROOT),
+    ("marker has no receipt_id", lambda c: _write_json(c.marker, "{}"), _FROM_ROOT),
+    ("marker receipt_id is not a string",
+     lambda c: _write_json(c.marker, '{"receipt_id": 7}'), _FROM_ROOT),
+    ("receipt deleted",
+     lambda c: (c.receipts_dir / f"{c.receipt.receipt_id}.json").unlink(),
+     _FROM_ROOT | {"receipt_id"}),
+    ("receipt tampered",
+     lambda c: _rewrite_receipt(c, component_repo="somewhere/else"),
+     _FROM_ROOT | {"receipt_id"}),
+    ("receipt staged path is null",
+     lambda c: _rewrite_receipt(c, component_staged_path=None),
+     _FROM_ROOT | {"receipt_id"}),
+    ("staged tree removed",
+     lambda c: shutil.rmtree(c.inspection.staged_dir), _FROM_ROOT | {"receipt_id"}),
+    ("staged path is a regular file",
+     lambda c: (shutil.rmtree(c.inspection.staged_dir),
+                Path(c.inspection.staged_dir).write_text("x", encoding="utf-8")),
+     _FROM_ROOT | {"receipt_id"}),
+    ("desired root does not parse", _break_root, _MARKER_AND_RECEIPT),
+    ("marker gone and root does not parse",
+     lambda c: (c.marker.unlink(), _break_root(c)), set()),
+]
+
+
+@pytest.mark.parametrize("label,mutate,populated", _ARMS, ids=[a[0] for a in _ARMS])
+def test_specialist_status_reports_a_pending_slug_it_cannot_fully_resume(
+        tmp_path, monkeypatch, restore_installed_index, label, mutate, populated) -> None:
+    """Every arm still answers, with five members and nulls where the value is
+    gone — a legacy pending slug predating the marker included. A raise here
+    would take the whole status route down for an operator trying to diagnose
+    exactly this."""
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    mutate(ctx)
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    pending_commit = payload["pending_commit"]
+    assert set(pending_commit) == _RESUME_KEYS
+    assert {k for k, v in pending_commit.items() if v is not None} == populated
+    assert {k: pending_commit[k] for k in populated} == {
+        k: ctx.expected[k] for k in populated}
+
+
+def test_the_disclosed_inputs_are_what_completes_the_pending_install(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """Usability, not plausibility: the five strings the payload disclosed —
+    and nothing held over from the fixture — are what a later engagement hands
+    back, and the slug reaches `active`. Five convincing-looking strings that
+    do not re-commit would satisfy every other assertion here."""
+    from personality_admin_handlers import specialist_status_payload
+    from specialist_component import load_specialist_component
+    from specialist_install import (
+        InspectionResult, commit_specialist_install, compute_install_root_digest,
+        resolve_dependency_closure,
+    )
+    import specialist_bundle_journal
+    import specialist_receipt
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    disclosed = specialist_status_payload(object(), slug="mtg")["pending_commit"]
+
+    # Everything below is derived from `disclosed` alone — the same walk the
+    # commit tool performs on the arguments a caller hands it.
+    staged = Path(disclosed["staged_dir"])
+    component = load_specialist_component(staged, staged / "manifest.json")
+    deps = resolve_dependency_closure(component, staged)
+    root_digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+    assert (component.component_id, component.version) == (
+        disclosed["component_id"], disclosed["version"])
+    assert root_digest == disclosed["root_digest"]
+    receipt = specialist_receipt.load(disclosed["receipt_id"],
+                                      receipts_dir=ctx.receipts_dir)
+    assert receipt is not None
+
+    inspection = InspectionResult(
+        component_id=disclosed["component_id"], version=disclosed["version"],
+        slug="mtg", component_checksum=component.checksum, root_digest=root_digest,
+        mission=str(component.role.role.get("mission", "")),
+        default_persona_ref=component.default_persona_ref,
+        default_persona_checksum=component.default_persona_checksum,
+        required_config_names=(), required_secret_names=(), dependencies=deps,
+        staged_dir=staged, receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest, plugin_resolutions=receipt.plugins)
+    instance, txn = commit_specialist_install(
+        **dict(ctx.kw, inspection=inspection, receipt=receipt,
+               config={"region": "EU"}))
+    specialist_bundle_journal.complete(txn.journal_path)
+
+    assert instance.state == "active"
+    assert not ctx.marker.exists()
+    from specialist_registry import InstalledSpecialistIndex
+    reloaded = InstalledSpecialistIndex(specialists_dir=str(ctx.specialists_dir))
+    reloaded.load()
+    after = reloaded.get_instance("mtg")
+    assert (after.active is not None, after.desired) == (True, None)
+
+
+def test_specialist_status_discloses_no_resume_for_an_instance_with_no_candidate(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """An active-only instance has nothing to resume, and a slug that is not
+    installed keeps its two-key payload."""
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                   required_config=(), config={})
+    assert ctx.state == "active"
+    index = _publish(ctx, restore_installed_index, monkeypatch)
+    assert index.get_instance("mtg").desired is None
+
+    payload = specialist_status_payload(object(), slug="mtg")
+    assert len(_RESUME_KEYS & payload.keys()) == 0
+    assert "pending_commit" not in payload
+
+    assert specialist_status_payload(object(), slug="ghost") == {
+        "slug": "ghost", "state": "not_installed"}
+
+
+@pytest.mark.asyncio
+async def test_the_status_route_builds_its_payload_off_the_event_loop(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The payload now reads the marker, the receipt sidecar and the staged
+    directory — filesystem work that must not run on the event loop, exactly
+    as `/admin/explain` already offloads its locked store read. Asserted by
+    thread identity, and with no listening socket: the route handler is
+    invoked directly with a stand-in request."""
+    import threading
+
+    import personality_admin_handlers
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = personality_admin_handlers.specialist_status_payload
+
+    def _record(runtime, *, slug):
+        threads.append(threading.get_ident())
+        return real(runtime, slug=slug)
+
+    monkeypatch.setattr(personality_admin_handlers, "specialist_status_payload", _record)
+
+    app = web.Application()
+    personality_admin_handlers.register_personality_admin_routes(
+        app, runtime=_FakeRuntime(explanation_store=None))
+    handler = next(r.handler for r in app.router.routes()
+                   if r.resource.canonical == "/admin/specialist/status")
+
+    class _Request:
+        async def json(self):
+            return {"slug": "mtg"}
+
+    response = await handler(_Request())
+
+    assert len(threads) == 1
+    assert threads.count(loop_thread) == 0
+    assert json.loads(response.text)["pending_commit"] == ctx.expected

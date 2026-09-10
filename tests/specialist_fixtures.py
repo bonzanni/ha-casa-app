@@ -21,12 +21,18 @@ from specialist_component import compute_component_checksum
 
 def write_minimal_component(tmp_path: Path, *, slug: str = "mtg-test",
                              extra_dependencies: list[dict] | None = None,
-                             tools_allowed: list[str] | None = None) -> tuple[Path, Path]:
+                             tools_allowed: list[str] | None = None,
+                             required_config: list[str] | None = None) -> tuple[Path, Path]:
     """Build a minimal, checksum-valid specialist component tree under
     ``tmp_path / "component"`` and return ``(component_dir, manifest_path)``.
 
     ``extra_dependencies`` rows are appended to the manifest's
     ``dependencies`` list, after the mandatory persona dependency row.
+
+    ``required_config`` names non-secret settings the component's
+    config-schema REQUIRES, so a commit that supplies none of them lands in
+    ``pending-configuration`` (#929). The names go into the schema BEFORE the
+    component checksum is computed over it, so the tree stays checksum-valid.
     """
     root = tmp_path / "component"
     (root / "role").mkdir(parents=True)
@@ -50,7 +56,7 @@ def write_minimal_component(tmp_path: Path, *, slug: str = "mtg-test",
     }
     (root / "role" / "role.yaml").write_text(yaml.safe_dump(role_yaml, sort_keys=False), encoding="utf-8")
     (root / "role" / "doctrine.md").write_text("# Core doctrine\n\nAnswer test questions.\n", encoding="utf-8")
-    config_schema = {"required": [], "secret_names": []}
+    config_schema = {"required": list(required_config or []), "secret_names": []}
     (root / "config-schema.json").write_text(json.dumps(config_schema), encoding="utf-8")
 
     persona_yaml = {

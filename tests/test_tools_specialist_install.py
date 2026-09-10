@@ -2422,3 +2422,152 @@ async def test_an_unreadable_registry_names_only_what_the_swap_dropped(
     assert "unknown" in env["plugin_data_note"]
     assert env["plugin_data_plugins"] == ["mtg.dropped"]
     assert "mtg.kept" not in env["plugin_data_plugins"]
+
+
+# ---------------------------------------------------------------------------
+# #929 (INV-SPEC-015): a pending-configuration outcome names the inputs its own
+# re-commit takes. The resources were already retained (the prune/reclaim pins
+# above); what was missing is any surface carrying the five values the
+# re-commit requires, so a later engagement was sent to a re-inspect that
+# refuses (slug_collision for a first install, no_active_tuple in upgrade mode).
+# ---------------------------------------------------------------------------
+
+_RESUME_KEYS = {"receipt_id", "staged_dir", "component_id", "version", "root_digest"}
+
+
+def _stage_real_component(tmp_path, *, name: str):
+    """A real staged component tree plus the closure digest the tools recompute
+    from its bytes — never a fixture-held constant."""
+    from test_specialist_install import _write_component
+    from specialist_component import load_specialist_component
+    from specialist_install import compute_install_root_digest, resolve_dependency_closure
+
+    staging_parent = tmp_path / ".staging"
+    staging_parent.mkdir(exist_ok=True)
+    staged = _write_component(staging_parent / name, slug="mtg")
+    component = load_specialist_component(staged, staged / "manifest.json")
+    deps = resolve_dependency_closure(component, staged)
+    root_digest = compute_install_root_digest(
+        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+    return staged, component, root_digest
+
+
+class _Counter:
+    """A call counter that records the keyword arguments it was handed."""
+
+    def __init__(self, result=None) -> None:
+        self.count = 0
+        self.kwargs: list[dict] = []
+        self._result = result
+
+    def __call__(self, *a, **kw):
+        self.count += 1
+        self.kwargs.append(kw)
+        return self._result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,pending", [("pending-configuration", True), ("active", False)])
+async def test_a_pending_install_commit_names_its_resume_inputs(
+        monkeypatch, tmp_path, state, pending) -> None:
+    """The pending arm carries exactly the five re-commit inputs, equal to the
+    values THIS call validated; the active arm — which prunes the receipt and
+    reclaims the staging tree — carries none of them."""
+    import specialist_install
+    import specialist_receipt
+    import tools as tools_mod
+    from tools import specialist_install_commit
+
+    staged, component, root_digest = _stage_real_component(tmp_path, name="commit")
+    receipt_id = "7" * 32
+    monkeypatch.setattr(
+        specialist_receipt, "load",
+        lambda rid, *a, **k: SimpleNamespace(receipt_id=rid, receipt_digest="", plugins=()))
+
+    instance = SimpleNamespace(slug="mtg", state=state)
+    txn = SimpleNamespace(slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
+                          journal_path=str(tmp_path / "journal.json"))
+    core = _Counter((instance, txn))
+    prune, reclaim = _Counter(), _Counter()
+    monkeypatch.setattr(specialist_install, "commit_specialist_install", core)
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", prune)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", reclaim)
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_install_commit.handler({
+        "component_id": component.component_id, "version": component.version,
+        "slug": component.slug, "staged_dir": str(staged),
+        "root_digest": root_digest, "receipt_id": receipt_id,
+    }))
+
+    assert core.count == 1
+    assert (prune.count, reclaim.count) == ((0, 0) if pending else (1, 1))
+    # The expectation is built from what the tool VALIDATED and handed the core,
+    # never from the result under test.
+    inspection = core.kwargs[0]["inspection"]
+    expected = {
+        "receipt_id": receipt_id, "staged_dir": str(inspection.staged_dir),
+        "component_id": inspection.component_id, "version": inspection.version,
+        "root_digest": inspection.root_digest,
+    }
+    assert len(_RESUME_KEYS & payload.keys()) == (5 if pending else 0)
+    if pending:
+        assert {k: payload[k] for k in _RESUME_KEYS} == expected
+        assert isinstance(payload["staged_dir"], str)
+    # The pre-existing projection is untouched in both arms.
+    assert payload["ok"] is True and payload["slug"] == "mtg"
+    assert payload["state"] == state
+    assert payload["activation_committed"] is (state == "active")
+    assert payload["required_env_vars"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,pending", [("pending-configuration", True), ("active", False)])
+async def test_a_pending_upgrade_names_its_resume_inputs(
+        monkeypatch, tmp_path, state, pending) -> None:
+    """The upgrade arm in parity with the install arm: an upgrade that lands
+    pending-configuration retains the receipt and the staging tree, and now
+    names the five inputs the follow-up re-commit takes."""
+    import specialist_install
+    import specialist_receipt
+    import tools as tools_mod
+    from tools import specialist_upgrade
+
+    staged, component, root_digest = _stage_real_component(tmp_path, name="upgrade")
+    receipt_id = "9" * 32
+    monkeypatch.setattr(
+        specialist_receipt, "load",
+        lambda rid, *a, **k: SimpleNamespace(receipt_id=rid, receipt_digest="", plugins=()))
+
+    instance = SimpleNamespace(slug="mtg", state=state)
+    txn = SimpleNamespace(slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
+                          journal_path=str(tmp_path / "journal.json"))
+    core = _Counter((instance, txn))
+    prune, reclaim = _Counter(), _Counter()
+    monkeypatch.setattr(specialist_install, "upgrade_specialist", core)
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", prune)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", reclaim)
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await specialist_upgrade.handler({
+        "slug": component.slug, "component_id": component.component_id,
+        "version": component.version, "staged_dir": str(staged),
+        "root_digest": root_digest, "receipt_id": receipt_id,
+    }))
+
+    assert core.count == 1
+    assert (prune.count, reclaim.count) == ((0, 0) if pending else (1, 1))
+    inspection = core.kwargs[0]["inspection"]
+    expected = {
+        "receipt_id": receipt_id, "staged_dir": str(inspection.staged_dir),
+        "component_id": inspection.component_id, "version": inspection.version,
+        "root_digest": inspection.root_digest,
+    }
+    assert len(_RESUME_KEYS & payload.keys()) == (5 if pending else 0)
+    if pending:
+        assert {k: payload[k] for k in _RESUME_KEYS} == expected
+        assert isinstance(payload["staged_dir"], str)
+    assert payload["ok"] is True and payload["slug"] == "mtg"
+    assert payload["state"] == state
+    # The upgrade result has never carried activation_committed/required_env_vars.
+    assert sorted(payload.keys() - _RESUME_KEYS) == ["ok", "reloaded", "slug", "state", "verify"]
