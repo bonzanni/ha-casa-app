@@ -32,6 +32,26 @@ broadly — and it is outside the specialist dispatch ceiling, so a third-party 
 reach it. It answers two different questions from two stores: what is standing wrong now, and
 what happened during a past setup, which only the episode row's recorded error can say.
 
+Those two questions have an ORDER, and the answer to "why is this plugin not working?"
+is the first one. The standing entries lead the result — the concatenation that builds the
+report puts the resolver's own issues, which carry the verify-stage row, before the merged
+setup-episode rows — and the health renderer appends to each the one detail the operator can
+act on. The setup history explains how it got there and comes after. Both carriers that
+reach the model now say so: the tool's own description leads with what `standing` is for and
+names `history` as following it, and the assistant's role doctrine carries the same telling
+in its core section, so it reaches all three of that resident's compiled projections rather
+than only the composed prompt a persona-bound assistant never reads. The telling is worded
+as what the plugin is waiting for and never as the identifier naming it, because the text
+projection it is carried into already forbids putting an environment-variable name or a raw
+tool-result field in front of a household member.
+
+What that pair of tellings can and cannot be held to is worth stating plainly, because the
+defect behind them was not a wrong result. The result was right and led with the actionable
+fact; the model paraphrased the last sentence instead and called the cause unknown. Whether
+a carrier changes that selection is not a property a unit test can decide, so what is pinned
+is that the telling is present, in order, in every carrier that serves it — and nothing more.
+The measurement of the selection itself is the playbook's plugin-status play.
+
 Its result envelope carries an optional third thing: whether an answer is COMPLETE. A
 store it could not read used to reach the agent as an empty list, which reads as health,
 so the tool now adds a conditional statement naming what it could not see —

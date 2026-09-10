@@ -14968,10 +14968,12 @@ def _tool_plugin_status() -> dict:
 
 @tool(
     "plugin_status",
-    "Report what is currently wrong with any installed plugin, and what "
-    "happened during each plugin's automatic setup — including the error a "
-    "failed setup last reported. Read-only: it changes nothing, and it is the "
-    "way to answer an operator asking why a plugin is not working without "
+    "Answer an operator asking why a plugin is not working from `standing` "
+    "first: it reports what is currently wrong with each installed plugin — "
+    "what is blocking it right now, such as a value it is still waiting for. "
+    "`history` comes after, and says what happened during each plugin's "
+    "automatic setup, including the error a failed setup last reported. "
+    "Read-only: it changes nothing, and it answers the question without "
     "engaging the configurator.",
     {"type": "object", "properties": {}},
 )

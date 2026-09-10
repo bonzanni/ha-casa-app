@@ -1066,13 +1066,23 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # one here, is exactly what it exists to catch — and only then regenerate the
 # digest for that carrier. Never regenerate the map wholesale from the
 # candidate; that is the one move which turns this assertion back into nothing.
+#
+# MOVED 2026-09-10 (#934), the three `assistant:*` carriers ONLY. #934 adds one
+# sentence to the assistant's Core doctrine about answering a "why is this
+# plugin not working" question from the standing entries before the setup
+# history. Regenerated per carrier after measuring the residual diff, not from
+# the candidate: `difflib` over base-vs-new residual text reports exactly ONE
+# `insert` on each of the three, and the inserted span is that sentence and
+# nothing else; the six butler and concierge carriers are byte-identical. The
+# sentence makes no retention claim on any surface, which is what this pin
+# guards.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "2dd2928a69e7218e312d351a11e2f7a133ea93171db28dd864b5cb52e546b0ef",
+        "785d81df7f3d8cdebc03c9dc139bfd74ddad36055aee567a018c82819ff260e1",
     "assistant:text":
-        "62d7824d006638e101817422aa3ae0ece973c16c112a58bbeec2d02b61ecb08f",
+        "07a848a00841d35d4d140ceb746da80a8014828a7513bf8a9a862f90ec4686a2",
     "assistant:voice":
-        "33063c98973890148cfbad89b537e3bde6634e6ddc37e8313c10b413e7dfd5ed",
+        "a66d7692b42fc5cd1c1f5679502c0aaf9981d084766779f499e71ec8e47f49ee",
     "butler:restricted_webhook":
         "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
     "butler:text":
