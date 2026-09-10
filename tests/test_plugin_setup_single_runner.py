@@ -94,6 +94,7 @@ def env(monkeypatch, tmp_path):
     pse.configure(
         dispatch=_dispatch, notify_operator=_notify,
         resolve_registry_entry=lambda p: state.entry,
+        registry_entry_fresh=lambda p: state.entry,          # #928
         ack_lookup=lambda ident: None, routes_live=lambda p: True)
     # The health regen writes to /data — not this test's subject.
     monkeypatch.setattr(tr, "_regen_health_safe", _noop)
@@ -1459,3 +1460,46 @@ async def test_an_artifact_intrinsic_failure_stays_terminal(env):
     assert _obligation()["status"] == "failed"
     assert any("could not run" in n for n in env.notes)
     assert env.dispatched == []
+
+
+async def _exhaust_through_reconciles(env):
+    """Three reconciles, each dispatching once and each dispatched turn
+    reporting no evidence of the tool: the obligation fails (#521 budget)."""
+    for n in (1, 2, 3):
+        await _reconcile(env)
+        assert len(env.dispatched) == n
+        pse.report_dispatch_outcome(_obligation()["id"], tools_used_ok=set(),
+                                    tools_attempted=set(),
+                                    available_tools=set())
+    await asyncio.sleep(0)
+    assert _obligation()["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_same_download_reinstall_after_removal_retries_setup_end_to_end(
+        env):
+    """INV-PLUG-020 through the real lifecycle pair: a consent-free plugin
+    exhausts its budget; `plugin_remove`'s retire stamps the row; the next
+    reconcile that resolves the same artifact re-arms it, seals a fresh
+    zero-member verdict, and dispatches — one new dispatch, only then."""
+    env.plugin = _plugin()                                 # setupTool only
+    await _exhaust_through_reconciles(env)
+    pse.retire_for_removed("gmail")                        # plugin_remove
+    await _reconcile(env)                                  # reinstalled
+    assert len(env.dispatched) == 4
+    row = _obligation()
+    assert row["status"] == "dispatched"
+    assert row["gen"] == 1
+    assert row["previous_failure"]["execution_retries"] == 3
+
+
+@pytest.mark.asyncio
+async def test_without_a_removal_the_same_artifact_never_retries_end_to_end(env):
+    """The companion mutation: no removal, no mark — two more reconciles at
+    the same artifact keep the dispatch count where the budget left it."""
+    env.plugin = _plugin()
+    await _exhaust_through_reconciles(env)
+    await _reconcile(env)
+    await _reconcile(env)
+    assert len(env.dispatched) == 3
+    assert _obligation()["status"] == "failed"

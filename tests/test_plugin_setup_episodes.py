@@ -81,6 +81,10 @@ def wired(tmp_path, monkeypatch):
     pse.configure(
         dispatch=dispatch, notify_operator=notify,
         resolve_registry_entry=lambda plugin: state["entry"],
+        # #928: the fresh on-disk read a removal mark's consumption needs; the
+        # fake serves the same entry as the cached resolver unless a test
+        # sets ``fresh`` to model the two disagreeing.
+        registry_entry_fresh=lambda plugin: state.get("fresh", state["entry"]),
         sleep=fake_sleep,
     )
     return state
@@ -1202,6 +1206,10 @@ async def test_a_reinstall_at_a_new_artifact_does_not_resurrect_the_old_failure(
     and, its mark having been pruned, announced afresh as though the new
     install had failed. Name is not enough; the obligation must be this
     artifact's.
+
+    #928 (r5): the SAME artifact reinstalled is no longer a failure that
+    merely stands — the first sweep that resolves it re-arms the obligation,
+    and the projection then shows setup as owed, not as failed.
     """
     import plugin_health
     health = tmp_path / "health.json"
@@ -1217,6 +1225,7 @@ async def test_a_reinstall_at_a_new_artifact_does_not_resurrect_the_old_failure(
     plugin_health.mark_notified([_setup_rows(r1)[0]["fingerprint"]],
                                 path=health, generation=r1["generation"])
 
+    pse.retire_for_removed("elevenlabs")     # what plugin_remove does (#928)
     r2 = _regen_into(monkeypatch, health, registered=[])          # removed
     assert len(_setup_rows(r2)) == 0
     assert len(r2["notified_fingerprints"]) == 0
@@ -1228,12 +1237,27 @@ async def test_a_reinstall_at_a_new_artifact_does_not_resurrect_the_old_failure(
     assert len(_setup_rows(r3)) == 0
     assert len(plugin_health.new_fingerprints(r3)) == 0
 
-    # The SAME artifact reinstalled still does stand — the failure is really
-    # this installation's — which is what keeps the filter from being a mute.
+    # The SAME artifact reinstalled, projected BEFORE any sweep has run: the
+    # row still stands, as the failed row it is — the projection alone re-arms
+    # nothing, which is what keeps the filter from being a mute. (The sweep
+    # below is what changes it; #928.)
     r4 = _regen_into(monkeypatch, health, registered=["elevenlabs"],
                      artifact="art-1")
     assert len(_setup_rows(r4)) == 1
     assert len(plugin_health.new_fingerprints(r4)) == 1
+
+    # r5 (#928): the first sweep that resolves the same artifact re-arms the
+    # obligation, and health now says setup is OWED — one pending row, no
+    # failed row, one newly announceable fingerprint.
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    r5 = _regen_into(monkeypatch, health, registered=["elevenlabs"],
+                     artifact="art-1")
+    rows = _setup_rows(r5)
+    assert len(rows) == 1
+    assert len([d for d in rows
+                if d["reason_code"] == "setup_episode_pending"]) == 1
+    assert len(plugin_health.new_fingerprints(r5)) == 1
 
 
 @pytest.mark.asyncio
@@ -1746,7 +1770,7 @@ async def test_tolerable_field_damage_on_a_row_is_kept_and_not_disclosed(
 # --- #928: a removed-after-failure plugin reinstalled from the same download --
 
 def _wire_fresh_registry(state):
-    """Point the on-disk registry hook (INV-PLUG-017's second resolution) at the
+    """Point the on-disk registry hook (INV-PLUG-020's second resolution) at the
     same fake entry the cached resolver serves. ``configure`` grows the
     ``registry_entry_fresh`` keyword with the fix; at the base it does not have
     it, and the red case must still reach its first count rather than die on a
@@ -1786,7 +1810,7 @@ async def _exhaust_consent_free(state):
 
 @pytest.mark.asyncio
 async def test_removed_failed_same_artifact_rearms_with_fresh_budget(wired):
-    """INV-PLUG-017 (#928): a plugin whose setup exhausted its execution budget,
+    """INV-PLUG-020 (#928): a plugin whose setup exhausted its execution budget,
     was removed, and was reinstalled from the SAME download (same artifact id)
     is owed setup again by the first sweep that resolves it — as a fresh
     attempt with its own budget, still holding for the sweep's positive seal,
@@ -1836,3 +1860,187 @@ async def test_removed_failed_same_artifact_rearms_with_fresh_budget(wired):
                                 tools_attempted=set(), available_tools=set())
     await pse._worker_pass()
     assert len(wired["dispatches"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_a_removal_mark_is_consumed_only_when_both_resolutions_agree(wired):
+    """A marked row re-arms only when the plugin resolves at the same artifact
+    BOTH from the cached snapshot and from a fresh read of the registry file
+    (seam round, astra): the snapshot lags a removal by one await, so a sweep
+    overlapping the removal would otherwise consume the mark for a plugin
+    that is gone — armed with no reinstall. Every disagreement leaves the
+    row exactly as it was, mark included; agreement re-arms once."""
+    old = await _exhaust_consent_free(wired)
+    pse.retire_for_removed("elevenlabs")
+    entry = wired["entry"]
+    for cached, fresh in ((entry, None),                      # snapshot lags
+                          (None, entry),                      # file lags
+                          (entry, dict(entry, artifact_id="art-9")),
+                          (dict(entry, artifact_id="art-9"), entry)):
+        wired["entry"], wired["fresh"] = cached, fresh
+        assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                     consent_pending=False) is False
+        rows = pse.episodes()
+        assert len(rows) == 1
+        assert rows[0]["id"] == old["id"]
+        assert rows[0]["status"] == "failed"
+        assert pse._removal_mark(rows[0]) is not None
+    assert len(wired["dispatches"]) == 3
+
+    wired["entry"], wired["fresh"] = entry, entry
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    assert len(pse.episodes("pending")) == 1
+    # Idempotent across passes: the same row, not another generation.
+    first = pse.episodes("pending")[0]["id"]
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    assert [r["id"] for r in pse.episodes()] == [first]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_row_that_was_never_removed_is_not_re_armed(wired):
+    """The budget is not defeated: without a removal the exhausted row is
+    settled, and two more sweeps at the same artifact add no dispatch."""
+    await _exhaust_consent_free(wired)
+    for _ in range(2):
+        assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                     consent_pending=False) is False
+        pse.open_round(plugin="elevenlabs", artifact_id="art-1",
+                       identities=[], verdict=True)
+        await pse._worker_pass()
+    assert len(pse.episodes("pending")) == 0
+    assert len(wired["dispatches"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_retire_stamps_a_failed_row_once_and_leaves_a_refused_row_alone(
+        wired):
+    """The stamp is written once (a repeated removal is not a newer one) and
+    never on a ``refused`` row, whose way back is the consent the removal
+    revoked: a same-artifact sweep with no pending consent re-arms nothing."""
+    old = await _exhaust_consent_free(wired)
+    assert "removed_ts" not in old
+    pse.retire_for_removed("elevenlabs")
+    stamp = pse._removal_mark(pse.episodes()[0])
+    assert stamp is not None
+    pse.retire_for_removed("elevenlabs")
+    row = pse.episodes()[0]
+    assert pse._removal_mark(row) == stamp
+    # Nothing else on the row moved: the history is what it was.
+    assert (row["status"], row["last_error"], row["execution_retries"],
+            row["updated_ts"]) == (old["status"], old["last_error"],
+                                   old["execution_retries"], old["updated_ts"])
+
+    # A FRESH refused row (not the stamped one above, which would hide a
+    # stamp written on refusal): removal leaves it unstamped, so the consent
+    # path re-arms it exactly as before this change — even while the fresh
+    # registry read lags, which a stamp would have made the sweep wait for.
+    data = pse._load()
+    data["episodes"] = []
+    pse._save(data)
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=True) is True
+    pse._update_episode(pse.episodes()[0]["id"], status="refused")
+    pse.retire_for_removed("elevenlabs")
+    refused = pse.episodes()[0]
+    assert refused["status"] == "refused"
+    assert pse._removal_mark(refused) is None
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is False
+    assert len(pse.episodes("pending")) == 0
+    wired["fresh"] = None
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=True) is True
+    assert len(pse.episodes("pending")) == 1
+    assert pse.episodes("pending")[0]["gen"] == refused["gen"] + 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_removal_before_the_retry_settles_keeps_the_history(
+        wired):
+    """Seam round (terra): F0 failed → removed → P1 re-armed carrying F0 →
+    removed again before it settles (P1 goes stale, stamped) → reinstalled →
+    P2. P2 must still carry F0's error, not lose it with P1."""
+    f0 = await _exhaust_consent_free(wired)
+    pse.retire_for_removed("elevenlabs")
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    p1 = pse.episodes("pending")[0]
+    assert p1["previous_failure"]["last_error"] == f0["last_error"]
+
+    pse.retire_for_removed("elevenlabs")
+    assert len(pse.episodes("stale")) == 1
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    rows = pse.episodes()
+    assert len(rows) == 1
+    p2 = rows[0]
+    assert p2["gen"] == p1["gen"] + 1
+    assert p2["previous_failure"]["last_error"] == f0["last_error"]
+    assert p2["previous_failure"]["episode"] == f0["id"]
+    assert "removed_ts" not in p2
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_removal_mark_grants_no_retry(wired):
+    """Only a number `retire_for_removed` wrote is a mark; a hand-edited
+    value is read as no mark, and a same-artifact sweep leaves the row."""
+    old = await _exhaust_consent_free(wired)
+    for bad in ("yes", True, None, [1], float("inf"), {"ts": 1.0}):
+        pse._update_episode(old["id"], removed_ts=bad)
+        assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                     consent_pending=False) is False
+        assert len(pse.episodes("pending")) == 0
+    assert len(pse.episodes("failed")) == 1
+
+
+@pytest.mark.asyncio
+async def test_both_removal_fields_survive_the_store_on_disk(wired):
+    """The mark and the snapshot are read back from the bytes on disk by the
+    same reader every consumer uses — a restart between removal and reinstall
+    loses neither."""
+    import json
+    f0 = await _exhaust_consent_free(wired)
+    pse.retire_for_removed("elevenlabs")
+    on_disk = json.loads(pse.STORE_PATH.read_text())
+    assert len([r for r in on_disk["episodes"]
+                if pse._finite(r.get("removed_ts")) is not None]) == 1
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    on_disk = json.loads(pse.STORE_PATH.read_text())
+    assert len([r for r in on_disk["episodes"]
+                if r.get("previous_failure", {}).get("last_error")
+                == f0["last_error"]]) == 1
+    assert len(pse.read_episodes("pending").rows) == 1
+    assert pse.read_episodes().damage is None
+
+
+@pytest.mark.asyncio
+async def test_status_sentence_names_the_removal_and_the_earlier_failure(wired):
+    """`plugin_status` keeps the original error readable through both shapes:
+    the removed installation's failed row, and the re-armed row that
+    replaced it. A malformed snapshot says nothing rather than something."""
+    import tools
+    f0 = await _exhaust_consent_free(wired)
+    assert tools._episode_sentence(f0).count("removed") == 0
+    pse.retire_for_removed("elevenlabs")
+    marked = pse.episodes()[0]
+    line = tools._episode_sentence(marked)
+    assert line.count("setup failed") == 1
+    assert line.count(f0["last_error"]) == 1
+    assert line.count("the plugin was removed since") == 1
+
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    fresh = pse.episodes()[0]
+    line = tools._episode_sentence(fresh)
+    assert line.count("setup has not run yet") == 1
+    assert line.count("the plugin was removed since") == 0
+    assert line.count("before the plugin was removed and reinstalled") == 1
+    assert line.count(f0["last_error"]) == 1
+
+    pse._update_episode(fresh["id"], previous_failure="not a mapping")
+    line = tools._episode_sentence(pse.episodes()[0])
+    assert line.count("before the plugin was removed and reinstalled") == 0
+    assert line.count(f0["last_error"]) == 0

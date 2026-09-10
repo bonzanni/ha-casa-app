@@ -780,3 +780,38 @@ def test_tool_registered_and_granted():
     import tools
     names = {t.name for t in tools.CASA_TOOLS}
     assert "consent_reprompt" in names
+
+
+async def test_plugin_remove_retires_before_its_first_await(
+        episodes_store, monkeypatch):
+    """#928 (design round, astra): the retire runs BEFORE the removal's first
+    await. The registry write is already committed when the sync core
+    returns; a cancellation anywhere in the reload used to leave the entry
+    gone and the row untouched — no `stale` conversion (the #494 window,
+    reopened) and no removal stamp. Reproduced: the reload raises
+    CancelledError, the tool call is cancelled, and the row is still retired
+    and stamped."""
+    import tools
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    monkeypatch.setattr(
+        tools, "_plugin_remove_sync",
+        lambda name: {"ok": True, "name": name, "artifact_id": "art-1",
+                      "targets": []})
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+
+    async def cancelled_seq(name, targets, expect):
+        raise asyncio.CancelledError()
+
+    async def unreachable_remove_cbs(name):
+        raise AssertionError("the reload was cancelled first")
+
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", cancelled_seq)
+    monkeypatch.setattr(tools, "_remove_plugin_callbacks",
+                        unreachable_remove_cbs)
+    with pytest.raises(asyncio.CancelledError):
+        await tools.plugin_remove.handler({"name": "gmail"})
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "stale"
+    assert pse._removal_mark(rows[0]) is not None
+    assert len(pse.episodes("pending")) == 0

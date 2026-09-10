@@ -12030,9 +12030,9 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
                 if name not in entry_targets:
                     continue
                 # #653 r1: and it must be THIS artifact's obligation. A
-                # terminal `failed` row survives both removal and reinstall
-                # (supersession only ever restages a pending/dispatched one),
-                # so without this a plugin removed after a failed setup and
+                # terminal `failed` row survives removal (stamped, #928) and a
+                # new-artifact reinstall until that artifact's sweep
+                # supersedes it, so without this a plugin removed after a failed setup and
                 # reinstalled at a NEW artifact within the decay window had the
                 # OLD artifact's failure re-enter health — and, because removal
                 # pruned its notification mark, announced afresh as though the
@@ -14360,6 +14360,28 @@ async def plugin_remove(args: dict) -> dict:
             core.setdefault("runtime_ready", False)
             core.setdefault("verify", {})
             return _result(core)
+        # #494: retire the plugin's setup obligation + round durably. Without
+        # this, an approval racing this removal could re-arm a `pending`
+        # obligation nothing can ever seal or release (a `pending` row never
+        # decays out of health). Called SYNCHRONOUSLY on the event loop —
+        # never via to_thread — so it serializes with the loop-confined
+        # episode-store writers (consent commit steps, the decision feed); a
+        # threaded retire could interleave a feed's load/save and let the
+        # feed's stale `pending` snapshot overwrite the retirement (Sol
+        # diff-gate r1).
+        # #928: and called HERE, before this coroutine's first await, rather
+        # than after the reload as it used to be: the registry write has
+        # already committed, and a cancellation anywhere in the reload below
+        # left the entry gone with the row untouched — no `stale` conversion
+        # (the #494 window, reopened) and no removal stamp, so a later
+        # same-download reinstall could not tell it was one. Nothing between
+        # here and the old position reads or writes this plugin's episode row.
+        try:
+            import plugin_setup_episodes
+            plugin_setup_episodes.retire_for_removed(core["name"])
+        except Exception:  # noqa: BLE001 — teardown must never fail removal
+            logger.warning("plugin_remove: setup-obligation retire failed "
+                           "(%s)", core["name"], exc_info=True)
         # A:§3.3 (r1-B8): the plugin is gone entirely — invalidate by its
         # (retained-for-GC) artifact AND by every former target's role.
         _invalidate_lifecycle(artifact_id=core.get("artifact_id"),
@@ -14375,21 +14397,6 @@ async def plugin_remove(args: dict) -> dict:
         # the spool dir so a later reinstall starts clean instead of inheriting
         # stale results/claims.
         await _remove_plugin_callbacks(core["name"])
-        # #494: retire the plugin's setup obligation + round durably. Without
-        # this, an approval racing this removal could re-arm a `pending`
-        # obligation nothing can ever seal or release (a `pending` row never
-        # decays out of health). Called SYNCHRONOUSLY on the event loop —
-        # never via to_thread — so it serializes with the loop-confined
-        # episode-store writers (consent commit steps, the decision feed); a
-        # threaded retire could interleave a feed's load/save and let the
-        # feed's stale `pending` snapshot overwrite the retirement (Sol
-        # diff-gate r1).
-        try:
-            import plugin_setup_episodes
-            plugin_setup_episodes.retire_for_removed(core["name"])
-        except Exception:  # noqa: BLE001 — teardown must never fail removal
-            logger.warning("plugin_remove: setup-obligation retire failed "
-                           "(%s)", core["name"], exc_info=True)
         return _result(core)
 
 
@@ -14791,6 +14798,21 @@ def _episode_sentence(row: dict) -> str:
     last_error = row.get("last_error")
     if isinstance(last_error, str) and last_error.strip():
         line += f" — last error: {last_error.strip()}"
+    # #928: two more facts the row carries about a removal. A row stamped by
+    # `retire_for_removed` describes an installation that is gone; a row
+    # re-armed after a same-download reinstall carries what the earlier
+    # installation failed on, which is the answer to "why did it fail last
+    # time" once the current row says only "has not run yet". A malformed
+    # snapshot renders as nothing rather than as a claim.
+    import plugin_setup_episodes
+    if plugin_setup_episodes._removal_mark(row) is not None:
+        line += " — the plugin was removed since"
+    previous = row.get("previous_failure")
+    if isinstance(previous, dict):
+        error = previous.get("last_error")
+        if isinstance(error, str) and error.strip():
+            line += (" — before the plugin was removed and reinstalled, "
+                     f"setup failed: {error.strip()}")
     return line
 
 

@@ -5215,6 +5215,22 @@ async def main() -> None:
             "setup_tool": setup,
         }
 
+    def _setup_registry_entry_fresh(plugin: str) -> dict | None:
+        # #928: a FRESH read of the registry file, deliberately not the cached
+        # snapshot `_setup_registry_entry` serves — `plugin_remove` stamps the
+        # obligation row before its first await and the snapshot is refreshed
+        # only after it, so the cache alone can show a removed plugin as still
+        # installed to a sweep overlapping that window. Unreadable or invalid
+        # reads as "not listed": the mark is then retained, never consumed.
+        import plugin_registry as _pr
+        data = _pr.load_registry()
+        if not data.valid:
+            return None
+        entry = next((e for e in data.entries
+                      if isinstance(e, dict) and e.get("name") == plugin),
+                     None)
+        return dict(entry) if entry is not None else None
+
     async def _setup_dispatch(role: str, text: str, context: dict) -> bool:
         import trigger_consent as _tc
         ch = channel_manager.get("telegram") if channel_manager else None
@@ -5275,6 +5291,8 @@ async def main() -> None:
     _pse.configure(
         dispatch=_setup_dispatch, notify_operator=_setup_notify,
         resolve_registry_entry=_setup_registry_entry,
+        # #928: the second resolution a removal mark's consumption needs.
+        registry_entry_fresh=_setup_registry_entry_fresh,
         # Union BOTH ack stores (trigger + callback identities are
         # disjoint) so a stranded round with a callback member heals.
         ack_lookup=_setup_ack_lookup_union,

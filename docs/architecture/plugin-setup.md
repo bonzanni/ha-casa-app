@@ -208,6 +208,32 @@ report — the same defect, relocated and worse. So on a bad read nothing is fil
 every row stands. Removal clears the row's notification mark along with the row, which
 is what lets a reinstall that fails again be announced once more rather than silently.
 
+**A removal is recorded on the row it keeps, and a reinstall from the same download is
+owed setup again.** The failed row's exhausted budget belonged to the installation the
+operator removed, not to the one they installed next — but the reconcile sweep keys
+obligations by artifact, and the same download is the same artifact, so until v0.291.0 the
+sweep read the retained row as settled and the reinstalled plugin never retried: the old
+failure re-entered health as though it were this installation's, and the only routes
+out were an update to a different commit or a manual run of a tool that may not load.
+Removal now stamps the failed row rather than rewriting it — the error, its counters and
+its timestamp stay, since they are the only record of why setup failed, and `stale`
+would both overwrite that and let it decay — and the sweep re-arms a stamped row the
+first time it resolves the plugin at that artifact again. The decision runs at the sweep
+and nowhere earlier, for the same reason an approval racing a removal is declined: a
+pending row for a plugin the registry cannot resolve can never be sealed or released. And
+because the removal path stamps the row before its first await while the resolver's
+cached snapshot is refreshed only after it, the sweep consumes a stamp only when a fresh
+read of the registry file agrees with the snapshot that the artifact is installed; any
+disagreement leaves the row as it is for the next pass to ask again. The re-armed row is
+a fresh attempt — its own bounded execution budget and its own exhaustion note, holding
+for the sweep's positive seal like any other — and carries the earlier failure with it,
+so `plugin_status` still says what the previous installation failed on. A reinstall at a
+*different* artifact is unchanged: a new obligation, the old row dropped. A `refused` row
+is not stamped; the consent the removal revoked is its way back, and the sweep already
+re-arms it while that consent is pending again.
+
+**INV-PLUG-020**: A setup obligation that reached `failed` and whose plugin was then removed is re-armed by the first reconcile sweep that resolves the same artifact again — to `pending`/`awaiting_verdict`, as a fresh attempt with its own bounded budget, carrying the earlier failure readably — and by nothing earlier: removal itself mints no pending row, and a sweep that cannot resolve the plugin both live and from a fresh read of the registry file leaves the row as it is.
+
 ## Failure behavior
 
 **No consent verdict has settled for an artifact.** The obligation holds, indefinitely and
@@ -281,6 +307,14 @@ usually a warm one that would fail identically, and the healer in practice is th
 agent reload. The budget is bounded; exhausting it fails the obligation with a note naming
 the manual run. A specialist-target dispatch stays delivery-only — the assistant is just
 the delegation courier there, and its own session says nothing about the specialist's.
+
+**The plugin is removed after its setup failed, and reinstalled from the same download.**
+The removal stamps the failed row and the next sweep that resolves the same artifact
+re-arms it as a fresh attempt (INV-PLUG-020): the obligation holds for a positive seal,
+dispatches, and either settles or exhausts a new budget with a new note. Nothing retries
+while the plugin is absent, and the earlier failure stays readable in the status tool
+throughout. A failed row whose plugin was never removed is settled and is never retried by
+a reconcile — the routes out remain an update to a different commit and the manual run.
 
 **The dispatch is accepted and the tool runs, but the integration is broken.** Delivery
 and in-session execution are what the obligation tracks; the executing agent reports the
