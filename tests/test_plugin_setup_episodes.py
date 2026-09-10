@@ -1741,3 +1741,98 @@ async def test_tolerable_field_damage_on_a_row_is_kept_and_not_disclosed(
     disk = json.loads(store.read_text(encoding="utf-8"))
     assert disk["episodes"] == [tolerable, good]
     assert "reset" not in disk
+
+
+# --- #928: a removed-after-failure plugin reinstalled from the same download --
+
+def _wire_fresh_registry(state):
+    """Point the on-disk registry hook (INV-PLUG-017's second resolution) at the
+    same fake entry the cached resolver serves. ``configure`` grows the
+    ``registry_entry_fresh`` keyword with the fix; at the base it does not have
+    it, and the red case must still reach its first count rather than die on a
+    TypeError, so the hook is wired only when ``configure`` accepts it."""
+    import inspect
+    if "registry_entry_fresh" not in inspect.signature(pse.configure).parameters:
+        return
+    pse.configure(
+        dispatch=wired_dispatch(state), notify_operator=wired_notify(state),
+        resolve_registry_entry=lambda plugin: state["entry"],
+        registry_entry_fresh=lambda plugin: state["entry"],
+        sleep=pse._sleep)
+
+
+async def _exhaust_consent_free(state):
+    """A consent-free obligation, sealed by an authoritative zero-member round,
+    dispatched three times with no evidence of the tool: ``failed`` with one
+    exhaustion note. Returns the failed row."""
+    import asyncio
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False) is True
+    pse.open_round(plugin="elevenlabs", artifact_id="art-1", identities=[],
+                   verdict=True)
+    for n in (1, 2, 3):
+        await pse._worker_pass()
+        assert len(state["dispatches"]) == n
+        ep = pse.episodes("dispatched")[0]
+        pse.report_dispatch_outcome(ep["id"], tools_used_ok=set(),
+                                    tools_attempted=set(),
+                                    available_tools=set())
+    await asyncio.sleep(0)                  # the exhaustion note is scheduled
+    assert len(pse.episodes("failed")) == 1
+    assert len(pse.episodes("pending")) == 0
+    assert len(state["notes"]) == 1
+    return pse.episodes("failed")[0]
+
+
+@pytest.mark.asyncio
+async def test_removed_failed_same_artifact_rearms_with_fresh_budget(wired):
+    """INV-PLUG-017 (#928): a plugin whose setup exhausted its execution budget,
+    was removed, and was reinstalled from the SAME download (same artifact id)
+    is owed setup again by the first sweep that resolves it — as a fresh
+    attempt with its own budget, still holding for the sweep's positive seal,
+    with the earlier failure carried readably. At the base the retained
+    ``failed`` row is read as settled and nothing ever retries.
+    """
+    _wire_fresh_registry(wired)
+    old = await _exhaust_consent_free(wired)
+
+    # Removed: the registry no longer resolves it, the obligation is retired.
+    entry, wired["entry"] = wired["entry"], None
+    pse.retire_for_removed("elevenlabs")
+    assert len(pse.episodes("pending")) == 0
+    assert len(wired["dispatches"]) == 3
+    assert len(wired["notes"]) == 1
+
+    # Reinstalled from the same download: the sweep resolves the same artifact
+    # and reports no pending consent (a consent-free plugin never has one).
+    wired["entry"] = entry
+    owed = pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1",
+                                 consent_pending=False)
+    assert len(pse.episodes("pending")) == 1      # base-red: 0, settled
+    assert owed is True
+
+    rows = pse.episodes()
+    assert len(rows) == 1
+    fresh = rows[0]
+    assert fresh["id"] != old["id"]
+    assert fresh["gen"] == old["gen"] + 1
+    assert fresh["gate"] == "awaiting_verdict"
+    assert int(fresh.get("attempts") or 0) == 0
+    assert int(fresh.get("execution_retries") or 0) == 0
+    assert "removed_ts" not in fresh
+    assert fresh["previous_failure"]["last_error"] == old["last_error"]
+
+    # Re-armed is not released: a pass before the seal dispatches nothing.
+    await pse._worker_pass()
+    assert len(wired["dispatches"]) == 3
+    pse.open_round(plugin="elevenlabs", artifact_id="art-1", identities=[],
+                   verdict=True)
+    await pse._worker_pass()
+    assert len(wired["dispatches"]) == 4
+    # A fresh budget: one non-evidenced outcome returns it to pending and the
+    # next pass re-dispatches, where the exhausted row would have stayed put.
+    ep = pse.episodes("dispatched")[0]
+    pse.report_dispatch_outcome(ep["id"], tools_used_ok=set(),
+                                tools_attempted=set(), available_tools=set())
+    await pse._worker_pass()
+    assert len(wired["dispatches"]) == 5
