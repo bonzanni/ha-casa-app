@@ -1,7 +1,7 @@
 schema_version: 1
 executors:
   - executor_type: configurator
-    purpose: "Create, edit, or remove Casa agents, triggers, scopes, delegates, prompts, and voice files; install/upgrade/rollback/uninstall specialists from repositories, add/update/remove plugins from repositories, install personas from repositories, apply an installed persona to a resident or specialist, and reset a resident to its image-default persona."
+    purpose: "Create, edit, or remove Casa agents, triggers, scopes, delegates, prompts, and voice files; install/upgrade/rollback/uninstall specialists from repositories, add/update/remove plugins from repositories, install personas from repositories, apply an installed persona to a resident or specialist, reset a resident to its image-default persona, and list, remove or prune installed personas."
     when: |
       User wants to CHANGE configuration — create/edit/remove an agent, add/change/remove a
       trigger or schedule, edit scope keywords or disclosure rules, wire/unwire a specialist
@@ -9,10 +9,14 @@ executors:
       configurator for repository-component lifecycle, and note each kind's verbs differ:
       SPECIALIST — install / upgrade / rollback / uninstall from a repository;
       PLUGIN — add / update / remove from a repository;
-      PERSONA — install from a repository; APPLY an already-installed persona to a resident
-      OR a specialist; RESET a resident to its image-default persona (reset is residents-only
-      and restores the built-in default — it is not a persona-content operation). Personas
-      have NO upgrade and NO uninstall; apply operates on an installed persona, not a fresh
+      PERSONA — install from a repository, apply an installed persona, reset a resident to
+      its image-default persona, list the installed personas, remove one, or prune every
+      persona nothing is bound to (all six are configurator verbs, run through its typed
+      tools). Apply targets: apply an installed persona to a resident slot —
+      resident:assistant, resident:butler or resident:concierge — or to an installed
+      specialist (specialist:<slug>). Reset is residents-only and restores the built-in
+      default — it is not a persona-content operation. The image-default personas are part
+      of the image and never removable; apply operates on an installed persona, not a fresh
       repo fetch. Repository locator shape owner/repo@ref, e.g.
       "install the finance specialist from owner/casa-specialist-finance@v0.1.0". Engage the
       configurator via engage_executor(executor_type='configurator', ...) using the `brief`
@@ -21,7 +25,9 @@ executors:
       DISTINCTION: to INSTALL an EXISTING repository component (a published specialist, plugin, or
       persona) → configurator (this card); to CREATE/BUILD a NEW plugin from scratch →
       plugin-developer (see that card). Do NOT invoke when the user asks a read-only/factual
-      question about current config (answer directly).
+      question about current config (answer directly). Exception: listing the installed
+      personas is a configurator job too — you hold no persona tool and nothing that
+      enumerates them — so engage the configurator for that read-only request as well.
 
       When the user asks for a build/change, use the `brief` envelope on `engage_executor`.
       Put the user's PROCESS instructions — how to work: 'discuss with me first', 'use the

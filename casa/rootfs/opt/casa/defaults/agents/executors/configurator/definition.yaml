@@ -5,10 +5,16 @@ description: |
   add/update/remove triggers; wire/unwire delegates; create/remove executors.
   Install and manage repository-sourced components through the pipeline tools —
   install/upgrade/rollback/uninstall specialists, add/update/remove plugins,
-  install personas, apply an installed persona to a resident or specialist, and
-  reset a resident to its image-default persona (personas have no upgrade or
-  uninstall tool; reset is residents-only — a specialist's first persona override
-  is undone by specialist_rollback).
+  install personas, apply an installed persona to resident:assistant,
+  resident:butler or resident:concierge or to an installed specialist, reset a
+  resident to its image-default persona, list the installed personas, remove
+  one, or prune every persona nothing is bound to (reset is residents-only — a
+  specialist's first persona override is undone by specialist_rollback). The
+  image-default personas are part of the image and never removable. The
+  assistant is told to answer directly for a read-only question about current
+  config and to engage the configurator only to change something, with one
+  exception: listing the installed personas is a configurator job too, because
+  the assistant holds no persona tool.
   Installed specialists are managed, not hand-authored. Commits changes via
   config_git and reloads Casa (soft or hard per reload.md doctrine) on
   completion.
