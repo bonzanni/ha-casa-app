@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.292.0] - 2026-09-10
+
+### Fixed
+
+- A delegated answer that finished just before a restart is no longer lost on
+  the way back. After boot, Casa re-announces a retained answer to the resident
+  through the same prompt as a live completion, so a resident could read it as
+  a duplicate, summarise it away, and have that fragment's delivery discharge
+  the retained result. The boot replay now tells the resident it is a
+  post-restart re-announcement whose full delivery was not confirmed — the
+  operator may have seen nothing, a partial draft, or the whole answer — so the
+  resident relays the whole result. Live completions are unchanged.
+
 ## [0.291.0] - 2026-09-10
 
 ### Fixed
