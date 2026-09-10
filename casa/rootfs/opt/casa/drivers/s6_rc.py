@@ -22,7 +22,16 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Constants — can be overridden in tests via monkeypatch.
-S6_OVERLAY_SOURCES = "/package/admin/s6-overlay-3.2.2.0/etc/s6-rc/sources"
+#
+# #925: the overlay sources are resolved through the VERSION-LESS
+# ``/package/admin/s6-overlay`` link the base image ships (-> s6-overlay-<v>),
+# never a versioned directory. ``casa/Dockerfile`` floats on the base's tag,
+# so a versioned literal here is a copy of one observed base and the next
+# base bump strands every launch compile on a path that no longer exists
+# (s6-rc-compile: unable to opendir, exit 111). The build asserts the link's
+# sources directory exists in the image; nothing here touches the filesystem
+# at import (dev hosts and CI lanes have no /package/admin).
+S6_OVERLAY_SOURCES = "/package/admin/s6-overlay/etc/s6-rc/sources"
 CASA_SOURCES = "/etc/s6-overlay/s6-rc.d"
 ENGAGEMENT_SOURCES_ROOT = "/data/casa-s6-services"
 LIVE_DB_SYMLINK = "/run/s6-rc/compiled"

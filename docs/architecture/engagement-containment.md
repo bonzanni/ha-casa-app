@@ -239,6 +239,16 @@ undropped process.
 resume that boot rather than a subset, and the services stay down from the pre-migration
 sweep — never started as a root service, never left crash-looping under their supervisor.
 
+**The base image's s6-overlay sources are not where the compile looks.** Every `claude_code`
+launch, its rollback, a cancel and a boot replay with a live engagement recompile the s6-rc
+database from the base image's own s6-overlay sources together with Casa's and the
+engagements'. The release image floats on the base's `bookworm` tag, so the overlay version
+inside it is whatever the base shipped at build time; Casa therefore compiles through the
+version-less `/package/admin/s6-overlay` link the base ships, never a versioned directory,
+and the image build refuses to complete when that link's sources directory is absent. A base
+that drops the link fails the build, not the first launch on an operator's install; the
+compile itself still fails closed (exit 111) and the launch rolls back.
+
 **A service will not confirm down.** By then the ladder has re-issued the stop, latched the
 service down and attempted its kill rungs, and it is still not confirmed down — either the
 strict probe will not call it down, or the last kill could not be delivered at all — its pid
@@ -339,6 +349,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 - `tests/test_quiesce_fence.py`
 - `tests/test_quiesce_funnel_order.py`
 - `tests/test_s6_quiesce_seams.py`
+- `tests/test_s6_rc_overlay_sources.py`
 - `test-local/e2e/test_engagement_quiesce.sh`
 
 **Related**
