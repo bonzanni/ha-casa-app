@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.293.0] - 2026-09-10
+
+### Fixed
+
+- The assistant no longer tells the operator that personas cannot be removed or
+  listed. Its configurator card still described the persona verbs as they were
+  several releases ago; it now names install, apply, reset, list, remove and
+  prune as configurator jobs, names the three residents and any installed
+  specialist as persona targets, and says the built-in personas are never
+  removable. Asking the assistant to list, remove or prune personas now engages
+  the configurator instead of a refusal.
+
 ## [0.292.0] - 2026-09-10
 
 ### Fixed
