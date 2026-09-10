@@ -839,7 +839,7 @@ _OTHER_ARMS_926 = {
 
 @pytest.mark.parametrize("shape", sorted(_OTHER_ARMS_926))
 @pytest.mark.parametrize("marker", [False, True], ids=["live", "replay"])
-def test_every_other_arm_renders_its_previous_prompt_whatever_the_marker_says(
+async def test_every_other_arm_renders_its_previous_prompt_whatever_the_marker_says(
     shape, marker,
 ):
     from unittest.mock import Mock
