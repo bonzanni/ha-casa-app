@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.291.0] - 2026-09-10
+
+### Fixed
+
+- `claude_code` executor engagements launch again on every release image built
+  since 2026-08-19. Casa compiled its per-engagement s6-rc service database
+  against a hard-coded s6-overlay 3.2.2.0 path; when the base image moved to
+  s6-overlay 3.2.3.0 the compile failed at the first launch, and on rollback,
+  cancel and boot replay with a live engagement. The compile now resolves the
+  overlay sources through the version-less link the base image ships, and the
+  image build refuses a base that lacks it, so the next base move is caught at
+  build time rather than at an operator's first launch.
+
 ## [0.290.0] - 2026-09-09
 
 ### Added

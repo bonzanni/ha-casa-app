@@ -7,6 +7,16 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm
 FROM ${BUILD_FROM}
 
+# #925: Casa recompiles the s6-rc database at every claude_code launch from
+# the base image's own s6-overlay sources, resolved through the version-less
+# /package/admin/s6-overlay link the base ships (-> s6-overlay-<version>).
+# BUILD_FROM floats on a tag, so the overlay version inside the image is
+# whatever the base carries at build time; this is the only check that runs
+# against the image actually released. A base that stops shipping the link
+# fails the build here, not the first engagement launch on an install.
+RUN test -d /package/admin/s6-overlay/etc/s6-rc/sources \
+    || { echo "s6-overlay sources not found at /package/admin/s6-overlay/etc/s6-rc/sources (base image layout changed; see drivers/s6_rc.py S6_OVERLAY_SOURCES)" >&2; exit 1; }
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          python3 python3-pip python3-venv \
