@@ -511,6 +511,14 @@ class InstalledSpecialistIndex:
     def get_instance(self, slug: str) -> SpecialistInstance | None:
         return self._instances.get(slug)
 
+    @property
+    def specialists_dir(self) -> Path:
+        """The tree this index was built from. #929: the admin status payload
+        reads a pending slug's `pending-receipt.json` out of it, and must read
+        the SAME tree the instance it is describing came from — never a
+        module default that a differently-rooted index would contradict."""
+        return self._dir
+
     def load(self) -> None:
         """A slug directory with only a desired.yaml (no active.yaml) is a
         brand-new specialist still in pending-configuration with NO running
@@ -648,6 +656,15 @@ def live_collision_slugs() -> frozenset[str]:
     if _active_index is None:
         return _IMAGE_ROLE_SLOTS
     return _active_index.all_collision_slugs()
+
+
+def live_specialists_dir() -> "Path | None":
+    """#929: the directory the published index was built from, for readers that
+    must reach a slug's on-disk tuple files (the admin status payload's pending
+    marker). `None` when no index is published — and `getattr`, not attribute
+    access, because a test stand-in index is a legitimate publisher here and an
+    admin route must degrade to "cannot tell" rather than raise."""
+    return getattr(_active_index, "specialists_dir", None)
 
 
 def get_installed_instance(slug: str) -> "SpecialistInstance | None":

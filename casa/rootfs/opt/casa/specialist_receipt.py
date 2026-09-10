@@ -221,9 +221,13 @@ def sweep_aged(*, receipts_dir: Path = DEFAULT_RECEIPTS_DIR,
     permanently unfinishable). Exactly the NEWEST receipt per kept slug is
     exempt — not every receipt naming the slug, or repeated pre-commit
     inspections would pin unbounded staging forever; any receipt for the
-    same root resumes the flow (re-inspecting for a fresh one is the
-    documented resume path), so one suffices. Unparseable receipts still
+    same root resumes the flow, so one suffices. Unparseable receipts still
     sweep.
+
+    #929: the documented resume is a second commit with the RETAINED
+    receipt — the one this exemption keeps — never a re-inspect, which
+    refuses the occupied slug. Which is why sweeping the last usable receipt
+    for a live pending candidate ends the install rather than delaying it.
 
     ``keep_receipt_ids`` (Sol r6-2): the receipts pending candidates were
     actually committed with (recorded durably at pending time) — exempted by

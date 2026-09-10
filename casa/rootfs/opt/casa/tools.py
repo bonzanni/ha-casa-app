@@ -13586,6 +13586,26 @@ async def _settle_install_consent_post(handle) -> "dict | None":
                        "the inspect tool to be prompted again")}
 
 
+def _pending_resume_inputs(inspection, receipt) -> dict:
+    """#929 (INV-SPEC-015): the arguments a re-commit of a pending-configuration
+    candidate takes, as this call validated them — never as the caller asserted
+    them (`component_id`/`version` are read from the staged manifest; only the
+    slug and the root digest are checked against the arguments).
+
+    A pending outcome retains its receipt and its staging tree, and the SAME
+    `(inspection, receipt)` pair re-commits to `active` — but a fresh
+    re-inspect refuses the now-occupied slug (`slug_collision`, and
+    `no_active_tuple` in upgrade mode for a first install), so an engagement
+    that was not handed these five values had no supported route back. The
+    args schema is unchanged: `staged_dir` and `receipt_id` remain REQUIRED,
+    and the receipt-to-inspection binding is untouched. `casactl specialist
+    status` names the same five for a slug holding a desired candidate.
+    """
+    return {"receipt_id": receipt.receipt_id, "staged_dir": str(inspection.staged_dir),
+            "component_id": inspection.component_id, "version": inspection.version,
+            "root_digest": inspection.root_digest}
+
+
 @tool(
     "specialist_install_commit",
     "Persist an INSPECTED specialist component to CAS, compile, and activate it — REFUSES unless "
@@ -13711,6 +13731,11 @@ async def specialist_install_commit(args: dict) -> dict:
                          row.scoped_name: list(row.env_names)
                          for row in receipt.plugins if row.env_names
                 },
+                # #929: a pending outcome names its own resume. An active one
+                # does not — its receipt was just pruned and its staging tree
+                # reclaimed two lines above, so there is nothing to re-commit.
+                **(_pending_resume_inputs(inspection, receipt)
+                   if instance.state == "pending-configuration" else {}),
                 # #676: an install's swap normally replaces an EMPTY owned
                 # set and drops nothing, so this adds no fields. It is not
                 # decoration: the swap runs unconditionally here, and a
@@ -13828,6 +13853,11 @@ async def specialist_upgrade(args: dict) -> dict:
             specialist_install_mod.reclaim_staging_tree(staged_dir)
         return {"ok": True, "slug": instance.slug, "state": instance.state,
                 "reloaded": seq["reloaded"], "verify": seq["verify"],
+                # #929: parity with specialist_install_commit — an upgrade that
+                # lands pending-configuration keeps its receipt and staging
+                # tree, and names the five inputs the follow-up re-commit takes.
+                **(_pending_resume_inputs(inspection, receipt)
+                   if instance.state == "pending-configuration" else {}),
                 # #676: an upgrade whose new owned generation omits an old
                 # plugin removed that plugin's registry entry. Same
                 # persisting removal, same disclosure.

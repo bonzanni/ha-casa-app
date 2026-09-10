@@ -15,8 +15,18 @@ TTY + typed ``SHOW`` gate lives in ``casactl`` itself, one layer up.
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 from aiohttp import web
+
+# #929: WHERE a pending slug's source receipt is read from. Its production
+# value is `specialist_receipt.DEFAULT_RECEIPTS_DIR`, resolved at call time so
+# a test can point this seam at a temporary tree without the status function
+# growing an argument its route would have to thread. The specialists tree
+# comes from the published index instead (`live_specialists_dir`), because the
+# marker must be read out of the SAME tree the instance came from.
+SPECIALIST_RECEIPTS_DIR: "object | None" = None
 
 
 def _json_type_name(value: object) -> str:
@@ -41,7 +51,75 @@ def _json_type_name(value: object) -> str:
     return "object"
 
 
+def _pending_commit_inputs(slug: str, desired) -> dict[str, object]:
+    """#929 (INV-SPEC-015): the five arguments a re-commit of this slug's
+    desired candidate takes, each member `None` when it is no longer
+    derivable.
+
+    A first install that lands `pending-configuration` retains its receipt,
+    its staging tree and a `pending-receipt.json` marker, and the same
+    `(inspection, receipt)` pair re-commits to `active` — but a re-inspect
+    refuses the now-occupied slug, so a later engagement that was not told
+    these values had no route at all. Three of them are already on disk in
+    the candidate's own root string; the other two come from the marker and
+    the receipt it names.
+
+    Every step degrades to `None` rather than raising: a pending slug that
+    predates the marker has none (the boot reader tolerates exactly that,
+    `specialist_bundle_journal.reconcile_boot`), an abandoned receipt is
+    swept after seven days, and a staging tree can be reclaimed under a
+    still-standing candidate. A status route that raised on any of those
+    would fail precisely the operator trying to diagnose it. `staged_dir` is
+    disclosed only while the recorded path is still a directory: naming a
+    reclaimed path would send the engagement to a route that refuses.
+    """
+    import specialist_receipt
+    from specialist_install import parse_component_root
+    from specialist_registry import live_specialists_dir
+
+    out: dict[str, object] = {
+        "receipt_id": None, "staged_dir": None,
+        "component_id": None, "version": None, "root_digest": None}
+    try:
+        component_id, version, root_digest = parse_component_root(desired.root)
+    except (ValueError, AttributeError, TypeError):
+        pass
+    else:
+        out.update(component_id=component_id, version=version, root_digest=root_digest)
+
+    specialists_dir = live_specialists_dir()
+    if specialists_dir is None:
+        return out
+    marker = Path(specialists_dir) / slug / "pending-receipt.json"
+    try:
+        raw = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return out
+    receipt_id = raw.get("receipt_id") if isinstance(raw, dict) else None
+    if not isinstance(receipt_id, str) or not receipt_id:
+        return out
+    out["receipt_id"] = receipt_id
+
+    receipts_dir = (SPECIALIST_RECEIPTS_DIR if SPECIALIST_RECEIPTS_DIR is not None
+                    else specialist_receipt.DEFAULT_RECEIPTS_DIR)
+    receipt = specialist_receipt.load(receipt_id, Path(receipts_dir))
+    if receipt is None:
+        return out
+    try:
+        staged = Path(receipt.component_staged_path)
+    except TypeError:
+        # `component_staged_path` is NON-attested runtime state: the receipt's
+        # digest does not cover it, so a hand-edited sidecar can load with a
+        # null or non-string value there and still be a valid receipt.
+        return out
+    if staged.is_dir():
+        out["staged_dir"] = str(staged)
+    return out
+
+
 def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
+    """Blocking: reads the pending marker and receipt sidecar off disk. Callers
+    on the event loop offload it (see `_specialist_status`)."""
     from specialist_registry import get_installed_instance
 
     instance = get_installed_instance(slug)
@@ -61,7 +139,7 @@ def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
             "config_digest": value.config_digest,
         }
 
-    return {
+    payload = {
         "slug": slug,
         "stable_agent_id": instance.stable_agent_id,
         "state": instance.state,
@@ -69,6 +147,12 @@ def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
         "desired": _tuple_view(instance.desired),
         "last_activation_error": instance.last_activation_error,
     }
+    # #929: on the DESIRED CANDIDATE, not on the state string — a pending
+    # UPGRADE keeps its active tuple, so the reloaded index calls that slug
+    # `active` while the candidate is exactly what a resume re-commits.
+    if instance.desired is not None:
+        payload["pending_commit"] = _pending_commit_inputs(slug, instance.desired)
+    return payload
 
 
 def register_personality_admin_routes(
@@ -165,7 +249,11 @@ def register_personality_admin_routes(
         slug = body.get("slug")
         if not isinstance(slug, str) or not slug:
             return web.json_response({"error": "invalid_slug"}, status=400)
-        return web.json_response(specialist_status_payload(runtime, slug=slug))
+        # #929: the payload now reads a pending slug's marker, its receipt
+        # sidecar and the staged directory — filesystem work, off the loop,
+        # for the same reason /admin/explain offloads its store read.
+        payload = await asyncio.to_thread(specialist_status_payload, runtime, slug=slug)
+        return web.json_response(payload)
 
     async def _explain(request: "web.Request") -> "web.Response":
         body = await request.json()
@@ -199,9 +287,10 @@ def register_personality_admin_routes(
             # F3 (round 3): ExplanationStore.get acquires the store's
             # threading.Lock and does file I/O — offload to a worker thread so a
             # concurrent per-turn store write (also to_thread'd) can never stall
-            # the event loop. The other admin routes read only in-memory runtime
-            # dicts / the lock-free installed-index snapshot, so none of them
-            # need this offload — only the store acquires a lock.
+            # the event loop. The three persona routes read only in-memory
+            # runtime dicts, so they need no offload; the specialist status
+            # route acquired one when it began reading a pending slug's marker
+            # and receipt off disk (#929).
             payload = await asyncio.to_thread(
                 runtime.explanation_store.get, cid, show_sensitive=show_sensitive)
         except (KeyError, ValueError):

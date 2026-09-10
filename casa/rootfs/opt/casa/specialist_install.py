@@ -232,12 +232,19 @@ def _refuse_if_active_present(instance_dir, *, slug: str, root: str) -> None:
 
     Deliberately NOT keyed on receipt/operation identity (Terra round-3):
     a same-root restage with different config is last-writer-wins pending
-    activation. An operator resuming configuration later re-inspects and
-    holds a NEW receipt for the same root, so demanding receipt equality
-    would refuse the legitimate resume flow; and both writers necessarily
-    hold consent for this exact install identity with byte-identical
-    content, so no consent or integrity boundary is crossed — only the
-    not-yet-activated config of one consented component."""
+    activation. Both writers necessarily hold consent for this exact install
+    identity with byte-identical content, so no consent or integrity
+    boundary is crossed — only the not-yet-activated config of one
+    consented component.
+
+    #929: the resume is a SECOND `commit_specialist_install` with the
+    RETAINED receipt, not a re-inspect — a fresh inspect refuses this very
+    slug (`slug_collision`), and upgrade-mode inspect refuses a first
+    install that never activated (`no_active_tuple`). The tool result and
+    `casactl specialist status` both name the retained receipt id and staged
+    directory for that call. A restage from an independently-obtained
+    receipt for the same root is still accepted here; it is simply not the
+    documented route any more."""
     if instance_dir.active() is not None:
         raise SpecialistInstallError(
             "concurrent_mutation",

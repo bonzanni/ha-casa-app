@@ -197,6 +197,22 @@ package trees in place — their failure window can leave that one plugin's own 
 broken, but never another plugin's — and generation retention means up to two
 generations of a tarball requirement occupy disk between installs.
 
+**INV-SPEC-015**: A pending-configuration outcome names the inputs its own re-commit takes — the commit and upgrade tool results, and the status of any slug holding a desired candidate, carry the retained receipt id and staged directory together with the component id, version and root digest.
+
+The re-commit was already the decided resume route (below), and the values were already
+retained; what no surface carried was the values themselves, so the carriers pointed at a
+re-inspect that refuses. The status disclosure follows the DESIRED CANDIDATE rather than the
+state string, because a pending upgrade keeps its active tuple and the reloaded index calls
+that slug active. Each member is reported as null rather than raised on: a pending slug
+predating the marker has none, an abandoned receipt is swept, and a staged tree can be
+reclaimed under a still-standing candidate — the operator diagnosing exactly that must still
+get an answer. The staged directory is named only while it still exists, since a reclaimed
+path would send the next engagement to a route that refuses.
+
+What it does not cover: that the re-commit will SUCCEED. The inputs are named; the bytes
+they point at are re-validated by the commit tool as they always were, and a closure that
+drifted still refuses.
+
 ## Failure behavior
 
 **Resolution, fetch, manifest or dependency problems.** Typed refusals before anything
@@ -237,7 +253,9 @@ degraded; nothing reinstalls tooling automatically.
 
 **An install lands pending-configuration.** The staged inspection tree and the source
 receipt are both retained — the follow-up configure re-commit requires that receipt, and
-a fresh re-inspect would refuse the now-occupied slug — and a retry that supplies only
+a fresh re-inspect would refuse the now-occupied slug — and both the commit result and
+`casactl specialist status` name the retained values that re-commit takes (INV-SPEC-015);
+a retry that supplies only
 the still-missing settings merges over the pending candidate's persisted snapshot
 (schema-known, non-secret keys only; the caller wins per key). Upgrades carry the active
 snapshot and a same-target pending candidate the same way. The receipt and staging tree

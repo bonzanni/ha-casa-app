@@ -120,7 +120,12 @@ fields must be JSON booleans; a request that sends anything else is refused with
 never the value. Those routes answer for an installed specialist whose binding has been
 activated exactly as they do for a resident, and for one whose binding has not been
 activated they answer for nothing at all; where a specialist's persona reference collides
-with a resident's, the resident's pack is the one inspect describes.
+with a resident's, the resident's pack is the one inspect describes. The specialist status
+route is the exception that proves it: a slug with only a desired candidate is exactly what
+it exists to report, and it names the inputs that candidate's re-commit takes (INV-SPEC-015,
+`architecture/specialist-lifecycle.md`) — which is disk work, so it answers off the event
+loop like the explain route, and reports a missing marker, receipt or staged tree as an
+absent value rather than an error.
 
 ## Contracts & invariants
 
