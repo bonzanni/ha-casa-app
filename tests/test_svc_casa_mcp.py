@@ -250,7 +250,16 @@ async def test_svc_hooks_resolve_body_identity_cannot_bypass_headers() -> None:
 
 
 async def test_svc_hooks_resolve_socket_unreachable_fails_closed() -> None:
-    """Hook fail-closed on transport error: deny with actionable reason (F-1)."""
+    """Hook fail-closed on transport error: deny with the boot-window wording.
+
+    F-1 established that the reason must signal failure unambiguously so the
+    model does not narrate a hook error as success. #880's ruling (option (a),
+    2026-09-10) keeps the answer a refusal but replaces the wording with the
+    tool-call face's, so the substrings that carried the F-1 property here are
+    gone; the property itself now rides on the executor prompt's general
+    ``is_error=true`` instruction, which is explicitly indifferent to the error
+    text, and on the CLI marking a ``deny`` as an error result.
+    """
     import aiohttp
 
     async def _fwd_raises(**_):
@@ -267,11 +276,12 @@ async def test_svc_hooks_resolve_socket_unreachable_fails_closed() -> None:
         body = await resp.json()
         reason = body["hookSpecificOutput"]["permissionDecisionReason"]
         assert body["hookSpecificOutput"]["permissionDecision"] == "deny"
-        # F-1: reason must signal failure unambiguously so the model
-        # doesn't narrate hook errors as success.
-        assert "permission relay" in reason.lower()
-        assert "tool was not run" in reason.lower()
-        assert "casa" in reason.lower()
+        # #880: the boot-window refusal names the condition in the tool-call
+        # face's own words. The byte-exact form is pinned by the refusal-case
+        # table below, and its equality with the tool-call face by
+        # ``test_socket_unreachable_hook_reason_matches_tools_call``.
+        assert "casa_temporarily_unavailable" in reason
+        assert "casa-main internal socket unreachable" in reason
 
 
 async def test_svc_hooks_resolve_forwards_with_no_client_timeout() -> None:
@@ -578,8 +588,9 @@ def _hook_refusal_cases():
                 connection_key=MagicMock(),
                 os_error=ConnectionRefusedError("simulated"),
             )),
-            "Permission relay unavailable: casa-main internal socket is down. "
-            "The tool was not run. Retry shortly or check addon logs.",
+            # #880: exactly the tool-call face's message for this condition.
+            "casa_temporarily_unavailable: casa-main internal socket "
+            "unreachable",
             (1, 1),
         ),
         (

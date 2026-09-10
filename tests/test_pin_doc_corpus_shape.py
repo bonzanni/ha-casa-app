@@ -528,9 +528,9 @@ SOCKET_UNREACHABLE_CLAIMS = (
     "returns HTTP 200 with "
     '`hookSpecificOutput.hookEventName: "PreToolUse"`, '
     '`permissionDecision: "deny"`, and '
-    '`permissionDecisionReason: "Permission relay unavailable: casa-main '
-    "internal socket is down. The tool was not run. Retry shortly or check "
-    'addon logs."`.',
+    '`permissionDecisionReason: "casa_temporarily_unavailable: casa-main '
+    'internal socket unreachable"` — the tool-call face\'s message verbatim '
+    "(#880).",
 
     "When casa-main's internal socket is unreachable, registered "
     "`POST /internal/channel/*` routes return HTTP 503 with body "
