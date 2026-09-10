@@ -1088,8 +1088,13 @@ async def test_commit_prunes_receipt_only_on_active(
         specialist_install, "commit_specialist_install", lambda *a, **k: (instance, txn))
     _stub_bundle_sequencer(monkeypatch)
 
+    # The handler loads component_id/version from the STAGED MANIFEST and
+    # validates only the slug and the root digest against the arguments, so a
+    # caller can assert a different identity and still reach the core. Passing
+    # divergent strings here is what separates "the values this call validated"
+    # from "the values the caller sent".
     payload = _payload(await specialist_install_commit.handler({
-        "component_id": component.component_id, "version": component.version,
+        "component_id": "wrong-id", "version": "9.9",
         "slug": component.slug, "staged_dir": str(staged),
         "root_digest": root_digest, "receipt_id": receipt_id,
     }))
@@ -2494,8 +2499,13 @@ async def test_a_pending_install_commit_names_its_resume_inputs(
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree", reclaim)
     _stub_bundle_sequencer(monkeypatch)
 
+    # The handler loads component_id/version from the STAGED MANIFEST and
+    # validates only the slug and the root digest against the arguments, so a
+    # caller can assert a different identity and still reach the core. Passing
+    # divergent strings here is what separates "the values this call validated"
+    # from "the values the caller sent".
     payload = _payload(await specialist_install_commit.handler({
-        "component_id": component.component_id, "version": component.version,
+        "component_id": "wrong-id", "version": "9.9",
         "slug": component.slug, "staged_dir": str(staged),
         "root_digest": root_digest, "receipt_id": receipt_id,
     }))
@@ -2505,6 +2515,8 @@ async def test_a_pending_install_commit_names_its_resume_inputs(
     # The expectation is built from what the tool VALIDATED and handed the core,
     # never from the result under test.
     inspection = core.kwargs[0]["inspection"]
+    assert (inspection.component_id, inspection.version) == (
+        component.component_id, component.version) != ("wrong-id", "9.9")
     expected = {
         "receipt_id": receipt_id, "staged_dir": str(inspection.staged_dir),
         "component_id": inspection.component_id, "version": inspection.version,
@@ -2549,15 +2561,18 @@ async def test_a_pending_upgrade_names_its_resume_inputs(
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree", reclaim)
     _stub_bundle_sequencer(monkeypatch)
 
+    # Divergent caller identity, for the same reason as the install arm.
     payload = _payload(await specialist_upgrade.handler({
-        "slug": component.slug, "component_id": component.component_id,
-        "version": component.version, "staged_dir": str(staged),
+        "slug": component.slug, "component_id": "wrong-id",
+        "version": "9.9", "staged_dir": str(staged),
         "root_digest": root_digest, "receipt_id": receipt_id,
     }))
 
     assert core.count == 1
     assert (prune.count, reclaim.count) == ((0, 0) if pending else (1, 1))
     inspection = core.kwargs[0]["inspection"]
+    assert (inspection.component_id, inspection.version) == (
+        component.component_id, component.version) != ("wrong-id", "9.9")
     expected = {
         "receipt_id": receipt_id, "staged_dir": str(inspection.staged_dir),
         "component_id": inspection.component_id, "version": inspection.version,

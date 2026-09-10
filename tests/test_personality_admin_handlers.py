@@ -1422,56 +1422,65 @@ def test_specialist_status_reports_a_pending_slug_it_cannot_fully_resume(
         k: ctx.expected[k] for k in populated}
 
 
-def test_the_disclosed_inputs_are_what_completes_the_pending_install(
+@pytest.mark.asyncio
+async def test_the_disclosed_inputs_are_what_completes_the_pending_install(
         tmp_path, monkeypatch, restore_installed_index) -> None:
     """Usability, not plausibility: the five strings the payload disclosed —
-    and nothing held over from the fixture — are what a later engagement hands
-    back, and the slug reaches `active`. Five convincing-looking strings that
-    do not re-commit would satisfy every other assertion here."""
-    from personality_admin_handlers import specialist_status_payload
-    from specialist_component import load_specialist_component
-    from specialist_install import (
-        InspectionResult, commit_specialist_install, compute_install_root_digest,
-        resolve_dependency_closure,
-    )
-    import specialist_bundle_journal
+    and nothing held over from the fixture — are handed straight back to the
+    PUBLIC re-commit tool, which reaches `active`. Five convincing-looking
+    strings that the tool refuses would satisfy every other assertion here.
+
+    Only the tool's process-global LOCATIONS are redirected at this test's
+    tree (the receipts directory, the ack ledger, the lifecycle core's
+    `/config` roots, the bundle sequencer); the real `commit_specialist_install`
+    runs, and the arguments are exactly `slug` plus the disclosed mapping.
+    """
+    from test_tools_specialist_install import _stub_bundle_sequencer
+
+    import specialist_install
+    import specialist_install_consent
     import specialist_receipt
+    import tools as tools_mod
+    from personality_admin_handlers import specialist_status_payload
+    from specialist_registry import InstalledSpecialistIndex
+    from tools import specialist_install_commit
 
     ctx = _pending_install(tmp_path, monkeypatch)
     _publish(ctx, restore_installed_index, monkeypatch)
     disclosed = specialist_status_payload(object(), slug="mtg")["pending_commit"]
 
-    # Everything below is derived from `disclosed` alone — the same walk the
-    # commit tool performs on the arguments a caller hands it.
-    staged = Path(disclosed["staged_dir"])
-    component = load_specialist_component(staged, staged / "manifest.json")
-    deps = resolve_dependency_closure(component, staged)
-    root_digest = compute_install_root_digest(
-        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
-    assert (component.component_id, component.version) == (
-        disclosed["component_id"], disclosed["version"])
-    assert root_digest == disclosed["root_digest"]
-    receipt = specialist_receipt.load(disclosed["receipt_id"],
-                                      receipts_dir=ctx.receipts_dir)
-    assert receipt is not None
+    real_commit = specialist_install.commit_specialist_install
+    real_load = specialist_receipt.load
+    core_calls: list[dict] = []
+    pruned: list[str] = []
 
-    inspection = InspectionResult(
-        component_id=disclosed["component_id"], version=disclosed["version"],
-        slug="mtg", component_checksum=component.checksum, root_digest=root_digest,
-        mission=str(component.role.role.get("mission", "")),
-        default_persona_ref=component.default_persona_ref,
-        default_persona_checksum=component.default_persona_checksum,
-        required_config_names=(), required_secret_names=(), dependencies=deps,
-        staged_dir=staged, receipt_id=receipt.receipt_id,
-        receipt_digest=receipt.receipt_digest, plugin_resolutions=receipt.plugins)
-    instance, txn = commit_specialist_install(
-        **dict(ctx.kw, inspection=inspection, receipt=receipt,
-               config={"region": "EU"}))
-    specialist_bundle_journal.complete(txn.journal_path)
+    def _commit(**kw):
+        core_calls.append(kw)
+        return real_commit(**dict(kw, specialists_dir=ctx.kw["specialists_dir"],
+                                  agents_specialists_dir=ctx.kw["agents_specialists_dir"],
+                                  registry_path=ctx.kw["registry_path"],
+                                  plugin_store_root=ctx.kw["plugin_store_root"],
+                                  ops_dir=ctx.kw["ops_dir"]))
 
-    assert instance.state == "active"
+    monkeypatch.setattr(specialist_install, "commit_specialist_install", _commit)
+    monkeypatch.setattr(specialist_receipt, "load",
+                        lambda rid, *a, **k: real_load(rid, receipts_dir=ctx.receipts_dir))
+    monkeypatch.setattr(specialist_install_consent, "SpecialistInstallAckStore",
+                        lambda *a, **k: ctx.acks)
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", pruned.append)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
+    _stub_bundle_sequencer(monkeypatch)
+
+    result = await specialist_install_commit.handler(
+        {"slug": "mtg", **disclosed, "config": {"region": "EU"}})
+    payload = json.loads(result["content"][0]["text"])
+
+    assert len(core_calls) == 1
+    assert payload["ok"] is True and payload["state"] == "active"
+    assert len(_RESUME_KEYS & payload.keys()) == 0
+    assert pruned == [disclosed["receipt_id"]]
     assert not ctx.marker.exists()
-    from specialist_registry import InstalledSpecialistIndex
+
     reloaded = InstalledSpecialistIndex(specialists_dir=str(ctx.specialists_dir))
     reloaded.load()
     after = reloaded.get_instance("mtg")
