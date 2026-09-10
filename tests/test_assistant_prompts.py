@@ -267,12 +267,112 @@ def _configurator_card() -> dict:
     raise AssertionError("configurator executor card not found in executors.yaml")
 
 
+def _configurator_description() -> str:
+    """The configurator's own `definition.yaml` `description` — the third
+    carrier of the persona routing sentence (#927). It has no runtime reader
+    at the moment, which is exactly why a test must read it: nothing else
+    notices when it drifts from the card it is supposed to agree with."""
+    import yaml
+
+    path = (_system_md_path().parents[2]
+            / "executors/configurator/definition.yaml")
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["description"]
+
+
+def _system_md_section(text: str, heading: str) -> str:
+    """The body of one `## <heading>` section of system.md (up to the next
+    `## `), so a lifecycle claim can be pinned in the section that carries it
+    rather than anywhere in the file."""
+    marker = f"## {heading}\n"
+    start = text.index(marker) + len(marker)
+    end = text.find("\n## ", start)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def _clauses(text: str) -> list[str]:
+    """Lowercased, markdown-stripped clauses: a clause ends at a period or a
+    semicolon, so a subject and its qualification must sit together and an
+    unrelated mention elsewhere in the carrier cannot satisfy a predicate."""
+    plain = _collapse_ws(text).lower().replace("*", "").replace("`", "")
+    return re.findall(r"[^.;]+", plain)
+
+
+def _n(text: str, *patterns: str) -> int:
+    """Count the clauses of `text` matching EVERY pattern (#927 red case,
+    specified by Astra: counts, not statuses)."""
+    return sum(
+        1 for clause in _clauses(text)
+        if all(re.search(pat, clause) for pat in patterns)
+    )
+
+
+def _resident_apply_targets() -> tuple[str, ...]:
+    """`resident:<slot>` for every fixed slot — derived from role_slot, never
+    hand-listed, so a fourth resident widens the assertion automatically."""
+    from role_slot import FIXED_RESIDENT_SLOTS
+    return tuple(f"resident:{slot}" for slot in FIXED_RESIDENT_SLOTS)
+
+
+PERSONA_VERBS = ("install", "apply", "reset", "list", "remove", "prune")
+
+
+def _assert_persona_routing_current(text: str, carrier: str) -> None:
+    """#927: every carrier of the assistant-facing persona routing sentence
+    must state the configurator's REAL persona verb set — `persona_list`,
+    `persona_remove` and `persona_prune` have been configurator tools since
+    v0.203.0 — route LISTING installed personas to the configurator as a
+    stated exception to the read-only guard (the assistant holds no persona
+    tool and nothing that enumerates a directory), name every fixed resident
+    slot and installed specialists as apply targets, and say image-default
+    personas are never removable. Predicates are clause-bound (see
+    `_clauses`); each is asserted as a count."""
+    stale = len(re.findall(r"no upgrade and no uninstall",
+                           _collapse_ws(text).lower()))
+    assert stale == 0, (
+        f"{carrier}: still claims personas have no upgrade and no uninstall "
+        f"({stale} occurrence(s)); persona_remove/persona_prune are "
+        "configurator tools"
+    )
+    assert _n(text, r"\bpersonas?\b",
+              *(rf"\b{verb}\b" for verb in PERSONA_VERBS)) >= 1, (
+        f"{carrier}: no single clause states the full persona lifecycle "
+        f"{PERSONA_VERBS}"
+    )
+    assert _n(text, r"\bread-only\b", r"\banswer directly\b") >= 1, (
+        f"{carrier}: the read-only/factual-question guard is missing"
+    )
+    assert _n(text, r"\bexcept(?:ion)?\b", r"\bread-only\b",
+              r"\blist(?:ing)?\b", r"\binstalled personas\b",
+              r"\bconfigurator\b") >= 1, (
+        f"{carrier}: listing installed personas is not stated as an "
+        "exception to the read-only guard routed to the configurator"
+    )
+    for target in _resident_apply_targets():
+        assert _n(text, r"\bapply\b", r"\binstalled persona\b",
+                  re.escape(target) + r"\b") >= 1, (
+            f"{carrier}: {target} is not named as an apply target"
+        )
+    assert _n(text, r"\bapply\b", r"\binstalled persona\b",
+              r"\binstalled specialists?\b") >= 1, (
+        f"{carrier}: installed specialists are not named as an apply target"
+    )
+    assert _n(text, r"\bimage[- ](?:default|shipped) personas?\b",
+              r"\bnever removable\b") >= 1, (
+        f"{carrier}: does not say image-default personas are never removable"
+    )
+    assert _n(text, r"\bimage[- ](?:default|shipped) personas?\b",
+              r"\b(?:can|may) be (?:removed|pruned)\b") == 0, (
+        f"{carrier}: promises removal of an image-default persona"
+    )
+
+
 def test_configurator_card_routes_repo_installs_with_correct_lifecycles():
     """v0.103.0 doctrine reconcile: the configurator card must (a) route
     repository installs of an existing component to ITSELF, (b) keep the
     read-only/factual-question non-dispatch guard, and (c) enumerate each
-    component kind's OWN lifecycle verbs — critically, personas are
-    install/apply/reset ONLY (no persona upgrade, no persona uninstall).
+    component kind's OWN lifecycle verbs — for personas, the configurator's
+    real set: install/apply/reset/list/remove/prune (#927; the old
+    "no upgrade and no uninstall" wording predates v0.203.0's removal tools).
     Parses the configurator card and makes focused assertions on its
     purpose+when text rather than scanning the whole file."""
     card = _configurator_card()
@@ -302,10 +402,29 @@ def test_configurator_card_routes_repo_installs_with_correct_lifecycles():
     assert "rollback" in low, "specialist lifecycle must include rollback"
     for verb in ("apply", "reset"):
         assert verb in low, f"persona lifecycle must include {verb}"
-    assert re.search(r"no upgrade and no uninstall", low), (
-        "configurator card must state personas have NO upgrade and NO "
-        "uninstall (persona lifecycle is install/apply/reset only)"
-    )
+    # #927: the card is the ONLY persona routing text a bundle-bound
+    # assistant is served (rendered verbatim into <executors>), and it used
+    # to say personas have NO upgrade and NO uninstall — false since
+    # v0.203.0 gave the configurator persona_list/persona_remove/
+    # persona_prune. The full verb set, the listing exception, the apply
+    # targets and the image-default exclusion are pinned here.
+    _assert_persona_routing_current(f"{card['purpose']}\n{card['when']}",
+                                    "configurator card")
+
+    # Naming the residents as apply targets must NOT have been done by
+    # granting delegation or a persona tool: delegates.yaml is the delegation
+    # ACL (INV-ENG-007) and the assistant ROUTES persona work, it holds none
+    # of the persona tools. Green at the base; regression guards.
+    import yaml
+    delegates_doc = yaml.safe_load(
+        (_system_md_path().parent.parent / "delegates.yaml")
+        .read_text(encoding="utf-8"))
+    assert [entry["agent"] for entry in delegates_doc["delegates"]] == ["butler"]
+    assistant_role = yaml.safe_load(
+        (_system_md_path().parents[3] / "roles/resident/assistant/role.yaml")
+        .read_text(encoding="utf-8"))
+    assert sum("persona_" in tool
+               for tool in assistant_role["tools"]["allowed"]) == 0
 
     # (d) reset is residents-only and restores the image default — the card
     #     must not imply a specialist reset or that reset is a persona-content
@@ -364,9 +483,23 @@ def test_create_vs_install_distinction_pinned(system_md_text):
     assert "not yet supported" not in system_low, (
         "system.md must not decline installs as 'not yet supported'"
     )
-    assert re.search(r"no upgrade and no uninstall", system_low), (
-        "system.md persona bullet must state NO upgrade and NO uninstall"
-    )
+    # #927: system.md is the composed fallback (not served to a bundle-bound
+    # resident, INV-PERS-012) and the configurator definition's description
+    # has no runtime reader — both are pinned so the three carriers keep
+    # saying the same thing as the served card.
+    _assert_persona_routing_current(system_md_text, "system.md")
+    _assert_persona_routing_current(_configurator_description(),
+                                    "configurator definition description")
+    # The full lifecycle must be stated in BOTH system.md sections that route
+    # persona work, not once somewhere in the file.
+    for heading in ("Configuration requests",
+                    "Installing an existing component from a repository"):
+        section = _system_md_section(system_md_text, heading)
+        assert _n(section, r"\bpersonas?\b",
+                  *(rf"\b{verb}\b" for verb in PERSONA_VERBS)) >= 1, (
+            f"system.md section {heading!r} does not state the full persona "
+            f"lifecycle {PERSONA_VERBS}"
+        )
 
 
 def test_system_prompt_forbids_engage_executor_context_bleed(system_md_text):
