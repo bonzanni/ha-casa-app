@@ -2448,9 +2448,23 @@ def test_a_marker_naming_another_slugs_receipt_is_not_certified(
 
     ctx.marker.write_text(json.dumps({"receipt_id": other.receipt.receipt_id}),
                           encoding="utf-8")
+
+    # The check is BEFORE the staged path is followed, so the count is the
+    # assertion: the other slug's staging tree is never loaded, parsed or
+    # hashed. Refusing afterwards would give the same verdict having already
+    # read it.
+    import specialist_install
+    real = specialist_install.validate_resume_inputs
+    calls = []
+
+    def _counted(**kw):
+        calls.append(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(specialist_install, "validate_resume_inputs", _counted)
     payload = specialist_status_payload(object(), slug="mtg")
 
     assert payload["pending_commit"]["receipt_id"] == other.receipt.receipt_id
-    assert payload["pending_commit_check"]["state"] == "blocked"
-    assert payload["pending_commit_check"]["reason"] in ("receipt_mismatch",
-                                                          "checksum_changed")
+    assert payload["pending_commit_check"] == {"state": "blocked",
+                                               "reason": "receipt_mismatch"}
+    assert len(calls) == 0
