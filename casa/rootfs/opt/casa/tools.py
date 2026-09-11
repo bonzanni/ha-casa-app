@@ -14098,19 +14098,29 @@ async def persona_install_commit(args: dict) -> dict:
 #     carrier further out. Terra also measured that `compute_binding_digest`
 #     moves for non-persona inputs (a role checksum among them), so an
 #     apparently unchanged persona never implied continuity in the first place.
+#   r4 (Astra, S2) the same overclaiming, now about the CONSOLATION rather
+#     than the loss: the sentence said Telegram history "stays recallable",
+#     which is false on a default install. Long-term memory is OFF by default
+#     (casa/DOCS.md's own Memory section says so), the backend is then
+#     NoOpSemanticMemory, whose `retain` is silent and whose `recall` raises
+#     `not_configured` (semantic_memory.py:147-167). Astra measured it: 1
+#     transcript submitted, 0 retry records, recall `not_configured`.
 #
-# The conclusion the third round forces: this tool CANNOT know, and neither can
-# the model reading it. Boot decides, after this call returns. So the sentence
-# states the consequence and says plainly who decides — and it promises
-# continuity to nobody, because no reachable evidence here could support that
-# promise. INV-PERS-018, pinned by
+# The conclusion the rounds force: this tool CANNOT know what survives, and
+# neither can the model reading it. Boot decides whether the identity moves,
+# after this call returns; the operator's configuration decides whether
+# anything is recoverable afterwards. So the sentence states the LOSS, names
+# who decides, and promises nothing — no continuity, and no consolation
+# either. INV-PERS-018, pinned by
 # tests/test_resident_persona_restart_notice.py.
 RESIDENT_CONVERSATION_RESET_NOTICE = (
     "On the restart that promotes this binding, if the resident's persona "
     "identity ends up different from the one it is running, every conversation "
     "of this resident starts fresh on every channel — the persona is part of "
-    "the resident's session identity. Telegram history is retained to memory "
-    "first and stays recallable; voice history is not carried. Boot decides "
+    "the resident's session identity. Telegram history is written out to "
+    "long-term memory on the way, where it is recoverable ONLY if long-term "
+    "memory is configured — it is off by default; voice history is not "
+    "carried at all. Boot decides "
     "that, not this tool, and staging the persona the resident already appears "
     "to have does not guarantee continuity. Relay this to the operator "
     "verbatim before they restart; do not predict which way it will go."

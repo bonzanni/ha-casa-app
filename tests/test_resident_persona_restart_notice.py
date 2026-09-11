@@ -269,9 +269,18 @@ def test_apply_recipe_step_five_tells_the_resident_conversation_cost() -> None:
 # exist at all.
 
 NO_PROMISE_CLAUSES = (
+    # r1-r3: it predicts nothing and promises no continuity.
     "boot decides that, not this tool",
     "does not guarantee continuity",
     "do not predict which way it will go",
+    # r4 (Astra, S2): and it promises no CONSOLATION either. Saying Telegram
+    # history "stays recallable" was false on a default install — long-term
+    # memory is off by default, the backend is then NoOpSemanticMemory, whose
+    # retain is silent and whose recall raises `not_configured`. Offering
+    # memory as a fallback without that condition is the same overclaiming as
+    # promising continuity, one comfort further along.
+    "only if long-term memory is configured",
+    "it is off by default",
 )
 
 
@@ -305,11 +314,12 @@ def _commit_active(binding, root_label: str) -> None:
     instance_dir.commit_desired_to_active()
 
 
-def test_the_notice_promises_no_continuity_and_tells_nobody_to_predict(
+def test_the_notice_promises_no_continuity_and_no_recall_and_predicts_nothing(
         resident) -> None:
     """The cut itself. Without these clauses the sentence either warns
-    unconditionally (r1's bug) or invites the reader to decide it does not
-    apply (r3's bug)."""
+    unconditionally (r1's bug), invites the reader to decide it does not apply
+    (r3's bug), or offers a recall fallback that a default install does not
+    have (r4's bug)."""
     assert_promises_nothing(
         _reset_payload()["conversation_notice"], "resident_persona_reset result")
 

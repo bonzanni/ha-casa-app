@@ -24,8 +24,10 @@
    restart that promotes this binding, if the resident's persona identity ends up
    different from the one it is running, **every conversation of this resident starts
    fresh on every channel**, because the persona is part of the resident's session
-   identity; Telegram history is retained to memory first and stays recallable, but
-   **voice history is not carried**, so anything said on voice and not repeated is gone.
+   identity; Telegram history is written out to long-term memory on the way, where it is
+   recoverable ONLY if long-term memory is configured — it is off by default — while
+   **voice history is not carried** at all, so anything said on voice and not repeated is
+   gone outright. Do not offer memory as a consolation without checking that it is on.
    Boot decides which happens, after this call has returned. A resident mid-way through
    something on voice is a reason to WAIT before restarting, and the operator can only
    weigh that if you pass the notice on.

@@ -142,8 +142,10 @@ restart.
 A resident's persona identity is an input of its binding digest, and that digest is a
 resume precondition, so the promotion INV-PERS-007 defers to the next restart starts
 every conversation that resident is holding fresh — on every channel, because the digest
-gate sits ahead of the freshness window. Telegram transcripts are retained on the way out
-and stay recallable; voice is not a bank-writable channel, so a voice conversation is lost
+gate sits ahead of the freshness window. Telegram transcripts are submitted to long-term
+memory on the way out, and are recoverable from there only when long-term memory is
+configured — it is off by default, and the degraded backend retains silently and refuses
+recall. Voice is not a bank-writable channel at all, so a voice conversation is lost
 outright rather than demoted to recall.
 
 Staging is the last moment the telling is worth anything: the operator is about to order
