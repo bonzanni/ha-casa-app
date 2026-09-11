@@ -1165,6 +1165,10 @@ def test_persona_pack_collision_resolves_to_the_resident_then_the_greatest_slug(
 # ---------------------------------------------------------------------------
 
 _RESUME_KEYS = {"receipt_id", "staged_dir", "component_id", "version", "root_digest"}
+# #929 attempt 3: `tool` is the sixth disclosed member — the handler that takes
+# the five. It is never null: a candidate either is or is not accompanied by an
+# active tuple, and that is the whole rule.
+_DISCLOSED_KEYS = _RESUME_KEYS | {"tool"}
 
 
 @pytest.fixture
@@ -1257,7 +1261,13 @@ def _install(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
                   "staged_dir": str(inspection.staged_dir),
                   "component_id": inspection.component_id,
                   "version": inspection.version,
-                  "root_digest": inspection.root_digest})
+                  "root_digest": inspection.root_digest,
+                  # #929 attempt 3: the sixth member. A pending UPGRADE leaves
+                  # the active tuple in place and `commit_specialist_install`
+                  # refuses an active tuple, so the resume route differs by
+                  # exactly this — which is what `upgrade` already records.
+                  "tool": ("specialist_upgrade" if upgrade
+                           else "specialist_install_commit")})
 
 
 def _pending_install(tmp_path, monkeypatch, *, slug="mtg"):
@@ -1290,6 +1300,8 @@ def _publish(ctx, registry_mod, monkeypatch):
     registry_mod.set_active_installed_index(index)
     monkeypatch.setattr(personality_admin_handlers, "SPECIALIST_RECEIPTS_DIR",
                         ctx.receipts_dir, raising=False)
+    monkeypatch.setattr(personality_admin_handlers, "SPECIALIST_OPS_DIR",
+                        ctx.kw["ops_dir"], raising=False)
     return index
 
 
@@ -1372,37 +1384,52 @@ def _rewrite_receipt(ctx, **fields) -> None:
 _MARKER_AND_RECEIPT = {"receipt_id", "staged_dir"}
 _FROM_ROOT = {"component_id", "version", "root_digest"}
 
+# Each arm: label, mutation, the members that stay populated, and the VERDICT
+# the payload must carry. Every one of these is `blocked` — a settled refusal
+# whose kind is the one the consuming tool would itself return — and NONE is
+# `unknown`, which is reserved for "I could not establish it" (a live journal,
+# an unreadable candidate or receipt, an observation that moved). The
+# distinction is load-bearing: a reader may act on `blocked`, and must only
+# look again on `unknown`.
 _ARMS = [
-    ("marker deleted", lambda c: c.marker.unlink(), _FROM_ROOT),
-    ("marker is not JSON", lambda c: _write_json(c.marker, "{not json"), _FROM_ROOT),
-    ("marker is a JSON list", lambda c: _write_json(c.marker, "[]"), _FROM_ROOT),
-    ("marker has no receipt_id", lambda c: _write_json(c.marker, "{}"), _FROM_ROOT),
+    ("marker deleted", lambda c: c.marker.unlink(), _FROM_ROOT, "incomplete_inputs"),
+    ("marker is not JSON", lambda c: _write_json(c.marker, "{not json"), _FROM_ROOT,
+     "incomplete_inputs"),
+    ("marker is a JSON list", lambda c: _write_json(c.marker, "[]"), _FROM_ROOT,
+     "incomplete_inputs"),
+    ("marker has no receipt_id", lambda c: _write_json(c.marker, "{}"), _FROM_ROOT,
+     "incomplete_inputs"),
     ("marker receipt_id is not a string",
-     lambda c: _write_json(c.marker, '{"receipt_id": 7}'), _FROM_ROOT),
+     lambda c: _write_json(c.marker, '{"receipt_id": 7}'), _FROM_ROOT,
+     "incomplete_inputs"),
     ("receipt deleted",
      lambda c: (c.receipts_dir / f"{c.receipt.receipt_id}.json").unlink(),
-     _FROM_ROOT | {"receipt_id"}),
+     _FROM_ROOT | {"receipt_id"}, "receipt_required"),
     ("receipt tampered",
      lambda c: _rewrite_receipt(c, component_repo="somewhere/else"),
-     _FROM_ROOT | {"receipt_id"}),
+     _FROM_ROOT | {"receipt_id"}, "receipt_required"),
     ("receipt staged path is null",
      lambda c: _rewrite_receipt(c, component_staged_path=None),
-     _FROM_ROOT | {"receipt_id"}),
+     _FROM_ROOT | {"receipt_id"}, "staged_dir_invalid"),
     ("staged tree removed",
-     lambda c: shutil.rmtree(c.inspection.staged_dir), _FROM_ROOT | {"receipt_id"}),
+     lambda c: shutil.rmtree(c.inspection.staged_dir), _FROM_ROOT | {"receipt_id"},
+     "staged_dir_invalid"),
     ("staged path is a regular file",
      lambda c: (shutil.rmtree(c.inspection.staged_dir),
                 Path(c.inspection.staged_dir).write_text("x", encoding="utf-8")),
-     _FROM_ROOT | {"receipt_id"}),
-    ("desired root does not parse", _break_root, _MARKER_AND_RECEIPT),
+     _FROM_ROOT | {"receipt_id"}, "staged_dir_invalid"),
+    ("desired root does not parse", _break_root, _MARKER_AND_RECEIPT,
+     "incomplete_inputs"),
     ("marker gone and root does not parse",
-     lambda c: (c.marker.unlink(), _break_root(c)), set()),
+     lambda c: (c.marker.unlink(), _break_root(c)), set(), "incomplete_inputs"),
 ]
 
 
-@pytest.mark.parametrize("label,mutate,populated", _ARMS, ids=[a[0] for a in _ARMS])
+@pytest.mark.parametrize("label,mutate,populated,reason", _ARMS,
+                         ids=[a[0] for a in _ARMS])
 def test_specialist_status_reports_a_pending_slug_it_cannot_fully_resume(
-        tmp_path, monkeypatch, restore_installed_index, label, mutate, populated) -> None:
+        tmp_path, monkeypatch, restore_installed_index,
+        label, mutate, populated, reason) -> None:
     """Every arm still answers, with five members and nulls where the value is
     gone — a legacy pending slug predating the marker included. A raise here
     would take the whole status route down for an operator trying to diagnose
@@ -1416,10 +1443,14 @@ def test_specialist_status_reports_a_pending_slug_it_cannot_fully_resume(
     payload = specialist_status_payload(object(), slug="mtg")
 
     pending_commit = payload["pending_commit"]
-    assert set(pending_commit) == _RESUME_KEYS
-    assert {k for k, v in pending_commit.items() if v is not None} == populated
+    assert set(pending_commit) == _DISCLOSED_KEYS
+    assert {k for k, v in pending_commit.items() if v is not None} == (
+        populated | {"tool"})
     assert {k: pending_commit[k] for k in populated} == {
         k: ctx.expected[k] for k in populated}
+    # And the verdict: never `verified`, and the reason is the one the
+    # consuming tool would itself return for this state.
+    assert payload["pending_commit_check"] == {"state": "blocked", "reason": reason}
 
 
 @pytest.mark.asyncio
@@ -1573,7 +1604,7 @@ def test_a_receipt_whose_staged_path_is_not_a_usable_string_discloses_none(
     assert pending_commit["staged_dir"] is None
     assert pending_commit["receipt_id"] == ctx.receipt.receipt_id
     assert {k for k, v in pending_commit.items() if v is not None} == {
-        "receipt_id", "component_id", "version", "root_digest"}
+        "receipt_id", "component_id", "version", "root_digest", "tool"}
 
 
 @pytest.mark.asyncio
@@ -1840,7 +1871,7 @@ async def test_a_pending_install_the_index_never_saw_still_names_its_resume_inpu
 
     payload = specialist_status_payload(object(), slug="mtg")
 
-    assert set(payload["pending_commit"]) == _RESUME_KEYS   # pre-fix: KeyError
+    assert set(payload["pending_commit"]) == _DISCLOSED_KEYS   # pre-fix: KeyError
     assert payload["pending_commit"] == ctx.expected
     # The loaded view is untouched AND labelled, so the payload cannot be read
     # as one contradictory claim about the tree.
@@ -1883,7 +1914,7 @@ async def test_a_pending_upgrade_the_index_predates_still_names_its_resume_input
 
     payload = specialist_status_payload(object(), slug="mtg")
 
-    assert set(payload["pending_commit"]) == _RESUME_KEYS   # pre-fix: KeyError
+    assert set(payload["pending_commit"]) == _DISCLOSED_KEYS   # pre-fix: KeyError
     assert payload["pending_commit"] == pending.expected
     assert payload["pending_commit"]["version"] == "0.2.0"
     assert payload["state"] == "active" and payload["desired"] is None
@@ -2019,6 +2050,193 @@ def test_a_slug_that_is_not_a_plain_tree_name_reads_no_tree(
     payload = specialist_status_payload(object(), slug=traversed)
 
     assert payload == {"slug": traversed, "state": "not_installed"}
+
+
+@pytest.mark.parametrize("slug", ["..", ".", "a/b", "/etc", "x\0y", "MTG", "ä",
+                                  "mtg/", "./mtg", "-mtg", ""],
+                         ids=["dotdot", "dot", "separator", "absolute", "nul",
+                              "uppercase", "unicode", "trailing-slash",
+                              "dot-slash", "leading-dash", "empty"])
+def test_the_slug_fence_is_the_lifecycles_own_rule(
+        tmp_path, monkeypatch, restore_installed_index, slug) -> None:
+    """The fence used to be `slug == Path(slug).name`, and that predicate
+    ADMITS `".."` — `Path("..").name` is `".."`, not the empty string the
+    comment claimed — and admits an embedded NUL. Both reviewers reproduced it
+    in attempt 3's seam round.
+
+    It is now the lifecycle's own canonical rule, the regex
+    `specialist_install.validate_specialist_slug` enforces, so the status
+    reader admits exactly the names the tree's own directory scan can produce
+    and nothing else. Verification does not make the fence redundant: a
+    traversal slug can name a tree elsewhere whose set is internally coherent,
+    and would then certify under a name that is not its own.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    payload = specialist_status_payload(object(), slug=slug)
+
+    assert payload == {"slug": slug, "state": "not_installed"}
+
+
+def test_a_symlinked_slug_directory_is_not_read(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """A canonical name whose directory is a SYMLINK passes the regex, so it is
+    refused separately — before anything under it is opened. Otherwise a link
+    planted beside the tree discloses another tree's candidate under a name
+    the fence approves."""
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    (ctx.specialists_dir / "alias").symlink_to(ctx.specialists_dir / "mtg",
+                                               target_is_directory=True)
+    assert (ctx.specialists_dir / "alias" / "desired.yaml").is_file()
+
+    payload = specialist_status_payload(object(), slug="alias")
+
+    assert payload == {"slug": "alias", "state": "not_installed"}
+
+
+def test_a_live_recovery_journal_blocks_certification(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """A slug the next boot still owes recovery for cannot be certified: its
+    tree is mid-transaction, and the tool that would consume the five refuses
+    `recovery_pending` on exactly this state.
+
+    This is the ONE rule that covers the whole failure/rollback interval as a
+    class — the `ENOSPC`-between-marker-and-stage window, a `rollback_disk`
+    part-way through its restores, a sequencer compensation in flight. None of
+    them has to be recognised individually, because all of them are "a journal
+    is open". The five stay disclosed as DIAGNOSTICS; what changes is that
+    they may not be used.
+    """
+    import specialist_bundle_journal
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    ops_dir = ctx.kw["ops_dir"]
+    assert len(list(specialist_bundle_journal.recovery_debt(ops_dir=ops_dir))) == 0
+
+    # Certified while the tree is quiet.
+    assert specialist_status_payload(object(), slug="mtg")[
+        "pending_commit_check"] == {"state": "verified"}
+
+    # A real writer's journal, left in-progress exactly as a failed sync phase
+    # leaves one.
+    journal = specialist_bundle_journal.begin(
+        "upgrade", "mtg", before_entries=[], before_tuple_files={},
+        ack_records=[], ops_dir=ops_dir)
+    debts = list(specialist_bundle_journal.recovery_debt(ops_dir=ops_dir))
+    assert len(debts) == 1
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert payload["pending_commit_check"] == {"state": "unknown",
+                                               "reason": "recovery_pending"}
+    # The values themselves are unchanged: blocked is not the same as gone.
+    assert payload["pending_commit"] == ctx.expected
+    specialist_bundle_journal.complete(journal)
+    assert len(list(specialist_bundle_journal.recovery_debt(ops_dir=ops_dir))) == 0
+    assert specialist_status_payload(object(), slug="mtg")[
+        "pending_commit_check"] == {"state": "verified"}
+
+
+def test_an_unreadable_candidate_claims_nothing_at_all(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """A candidate the process cannot READ is not a candidate that is ABSENT.
+
+    The earlier snapshot caught every exception and returned "absent", so one
+    injected read error produced zero disclosures AND a `state_is_stale` claim
+    — telling a reader the loaded view was wrong when nothing had been
+    established at all. `unknown` says so instead, and withholds the staleness
+    claim: "cannot tell" is not "they agree", in this direction too.
+    """
+    import personality_binding
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    real = personality_binding.InstanceDir.desired
+
+    def _eio(self):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(personality_binding.InstanceDir, "desired", _eio)
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert payload["pending_commit_check"] == {"state": "unknown",
+                                               "reason": "unreadable_candidate"}
+    assert "pending_commit" not in payload
+    assert "state_is_stale" not in payload
+
+    monkeypatch.setattr(personality_binding.InstanceDir, "desired", real)
+    assert specialist_status_payload(object(), slug="mtg")[
+        "pending_commit_check"] == {"state": "verified"}
+
+
+def test_an_unreadable_receipt_is_not_a_missing_one(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """`specialist_receipt.load` returns None for a sidecar that is gone AND
+    for one that is there and unreadable — it catches OSError. The difference
+    decides whether a reader is told the candidate can no longer be resumed or
+    told to look again, and a recipe that treats the first as permanent would
+    destroy a healthy install on one transient error.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    sidecar = ctx.receipts_dir / f"{ctx.receipt.receipt_id}.json"
+    sidecar.chmod(0o000)
+    try:
+        payload = specialist_status_payload(object(), slug="mtg")
+    finally:
+        sidecar.chmod(0o600)
+
+    assert payload["pending_commit_check"] == {"state": "unknown",
+                                               "reason": "unreadable_receipt"}
+    # A DELETED sidecar is the settled answer, and a different one.
+    sidecar.unlink()
+    assert specialist_status_payload(object(), slug="mtg")[
+        "pending_commit_check"] == {"state": "blocked", "reason": "receipt_required"}
+
+
+def test_a_candidate_that_moves_under_the_validation_is_not_certified(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The validation hashes a staged tree and resolves a dependency closure,
+    which must not happen while the innermost lifecycle lock is held — so it
+    runs between two locked observations, and a candidate that moved between
+    them is `unknown` rather than certified. One re-check, not a retry loop: an
+    unbounded retry on a status route would be a new hazard, not a fix.
+    """
+    import personality_admin_handlers as handlers
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    real_certify = handlers._certify
+    moved = []
+
+    def _certify_then_move(*a, **kw):
+        verdict = real_certify(*a, **kw)
+        if not moved:
+            moved.append(True)
+            ctx.marker.write_text(json.dumps({"receipt_id": "e" * 32}),
+                                  encoding="utf-8")
+        return verdict
+
+    monkeypatch.setattr(handlers, "_certify", _certify_then_move)
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert moved == [True]
+    assert payload["pending_commit_check"] == {"state": "unknown",
+                                               "reason": "observation_changed"}
 
 
 # --- #929 red case (attempt 3, specified by astra) -------------------------

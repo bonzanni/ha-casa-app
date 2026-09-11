@@ -29,6 +29,14 @@ from aiohttp import web
 # it, which after `_tree_candidate_disclosure` comes from the tree itself.
 SPECIALIST_RECEIPTS_DIR: "object | None" = None
 
+# #929 (attempt 3): WHERE the bundle journal's ops directory is, for the
+# recovery-debt scan that decides whether the tree is mid-transaction. Same
+# seam shape and same reason as the receipts directory above — and it is a
+# seam rather than a parameter because `specialist_bundle_journal.recovery_debt`
+# binds `OPS_DIR` as a DEFAULT ARGUMENT at import time, so monkeypatching the
+# module constant does not reach it. Production value resolved at call time.
+SPECIALIST_OPS_DIR: "object | None" = None
+
 
 def _json_type_name(value: object) -> str:
     """The JSON type name of a value decoded by ``await request.json()``.
@@ -52,94 +60,117 @@ def _json_type_name(value: object) -> str:
     return "object"
 
 
-def _candidate_snapshot(slug_dir: "Path") -> "tuple[bool, str | None, str | None]":
-    """#929: WHETHER this slug's tree holds a desired candidate, that
-    candidate's own root string, and its `pending-receipt.json`, read as ONE
-    snapshot of the tree — under the lock every writer of those files holds.
+def _candidate_snapshot(slug: str, slug_dir: "Path", ops_dir=None):
+    """#929: everything about this slug's tree that a resume disclosure depends
+    on, read as ONE snapshot under the lock every writer of those files holds:
+    whether the slug is ACTIVE, whether it holds a desired CANDIDATE, that
+    candidate's own root string, its `pending-receipt.json`, and whether the
+    next boot still owes RECOVERY for the slug.
 
-    They are written together and only together: `_record_pending_receipt`
-    immediately before `stage_desired`, and `_clear_pending_receipt` in the
-    same scope as `commit_desired_to_active`, each inside
-    `specialist_materialize.MATERIALIZE_LOCK` (`specialist_install.py`). An
-    unlocked reader can therefore see the marker of one candidate beside the
-    root of another — and so can a reader that takes the ROOT from the
-    published index, which is a snapshot no pending write republishes (a
-    pending candidate is never loaded, so no reload follows it). Either
-    pairing advertises five inputs the re-commit refuses `checksum_changed`,
-    which is the one route this disclosure exists to keep an engagement out
-    of. Taking the writers' lock for the two reads makes the pair untearable
-    in both directions; the receipt sidecar the marker names is write-once
-    and is loaded outside it.
+    Returns `(active, candidate, root, marker, debt)` where `candidate` is
+    `True` / `False` / `None` — present, absent, or **unreadable**. The third
+    value is not pedantry: the earlier version of this function caught every
+    exception and returned "absent", so a candidate the process could not read
+    was reported as one that did not exist, and the staleness comparison then
+    asserted the loaded view was wrong when in truth nothing had been
+    established (astra, attempt-3 seam round: 0 disclosures and 1 staleness
+    claim from a single injected `EIO`). "Cannot tell" is not "they agree", in
+    this direction too.
 
-    PRESENCE is read here too (astra, candidate review r2), from the same
-    locked section rather than from the published index — see
-    `_tree_candidate_disclosure` for why the index cannot answer it. The
-    predicate is deliberately the INDEX'S OWN — a candidate is what
-    `InstanceDir.desired()` returns, exactly as `InstalledSpecialistIndex.
-    load` decides `pending-configuration` — so the only difference between
-    the two answers is WHEN the tree was read, which is what makes comparing
-    them a sound staleness test rather than two rules disagreeing. Reading it
-    beside the root and the marker keeps the property round 1 bought — one
-    lock, one tree, one candidate — instead of a second read that could land
-    on another.
+    Why these five together and under this lock. `_record_pending_receipt`
+    writes the marker immediately before `stage_desired`, and
+    `_clear_pending_receipt` runs in the same scope as
+    `commit_desired_to_active`, each inside `specialist_materialize.
+    MATERIALIZE_LOCK` (`specialist_install.py`) — so a locked reader cannot see
+    the marker of one candidate beside the root of another *within a
+    completed writer*. Recovery debt joins them because a writer's journal is
+    created BEFORE its tuple write and is NOT serialized by this lock: checking
+    it outside the locked read let a candidate be staged, journalled and
+    certified between the check and the snapshot (astra and terra, seam round,
+    reproduced independently). Read here, and read again in the second
+    snapshot, the last thing before anything is certified.
+
+    PRESENCE is read from the tree rather than from the published index
+    because the index is refreshed only by agent reloads and a commit that
+    lands pending-configuration performs none — see
+    `_tree_candidate_disclosure`. The predicate is deliberately the INDEX'S
+    OWN (`InstanceDir.desired()`, exactly as `InstalledSpecialistIndex.load`
+    decides `pending-configuration`), so the only difference between the two
+    answers is WHEN the tree was read, which is what makes comparing them a
+    sound staleness test rather than two rules disagreeing.
 
     Loop-safety (the lock's own contract): MATERIALIZE_LOCK is never acquired
     on the event loop — the only caller is `specialist_status_payload`, which
     the route offloads with `asyncio.to_thread`. It is the innermost of the
-    three specialist locks and nothing is taken while it is held here.
+    three specialist locks and nothing is taken while it is held here; the
+    validation that hashes the staged tree runs OUTSIDE it, between two
+    snapshots.
     """
     import personality_binding
+    import specialist_bundle_journal
     import specialist_materialize
 
+    active = False
+    candidate: "bool | None" = False
     root: str | None = None
     marker: str | None = None
+    debt = 0
     with specialist_materialize.MATERIALIZE_LOCK:
+        instance_dir = personality_binding.InstanceDir(slug_dir)
         try:
-            desired = personality_binding.InstanceDir(slug_dir).desired()
+            active = instance_dir.active() is not None
         except Exception:  # noqa: BLE001
-            # A candidate that will not load — bad YAML, a schema failure,
-            # a #372 tombstone — is no candidate here, exactly as it is none
-            # to the index's own scan, which isolates that slug as
-            # state="error" and puts the reason in `last_activation_error`.
-            # Nothing about a resume is derivable from it, and the route must
-            # still answer for the slug an operator is diagnosing, not raise.
-            desired = None
-        present = desired is not None
+            active = False
+        try:
+            desired = instance_dir.desired()
+        except Exception:  # noqa: BLE001
+            # A candidate that will not LOAD — bad YAML, a schema failure, a
+            # #372 tombstone — is a candidate we cannot read, not one that is
+            # absent. The index's own scan isolates that slug as state="error"
+            # and puts the reason in `last_activation_error`; this route must
+            # answer for the slug an operator is diagnosing without raising,
+            # and without claiming the tree holds nothing.
+            candidate, desired = None, None
+        else:
+            candidate = desired is not None
         root = getattr(desired, "root", None)
         try:
             marker = (slug_dir / "pending-receipt.json").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            marker = None
         except (OSError, ValueError):
             # ValueError: a name the OS cannot express at all (an embedded
             # NUL) is an unreadable marker, not a 500 out of a status route.
+            # Unreadable is not absent here either: it forbids certification.
             marker = None
-    return present, root, marker
+            if candidate:
+                candidate = None
+        try:
+            debt = sum(1 for row in specialist_bundle_journal.recovery_debt(
+                **({} if ops_dir is None else {"ops_dir": ops_dir}))
+                if row["slug"] in (None, slug))
+        except Exception:  # noqa: BLE001
+            # An unreadable ops directory is outstanding debt for every slug as
+            # far as `require_no_recovery_debt` is concerned; fail closed the
+            # same way rather than certifying against a directory we could not
+            # read.
+            debt = 1
+    return active, candidate, root, marker, debt
 
 
-def _pending_commit_inputs(root: "str | None", marker_text: "str | None") -> dict[str, object]:
+def _resume_inputs(root: "str | None", marker_text: "str | None",
+                   receipts_dir) -> "tuple[dict[str, object], str | None]":
     """#929 (INV-SPEC-015): the five arguments a re-commit of the candidate in
     `_candidate_snapshot`'s snapshot takes, each member `None` when it is no
-    longer derivable. Called only for a snapshot that HAS a candidate; `root`
-    is still optional here because a loaded tuple's root string can be
-    anything the checked parser then refuses.
-
-    A first install that lands `pending-configuration` retains its receipt,
-    its staging tree and a `pending-receipt.json` marker, and the same
-    `(inspection, receipt)` pair re-commits to `active` — but a re-inspect
-    refuses the now-occupied slug, so a later engagement that was not told
-    these values had no route at all. Three of them are already on disk in
-    the candidate's own root string; the other two come from the marker and
-    the receipt it names. Both halves reach this function from ONE locked
-    read of the tree (`_candidate_snapshot`) — never the index's root beside
-    the tree's marker.
+    longer derivable, plus the receipt itself when it loaded.
 
     Every step degrades to `None` rather than raising: a pending slug that
     predates the marker has none (the boot reader tolerates exactly that,
     `specialist_bundle_journal.reconcile_boot`), an abandoned receipt is
     swept after seven days, and a staging tree can be reclaimed under a
-    still-standing candidate. A status route that raised on any of those
-    would fail precisely the operator trying to diagnose it. `staged_dir` is
-    disclosed only while the recorded path is still a directory: naming a
-    reclaimed path would send the engagement to a route that refuses.
+    still-standing candidate. A status route that raised on any of those would
+    fail precisely the operator trying to diagnose it. These five are
+    DIAGNOSTIC; whether they may be USED is `_certify`'s answer, not theirs.
     """
     import specialist_receipt
     from specialist_install import parse_component_root
@@ -156,104 +187,254 @@ def _pending_commit_inputs(root: "str | None", marker_text: "str | None") -> dic
         out.update(component_id=component_id, version=version, root_digest=root_digest)
 
     if marker_text is None:
-        return out
+        return out, None
     try:
         raw = json.loads(marker_text)
     except ValueError:
-        return out
+        return out, None
     receipt_id = raw.get("receipt_id") if isinstance(raw, dict) else None
     if not isinstance(receipt_id, str) or not receipt_id:
-        return out
+        return out, None
     out["receipt_id"] = receipt_id
 
-    receipts_dir = (SPECIALIST_RECEIPTS_DIR if SPECIALIST_RECEIPTS_DIR is not None
-                    else specialist_receipt.DEFAULT_RECEIPTS_DIR)
     receipt = specialist_receipt.load(receipt_id, Path(receipts_dir))
     if receipt is None:
-        return out
+        return out, None
     # `component_staged_path` is NON-attested runtime state: the receipt's
     # digest does not cover it, so a hand-edited or truncated sidecar can load
     # with a null, non-string or EMPTY value there and still be a valid
     # receipt. Empty is checked because `Path("")` is `Path(".")`, a directory
-    # that always exists — it would be disclosed as a resumable ".", and the
-    # recipe reads any non-null member as resumable (terra, diff review r2).
+    # that always exists — it would be disclosed as a resumable ".", and a
+    # reader treats any non-null member as resumable (terra, diff review r2).
     staged_path = receipt.component_staged_path
     if not isinstance(staged_path, str) or not staged_path:
-        return out
+        return out, receipt
     staged = Path(staged_path)
     if staged.is_dir():
         out["staged_dir"] = str(staged)
-    return out
+    return out, receipt
+
+
+def _receipt_is_unreadable(marker_text: "str | None", receipts_dir) -> bool:
+    """Distinguish a receipt sidecar that is GONE from one that is there and
+    cannot be read. `specialist_receipt.load` returns `None` for both — it
+    catches `OSError` — and the difference decides whether a reader is told
+    "this candidate can no longer be resumed" or "look again".
+
+    It matters because a recipe that treats the first as permanent will
+    destroy a healthy install on a transient read error: astra reproduced one
+    injected `EIO` taking `(active, desired, receipts)` from `(1,1,2)` to
+    `(0,0,2)` while the very next read returned a valid receipt and a fully
+    validating candidate.
+    """
+    try:
+        raw = json.loads(marker_text or "")
+        receipt_id = raw.get("receipt_id") if isinstance(raw, dict) else None
+    except ValueError:
+        return False
+    if not isinstance(receipt_id, str) or not receipt_id:
+        return False
+    path = Path(receipts_dir) / f"{receipt_id}.json"
+    try:
+        path.read_bytes()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False
+
+
+def _certify(slug: str, inputs: dict, receipt, receipts_dir) -> "tuple[str, str]":
+    """#929: apply the acceptance predicate of the tool that will CONSUME the
+    disclosed set, to the set itself, before it is disclosed — and name that
+    tool.
+
+    This is where the guarantee is established, and the choice of WHERE is the
+    whole design. Not at the write: `MATERIALIZE_LOCK` is non-reentrant and
+    `specialist_bundle_journal.rollback_disk` re-acquires it itself, requiring
+    that no caller hold it (the sync-phase handlers call it from `except`
+    blocks after their `with` scope exits), so widening a writer's lock across
+    its own rollback deadlocks — and establishing coherence at the write means
+    proving every writer's every FAILURE path leaves a coherent tree, an
+    argument that has to be remade for paths that do not exist yet. Not at the
+    read either: a locked read makes two files contemporaneous, not coherent —
+    after a failed write they are contemporaneous and still name different
+    candidates. At the point of use the question "could this have been
+    produced by a torn write?" is never asked; only "is this set acceptable?",
+    which is decidable from the bytes in hand, for every sequence including
+    the ones nobody enumerated.
+
+    The predicate is the tools' own (`specialist_install.validate_resume_inputs`
+    — literally the function both handlers now run), plus two checks that
+    belong to the CLAIM rather than to the handlers: the receipt's own slug,
+    and the identity triple against the tree candidate's root. Those two are
+    deliberately NOT pushed into the shared predicate: both handlers today
+    activate with a caller-supplied `component_id`/`version` that disagrees
+    with the staged manifest, so adding them there would turn accepted calls
+    into refusals (astra, seam round).
+
+    Returns `(state, reason)`. `"verified"` licenses a call; `"blocked"` is a
+    settled refusal with the tool's own kind; `"unknown"` is "I could not
+    establish it" and is NEVER evidence that there is nothing to resume.
+    """
+    from specialist_install import validate_resume_inputs
+
+    if inputs["receipt_id"] is None or any(
+            inputs[k] is None for k in ("component_id", "version", "root_digest")):
+        # A member that is not derivable at all: no marker, a marker that is
+        # not JSON or carries no usable id, a root string the checked parser
+        # refuses. The caller has already separated "the receipt sidecar is
+        # there and unreadable" from this, so what is left is settled.
+        return "blocked", "incomplete_inputs"
+    if receipt is None:
+        # The id is there and no sidecar loads for it: swept, or tampered and
+        # failing its own digest re-derivation. The consuming tool answers
+        # this exact refusal.
+        return "blocked", "receipt_required"
+    if inputs["staged_dir"] is None:
+        # The receipt loaded, but the staging tree it names is gone, is not a
+        # directory, or was never a usable string.
+        return "blocked", "staged_dir_invalid"
+
+    checked = validate_resume_inputs(
+        staged_dir=inputs["staged_dir"], receipt_id=inputs["receipt_id"],
+        root_digest=inputs["root_digest"], receipts_dir=Path(receipts_dir))
+    if not checked.ok:
+        return "blocked", checked.kind
+    if checked.receipt.slug != slug:
+        # The receipt is reached through the marker; one naming another slug's
+        # receipt would otherwise send the reader to another slug's staging
+        # tree. The receipt carries no attested component root, so id agreement
+        # alone establishes nothing — the staged bytes have to participate,
+        # which is what the digest check above does.
+        return "blocked", "receipt_mismatch"
+    if (checked.component.component_id, checked.component.version) != (
+            inputs["component_id"], inputs["version"]):
+        # The handlers read identity from the staged manifest and never compare
+        # it to their arguments, so these two are exactly the members whose
+        # wrongness the consuming tool cannot catch. The claim is made here, so
+        # it is checked here.
+        return "blocked", "checksum_changed"
+    return "verified", ""
 
 
 def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str, object]:
-    """#929 (astra, candidate review r2): every status key that describes a
-    pending candidate — its PRESENCE as much as its five values — decided by
-    the tree, plus the one key that tells a reader when the payload's loaded
-    view does not describe that candidate.
+    """#929: every status key that describes a pending candidate — its
+    PRESENCE, its five values, whether they may be USED, and the one key that
+    tells a reader when the payload's loaded view does not describe that
+    candidate.
 
-    What was cut, and why it is a cut rather than a third case. This
-    disclosure used to ask the published index WHETHER there was a candidate
+    What was cut from the published index, and why it is a cut. This
+    disclosure used to ask the index WHETHER there was a candidate
     (`instance.desired is not None`) and the tree only for the values. The
     index is a snapshot refreshed by agent RELOADS, and a commit that lands
     `pending-configuration` performs none — a pending candidate is
-    deliberately not loadable, so nothing reloads and nothing republishes. So
-    the index is blind to exactly the case this route exists for: after a
-    first install that lands pending, the index has no instance for the slug
-    at all and status answered `not_installed` with NO resume inputs, while
-    the tree held all five and the recipe was sending the next engagement
-    here to collect them — the route prevented the recovery it was added to
-    enable. A pending UPGRADE is the same defect one step on: the index's
-    instance predates the staging, its `desired` is None, and the same key is
-    withheld. Round 1 had already had to take the VALUES off the index for
-    the same reason. One mechanism, three faces: presence and values now come
-    from one locked snapshot of the tree (`_candidate_snapshot`), and the
-    index is not consulted about this slug's candidate at all.
+    deliberately not loadable, so nothing reloads and nothing republishes. The
+    index is therefore blind to exactly the case this route exists for: after
+    a first install that lands pending, it has no instance for the slug at all
+    and status answered `not_installed` with NO resume inputs, while the tree
+    held all five — the route prevented the recovery it was added to enable.
+    A pending UPGRADE is the same defect one step on. Presence and values now
+    come from one locked snapshot of the tree, and the index is not consulted
+    about this slug's candidate at all.
 
-    Coherence, since the two sources can disagree. `state`, `active` and
-    `desired` remain the RUNNING PROCESS's loaded view — which is what an
-    operator asking "is this slug serving?" is asking, and no tree read can
-    answer it. They and `pending_commit` therefore answer different questions
-    and legitimately move on different events: the loaded view at a reload,
-    the tree at a commit. Where they differ the payload says so with
-    `state_is_stale` rather than leaving a reader to reconcile
-    `state: "not_installed"` with five resume inputs: it is present exactly
-    when the loaded view's candidate — its presence AND its root — is not the
-    tree's, in either direction. What a reader is meant to believe:
-    `pending_commit` about what can be re-committed (it is the tree), `state`
-    about what is loaded, and that the loaded view catches up at the next
-    reload or restart.
+    What is disclosed, and what it means:
 
-    The one thing still taken from the index is WHERE the specialist tree is:
-    a per-process location fixed at boot from the config root, not state
-    about this slug. With no index published there is no tree to read, so the
-    payload discloses nothing about a candidate — and withholds
-    `state_is_stale` too, because "cannot tell" is not "they agree".
+    * `pending_commit` — the five diagnostic values plus `tool`, the name of
+      the handler that takes them (`specialist_upgrade` when the slug is
+      active, because `commit_specialist_install` refuses an active tuple
+      outright; `specialist_install_commit` otherwise). Present whenever a
+      candidate is observed, members `None` where not derivable.
+    * `pending_commit_check` — `verified` / `blocked` / `unknown`, with a
+      reason. ONLY `verified` licenses a call. The verdict is separate from
+      the values on purpose: recovery debt can block five perfectly derivable,
+      mutually consistent values, and nulling an arbitrary member to signal
+      that would misdescribe the evidence.
+    * `state_is_stale` — index-vs-tree only, true-only, computed from the
+      OBSERVATION and never from the validation, so a torn tree still reports
+      staleness truthfully. It is not a resume-validity flag.
 
-    The slug is fenced HERE, where the caller's string becomes a path. Under
-    the old mechanism only a slug the index already held could reach the disk
-    at all, and the index's keys are directory names its own scan produced;
-    reading the tree for ANY requested slug is new with this cut, so
-    `../<x>` would otherwise have read — and YAML-parsed — a tuple from
-    outside the tree and disclosed another slug's five values under a name
-    that is not that slug. One plain directory name is the whole rule:
-    `Path(slug).name` is the empty string for `.` and `..` and the last
-    segment for anything with a separator, so equality admits exactly the
-    names the index's own directory scan can produce.
+    Coherence, since the loaded view and the tree answer different questions.
+    `state`, `active` and `desired` remain the RUNNING PROCESS's loaded view —
+    what an operator asking "is this slug serving?" is asking, and no tree
+    read can answer it. They move at a reload; the tree moves at a commit.
+    What a reader is meant to believe: `pending_commit` about what can be
+    re-committed, gated by `pending_commit_check`; `state` about what is
+    loaded; and that the loaded view catches up at the next reload or restart.
+
+    The slug is fenced HERE, where the caller's string becomes a path, with
+    the lifecycle's own canonical rule (`specialist_component.is_valid_slug`,
+    the regex `specialist_install.validate_specialist_slug` enforces). Reading
+    the tree for ANY requested slug is new with the index cut — before it,
+    only a slug the index already held reached disk — so an unfenced value
+    would read and YAML-parse a tuple from outside the tree and disclose
+    another slug's values under a name that is not that slug. The earlier
+    fence was `slug == Path(slug).name`, which ADMITS `".."` (measured:
+    `Path("..").name == ".."`) and an embedded NUL; both reviewers reproduced
+    it in the seam round. Verification does not subsume the fence either: a
+    traversal slug can name a tree elsewhere whose set is internally coherent
+    and would then certify. A symlinked slug directory is refused before
+    anything under it is read.
+
+    Nothing is disclosed and NO staleness is claimed when there is no
+    published tree: "cannot tell" is not "they agree".
     """
+    from specialist_component import is_valid_slug
     from specialist_registry import live_specialists_dir
 
     specialists_dir = live_specialists_dir()
-    if specialists_dir is None or slug != Path(slug).name:
+    if specialists_dir is None or not is_valid_slug(slug):
         return {}
-    present, root, marker_text = _candidate_snapshot(Path(specialists_dir) / slug)
+    slug_dir = Path(specialists_dir) / slug
+    if slug_dir.is_symlink():
+        return {}
+
+    receipts_dir = (SPECIALIST_RECEIPTS_DIR if SPECIALIST_RECEIPTS_DIR is not None
+                    else _default_receipts_dir())
+    ops_dir = SPECIALIST_OPS_DIR
+    active, candidate, root, marker, debt = _candidate_snapshot(slug, slug_dir, ops_dir)
+
     out: dict[str, object] = {}
-    if present:
-        out["pending_commit"] = _pending_commit_inputs(root, marker_text)
+    if candidate is None:
+        # Unreadable. No candidate assertion, no staleness claim, and a reason.
+        return {"pending_commit_check": {"state": "unknown",
+                                         "reason": "unreadable_candidate"}}
+    if candidate:
+        inputs, receipt = _resume_inputs(root, marker, receipts_dir)
+        tool = "specialist_upgrade" if active else "specialist_install_commit"
+        out["pending_commit"] = {**inputs, "tool": tool}
+        if debt:
+            state, reason = "unknown", "recovery_pending"
+        elif _receipt_is_unreadable(marker, receipts_dir):
+            state, reason = "unknown", "unreadable_receipt"
+        else:
+            state, reason = _certify(slug, inputs, receipt, receipts_dir)
+            if state == "verified":
+                # Re-observe: the validation above hashed a staged tree and
+                # resolved a dependency closure OUTSIDE the lock, because that
+                # work must not be done while the innermost lifecycle lock is
+                # held. One re-check — not a retry loop, which would be a new
+                # hazard on a status route — and the recovery-debt scan rides
+                # with it, so the last thing read before certifying is whether
+                # a writer opened a journal in the meantime.
+                if (active, candidate, root, marker, 0) != _candidate_snapshot(
+                        slug, slug_dir, ops_dir):
+                    state, reason = "unknown", "observation_changed"
+        out["pending_commit_check"] = ({"state": state} if state == "verified"
+                                       else {"state": state, "reason": reason})
+    # No candidate at all: the payload for a `not_installed`, `active` or
+    # `error` slug is exactly what it was before this change. A verdict key on
+    # every status call would be noise about a question nobody asked.
     if (loaded_candidate is not None,
-            getattr(loaded_candidate, "root", None)) != (present, root):
+            getattr(loaded_candidate, "root", None)) != (bool(candidate), root):
         out["state_is_stale"] = True
     return out
+
+
+def _default_receipts_dir():
+    import specialist_receipt
+
+    return specialist_receipt.DEFAULT_RECEIPTS_DIR
 
 
 def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:

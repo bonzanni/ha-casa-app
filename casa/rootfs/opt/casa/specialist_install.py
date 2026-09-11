@@ -460,6 +460,96 @@ def resolve_and_fetch(
     return commit
 
 
+@dataclass(frozen=True, slots=True)
+class ResumeValidation:
+    """The verdict of `validate_resume_inputs`. `ok` carries the loaded
+    artifacts; otherwise `kind`/`detail` are the refusal the tool would have
+    returned."""
+    ok: bool
+    kind: str = ""
+    detail: str = ""
+    receipt: "SourceReceipt | None" = None
+    component: "SpecialistComponent | None" = None
+    dependencies: tuple["DependencyResolution", ...] = ()
+    root_digest: str = ""
+
+
+def validate_resume_inputs(
+    *, staged_dir: "Path | str", receipt_id: object, root_digest: object,
+    expect_slug: "str | None" = None, receipts_dir: "Path | None" = None,
+) -> ResumeValidation:
+    """#929: the acceptance predicate `specialist_install_commit` and
+    `specialist_upgrade` apply to a caller's resume inputs BEFORE they open a
+    transaction — extracted so the one surface that DISCLOSES those inputs can
+    apply the same predicate the tool that consumes them will.
+
+    Why an extraction and not a second verifier beside the disclosure. Three
+    candidate reviews of this change each found a different sequence under
+    which the disclosed values were assembled from two different candidates
+    and the tool then refused them: a stale index root beside a newer marker,
+    an empty index hiding the candidate entirely, and the tree itself
+    transiently inconsistent across a failed write's rollback. Each was fixed
+    by reasoning about WRITERS — that the files are written together, that a
+    locked read sees them together. Provenance is not coherence: after a
+    failed write the two files ARE contemporaneous and still name different
+    candidates, and the argument has to be remade for every failure path that
+    does not exist yet. Verifying the set against the consumer's own predicate
+    asks a question that is decidable from the bytes in hand, for every
+    sequence including the ones nobody has enumerated. Two COPIES of that
+    predicate would be the same defect one layer down, so there is one.
+
+    Behaviour-preserving by construction: the five steps, their order, their
+    refusal `kind`s and their `detail` strings are the handlers' own.
+    `expect_slug` is the install handler's extra slug comparison, which the
+    upgrade handler deliberately does not make (it derives the identity from
+    the staged manifest) — passing `None` reproduces that exactly. Nothing is
+    ADDED here; the disclosure's extra checks (the receipt's own slug, and the
+    identity triple against the tree candidate's root) belong to the caller
+    that makes the claim, because adding them here would turn currently
+    ACCEPTED tool calls into refusals — measured: both handlers activate today
+    with a caller-supplied `component_id`/`version` that disagrees with the
+    staged manifest.
+
+    Side-effect-free: it loads, resolves and hashes, and writes nothing.
+    """
+    import specialist_receipt
+
+    if not receipt_id:
+        return ResumeValidation(False, "receipt_required",
+                                "a valid receipt_id from specialist_install_inspect "
+                                "is required")
+    receipt = (specialist_receipt.load(receipt_id, receipts_dir) if receipts_dir is not None
+               else specialist_receipt.load(receipt_id))
+    if receipt is None:
+        return ResumeValidation(False, "receipt_required",
+                                "a valid receipt_id from specialist_install_inspect "
+                                "is required")
+
+    staged = Path(staged_dir)
+    try:
+        component = load_specialist_component(staged, staged / "manifest.json")
+    except (ValueError, OSError) as exc:
+        return ResumeValidation(False, "staged_dir_invalid", str(exc))
+    if expect_slug is not None and component.slug != expect_slug:
+        return ResumeValidation(False, "checksum_changed",
+                                "staged component no longer matches the approved inspection")
+    deps = resolve_dependency_closure(component, staged)
+    unavailable = [d for d in deps if not d.available]
+    if unavailable:
+        detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)
+        return ResumeValidation(False, "dependency_unavailable", detail)
+    try:
+        actual = compute_install_root_digest(
+            component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+    except OSError as exc:
+        return ResumeValidation(False, "staged_dir_invalid", str(exc))
+    if actual != root_digest:
+        return ResumeValidation(False, "checksum_changed",
+                                "staged component no longer matches the approved inspection")
+    return ResumeValidation(True, receipt=receipt, component=component,
+                            dependencies=deps, root_digest=actual)
+
+
 def resolve_dependency_closure(
     component: SpecialistComponent, component_dir: Path,
 ) -> tuple[DependencyResolution, ...]:
@@ -474,6 +564,22 @@ def resolve_dependency_closure(
     import plugin_registry
     from persona_pack import PersonaPackError, load_persona_pack
     from plugin_store import content_checksum
+
+    # #929 (astra, attempt-3 seam round): ONE registry snapshot for the whole
+    # closure. The legacy/sourceless branch below used to call
+    # `plugin_registry.resolve_all()` per dependency ROW, so a `reload_snapshot`
+    # landing between two rows composed generation A's availability with
+    # generation B's — reproduced with a registry moving `{alpha} -> {} ->
+    # {beta}`, yielding a closure every row of which was "available" and which
+    # was never simultaneously satisfiable; the commit that consumed it then
+    # refused `dependency_unavailable`. `pinned_resolver()` is #454's existing
+    # answer to exactly this ("a resolver bound to ONE snapshot, for callers
+    # whose correctness depends on every read describing the same registry"),
+    # and it is captured HERE, at entry, rather than lazily on first legacy row.
+    # This is a change to a shipped mutation path: no closure that was
+    # simultaneously satisfiable becomes refused, and a mixed one — which never
+    # was — stops being accepted.
+    resolve_registry = plugin_registry.pinned_resolver()
 
     out: list[DependencyResolution] = []
     for dep in component.dependencies:
@@ -619,7 +725,7 @@ def resolve_dependency_closure(
             # snapshot-build time) and hash its on-disk artifact directory the
             # same way plugin_store always does.
             resolved = next(
-                (p for p in plugin_registry.resolve_all().plugins
+                (p for p in resolve_registry().plugins
                  if p.name == dep.identifier), None,
             )
             if resolved is None:

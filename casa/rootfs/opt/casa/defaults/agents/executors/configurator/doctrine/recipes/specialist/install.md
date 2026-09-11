@@ -58,15 +58,36 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    revoked at the provider. Run `plugin_list()` to see which entries are
    gone.
 5. If `state == "pending-configuration"`: report which config/secret names are still missing, then
-   finish the install by CALLING `specialist_install_commit` AGAIN — never by re-inspecting. The
+   finish the install by CALLING THE TOOL THE RESULT NAMES again — never by re-inspecting. The
    pending result carries the five values that second call takes (`receipt_id`, `staged_dir`,
-   `component_id`, `version`, `root_digest`); pass them back verbatim with `slug` and the
-   config/secret values the operator supplied. The receipt and the staged bytes are RETAINED for
-   exactly this. A LATER engagement that no longer has that result gets the same five from
+   `component_id`, `version`, `root_digest`) and a sixth, `tool`, naming the handler that takes
+   them; pass the five back verbatim with `slug` and the config/secret values the operator
+   supplied. **Call the tool `tool` names and no other** — a pending UPGRADE keeps the old version
+   active, and `specialist_install_commit` refuses any slug with an active tuple
+   (`kind: "concurrent_mutation"`), so its resume goes to `specialist_upgrade`. The receipt and
+   the staged bytes are RETAINED for exactly this.
+   A LATER engagement that no longer has that result gets the same six from
    `casactl specialist status <slug>` under `pending_commit` (the operator runs it and pastes the
-   result). If any member of `pending_commit` is null, the candidate can no longer be resumed —
-   the marker, the receipt or the staged tree is gone — so `specialist_uninstall(slug=...)` and
-   install afresh.
+   result), beside `pending_commit_check`, which is the only thing that says whether they may be
+   used:
+   - `{"state": "verified"}` — the values were checked against the very predicate the named tool
+     applies. Make the call.
+   - `{"state": "blocked", "reason": ...}` — the candidate cannot be resumed as it stands.
+     `receipt_required` / `staged_dir_invalid` / `incomplete_inputs` mean the receipt, the staged
+     bytes or the marker are gone; `checksum_changed` / `receipt_mismatch` mean what is on disk is
+     not what the candidate claims. Report the reason and what it implies, and let the OPERATOR
+     decide whether to `specialist_uninstall(slug=...)` and install afresh. **Never uninstall on
+     your own judgement here** — uninstalling is irreversible and a wrong reading destroys a
+     healthy install.
+   - `{"state": "unknown", "reason": ...}` — nothing could be established: a transaction is in
+     flight (`recovery_pending`), something could not be read (`unreadable_candidate`,
+     `unreadable_receipt`), or the tree moved while it was being checked
+     (`observation_changed`). This is NOT evidence that there is nothing to resume. Wait and run
+     `casactl specialist status <slug>` again; `recovery_pending` clears when the transaction
+     finishes or at the next restart.
+   - No `pending_commit` and no `pending_commit_check` at all: the slug holds no candidate.
+   A null member of `pending_commit` is a value that could not be derived; it is a diagnosis, not
+   an instruction. `pending_commit_check` is what decides.
 6. If `state == "active"`: wire delegation by applying ONLY the edit steps of
    `recipes/delegate/wire.md` (edit `delegates.yaml` idempotently + ensure the
    delegate tool is allowed). Do NOT run wire.md's own commit/reload/emit_completion

@@ -197,7 +197,7 @@ package trees in place — their failure window can leave that one plugin's own 
 broken, but never another plugin's — and generation retention means up to two
 generations of a tarball requirement occupy disk between installs.
 
-**INV-SPEC-015**: A pending-configuration outcome names the inputs its own re-commit takes — the commit and upgrade tool results, and the status of any slug whose tree holds a desired candidate, carry the retained receipt id and staged directory together with the component id, version and root digest; status reads that candidate's presence and its values from one locked snapshot of the tree rather than from the loaded index, and marks its own loaded view stale when that view does not describe the tree's candidate.
+**INV-SPEC-015**: A pending-configuration outcome names the inputs its own re-commit takes AND the tool that takes them — the commit and upgrade tool results, and the status of any slug whose tree holds a desired candidate, carry the retained receipt id and staged directory together with the component id, version and root digest, plus the name of the handler that admits them; status reads that candidate's presence and its values from one locked snapshot of the tree rather than from the loaded index, certifies the assembled set against the very acceptance predicate that handler applies before reporting it usable, reports no usable set and no staleness whenever that cannot be established, and marks its own loaded view stale when that view does not describe the tree's candidate.
 
 The re-commit was already the decided resume route (below), and the values were already
 retained; what no surface carried was the values themselves, so the carriers pointed at a
@@ -211,11 +211,29 @@ engagement comes here to recover, so presence is read from the tree with the val
 predating the marker has none, an abandoned receipt is swept, and a staged tree can be
 reclaimed under a still-standing candidate — the operator diagnosing exactly that must still
 get an answer. The staged directory is named only while it still exists, since a reclaimed
-path would send the next engagement to a route that refuses. The status reads the candidate
-and its retained receipt as ONE snapshot of the specialist tree, taken under the lock every
-lifecycle writer holds — never an in-memory index snapshot's candidate beside the tree's
-marker, and never between a stage's two writes; either pairing could name one candidate's
-root beside another's receipt, which is the refusal this disclosure exists to prevent.
+path would send the next engagement to a route that refuses.
+
+Which tool takes them is part of the answer, not a detail for the reader to infer: a pending
+upgrade keeps its active tuple, and a fresh commit refuses any slug that has one, so a pending
+upgrade resumes through the upgrade tool and a pending first install through the commit tool.
+A disclosure that named five values and left the route to be guessed would send half its
+readers to a handler that refuses.
+
+Whether the named set may be USED is a separate answer, and it is established where the claim
+is made rather than where the files were written. The reason is that no argument about writers
+is sound enough: the candidate and its retained receipt are read as ONE snapshot of the tree
+under the lock every lifecycle writer holds, which makes them contemporaneous — but a write
+that FAILS leaves them contemporaneous and still describing different candidates, and the
+lock cannot be widened across the failure's own rollback, which re-takes it and requires that
+no caller hold it. So the assembled set is checked against the acceptance predicate of the
+handler that will consume it — the same function that handler runs: the receipt loads and
+belongs to this slug, the staged bytes load, their dependency closure resolves against ONE
+registry generation, and their recomputed root digest and identity are the tree candidate's
+own. A set that passes is reported verified; one that fails is reported blocked with the
+refusal's own reason; and where nothing could be established — a transaction still in flight,
+a candidate or receipt that could not be read, a tree that moved while it was being checked —
+the answer is that it is unknown. Unknown is never evidence that there is nothing to resume,
+and no reader may destroy an install on it.
 
 Because the two sources answer different questions they can disagree, and the payload says
 so rather than leaving the contradiction to its reader. `state`, `active` and `desired` remain

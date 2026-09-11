@@ -2585,4 +2585,10 @@ async def test_a_pending_upgrade_names_its_resume_inputs(
     assert payload["ok"] is True and payload["slug"] == "mtg"
     assert payload["state"] == state
     # The upgrade result has never carried activation_committed/required_env_vars.
-    assert sorted(payload.keys() - _RESUME_KEYS) == ["ok", "reloaded", "slug", "state", "verify"]
+    # #929 attempt 3: a pending result also names the TOOL that takes the five —
+    # for an upgrade that is `specialist_upgrade`, because the active tuple it
+    # left in place makes `specialist_install_commit` refuse `concurrent_mutation`.
+    assert sorted(payload.keys() - _RESUME_KEYS) == (
+        ["ok", "reloaded", "slug", "state", "tool", "verify"] if pending
+        else ["ok", "reloaded", "slug", "state", "verify"])
+    assert payload.get("tool") == ("specialist_upgrade" if pending else None)
