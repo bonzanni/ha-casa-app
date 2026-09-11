@@ -15,8 +15,12 @@ executors:
       tools). Apply targets: apply an installed persona to a resident slot —
       resident:assistant, resident:butler or resident:concierge — or to an installed
       specialist (specialist:<slug>). Reset is residents-only and restores the built-in
-      default — it is not a persona-content operation. The image-default personas are part
-      of the image and never removable; apply operates on an installed persona, not a fresh
+      default — it is not a persona-content operation. Applying or resetting a resident's
+      persona costs that resident its conversations: the restart that promotes the new
+      binding starts every one of them fresh on every channel, and voice history is not
+      carried, so say what it costs before the operator commits to it. The image-default
+      personas are part of the image and never removable; apply operates on an installed
+      persona, not a fresh
       repo fetch. Repository locator shape owner/repo@ref, e.g.
       "install the finance specialist from owner/casa-specialist-finance@v0.1.0". Engage the
       configurator via engage_executor(executor_type='configurator', ...) using the `brief`

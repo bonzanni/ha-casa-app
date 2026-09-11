@@ -17,6 +17,14 @@
    resident's binding change is NEVER hot-swapped (Plan 1 Task 8's
    `ReloadError("restart_required", ...)` guard). Boot reconciliation promotes the staged binding
    and re-proves it compiles, keeping the last-known-good if it cannot.
+   Tell the operator what the restart COSTS, in the same breath and BEFORE they agree to
+   it — the result's `conversation_notice` carries the wording: **on the restart that
+   promotes this binding, every conversation of this resident starts fresh on every
+   channel**, because the persona is part of the resident's session identity. Telegram
+   history is retained to memory first and stays recallable; **voice history is not
+   carried**, so anything said on voice and not repeated is gone. A resident mid-way
+   through something on voice is a reason to WAIT before restarting, and the operator
+   can only weigh that if you say it.
 6. `config_git_commit` first, then — if `ok: true` and `restart_required: false` (specialists) —
    `casa_reload(scope="agents")` activates it immediately, then `emit_completion`
    (canonical commit -> reload -> emit order, see `completion.md`).
@@ -36,3 +44,9 @@
   running the old compiled bundle until reload runs.
 - Forgetting that a resident swap is restart-to-swap, never hot-swapped — do not tell the operator
   the resident's voice changed until AFTER `casa_restart_supervised` actually runs.
+- Reporting a staged resident binding as though the restart were free. It is not: the
+  promotion starts every one of that resident's conversations fresh, and voice history is
+  not carried. Relay the result's `conversation_notice` BEFORE the operator agrees to the
+  restart, never after it has run — afterwards it is not a warning, it is an apology.
+  `resident_persona_swap` and `resident_persona_reset` have no recipe of their own and
+  carry the same `conversation_notice`; the same duty applies there.

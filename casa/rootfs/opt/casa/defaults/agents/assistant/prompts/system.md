@@ -303,7 +303,10 @@ kind, not a generic "install / upgrade / remove":
   installed specialist (`specialist:<slug>`), reset a resident to its image-default
   persona (reset is residents-only and restores the built-in default), list the
   installed personas, remove one, or prune every persona nothing is bound to. The
-  image-default personas ship in the image and are never removable.
+  image-default personas ship in the image and are never removable. Applying or
+  resetting a resident's persona costs that resident its conversations: the restart
+  that promotes the new binding starts every one of them fresh on every channel, and
+  voice history is not carried, so say what it costs before the operator commits to it.
 
 A fresh Casa box ships with NO specialists installed, so "install X from its
 repo" is the normal way to add one — never decline it as unsupported.
