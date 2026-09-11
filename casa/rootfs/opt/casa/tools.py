@@ -14059,6 +14059,91 @@ async def persona_install_commit(args: dict) -> dict:
                      "checksum": pack.checksum})
 
 
+# #931: a resident's persona identity is an input of its binding digest
+# (personality_binding.compute_binding_digest), and that digest is a resume
+# precondition — agent._resume_decision refuses a stored session whose digest
+# differs from the freshly loaded resident's, returning
+# ("new", retain_old=True, "binding_mismatch") after the role check and BEFORE
+# the freshness window, so the refusal is channel-agnostic. Telegram
+# transcripts survive as recall (Agent._spawn_cold_retain -> retain_cold_session);
+# voice is not a bank-writable channel (channel_policy.writes_to_bank), so
+# session_saver.save_session returns False without persisting and a voice
+# conversation is lost outright rather than demoted to recall.
+#
+# Staging is the LAST moment the operator can be told, because the promotion
+# happens at a restart they are about to order. One constant, shared by every
+# staging entry point's description AND its result, so the three cannot drift
+# apart — and so the telling is data the model must relay, not doctrine it may
+# have skipped. INV-PERS-018, pinned by
+# tests/test_resident_persona_restart_notice.py.
+#
+# NOTHING HERE PREDICTS THE OUTCOME, AND NOTHING INSTRUCTS ANYONE ELSE TO.
+# Three diff-review rounds found the same mechanism — something deciding
+# whether this staging will move the digest — wrong in every direction it was
+# tried:
+#   r1 (Terra, S2) an unconditional notice fired on a stage whose candidate
+#     equals the active binding, which reconcile discards rather than promotes:
+#     a confident FALSE warning of conversation loss.
+#   r2 (Astra, S2) the predicate added for r1 stayed SILENT where the digest
+#     does move. `reset` resolves its pack through persona_pack_roots(), which
+#     searches the INSTALLED root first, while boot loads the image-default
+#     pack from the image root ONLY (agent_loader's `_load_default`). An
+#     installed pack shadowing an image-default ref makes the two disagree, and
+#     a suppressed TRUE warning is the original bug restored. Filed as #945.
+#   r3 (Astra AND Terra, S2) the predicate was gone from Python but survived as
+#     an INSTRUCTION: this sentence told the model to say "which of the two
+#     applies", and the recipe told it to infer that from `prior_persona` or
+#     from what the operator asked for. In the #945 state both of those read
+#     identical while boot changes the digest — the same false reassurance, one
+#     carrier further out. Terra also measured that `compute_binding_digest`
+#     moves for non-persona inputs (a role checksum among them), so an
+#     apparently unchanged persona never implied continuity in the first place.
+#   r4 (Astra, S2) the same overclaiming, now about the CONSOLATION rather
+#     than the loss: the sentence said Telegram history "stays recallable",
+#     which is false on a default install. Long-term memory is OFF by default,
+#     the backend is then NoOpSemanticMemory, whose `retain` is silent and
+#     whose `recall` raises `not_configured` (semantic_memory.py:147-167).
+#     Qualified with "only if long-term memory is configured".
+#   r5 (Terra, S2) that qualification was STILL a guarantee. Even with memory
+#     configured, retain_cold_session DISCARDS behind the wipe fence, retains
+#     nothing for a legacy/corrupt snapshot, and gives up after bounded
+#     retries (session_saver.py:410-432). "Written out" promises what the code
+#     does not.
+#
+#   r8 (Astra, S2) the CENTRAL claim was itself too strong. "Every
+#     conversation starts fresh" is false: `_resume_decision` compares the
+#     promoted digest against EACH STORED SESSION's own digest, not against
+#     the identity being left behind, so a conversation last held under the
+#     persona now being promoted RESUMES. Astra reproduced A -> B -> A through
+#     three real reconciliations: 2 resumed, 2 fresh. The sentence now says
+#     "last held under a different persona identity", and says that in the
+#     ordinary case that is all of them.
+#
+# The conclusion the rounds force: this tool CANNOT know what survives — not
+# whether the identity moves (boot decides, after this call returns), and not
+# whether anything is recoverable afterwards (configuration, the wipe fence and
+# the snapshot's own integrity decide). Two rounds on the consolation clause is
+# the signal to CUT it, not to qualify it a third time. So the sentence states
+# the LOSS, names who decides, and mentions memory not at all: what it costs is
+# the operator's decision input, and a consolation nobody can guarantee was
+# only ever a way of softening it. INV-PERS-018, pinned by
+# tests/test_resident_persona_restart_notice.py.
+RESIDENT_CONVERSATION_RESET_NOTICE = (
+    "On the restart that promotes this binding, every conversation of this "
+    "resident that was last held under a different persona identity starts "
+    "fresh on every channel — the persona is part of the resident's session "
+    "identity, and each stored conversation is judged against the identity "
+    "that is actually promoted, not against the one being left behind. In the "
+    "ordinary case that is every conversation the resident is holding now. "
+    "Voice history is not carried at all, and Casa promises nothing about "
+    "recovering what any of those conversations held. Boot decides what is "
+    "promoted, not this tool, and staging the persona the resident already "
+    "appears to have does not guarantee continuity. Relay this to the "
+    "operator verbatim before they restart; do not predict which way it will "
+    "go."
+)
+
+
 @tool(
     "persona_apply",
     "Apply an installed persona as an override binding to a resident slot (assistant/butler/"
@@ -14066,7 +14151,8 @@ async def persona_install_commit(args: dict) -> dict:
     "surfaces first: one that exceeds an admission ceiling is refused with nothing written "
     "(ok:false, kind:incompatible). For a RESIDENT the accepted binding is STAGED, not "
     "activated — it takes effect on that resident's next restart. For a specialist it is "
-    "committed and activated by the next casa_reload.",
+    "committed and activated by the next casa_reload. FOR A RESIDENT, say this "
+    "when you report the staging: " + RESIDENT_CONVERSATION_RESET_NOTICE,
     {"type": "object", "properties": {
         "target_role_id": {"type": "string"}, "persona_id": {"type": "string"},
         "persona_version": {"type": "string"}}, "required": ["target_role_id", "persona_id", "persona_version"]},
@@ -14152,9 +14238,19 @@ async def persona_apply(args: dict) -> dict:
         # tool description and recipes/persona/apply.md have always claimed. A
         # specialist is committed active and reports restart_required: false,
         # activated by casa_reload.
+        # #931: the staging result carries what the promoting restart COSTS,
+        # not only that one is required. `restart_required` told the operator
+        # when the binding takes effect and never what taking effect does to
+        # the conversations they are already holding. Additive, and gated on
+        # exactly the condition `restart_required` is: a specialist activates
+        # on casa_reload rather than a restart, so the notice would be untrue
+        # of it — None is "no statement", not a silent omission.
         return {"ok": True, "target_role_id": args["target_role_id"],
                 "binding_digest": staged.binding.binding_digest,
-                "restart_required": kind == "resident"}
+                "restart_required": kind == "resident",
+                "conversation_notice": (
+                    RESIDENT_CONVERSATION_RESET_NOTICE if kind == "resident"
+                    else None)}
 
     if kind == "resident":
         # Controller resolution #2 (task-n1d-brief deviation): the brief
@@ -15694,10 +15790,16 @@ async def _stage_and_report(role_id: str, slot: str, binding) -> dict:
         # its bytes changed while this swap was in flight). Structured refusal,
         # never a raw exception out of the tool — and nothing was staged.
         return {"ok": False, "kind": exc.kind, "detail": exc.detail}
+    # #931: `activation: "restart_required"` names WHEN, never what it costs.
+    # Both callers (resident_persona_swap, resident_persona_reset) are
+    # residents-only by their own enum, so the notice is unconditionally true
+    # here. Additive — `tests/test_reconcile_resident_binding.py` round-trips
+    # the staged tuple, not this envelope's key set.
     return {
         "ok": True, "role": role_id, "persona": f"{binding.persona_id}@{binding.persona_version}",
         "activation": "restart_required",
         "prior_persona": (f"{active.binding.persona_id}@{active.binding.persona_version}" if active else None),
+        "conversation_notice": RESIDENT_CONVERSATION_RESET_NOTICE,
     }
 
 
@@ -15725,7 +15827,8 @@ def _resolve_resident_role(role_id: str):
     "butler/concierge) from an already locally-present persona pack. Validates "
     "role/persona compatibility BEFORE staging anything. Takes effect only after "
     "casa_restart_supervised (personality-identity changes are restart-to-swap, "
-    "never hot-reloaded).",
+    "never hot-reloaded). Say this when you report the staging: "
+    + RESIDENT_CONVERSATION_RESET_NOTICE,
     {"type": "object", "properties": {
         "role": {"enum": ["resident:assistant", "resident:butler", "resident:concierge"]},
         "persona_ref": {"type": "string"},
@@ -15753,7 +15856,9 @@ async def resident_persona_swap(args: dict) -> dict:
     "resident_persona_reset",
     "Stage a reset for a fixed resident slot's binding back to the CURRENT "
     "in-image default persona, undoing any override (spec §2.3/§4.4's "
-    "always-available reset). Takes effect only after casa_restart_supervised.",
+    "always-available reset). Takes effect only after casa_restart_supervised. "
+    "Say this when you report the staging: "
+    + RESIDENT_CONVERSATION_RESET_NOTICE,
     {"type": "object", "properties": {
         "role": {"enum": ["resident:assistant", "resident:butler", "resident:concierge"]},
     }, "required": ["role"]},

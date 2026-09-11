@@ -42,13 +42,16 @@ A fresh install ships with no specialists installed; see [Installing a specialis
 
 ### Optional -- Memory
 
-Short-term conversation continuity always works via the Claude Agent SDK
-session. **Long-term** memory (cross-session recall) is off by default and
+Short-term conversation continuity works via the Claude Agent SDK session,
+with one exception worth knowing: changing a resident's identity — its persona,
+or the model it runs on — starts that resident's conversations fresh at the
+next restart (see *Changing a resident's persona costs you its conversations*,
+below). **Long-term** memory (cross-session recall) is off by default and
 is enabled by pointing Casa at a self-hosted **Hindsight** app.
 
 | Option | Description |
 |--------|-------------|
-| `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — both **save** (the freshness reaper retains ended conversations, each item tier-classified) and **recall** (a mental-model overlay + relevance-ranked recall on the read path, plus a `recall_memory` pull tool). **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session). |
+| `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — both **save** (the freshness reaper retains ended conversations, each item tier-classified) and **recall** (a mental-model overlay + relevance-ranked recall on the read path, plus a `recall_memory` pull tool). **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session, except across a resident identity change — and with this empty, nothing an ended conversation held is recoverable afterwards). |
 
 **Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
 bank, drops any pending durable retry records, and forgets every conversation
@@ -1130,6 +1133,25 @@ finance to the previous version"*, *"Uninstall the finance specialist"*).
 You can also swap which persona an installed specialist uses (its bundled
 default, or another installed persona) by asking Ellen to apply a
 different persona to it.
+
+**Changing a resident's persona costs you its conversations.** Giving Ellen,
+the butler or the concierge a different persona — or resetting one back to its
+built-in default — takes effect at the next restart, and if that changes who
+the resident is, the restart starts fresh every conversation with that
+resident that was last held under a different persona — in practice, all of
+the ones you have going — on Telegram and on voice alike. Voice conversations are not kept at
+all, so anything said there and not repeated is gone. A Telegram conversation
+is *offered* to long-term memory on the way out, which is not the same as being
+kept: long-term memory is off by default, and even switched on the hand-off can
+be dropped — so treat anything you still need as something to say again, not
+something to look up.
+
+Casa's configurator is instructed to spell this out before it restarts
+anything, and the tools that stage a resident's persona return the warning
+with the result — but nothing *forces* it into the sentence you read. **If you are asked to
+approve a restart and were not told what it costs, ask before you agree.**
+Treat it as a real possibility rather than a certainty either way: what a
+restart activates is settled at start-up, not when you ask for the change.
 
 ## Claude Code driver (v0.13.1)
 

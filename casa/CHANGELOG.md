@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.298.0] - 2026-09-11
+
+### Fixed
+
+- Staging a persona for a resident now says what the promoting restart costs.
+  When the restart promotes a binding that differs from the one a resident's
+  conversations were started under, those conversations begin again — and voice
+  history is not kept at all. None of the three tools, the recipe or the restart
+  telling mentioned it, so the first sign was a resident that no longer
+  remembered the conversation you were having. Staging the binding a resident
+  already has stays a no-op and costs nothing. The notice says what happens and
+  who decides it; it promises nobody that a particular conversation will
+  survive, because nothing available at that moment can know.
+
 ## [0.297.0] - 2026-09-11
 
 ### Fixed
