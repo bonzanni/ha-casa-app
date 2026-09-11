@@ -232,9 +232,9 @@ def _resume_inputs(root: "str | None", marker_text: "str | None",
         return out, None
     out["receipt_id"] = receipt_id
 
-    receipt = specialist_receipt.load(receipt_id, Path(receipts_dir))
+    receipt, readable = specialist_receipt.load_observed(receipt_id, Path(receipts_dir))
     if receipt is None:
-        return out, None
+        return out, (None if readable else _UNREADABLE)
     # `component_staged_path` is NON-attested runtime state: the receipt's
     # digest does not cover it, so a hand-edited or truncated sidecar can load
     # with a null, non-string or EMPTY value there and still be a valid
@@ -250,33 +250,9 @@ def _resume_inputs(root: "str | None", marker_text: "str | None",
     return out, receipt
 
 
-def _receipt_is_unreadable(marker_text: "str | None", receipts_dir) -> bool:
-    """Distinguish a receipt sidecar that is GONE from one that is there and
-    cannot be read. `specialist_receipt.load` returns `None` for both — it
-    catches `OSError` — and the difference decides whether a reader is told
-    "this candidate can no longer be resumed" or "look again".
-
-    It matters because a recipe that treats the first as permanent will
-    destroy a healthy install on a transient read error: astra reproduced one
-    injected `EIO` taking `(active, desired, receipts)` from `(1,1,2)` to
-    `(0,0,2)` while the very next read returned a valid receipt and a fully
-    validating candidate.
-    """
-    try:
-        raw = json.loads(marker_text or "")
-        receipt_id = raw.get("receipt_id") if isinstance(raw, dict) else None
-    except ValueError:
-        return False
-    if not isinstance(receipt_id, str) or not receipt_id:
-        return False
-    path = Path(receipts_dir) / f"{receipt_id}.json"
-    try:
-        path.read_bytes()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    return False
+_UNREADABLE = object()
+"""Sentinel for "the receipt sidecar could not be READ", as distinct from
+`None` meaning "no receipt loaded, and that is a settled answer"."""
 
 
 def _certify(slug: str, inputs: dict, receipt, receipts_dir) -> "tuple[str, str]":
@@ -446,7 +422,7 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
         out["pending_commit"] = {**inputs, "tool": tool}
         if obs.debt:
             state, reason = "unknown", "recovery_pending"
-        elif _receipt_is_unreadable(obs.marker, receipts_dir):
+        elif receipt is _UNREADABLE:
             state, reason = "unknown", "unreadable_receipt"
         else:
             state, reason = _certify(slug, inputs, receipt, receipts_dir)

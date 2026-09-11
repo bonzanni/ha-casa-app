@@ -2291,6 +2291,46 @@ def test_an_unreadable_receipt_is_not_a_missing_one(
         "pending_commit_check"] == {"state": "blocked", "reason": "receipt_required"}
 
 
+def test_a_transiently_unreadable_receipt_is_judged_by_the_read_that_failed(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """Readability is reported by the read that produced the answer, never by
+    a later probe of the same path.
+
+    The first version classified afterwards: `specialist_receipt.load`
+    returned None, and a second `read_bytes()` of the sidecar decided whether
+    that meant gone or unreadable. A failure that does not persist — the
+    ordinary shape of a transient I/O error — then read as PERMANENTLY gone,
+    and the recipe treats permanently gone as grounds to offer an uninstall.
+    A second read is a different read and cannot be evidence about the first.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    sidecar = ctx.receipts_dir / f"{ctx.receipt.receipt_id}.json"
+    assert sidecar.is_file() and sidecar.stat().st_size > 0
+
+    # The file is perfectly readable the whole time — only the load's own read
+    # fails. Any classification made by probing the path afterwards would say
+    # "readable, so the receipt is genuinely gone".
+    real_read_text = Path.read_text
+    probes = []
+
+    def _one_bad_read(self, *a, **kw):
+        if self.name == sidecar.name:
+            probes.append(self)
+            raise OSError(5, "Input/output error")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _one_bad_read)
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert len(probes) == 1
+    assert payload["pending_commit_check"] == {"state": "unknown",
+                                               "reason": "unreadable_receipt"}
+    assert sidecar.read_bytes()  # still perfectly readable, and irrelevant
+
+
 def test_a_candidate_that_moves_under_the_validation_is_not_certified(
         tmp_path, monkeypatch, restore_installed_index) -> None:
     """The validation hashes a staged tree and resolves a dependency closure,

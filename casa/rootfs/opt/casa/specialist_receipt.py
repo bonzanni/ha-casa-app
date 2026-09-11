@@ -277,18 +277,47 @@ def sweep_aged(*, receipts_dir: Path = DEFAULT_RECEIPTS_DIR,
     return removed
 
 
+def load_observed(receipt_id: str, receipts_dir: Path = DEFAULT_RECEIPTS_DIR,
+                  ) -> "tuple[SourceReceipt | None, bool]":
+    """``(receipt, readable)`` — ``load`` plus the one fact ``load`` throws
+    away: whether the sidecar could be READ at all.
+
+    ``load`` fails closed to ``None`` for a sidecar that is gone, one that is
+    tampered, and one that is there and unreadable, because for its own
+    callers — the commit and upgrade tools — all three mean the same thing and
+    the safe answer is to refuse. A caller that must tell a reader WHY needs
+    the difference: "the receipt is gone, this candidate cannot be resumed"
+    invites destroying an install, and one transient ``EIO`` must never say
+    that (#929, diff review r2).
+
+    ``readable`` is False ONLY for a failure of the read itself. A missing
+    file is a real answer and is readable-and-absent; so is a sidecar that
+    parses and fails its own digest re-derivation. It is observed from the
+    read that actually produced the answer — never from a second probe of the
+    same path afterwards, which is a different read and can succeed where the
+    first failed.
+    """
+    if not _is_opaque_receipt_id(receipt_id):
+        return None, True
+    path = Path(receipts_dir) / f"{receipt_id}.json"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, True
+    except (OSError, ValueError):
+        return None, False
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        return None, True
+    if not isinstance(raw, dict):
+        return None, True
+    return _from_json(raw), True
+
+
 def load(receipt_id: str, receipts_dir: Path = DEFAULT_RECEIPTS_DIR) -> "SourceReceipt | None":
     """Opaque-id lookup — never accepts caller-supplied coordinates. Fails
     closed (returns ``None``) on a missing/malformed/tampered sidecar or a
     non-opaque ``receipt_id`` shape (never joins an unvalidated id into a
     filesystem path)."""
-    if not _is_opaque_receipt_id(receipt_id):
-        return None
-    path = Path(receipts_dir) / f"{receipt_id}.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, dict):
-        return None
-    return _from_json(raw)
+    return load_observed(receipt_id, receipts_dir)[0]
