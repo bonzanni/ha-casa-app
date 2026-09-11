@@ -197,13 +197,20 @@ async def test_662_an_absent_callback_selects_the_corrective_edit() -> None:
     assert actual == (1, 1, _CORRECTIVE), f"absent-callback facts: {actual!r}"
 
 
-async def test_933_a_withdrawn_consent_does_not_claim_it_expired() -> None:
+@pytest.mark.parametrize("reason", [
+    "challenge_cancelled", "unrecognised_red_case_reason",
+])
+async def test_933_a_withdrawn_consent_does_not_claim_it_expired(reason) -> None:
     """#933 — the authz half of the family, in the module the issue named.
 
     `ChallengeCoordinator.cancel_matching` retires a persona consent with
     `challenge_cancelled` when the persona is removed or its ack revoked. The
     hook sees that reason and today throws it away, so an operator who has just
     removed a persona is told the request timed out instead.
+
+    The authz half composes a headline rather than a body suffix, so it gets
+    its own unknown-reason row: the fallback has to be truthful in BOTH
+    composers, not only in the one the scheduled pin reaches.
     """
     class _Coordinator:
         def register_challenge(self, key, **kwargs):
@@ -236,7 +243,7 @@ async def test_933_a_withdrawn_consent_does_not_claim_it_expired() -> None:
         inspection=_inspection(), acks=_Acks(),
     )
     finish = coordinator.finish_factory(88, SimpleNamespace(meta={}))
-    await finish({"outcome": "cancelled", "reason": "challenge_cancelled"})
+    await finish({"outcome": "cancelled", "reason": reason})
 
     assert len(channel.edits) == 1
     text = channel.edits[0][2]
