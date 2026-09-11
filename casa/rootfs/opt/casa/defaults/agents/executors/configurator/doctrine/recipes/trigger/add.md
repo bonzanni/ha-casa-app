@@ -42,11 +42,25 @@ author whose turn sends with a tool, in `prompt=` and in
 `prompts/<trigger_name>.md` alike.
 
 **A prompt whose turn does not send with a tool needs no clause**, and adding
-one there would silence the delivery. That is the other shipped shape: the
-heartbeat and morning-briefing defaults tell the agent to output ONLY the final
-message text, so their closing text IS the delivery — they name the sentinel
-only for the case where the turn has nothing to say. Decide which shape the
-prompt you are writing is, and say so in it either way.
+one there would silence the delivery outright: the sentinel is the whole final
+text, the turn is suppressed, and the operator gets nothing. That is the other
+shipped shape — the heartbeat and morning-briefing defaults tell the agent to
+output ONLY the final message text, so their closing text IS the delivery, and
+they name the sentinel only for the turn that has nothing worth saying.
+
+**Every prompt is one shape or the other, so decide which before you write it,
+and end it accordingly.** Both endings, written out:
+
+    # shape A — the turn SENDS with a tool, then has nothing left to say.
+    prompt="Send this exact message via telegram: \"Bins out tonight.\" After the send, output the sentinel `<silent/>` and nothing else."
+
+    # shape B — the turn's OWN final text is the delivery. No closing clause;
+    # the sentinel appears only as the way to say nothing at all.
+    prompt="Output today's forecast as the final message text, with no preamble. If there is nothing worth sending, output the sentinel `<silent/>` and nothing else."
+
+Neither ending is the default. Copying shape A onto a shape-B prompt loses the
+delivery; leaving shape A's ending off a shape-A prompt costs a second message
+on every firing.
 
 ## Write the trigger — `config_trigger_upsert`, never a hand edit
 
@@ -64,7 +78,7 @@ inside Casa, leaving every other entry exactly as it was.
         minutes=<N>,               # interval only
         schedule="<cron>",         # cron only
         channel="<telegram|voice>",
-        prompt="<one-line imperative> After the send, output the sentinel `<silent/>` and nothing else.")
+        prompt="<one-line imperative, ended as its shape requires — see above>")
 
     # webhook — served ONLY at POST /webhook/<name> (no `path` field; it was
     # removed in v0.97.0). The agent must declare the `webhook` channel.
@@ -89,10 +103,13 @@ reminders); ask the resident to change one of those instead.
 ### Add agents/<role>/prompts/<trigger_name>.md (cron/interval only)
 
     You are <name>. The <trigger-name> trigger just fired. <Task description.>
-    After the send, output the sentinel `<silent/>` and nothing else.
+    <closing line for this prompt's shape — see "Every scheduled prompt says
+    how the turn ends" above.>
 
-The last line belongs there whenever the task description tells the agent to
-send something; drop it when the turn's own reply is the delivery.
+A prompt file ends the same way a `prompt=` string does, and the choice is the
+same one: shape A's closing clause when the task description tells the agent to
+send with a tool, shape B's no-clause ending when the turn's own reply is the
+delivery.
 
 ## Reload — MANDATORY before emit_completion
 

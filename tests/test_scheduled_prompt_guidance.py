@@ -68,3 +68,46 @@ def test_the_webhook_route_is_not_told_to_carry_a_prompt():
     add = _normalized(_RECIPES / "add.md")
     assert "A webhook trigger has no prompt and the schema refuses one" in add
     assert "`prompt`/`prompt_file` are **refused by the schema** for a webhook" in add
+
+
+# --- Round 2 of diff review, terra, two S2s, generalised rather than patched ---
+#
+# Stating the convention is not enough: an EXAMPLE prompt is what the
+# configurator copies, and an example that carries the closing clause
+# unconditionally silences a turn whose own final text is the delivery
+# (`_strips_to_silence` clears it and nothing is sent), while an example that
+# carries no ending at all reproduces the original double message. So every
+# surface that shows an example prompt shows BOTH shapes, labelled, and no
+# surface shows one ending as the default.
+
+SHAPE_A = "After the send, output the sentinel `<silent/>` and nothing else."
+SHAPE_B = ("If there is nothing worth sending, output the sentinel `<silent/>` "
+           "and nothing else.")
+
+EXAMPLE_SURFACES = [
+    _RECIPES / "add.md",
+    _RECIPES / "update.md",
+    REPO_ROOT / "casa/DOCS.md",
+]
+
+
+@pytest.mark.parametrize("path", EXAMPLE_SURFACES, ids=lambda p: p.name)
+def test_both_prompt_shapes_are_shown_wherever_an_example_prompt_is(path):
+    """Neither ending may be presented alone: a surface that shows one shape's
+    example shows the other's beside it."""
+    text = _normalized(path)
+    assert SHAPE_A in text
+    assert SHAPE_B in text
+    assert "shape A" in text and "shape B" in text
+
+
+@pytest.mark.parametrize("path", [_RECIPES / "add.md", _RECIPES / "update.md"],
+                         ids=lambda p: p.name)
+def test_the_upsert_template_does_not_hardcode_one_ending(path):
+    """The `config_trigger_upsert` template — the line the configurator fills in
+    and calls — must defer to the shape, never carry an ending of its own."""
+    template = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+                if "prompt=\"<" in ln]
+    assert len(template) == 1, template
+    assert "shape requires" in template[0]
+    assert "<silent/>" not in template[0]

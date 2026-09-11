@@ -129,11 +129,28 @@ hand-written prompt that omits the clause** — such a prompt still delivers
 twice, and the fix is to add the clause to the prompt.
 
 A prompt whose turn does not send with a tool needs no clause, and adding one
-there would silence the delivery. That is the shape the shipped heartbeat and
+there would silence the delivery outright — the sentinel becomes the whole final
+text and you get nothing. That is the shape the shipped heartbeat and
 morning-briefing triggers use: they tell the agent to output only the final
 message text, so the closing text IS the delivery, and they name the sentinel
-only for the case where the turn has nothing worth saying. Webhook triggers have
-no prompt at all, so none of this applies to them.
+only for the case where the turn has nothing worth saying.
+
+Every prompt is one shape or the other, so decide which before writing it:
+
+```yaml
+# shape A — the turn SENDS with a tool, then has nothing left to say.
+prompt: >-
+  Send this exact message via telegram: "Bins out tonight." After the send,
+  output the sentinel `<silent/>` and nothing else.
+
+# shape B — the turn's OWN final text is the delivery. No closing clause; the
+# sentinel appears only as the way to say nothing at all.
+prompt: >-
+  Output today's forecast as the final message text, with no preamble. If there
+  is nothing worth sending, output the sentinel `<silent/>` and nothing else.
+```
+
+Webhook triggers have no prompt at all, so none of this applies to them.
 
 ## API endpoints
 

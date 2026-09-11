@@ -19,7 +19,8 @@ that changed. Read the file first to see what it currently has; reads are fine.
 
     config_trigger_upsert(role="<role>", name="<trigger_name>",
                           type="cron", schedule="0 7 * * 1-5",
-                          channel="telegram", prompt="<imperative>")
+                          channel="telegram",
+                          prompt="<imperative, ended as its shape requires — see below>")
 
 Per-trigger prompt in prompts/<trigger_name>.md — that one IS an ordinary edit.
 
@@ -34,9 +35,22 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-An existing prompt you are touching for another reason and that lacks the clause
-is worth mentioning to the operator; adding it is a prompt change like any
-other, so say what you changed.
+A prompt that does NOT send with a tool must not be given the clause: its own
+final text is the delivery, so a closing sentinel suppresses the whole turn.
+Both endings, written out:
+
+    # shape A — the turn SENDS with a tool, then has nothing left to say.
+    prompt="Send this exact message via telegram: \"Bins out tonight.\" After the send, output the sentinel `<silent/>` and nothing else."
+
+    # shape B — the turn's OWN final text is the delivery. No closing clause;
+    # the sentinel appears only as the way to say nothing at all.
+    prompt="Output today's forecast as the final message text, with no preamble. If there is nothing worth sending, output the sentinel `<silent/>` and nothing else."
+
+Because an upsert replaces the whole entry, a prompt you rewrite is a prompt you
+re-end: give it the ending its shape requires, even when the prompt is not what
+you were asked to change. An existing shape-A prompt that lacks the clause is
+worth mentioning to the operator; adding it is a prompt change like any other,
+so say what you changed.
 
 ## Reload — MANDATORY before emit_completion
 
