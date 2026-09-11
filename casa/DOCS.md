@@ -122,29 +122,35 @@ the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
 Casa writes that clause into the prompts it generates itself that have this
-shape — a reminder's prompt and an event wake's instruction — and the
-Configurator writes it into the scheduled prompts it authors for you whose turn
-sends with a tool. It is a convention, not an enforced rule: **nothing rejects a
-hand-written prompt that omits the clause** — such a prompt still delivers
-twice, and the fix is to add the clause to the prompt.
+shape — a reminder's prompt is the plain example — and the Configurator writes
+it into the scheduled prompts it authors for you that have it. It is a
+convention, not an enforced rule: **nothing rejects a hand-written prompt that
+omits the clause** — such a prompt still delivers twice, and the fix is to add
+the clause to the prompt.
 
-A prompt whose turn does not send with a tool needs no clause, and adding one
-there would silence the delivery outright — the sentinel becomes the whole final
-text and you get nothing. That is the shape the shipped heartbeat and
-morning-briefing triggers use: they tell the agent to output only the final
-message text, so the closing text IS the delivery, and they name the sentinel
-only for the case where the turn has nothing worth saying.
+The question is never whether the turn uses a tool. It is where your copy of the
+message comes from, and there are only two answers. Either it arrives from a
+delivery tool call, which puts it in the chat by itself and leaves the turn with
+nothing left to say — that shape needs the clause. Or it arrives as the turn's
+own final text, which Casa delivers when the turn ends — that shape must NOT be
+given the clause, because the sentinel would then be the whole final text and
+you would get nothing. The shipped heartbeat and morning-briefing triggers are
+the second shape: they tell the agent to output only the final message text, and
+they name the sentinel only for the case where the turn has nothing worth
+saying. A turn that looks something up and then reports what it found is the
+second shape too, however many tools it called on the way.
 
-Every prompt is one shape or the other, so decide which before writing it:
+Decide which shape your prompt is before writing it:
 
 ```yaml
-# shape A — the turn SENDS with a tool, then has nothing left to say.
+# shape A — your copy arrives from a DELIVERY tool call (send_message /
+# send_media), so the turn has nothing left to say.
 prompt: >-
   Send this exact message via telegram: "Bins out tonight." After the send,
   output the sentinel `<silent/>` and nothing else.
 
-# shape B — the turn's OWN final text is the delivery. No closing clause; the
-# sentinel appears only as the way to say nothing at all.
+# shape B — your copy arrives as the turn's OWN final text. No closing clause;
+# the sentinel appears only as the way to say nothing at all.
 prompt: >-
   Output today's forecast as the final message text, with no preamble. If there
   is nothing worth sending, output the sentinel `<silent/>` and nothing else.

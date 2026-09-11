@@ -35,27 +35,36 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-That is exactly what Casa writes into the prompts it generates itself for this
-shape — a reminder's prompt and an event wake's instruction both send with a
-tool and then ask for the sentinel. Write it into every scheduled prompt you
-author whose turn sends with a tool, in `prompt=` and in
-`prompts/<trigger_name>.md` alike.
+**The question is never "does this turn call a tool". It is: where does the
+operator's copy of the message come from?** Exactly two answers exist, and they
+take opposite endings:
 
-**A prompt whose turn does not send with a tool needs no clause**, and adding
-one there would silence the delivery outright: the sentinel is the whole final
-text, the turn is suppressed, and the operator gets nothing. That is the other
-shipped shape — the heartbeat and morning-briefing defaults tell the agent to
-output ONLY the final message text, so their closing text IS the delivery, and
-they name the sentinel only for the turn that has nothing worth saying.
+- from a DELIVERY tool call — `send_message` or `send_media` — which puts the
+  message in the chat by itself, leaving the turn with nothing left to say. This
+  is the shape that needs the clause, and it is the shape a reminder's generated
+  prompt has.
+- from the turn's OWN final text, which Casa delivers when the turn ends. This
+  shape must NOT be given the clause: the sentinel would be the whole final text,
+  the turn would be suppressed, and the operator would get nothing. The heartbeat
+  and morning-briefing defaults are this shape — they tell the agent to output
+  ONLY the final message text — and so is any turn that calls tools to look
+  something up and then REPORTS what it found.
 
-**Every prompt is one shape or the other, so decide which before you write it,
-and end it accordingly.** Both endings, written out:
+A tool call that is not a delivery decides nothing here. A turn may read the
+calendar, query Home Assistant, or acknowledge a background wake and still be
+the second shape, because none of those put anything in the operator's chat.
 
-    # shape A — the turn SENDS with a tool, then has nothing left to say.
+**Decide which before you write the prompt, and end it accordingly.** Both
+endings, written out:
+
+    # shape A — the operator's copy of the message arrives from a DELIVERY
+    # tool call (send_message / send_media), so the turn has nothing left
+    # to say. Any other tool the turn calls is irrelevant to this choice.
     prompt="Send this exact message via telegram: \"Bins out tonight.\" After the send, output the sentinel `<silent/>` and nothing else."
 
-    # shape B — the turn's OWN final text is the delivery. No closing clause;
-    # the sentinel appears only as the way to say nothing at all.
+    # shape B — the operator's copy arrives as the turn's OWN final text. No
+    # closing clause; the sentinel appears only as the way to say nothing at
+    # all. A turn that calls tools and then REPORTS the result is this shape.
     prompt="Output today's forecast as the final message text, with no preamble. If there is nothing worth sending, output the sentinel `<silent/>` and nothing else."
 
 Neither ending is the default. Copying shape A onto a shape-B prompt loses the
@@ -108,8 +117,8 @@ reminders); ask the resident to change one of those instead.
 
 A prompt file ends the same way a `prompt=` string does, and the choice is the
 same one: shape A's closing clause when the task description tells the agent to
-send with a tool, shape B's no-clause ending when the turn's own reply is the
-delivery.
+deliver with `send_message` or `send_media`, shape B's no-clause ending when the
+turn's own reply is what the operator reads.
 
 ## Reload — MANDATORY before emit_completion
 

@@ -111,3 +111,16 @@ def test_the_upsert_template_does_not_hardcode_one_ending(path):
     assert len(template) == 1, template
     assert "shape requires" in template[0]
     assert "<silent/>" not in template[0]
+
+
+@pytest.mark.parametrize("path", EXAMPLE_SURFACES, ids=lambda p: p.name)
+def test_shape_a_is_defined_by_the_delivery_tool_not_by_tool_use(path):
+    """Gate-owned review round, terra, S2. "The turn uses a tool" is the wrong
+    test: a turn may call `ack_event`, read the calendar or query Home Assistant
+    and still deliver through its OWN final text, and giving that prompt the
+    closing clause suppresses its only delivery. So every surface names the
+    DELIVERY tools where it defines the shape, and says in terms that a
+    non-delivery tool call does not decide the question."""
+    text = _normalized(path)
+    assert "send_message" in text and "send_media" in text
+    assert "DELIVERY tool call" in text or "delivery tool call" in text

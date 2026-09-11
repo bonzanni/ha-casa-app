@@ -35,15 +35,21 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-A prompt that does NOT send with a tool must not be given the clause: its own
-final text is the delivery, so a closing sentinel suppresses the whole turn.
-Both endings, written out:
+The question is never whether the turn calls a tool. It is where the operator's
+copy of the message comes from: a DELIVERY tool call (`send_message`,
+`send_media`), or the turn's own final text. A prompt of the second kind must
+NOT be given the clause — the sentinel would be its whole final text and the
+turn would be suppressed — and a turn that calls tools to look something up and
+then reports what it found is the second kind. Both endings, written out:
 
-    # shape A — the turn SENDS with a tool, then has nothing left to say.
+    # shape A — the operator's copy of the message arrives from a DELIVERY
+    # tool call (send_message / send_media), so the turn has nothing left
+    # to say. Any other tool the turn calls is irrelevant to this choice.
     prompt="Send this exact message via telegram: \"Bins out tonight.\" After the send, output the sentinel `<silent/>` and nothing else."
 
-    # shape B — the turn's OWN final text is the delivery. No closing clause;
-    # the sentinel appears only as the way to say nothing at all.
+    # shape B — the operator's copy arrives as the turn's OWN final text. No
+    # closing clause; the sentinel appears only as the way to say nothing at
+    # all. A turn that calls tools and then REPORTS the result is this shape.
     prompt="Output today's forecast as the final message text, with no preamble. If there is nothing worth sending, output the sentinel `<silent/>` and nothing else."
 
 Because an upsert replaces the whole entry, a prompt you rewrite is a prompt you

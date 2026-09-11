@@ -88,15 +88,19 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-The clause belongs to prompts of one shape — the turn sends with a tool and then has
-nothing left to say. Casa writes it into the prompts it generates of that shape: a
-reminder's prompt ([`architecture/reminders.md`](reminders.md)) and an event wake's
-instruction ([`architecture/plugin-events.md`](plugin-events.md)). The configurator's
-trigger recipes instruct it for the scheduled prompts the configurator authors, and the
-app's user documentation states it for a hand-written `triggers.yaml`. The other shape
-needs no clause and is harmed by one: the shipped heartbeat and morning-briefing defaults
-tell the agent to output only the final message text, so their closing text IS the
-delivery, and they name the sentinel only for the turn that has nothing to say.
+**Which prompts the clause belongs to is decided by where the operator's copy comes from,
+never by whether the turn calls a tool.** A turn whose message reaches the operator from a
+delivery tool call has nothing left to say, and that is the shape the clause is for: a
+reminder's generated prompt ([`architecture/reminders.md`](reminders.md)) is the plain
+example, and an event wake carries the same clause for the same reason, its `ack_event` call
+being bookkeeping rather than the delivery
+([`architecture/plugin-events.md`](plugin-events.md)). A turn whose message reaches the
+operator as its own final text is the other shape, needs no clause, and is harmed by one —
+the sentinel would be its whole final text and the turn would be suppressed. The shipped
+heartbeat and morning-briefing defaults are that shape, telling the agent to output only the
+final message text; so is any turn that calls tools to look something up and then reports
+what it found. The configurator's trigger recipes and the app's user documentation both
+state the distinction in those terms.
 **The convention is not a runtime guarantee**: nothing validates a prompt, so a
 hand-authored prompt of the first shape that omits the clause still delivers twice. The
 mechanics of the sentinel and the gate that reads it are
