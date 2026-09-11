@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.300.0] - 2026-09-11
+
+### Changed
+
+- Plugins can no longer be given to workers. Installing or assigning a plugin
+  with a worker as its target is refused, with the reason stated, and a worker
+  target already stored on an operator-installed plugin is ignored when its
+  plugins are resolved — the plugin health report says so rather than leaving it
+  to be inferred. Workers run the plugins Casa ships with them. This is the
+  current boundary rather than a permanent one; the documentation says so.
+
 ## [0.299.0] - 2026-09-11
 
 ### Fixed
