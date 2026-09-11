@@ -6,7 +6,7 @@
 
 Every invariant is defined in exactly one file and referenced by id elsewhere.
 
-The index is sharded by family letter: see also [`doctrine/invariants.md`](invariants.md), [`doctrine/invariants-n-z.md`](invariants-n-z.md).
+The index is sharded by family letter: see also [`doctrine/invariants.md`](invariants.md), [`doctrine/invariants-n-r.md`](invariants-n-r.md), [`doctrine/invariants-s-z.md`](invariants-s-z.md).
 
 | Id | Statement | Defined in |
 |---|---|---|

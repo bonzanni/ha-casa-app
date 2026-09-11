@@ -63,8 +63,8 @@ The idiom already dominates: code prose cites invariant ids far more often than 
 
 A load failure is a source the verifier could not read or parse at all — an unparsable
 shard, a duplicate key, an unreadable file, a source that is not a list — and it leaves
-nothing to render from. Rendering from nothing is how the invariant index, its N-Z shard,
-`llms.txt` and the routing table once collapsed to their headers while the bare check,
+nothing to render from. Rendering from nothing is how the invariant index, the shard then
+holding families N-Z, `llms.txt` and the routing table once collapsed to their headers while the bare check,
 run before the collapse, named no shard and prescribed `--write-nav`. What the invariant
 does not cover: an entry-level problem in a manifest that did load (a malformed `covers`
 list, say) is reported as its own finding while navigation still renders, and `--impact`
@@ -170,9 +170,12 @@ An agent knows what it is about to change before it knows which subsystem owns i
 routing table has to meet it where it is.
 
 Never hand-edit a generated block or file: `llms.txt`, the invariant index — which shards by
-family letter across `doctrine/invariants.md` (A-E), `doctrine/invariants-f-m.md` (F-M) and
-`doctrine/invariants-n-z.md` (N-Z), because one file outgrew the index ceiling and then a shard
-did — the routing
+family letter across `doctrine/invariants.md` (A-E), `doctrine/invariants-f-m.md` (F-M),
+`doctrine/invariants-n-r.md` (N-R) and `doctrine/invariants-s-z.md` (S-Z), because one file
+outgrew the index ceiling and then a shard did, twice. A shard's name states the range of
+family letters it OWNS, so a shard that is split is RENAMED rather than left claiming a range
+it no longer holds; `doctrine/invariants.md` keeps its generic name as the entry point — the
+routing
 table between the README's markers, and each document's Source & test map are all rendered
 from the manifest (root plus shards). Hand-kept indexes rot behind the corpus they index; generated ones
 cannot. Regenerate with `python -m scripts.verify_docs . --write-nav`. A manifest that
