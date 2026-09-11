@@ -193,3 +193,70 @@ def test_pending_read_recovery_rule_is_shipped() -> None:
     prompt = _flat(Path(tools_mod.__file__).parent / "defaults/agents/executors"
                    / "configurator/prompt.md")
     assert "doctrine/safety.md" in prompt
+
+
+# Not a red case and not part of the pinned declaration: a regression test in
+# the diff, added after the gate-owned review reproduced this third path. The
+# accepted red case above covers the two merge reads only, and INV-OPS-001 is
+# declared over exactly those; this path is now compliant too, and this test is
+# what keeps it so.
+_EXPECTED_GUARD_DETAIL = (
+    "'mtg': an unreadable pending candidate already exists "
+    "([Errno 5] Input/output error); refusing to replace it — the candidate "
+    "and its saved configuration are untouched; resolve the read error and "
+    "retry"
+)
+
+
+def test_the_active_present_guards_unreadable_arm_advises_preservation(
+        tmp_path, monkeypatch, restore_installed_index) -> None:  # noqa: F811
+    """The in-lock guard reads the candidate AGAIN, and that read can fail too.
+
+    Same shape as the merge read one layer up: the guard is right to fail
+    closed — it cannot prove the occupant is ours — and the candidate is intact
+    when it does, so the advice must not send the operator to uninstall.
+    """
+    import personality_binding
+    import specialist_install
+
+    # `commit_specialist_install` only: the upgrade handler's in-lock check is
+    # `_require_active_unchanged`, a different guard with non-destructive advice
+    # already, so this arm is reachable from the install handler alone.
+    ctx = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                   required_config=("saved", "region"),
+                   config={"saved": _SAVED})
+    resume = lambda **kw: specialist_install.commit_specialist_install(**kw)  # noqa: E731
+    assert ctx.state == "pending-configuration"
+
+    slug_dir = ctx.specialists_dir / "mtg"
+    desired = slug_dir / "desired.yaml"
+    before = desired.read_bytes()
+    assert _saved_value_copies(slug_dir) == 1
+
+    # Fail ONLY the guard's own read, selected by its caller frame: the merge
+    # read succeeds and the in-lock guard's read is the one that breaks.
+    real = personality_binding.InstanceDir.desired
+    hit: list[str] = []
+
+    def _fail_only_the_guards_read(self):
+        import inspect as _inspect
+        caller = _inspect.currentframe().f_back.f_code.co_name
+        if caller == "_refuse_if_active_present":
+            hit.append(caller)
+            raise OSError(5, "Input/output error")
+        return real(self)
+
+    monkeypatch.setattr(personality_binding.InstanceDir, "desired",
+                        _fail_only_the_guards_read)
+    kw = dict(ctx.kw)
+    kw["config"] = {"region": "EU"}
+    with pytest.raises(specialist_install.SpecialistInstallError) as exc:
+        resume(**kw)
+
+    assert hit == ["_refuse_if_active_present"]
+    assert exc.value.kind == "concurrent_mutation"
+    assert exc.value.detail == _EXPECTED_GUARD_DETAIL
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+    assert desired.read_bytes() == before
+    assert _saved_value_copies(slug_dir) == 1

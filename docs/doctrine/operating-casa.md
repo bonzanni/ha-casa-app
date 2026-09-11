@@ -242,10 +242,12 @@ The invariant is deliberately narrower than the rule above it. What is mechanica
 guaranteed is those two refusal paths and the presence of this rule in both the corpus and
 the shipped configurator doctrine that paraphrases refusals to an operator; nothing checks
 an arbitrary refusal detail, a `last_activation_error`, or a recipe's prose, and at the time
-of writing three shipped strings — two in `specialist_install.py`'s active-present guard and
-`personality_binding`'s pre-guard tombstone message, which reaches the operator through the
-status payload — are outstanding violations of the rule rather than exceptions to it. They
-are tracked separately. Stating the rule wider than the pin is the point: the pin says what
+of writing two shipped strings — the different-root arm of `specialist_install.py`'s
+active-present guard, and `personality_binding`'s pre-guard tombstone message, which reaches
+the operator through the status payload — are outstanding violations of the rule rather than
+exceptions to it. They are tracked separately. That guard's OTHER arm, the one reached when
+the candidate cannot be read at all, complies: it is reachable from a transient failure, so
+it was corrected alongside the two merge reads even though the invariant does not name it. Stating the rule wider than the pin is the point: the pin says what
 is proved, and the rule says what is owed.
 
 ## What this cannot tell you

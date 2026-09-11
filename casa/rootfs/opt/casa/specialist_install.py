@@ -259,10 +259,16 @@ def _refuse_if_active_present(instance_dir, *, slug: str, root: str) -> None:
         # or schema-invalid desired.yaml raises the raw parser/validator
         # error. All of them mean the same thing here: an occupant we cannot
         # prove is ours — fail closed.
+        # INV-OPS-001's rule, applied to this guard after the gate-owned review
+        # reproduced it: the guard is right to fail closed — it cannot prove the
+        # occupant is ours — but the candidate is intact when it does, and this
+        # read can fail transiently, so the advice must not send the operator to
+        # an uninstall that deletes the settings the refusal just preserved.
         raise SpecialistInstallError(
             "concurrent_mutation",
             f"{slug!r}: an unreadable pending candidate already exists "
-            f"({exc}); refusing to replace it — uninstall or repair first")
+            f"({exc}); refusing to replace it — the candidate and its saved "
+            f"configuration are untouched; resolve the read error and retry")
     if pending is not None and pending.root != root:
         raise SpecialistInstallError(
             "concurrent_mutation",
