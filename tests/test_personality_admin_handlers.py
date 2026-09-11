@@ -1732,3 +1732,284 @@ def test_the_marker_and_the_candidate_root_are_read_as_one_locked_snapshot(
     assert second.state == "pending-configuration"
     assert torn_receipt == second.receipt.receipt_id
     assert disclosed == second.expected
+
+
+# ---------------------------------------------------------------------------
+# #929, candidate review r2 (astra): the PUBLISHED INDEX is not a source of
+# truth for pending-candidate state — presence included.
+#
+# Round 1 took the five VALUES off the index because it is a snapshot nothing
+# republishes for a pending candidate. The same snapshot was still left
+# deciding WHETHER there is a candidate at all, and that is the same defect:
+# a commit that lands pending-configuration reloads no agent (a pending
+# candidate is deliberately not loadable) and only a reload republishes the
+# index, so the index is blind to exactly the case this route exists for. The
+# mechanism is cut rather than patched a third time: presence and values both
+# come from one locked snapshot of the tree, and where the loaded view then
+# disagrees the payload says so instead of contradicting itself.
+# ---------------------------------------------------------------------------
+
+
+async def _resume_with_disclosed(ctx, disclosed, monkeypatch, *, upgrade=False):
+    """Hand the five disclosed strings straight to the PUBLIC re-commit tool
+    and return `(core_calls, payload)`.
+
+    Only the tool's process-global LOCATIONS are redirected at this test's tree
+    (the receipts directory, the ack ledger, the lifecycle core's `/config`
+    roots, the bundle sequencer); the real `commit_specialist_install` /
+    `upgrade_specialist` runs, and the arguments are exactly `slug`, the
+    disclosed mapping and the configuration the operator supplies.
+    """
+    from test_tools_specialist_install import _stub_bundle_sequencer
+
+    import specialist_install
+    import specialist_install_consent
+    import specialist_receipt
+    import tools as tools_mod
+    from tools import specialist_install_commit, specialist_upgrade
+
+    name = "upgrade_specialist" if upgrade else "commit_specialist_install"
+    real_core = getattr(specialist_install, name)
+    real_load = specialist_receipt.load
+    core_calls: list[dict] = []
+    roots = {k: ctx.kw[k] for k in ("specialists_dir", "agents_specialists_dir",
+                                    "registry_path", "plugin_store_root", "ops_dir")}
+
+    def _core(**kw):
+        core_calls.append(kw)
+        return real_core(**dict(kw, **roots))
+
+    monkeypatch.setattr(specialist_install, name, _core)
+    monkeypatch.setattr(specialist_receipt, "load",
+                        lambda rid, *a, **k: real_load(rid, receipts_dir=ctx.receipts_dir))
+    monkeypatch.setattr(specialist_install_consent, "SpecialistInstallAckStore",
+                        lambda *a, **k: ctx.acks)
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
+    _stub_bundle_sequencer(monkeypatch)
+
+    tool = specialist_upgrade if upgrade else specialist_install_commit
+    result = await tool.handler(
+        {"slug": ctx.slug, **disclosed, "config": {"region": "EU"}})
+    return core_calls, json.loads(result["content"][0]["text"])
+
+
+@pytest.mark.asyncio
+async def test_a_pending_install_the_index_never_saw_still_names_its_resume_inputs(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The ordinary first install that lands pending-configuration, in the
+    order a running process actually sees it: the index was published BEFORE
+    the install and no reload followed it, because a pending candidate is not
+    loadable and only a reload republishes.
+
+    The index therefore holds no instance for the slug, and the route answered
+    `{"slug": ..., "state": "not_installed"}` with zero resume inputs while the
+    tree held all five — the recipe sends a LATER engagement here for exactly
+    those values, so the route prevented the recovery it exists to enable
+    (astra, candidate review r2). Asserted as the OUTCOME: the five it now
+    discloses are accepted by the public re-commit tool and reach `active`.
+    """
+    import personality_admin_handlers
+    from personality_admin_handlers import specialist_status_payload
+    from specialist_registry import InstalledSpecialistIndex
+
+    specialists_dir = tmp_path / "specialists"
+    index = InstalledSpecialistIndex(specialists_dir=str(specialists_dir))
+    index.load()
+    restore_installed_index.set_active_installed_index(index)
+    assert len(index.installed_slugs()) == 0
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(personality_admin_handlers, "SPECIALIST_RECEIPTS_DIR",
+                        ctx.receipts_dir, raising=False)
+
+    # The premise, asserted before it is read: one tree, the install in it,
+    # and an index that still knows nothing about the slug.
+    assert ctx.specialists_dir == specialists_dir
+    assert len(index.installed_slugs()) == 0
+    assert index.get_instance("mtg") is None
+    assert (specialists_dir / "mtg" / "desired.yaml").is_file()
+    assert json.loads(ctx.marker.read_text())["receipt_id"] == ctx.receipt.receipt_id
+    assert len(list(ctx.receipts_dir.glob("*.json"))) == 1
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert set(payload["pending_commit"]) == _RESUME_KEYS   # pre-fix: KeyError
+    assert payload["pending_commit"] == ctx.expected
+    # The loaded view is untouched AND labelled, so the payload cannot be read
+    # as one contradictory claim about the tree.
+    assert payload["state"] == "not_installed"
+    assert payload["state_is_stale"] is True
+
+    core_calls, result = await _resume_with_disclosed(
+        ctx, payload["pending_commit"], monkeypatch)
+
+    assert result.get("kind") is None
+    assert result["ok"] is True and result["state"] == "active"
+    assert len(core_calls) == 1
+    assert not ctx.marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_pending_upgrade_the_index_predates_still_names_its_resume_inputs(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The same mechanism one step on: the index holds the slug's ACTIVE
+    generation, published before the upgrade staged a candidate beside it, so
+    its instance has `desired = None`. Presence taken from that instance
+    withheld the disclosure exactly as the empty index did — the tree is what
+    is asked, and the disclosed five re-commit through the public upgrade tool.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    active = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                      required_config=(), config={})
+    assert active.state == "active"
+    index = _publish(active, restore_installed_index, monkeypatch)
+    pending = _install(tmp_path, monkeypatch, home=tmp_path / "b", slug="mtg",
+                       version="0.2.0")
+    assert pending.state == "pending-configuration"
+
+    # The premise: the index's instance predates the staged candidate.
+    instance = index.get_instance("mtg")
+    assert instance.desired is None and instance.state == "active"
+    assert instance.active.root.endswith(active.expected["root_digest"])
+    assert json.loads(pending.marker.read_text())["receipt_id"] == pending.receipt.receipt_id
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert set(payload["pending_commit"]) == _RESUME_KEYS   # pre-fix: KeyError
+    assert payload["pending_commit"] == pending.expected
+    assert payload["pending_commit"]["version"] == "0.2.0"
+    assert payload["state"] == "active" and payload["desired"] is None
+    assert payload["state_is_stale"] is True
+
+    core_calls, result = await _resume_with_disclosed(
+        pending, payload["pending_commit"], monkeypatch, upgrade=True)
+
+    assert result.get("kind") is None
+    assert result["ok"] is True and result["state"] == "active"
+    assert len(core_calls) == 1
+    assert not pending.marker.exists()
+
+
+def test_a_candidate_gone_from_the_tree_is_not_disclosed_from_a_stale_index(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The absence rule is the tree's too, in the other direction: the index
+    still holds the pending instance, the tree no longer holds the candidate.
+
+    Pre-fix the index's `desired` alone put a five-member `pending_commit` in
+    the payload with every value null, describing a candidate that is not
+    there; the tree decides, so the key is absent and the loaded view carrying
+    a `desired` it no longer has is marked stale.
+    """
+    import specialist_install
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    index = _publish(ctx, restore_installed_index, monkeypatch)
+    specialist_install.uninstall_specialist(
+        slug="mtg", specialists_dir=ctx.kw["specialists_dir"],
+        agents_specialists_dir=ctx.kw["agents_specialists_dir"],
+        registry_path=ctx.kw["registry_path"], ops_dir=ctx.kw["ops_dir"])
+
+    assert index.get_instance("mtg").desired is not None
+    assert not (ctx.specialists_dir / "mtg" / "desired.yaml").exists()
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert "pending_commit" not in payload          # pre-fix: five null members
+    assert payload["desired"] is not None
+    assert payload["state_is_stale"] is True
+    assert len(payload) == 7
+
+
+def test_an_index_that_names_no_tree_discloses_nothing_about_a_candidate(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """WHERE the tree is remains the one thing taken from the index. A
+    publisher that names none leaves the route unable to read the tree at all,
+    and it then discloses no candidate AND no staleness — "cannot tell" is not
+    "they agree" — even with a real pending candidate sitting in this tree.
+    """
+    import personality_admin_handlers
+    from personality_admin_handlers import specialist_status_payload
+    from specialist_lifecycle import SpecialistInstance
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(personality_admin_handlers, "SPECIALIST_RECEIPTS_DIR",
+                        ctx.receipts_dir, raising=False)
+
+    class _NoTreeIndex:
+        def get_instance(self, slug):
+            return SpecialistInstance(
+                slug=slug, stable_agent_id=f"specialist:{slug}", state="active",
+                active=_instance_tuple(), desired=None, last_activation_error=None)
+
+    restore_installed_index.set_active_installed_index(_NoTreeIndex())
+    assert restore_installed_index.live_specialists_dir() is None
+    assert (ctx.specialists_dir / "mtg" / "desired.yaml").is_file()
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert "pending_commit" not in payload
+    assert "state_is_stale" not in payload
+    assert len(payload) == 6
+
+
+def test_a_loaded_candidate_that_is_not_the_trees_candidate_is_marked_stale(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The residual round 1 left behind, now named in the payload: BOTH views
+    hold a candidate and they are different ones, so `desired` describes A
+    while `pending_commit` — correctly, since round 1 — names B's five.
+
+    A reader handed those two together had no way to tell which is the tree.
+    `state_is_stale` says it, on the same rule as the other direction: the
+    loaded candidate is compared with the tree's by presence AND root.
+    """
+    import specialist_install
+    from personality_admin_handlers import specialist_status_payload
+
+    first = _pending_install(tmp_path, monkeypatch)
+    index = _publish(first, restore_installed_index, monkeypatch)
+    specialist_install.uninstall_specialist(
+        slug="mtg", specialists_dir=first.kw["specialists_dir"],
+        agents_specialists_dir=first.kw["agents_specialists_dir"],
+        registry_path=first.kw["registry_path"], ops_dir=first.kw["ops_dir"])
+    second = _install(tmp_path, monkeypatch, home=tmp_path / "b", slug="mtg",
+                      version="0.2.0")
+    assert second.state == "pending-configuration"
+
+    # The premise: two candidates, one slug, neither view empty.
+    stale = index.get_instance("mtg")
+    assert stale.desired is not None
+    assert stale.desired.root.endswith(first.expected["root_digest"])
+    assert second.expected["root_digest"] != first.expected["root_digest"]
+
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert payload["desired"]["root"].endswith(first.expected["root_digest"])
+    assert payload["pending_commit"] == second.expected
+    assert payload["state_is_stale"] is True        # pre-fix: absent entirely
+
+
+def test_a_slug_that_is_not_a_plain_tree_name_reads_no_tree(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """Taking presence off the index made the tree read reachable for ANY slug
+    string — before, a slug the index did not hold never became a path. So the
+    string is fenced where it becomes one: only a single plain directory name
+    names a candidate.
+
+    Asserted against a real candidate reached by traversal: unfenced, this
+    discloses `mtg`'s five values under a slug that is not `mtg`.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    traversed = "../specialists/mtg"
+    assert (ctx.specialists_dir / traversed).resolve() == (ctx.specialists_dir / "mtg")
+    assert (ctx.specialists_dir / traversed / "desired.yaml").is_file()
+
+    payload = specialist_status_payload(object(), slug=traversed)
+
+    assert payload == {"slug": traversed, "state": "not_installed"}

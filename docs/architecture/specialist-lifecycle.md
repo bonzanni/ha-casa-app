@@ -197,13 +197,17 @@ package trees in place — their failure window can leave that one plugin's own 
 broken, but never another plugin's — and generation retention means up to two
 generations of a tarball requirement occupy disk between installs.
 
-**INV-SPEC-015**: A pending-configuration outcome names the inputs its own re-commit takes — the commit and upgrade tool results, and the status of any slug holding a desired candidate, carry the retained receipt id and staged directory together with the component id, version and root digest.
+**INV-SPEC-015**: A pending-configuration outcome names the inputs its own re-commit takes — the commit and upgrade tool results, and the status of any slug whose tree holds a desired candidate, carry the retained receipt id and staged directory together with the component id, version and root digest; status reads that candidate's presence and its values from one locked snapshot of the tree rather than from the loaded index, and marks its own loaded view stale when that view does not describe the tree's candidate.
 
 The re-commit was already the decided resume route (below), and the values were already
 retained; what no surface carried was the values themselves, so the carriers pointed at a
-re-inspect that refuses. The status disclosure follows the DESIRED CANDIDATE rather than the
-state string, because a pending upgrade keeps its active tuple and the reloaded index calls
-that slug active. Each member is reported as null rather than raised on: a pending slug
+re-inspect that refuses. The status disclosure follows the TREE'S DESIRED CANDIDATE rather than the
+state string, and rather than the loaded index: a pending upgrade keeps its active tuple, so
+an index that has reloaded calls that slug active — and, more sharply, nothing republishes the
+index for a pending candidate at all, because such a candidate is deliberately not loadable
+and only a reload republishes. An index asked WHETHER there is a candidate therefore answers
+no for the ordinary first install that lands pending, which is exactly the case a later
+engagement comes here to recover, so presence is read from the tree with the values. Each member is reported as null rather than raised on: a pending slug
 predating the marker has none, an abandoned receipt is swept, and a staged tree can be
 reclaimed under a still-standing candidate — the operator diagnosing exactly that must still
 get an answer. The staged directory is named only while it still exists, since a reclaimed
@@ -213,9 +217,18 @@ lifecycle writer holds — never an in-memory index snapshot's candidate beside 
 marker, and never between a stage's two writes; either pairing could name one candidate's
 root beside another's receipt, which is the refusal this disclosure exists to prevent.
 
+Because the two sources answer different questions they can disagree, and the payload says
+so rather than leaving the contradiction to its reader. `state`, `active` and `desired` remain
+the running process's LOADED view — which is what an operator asking whether the slug is
+serving is asking, and no tree read answers it — while the disclosed inputs are the tree's.
+`state_is_stale` accompanies them exactly when the loaded view's candidate, by presence and by
+root, is not the tree's: believe the disclosed inputs about what can be re-committed, `state`
+about what is loaded, and expect the loaded view to catch up at the next reload or restart.
+
 What it does not cover: that the re-commit will SUCCEED. The inputs are named; the bytes
 they point at are re-validated by the commit tool as they always were, and a closure that
-drifted still refuses.
+drifted still refuses. Nor does status refresh anything it reports — it triggers no reload,
+so a stale loaded view stays stale until something else reloads.
 
 ## Failure behavior
 

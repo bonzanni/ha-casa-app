@@ -514,9 +514,11 @@ class InstalledSpecialistIndex:
     @property
     def specialists_dir(self) -> Path:
         """The tree this index was built from. #929: the admin status payload
-        reads a pending slug's `pending-receipt.json` out of it, and must read
-        the SAME tree the instance it is describing came from — never a
-        module default that a differently-rooted index would contradict."""
+        reads a pending slug's candidate and `pending-receipt.json` out of it,
+        and must read the SAME tree this index was built from — never a module
+        default that a differently-rooted index would contradict. A LOCATION,
+        fixed when the index is constructed from the config root; nothing
+        about any slug's state is read through it."""
         return self._dir
 
     def load(self) -> None:
@@ -661,9 +663,15 @@ def live_collision_slugs() -> frozenset[str]:
 def live_specialists_dir() -> "Path | None":
     """#929: the directory the published index was built from, for readers that
     must reach a slug's on-disk tuple files (the admin status payload's pending
-    marker). `None` when no index is published — and `getattr`, not attribute
-    access, because a test stand-in index is a legitimate publisher here and an
-    admin route must degrade to "cannot tell" rather than raise."""
+    candidate and marker). `None` when no index is published — and `getattr`,
+    not attribute access, because a test stand-in index is a legitimate
+    publisher here and an admin route must degrade to "cannot tell" rather
+    than raise.
+
+    This is the ONLY thing the status payload asks the index about a pending
+    candidate's tree — WHERE it is. Presence and values are read from the tree
+    itself, because the index is refreshed by agent reloads and a commit that
+    lands pending-configuration performs none (astra, candidate review r2)."""
     return getattr(_active_index, "specialists_dir", None)
 
 

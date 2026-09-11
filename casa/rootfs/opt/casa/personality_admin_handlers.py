@@ -23,9 +23,10 @@ from aiohttp import web
 # #929: WHERE a pending slug's source receipt is read from. Its production
 # value is `specialist_receipt.DEFAULT_RECEIPTS_DIR`, resolved at call time so
 # a test can point this seam at a temporary tree without the status function
-# growing an argument its route would have to thread. The specialists tree
-# comes from the published index instead (`live_specialists_dir`), because the
-# marker must be read out of the SAME tree the instance came from.
+# growing an argument its route would have to thread. The specialists TREE is
+# the ONE thing still taken from the published index (`live_specialists_dir`):
+# WHERE the tree is, a per-process location fixed at boot — never WHAT is in
+# it, which after `_tree_candidate_disclosure` comes from the tree itself.
 SPECIALIST_RECEIPTS_DIR: "object | None" = None
 
 
@@ -51,10 +52,10 @@ def _json_type_name(value: object) -> str:
     return "object"
 
 
-def _candidate_snapshot(slug_dir: "Path") -> "tuple[str | None, str | None]":
-    """#929 (terra, candidate review): the candidate's own root string and its
-    `pending-receipt.json`, read as ONE snapshot of the tree — under the lock
-    every writer of those two files holds.
+def _candidate_snapshot(slug_dir: "Path") -> "tuple[bool, str | None, str | None]":
+    """#929: WHETHER this slug's tree holds a desired candidate, that
+    candidate's own root string, and its `pending-receipt.json`, read as ONE
+    snapshot of the tree — under the lock every writer of those files holds.
 
     They are written together and only together: `_record_pending_receipt`
     immediately before `stage_desired`, and `_clear_pending_receipt` in the
@@ -70,6 +71,18 @@ def _candidate_snapshot(slug_dir: "Path") -> "tuple[str | None, str | None]":
     in both directions; the receipt sidecar the marker names is write-once
     and is loaded outside it.
 
+    PRESENCE is read here too (astra, candidate review r2), from the same
+    locked section rather than from the published index — see
+    `_tree_candidate_disclosure` for why the index cannot answer it. The
+    predicate is deliberately the INDEX'S OWN — a candidate is what
+    `InstanceDir.desired()` returns, exactly as `InstalledSpecialistIndex.
+    load` decides `pending-configuration` — so the only difference between
+    the two answers is WHEN the tree was read, which is what makes comparing
+    them a sound staleness test rather than two rules disagreeing. Reading it
+    beside the root and the marker keeps the property round 1 bought — one
+    lock, one tree, one candidate — instead of a second read that could land
+    on another.
+
     Loop-safety (the lock's own contract): MATERIALIZE_LOCK is never acquired
     on the event loop — the only caller is `specialist_status_payload`, which
     the route offloads with `asyncio.to_thread`. It is the innermost of the
@@ -84,22 +97,30 @@ def _candidate_snapshot(slug_dir: "Path") -> "tuple[str | None, str | None]":
         try:
             desired = personality_binding.InstanceDir(slug_dir).desired()
         except Exception:  # noqa: BLE001
-            # A candidate that will not load — bad YAML, a schema failure, a
-            # #372 tombstone — has no root to disclose, and the route must
-            # still answer for exactly the slug an operator is diagnosing.
+            # A candidate that will not load — bad YAML, a schema failure,
+            # a #372 tombstone — is no candidate here, exactly as it is none
+            # to the index's own scan, which isolates that slug as
+            # state="error" and puts the reason in `last_activation_error`.
+            # Nothing about a resume is derivable from it, and the route must
+            # still answer for the slug an operator is diagnosing, not raise.
             desired = None
+        present = desired is not None
         root = getattr(desired, "root", None)
         try:
             marker = (slug_dir / "pending-receipt.json").read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, ValueError):
+            # ValueError: a name the OS cannot express at all (an embedded
+            # NUL) is an unreadable marker, not a 500 out of a status route.
             marker = None
-    return root, marker
+    return present, root, marker
 
 
-def _pending_commit_inputs(slug: str) -> dict[str, object]:
-    """#929 (INV-SPEC-015): the five arguments a re-commit of this slug's
-    desired candidate takes, each member `None` when it is no longer
-    derivable.
+def _pending_commit_inputs(root: "str | None", marker_text: "str | None") -> dict[str, object]:
+    """#929 (INV-SPEC-015): the five arguments a re-commit of the candidate in
+    `_candidate_snapshot`'s snapshot takes, each member `None` when it is no
+    longer derivable. Called only for a snapshot that HAS a candidate; `root`
+    is still optional here because a loaded tuple's root string can be
+    anything the checked parser then refuses.
 
     A first install that lands `pending-configuration` retains its receipt,
     its staging tree and a `pending-receipt.json` marker, and the same
@@ -107,8 +128,9 @@ def _pending_commit_inputs(slug: str) -> dict[str, object]:
     refuses the now-occupied slug, so a later engagement that was not told
     these values had no route at all. Three of them are already on disk in
     the candidate's own root string; the other two come from the marker and
-    the receipt it names — read as one locked snapshot of the tree, never
-    the index's root beside the tree's marker (`_candidate_snapshot`).
+    the receipt it names. Both halves reach this function from ONE locked
+    read of the tree (`_candidate_snapshot`) — never the index's root beside
+    the tree's marker.
 
     Every step degrades to `None` rather than raising: a pending slug that
     predates the marker has none (the boot reader tolerates exactly that,
@@ -121,16 +143,11 @@ def _pending_commit_inputs(slug: str) -> dict[str, object]:
     """
     import specialist_receipt
     from specialist_install import parse_component_root
-    from specialist_registry import live_specialists_dir
 
     out: dict[str, object] = {
         "receipt_id": None, "staged_dir": None,
         "component_id": None, "version": None, "root_digest": None}
 
-    specialists_dir = live_specialists_dir()
-    if specialists_dir is None:
-        return out
-    root, marker_text = _candidate_snapshot(Path(specialists_dir) / slug)
     try:
         component_id, version, root_digest = parse_component_root(root)
     except (ValueError, AttributeError, TypeError):
@@ -169,15 +186,81 @@ def _pending_commit_inputs(slug: str) -> dict[str, object]:
     return out
 
 
+def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str, object]:
+    """#929 (astra, candidate review r2): every status key that describes a
+    pending candidate — its PRESENCE as much as its five values — decided by
+    the tree, plus the one key that tells a reader when the payload's loaded
+    view does not describe that candidate.
+
+    What was cut, and why it is a cut rather than a third case. This
+    disclosure used to ask the published index WHETHER there was a candidate
+    (`instance.desired is not None`) and the tree only for the values. The
+    index is a snapshot refreshed by agent RELOADS, and a commit that lands
+    `pending-configuration` performs none — a pending candidate is
+    deliberately not loadable, so nothing reloads and nothing republishes. So
+    the index is blind to exactly the case this route exists for: after a
+    first install that lands pending, the index has no instance for the slug
+    at all and status answered `not_installed` with NO resume inputs, while
+    the tree held all five and the recipe was sending the next engagement
+    here to collect them — the route prevented the recovery it was added to
+    enable. A pending UPGRADE is the same defect one step on: the index's
+    instance predates the staging, its `desired` is None, and the same key is
+    withheld. Round 1 had already had to take the VALUES off the index for
+    the same reason. One mechanism, three faces: presence and values now come
+    from one locked snapshot of the tree (`_candidate_snapshot`), and the
+    index is not consulted about this slug's candidate at all.
+
+    Coherence, since the two sources can disagree. `state`, `active` and
+    `desired` remain the RUNNING PROCESS's loaded view — which is what an
+    operator asking "is this slug serving?" is asking, and no tree read can
+    answer it. They and `pending_commit` therefore answer different questions
+    and legitimately move on different events: the loaded view at a reload,
+    the tree at a commit. Where they differ the payload says so with
+    `state_is_stale` rather than leaving a reader to reconcile
+    `state: "not_installed"` with five resume inputs: it is present exactly
+    when the loaded view's candidate — its presence AND its root — is not the
+    tree's, in either direction. What a reader is meant to believe:
+    `pending_commit` about what can be re-committed (it is the tree), `state`
+    about what is loaded, and that the loaded view catches up at the next
+    reload or restart.
+
+    The one thing still taken from the index is WHERE the specialist tree is:
+    a per-process location fixed at boot from the config root, not state
+    about this slug. With no index published there is no tree to read, so the
+    payload discloses nothing about a candidate — and withholds
+    `state_is_stale` too, because "cannot tell" is not "they agree".
+
+    The slug is fenced HERE, where the caller's string becomes a path. Under
+    the old mechanism only a slug the index already held could reach the disk
+    at all, and the index's keys are directory names its own scan produced;
+    reading the tree for ANY requested slug is new with this cut, so
+    `../<x>` would otherwise have read — and YAML-parsed — a tuple from
+    outside the tree and disclosed another slug's five values under a name
+    that is not that slug. One plain directory name is the whole rule:
+    `Path(slug).name` is the empty string for `.` and `..` and the last
+    segment for anything with a separator, so equality admits exactly the
+    names the index's own directory scan can produce.
+    """
+    from specialist_registry import live_specialists_dir
+
+    specialists_dir = live_specialists_dir()
+    if specialists_dir is None or slug != Path(slug).name:
+        return {}
+    present, root, marker_text = _candidate_snapshot(Path(specialists_dir) / slug)
+    out: dict[str, object] = {}
+    if present:
+        out["pending_commit"] = _pending_commit_inputs(root, marker_text)
+    if (loaded_candidate is not None,
+            getattr(loaded_candidate, "root", None)) != (present, root):
+        out["state_is_stale"] = True
+    return out
+
+
 def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
     """Blocking: reads the pending candidate, its marker and its receipt
     sidecar off disk, the first two under MATERIALIZE_LOCK. Callers on the
     event loop offload it (see `_specialist_status`)."""
     from specialist_registry import get_installed_instance
-
-    instance = get_installed_instance(slug)
-    if instance is None:
-        return {"slug": slug, "state": "not_installed"}
 
     def _tuple_view(value):
         if value is None:
@@ -192,22 +275,28 @@ def specialist_status_payload(runtime, *, slug: str) -> dict[str, object]:
             "config_digest": value.config_digest,
         }
 
-    payload = {
-        "slug": slug,
-        "stable_agent_id": instance.stable_agent_id,
-        "state": instance.state,
-        "active": _tuple_view(instance.active),
-        "desired": _tuple_view(instance.desired),
-        "last_activation_error": instance.last_activation_error,
-    }
-    # #929: on the DESIRED CANDIDATE, not on the state string — a pending
-    # UPGRADE keeps its active tuple, so the reloaded index calls that slug
-    # `active` while the candidate is exactly what a resume re-commits. The
-    # index decides only WHETHER there is a candidate to disclose; the five
-    # values are read from the tree, so a snapshot older than the tree
-    # cannot contribute one of them (terra, candidate review).
-    if instance.desired is not None:
-        payload["pending_commit"] = _pending_commit_inputs(slug)
+    instance = get_installed_instance(slug)
+    if instance is None:
+        # #929: a slug the loaded index does not know is NOT evidence that the
+        # tree holds nothing — a first install that lands pending-configuration
+        # reloads nothing, so it never enters the index. This stays the payload
+        # for a slug that is genuinely absent everywhere; the disclosure below
+        # is what decides which of the two this is.
+        payload: dict[str, object] = {"slug": slug, "state": "not_installed"}
+    else:
+        payload = {
+            "slug": slug,
+            "stable_agent_id": instance.stable_agent_id,
+            "state": instance.state,
+            "active": _tuple_view(instance.active),
+            "desired": _tuple_view(instance.desired),
+            "last_activation_error": instance.last_activation_error,
+        }
+    # #929: the candidate's presence and its values both come from the tree,
+    # and the loaded view above is labelled stale when it does not describe
+    # that candidate (`_tree_candidate_disclosure`).
+    payload.update(_tree_candidate_disclosure(
+        slug, instance.desired if instance is not None else None))
     return payload
 
 

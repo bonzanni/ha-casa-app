@@ -105,7 +105,7 @@
     INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
     INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]
     INV-SPEC-002: [tests/test_specialist_lifecycle_matrix.py::test_fresh_install_missing_config_is_pending_configuration_with_no_active_tuple]
-    INV-SPEC-015: [tests/test_tools_specialist_install.py::test_a_pending_install_commit_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_specialist_status_names_a_pending_slugs_resume_inputs]
+    INV-SPEC-015: [tests/test_tools_specialist_install.py::test_a_pending_install_commit_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_specialist_status_names_a_pending_slugs_resume_inputs, tests/test_personality_admin_handlers.py::test_a_pending_install_the_index_never_saw_still_names_its_resume_inputs]
     INV-SPEC-004: [tests/test_specialist_materialize.py::test_materialize_operational_files_repeat_call_swaps_atomically_and_gcs_old_version]
     INV-SPEC-005: [tests/test_specialist_consent_receipt.py::test_pin_inv_spec_005_tampered_receipt_loads_as_none]
     INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses]
