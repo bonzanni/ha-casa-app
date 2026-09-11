@@ -215,7 +215,7 @@ class TestTheFileIsActuallyDead:
 # --- The read/render/not-served pair, and the corpus statement that names it ---
 #
 # Node ids here are UNPARAMETRISED on purpose: they are bound from
-# `docs/manifest.d/architecture-n-r.yaml`, and a bracketed id does not resolve.
+# `docs/manifest.d/architecture-plugin-m-r.yaml`, and a bracketed id does not resolve.
 
 _DEFAULT_AGENTS = "casa/rootfs/opt/casa/defaults/agents"
 _DISCLOSURE = "casa/rootfs/opt/casa/defaults/policies/disclosure.yaml"

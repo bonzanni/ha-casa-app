@@ -50,9 +50,12 @@ SKELETON_MANIFEST = """
 - doc: doctrine/invariants-f-m.md
   kind: generated
   summary: Generated invariant index (families F-M).
-- doc: doctrine/invariants-n-z.md
+- doc: doctrine/invariants-n-r.md
   kind: generated
-  summary: Generated invariant index (families N-Z).
+  summary: Generated invariant index (families N-R).
+- doc: doctrine/invariants-s-z.md
+  kind: generated
+  summary: Generated invariant index (families S-Z).
 - doc: doctrine/publishing.md
   summary: What may be written down here.
   when_changing: anything published
@@ -66,7 +69,8 @@ SKELETON_FILES = {
     "llms.txt": "",
     "doctrine/invariants.md": "",
     "doctrine/invariants-f-m.md": "",
-    "doctrine/invariants-n-z.md": "",
+    "doctrine/invariants-n-r.md": "",
+    "doctrine/invariants-s-z.md": "",
     "doctrine/publishing.md": CODE_WINS + SOURCEMAP,
     "contributing/doc-contract.md": CODE_WINS + SOURCEMAP,
 }
@@ -1008,13 +1012,19 @@ INV_SHARD_ENTRY = """
   covers: [casa/a.py::A.b]
   tests: [tests/test_a.py::test_b]
   related: [doctrine/publishing.md]
-  defines_invariants: [INV-EVAL-001, INV-F-001, INV-MEM-001, INV-N-001, INV-OBS-001]
+  defines_invariants: [INV-EVAL-001, INV-F-001, INV-MEM-001, INV-N-001, INV-OBS-001,
+                       INV-PUB-001, INV-R-001, INV-RZ-001, INV-S-001, INV-VOICE-001]
   invariant_tests:
     INV-EVAL-001: [tests/test_a.py::test_b]
     INV-F-001: [tests/test_a.py::test_b]
     INV-MEM-001: [tests/test_a.py::test_b]
     INV-N-001: [tests/test_a.py::test_b]
     INV-OBS-001: [tests/test_a.py::test_b]
+    INV-PUB-001: [tests/test_a.py::test_b]
+    INV-R-001: [tests/test_a.py::test_b]
+    INV-RZ-001: [tests/test_a.py::test_b]
+    INV-S-001: [tests/test_a.py::test_b]
+    INV-VOICE-001: [tests/test_a.py::test_b]
 """
 
 INV_SHARD_DOC = {
@@ -1024,56 +1034,88 @@ INV_SHARD_DOC = {
         "**INV-F-001**: first family of the second shard.\n\n"
         "**INV-MEM-001**: last family of the second shard.\n\n"
         "**INV-N-001**: first family of the third shard.\n\n"
-        "**INV-OBS-001**: an ordinary family of the third shard.\n"
+        "**INV-OBS-001**: an ordinary family of the third shard.\n\n"
+        "**INV-PUB-001**: an ordinary family of the third shard.\n\n"
+        "**INV-R-001**: the third shard owns the whole range up to its bound.\n\n"
+        "**INV-RZ-001**: last family of the third shard, just below the bound.\n\n"
+        "**INV-S-001**: first family of the fourth shard.\n\n"
+        "**INV-VOICE-001**: an ordinary family of the fourth shard.\n"
         + SOURCEMAP
     )
 }
 
 
+# Literal on purpose: derived from `_INV_SHARDS`, these would describe whatever table
+# the code happens to hold, and a dropped or renamed shard row would simply stop being
+# checked. The pins below compare the RENDERED layout against this fixed expectation.
+INV_SHARD_PATHS = (
+    "doctrine/invariants.md",
+    "doctrine/invariants-f-m.md",
+    "doctrine/invariants-n-r.md",
+    "doctrine/invariants-s-z.md",
+)
+INV_SHARD_LABELS = ("A-E", "F-M", "N-R", "S-Z")
+
+
 def _shard_rows(root: Path) -> dict[str, list[str]]:
+    """Every rendered invariant-index shard, keyed by the path actually rendered —
+    NOT by the paths the table names, so a missing or extra shard shows up as a
+    layout difference rather than a KeyError."""
     targets = verify_docs.nav_targets(root)
     return {
-        path: [line.split("`")[1] for line in targets[path].splitlines()
+        path: [line.split("`")[1] for line in body.splitlines()
                if line.startswith("| `INV-")]
-        for _label, path, _bound in verify_docs._INV_SHARDS
+        for path, body in targets.items()
+        if path.startswith("doctrine/invariants")
     }
 
 
-def test_every_family_lands_in_exactly_one_shard_at_the_f_and_n_boundaries(tmp_path):
-    """#843: the A-M shard outgrew the index ceiling and the index now shards three
-    ways. A family sorting exactly AT a boundary (`F`, `N`) opens the later shard,
-    one sorting just below it (`EVAL`, `MEM`) closes the earlier one, and every
-    row appears exactly once across the three — so a boundary compared with the
-    wrong inequality, or a family the table assigns nowhere, is caught here."""
+def test_every_family_lands_in_exactly_one_shard_at_the_f_n_and_s_boundaries(tmp_path):
+    """#843, then #953: each shard outgrew the index ceiling in turn and the index
+    now shards FOUR ways. A family sorting exactly AT a boundary (`F`, `N`, `S`)
+    opens the later shard, one sorting just below it (`EVAL`, `MEM`, `RZ`) closes
+    the earlier one, and every row appears exactly once across the four — so a
+    boundary compared with the wrong inequality, a bound moved off `S` to
+    anywhere in `R`..`RZ` or up to `T`, a shard
+    table left at three rows, or a family the table assigns nowhere is caught
+    here. The expected layout is literal test data, never read back from
+    `_INV_SHARDS`."""
     root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
     rows = _shard_rows(root)
     assert rows == {
         "doctrine/invariants.md": ["INV-EVAL-001"],
         "doctrine/invariants-f-m.md": ["INV-F-001", "INV-MEM-001"],
-        "doctrine/invariants-n-z.md": ["INV-N-001", "INV-OBS-001"],
+        "doctrine/invariants-n-r.md": ["INV-N-001", "INV-OBS-001", "INV-PUB-001",
+                                      "INV-R-001", "INV-RZ-001"],
+        "doctrine/invariants-s-z.md": ["INV-S-001", "INV-VOICE-001"],
     }
     assert sorted(sum(rows.values(), [])) == [
-        "INV-EVAL-001", "INV-F-001", "INV-MEM-001", "INV-N-001", "INV-OBS-001"]
+        "INV-EVAL-001", "INV-F-001", "INV-MEM-001", "INV-N-001", "INV-OBS-001",
+        "INV-PUB-001", "INV-R-001", "INV-RZ-001", "INV-S-001", "INV-VOICE-001"]
+    assert len(sum(rows.values(), [])) == 10
 
 
 def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
-    """A reader landing on any shard can reach the other two in one hop, and the
-    title states the range the shard actually holds."""
+    """A reader landing on any shard can reach the other three in one hop, the
+    title states the range the shard OWNS, and no shard links to itself. Counted
+    across the four: twelve sibling links, zero self-links."""
     root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
     targets = verify_docs.nav_targets(root)
-    first = targets["doctrine/invariants.md"]
-    assert first.startswith("# Invariants (A-E)\n")
-    assert first.count("[`doctrine/invariants-f-m.md`](invariants-f-m.md)") == 1
-    assert first.count("[`doctrine/invariants-n-z.md`](invariants-n-z.md)") == 1
-    assert first.count("invariants.md`](invariants.md)") == 0
-    middle = targets["doctrine/invariants-f-m.md"]
-    assert middle.startswith("# Invariants (F-M)\n")
-    assert middle.count("[`doctrine/invariants.md`](invariants.md)") == 1
-    assert middle.count("[`doctrine/invariants-n-z.md`](invariants-n-z.md)") == 1
-    last = targets["doctrine/invariants-n-z.md"]
-    assert last.startswith("# Invariants (N-Z)\n")
-    assert last.count("[`doctrine/invariants.md`](invariants.md)") == 1
-    assert last.count("[`doctrine/invariants-f-m.md`](invariants-f-m.md)") == 1
+    rendered = sorted(p for p in targets if p.startswith("doctrine/invariants"))
+    assert rendered == sorted(INV_SHARD_PATHS)
+
+    siblings = 0
+    for path, label in zip(INV_SHARD_PATHS, INV_SHARD_LABELS):
+        body = targets[path]
+        assert body.startswith(f"# Invariants ({label})\n")
+        see_also = [ln for ln in body.splitlines() if "see also" in ln]
+        assert len(see_also) == 1
+        for other in INV_SHARD_PATHS:
+            href = Path(other).name
+            want = 0 if other == path else 1
+            assert see_also[0].count(f"[`{other}`]({href})") == want
+            siblings += see_also[0].count(f"[`{other}`]({href})")
+    assert siblings == 12
 
 
 # --- a manifest that fails to load renders nothing (#812) ---------------------------
@@ -1085,7 +1127,8 @@ GENERATED = [
     "architecture/turn-loop.md",
     "contributing/doc-contract.md",
     "doctrine/invariants-f-m.md",
-    "doctrine/invariants-n-z.md",
+    "doctrine/invariants-n-r.md",
+    "doctrine/invariants-s-z.md",
     "doctrine/invariants.md",
     "doctrine/publishing.md",
     "llms.txt",
