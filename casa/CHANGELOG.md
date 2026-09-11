@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.297.0] - 2026-09-11
+
+### Fixed
+
+- A question whose buttons go away now says what retired it. Whether the
+  reminder was cancelled, the persona removed, the trigger reloaded, the answer
+  typed instead of tapped, or a new conversation started, the message under the
+  keyboard used to claim the question had expired — so a question you had just
+  answered another way, or one Casa itself withdrew, read as if you had let it
+  lapse. An expiry still reads as an expiry, and a reason Casa does not
+  recognise reads as a plain cancellation rather than an invented one.
+- The memory-wipe confirmation had the mirror-image problem and is fixed with
+  it: letting it time out no longer reports that you declined.
+
 ## [0.296.0] - 2026-09-11
 
 ### Fixed
