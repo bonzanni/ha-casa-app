@@ -196,8 +196,10 @@ lane rule itself is in [`scheduled-asks.md`](scheduled-asks.md).
 nothing used to cost the *agent* something: a question the broker had already retired —
 by a `/new`, by a typed answer, by a replacement question, by its own timeout, by an
 operator tap, by shutdown — still came back as an outstanding request id, while the
-keyboard on screen already read expired. It now comes back as settled, with no reply
-pending on that id. Settled is a successful outcome, not an error: every one of those
+keyboard on screen had already been settled. It now comes back as settled, with no reply
+pending on that id. What that keyboard reads names which of those retirements it was:
+only a question that really ran out of time says it expired, and a reason the renderer
+does not recognise says plainly that it was cancelled. Settled is a successful outcome, not an error: every one of those
 retirements is a benign operator or system action, and recording them as tool failures
 would misreport the common case to fix the rare one. The status names no outcome, because
 the single read that produced it cannot tell a cancellation from an answer — which is also
