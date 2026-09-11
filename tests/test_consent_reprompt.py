@@ -780,3 +780,297 @@ def test_tool_registered_and_granted():
     import tools
     names = {t.name for t in tools.CASA_TOOLS}
     assert "consent_reprompt" in names
+
+
+async def test_plugin_remove_retires_before_its_first_await(
+        episodes_store, monkeypatch):
+    """#928: the whole durable settlement runs before the removal reaches the
+    RELOAD. The registry write is already committed when the sync core
+    returns; a cancellation anywhere in the reload used to leave the entry
+    gone and the row untouched — no `stale` conversion (the #494 window,
+    reopened) and no removal stamp. Reproduced: the reload raises
+    CancelledError, the tool call is cancelled, and the row is still retired
+    and stamped — and the callback teardown, which now precedes the reload,
+    has already run."""
+    import tools
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    monkeypatch.setattr(
+        tools, "_plugin_remove_sync",
+        lambda name: {"ok": True, "name": name, "artifact_id": "art-1",
+                      "targets": []})
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+
+    async def cancelled_seq(name, targets, expect):
+        raise asyncio.CancelledError()
+
+    torn_down = []
+
+    async def record_remove_cbs(name):
+        torn_down.append(name)
+
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", cancelled_seq)
+    monkeypatch.setattr(tools, "_remove_plugin_callbacks", record_remove_cbs)
+    with pytest.raises(asyncio.CancelledError):
+        await tools.plugin_remove.handler({"name": "gmail"})
+    assert torn_down == ["gmail"]
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "stale"
+    assert pse._removal_mark(rows[0]) is not None
+    assert len(pse.episodes("pending")) == 0
+
+
+async def test_plugin_remove_cancelled_on_its_core_await_still_retires(
+        episodes_store, monkeypatch):
+    """#928 (handback review, terra S2): the registry write runs in a thread,
+    so a cancellation landing on the FIRST await — while the core is still
+    running — could not stop the removal from committing, and used to leave
+    the committed removal with its setup row untouched. Reproduced: the core
+    is held at a barrier, the tool call is cancelled there, the barrier is
+    released; the call still ends cancelled AND the row is retired and
+    stamped — through a second cancellation as well."""
+    import threading
+    import tools
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    entered, release = threading.Event(), threading.Event()
+
+    def held_core(name):
+        entered.set()
+        assert release.wait(5.0)
+        return {"ok": True, "name": name, "artifact_id": "art-1",
+                "targets": []}
+
+    async def unreachable_seq(name, targets, expect):
+        raise AssertionError("the cancelled call must not reach the reload")
+
+    monkeypatch.setattr(tools, "_plugin_remove_sync", held_core)
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", unreachable_seq)
+    task = asyncio.create_task(tools.plugin_remove.handler({"name": "gmail"}))
+    await asyncio.to_thread(entered.wait, 5.0)
+    task.cancel()
+    await asyncio.sleep(0)                     # the first cancel is delivered
+    task.cancel()                              # and a second one, while held
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "stale"
+    assert pse._removal_mark(rows[0]) is not None
+    assert len(pse.episodes("pending")) == 0
+
+
+async def test_plugin_remove_cancelled_on_a_failing_core_is_not_swallowed(
+        episodes_store, monkeypatch):
+    """#928: the shielded core drains on the failure path too, and a
+    cancellation delivered while it ran is re-raised rather than swallowed
+    into a normal tool result. Nothing committed, so nothing is retired:
+    the row is left exactly as it was."""
+    import threading
+    import tools
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    entered, release = threading.Event(), threading.Event()
+
+    def held_failing_core(name):
+        entered.set()
+        assert release.wait(5.0)
+        return {"ok": False, "name": name, "error": "absent"}
+
+    async def unreachable_seq(name, targets, expect):
+        raise AssertionError("the cancelled call must not reach the reload")
+
+    monkeypatch.setattr(tools, "_plugin_remove_sync", held_failing_core)
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", unreachable_seq)
+    task = asyncio.create_task(tools.plugin_remove.handler({"name": "gmail"}))
+    await asyncio.to_thread(entered.wait, 5.0)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    rows = pse.episodes()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "pending"
+    assert pse._removal_mark(rows[0]) is None
+
+
+async def test_a_cancelled_committed_removal_still_revokes_the_real_acks(
+        episodes_store, tmp_path, monkeypatch):
+    """#928 (diff review r1, terra S2; refutation round, astra): the wrong
+    OUTCOME, pinned against the real ack store rather than a stub.
+
+    A committed removal whose caller is cancelled used to reach neither the
+    reload nor the callback teardown, so a same-artifact reinstall inherited
+    the persisted consent — and because the removal now stamps the setup row,
+    that inherited ack makes the re-armed consent round empty and
+    authoritative, releasing a setup dispatch on a consent the removal was
+    supposed to revoke (measured base 0 dispatches, head 1). The settlement
+    runs the revocation before the reload, so the state a reinstall could
+    inherit is gone even when the caller never came back."""
+    import threading
+    import callback_acks
+    import callback_spool
+    import tools
+    from plugin_callbacks import ack_identity
+
+    store = callback_acks.CallbackAckStore(tmp_path / "acks.json")
+    store.record("gmail", "plg-gmail--authorize", "d1")
+    monkeypatch.setattr(callback_acks, "ACKS", store)
+    spool = callback_spool.CallbackSpool(tmp_path / "cb")
+    spool.ensure_plugin_dirs("gmail")
+    monkeypatch.setattr(callback_spool, "get_spool", lambda: spool)
+
+    assert pse.ensure_obligation(plugin="gmail", artifact_id="art-1")
+    entered, release = threading.Event(), threading.Event()
+
+    def held_core(name):
+        entered.set()
+        assert release.wait(5.0)
+        return {"ok": True, "name": name, "artifact_id": "art-1",
+                "targets": []}
+
+    async def unreachable_seq(name, targets, expect):
+        raise AssertionError("the cancelled call must not reach the reload")
+
+    monkeypatch.setattr(tools, "_plugin_remove_sync", held_core)
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", unreachable_seq)
+    try:
+        task = asyncio.create_task(
+            tools.plugin_remove.handler({"name": "gmail"}))
+        await asyncio.to_thread(entered.wait, 5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()                          # and again, while held
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The durable state a reinstall would have inherited, read back from
+        # disk rather than from the live object.
+        fresh = callback_acks.CallbackAckStore(tmp_path / "acks.json")
+        assert fresh.get(
+            ack_identity("gmail", "plg-gmail--authorize", "d1")) is None
+        assert not (spool.root / "gmail").exists()
+        # …and the setup row settled exactly as #928 requires.
+        rows = pse.episodes()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "stale"
+        assert pse._removal_mark(rows[0]) is not None
+    finally:
+        spool.close()
+
+
+async def test_the_committed_removal_settles_in_order_exactly_once(
+        episodes_store, monkeypatch):
+    """#928 (converged design, terra pin 4): the ordering IS the mechanism, so
+    it is pinned as an event log and not as a set of counts — counts alone pass
+    with the block in the wrong place. The reload runs LAST and outside the
+    settlement, and every settlement step runs exactly once."""
+    import tools
+    log = []
+    monkeypatch.setattr(
+        tools, "_plugin_remove_sync",
+        lambda name: (log.append("core"),
+                      {"ok": True, "name": name, "artifact_id": "art-1",
+                       "targets": []})[1])
+    monkeypatch.setattr(pse, "retire_for_removed",
+                        lambda plugin: log.append("retire"))
+    monkeypatch.setattr(tools, "_invalidate_lifecycle",
+                        lambda **kw: log.append("invalidate"))
+
+    async def teardown(name):
+        log.append("teardown")
+
+    async def seq(name, targets, expect):
+        log.append("reload")
+        return {}
+
+    monkeypatch.setattr(tools, "_remove_plugin_callbacks", teardown)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", seq)
+    res = await tools.plugin_remove.handler({"name": "gmail"})
+    assert json.loads(res["content"][0]["text"])["ok"] is True
+    assert log == ["core", "retire", "invalidate", "teardown", "reload"]
+
+
+async def test_a_cancellation_during_the_teardown_itself_drains_it(
+        episodes_store, monkeypatch):
+    """#928 (converged design, astra/terra pin 2): the drain covers the whole
+    settlement, not just the core. With the teardown held and two
+    cancellations delivered while it is held, the call is still unfinished;
+    releasing it completes the teardown exactly once and only then does the
+    cancellation propagate."""
+    import tools
+    log = []
+    gate = asyncio.Event()
+    monkeypatch.setattr(
+        tools, "_plugin_remove_sync",
+        lambda name: {"ok": True, "name": name, "artifact_id": "art-1",
+                      "targets": []})
+    monkeypatch.setattr(pse, "retire_for_removed", lambda plugin: None)
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+
+    async def held_teardown(name):
+        log.append("teardown-entered")
+        await gate.wait()
+        log.append("teardown-done")
+
+    async def unreachable_seq(name, targets, expect):
+        raise AssertionError("the cancelled call must not reach the reload")
+
+    monkeypatch.setattr(tools, "_remove_plugin_callbacks", held_teardown)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", unreachable_seq)
+    task = asyncio.create_task(tools.plugin_remove.handler({"name": "gmail"}))
+    while "teardown-entered" not in log:
+        await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()                     # still draining the settlement
+    assert log == ["teardown-entered"]
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert log == ["teardown-entered", "teardown-done"]
+
+
+async def test_a_cancellation_during_the_reload_finds_the_settlement_done(
+        episodes_store, monkeypatch):
+    """#928 (converged design, astra/terra pin 3): the reload is the ONE part
+    a cancelled caller abandons. Held at an await and cancelled, it does not
+    keep the tool alive — the settlement is already complete, exactly once.
+    This is the mutation that rejects "shield the whole tail"."""
+    import tools
+    log = []
+    monkeypatch.setattr(
+        tools, "_plugin_remove_sync",
+        lambda name: {"ok": True, "name": name, "artifact_id": "art-1",
+                      "targets": []})
+    monkeypatch.setattr(pse, "retire_for_removed",
+                        lambda plugin: log.append("retire"))
+    monkeypatch.setattr(tools, "_invalidate_lifecycle", lambda **kw: None)
+
+    async def teardown(name):
+        log.append("teardown")
+
+    async def held_seq(name, targets, expect):
+        log.append("reload-entered")
+        await asyncio.Event().wait()           # never resolves
+
+    monkeypatch.setattr(tools, "_remove_plugin_callbacks", teardown)
+    monkeypatch.setattr(tools, "_reload_and_verify_targets", held_seq)
+    task = asyncio.create_task(tools.plugin_remove.handler({"name": "gmail"}))
+    while "reload-entered" not in log:
+        await asyncio.sleep(0)
+    task.cancel()
+    # BOUNDED on purpose: the mutation this test exists to reject is shielding
+    # the reload too, under which the cancellation never lands and a bare
+    # `await task` would hang the suite instead of failing it.
+    await asyncio.wait([task], timeout=5.0)
+    assert task.done(), "the reload is not abandoned on cancellation"
+    with pytest.raises(asyncio.CancelledError):
+        task.result()
+    assert log == ["retire", "teardown", "reload-entered"]
+    # The lock the tool held is free again — nothing is drained on this path.
+    assert not tools._PLUGIN_TOOLS_LOCK.locked()

@@ -91,6 +91,11 @@ Design (Sol+Terra design round + implementation rounds 1-3, 2026-07-24):
 * **Worker survivability**: per-episode isolation + self re-kick.
 * **Terminal-state hygiene**: supersession prunes a plugin's older
   episodes; ``failed``/``stale`` decay out of health after 72h.
+* **A removal is recorded on the row, and a same-download reinstall re-arms
+  it** (#928 / INV-PLUG-020): ``retire_for_removed`` stamps the ``failed``
+  row it keeps, and the sweep re-arms a stamped row — as a fresh attempt
+  carrying the earlier failure — once the plugin resolves again, live and
+  from a fresh read of the registry file, at the same artifact.
 * **Delivery semantics (disclosed)**: ``dispatched`` means the turn was
   accepted by the in-process bus and the target agent will report the
   actual outcome to the operator — the durable retry contract covers
@@ -153,6 +158,11 @@ _MUTABLE_COMPOSE_FAILURE = "no resident or specialist target"
 _dispatch: Callable[[str, str, dict], Awaitable[bool]] | None = None
 _notify_operator: Callable[[str], Awaitable[None]] | None = None
 _resolve_registry_entry: Callable[[str], Any] | None = None
+# #928: ``(plugin) -> entry | None`` from a FRESH read of the registry file —
+# not the cached snapshot ``_resolve_registry_entry`` serves, which is
+# refreshed only by the reload a removal runs AFTER it has committed and
+# stamped the row. See ``_resolves_reinstalled``.
+_registry_entry_fresh: Callable[[str], Any] | None = None
 _ack_lookup: Callable[[str], str | None] | None = None
 _routes_live: Callable[[str], bool] | None = None
 # #803: ``() -> (published, generation) | None`` over the APPLIED routing
@@ -175,6 +185,7 @@ def _now() -> float:
 def configure(*, dispatch, notify_operator, resolve_registry_entry,
               ack_lookup=None, routes_live=None, applied_routing=None,
               secrets_ready=None, execution_ready=None,
+              registry_entry_fresh=None,
               sleep=asyncio.sleep) -> None:
     """casa_core boot wiring. Idempotent. ``ack_lookup(identity)`` returns
     the persisted ack's approval generation (or None) — the boot recovery
@@ -197,13 +208,20 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
     or ``None`` when no runtime registry is bound: the worker reads it before
     the route recomputation and again, yield-free, before the send, and
     DEFERS (its own timer) on a standing unavailable marker, on any
-    publication that landed in between, or on a read that raised."""
+    publication that landed in between, or on a read that raised.
+    ``registry_entry_fresh(plugin)`` (#928) returns the plugin's registry
+    entry from a FRESH read of the registry file, or None when the file is
+    unreadable, invalid, or does not list it: the sweep consumes a removal
+    mark only when both this and ``resolve_registry_entry`` show the same
+    artifact installed, so a pass that pinned a pre-removal snapshot cannot
+    re-arm a plugin that is gone. Absent, no mark is ever consumed."""
     global _dispatch, _notify_operator, _resolve_registry_entry
     global _ack_lookup, _routes_live, _applied_routing, _secrets_ready
-    global _execution_ready, _sleep, _lock, _kick
+    global _execution_ready, _registry_entry_fresh, _sleep, _lock, _kick
     _dispatch = dispatch
     _notify_operator = notify_operator
     _resolve_registry_entry = resolve_registry_entry
+    _registry_entry_fresh = registry_entry_fresh
     _ack_lookup = ack_lookup
     _routes_live = routes_live
     _applied_routing = applied_routing
@@ -225,7 +243,13 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
 #    "status": "pending"|"dispatched"|"failed"|"stale"|"refused",
 #    "gate": "awaiting_verdict"|"released",
 #    "attempts", "resolve_deferrals", "approved_identities",
-#    "created_ts", "updated_ts", "last_error"}
+#    "created_ts", "updated_ts", "last_error",
+#    optional: "execution_retries", "expected_tool",
+#    "removed_ts" (#928: a float stamped by `retire_for_removed` on a
+#      `failed`/`stale` row it retains — the plugin was removed while the
+#      row stood; the sweep consumes it, see `ensure_obligation`),
+#    "previous_failure" (#928: one flat snapshot of the failed attempt a
+#      same-artifact re-arm replaced, carried for the status tool)}
 # There is at most ONE row per plugin — its CURRENT artifact's obligation.
 # ---------------------------------------------------------------------------
 
@@ -599,10 +623,11 @@ def health_issues() -> list[dict]:
                 "kind": f"setup_episode_{st}",
                 "plugin": e.get("plugin"),
                 # #653 r1: which ARTIFACT's obligation this was. A terminal
-                # `failed` row is never superseded and `retire_for_removed`
-                # leaves it alone, so it outlives both the artifact and the
-                # installation; the health merge needs this to tell a current
-                # failure from a previous artifact's. Consumed for FILTERING
+                # `failed` row is superseded only by a new artifact, and
+                # `retire_for_removed` stamps rather than converts it (#928),
+                # so it outlives both the artifact and the installation until
+                # the sweep re-arms it; the health merge needs this to tell a
+                # current failure from a previous artifact's. Consumed for FILTERING
                 # only — it is deliberately not carried onto the emitted issue,
                 # because artifact_id is part of the health fingerprint and
                 # adding it there would re-announce every already-notified
@@ -660,6 +685,59 @@ def _new_row(plugin: str, artifact_id: str, gen: int) -> dict:
     }
 
 
+def _removal_mark(row: dict) -> float | None:
+    """The stamp `retire_for_removed` leaves on a row it retains, read
+    STRICTLY: a finite number, or nothing. A hand-edited non-number reads as
+    "not marked" — the direction that changes nothing (no retry is granted by
+    a value nobody wrote)."""
+    return _finite(row.get("removed_ts"))
+
+
+def _previous_failure_for(row: dict) -> dict | None:
+    """What a fresh same-artifact row carries about the attempt it replaces
+    (#928). A removal-marked ``failed`` row becomes a NEW flat snapshot — the
+    facts the status tool needs to say what the earlier installation failed on;
+    any other replaced row hands on the snapshot it already carries (a second
+    removal before the retry settled must not lose it); a malformed snapshot
+    is dropped rather than propagated. At most one, never a chain."""
+    if row.get("status") == "failed" and _removal_mark(row) is not None:
+        return {
+            "episode": row.get("id"),
+            "artifact_id": row.get("artifact_id"),
+            "gen": row.get("gen"),
+            "last_error": row.get("last_error") or "",
+            "execution_retries": row.get("execution_retries") or 0,
+            "failed_ts": row.get("updated_ts"),
+            "removed_ts": _removal_mark(row),
+        }
+    prev = row.get("previous_failure")
+    return dict(prev) if isinstance(prev, dict) else None
+
+
+def _resolves_reinstalled(plugin: str, artifact_id: str) -> bool:
+    """Whether the plugin is installed at this exact artifact RIGHT NOW, by
+    both resolutions this module can make (#928, seam round): the cached
+    snapshot the worker also reads, AND a fresh read of the registry file.
+    The second is what makes a removal mark safe to consume: the removal stamps
+    the row in the settlement that completes before its reload, and only that
+    reload refreshes the snapshot, so a sweep overlapping that window still
+    sees the removed plugin resolve from the cache. Absent hooks, a raise, an unreadable or
+    invalid file, a missing entry or another artifact all answer False — the
+    row is RETAINED as it is and the next sweep asks again."""
+    resolved_ok, entry = _resolve_entry(plugin)
+    if (not resolved_ok or not isinstance(entry, dict)
+            or entry.get("artifact_id") != artifact_id):
+        return False
+    if _registry_entry_fresh is None:
+        return False
+    try:
+        fresh = _registry_entry_fresh(plugin)
+    except Exception:  # noqa: BLE001 — decline, never raise into the sweep
+        logger.exception("fresh registry read failed (plugin=%s)", plugin)
+        return False
+    return isinstance(fresh, dict) and fresh.get("artifact_id") == artifact_id
+
+
 def ensure_obligation(*, plugin: str, artifact_id: str,
                       consent_pending: bool = False) -> bool:
     """Ensure a durable setup obligation exists for this EXACT artifact, and
@@ -692,6 +770,22 @@ def ensure_obligation(*, plugin: str, artifact_id: str,
     row with no pending consent returns False, so a settled artifact stops
     generating verdict churn on every reconcile.
 
+    #928 / INV-PLUG-020: a row `retire_for_removed` stamped (``removed_ts``)
+    belongs to an installation the operator REMOVED; the plugin resolving here
+    again at the SAME artifact means it was reinstalled from the same download,
+    and setup is owed afresh — a ``failed`` row's exhausted budget was that
+    installation's, not this one's. So a marked ``failed``/``stale`` row is
+    re-armed like a ``stale`` one, on ONE extra condition: both the cached
+    snapshot and a fresh read of the registry file must list this artifact
+    (:func:`_resolves_reinstalled`) — a pass that pinned a pre-removal
+    snapshot, or one racing the removal's own reload, may not consume the
+    mark. A marked row that fails that check is left exactly as it is
+    (returns False), whatever ``consent_pending`` says: the consent the
+    removal revoked cannot be pending for a plugin that is gone. The fresh row
+    carries no mark, so the re-arm happens once; it carries the replaced
+    failure as ``previous_failure`` (:func:`_previous_failure_for`) so the
+    status tool can still say what the earlier installation failed on.
+
     SYNCHRONOUS + yield-free. Never raises."""
     try:
         data = _load()
@@ -710,7 +804,16 @@ def ensure_obligation(*, plugin: str, artifact_id: str,
             # — a transient registry outage during the dispatch window would
             # otherwise strand an already-released obligation for good, because
             # by then every consent is acked and no pending signal remains.
-            if row.get("status") == "stale":
+            marked = _removal_mark(row) is not None
+            if marked:
+                if not _resolves_reinstalled(plugin, artifact_id):
+                    logger.info("setup obligation for a removed plugin left "
+                                "as it is (plugin=%s): not resolved as "
+                                "reinstalled at this artifact", plugin)
+                    return False
+                if row.get("status") in ("failed", "stale"):
+                    consent_pending = True
+            elif row.get("status") == "stale":
                 consent_pending = True
             if not consent_pending:
                 return True if stale_release else False
@@ -726,13 +829,18 @@ def ensure_obligation(*, plugin: str, artifact_id: str,
             gen = int(row.get("gen") or 0) + 1
             fresh = _new_row(plugin, artifact_id, gen)
             fresh["created_ts"] = row.get("created_ts") or fresh["created_ts"]
+            previous = _previous_failure_for(row)
+            if previous is not None:
+                fresh["previous_failure"] = previous
             data["episodes"] = [e for e in data["episodes"]
                                 if e.get("plugin") != plugin]
             data["episodes"].append(fresh)
             _save(data)
-            logger.info("setup obligation re-armed (plugin=%s gen=%d): a "
-                        "consent for this artifact is pending again", plugin,
-                        gen)
+            logger.info("setup obligation re-armed (plugin=%s gen=%d): %s",
+                        plugin, gen,
+                        "the plugin was reinstalled at the same artifact"
+                        if marked else
+                        "a consent for this artifact is pending again")
             return True
         # No row, or a row for a superseded artifact.
         data["episodes"] = [e for e in data["episodes"]
@@ -921,6 +1029,9 @@ def _rearm_refused_locked(data: dict, plugin: str, artifact_id: str) -> bool:
     gen = int(row.get("gen") or 0) + 1
     fresh = _new_row(plugin, artifact_id, gen)
     fresh["created_ts"] = row.get("created_ts") or fresh["created_ts"]
+    previous = _previous_failure_for(row)
+    if previous is not None:
+        fresh["previous_failure"] = previous
     data["episodes"] = [e for e in data["episodes"]
                         if e.get("plugin") != plugin]
     data["episodes"].append(fresh)
@@ -935,15 +1046,32 @@ def retire_for_removed(plugin: str) -> None:
     and drop its round. Closes the approve-racing-removal window (#494 design
     r4, Terra): a re-armed ``pending`` row for a plugin the registry no
     longer resolves can never be sealed or released, so nothing may leave one
-    behind. Best-effort; never raises."""
+    behind.
+
+    #928: a ``failed`` row is NOT converted — it is the only record of why
+    setup failed, and ``stale`` would both rewrite that and let it decay — but
+    it, and every ``stale`` row, is STAMPED ``removed_ts`` so the reconcile
+    sweep can tell a reinstall from a settled installation
+    (:func:`ensure_obligation`). Nothing is minted here: a ``pending`` row for
+    a plugin that no longer resolves is exactly what #494 forbids, and the
+    sweep re-arms only after the plugin resolves again. An already-stamped row
+    keeps its stamp (idempotent — a repeated removal is not a newer one).
+    ``refused`` rows are left alone: the consent this removal revokes is their
+    way back, and the sweep's ``consent_pending`` already re-arms them.
+    Best-effort; never raises."""
     try:
         data = _load()
         changed = False
         for e in data["episodes"]:
-            if (e.get("plugin") == plugin
-                    and e.get("status") in ("pending", "dispatched")):
+            if e.get("plugin") != plugin:
+                continue
+            if e.get("status") in ("pending", "dispatched"):
                 e.update({"status": "stale", "updated_ts": _now(),
                           "last_error": "plugin removed"})
+                changed = True
+            if (e.get("status") in ("failed", "stale")
+                    and _removal_mark(e) is None):
+                e["removed_ts"] = _now()
                 changed = True
         if plugin in data["rounds"]:
             del data["rounds"][plugin]
