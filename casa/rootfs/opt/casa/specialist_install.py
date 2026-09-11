@@ -270,11 +270,19 @@ def _refuse_if_active_present(instance_dir, *, slug: str, root: str) -> None:
             f"({exc}); refusing to replace it — the candidate and its saved "
             f"configuration are untouched; resolve the read error and retry")
     if pending is not None and pending.root != root:
+        # INV-OPS-001's rule once more, on the arm reached when the candidate
+        # LOADS. The refusal is right and unchanged — a pending candidate that
+        # is not ours occupies the slug, and replacing it would silently discard
+        # the configuration an earlier attempt supplied — and that candidate is
+        # whole when it refuses. So the advice must not offer the uninstall that
+        # rmtree's the instance directory holding it; the non-destructive route
+        # out of this state is the occupant's own pending -> active re-commit.
         raise SpecialistInstallError(
             "concurrent_mutation",
             f"{slug!r}: a different pending install ({pending.root}) already "
-            f"occupies this slug; refusing to replace it — complete or "
-            f"uninstall it first")
+            f"occupies this slug; refusing to replace it — that candidate and "
+            f"its saved configuration are untouched; finish configuring it "
+            f"before this slug takes another install")
 
 
 @dataclass(frozen=True, slots=True)

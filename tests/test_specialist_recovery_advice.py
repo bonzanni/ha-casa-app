@@ -260,3 +260,156 @@ def test_the_active_present_guards_unreadable_arm_advises_preservation(
     assert [w for w in _DESTRUCTIVE if w in lowered] == []
     assert desired.read_bytes() == before
     assert _saved_value_copies(slug_dir) == 1
+
+
+# Also not a red case and not part of the pinned declaration: the sibling
+# regression test for the SAME guard's other arm, added after the candidate
+# review reproduced this one through the public handlers. INV-OPS-001 is
+# declared over the two merge reads and is untouched.
+#
+# The detail interpolates the occupant's own component root, which is a
+# checksum-bearing string, so the literal here is the whole SENTENCE with that
+# one value substituted — and the value is read from the pending tuple on disk,
+# never from the module under test. A containment check for banned words would
+# admit "or clear the slug first"; this does not.
+_EXPECTED_DIFFERENT_ROOT_DETAIL = (
+    "'mtg': a different pending install ({root}) already occupies this slug; "
+    "refusing to replace it — that candidate and its saved configuration are "
+    "untouched; finish configuring it before this slug takes another install"
+)
+
+
+def _inspect_only(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
+                  required_config=("region",)):
+    """`_install` split at its commit: inspect one generation, commit nothing.
+
+    The different-root arm is reachable no other way. Once a pending candidate
+    occupies the slug a fresh inspect refuses it (`slug_collision`) and an
+    upgrade-mode inspect refuses a slug that never activated (`no_active_tuple`),
+    so BOTH inspections have to happen while the slug is still free — which is
+    exactly the two-concurrent-installs race the guard exists for, and is why
+    `_install`'s inspect-then-commit cannot produce this state.
+    """
+    import json as _json
+    from types import SimpleNamespace
+
+    import specialist_install
+    import specialist_receipt
+    from specialist_fixtures import write_minimal_component
+    from specialist_install_consent import (
+        SpecialistInstallAckStore, install_consent_identity,
+    )
+    from specialist_registry import InstalledSpecialistIndex
+
+    comp, mpath = write_minimal_component(home, slug=slug,
+                                          required_config=list(required_config))
+    if version is not None:
+        manifest = _json.loads(mpath.read_text(encoding="utf-8"))
+        manifest["version"] = version
+        mpath.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    def _fetch(repo, ref, subdir, dest, *, expected_revision=None):
+        import shutil
+        # Bytes, never modes: the candidate gate runs on a read-only tree.
+        shutil.copytree(comp / subdir if subdir else comp, dest,
+                        copy_function=shutil.copyfile)
+        return "a" * 40
+
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", _fetch)
+    receipts_dir = tmp_path / "receipts"
+    specialists_dir = tmp_path / "specialists"
+    idx = InstalledSpecialistIndex(specialists_dir=str(specialists_dir))
+    idx.load()
+    inspection = specialist_install.inspect_specialist_repo(
+        "org/repo", "main", staging_root=home / "staging",
+        installed_index=idx, receipts_dir=receipts_dir,
+        specialists_dir=specialists_dir)
+    receipt = specialist_receipt.load(inspection.receipt_id, receipts_dir=receipts_dir)
+    assert receipt is not None
+
+    acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
+    identity = install_consent_identity(
+        component_id=inspection.component_id, version=inspection.version,
+        root_digest=inspection.root_digest, slug=inspection.slug,
+        receipt_digest=inspection.receipt_digest)
+    acks.record(identity=identity, component_id=inspection.component_id,
+                version=inspection.version, component_checksum=inspection.root_digest,
+                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
+
+    kw = dict(inspection=inspection, receipt=receipt, config={},
+              secret_names_provided=frozenset(), acks=acks,
+              specialists_dir=specialists_dir,
+              agents_specialists_dir=tmp_path / "agents",
+              registry_path=tmp_path / "registry.json",
+              plugin_store_root=tmp_path / "store",
+              ops_dir=tmp_path / "ops")
+    return SimpleNamespace(inspection=inspection, receipt=receipt, kw=kw,
+                           specialists_dir=specialists_dir,
+                           receipts_dir=receipts_dir)
+
+
+def test_the_active_present_guards_different_root_arm_advises_preservation(
+        tmp_path, monkeypatch, restore_installed_index) -> None:  # noqa: F811
+    """The occupant LOADED here — and that is the whole difference.
+
+    No read failed, so nothing is transient; the refusal is permanent until
+    somebody acts. That makes the advice the operator's only route, and the
+    route it named deleted the one thing the refusal had preserved: the
+    settings an earlier attempt supplied to a candidate that is not this
+    caller's. The guard still fails closed with the same kind.
+    """
+    import personality_binding
+    import specialist_bundle_journal
+    import specialist_install
+
+    occupant = _inspect_only(tmp_path, monkeypatch, home=tmp_path / "a",
+                             slug="mtg", required_config=("saved", "region"))
+    newcomer = _inspect_only(tmp_path, monkeypatch, home=tmp_path / "b",
+                             slug="mtg", version="0.2.0",
+                             required_config=("saved", "region"))
+    assert newcomer.inspection.root_digest != occupant.inspection.root_digest
+
+    kw_a = dict(occupant.kw)
+    kw_a["config"] = {"saved": _SAVED}
+    instance, txn = specialist_install.commit_specialist_install(**kw_a)
+    specialist_bundle_journal.complete(txn.journal_path)
+    assert instance.state == "pending-configuration"
+
+    slug_dir = occupant.specialists_dir / "mtg"
+    desired = slug_dir / "desired.yaml"
+    ops_dir = occupant.kw["ops_dir"]
+    before = desired.read_bytes()
+    assert _saved_value_copies(slug_dir) == 1
+    journals_before = _recovery_journals(ops_dir)
+
+    # The occupant's root, read from the tuple on disk — the value the refusal
+    # interpolates, obtained from state rather than from the string under test.
+    pending = personality_binding.InstanceDir(slug_dir).desired()
+    assert pending is not None and pending.root != newcomer.inspection.root_digest
+
+    kw_b = dict(newcomer.kw)
+    kw_b["config"] = {"saved": "a-second-operators-value"}
+    with pytest.raises(specialist_install.SpecialistInstallError) as exc:
+        specialist_install.commit_specialist_install(**kw_b)
+
+    assert exc.value.kind == "concurrent_mutation"
+    assert exc.value.detail == _EXPECTED_DIFFERENT_ROOT_DETAIL.format(root=pending.root)
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+
+    # The refusal preserved the occupant byte for byte, as it always did.
+    assert desired.read_bytes() == before
+    assert _saved_value_copies(slug_dir) == 1
+
+    # And the advice it now gives is one the operator can actually follow: the
+    # occupant's own configure re-commit activates it, with the earlier value
+    # intact. The old advice's route — uninstall — took that value to zero.
+    kw_a2 = dict(occupant.kw)
+    kw_a2["config"] = {"region": "EU"}
+    instance, txn = specialist_install.commit_specialist_install(**kw_a2)
+    specialist_bundle_journal.complete(txn.journal_path)
+    assert instance.state == "active"
+    snapshot = dict(instance.active.config_snapshot)
+    assert snapshot["saved"] == _SAVED
+    assert snapshot["region"] == "EU"
+    assert _recovery_journals(ops_dir) == journals_before
