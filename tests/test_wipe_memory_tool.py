@@ -357,6 +357,37 @@ class TestConsentFlow:
         assert calls == []
         assert any("cancelled — nothing was deleted" in e[2] for e in channel.edits)
 
+    async def test_an_expired_wipe_keyboard_does_not_claim_it_was_cancelled(
+        self, monkeypatch, _fresh_broker,
+    ):
+        """#933, mirrored — this keyboard collapses the other way.
+
+        Every non-answered outcome here reads "cancelled", so an operator who
+        simply never came back is told they declined. The deny arm below it
+        keeps saying cancelled, because for a tap on "Cancel" that is true.
+        """
+        calls = []
+
+        async def fake_wipe(**kwargs):
+            calls.append(kwargs)
+            return memory_wipe.WipeReport()
+
+        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
+        payload, channel = await _invoke(monkeypatch)
+        rid = _fresh_broker.pending(
+            namespace="resident_ask", scope="authz:500")[0]
+        _fresh_broker._on_timeout(("resident_ask", "authz:500", rid))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await memory_wipe.drain_wipe_task()
+
+        assert calls == []
+        assert len(channel.edits) == 1
+        suffix = channel.edits[0][2].casefold()
+        assert sum("expired" in t for t in [suffix]) == 1
+        assert sum("cancelled" in t for t in [suffix]) == 0
+        assert sum("nothing was deleted" in t for t in [suffix]) == 1
+
     async def test_second_wipe_refused_while_first_runs(
         self, monkeypatch, _fresh_broker,
     ):

@@ -511,6 +511,29 @@ class TestFinishHookShape:
         assert not any(c[0] == "dispatch" for c in ch.calls)
 
 
+    async def test_a_cancelled_question_does_not_claim_it_expired(
+        self, monkeypatch, _fresh_broker,
+    ):
+        """#933 — the human ask's twin of the scheduled pin.
+
+        Nothing dispatches a continuation on this path, so the edit is the ONLY
+        thing the operator is ever told about why the keyboard went away. A
+        `/new` is not an expiry and must not say it was one.
+        """
+        channel = _FakeChannel()
+        _res, payload, ch = await _ask(monkeypatch, channel=channel)
+        assert _fresh_broker.cancel_scope(
+            namespace="resident_ask", scope="dm:500", reason="new_session",
+        ) == 1
+        await _settle(lambda: len(ch.edits) >= 1)
+
+        assert len(ch.edits) == 1
+        assert sum(c[0] == "dispatch" for c in ch.calls) == 0
+        suffix = ch.edits[0][2].casefold()
+        assert sum("expired" in t for t in [suffix]) == 0
+        assert sum("cancel" in t for t in [suffix]) == 1
+
+
 async def _settle(pred, tries=2000):
     for _ in range(tries):
         if pred():
