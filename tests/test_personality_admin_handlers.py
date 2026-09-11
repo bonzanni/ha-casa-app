@@ -2052,6 +2052,35 @@ def test_a_slug_that_is_not_a_plain_tree_name_reads_no_tree(
     assert payload == {"slug": traversed, "state": "not_installed"}
 
 
+def test_a_traversal_slug_reads_no_tuple_from_OUTSIDE_the_tree(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The hazard the fence exists for, with something real to find at the far
+    end: a full candidate tuple planted in the specialist tree's PARENT.
+
+    `".."` passes the old `slug == Path(slug).name` fence (`Path("..").name`
+    is `".."`, not the empty string its comment claimed), and with it the
+    route reads, YAML-parses and discloses a tuple from outside the tree under
+    a slug that names no specialist at all. The canonical rule admits only the
+    names the tree's own directory scan can produce.
+    """
+    import shutil
+
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    outside = ctx.specialists_dir.parent
+    assert outside == tmp_path
+    for name in ("desired.yaml", "pending-receipt.json"):
+        # Bytes, never modes: the candidate gate runs on a read-only tree.
+        shutil.copyfile(ctx.specialists_dir / "mtg" / name, outside / name)
+    assert (outside / "desired.yaml").is_file()
+
+    payload = specialist_status_payload(object(), slug="..")
+
+    assert payload == {"slug": "..", "state": "not_installed"}
+
+
 @pytest.mark.parametrize("slug", ["..", ".", "a/b", "/etc", "x\0y", "MTG", "ä",
                                   "mtg/", "./mtg", "-mtg", ""],
                          ids=["dotdot", "dot", "separator", "absolute", "nul",
@@ -2346,3 +2375,82 @@ async def test_verified_pending_upgrade_names_and_uses_its_admitting_tool(
     assert landed.active.root == instance.desired.root
     assert landed.desired is None
     assert not pending.marker.exists()
+
+
+def _retune_root(ctx, *, version=None, digest=None) -> None:
+    """Rewrite the candidate's own root string, keeping it PARSEABLE. This is
+    the shape every torn pairing reduces to once its particular sequence is
+    removed: a candidate root that is not the one the retained staging tree
+    produces."""
+    import yaml as _yaml
+
+    path = ctx.specialists_dir / ctx.slug / "desired.yaml"
+    raw = _yaml.safe_load(path.read_text(encoding="utf-8"))
+    cid, ver, dig = ctx.expected["component_id"], ctx.expected["version"], \
+        ctx.expected["root_digest"]
+    raw["root"] = f"{cid}@{version or ver}#{digest or dig}"
+    path.write_text(_yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+
+@pytest.mark.parametrize("kwargs,caught_by", [
+    ({"digest": "sha256:" + "0" * 64}, "the tool's own root re-computation"),
+    ({"version": "9.9.9"}, "the identity comparison the tools do NOT make"),
+], ids=["root digest", "identity triple"])
+def test_a_candidate_root_the_staged_bytes_do_not_produce_is_not_certified(
+        tmp_path, monkeypatch, restore_installed_index, kwargs, caught_by) -> None:
+    """Five derivable, mutually plausible members whose STAGED BYTES are not
+    the candidate's. Nothing upstream of the acceptance predicate objects —
+    the marker, the receipt and the staging tree all exist and load — and the
+    tool that consumed them would refuse.
+
+    This is the shape all three of this change's candidate findings had, once
+    their particular sequences are removed: a pairing no writer intended. It
+    is caught without knowing which sequence produced it, because the
+    predicate asks whether the set is ACCEPTABLE rather than how it came
+    about.
+
+    The second arm is the one the consuming tools cannot catch themselves:
+    they read `component_id`/`version` from the staged manifest and never
+    compare them to their arguments, so a wrong identity beside a right digest
+    reaches `active` under a name the payload advertised. The claim is made
+    here, so it is checked here.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    ctx = _pending_install(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    assert specialist_status_payload(object(), slug="mtg")[
+        "pending_commit_check"] == {"state": "verified"}
+
+    _retune_root(ctx, **kwargs)
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    # Every member is still derivable — this is not a degradation case.
+    assert {k for k, v in payload["pending_commit"].items() if v is None} == set()
+    assert payload["pending_commit_check"] == {"state": "blocked",
+                                               "reason": "checksum_changed"}
+
+
+def test_a_marker_naming_another_slugs_receipt_is_not_certified(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """The receipt is reached THROUGH the marker, so a marker naming another
+    slug's receipt would otherwise send the reader to another slug's staging
+    tree under this slug's name. The receipt carries no attested component
+    root, so agreeing ids establish nothing on their own — which is why the
+    staged bytes have to participate as well.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    other = _install(tmp_path, monkeypatch, home=tmp_path / "other", slug="chess")
+    ctx = _pending_install(tmp_path, monkeypatch)
+    assert other.receipt.slug == "chess" and ctx.receipt.slug == "mtg"
+    _publish(ctx, restore_installed_index, monkeypatch)
+
+    ctx.marker.write_text(json.dumps({"receipt_id": other.receipt.receipt_id}),
+                          encoding="utf-8")
+    payload = specialist_status_payload(object(), slug="mtg")
+
+    assert payload["pending_commit"]["receipt_id"] == other.receipt.receipt_id
+    assert payload["pending_commit_check"]["state"] == "blocked"
+    assert payload["pending_commit_check"]["reason"] in ("receipt_mismatch",
+                                                          "checksum_changed")
