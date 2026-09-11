@@ -273,14 +273,15 @@ NO_PROMISE_CLAUSES = (
     "boot decides that, not this tool",
     "does not guarantee continuity",
     "do not predict which way it will go",
-    # r4 (Astra, S2): and it promises no CONSOLATION either. Saying Telegram
-    # history "stays recallable" was false on a default install — long-term
-    # memory is off by default, the backend is then NoOpSemanticMemory, whose
-    # retain is silent and whose recall raises `not_configured`. Offering
-    # memory as a fallback without that condition is the same overclaiming as
-    # promising continuity, one comfort further along.
-    "only if long-term memory is configured",
-    "it is off by default",
+    # r4 (Astra, S2) then r5 (Terra, S2): and it promises no CONSOLATION
+    # either. "Stays recallable" was false on a default install; the
+    # qualification that replaced it ("written out ... only if long-term memory
+    # is configured") was STILL a guarantee, because even with memory on the
+    # cold retain discards behind the wipe fence, retains nothing for a
+    # snapshot without usable provenance, and gives up after bounded retries.
+    # Two rounds on one clause is the signal to CUT it: the notice now mentions
+    # memory not at all, and says so explicitly.
+    "casa promises nothing about recovering",
 )
 
 
@@ -318,10 +319,17 @@ def test_the_notice_promises_no_continuity_and_no_recall_and_predicts_nothing(
         resident) -> None:
     """The cut itself. Without these clauses the sentence either warns
     unconditionally (r1's bug), invites the reader to decide it does not apply
-    (r3's bug), or offers a recall fallback that a default install does not
-    have (r4's bug)."""
-    assert_promises_nothing(
-        _reset_payload()["conversation_notice"], "resident_persona_reset result")
+    (r3's bug), or offers a recall fallback that neither a default install
+    (r4's bug) nor a configured one (r5's bug) actually guarantees."""
+    notice = _reset_payload()["conversation_notice"]
+    assert_promises_nothing(notice, "resident_persona_reset result")
+    # And the cut is total: no consolation survives in any form. A future
+    # "it is retained to memory" restores exactly the r4/r5 shape.
+    lowered = " ".join(notice.lower().split())
+    for offered in ("recallable", "written out", "retained to memory",
+                    "can be recovered", "still available"):
+        assert offered not in lowered, (
+            f"the notice offers a survival guarantee again: {offered!r}")
 
 
 def test_the_notice_is_identical_whether_or_not_the_binding_appears_to_move(

@@ -24,10 +24,11 @@
    restart that promotes this binding, if the resident's persona identity ends up
    different from the one it is running, **every conversation of this resident starts
    fresh on every channel**, because the persona is part of the resident's session
-   identity; Telegram history is written out to long-term memory on the way, where it is
-   recoverable ONLY if long-term memory is configured — it is off by default — while
-   **voice history is not carried** at all, so anything said on voice and not repeated is
-   gone outright. Do not offer memory as a consolation without checking that it is on.
+   identity; **voice history is not carried** at all, and Casa promises nothing about
+   recovering what any of those conversations held. Do NOT offer long-term memory as a
+   consolation: it is off by default, and even switched on it can discard a transcript
+   behind a memory wipe or give up retaining it. Say what is lost and let the operator
+   decide.
    Boot decides which happens, after this call has returned. A resident mid-way through
    something on voice is a reason to WAIT before restarting, and the operator can only
    weigh that if you pass the notice on.

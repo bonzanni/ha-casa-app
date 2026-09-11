@@ -14100,27 +14100,32 @@ async def persona_install_commit(args: dict) -> dict:
 #     apparently unchanged persona never implied continuity in the first place.
 #   r4 (Astra, S2) the same overclaiming, now about the CONSOLATION rather
 #     than the loss: the sentence said Telegram history "stays recallable",
-#     which is false on a default install. Long-term memory is OFF by default
-#     (casa/DOCS.md's own Memory section says so), the backend is then
-#     NoOpSemanticMemory, whose `retain` is silent and whose `recall` raises
-#     `not_configured` (semantic_memory.py:147-167). Astra measured it: 1
-#     transcript submitted, 0 retry records, recall `not_configured`.
+#     which is false on a default install. Long-term memory is OFF by default,
+#     the backend is then NoOpSemanticMemory, whose `retain` is silent and
+#     whose `recall` raises `not_configured` (semantic_memory.py:147-167).
+#     Qualified with "only if long-term memory is configured".
+#   r5 (Terra, S2) that qualification was STILL a guarantee. Even with memory
+#     configured, retain_cold_session DISCARDS behind the wipe fence, retains
+#     nothing for a legacy/corrupt snapshot, and gives up after bounded
+#     retries (session_saver.py:410-432). "Written out" promises what the code
+#     does not.
 #
-# The conclusion the rounds force: this tool CANNOT know what survives, and
-# neither can the model reading it. Boot decides whether the identity moves,
-# after this call returns; the operator's configuration decides whether
-# anything is recoverable afterwards. So the sentence states the LOSS, names
-# who decides, and promises nothing — no continuity, and no consolation
-# either. INV-PERS-018, pinned by
+# The conclusion the rounds force: this tool CANNOT know what survives — not
+# whether the identity moves (boot decides, after this call returns), and not
+# whether anything is recoverable afterwards (configuration, the wipe fence and
+# the snapshot's own integrity decide). Two rounds on the consolation clause is
+# the signal to CUT it, not to qualify it a third time. So the sentence states
+# the LOSS, names who decides, and mentions memory not at all: what it costs is
+# the operator's decision input, and a consolation nobody can guarantee was
+# only ever a way of softening it. INV-PERS-018, pinned by
 # tests/test_resident_persona_restart_notice.py.
 RESIDENT_CONVERSATION_RESET_NOTICE = (
     "On the restart that promotes this binding, if the resident's persona "
     "identity ends up different from the one it is running, every conversation "
     "of this resident starts fresh on every channel — the persona is part of "
-    "the resident's session identity. Telegram history is written out to "
-    "long-term memory on the way, where it is recoverable ONLY if long-term "
-    "memory is configured — it is off by default; voice history is not "
-    "carried at all. Boot decides "
+    "the resident's session identity. Voice history is not carried at all, "
+    "and Casa promises nothing about recovering what any of those "
+    "conversations held. Boot decides "
     "that, not this tool, and staging the persona the resident already appears "
     "to have does not guarantee continuity. Relay this to the operator "
     "verbatim before they restart; do not predict which way it will go."

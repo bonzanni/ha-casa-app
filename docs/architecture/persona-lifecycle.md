@@ -142,11 +142,12 @@ restart.
 A resident's persona identity is an input of its binding digest, and that digest is a
 resume precondition, so the promotion INV-PERS-007 defers to the next restart starts
 every conversation that resident is holding fresh — on every channel, because the digest
-gate sits ahead of the freshness window. Telegram transcripts are submitted to long-term
-memory on the way out, and are recoverable from there only when long-term memory is
-configured — it is off by default, and the degraded backend retains silently and refuses
-recall. Voice is not a bank-writable channel at all, so a voice conversation is lost
-outright rather than demoted to recall.
+gate sits ahead of the freshness window. Voice is not a bank-writable channel, so a voice
+conversation is lost outright. A Telegram transcript is *offered* to long-term memory on
+the way out, which is a weaker thing than being kept: memory is off by default, and even
+configured the cold retain discards behind the wipe fence, retains nothing for a snapshot
+without usable provenance, and gives up after bounded retries. That is why the notice the
+operator is shown says nothing about recovery — see below.
 
 Staging is the last moment the telling is worth anything: the operator is about to order
 the restart themselves, and afterwards the notice is an apology rather than a warning.
