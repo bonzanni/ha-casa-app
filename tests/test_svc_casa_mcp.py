@@ -250,7 +250,16 @@ async def test_svc_hooks_resolve_body_identity_cannot_bypass_headers() -> None:
 
 
 async def test_svc_hooks_resolve_socket_unreachable_fails_closed() -> None:
-    """Hook fail-closed on transport error: deny with actionable reason (F-1)."""
+    """Hook fail-closed on transport error: deny with the boot-window wording.
+
+    F-1 established that the reason must signal failure unambiguously so the
+    model does not narrate a hook error as success. #880's ruling (option (a),
+    2026-09-10) keeps the answer a refusal but replaces the wording with the
+    tool-call face's, so the substrings that carried the F-1 property here are
+    gone; the property itself now rides on the executor prompt's general
+    ``is_error=true`` instruction, which is explicitly indifferent to the error
+    text, and on the CLI marking a ``deny`` as an error result.
+    """
     import aiohttp
 
     async def _fwd_raises(**_):
@@ -267,11 +276,12 @@ async def test_svc_hooks_resolve_socket_unreachable_fails_closed() -> None:
         body = await resp.json()
         reason = body["hookSpecificOutput"]["permissionDecisionReason"]
         assert body["hookSpecificOutput"]["permissionDecision"] == "deny"
-        # F-1: reason must signal failure unambiguously so the model
-        # doesn't narrate hook errors as success.
-        assert "permission relay" in reason.lower()
-        assert "tool was not run" in reason.lower()
-        assert "casa" in reason.lower()
+        # #880: the boot-window refusal names the condition in the tool-call
+        # face's own words. The byte-exact form is pinned by the refusal-case
+        # table below, and its equality with the tool-call face by
+        # ``test_socket_unreachable_hook_reason_matches_tools_call``.
+        assert "casa_temporarily_unavailable" in reason
+        assert "casa-main internal socket unreachable" in reason
 
 
 async def test_svc_hooks_resolve_forwards_with_no_client_timeout() -> None:
@@ -578,8 +588,9 @@ def _hook_refusal_cases():
                 connection_key=MagicMock(),
                 os_error=ConnectionRefusedError("simulated"),
             )),
-            "Permission relay unavailable: casa-main internal socket is down. "
-            "The tool was not run. Retry shortly or check addon logs.",
+            # #880: exactly the tool-call face's message for this condition.
+            "casa_temporarily_unavailable: casa-main internal socket "
+            "unreachable",
             (1, 1),
         ),
         (
@@ -717,8 +728,8 @@ async def _unexpected_forwarder_cases():
     ]
 
 
-def _hooks_request(app, body: dict):
-    """A /hooks/resolve request resolved through the app's OWN router.
+def _json_post_request(app, path: str, body: dict):
+    """A JSON POST to `path`, resolved through the app's OWN router.
 
     No listening socket is opened — the sandbox the reviewers run in denies
     one, and a status read back through a listener is not available here by
@@ -736,11 +747,16 @@ def _hooks_request(app, body: dict):
     stream.feed_eof()
     return make_mocked_request(
         "POST",
-        "/hooks/resolve",
+        path,
         payload=stream,
         app=app,
         headers={"Content-Type": "application/json"},
     )
+
+
+def _hooks_request(app, body: dict):
+    """A /hooks/resolve request, resolved in-process. See above."""
+    return _json_post_request(app, "/hooks/resolve", body)
 
 
 _HOOK_REQUEST_BODY = {
@@ -910,3 +926,66 @@ async def test_svc_hooks_resolve_adjacent_answers_are_unchanged() -> None:
                      fwd.call_count, fwd.await_count))
 
     assert seen == [(200, allow, 1, 1), (200, None, 1, 1)]
+
+
+# ---------------------------------------------------------------------------
+# #880 — the boot window's two assistant-facing faces must tell one story.
+# Specified by **astra** in the drive red-case round.
+async def test_socket_unreachable_hook_reason_matches_tools_call() -> None:
+    """One condition, one wording: the operator's decision on #880 (2026-09-10).
+
+    Casa resumes mid-flight engagements before it opens the internal socket
+    those engagements reach it through, so a resumed engagement's first move can
+    land while ``_forward_to_internal`` still raises
+    ``aiohttp.ClientConnectorError``. The bridge answers that ONE condition on
+    two faces, and at the base they word it differently: ``tools/call`` says
+    ``casa_temporarily_unavailable: casa-main internal socket unreachable``
+    while ``/hooks/resolve`` said ``Permission relay unavailable: casa-main
+    internal socket is down. …``. Option (a) of the ruling keeps the hook answer
+    a refusal — HTTP 200 carrying a ``deny``, INV-MCP-011 untouched — and gives
+    it exactly the wording the tool-call face already uses.
+
+    The comparison is DERIVED from both handlers in the same run rather than
+    written against a literal here: a drift on either face alone breaks it, and
+    a copy of the string in this file would only pin the face it was copied
+    from. Both requests are resolved through the app's own router, so no
+    listening socket is opened.
+    """
+    import aiohttp
+
+    fwd = AsyncMock(side_effect=aiohttp.ClientConnectorError(
+        connection_key=MagicMock(),
+        os_error=ConnectionRefusedError("simulated"),
+    ))
+    app = _make_svc_app(tools=[_DummyTool()], forward_call=fwd)
+
+    call_request = _json_post_request(app, "/mcp/casa-framework", {
+        "jsonrpc": "2.0", "id": 8,
+        "method": "tools/call",
+        "params": {"name": "ok", "arguments": {}},
+    })
+    match = await app.router.resolve(call_request)
+    call_resp = await match.handler(call_request)
+
+    hook_request = _json_post_request(
+        app, "/hooks/resolve", _HOOK_REQUEST_BODY)
+    match = await app.router.resolve(hook_request)
+    hook_resp = await match.handler(hook_request)
+
+    # Both faces reached the forwarder, once each, on their own internal path.
+    assert (fwd.call_count, fwd.await_count) == (2, 2)
+    assert [c.kwargs["path"] for c in fwd.call_args_list] == [
+        "/internal/tools/call", "/internal/hooks/resolve",
+    ]
+    error = json.loads(call_resp.body)["error"]
+    assert error["code"] == -32000
+
+    output = json.loads(hook_resp.body)["hookSpecificOutput"]
+    assert hook_resp.status == 200
+    assert output["hookEventName"] == "PreToolUse"
+    assert output["permissionDecision"] == "deny"
+
+    # The declaration of #880: for THIS condition the two faces carry the same
+    # bytes. Nothing here is asserted about the route's other refusal arms.
+    assert (output["permissionDecisionReason"].encode("utf-8")
+            == error["message"].encode("utf-8"))

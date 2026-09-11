@@ -263,10 +263,18 @@ def _build_hooks_handler(*, forward_to_internal: ForwardCallable):
                 {"hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
+                    # #880, the operator's decision (2026-09-10), option
+                    # (a): this stays a refusal — the hook protocol offers no
+                    # answer that stops the tool without holding it — but it
+                    # carries EXACTLY the wording the tool-call face uses for
+                    # this same condition, so the assistant sees one story on
+                    # both faces. Duplicated, never hoisted into a shared
+                    # constant: tests/test_mcp_restart_survival.py asserts the
+                    # tool-call arm's source layout as text, and the e2e
+                    # probe's window classifier turns on those same bytes.
                     "permissionDecisionReason":
-                        "Permission relay unavailable: casa-main internal "
-                        "socket is down. The tool was not run. Retry shortly "
-                        "or check addon logs.",
+                        "casa_temporarily_unavailable: "
+                        "casa-main internal socket unreachable",
                 }},
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
