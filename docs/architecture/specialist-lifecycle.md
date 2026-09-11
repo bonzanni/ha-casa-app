@@ -250,6 +250,17 @@ they point at are re-validated by the commit tool as they always were, and a clo
 drifted still refuses. Nor does status refresh anything it reports — it triggers no reload,
 so a stale loaded view stays stale until something else reloads.
 
+The same reasoning binds what a refusal on this route SAYS. When either merge read of a
+pending candidate's configuration fails, the operation refuses with the candidate, its
+saved settings and its receipt and staging tree all intact — and the advice that travels
+with that refusal is part of the guarantee, because the tool result carries the refusal's
+`detail` verbatim to whoever paraphrases it to the operator. It therefore names what to
+keep and asks for a retry, and it does not offer an uninstall: uninstall removes the
+instance directory, which is where a pending candidate's supplied configuration lives, so
+following that advice after one transient read error would destroy the only copy of what
+the refusal preserved. This is the operating doctrine's general preservation rule, declared
+narrowly over these two paths as INV-OPS-001 (`doctrine/operating-casa.md`).
+
 ## Failure behavior
 
 **Resolution, fetch, manifest or dependency problems.** Typed refusals before anything

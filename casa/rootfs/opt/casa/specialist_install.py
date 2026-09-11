@@ -2047,11 +2047,19 @@ def commit_specialist_install(
             # guard's own refusal instead: a candidate whose config we could
             # not read is one we cannot merge with, and refusing costs a
             # retry where proceeding costs the operator's settings.
+            # INV-OPS-001 (#929 attempt 4): the advice preserves exactly what
+            # the refusal preserved. The earlier wording offered "uninstall and
+            # install afresh" as an alternative; `tools.py` relays this detail
+            # verbatim and `_uninstall_core` rmtree's the instance directory, so
+            # that alternative destroyed the only copy of the settings after one
+            # transient read error the next read recovers from.
             raise SpecialistInstallError(
                 "concurrent_mutation",
                 f"{inspection.slug!r}: the pending candidate's configuration "
                 f"could not be read ({exc}); refusing to restage over it — "
-                f"retry, or uninstall and install afresh") from exc
+                f"preserve the pending candidate, its saved configuration, and "
+                f"the receipt and staging tree needed to resume; resolve the "
+                f"read error and retry") from exc
         merged_config = dict(config)
         if pending_before is not None and pending_before.root == root:
             _secret_declared = set(component.config_schema.get("secret_names", []) or [])
@@ -2975,11 +2983,15 @@ def _upgrade_core(
         # read that fails once can succeed the next time, so treating the
         # failure as "contributes nothing" silently drops the settings an
         # earlier pending attempt already supplied. Fail closed.
+        # INV-OPS-001 (#929 attempt 4): same advice change as the install arm,
+        # for the same reason — a refusal that preserved the settings must not
+        # recommend an action that destroys them.
         raise SpecialistInstallError(
             "concurrent_mutation",
             f"{slug!r}: the pending candidate's configuration could not be "
-            f"read ({exc}); refusing to restage over it — retry, or "
-            f"uninstall and install afresh") from exc
+            f"read ({exc}); refusing to restage over it — preserve the pending "
+            f"candidate, its saved configuration, and the receipt and staging "
+            f"tree needed to resume; resolve the read error and retry") from exc
     desired_carried = {}
     if _desired_before is not None and _desired_before.root == root:
         desired_carried = {
