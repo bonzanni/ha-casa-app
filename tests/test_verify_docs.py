@@ -1009,7 +1009,7 @@ INV_SHARD_ENTRY = """
   tests: [tests/test_a.py::test_b]
   related: [doctrine/publishing.md]
   defines_invariants: [INV-EVAL-001, INV-F-001, INV-MEM-001, INV-N-001, INV-OBS-001,
-                       INV-PUB-001, INV-S-001, INV-VOICE-001]
+                       INV-PUB-001, INV-R-001, INV-RZ-001, INV-S-001, INV-VOICE-001]
   invariant_tests:
     INV-EVAL-001: [tests/test_a.py::test_b]
     INV-F-001: [tests/test_a.py::test_b]
@@ -1017,6 +1017,8 @@ INV_SHARD_ENTRY = """
     INV-N-001: [tests/test_a.py::test_b]
     INV-OBS-001: [tests/test_a.py::test_b]
     INV-PUB-001: [tests/test_a.py::test_b]
+    INV-R-001: [tests/test_a.py::test_b]
+    INV-RZ-001: [tests/test_a.py::test_b]
     INV-S-001: [tests/test_a.py::test_b]
     INV-VOICE-001: [tests/test_a.py::test_b]
 """
@@ -1029,7 +1031,9 @@ INV_SHARD_DOC = {
         "**INV-MEM-001**: last family of the second shard.\n\n"
         "**INV-N-001**: first family of the third shard.\n\n"
         "**INV-OBS-001**: an ordinary family of the third shard.\n\n"
-        "**INV-PUB-001**: last family of the third shard.\n\n"
+        "**INV-PUB-001**: an ordinary family of the third shard.\n\n"
+        "**INV-R-001**: the third shard owns the whole range up to its bound.\n\n"
+        "**INV-RZ-001**: last family of the third shard, just below the bound.\n\n"
         "**INV-S-001**: first family of the fourth shard.\n\n"
         "**INV-VOICE-001**: an ordinary family of the fourth shard.\n"
         + SOURCEMAP
@@ -1065,9 +1069,10 @@ def _shard_rows(root: Path) -> dict[str, list[str]]:
 def test_every_family_lands_in_exactly_one_shard_at_the_f_n_and_s_boundaries(tmp_path):
     """#843, then #953: each shard outgrew the index ceiling in turn and the index
     now shards FOUR ways. A family sorting exactly AT a boundary (`F`, `N`, `S`)
-    opens the later shard, one sorting just below it (`EVAL`, `MEM`, `PUB`) closes
+    opens the later shard, one sorting just below it (`EVAL`, `MEM`, `RZ`) closes
     the earlier one, and every row appears exactly once across the four — so a
-    boundary compared with the wrong inequality, a bound moved off `S`, a shard
+    boundary compared with the wrong inequality, a bound moved off `S` to
+    anywhere in `R`..`RZ` or up to `T`, a shard
     table left at three rows, or a family the table assigns nowhere is caught
     here. The expected layout is literal test data, never read back from
     `_INV_SHARDS`."""
@@ -1076,13 +1081,14 @@ def test_every_family_lands_in_exactly_one_shard_at_the_f_n_and_s_boundaries(tmp
     assert rows == {
         "doctrine/invariants.md": ["INV-EVAL-001"],
         "doctrine/invariants-f-m.md": ["INV-F-001", "INV-MEM-001"],
-        "doctrine/invariants-n-r.md": ["INV-N-001", "INV-OBS-001", "INV-PUB-001"],
+        "doctrine/invariants-n-r.md": ["INV-N-001", "INV-OBS-001", "INV-PUB-001",
+                                      "INV-R-001", "INV-RZ-001"],
         "doctrine/invariants-s-z.md": ["INV-S-001", "INV-VOICE-001"],
     }
     assert sorted(sum(rows.values(), [])) == [
         "INV-EVAL-001", "INV-F-001", "INV-MEM-001", "INV-N-001", "INV-OBS-001",
-        "INV-PUB-001", "INV-S-001", "INV-VOICE-001"]
-    assert len(sum(rows.values(), [])) == 8
+        "INV-PUB-001", "INV-R-001", "INV-RZ-001", "INV-S-001", "INV-VOICE-001"]
+    assert len(sum(rows.values(), [])) == 10
 
 
 def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
