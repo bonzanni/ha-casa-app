@@ -247,46 +247,45 @@ def test_apply_recipe_step_five_tells_the_resident_conversation_cost() -> None:
     assert_restart_notice(step_5, "recipes/persona/apply.md step 5")
 
 
-# --- the notice PREDICTS nothing, and states both branches ----------------
+# --- the notice PROMISES no continuity, and predicts nothing --------------
 #
-# Diff review found the same mechanism wrong in OPPOSITE directions in two
-# consecutive rounds, which is the signal to cut a mechanism rather than
-# sharpen it:
+# Three diff-review rounds found the same mechanism — something deciding
+# whether this staging will move the digest — wrong in every direction tried:
 #
-#   r1 (Terra, S2) — the notice was unconditional, and a stage whose candidate
-#     EQUALS the active binding is discarded by reconcile rather than promoted.
-#     A confident FALSE warning of conversation loss.
-#   r2 (Astra, S2) — the predicate added for r1 stayed SILENT where the digest
-#     DOES move: `reset` resolves its pack through `persona_pack_roots()`,
-#     which searches the INSTALLED root first, while boot loads the
-#     image-default pack from the image root ONLY. An installed pack shadowing
-#     an image-default ref makes the two disagree, and a suppressed TRUE
-#     warning is the original bug restored.
+#   r1 (Terra, S2) an unconditional notice fired on a stage whose candidate
+#     equals the active binding, which reconcile discards: a false warning.
+#   r2 (Astra, S2) the predicate added for r1 stayed SILENT where the digest
+#     DOES move — `reset` resolves its pack installed-root-first while boot
+#     resolves image-root-only, so an installed pack shadowing an image-default
+#     ref makes them disagree. Filed as #945.
+#   r3 (Astra AND Terra, S2) the predicate was gone from Python but survived as
+#     an INSTRUCTION: the notice told the model to say which branch applied and
+#     the recipe told it to infer that from `prior_persona` or the request. In
+#     the #945 state both read identical while boot changes the digest.
 #
-# Predicting boot's resolution from the tool means duplicating it, and the
-# second finding IS that duplicate drifting. So there is no prediction: the
-# sentence states its own condition and is true in BOTH states. These tests pin
-# exactly that, and they are ORDINARY tests in this change's diff rather than
-# red cases — at the base `conversation_notice` does not exist at all.
+# So nothing predicts, and nothing promises continuity: the tool cannot know,
+# and neither can the model reading it. These are ORDINARY tests in this
+# change's diff, not red cases — at the base `conversation_notice` does not
+# exist at all.
 
-BRANCH_CLAUSES = (
-    "if this staging changes the resident's persona identity",
-    "if instead it stages the binding that is already active",
-    "boot discards it and nothing restarts",
+NO_PROMISE_CLAUSES = (
+    "boot decides that, not this tool",
+    "does not guarantee continuity",
+    "do not predict which way it will go",
 )
 
 
-def assert_states_both_branches(text: str, surface: str) -> None:
+def assert_promises_nothing(text: str, surface: str) -> None:
     normalized = " ".join((text or "").lower().split())
-    present = [c for c in BRANCH_CLAUSES if c in normalized]
-    assert len(present) == len(BRANCH_CLAUSES), (
-        f"{surface}: {len(BRANCH_CLAUSES) - len(present)} of "
-        f"{len(BRANCH_CLAUSES)} branch clauses absent — missing "
-        f"{[c for c in BRANCH_CLAUSES if c not in present]}"
+    present = [c for c in NO_PROMISE_CLAUSES if c in normalized]
+    assert len(present) == len(NO_PROMISE_CLAUSES), (
+        f"{surface}: {len(NO_PROMISE_CLAUSES) - len(present)} of "
+        f"{len(NO_PROMISE_CLAUSES)} no-promise clauses absent — missing "
+        f"{[c for c in NO_PROMISE_CLAUSES if c not in present]}"
     )
 
 
-def _reset_payload(resident) -> dict:
+def _reset_payload() -> dict:
     from tools import resident_persona_reset
 
     return _payload(asyncio.run(resident_persona_reset.handler({
@@ -294,7 +293,7 @@ def _reset_payload(resident) -> dict:
     })))
 
 
-def _commit_active(resident, binding, root_label: str) -> None:
+def _commit_active(binding, root_label: str) -> None:
     """Leave the resident ACTIVE on `binding`, as a boot reconcile would."""
     from personality_binding import InstanceDir, make_instance_tuple
     import agent_loader
@@ -306,41 +305,70 @@ def _commit_active(resident, binding, root_label: str) -> None:
     instance_dir.commit_desired_to_active()
 
 
-def test_the_notice_states_both_branches_rather_than_predicting_one(
-        resident, monkeypatch) -> None:
-    """The cut itself: the notice names the no-op branch, so no caller has to
-    predict which one applies. Without these clauses the sentence is the
-    unconditional claim r1 found false."""
-    assert_states_both_branches(
-        _reset_payload(resident)["conversation_notice"],
-        "resident_persona_reset result")
+def test_the_notice_promises_no_continuity_and_tells_nobody_to_predict(
+        resident) -> None:
+    """The cut itself. Without these clauses the sentence either warns
+    unconditionally (r1's bug) or invites the reader to decide it does not
+    apply (r3's bug)."""
+    assert_promises_nothing(
+        _reset_payload()["conversation_notice"], "resident_persona_reset result")
 
 
-def test_the_notice_is_identical_whether_or_not_the_binding_moves(
-        resident, monkeypatch) -> None:
-    """The property that makes the cut safe, and the mutation guard for it: the
-    SAME sentence is returned in the no-op state (already on the image default)
-    and in the moving state (on an override). A reintroduced predicate — in
-    EITHER direction — makes these two differ, so this fails for r1's bug and
-    for r2's alike."""
+def test_the_notice_is_identical_whether_or_not_the_binding_appears_to_move(
+        resident) -> None:
+    """The mutation guard for the whole cut: the SAME sentence is returned when
+    the reset plainly moves the binding and when it plainly does not. A
+    reintroduced predicate in EITHER direction makes these differ, so this one
+    test fails for r1's bug and r2's alike."""
     from personality_binding import (
         materialize_image_default_binding, materialize_override_binding)
     import tools as tools_mod
 
-    # Moving: active on an override, reset restores the image default.
-    _commit_active(resident, materialize_override_binding(
+    _commit_active(materialize_override_binding(
         role=resident.role, persona=resident.pack,
         override_source="operator:casa/ellen@0.2.0"), "operator:casa/ellen@0.2.0")
-    moving = _reset_payload(resident)["conversation_notice"]
+    moving = _reset_payload()["conversation_notice"]
 
-    # No-op: active on the very binding the reset restores.
     default_pack = tools_mod._resolve_local_persona("casa/ellen@0.1.0")
-    _commit_active(resident, materialize_image_default_binding(
+    _commit_active(materialize_image_default_binding(
         role=resident.role, persona=default_pack,
         image_default_root="casa/ellen@0.1.0"), "casa/ellen@0.1.0")
-    no_op = _reset_payload(resident)["conversation_notice"]
+    no_op = _reset_payload()["conversation_notice"]
 
     assert moving == no_op
-    # And it is the real notice in both, not two empty strings agreeing.
-    assert_restart_notice(moving, "reset result (binding moves)")
-    assert_states_both_branches(no_op, "reset result (no-op)")
+    assert_restart_notice(moving, "reset result (binding plainly moves)")
+    assert_promises_nothing(no_op, "reset result (binding plainly does not)")
+
+
+def test_an_installed_pack_shadowing_the_image_default_still_tells(
+        resident, tmp_path, monkeypatch) -> None:
+    """r2's state, kept as a regression (#945). An installed
+    `casa/ellen@0.1.0` shadows the image-default ref: `_resolve_local_persona`
+    searches the INSTALLED root first, so reset's candidate digest equals the
+    active one — while boot, which reads the image root ONLY, promotes a
+    different binding. This is precisely the state in which r1's predicate went
+    silent and the voice conversation was lost unannounced.
+
+    The staging divergence itself is #945 and is NOT fixed here. What this pins
+    is that the TELLING no longer depends on it: the notice must arrive whole.
+    """
+    from personality_binding import materialize_image_default_binding
+    import tools as tools_mod
+
+    shadow = install_persona_for_apply(
+        tmp_path, monkeypatch, persona_id="casa/ellen", version="0.1.0")
+    resolved = tools_mod._resolve_local_persona("casa/ellen@0.1.0")
+    # The shadow really is what the tool resolves — if this ever stops holding,
+    # #945 was fixed and this test is describing a state that no longer exists.
+    assert resolved.checksum == shadow.checksum
+
+    _commit_active(materialize_image_default_binding(
+        role=resident.role, persona=resolved,
+        image_default_root="casa/ellen@0.1.0"), "casa/ellen@0.1.0")
+
+    payload = _reset_payload()
+    assert payload["ok"] is True
+    assert_restart_notice(
+        payload["conversation_notice"], "reset result (shadowed image default)")
+    assert_promises_nothing(
+        payload["conversation_notice"], "reset result (shadowed image default)")

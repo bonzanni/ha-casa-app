@@ -10,12 +10,12 @@ description: |
   resident to its image-default persona, list the installed personas, remove
   one, or prune every persona nothing is bound to (reset is residents-only — a
   specialist's first persona override is undone by specialist_rollback). The
-  image-default personas are part of the image and never removable. Giving a resident a
-  DIFFERENT persona, or resetting one that is on an override, costs that resident its
-  conversations: the restart that promotes the new binding starts every one of them fresh on
-  every channel, and voice history is not carried, so say what it costs before the operator
-  commits to it. Staging the persona a resident already has costs nothing and restarts
-  nothing. The assistant is told to answer directly for a read-only question about current
+  image-default personas are part of the image and never removable. Changing a resident's
+  persona can cost that resident its conversations: if the restart promotes a different
+  identity, every one of them starts fresh on every channel and voice history is not
+  carried, so relay what the tool says before the operator commits to it. Never reassure
+  them that a restart will change nothing — that is settled at start-up, not when the change
+  is staged. The assistant is told to answer directly for a read-only question about current
   config and to engage the configurator only to change something, with one
   exception: listing the installed personas is a configurator job too, because
   the assistant holds no persona tool.

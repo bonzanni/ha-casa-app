@@ -1132,16 +1132,15 @@ default, or another installed persona) by asking Ellen to apply a
 different persona to it.
 
 **Changing a resident's persona costs you its conversations.** Giving Ellen,
-the butler or the concierge a *different* persona — or resetting one that is
-currently on an override back to its built-in default — takes effect at the
-next restart, and that restart starts every conversation with that resident
+the butler or the concierge a different persona — or resetting one back to its
+built-in default — takes effect at the next restart, and if that changes who
+the resident is, the restart starts every conversation with that resident
 fresh, on Telegram and on voice alike. Anything said on Telegram is kept in
 memory and can still be recalled; voice conversations are not kept, so anything
 said there and not repeated is gone. Casa tells you this before you restart, so
-finish what you are in the middle of first.
-
-Asking for the persona a resident is *already* using costs nothing: Casa
-notices at the next start that nothing changed, and the conversations carry on.
+finish what you are in the middle of first — and treat it as a real
+possibility rather than a certainty either way, because what the restart
+activates is settled at start-up, not when you ask for it.
 
 ## Claude Code driver (v0.13.1)
 

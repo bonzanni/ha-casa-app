@@ -303,12 +303,12 @@ kind, not a generic "install / upgrade / remove":
   installed specialist (`specialist:<slug>`), reset a resident to its image-default
   persona (reset is residents-only and restores the built-in default), list the
   installed personas, remove one, or prune every persona nothing is bound to. The
-  image-default personas ship in the image and are never removable. Giving a resident a
-  DIFFERENT persona, or resetting one that is on an override, costs that resident its
-  conversations: the restart that promotes the new binding starts every one of them fresh on
-  every channel, and voice history is not carried, so say what it costs before the operator
-  commits to it. Staging the persona a resident already has costs nothing and restarts
-  nothing.
+  image-default personas ship in the image and are never removable. Changing a resident's
+  persona can cost that resident its conversations: if the restart promotes a different
+  identity, every one of them starts fresh on every channel and voice history is not
+  carried, so relay what the tool says before the operator commits to it. Never reassure
+  them that a restart will change nothing — that is settled at start-up, not when the change
+  is staged.
 
 A fresh Casa box ships with NO specialists installed, so "install X from its
 repo" is the normal way to add one — never decline it as unsupported.

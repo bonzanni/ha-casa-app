@@ -18,18 +18,17 @@
    `ReloadError("restart_required", ...)` guard). Boot reconciliation promotes the staged binding
    and re-proves it compiles, keeping the last-known-good if it cannot.
    Tell the operator what the restart COSTS, in the same breath and BEFORE they agree to
-   it. Relay the result's `conversation_notice` — do not paraphrase it, and do not assume
-   which of its two branches applies. It says: IF this staging changes the resident's
-   persona identity, then **on the restart that promotes this binding, every conversation
-   of this resident starts fresh on every channel**, because the persona is part of the
-   resident's session identity; Telegram history is retained to memory first and stays
-   recallable, but **voice history is not carried**, so anything said on voice and not
-   repeated is gone. IF instead you staged the binding that is already active, boot
-   discards it and nothing restarts — say THAT, and do not warn about a loss that will
-   not happen. You can tell the two apart from `prior_persona` where the envelope carries
-   it, and otherwise from what the operator asked for. A resident mid-way through
+   it. **Relay the result's `conversation_notice` VERBATIM.** Do not paraphrase it, do not
+   summarise it, and above all do not work out for yourself whether this particular
+   staging will change anything — you cannot, and neither can this tool. It says: on the
+   restart that promotes this binding, if the resident's persona identity ends up
+   different from the one it is running, **every conversation of this resident starts
+   fresh on every channel**, because the persona is part of the resident's session
+   identity; Telegram history is retained to memory first and stays recallable, but
+   **voice history is not carried**, so anything said on voice and not repeated is gone.
+   Boot decides which happens, after this call has returned. A resident mid-way through
    something on voice is a reason to WAIT before restarting, and the operator can only
-   weigh that if you say it.
+   weigh that if you pass the notice on.
 6. `config_git_commit` first, then — if `ok: true` and `restart_required: false` (specialists) —
    `casa_reload(scope="agents")` activates it immediately, then `emit_completion`
    (canonical commit -> reload -> emit order, see `completion.md`).
@@ -56,8 +55,10 @@
   — afterwards it is not a warning, it is an apology. `resident_persona_swap` and
   `resident_persona_reset` have no recipe of their own and carry the same
   `conversation_notice`; the same duty applies there.
-- The opposite mistake, and it is just as bad: warning about a conversation loss on a
-  stage that changes NOTHING. Resetting a resident that is already on its image default,
-  or applying the persona it is already bound to, stages a binding boot will discard —
-  nothing is promoted and no conversation restarts. The notice states both branches
-  precisely so you do not have to guess; read it and say which one happened.
+- The opposite mistake, and it is the one that has been made three times here:
+  REASSURING the operator that nothing will change. You cannot know that. `prior_persona`
+  and the ref the operator asked for can both read identical while boot still promotes a
+  different binding — an installed pack can shadow an image-default ref, and the binding
+  digest moves for non-persona inputs (a role checksum among them) as well. Never tell
+  the operator a restart is free. Relay the notice as written and let boot be the one
+  that decides.

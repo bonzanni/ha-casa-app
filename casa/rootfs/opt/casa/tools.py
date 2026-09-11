@@ -14077,32 +14077,43 @@ async def persona_install_commit(args: dict) -> dict:
 # have skipped. INV-PERS-018, pinned by
 # tests/test_resident_persona_restart_notice.py.
 #
-# THE NOTICE STATES ITS OWN CONDITION, and this tool PREDICTS NOTHING. Two
-# diff-review rounds found the same mechanism — a predicate here deciding
-# whether the promotion would move the digest — wrong in OPPOSITE directions:
-#   r1 (Terra, S2) it fired on a stage whose candidate equals the active
-#     binding, which reconcile discards rather than promotes: a confident FALSE
-#     warning of conversation loss.
-#   r2 (Astra, S2) it stayed SILENT where the digest does move. `reset`
-#     resolves its pack through persona_pack_roots(), which searches the
-#     INSTALLED root first, while boot's reconcile loads the image-default pack
-#     from the image root ONLY (agent_loader's `_load_default`). An installed
-#     pack shadowing an image-default ref makes the two disagree, and a
-#     suppressed TRUE warning is the original bug restored — with the voice
-#     conversation gone and nothing said.
-# Predicting boot's resolution from here means duplicating it, and a duplicate
-# drifts; the second finding IS that drift. So the prediction is cut rather than
-# sharpened, and the sentence is worded to be true in BOTH states. (The
-# staging divergence r2 uncovered is a real, pre-existing defect that this
-# change does not touch — it is filed separately.)
+# NOTHING HERE PREDICTS THE OUTCOME, AND NOTHING INSTRUCTS ANYONE ELSE TO.
+# Three diff-review rounds found the same mechanism — something deciding
+# whether this staging will move the digest — wrong in every direction it was
+# tried:
+#   r1 (Terra, S2) an unconditional notice fired on a stage whose candidate
+#     equals the active binding, which reconcile discards rather than promotes:
+#     a confident FALSE warning of conversation loss.
+#   r2 (Astra, S2) the predicate added for r1 stayed SILENT where the digest
+#     does move. `reset` resolves its pack through persona_pack_roots(), which
+#     searches the INSTALLED root first, while boot loads the image-default
+#     pack from the image root ONLY (agent_loader's `_load_default`). An
+#     installed pack shadowing an image-default ref makes the two disagree, and
+#     a suppressed TRUE warning is the original bug restored. Filed as #945.
+#   r3 (Astra AND Terra, S2) the predicate was gone from Python but survived as
+#     an INSTRUCTION: this sentence told the model to say "which of the two
+#     applies", and the recipe told it to infer that from `prior_persona` or
+#     from what the operator asked for. In the #945 state both of those read
+#     identical while boot changes the digest — the same false reassurance, one
+#     carrier further out. Terra also measured that `compute_binding_digest`
+#     moves for non-persona inputs (a role checksum among them), so an
+#     apparently unchanged persona never implied continuity in the first place.
+#
+# The conclusion the third round forces: this tool CANNOT know, and neither can
+# the model reading it. Boot decides, after this call returns. So the sentence
+# states the consequence and says plainly who decides — and it promises
+# continuity to nobody, because no reachable evidence here could support that
+# promise. INV-PERS-018, pinned by
+# tests/test_resident_persona_restart_notice.py.
 RESIDENT_CONVERSATION_RESET_NOTICE = (
-    "If this staging changes the resident's persona identity, then on the "
-    "restart that promotes this binding, every conversation of this resident "
-    "starts fresh on every channel — the persona is part of the resident's "
-    "session identity. Telegram history is retained to memory first and stays "
-    "recallable; voice history is not carried. If instead it stages the "
-    "binding that is already active, boot discards it and nothing restarts. "
-    "Tell the operator which of the two applies BEFORE they restart."
+    "On the restart that promotes this binding, if the resident's persona "
+    "identity ends up different from the one it is running, every conversation "
+    "of this resident starts fresh on every channel — the persona is part of "
+    "the resident's session identity. Telegram history is retained to memory "
+    "first and stays recallable; voice history is not carried. Boot decides "
+    "that, not this tool, and staging the persona the resident already appears "
+    "to have does not guarantee continuity. Relay this to the operator "
+    "verbatim before they restart; do not predict which way it will go."
 )
 
 
