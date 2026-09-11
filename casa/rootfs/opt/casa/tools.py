@@ -14076,36 +14076,34 @@ async def persona_install_commit(args: dict) -> dict:
 # apart — and so the telling is data the model must relay, not doctrine it may
 # have skipped. INV-PERS-018, pinned by
 # tests/test_resident_persona_restart_notice.py.
+#
+# THE NOTICE STATES ITS OWN CONDITION, and this tool PREDICTS NOTHING. Two
+# diff-review rounds found the same mechanism — a predicate here deciding
+# whether the promotion would move the digest — wrong in OPPOSITE directions:
+#   r1 (Terra, S2) it fired on a stage whose candidate equals the active
+#     binding, which reconcile discards rather than promotes: a confident FALSE
+#     warning of conversation loss.
+#   r2 (Astra, S2) it stayed SILENT where the digest does move. `reset`
+#     resolves its pack through persona_pack_roots(), which searches the
+#     INSTALLED root first, while boot's reconcile loads the image-default pack
+#     from the image root ONLY (agent_loader's `_load_default`). An installed
+#     pack shadowing an image-default ref makes the two disagree, and a
+#     suppressed TRUE warning is the original bug restored — with the voice
+#     conversation gone and nothing said.
+# Predicting boot's resolution from here means duplicating it, and a duplicate
+# drifts; the second finding IS that drift. So the prediction is cut rather than
+# sharpened, and the sentence is worded to be true in BOTH states. (The
+# staging divergence r2 uncovered is a real, pre-existing defect that this
+# change does not touch — it is filed separately.)
 RESIDENT_CONVERSATION_RESET_NOTICE = (
-    "On the restart that promotes this binding, every conversation of this "
-    "resident starts fresh on every channel — the persona is part of the "
-    "resident's session identity. Telegram history is retained to memory "
-    "first and stays recallable; voice history is not carried. Tell the "
-    "operator this BEFORE they restart."
+    "If this staging changes the resident's persona identity, then on the "
+    "restart that promotes this binding, every conversation of this resident "
+    "starts fresh on every channel — the persona is part of the resident's "
+    "session identity. Telegram history is retained to memory first and stays "
+    "recallable; voice history is not carried. If instead it stages the "
+    "binding that is already active, boot discards it and nothing restarts. "
+    "Tell the operator which of the two applies BEFORE they restart."
 )
-
-
-def _conversation_notice(active_digest: str | None,
-                         candidate_digest: str | None) -> str | None:
-    """The notice for a staged resident binding — or None when staging it
-    changes nothing.
-
-    Diff-review round 1 (Terra, S2): the notice was unconditional, and a stage
-    whose candidate EQUALS the already-active binding is discarded by boot
-    reconciliation rather than promoted — `personality_binding`'s reconcile
-    returns the active tuple untouched when
-    `active.binding.binding_digest == candidate_binding.binding_digest`. The
-    digest therefore never moves, `_resume_decision` resumes normally, and the
-    notice was a confidently-worded FALSE warning on a real, reachable path
-    (reset a resident that is already on its image default).
-
-    This predicate MIRRORS reconcile's, deliberately: same comparison, same
-    treatment of a missing active (no active tuple is not a no-op). It decides
-    only what is SAID — reconcile alone decides what is promoted.
-    """
-    if active_digest is not None and active_digest == candidate_digest:
-        return None
-    return RESIDENT_CONVERSATION_RESET_NOTICE
 
 
 @tool(
@@ -14209,23 +14207,12 @@ async def persona_apply(args: dict) -> dict:
         # exactly the condition `restart_required` is: a specialist activates
         # on casa_reload rather than a restart, so the notice would be untrue
         # of it — None is "no statement", not a silent omission.
-        notice = None
-        if kind == "resident":
-            # Read the active tuple for the no-op comparison (round-1 S2).
-            # AFTER staging on purpose: `stage_desired` writes desired.yaml and
-            # never touches active.yaml, so this reads the same bytes it would
-            # have before — and off the loop, like every other InstanceDir read
-            # on this path.
-            from personality_binding import InstanceDir
-
-            prior = await asyncio.to_thread(InstanceDir(instance_dir_root).active)
-            notice = _conversation_notice(
-                prior.binding.binding_digest if prior is not None else None,
-                staged.binding.binding_digest)
         return {"ok": True, "target_role_id": args["target_role_id"],
                 "binding_digest": staged.binding.binding_digest,
                 "restart_required": kind == "resident",
-                "conversation_notice": notice}
+                "conversation_notice": (
+                    RESIDENT_CONVERSATION_RESET_NOTICE if kind == "resident"
+                    else None)}
 
     if kind == "resident":
         # Controller resolution #2 (task-n1d-brief deviation): the brief
@@ -15774,12 +15761,7 @@ async def _stage_and_report(role_id: str, slot: str, binding) -> dict:
         "ok": True, "role": role_id, "persona": f"{binding.persona_id}@{binding.persona_version}",
         "activation": "restart_required",
         "prior_persona": (f"{active.binding.persona_id}@{active.binding.persona_version}" if active else None),
-        # Round-1 S2: `active` here was read INSIDE the materialize lock, in the
-        # same critical section that staged the candidate — the most accurate
-        # reading available, and better than persona_apply's post-stage read.
-        "conversation_notice": _conversation_notice(
-            active.binding.binding_digest if active is not None else None,
-            binding.binding_digest),
+        "conversation_notice": RESIDENT_CONVERSATION_RESET_NOTICE,
     }
 
 

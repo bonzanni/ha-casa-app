@@ -247,82 +247,100 @@ def test_apply_recipe_step_five_tells_the_resident_conversation_cost() -> None:
     assert_restart_notice(step_5, "recipes/persona/apply.md step 5")
 
 
-# --- the no-op stage: nothing is promoted, so nothing is claimed ----------
+# --- the notice PREDICTS nothing, and states both branches ----------------
 #
-# Diff-review round 1 (Terra, S2) against the fix above: the notice was
-# unconditional, and a stage whose candidate EQUALS the already-active binding
-# is DISCARDED by boot reconciliation rather than promoted
-# (`personality_binding` returns the active tuple untouched when
-# `active.binding.binding_digest == candidate_binding.binding_digest`). The
-# digest never moves, the session resumes, and the notice was a confidently
-# worded FALSE warning on a reachable path.
+# Diff review found the same mechanism wrong in OPPOSITE directions in two
+# consecutive rounds, which is the signal to cut a mechanism rather than
+# sharpen it:
 #
-# These are regression tests in this change's diff, NOT red cases: at the base
-# `conversation_notice` does not exist at all, so `.get(...)` is None and both
-# would pass there for the wrong reason. They pin the fix, and they are
-# reviewed like any other test rather than carrying a red-case receipt.
+#   r1 (Terra, S2) — the notice was unconditional, and a stage whose candidate
+#     EQUALS the active binding is discarded by reconcile rather than promoted.
+#     A confident FALSE warning of conversation loss.
+#   r2 (Astra, S2) — the predicate added for r1 stayed SILENT where the digest
+#     DOES move: `reset` resolves its pack through `persona_pack_roots()`,
+#     which searches the INSTALLED root first, while boot loads the
+#     image-default pack from the image root ONLY. An installed pack shadowing
+#     an image-default ref makes the two disagree, and a suppressed TRUE
+#     warning is the original bug restored.
+#
+# Predicting boot's resolution from the tool means duplicating it, and the
+# second finding IS that duplicate drifting. So there is no prediction: the
+# sentence states its own condition and is true in BOTH states. These tests pin
+# exactly that, and they are ORDINARY tests in this change's diff rather than
+# red cases — at the base `conversation_notice` does not exist at all.
+
+BRANCH_CLAUSES = (
+    "if this staging changes the resident's persona identity",
+    "if instead it stages the binding that is already active",
+    "boot discards it and nothing restarts",
+)
 
 
-def test_a_no_op_reset_claims_nothing_because_nothing_is_promoted(
-        resident, monkeypatch) -> None:
-    """The resident is ALREADY active on the binding the reset restores, so
-    reconciliation discards the staged candidate and the conversations survive.
-    The result must not warn about a loss that will not happen."""
-    from personality_binding import (
-        InstanceDir, materialize_image_default_binding, make_instance_tuple)
+def assert_states_both_branches(text: str, surface: str) -> None:
+    normalized = " ".join((text or "").lower().split())
+    present = [c for c in BRANCH_CLAUSES if c in normalized]
+    assert len(present) == len(BRANCH_CLAUSES), (
+        f"{surface}: {len(BRANCH_CLAUSES) - len(present)} of "
+        f"{len(BRANCH_CLAUSES)} branch clauses absent — missing "
+        f"{[c for c in BRANCH_CLAUSES if c not in present]}"
+    )
+
+
+def _reset_payload(resident) -> dict:
     from tools import resident_persona_reset
+
+    return _payload(asyncio.run(resident_persona_reset.handler({
+        "role": "resident:assistant",
+    })))
+
+
+def _commit_active(resident, binding, root_label: str) -> None:
+    """Leave the resident ACTIVE on `binding`, as a boot reconcile would."""
+    from personality_binding import InstanceDir, make_instance_tuple
     import agent_loader
+
+    instance_dir = InstanceDir(
+        agent_loader._resident_bindings_root(None) / "resident-assistant")
+    instance_dir.stage_desired(
+        make_instance_tuple(root=root_label, binding=binding, config_snapshot={}))
+    instance_dir.commit_desired_to_active()
+
+
+def test_the_notice_states_both_branches_rather_than_predicting_one(
+        resident, monkeypatch) -> None:
+    """The cut itself: the notice names the no-op branch, so no caller has to
+    predict which one applies. Without these clauses the sentence is the
+    unconditional claim r1 found false."""
+    assert_states_both_branches(
+        _reset_payload(resident)["conversation_notice"],
+        "resident_persona_reset result")
+
+
+def test_the_notice_is_identical_whether_or_not_the_binding_moves(
+        resident, monkeypatch) -> None:
+    """The property that makes the cut safe, and the mutation guard for it: the
+    SAME sentence is returned in the no-op state (already on the image default)
+    and in the moving state (on an override). A reintroduced predicate — in
+    EITHER direction — makes these two differ, so this fails for r1's bug and
+    for r2's alike."""
+    from personality_binding import (
+        materialize_image_default_binding, materialize_override_binding)
     import tools as tools_mod
 
-    # Make the image default the ACTIVE binding, exactly as a boot reconcile
-    # would leave it — commit, do not merely stage.
-    persona = tools_mod._resolve_local_persona("casa/ellen@0.1.0")
-    binding = materialize_image_default_binding(
-        role=resident.role, persona=persona, image_default_root="casa/ellen@0.1.0")
-    instance_dir = InstanceDir(
-        agent_loader._resident_bindings_root(None) / "resident-assistant")
-    instance_dir.stage_desired(
-        make_instance_tuple(root="casa/ellen@0.1.0", binding=binding, config_snapshot={}))
-    instance_dir.commit_desired_to_active()
-    active = instance_dir.active()
-    assert active is not None
-    assert active.binding.binding_digest == binding.binding_digest
-
-    payload = _payload(asyncio.run(resident_persona_reset.handler({
-        "role": "resident:assistant",
-    })))
-
-    assert payload["ok"] is True
-    # The staged candidate equals the active binding, so reconciliation will
-    # discard it: no digest movement, no reset, and nothing to warn about.
-    assert payload["conversation_notice"] is None
-
-
-def test_a_reset_that_does_move_the_binding_still_tells(
-        resident, monkeypatch) -> None:
-    """The mutation guard for the case above: with a DIFFERENT active binding,
-    the same call must still carry the notice. Without this, returning None
-    unconditionally would pass the no-op test."""
-    from personality_binding import (
-        InstanceDir, materialize_override_binding, make_instance_tuple)
-    from tools import resident_persona_reset
-    import agent_loader
-
-    binding = materialize_override_binding(
+    # Moving: active on an override, reset restores the image default.
+    _commit_active(resident, materialize_override_binding(
         role=resident.role, persona=resident.pack,
-        override_source="operator:casa/ellen@0.2.0")
-    instance_dir = InstanceDir(
-        agent_loader._resident_bindings_root(None) / "resident-assistant")
-    instance_dir.stage_desired(
-        make_instance_tuple(root="operator:casa/ellen@0.2.0", binding=binding,
-                            config_snapshot={}))
-    instance_dir.commit_desired_to_active()
+        override_source="operator:casa/ellen@0.2.0"), "operator:casa/ellen@0.2.0")
+    moving = _reset_payload(resident)["conversation_notice"]
 
-    payload = _payload(asyncio.run(resident_persona_reset.handler({
-        "role": "resident:assistant",
-    })))
+    # No-op: active on the very binding the reset restores.
+    default_pack = tools_mod._resolve_local_persona("casa/ellen@0.1.0")
+    _commit_active(resident, materialize_image_default_binding(
+        role=resident.role, persona=default_pack,
+        image_default_root="casa/ellen@0.1.0"), "casa/ellen@0.1.0")
+    no_op = _reset_payload(resident)["conversation_notice"]
 
-    assert payload["ok"] is True
-    assert_restart_notice(
-        payload.get("conversation_notice", ""),
-        "resident_persona_reset result (binding actually moves)")
+    assert moving == no_op
+    # And it is the real notice in both, not two empty strings agreeing.
+    assert_restart_notice(moving, "reset result (binding moves)")
+    assert_states_both_branches(no_op, "reset result (no-op)")
