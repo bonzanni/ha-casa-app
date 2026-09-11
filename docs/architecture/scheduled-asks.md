@@ -41,11 +41,26 @@ anything.
 
 The text rides with the state because the state alone cannot say what the screen should read.
 A crash between "decided" and "edited" leaves a keyboard that still looks answerable, and the
-operator taps it and is told the question expired — the same picture whether the outcome was a
-cancellation or an answer. Guessing is worse than silence here: an invented "expired" body
-would overwrite a keyboard that already reads "Answered: Confirm" with a false account of it.
-Persisting the text removes the guess, and replaying it is safe because an identical re-edit is
-success rather than an error, so a crash after the edit costs nothing.
+operator taps a question that has already been settled. Guessing is worse than silence here: a
+body invented at boot from the state alone would overwrite a keyboard that already reads
+"Answered: Confirm" with a false account of it. Persisting the text removes the guess, and
+replaying it is safe because an identical re-edit is success rather than an error, so a crash
+after the edit costs nothing.
+
+**What the settled keyboard says names what retired the question.** A terminal outcome arrives
+carrying its cause — a TTL that ran out, or a cancellation with the reason the revoking caller
+passed — and the same cause is rendered twice: into the continuation the asking session reads,
+and into the edit the operator reads. The two used to disagree, because the edit was composed
+from the outcome kind alone and every non-answer read as an expiry, so an operator who had just
+cancelled the reminder was told the question had timed out. The wording lives in
+`ask_retirement`, which serves every question in the `resident_ask` namespace — the scheduled
+ask, the human `ask_user`, the memory-wipe confirmation and the authorization and consent
+challenges — so the vocabulary cannot drift between them. A reason the renderer does not
+recognise renders a plain cancellation and never an expiry: the set of reasons is open, a new
+revocation path invents a new one without touching that module, and being vague about a
+cancellation is a smaller lie than inventing a timeout that did not happen. Because the text is
+decided before the `settling` write that carries it, the boot replay shows the operator the
+same sentence the live path would have.
 
 Which action the crash window forbids replaying is worth stating rather than implying: the
 DISPATCH, and only the dispatch. The keyboard edit is idempotent and, being the text the record
@@ -130,8 +145,8 @@ The live path and the boot pass ask the same question of the lane and are right 
 differently, because a refusal costs a different amount in each. On the live path a refused
 machine question is simply not asked, and nothing is lost by treating a request that has just
 registered as owning the operator's attention — it is about to post. In the boot pass a refusal
-SETTLES the durable record: the keyboard is edited to expired and the session that asked is
-told, and none of that can be taken back. A challenge or a human question whose keyboard is
+SETTLES the durable record: the keyboard is edited to say the lane was busy and the session
+that asked is told, and none of that can be taken back. A challenge or a human question whose keyboard is
 still in flight would therefore destroy a question the operator can currently see, in exchange
 for one that may never arrive — and if that post then fails, the operator has neither.
 

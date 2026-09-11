@@ -7,6 +7,8 @@
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/agent_loader.py
   doc: architecture/agent-taxonomy.md
+- item: casa/rootfs/opt/casa/ask_retirement.py
+  doc: architecture/scheduled-asks.md
 - item: casa/rootfs/opt/casa/authz_grants.py
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/bus.py

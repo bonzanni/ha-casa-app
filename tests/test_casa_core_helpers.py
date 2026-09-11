@@ -274,8 +274,9 @@ class TestBrokerShutdownOrdering:
         """v0.76.0 (W5b, r1-B9): extends the shutdown-ordering barrier to a
         REAL pending `ask_user` request (not a fake/synthetic finish hook) —
         BROKER.cancel_all + drain_hooks must edit the pending ask's keyboard
-        to an expired state before channel_manager.stop_all() tears the
-        channel down."""
+        before channel_manager.stop_all() tears the channel down. #933: the
+        edit says the shutdown retired it — "expired" was never true here, the
+        cancel_all reason has always been `casa_shutdown`."""
         import agent as agent_mod
         import tools
         import verdict_broker
@@ -334,7 +335,8 @@ class TestBrokerShutdownOrdering:
         await _drain_broker_before_channel_shutdown(channel_manager)
 
         assert edits, "the pending ask's keyboard must have been edited"
-        assert "expired" in edits[0][2].lower()
+        assert edits[0][2].endswith(
+            "(this question was cancelled when Casa shut down)")
         # The edit landed BEFORE stop_all — drain_hooks() is awaited first.
         assert order == ["edit", "stop_all"]
 

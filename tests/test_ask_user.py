@@ -495,20 +495,52 @@ class TestFinishHookShape:
         assert "answer received but delivery failed — please type it" in ch.edits[1][2]
 
     async def test_no_answer_edits_expired(self, monkeypatch, _fresh_broker):
-        """Any non-"answered" terminal outcome (timeout's `no_answer`, or —
-        exercised directly here via `cancel()` to avoid a real TTL wait —
-        `cancelled`) takes the SAME expired-edit branch. TTL-driven timing
-        itself is covered separately by TestTTLExpiry (with a lowered floor)."""
+        """The broker's own TTL path edits the keyboard to an expiry and
+        dispatches nothing.
+
+        This drove `cancel(reason="test")` and asserted the expired wording,
+        which is how #933 stayed invisible: a cancellation reaching the
+        expired-edit branch WAS the defect, recorded here as the contract.
+        The TTL is now fired through the callback the deadline schedules, so
+        the test reaches the outcome its name claims. TTL-driven timing itself
+        is covered separately by TestTTLExpiry (with a lowered floor)."""
         channel = _FakeChannel()
         _res, payload, ch = await _ask(monkeypatch, channel=channel)
         rid = payload["request_id"]
-        assert _fresh_broker.cancel(
-            namespace="resident_ask", scope="dm:500", request_id=rid,
-            reason="test",
-        )
+        _fresh_broker._on_timeout(("resident_ask", "dm:500", rid))
         await _settle(lambda: len(ch.edits) >= 1)
-        assert "expired" in ch.edits[0][2].lower()
+        assert sum("expired" in e[2].lower() for e in ch.edits) == 1
         assert not any(c[0] == "dispatch" for c in ch.calls)
+
+
+    @pytest.mark.parametrize("reason", [
+        "new_session", "unrecognised_red_case_reason",
+    ])
+    async def test_a_cancelled_question_does_not_claim_it_expired(
+        self, monkeypatch, _fresh_broker, reason,
+    ):
+        """#933 — the human ask's twin of the scheduled pin.
+
+        Nothing dispatches a continuation on this path, so the edit is the ONLY
+        thing the operator is ever told about why the keyboard went away. A
+        `/new` is not an expiry and must not say it was one.
+
+        The second row is the one a `new_session` special-case would not
+        satisfy: a reason no renderer has heard of still has to fall back to a
+        truthful generic cancellation rather than to the expiry text.
+        """
+        channel = _FakeChannel()
+        _res, payload, ch = await _ask(monkeypatch, channel=channel)
+        assert _fresh_broker.cancel_scope(
+            namespace="resident_ask", scope="dm:500", reason=reason,
+        ) == 1
+        await _settle(lambda: len(ch.edits) >= 1)
+
+        assert len(ch.edits) == 1
+        assert sum(c[0] == "dispatch" for c in ch.calls) == 0
+        suffix = ch.edits[0][2].casefold()
+        assert sum("expired" in t for t in [suffix]) == 0
+        assert sum("cancel" in t for t in [suffix]) == 1
 
 
 async def _settle(pred, tries=2000):
@@ -793,7 +825,10 @@ class TestShutdownDrainsRealAskFinishHook:
         await _drain_broker_before_channel_shutdown(cm)
 
         assert order == ["edit", "stop_all"]
-        assert "expired" in ch.edits[0][2].lower()
+        # The keyboard is retired before the channel goes, and #933 makes it
+        # say why: a shutdown is not a question nobody answered in time.
+        assert ch.edits[0][2].endswith(
+            "(this question was cancelled when Casa shut down)")
 
 
 # ---------------------------------------------------------------------------

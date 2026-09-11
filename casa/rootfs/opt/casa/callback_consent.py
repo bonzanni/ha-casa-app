@@ -156,10 +156,17 @@ def prompt_callback_consent(
         async def _finish(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
+                import ask_retirement
+
+                # #933: the reason the broker delivered names the cause;
+                # a withdrawal is not an expiry.
                 await channel.edit_dm_message(
                     chat_id, message_id,
-                    f"⌛ Expired — consent for GET /callback/{effective} was "
-                    "not answered; it stays closed",
+                    ask_retirement.retirement_headline(
+                        f"consent for GET /callback/{effective}",
+                        o, outcome.get("reason") if isinstance(outcome, dict)
+                        else None,
+                        consequence="it stays closed"),
                 )
                 await _feed_setup_episode(approved=False)
                 return

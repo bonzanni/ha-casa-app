@@ -1065,11 +1065,17 @@ async def ask_user(args: dict) -> dict:
             # r2-B1/r3-B1 single-owner finish hook: on `answered` edit the
             # keyboard to the answered label FIRST, then dispatch the
             # synthetic continuation, then overwrite with a visible failure
-            # text ONLY if dispatch failed. no_answer/cancelled -> expired.
+            # text ONLY if dispatch failed. Anything else is a retirement, and
+            # this edit is the ONLY thing the operator is ever told about it —
+            # unlike the scheduled ask, nothing here dispatches a continuation
+            # carrying the reason (#933).
             if outcome.get("outcome") != "answered":
+                import ask_retirement
+
                 await channel.edit_dm_message(
                     chat_id, message_id,
-                    f"{body}\n\n(this question has expired)",
+                    ask_retirement.retired_body(
+                        body, outcome.get("outcome"), outcome.get("reason")),
                 )
                 return
             idx = outcome["option_index"]
@@ -1230,10 +1236,26 @@ async def wipe_memory(args: dict) -> dict:
             await channel.edit_dm_message(chat_id, message_id, text)
 
         async def _finish(outcome: dict) -> None:
-            if outcome.get("outcome") != "answered" or outcome.get("option_index") != 0:
+            kind = outcome.get("outcome")
+            if kind == "answered" and outcome.get("option_index") != 0:
+                # A tap on "Cancel". This one really was a cancellation.
                 await channel.edit_dm_message(
                     chat_id, message_id,
                     f"{body}\n\n(cancelled — nothing was deleted)",
+                )
+                return
+            if kind != "answered":
+                # #933 mirrored: this keyboard used to call every non-answered
+                # outcome a cancellation, so an operator who simply never came
+                # back was told they had declined. The consequence clause is
+                # true either way and stays.
+                import ask_retirement
+
+                await channel.edit_dm_message(
+                    chat_id, message_id,
+                    ask_retirement.retired_body(
+                        body, kind, outcome.get("reason"),
+                        consequence="nothing was deleted"),
                 )
                 return
             # Approve: admit as THE single-flight wipe. The finish hook runs

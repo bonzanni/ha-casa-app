@@ -21,7 +21,7 @@ from authz_grants import (
     GrantKey,
     GrantStore,
     _CHALLENGE_MAX_CHARS,
-    _challenge_expired_text,
+    _challenge_retired_text,
     canonical_args_hash,
     canonical_args_json,
     render_challenge_message,
@@ -676,14 +676,30 @@ class TestDisplayNameRenderGuard:
         assert "finance (finance)" in self._render("N" * 65)
 
 
-class TestChallengeExpiredText:
+class TestChallengeRetiredText:
     def test_uses_short_name_only(self):
-        text = _challenge_expired_text("mcp__plugin_p_s__invoice_reset")
+        text = _challenge_retired_text(
+            "mcp__plugin_p_s__invoice_reset", "no_answer", None)
         assert text == "⌛ Expired — invoice_reset was not approved in time"
 
     def test_plain_tool_name_matches_settlement_pattern(self):
-        assert _challenge_expired_text("invoice_reset") == (
+        assert _challenge_retired_text("invoice_reset", "no_answer", None) == (
             "⌛ Expired — invoice_reset was not approved in time"
+        )
+
+    def test_a_withdrawn_challenge_does_not_claim_it_timed_out(self):
+        """#933 — `cancel_matching` retires a challenge when the tool that
+        raised it is removed or its ack revoked. Saying it was not approved in
+        time is false, and the operator who withdrew it is the one reading."""
+        assert _challenge_retired_text(
+            "invoice_reset", "cancelled", "challenge_cancelled") == (
+            "🚫 Withdrawn — invoice_reset was withdrawn before it was answered"
+        )
+
+    def test_an_unrecognised_reason_falls_back_to_a_plain_cancellation(self):
+        assert _challenge_retired_text(
+            "invoice_reset", "cancelled", "a_reason_nobody_has_mapped") == (
+            "🚫 Cancelled — invoice_reset was cancelled"
         )
 
 
@@ -1246,14 +1262,15 @@ class TestAuthzFinishHook:
         assert "failed" in last
 
     async def test_no_answer_edits_expired(self, monkeypatch):
+        """#933: drove `cancel(reason="timeout")` and so never reached
+        `no_answer`; the broker's own deadline callback is what produces one."""
         broker, coord, channel = _fresh_env(monkeypatch)
         key, handle = _create(coord, channel)
         await handle.settled_post()
         ch = coord._entries[key]
-        broker.cancel(namespace="resident_ask", scope=ch.scope,
-                      request_id=ch.rid, reason="timeout")
+        broker._on_timeout(("resident_ask", ch.scope, ch.rid))
         await _settle()
-        assert any("expired" in e[2].lower() for e in channel.edits)
+        assert sum("expired" in e[2].lower() for e in channel.edits) == 1
         assert channel.dispatches == []
 
     # -- W1: exact humanized settlement copy --------------------------------
@@ -1303,15 +1320,35 @@ class TestAuthzFinishHook:
     async def test_no_answer_edit_uses_humanized_expired_copy(
         self, monkeypatch,
     ):
+        """#933: this drove `cancel(reason="timeout")` and so never reached
+        `no_answer` at all — no production path cancels this namespace with
+        that reason; only the broker's own deadline produces an expiry, and
+        that is what it fires. The wording it asserts is unchanged."""
         broker, coord, channel = _fresh_env(monkeypatch)
         key, handle = _create(coord, channel, tool_name="invoice_reset")
         await handle.settled_post()
         ch = coord._entries[key]
-        broker.cancel(namespace="resident_ask", scope=ch.scope,
-                      request_id=ch.rid, reason="timeout")
+        broker._on_timeout(("resident_ask", ch.scope, ch.rid))
         await _settle()
         assert channel.edits[-1][2] == (
             "⌛ Expired — invoice_reset was not approved in time"
+        )
+
+    async def test_a_cancelled_challenge_edit_does_not_claim_an_expiry(
+        self, monkeypatch,
+    ):
+        """The arm the test above was mistaken for. `/new` cancels the whole
+        `authz:` scope; the keyboard must say so."""
+        broker, coord, channel = _fresh_env(monkeypatch)
+        key, handle = _create(coord, channel, tool_name="invoice_reset")
+        await handle.settled_post()
+        ch = coord._entries[key]
+        assert broker.cancel_scope(
+            namespace="resident_ask", scope=ch.scope,
+            reason="new_session") == 1
+        await _settle()
+        assert channel.edits[-1][2] == (
+            "🚫 Cancelled — invoice_reset was cancelled by /new"
         )
 
     async def test_approved_dispatch_failure_overwrite_uses_humanized_copy(
@@ -1467,7 +1504,10 @@ class TestCancelMatching:
         n = coord.cancel_matching(role="finance")
         await _settle()
         assert n == 1
-        assert any("expired" in e[2].lower() for e in channel.edits)
+        # #933: `cancel_matching` withdraws the challenge; it did not time out.
+        assert sum("expired" in e[2].lower() for e in channel.edits) == 0
+        assert sum(e[2] == "🚫 Withdrawn — a was withdrawn before it was "
+                   "answered" for e in channel.edits) == 1
         assert k1 not in coord._entries
         assert k2 in coord._entries
 

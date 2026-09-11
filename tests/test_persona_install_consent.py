@@ -195,3 +195,60 @@ async def test_662_an_absent_callback_selects_the_corrective_edit() -> None:
 
     actual = (len(acks.records), len(channel.edits), channel.edits[0][2])
     assert actual == (1, 1, _CORRECTIVE), f"absent-callback facts: {actual!r}"
+
+
+@pytest.mark.parametrize("reason", [
+    "challenge_cancelled", "unrecognised_red_case_reason",
+])
+async def test_933_a_withdrawn_consent_does_not_claim_it_expired(reason) -> None:
+    """#933 — the authz half of the family, in the module the issue named.
+
+    `ChallengeCoordinator.cancel_matching` retires a persona consent with
+    `challenge_cancelled` when the persona is removed or its ack revoked. The
+    hook sees that reason and today throws it away, so an operator who has just
+    removed a persona is told the request timed out instead.
+
+    The authz half composes a headline rather than a body suffix, so it gets
+    its own unknown-reason row: the fallback has to be truthful in BOTH
+    composers, not only in the one the scheduled pin reaches.
+    """
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            self.on_commit_sync = kwargs["on_commit_sync"]
+            self.finish_factory = kwargs["finish_factory"]
+            return SimpleNamespace(created=True)
+
+    class _Acks:
+        def __init__(self):
+            self.records = []
+
+        def revocation_generations(self, *, persona_id, version):
+            return (0, 0)
+
+        def record(self, **kwargs):
+            self.records.append(kwargs)
+            return True
+
+    class _Channel:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text):
+            self.edits.append((chat_id, message_id, text))
+
+    coordinator = _Coordinator()
+    channel = _Channel()
+    prompt_persona_install_consent(
+        coordinator=coordinator, channel=channel, chat_id=701, operator_id=701,
+        inspection=_inspection(), acks=_Acks(),
+    )
+    finish = coordinator.finish_factory(88, SimpleNamespace(meta={}))
+    await finish({"outcome": "cancelled", "reason": reason})
+
+    assert len(channel.edits) == 1
+    text = channel.edits[0][2]
+    lowered = text.casefold()
+    assert sum("expired" in t for t in [lowered]) == 0
+    # Still says which consent it was, and still says nothing was installed.
+    assert sum("'judge'" in t for t in [text]) == 1
+    assert sum("nothing was installed" in t for t in [lowered]) == 1

@@ -47,6 +47,7 @@ import os
 import time
 from typing import Any, Callable, Coroutine
 
+import ask_retirement
 from atomic_io import PRIVATE, atomic_write_json
 
 logger = logging.getLogger(__name__)
@@ -231,8 +232,16 @@ def epoch_is_current(role: str, label: str, stamped: Any) -> bool:
 # the single-owner finish hook
 # ---------------------------------------------------------------------------
 
-def _expired_body(body: str) -> str:
-    return f"{body}\n\n(this question has expired)"
+def _retired_body(body: str, kind: str | None, reason: str | None) -> str:
+    """What the keyboard is edited to when this question is retired.
+
+    The reason is already in hand — `_terminal_text` below renders it into the
+    session continuation on the very same call — so composing one fixed expiry
+    string here told the operator something the session was being told
+    correctly (#933). `ask_retirement` owns the wording for the whole
+    `resident_ask` family; this is only its `dm:` lane caller.
+    """
+    return ask_retirement.retired_body(body, kind, reason)
 
 
 def _terminal_text(rid: str, kind: str, reason: str | None, chosen: str | None) -> str:
@@ -328,15 +337,20 @@ def make_finish_hook(
             # legitimately restore.
             return
         chosen = None
-        edit_text = _expired_body(body)
         if kind == "answered":
             idx = outcome.get("option_index")
             if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(options):
                 chosen = options[idx]
-                edit_text = f"{body}\n\nAnswered: {chosen}"
             else:  # pragma: no cover — the broker range-checks before commit
                 kind = "cancelled"
                 reason = "invalid_option"
+        # AFTER the answered branch may have rewritten `kind`/`reason`, and
+        # still before `_settle` persists it as `terminal_edit` (INV-JOB-013),
+        # so the boot replay shows the operator the same sentence.
+        if chosen is not None:
+            edit_text = f"{body}\n\nAnswered: {chosen}"
+        else:
+            edit_text = _retired_body(body, kind, reason)
         await _settle(channel, rec, kind=kind, reason=reason, chosen=chosen,
                       edit_text=edit_text)
 
@@ -680,7 +694,8 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
                 counts.get("revoked_before_reconcile", 0) + 1)
             await _settle(channel, rec, kind="cancelled",
                           reason=revoked_reason, chosen=None,
-                          edit_text=_expired_body(rec.get("body") or ""))
+                          edit_text=_retired_body(rec.get("body") or "",
+                                                  "cancelled", revoked_reason))
             continue
 
         # Identity at the point of use (#485 doctrine): the operator may have
@@ -692,7 +707,9 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
             counts["operator_changed"] += 1
             await _settle(channel, rec, kind="cancelled",
                           reason="operator_changed", chosen=None,
-                          edit_text=_expired_body(rec.get("body") or ""))
+                          edit_text=_retired_body(rec.get("body") or "",
+                                                  "cancelled",
+                                                  "operator_changed"))
             continue
 
         remaining = float(rec.get("expires_at") or 0) - now
@@ -700,7 +717,8 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
             counts["expired"] += 1
             await _settle(channel, rec, kind="no_answer", reason=None,
                           chosen=None,
-                          edit_text=_expired_body(rec.get("body") or ""))
+                          edit_text=_retired_body(rec.get("body") or "",
+                                                  "no_answer", None))
             continue
 
         # Same lane contract as the live path, decided on DELIVERY rather than
@@ -725,7 +743,8 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
             counts["operator_busy"] = counts.get("operator_busy", 0) + 1
             await _settle(channel, rec, kind="cancelled", reason="operator_busy",
                           chosen=None,
-                          edit_text=_expired_body(rec.get("body") or ""))
+                          edit_text=_retired_body(rec.get("body") or "",
+                                                  "cancelled", "operator_busy"))
             continue
         BROKER.set_finish_hook(req, make_finish_hook(channel, rec))
         counts["restored"] += 1

@@ -236,8 +236,8 @@ order in the DM path is fixed and each step is there for a measured reason: `/ne
 intercepted first and takes its own reset, which retires both halves of the operator's
 attention lane; the rate limiter returns next, so a dropped message never expires a question
 it will never answer; then the typed-answer retirement runs, synchronously, before the text
-is dispatched as a normal turn, so the stale keyboard is edited to expired while the same
-text still reaches the agent. That retirement is bound twice over — to this chat's plain-ask
+is dispatched as a normal turn, so the stale keyboard is edited to say the typed reply closed
+it — not that it expired, which it did not — while the same text still reaches the agent. That retirement is bound twice over — to this chat's plain-ask
 scope, and to the absence of the marker a machine-timed question carries. The scope binding
 is not decoration: the broker's predicate cancel is namespace-wide, so a selection that
 forgot it would retire another operator's live question. Authorization challenges live in a

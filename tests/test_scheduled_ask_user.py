@@ -31,6 +31,16 @@ from verdict_broker import VerdictBroker
 OPERATOR = 4242
 LABEL = "cron-invoices"
 
+# #933 — the screen copy each cancellation reason produces, for the terminal
+# outcomes suite. Written out rather than matched as a substring: the point of
+# the change is that these four are DIFFERENT from each other.
+_EDIT_FOR = {
+    "superseded": "(this question was replaced by a newer question)",
+    "typed_answer": "(this question was closed when you replied by text)",
+    "new_session": "(this question was cancelled by /new)",
+    "trigger_changed": "(this question was cancelled when its trigger changed)",
+}
+
 
 # ---------------------------------------------------------------------------
 # fixtures / doubles
@@ -402,8 +412,71 @@ class TestTerminalOutcomes:
         await _fresh_broker.drain_hooks()
         await wait_until(lambda: channel.scheduled_dispatches)
         assert reason in channel.scheduled_dispatches[0]["text"]
-        assert "expired" in channel.edits[-1][2]
+        # The INV-JOB-007 arm is the line above: the reason reaches the
+        # session. What the SCREEN says used to be "expired" for all four of
+        # these, none of which is an expiry (#933) — it now names the cause,
+        # and says nothing about a timeout that did not happen.
+        assert sum("expired" in e[2] for e in channel.edits[-1:]) == 0
+        assert sum(e[2].endswith(_EDIT_FOR[reason])
+                   for e in channel.edits[-1:]) == 1
         assert _fresh_store.all() == []
+
+    @pytest.mark.parametrize("retire,expiries,cancels", [
+        # #933 — a retirement that is NOT an expiry must not say it expired,
+        # and a reason the renderer has never heard of must fall back to a
+        # truthful generic cancellation rather than to the expiry text.
+        ("new_session", 0, None),
+        ("unrecognised_red_case_reason", 0, 1),
+        (None, 1, 0),                       # the broker's own TTL path
+    ])
+    async def test_retired_keyboard_distinguishes_cancel_from_expiry(
+        self, monkeypatch, _fresh_broker, _fresh_store, retire, expiries,
+        cancels,
+    ):
+        """The edit text is a function of the outcome AND the reason.
+
+        The reason is already delivered here — `_terminal_text` renders it into
+        the session continuation on the very same call — so this pins the one
+        consumer that throws it away.
+        """
+        payload, channel = await _ask(
+            monkeypatch,
+            args={"question": "Proceed?", "options": ["Yes", "No"],
+                  "timeout_s": 300},
+        )
+        rid = payload["request_id"]
+        body = _record(_fresh_store)["body"]
+        assert len(_fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 1
+
+        if retire is None:
+            _fresh_broker._on_timeout(
+                ("resident_ask", f"dm:{OPERATOR}", rid))
+        else:
+            assert _fresh_broker.cancel_scope(
+                namespace="resident_ask", scope=f"dm:{OPERATOR}",
+                reason=retire,
+            ) == 1
+        await _fresh_broker.drain_hooks()
+        await wait_until(lambda: channel.scheduled_dispatches)
+
+        # The retirement itself is unchanged: one edit, on the posted message,
+        # one continuation, no surviving record, no surviving request.
+        assert len(channel.edits) == 1
+        assert sum(e[:2] == (OPERATOR, 77) for e in channel.edits) == 1
+        assert len(channel.scheduled_dispatches) == 1
+        assert len(_fresh_broker.pending(
+            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+        assert _fresh_store.all() == []
+
+        # Read the recorded WIRE edit, never a renderer's own return value.
+        text = channel.edits[0][2]
+        assert text.startswith(f"{body}\n\n")
+        suffix = text[len(body) + 2:].casefold()
+        assert len(suffix.strip()) > 0
+        assert sum("expired" in s for s in [suffix]) == expiries
+        if cancels is not None:
+            assert sum("cancelled" in s for s in [suffix]) == cancels
 
     async def test_timeout_reaches_the_session(
         self, monkeypatch, _fresh_broker, _fresh_store,
