@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.294.0] - 2026-09-11
+
+### Fixed
+
+- A plugin whose setup failed, and which you then removed and reinstalled from
+  the same download, is offered its setup again. Casa kept the old failure as
+  the last word on that download and never asked for setup a second time, so the
+  reinstall arrived already broken and said so instead of retrying. The failure
+  is still kept and still readable — the retry now carries the previous failure
+  with it rather than erasing it — and a reinstall at a different version
+  behaves as before.
+- A plugin removal that is interrupted part-way now finishes everything it
+  owes. If the removal was already committed when the interruption arrived, its
+  durable clean-up could be skipped, and a later reinstall of the same download
+  could inherit consents that the removal had promised to revoke.
+
 ## [0.293.0] - 2026-09-10
 
 ### Fixed
