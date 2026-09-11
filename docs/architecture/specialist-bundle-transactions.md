@@ -283,6 +283,14 @@ that fails quarantines and restores nothing, and one that partly fails can quara
 while still leaving a live tuple behind — the tree after the journal pass is the only
 answer that covers all three.
 
+Outstanding debt is no longer only a writer's concern. The specialist status route reads
+the same directory, through the same predicate, before it certifies that a pending
+candidate's disclosed resume inputs are usable (INV-SPEC-015,
+`architecture/specialist-lifecycle.md`): a standing journal means the tree is
+mid-transaction, so the inputs are reported as diagnostics that could not be certified
+rather than as a set to act on. It refuses nothing and resolves nothing — boot still
+replays or quarantines exactly what it would have.
+
 **Two mutations race.** The loser refuses as a concurrent mutation; nothing is overwritten
 or resurrected. The in-lock re-check covers both generations: an active tuple that appeared
 while waiting refuses outright, and a pending (desired-only) candidate with a *different*
