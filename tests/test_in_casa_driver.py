@@ -1359,3 +1359,149 @@ class TestDeliveryOutcomeObservation:
         from channels.telegram import _FOLLOWUP_TEXT_NOT_DELIVERED
         from drivers.in_casa_driver import FOLLOWUP_TEXT_NOT_DELIVERED
         assert _FOLLOWUP_TEXT_NOT_DELIVERED == FOLLOWUP_TEXT_NOT_DELIVERED
+
+
+# ---------------------------------------------------------------------------
+# #930 red case — the driver's turn-incompleteness OBSERVATION logs at INFO
+# ---------------------------------------------------------------------------
+
+def _observation_records(caplog, family):
+    """Records of ONE observation family, selected by logger and emitting
+    function — never by level and never by the part of the wording under
+    test. ``family`` is the stable half of the message, the half this change
+    does not touch."""
+    return [
+        r for r in caplog.records
+        if r.name == "drivers.in_casa_driver"
+        and r.funcName == "_deliver_turn"
+        and family in r.getMessage()
+    ]
+
+
+class TestTurnIncompleteObservationIsInfo:
+    """#930 (specified by Astra, MODE: SPECIFY, redcase round 1).
+
+    ``_deliver_turn`` OBSERVES that a turn left no terminal artifact; the
+    component that can tell a cut-off turn from a healthy in_casa self-emit
+    completion is the launch owner, and its levels are already right — INFO on
+    the lost-race ``record already terminal`` arm (``tools.py``), WARNING only
+    on the REPORTED arm. The driver's own comment (``in_casa_driver.py``, the
+    block above the follow-up arm) says it cannot make that distinction, so at
+    WARNING it claims a severity it does not have, and its message asserts that
+    another component "reports it" — false on the arm the HEALTHY self-emit
+    completion takes.
+
+    Red at the base: three arms log at WARNING (30), asserted against INFO (20).
+    The observation VALUES are unchanged and asserted here too, so a fix that
+    demoted the line by dropping the observation would fail.
+    """
+
+    async def _launch(self, monkeypatch, outcome, *messages):
+        from drivers.in_casa_driver import InCasaDriver
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient", _client_of(*messages))
+        handle = _handle_returning(outcome)
+        drv = InCasaDriver(topic_stream_factory=lambda t: handle)
+        rec = _make_record()
+        await drv.start(rec, prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+        return drv, rec, handle
+
+    @pytest.mark.parametrize("case", ["missing_result", "no_visible_output",
+                                      "text_not_delivered"])
+    async def test_launch_observation_is_info_and_claims_no_reporter(
+            self, monkeypatch, caplog, case):
+        import logging
+        from channels import DeliveryOutcome
+        from drivers.in_casa_driver import (
+            LAUNCH_MISSING_RESULT, LAUNCH_NO_VISIBLE_OUTPUT,
+            LAUNCH_TEXT_NOT_DELIVERED,
+        )
+        if case == "missing_result":
+            outcome, expected = DeliveryOutcome.DELIVERED, LAUNCH_MISSING_RESULT
+            messages = (_mk_assistant("streamed text"),)   # no ResultMessage
+            finalizes = 1
+        elif case == "no_visible_output":
+            outcome, expected = (DeliveryOutcome.DELIVERED,
+                                 LAUNCH_NO_VISIBLE_OUTPUT)
+            messages = (_mk_result_msg(),)                 # no text at all
+            finalizes = 0
+        else:
+            outcome, expected = (DeliveryOutcome.NOT_DELIVERED,
+                                 LAUNCH_TEXT_NOT_DELIVERED)
+            messages = (_mk_assistant("streamed text"), _mk_result_msg())
+            finalizes = 1
+
+        with caplog.at_level(logging.INFO, logger="drivers.in_casa_driver"):
+            drv, rec, handle = await self._launch(
+                monkeypatch, outcome, *messages)
+
+        assert handle.finalize.await_count == finalizes
+        records = _observation_records(
+            caplog, "launch turn left no terminal artifact")
+        assert len(records) == 1, [r.getMessage() for r in caplog.records]
+        record = records[0]
+        assert record.levelno == logging.INFO
+        assert "the launch owner reports it" not in record.getMessage()
+        # The observation VALUE — the owner's actual input — is unchanged.
+        assert drv.launch_turn_incomplete(rec.id) == expected
+
+    @pytest.mark.parametrize("case", ["missing_result", "text_not_delivered"])
+    async def test_followup_observation_is_info_and_claims_no_reporter(
+            self, monkeypatch, caplog, case):
+        import logging
+        from channels import DeliveryOutcome
+        from drivers.in_casa_driver import (
+            FOLLOWUP_MISSING_RESULT, FOLLOWUP_TEXT_NOT_DELIVERED,
+        )
+        outcomes = [DeliveryOutcome.DELIVERED]
+
+        def _factory(topic_id):
+            h = MagicMock()
+            h.emit = AsyncMock()
+            h.finalize = AsyncMock(side_effect=lambda t: outcomes[-1])
+            return h
+
+        from drivers.in_casa_driver import InCasaDriver
+        monkeypatch.setattr(
+            "drivers.in_casa_driver.ClaudeSDKClient",
+            _client_of(_mk_assistant("launch ok"), _mk_result_msg()))
+        drv = InCasaDriver(topic_stream_factory=_factory)
+        rec = _make_record()
+        await drv.start(rec, prompt="hi",
+                        options=ClaudeAgentOptions(model="sonnet"))
+        assert drv.launch_turn_incomplete(rec.id) == ""
+
+        if case == "missing_result":
+            expected, family = (FOLLOWUP_MISSING_RESULT,
+                                "follow-up turn ended with no ResultMessage")
+            claim = "its delivery task reports it"
+
+            # An assistant frame with no ResultMessage: model evidence was
+            # seen (so no EmptyTurnError) and the turn's terminal artifact is
+            # missing.
+            async def _stream(self):
+                yield _mk_assistant("follow-up text")
+        else:
+            expected, family = (
+                FOLLOWUP_TEXT_NOT_DELIVERED,
+                "follow-up turn's streamed text was not delivered")
+            claim = "its delivery task reports it"
+            outcomes.append(DeliveryOutcome.NOT_DELIVERED)
+
+            async def _stream(self):
+                yield _mk_assistant("follow-up text")
+                yield _mk_result_msg()
+
+        monkeypatch.setattr(
+            type(drv._clients[rec.id]), "receive_response", _stream)
+        token = drv.admit_inbound(rec.id, "again")
+        with caplog.at_level(logging.INFO, logger="drivers.in_casa_driver"):
+            await drv.send_user_turn(rec, "again", inbound_token=token)
+
+        records = _observation_records(caplog, family)
+        assert len(records) == 1, [r.getMessage() for r in caplog.records]
+        record = records[0]
+        assert record.levelno == logging.INFO
+        assert claim not in record.getMessage()
+        assert drv.followup_turn_incomplete(rec.id, token) == expected

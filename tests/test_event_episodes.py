@@ -966,3 +966,113 @@ async def test_removal_note_failure_leaves_it_unnoted_and_retries(wired):
     await ee._worker_pass()
     assert len(wired.notes) == 2
     assert wired.spool.list_removal_records()[0][1]["noted"] is True
+
+
+# ---------------------------------------------------------------------------
+# #930 — an owed note whose send failed is an INFO observation, not an ERROR
+# ---------------------------------------------------------------------------
+
+NOT_READY = "operator notify: telegram channel not ready"
+
+
+def _counted_notify(wired):
+    """The observed seam again, with the ATTEMPT count separated from the
+    DELIVERY count: ``notes`` in the shared harness appends before raising,
+    so it counts attempts only."""
+    state = {"down": False, "attempts": 0}
+    delivered: list[str] = []
+
+    async def notify(text):
+        state["attempts"] += 1
+        if state["down"]:
+            raise RuntimeError(NOT_READY)
+        delivered.append(text)
+
+    wired.wire(notify_operator=notify)
+    return state, delivered
+
+
+def _note_failure_records(caplog, func):
+    """Records of one note-failure site, selected by logger and emitting
+    function — never by level and never by the wording under test."""
+    return [r for r in caplog.records
+            if r.name == "event_episodes" and r.funcName == func]
+
+
+async def test_exhaustion_send_failure_in_the_boot_window_is_info(wired,
+                                                                  caplog):
+    """#930 (specified by Astra, MODE: SPECIFY, redcase round 1).
+
+    ``casa_core.operator_notify`` raises the same bare ``RuntimeError`` for a
+    missing channel and for a not-yet-started one, and the event worker's
+    first pass runs BEFORE ``channel_manager.start_all()`` — so on every
+    healthy boot this raise is the designed outcome and the record stays owed
+    (INV-EV-004). At the base the handler reports it with
+    ``logger.exception`` — ERROR plus a traceback — for a retry that is
+    working as designed.
+
+    Red at the base: ERROR (40) asserted against INFO (20). The retry
+    discipline is asserted here too, so a fix that demoted the line by
+    swallowing the failure would fail.
+    """
+    import logging
+    state, delivered = _counted_notify(wired)
+    state["down"] = True
+    wired.seed()
+
+    with caplog.at_level(logging.INFO, logger="event_episodes"):
+        await _drive_to_exhaustion(wired)
+
+    assert state["attempts"] == 1          # one send attempt
+    assert delivered == []                 # zero deliveries
+    rec = wired.rec()
+    assert rec["status"] == "done" and rec["outcome"] == "exhausted"
+    assert rec["noted"] is False           # still owed, zero marks
+    assert ee._exhaustion_sent_unmarked == set()
+
+    records = _note_failure_records(caplog, "_process_unnoted_exhaustions")
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    record = records[0]
+    assert record.levelno == logging.INFO
+    assert record.exc_info is None         # no traceback for a designed retry
+    assert NOT_READY in record.getMessage()
+
+    # And the note is still owed: the first working pass delivers and marks it.
+    state["down"] = False
+    await ee._worker_pass()
+    assert state["attempts"] == 2
+    assert len(delivered) == 1
+    assert wired.rec()["noted"] is True
+
+
+async def test_removal_send_failure_in_the_boot_window_is_info(wired, caplog):
+    """#930 — the removal-note twin of the line above: same worker, same boot
+    window, same owed-and-retried discipline, same ERROR at the base."""
+    import logging
+    state, delivered = _counted_notify(wired)
+    state["down"] = True
+    wired.seed()
+    wired.installed = set()
+    wired.routed = {}
+
+    with caplog.at_level(logging.INFO, logger="event_episodes"):
+        await ee._worker_pass()        # creates the record AND attempts the note
+
+    assert state["attempts"] == 1
+    assert delivered == []
+    filename, rec = wired.spool.list_removal_records()[0]
+    assert rec["noted"] is False
+    assert ee._removal_sent_unmarked == set()
+
+    records = _note_failure_records(caplog, "_process_removal_records")
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    record = records[0]
+    assert record.levelno == logging.INFO
+    assert record.exc_info is None
+    assert NOT_READY in record.getMessage()
+
+    state["down"] = False
+    await ee._worker_pass()
+    assert state["attempts"] == 2
+    assert len(delivered) == 1
+    assert wired.spool.list_removal_records()[0][1]["noted"] is True

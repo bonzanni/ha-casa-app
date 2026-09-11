@@ -813,3 +813,52 @@ def test_worker_owns_no_episode_store():
                  "_reconcile_locked", "_mark_dispatched", "_update_episode",
                  "_any_tombstone", "_has_key", "_empty"):
         assert not hasattr(ce, gone), gone
+
+
+# ---------------------------------------------------------------------------
+# #930 — the callback twin: an owed note whose send failed is an INFO
+# observation, not an ERROR
+# ---------------------------------------------------------------------------
+
+NOT_READY = "operator notify: telegram channel not ready"
+
+
+async def test_exhaustion_send_failure_in_the_boot_window_is_info(wired,
+                                                                  caplog):
+    """#930 (specified by Astra, MODE: SPECIFY, redcase round 1) — the twin of
+    ``event_episodes``' exhaustion line, on the same boot window.
+
+    ``_cbep.start_worker()`` runs before ``channel_manager.start_all()``, and
+    ``casa_core.operator_notify`` raises the same bare ``RuntimeError`` for a
+    missing channel and a not-yet-started one. The note stays owed and is
+    retried (INV-CB-008); at the base the handler reports that designed retry
+    with ``logger.exception`` — ERROR plus a traceback.
+
+    Red at the base: ERROR (40) asserted against INFO (20).
+    """
+    import logging
+    wired.note_error = RuntimeError(NOT_READY)
+
+    with caplog.at_level(logging.INFO, logger="callback_episodes"):
+        await _spend_budget(wired)
+
+    assert len(wired.notes) == 1           # one send attempt
+    assert wired.delivered == 0            # zero deliveries
+    assert wired.attempt(HASH)["noted"] is False      # owed, zero marks
+    assert ce._exhaustion_sent_unmarked == set()
+
+    records = [r for r in caplog.records
+               if r.name == "callback_episodes"
+               and r.funcName == "_process_unnoted_exhaustions"]
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    record = records[0]
+    assert record.levelno == logging.INFO
+    assert record.exc_info is None         # no traceback for a designed retry
+    assert NOT_READY in record.getMessage()
+
+    # Still owed: the first working pass delivers it and marks it.
+    wired.note_error = None
+    await ce._worker_pass()
+    assert len(wired.notes) == 2
+    assert wired.delivered == 1
+    assert wired.attempt(HASH)["noted"] is True
