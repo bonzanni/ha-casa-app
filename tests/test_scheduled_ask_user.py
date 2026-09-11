@@ -31,6 +31,16 @@ from verdict_broker import VerdictBroker
 OPERATOR = 4242
 LABEL = "cron-invoices"
 
+# #933 — the screen copy each cancellation reason produces, for the terminal
+# outcomes suite. Written out rather than matched as a substring: the point of
+# the change is that these four are DIFFERENT from each other.
+_EDIT_FOR = {
+    "superseded": "(this question was replaced by a newer question)",
+    "typed_answer": "(this question was closed when you replied by text)",
+    "new_session": "(this question was cancelled by /new)",
+    "trigger_changed": "(this question was cancelled when its trigger changed)",
+}
+
 
 # ---------------------------------------------------------------------------
 # fixtures / doubles
@@ -402,7 +412,13 @@ class TestTerminalOutcomes:
         await _fresh_broker.drain_hooks()
         await wait_until(lambda: channel.scheduled_dispatches)
         assert reason in channel.scheduled_dispatches[0]["text"]
-        assert "expired" in channel.edits[-1][2]
+        # The INV-JOB-007 arm is the line above: the reason reaches the
+        # session. What the SCREEN says used to be "expired" for all four of
+        # these, none of which is an expiry (#933) — it now names the cause,
+        # and says nothing about a timeout that did not happen.
+        assert sum("expired" in e[2] for e in channel.edits[-1:]) == 0
+        assert sum(e[2].endswith(_EDIT_FOR[reason])
+                   for e in channel.edits[-1:]) == 1
         assert _fresh_store.all() == []
 
     @pytest.mark.parametrize("retire,expiries,cancels", [

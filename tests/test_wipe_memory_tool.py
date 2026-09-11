@@ -264,8 +264,8 @@ class TestConsentFlow:
             namespace="resident_ask", scope="authz:500")) == 0
         assert len(channel.posts) == 1
         assert len(channel.edits) == 1
-        assert sum("cancelled — nothing was deleted" in e[2]
-                   for e in channel.edits) == 1
+        assert sum("(this question was cancelled by /new — nothing was "
+                   "deleted)" in e[2] for e in channel.edits) == 1
         assert len(calls) == 0
 
     async def test_a_live_consent_request_returns_the_unchanged_payload(
@@ -355,7 +355,10 @@ class TestConsentFlow:
         await asyncio.sleep(0)
         await memory_wipe.drain_wipe_task()
         assert calls == []
-        assert any("cancelled — nothing was deleted" in e[2] for e in channel.edits)
+        # #933: a `/new` is a cancellation, and now says which one. The bare
+        # "(cancelled — nothing was deleted)" copy belongs to the DENY tap.
+        assert sum("(this question was cancelled by /new — nothing was "
+                   "deleted)" in e[2] for e in channel.edits) == 1
 
     async def test_an_expired_wipe_keyboard_does_not_claim_it_was_cancelled(
         self, monkeypatch, _fresh_broker,

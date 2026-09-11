@@ -84,10 +84,18 @@ def prompt_persona_install_consent(
         async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
+                import ask_retirement
+
+                # #933: the reason the broker delivered names the cause;
+                # a withdrawal is not an expiry.
                 await channel.edit_dm_message(
                     chat_id, message_id,
-                    f"⌛ Expired — persona install consent for {inspection.persona_id!r} was not "
-                    "answered; nothing was installed")
+                    ask_retirement.retirement_headline(
+                        f"persona install consent for {inspection.persona_id!r}",
+                        o, outcome.get("reason") if isinstance(outcome, dict)
+                        else None,
+                        consequence="nothing was installed"),
+                )
                 return
             if outcome.get("option_index") == 0:
                 if not req.meta.get("acked"):

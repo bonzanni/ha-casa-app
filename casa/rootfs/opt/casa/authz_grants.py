@@ -429,8 +429,17 @@ def render_challenge_message(
     )
 
 
-def _challenge_expired_text(tool_name: str) -> str:
-    return f"⌛ Expired — {short_tool_name(tool_name)} was not approved in time"
+def _challenge_retired_text(
+    tool_name: str, kind: str | None, reason: str | None,
+) -> str:
+    """#933 — a challenge withdrawn by `cancel_matching`, by `/new` or by a
+    shutdown is not a challenge that timed out, and the operator who withdrew
+    it should not be told it did. The unanswered wording is unchanged."""
+    import ask_retirement
+
+    return ask_retirement.retirement_headline(
+        short_tool_name(tool_name), kind, reason,
+        expired_clause="was not approved in time")
 
 
 def _broker() -> Any:
@@ -843,7 +852,10 @@ class ChallengeCoordinator:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 await channel.edit_dm_message(
-                    chat_id, message_id, _challenge_expired_text(tool_name),
+                    chat_id, message_id,
+                    _challenge_retired_text(
+                        tool_name, o, outcome.get("reason")
+                        if isinstance(outcome, dict) else None),
                 )
                 return
             idx = outcome.get("option_index")
