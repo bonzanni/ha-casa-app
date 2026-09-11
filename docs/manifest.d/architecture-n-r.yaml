@@ -68,12 +68,14 @@
     - tests/test_persona_install_consent.py
     - tests/test_tools_persona_install.py
     - tests/test_wholebranch_security_fixes.py
+    - tests/test_resident_persona_restart_notice.py
   related: [architecture/personality.md, architecture/specialist-lifecycle.md]
-  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-011, INV-PERS-013]
+  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-011, INV-PERS-013, INV-PERS-018]
   invariant_tests:
     INV-PERS-005: [tests/test_persona_pack.py::test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to]
     INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
     INV-PERS-007: [tests/test_persona_apply_resident_staging.py::test_resident_apply_stages_and_does_not_promote, tests/test_persona_apply_resident_staging.py::test_resident_apply_writes_nothing_when_the_candidate_cannot_compile]
+    INV-PERS-018: [tests/test_resident_persona_restart_notice.py::test_persona_apply_result_tells_the_resident_conversation_cost, tests/test_resident_persona_restart_notice.py::test_resident_persona_swap_result_tells_the_resident_conversation_cost, tests/test_resident_persona_restart_notice.py::test_resident_persona_reset_result_tells_the_resident_conversation_cost, tests/test_resident_persona_restart_notice.py::test_apply_recipe_step_five_tells_the_resident_conversation_cost]
     INV-PERS-011: [tests/test_persona_install_consent.py::test_662_only_a_literal_true_outcome_selects_the_success_edit, tests/test_tools_persona_install.py::test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement]
     INV-PERS-013: [tests/test_tools_persona_install.py::test_resolve_local_persona_refuses_traversal_ref, tests/test_tools_persona_install.py::test_resolve_local_persona_refuses_identity_mismatch, tests/test_tools_persona_install.py::test_resolve_local_persona_honors_casa_config_dir, tests/test_tools_persona_install.py::test_persona_apply_refuses_a_pack_that_does_not_declare_the_requested_identity, tests/test_wholebranch_security_fixes.py::test_validate_persona_path_segments_rejects_unsafe, tests/test_persona_removal.py::test_a_traversal_bearing_ref_never_reaches_a_path_join]
 

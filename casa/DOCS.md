@@ -1131,6 +1131,15 @@ You can also swap which persona an installed specialist uses (its bundled
 default, or another installed persona) by asking Ellen to apply a
 different persona to it.
 
+**Changing a resident's persona costs you its conversations.** Applying a
+persona to Ellen, the butler or the concierge — or resetting one back to its
+built-in default — takes effect at the next restart, and that restart starts
+every conversation with that resident fresh, on Telegram and on voice alike.
+Anything said on Telegram is kept in memory and can still be recalled; voice
+conversations are not kept, so anything said there and not repeated is gone.
+Casa tells you this before you restart, so finish what you are in the middle
+of first.
+
 ## Claude Code driver (v0.13.1)
 
 Plan 4a infrastructure — does not change user-facing behavior by itself.

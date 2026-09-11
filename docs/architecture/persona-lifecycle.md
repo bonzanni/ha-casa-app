@@ -137,6 +137,30 @@ reconciliation discards it and retains the last-known-good, exactly as INV-PERS-
 describes. It also says nothing about specialists, which activate on reload rather than
 restart.
 
+**INV-PERS-018**: Every entry point that stages a persona binding for a resident tells the operator what the promoting restart costs — the same notice in its result envelope and in its own description — and the apply recipe states it at the step that orders the restart.
+
+A resident's persona identity is an input of its binding digest, and that digest is a
+resume precondition, so the promotion INV-PERS-007 defers to the next restart starts
+every conversation that resident is holding fresh — on every channel, because the digest
+gate sits ahead of the freshness window. Telegram transcripts are retained on the way out
+and stay recallable; voice is not a bank-writable channel, so a voice conversation is lost
+outright rather than demoted to recall.
+
+Staging is the last moment the telling is worth anything: the operator is about to order
+the restart themselves, and afterwards the notice is an apology rather than a warning.
+That is why the notice rides in the RESULT and not only in doctrine — a recipe step can be
+skipped by the model reading it, and two of the three staging entry points
+(`resident_persona_swap`, `resident_persona_reset`) are routed through no recipe at all.
+One constant serves the descriptions and both result envelopes, so a fix to one wording
+cannot leave another entry point saying something else.
+
+What it does not cover: it says nothing about the resume decision, which is unchanged — a
+digest mismatch still refuses and retains. It does not make voice retain anything. It says
+nothing about specialists, which activate on reload rather than a restart and so do not
+carry the notice. And it is about what the tool surface SAYS, not about what the model
+does with it: an operator who is told and restarts anyway loses the conversations exactly
+as before.
+
 **INV-PERS-011**: A persona install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
 
 The persona and specialist consent finish hooks are separately written copies of one
@@ -240,6 +264,7 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `tests/test_persona_install_consent.py`
 - `tests/test_tools_persona_install.py`
 - `tests/test_wholebranch_security_fixes.py`
+- `tests/test_resident_persona_restart_notice.py`
 
 **Related**
 - [`architecture/personality.md`](../architecture/personality.md)
