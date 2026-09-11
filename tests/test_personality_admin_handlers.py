@@ -1326,9 +1326,22 @@ def test_specialist_status_names_a_pending_slugs_resume_inputs(
 
     payload = specialist_status_payload(object(), slug="mtg")
 
-    assert len(payload) == 7
-    assert set(payload["pending_commit"]) == _RESUME_KEYS
+    assert "pending_commit" in payload
+    assert len(payload) == 8
+    assert set(payload) == {
+        "slug", "stable_agent_id", "state", "active", "desired",
+        "last_activation_error", "pending_commit", "pending_commit_check",
+    }
+
+    assert len(payload["pending_commit"]) == 6
+    assert set(payload["pending_commit"]) == _RESUME_KEYS | {"tool"}
+    assert payload["pending_commit"]["tool"] == "specialist_install_commit"
     assert payload["pending_commit"] == ctx.expected
+
+    assert len(payload["pending_commit_check"]) == 1
+    assert set(payload["pending_commit_check"]) == {"state"}
+    assert payload["pending_commit_check"] == {"state": "verified"}
+
     # Every pre-existing key survives.
     assert payload["slug"] == "mtg" and payload["state"] == "pending-configuration"
     assert payload["stable_agent_id"] == "specialist:mtg"

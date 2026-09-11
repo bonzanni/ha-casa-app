@@ -296,18 +296,20 @@ def _certify(slug: str, inputs: dict, receipt, receipts_dir) -> "tuple[str, str]
         # directory, or was never a usable string.
         return "blocked", "staged_dir_invalid"
 
+    if receipt.slug != slug:
+        # BEFORE the staged path is followed, not after: the receipt is reached
+        # through the marker, and one naming another slug's receipt would
+        # otherwise have this route read, parse and hash another slug's staging
+        # tree before refusing. The receipt carries no attested component root,
+        # so id agreement alone would establish nothing either — which is why
+        # the staged bytes still have to participate below.
+        return "blocked", "receipt_mismatch"
+
     checked = validate_resume_inputs(
         staged_dir=inputs["staged_dir"], receipt_id=inputs["receipt_id"],
         root_digest=inputs["root_digest"], receipts_dir=Path(receipts_dir))
     if not checked.ok:
         return "blocked", checked.kind
-    if checked.receipt.slug != slug:
-        # The receipt is reached through the marker; one naming another slug's
-        # receipt would otherwise send the reader to another slug's staging
-        # tree. The receipt carries no attested component root, so id agreement
-        # alone establishes nothing — the staged bytes have to participate,
-        # which is what the digest check above does.
-        return "blocked", "receipt_mismatch"
     if (checked.component.component_id, checked.component.version) != (
             inputs["component_id"], inputs["version"]):
         # The handlers read identity from the staged manifest and never compare
