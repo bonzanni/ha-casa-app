@@ -12974,6 +12974,21 @@ def _plugin_add_sync(*, name: str, repo: str, ref: str, subdir: str = "",
            if not isinstance(t, str) or not plugin_registry.TARGET_RE.match(t)]
     if bad or not targets:
         return {"ok": False, "kind": "invalid_target", "invalid": bad}
+    # #923 (operator's decision, 2026-09-10): operators cannot target executors
+    # ("workers") with plugins for now — workers come with the bundled set Casa
+    # ships. Every entry plugin_add can create is github-sourced, so no source
+    # test is needed here. Raised from the HANDLER, before the registry read,
+    # the publish, the sysreq install and the write, so a refused call leaves
+    # the machine and the operator's registry byte-identical; a JSON-schema
+    # `pattern` would refuse earlier but with no reason the operator can read,
+    # and would also refuse the string shape the bundled path needs. The whole
+    # request is refused: a mixed resident+executor call is not partly installed.
+    worker = [t for t in targets if t.startswith("executor:")]
+    if worker:
+        return {"ok": False, "kind": "executor_target_not_allowed",
+                "invalid": worker,
+                "detail": ("for now a plugin cannot be assigned to a worker — "
+                           "workers use only the plugins Casa ships")}
     # Sol round-3 M: validate subdir here so `../x` returns an envelope instead
     # of an uncaught ValueError from normalize_subdir inside publish.
     try:
@@ -13042,6 +13057,30 @@ def _plugin_update_sync(*, name: str, new_ref: str,
         return {"ok": False, "kind": "owned_by_specialist", "owner": owner,
                 "detail": (f"{name!r} is managed by {owner}'s bundle — use "
                           "specialist_upgrade / specialist_uninstall")}
+    # #923, both halves, and each covers the other's residue.
+    #
+    # (1) Refuse when a BUNDLED entry serves a worker. Without this, updating a
+    # seeded entry to an operator-chosen ref repoints Casa's shipped plugin at
+    # the operator's bytes while the entry keeps its `bundled` label, so those
+    # bytes keep reaching the worker — the exact outcome the ruling forbids,
+    # reached through a supported tool. Refused HERE, before resolve, publish,
+    # sysreqs and save. Casa updates its own worker plugins by shipping a
+    # release; `seed_defaults` adds unseen names and never re-pins, so this
+    # never promises that an upgrade re-pins an existing default.
+    #
+    # (2) Every other successful update stamps `source.type = "github"` below,
+    # in the same save as the new pin, so the label never outlives the bytes it
+    # described. The two compose: (1) means the stamp can never drop a plugin
+    # Casa ships out of a worker's set, because such an entry cannot be updated
+    # at all.
+    if (plugin_registry.is_bundled(entry)
+            and any(isinstance(t, str) and t.startswith("executor:")
+                    for t in entry.get("targets") or [])):
+        return {"ok": False, "kind": "executor_target_not_allowed",
+                "name": name,
+                "detail": ("this plugin is shipped with Casa and serves a "
+                           "worker — for now it is updated by updating Casa, "
+                           "not from here")}
     # A:§3.3 (r1-B8): capture the OLD artifact_id BEFORE the mutation — the
     # caller invalidates its grants/challenges only after this commits.
     old_artifact_id = entry.get("artifact_id")
@@ -13069,6 +13108,10 @@ def _plugin_update_sync(*, name: str, new_ref: str,
         return err
     entry["source"]["ref"] = new_ref
     entry["source"]["revision"] = result.revision
+    # #923 (2): these bytes are the operator's choice now, whatever the entry
+    # was seeded as, and `source.type` is the ONE thing that says which
+    # population an entry belongs to.
+    entry["source"]["type"] = "github"
     entry["artifact_id"] = result.artifact_id
     entry["version"] = result.version
     plugin_registry.save_registry(data)
@@ -13176,7 +13219,9 @@ def _resolved_observability(name: str, *, manifest: dict | None = None) -> dict:
     "plugin_add",
     "Add a plugin to the registry: publish its pinned artifact, install any "
     "system requirements, assign it to targets, then reload + verify. Version "
-    "is derived from the plugin manifest (never supplied).",
+    "is derived from the plugin manifest (never supplied). Targets are "
+    "resident: or specialist: roles; for now a plugin cannot be given to a "
+    "worker (executor:) — workers use only the plugins Casa ships with them.",
     # Sol #15: an explicit JSON Schema — the shorthand {key: type} form marks
     # EVERY key required, so a root-plugin call omitting `subdir` (defaulted by
     # the handler) is rejected by the MCP input validator before the handler
@@ -13224,7 +13269,9 @@ async def plugin_add(args: dict) -> dict:
     "requirements, repoint the registry, reload + verify. Version derives "
     "from the fetched manifest. Pass expected_revision (the producer's "
     "handed-off sha) so a tag that moved after the build aborts before "
-    "activation.",
+    "activation. A plugin Casa ships to a worker is not updated here — it is "
+    "updated by updating Casa; updating any other plugin makes it the "
+    "operator's, so it is no longer part of what Casa ships.",
     {"type": "object",
      "properties": {
          "name": {"type": "string"},
@@ -14314,6 +14361,18 @@ def _plugin_assign_sync(*, name: str, target: str) -> dict:
         return {"ok": False, "kind": "owned_by_specialist", "owner": owner,
                 "detail": (f"{name!r} is managed by {owner}'s bundle — use "
                           "specialist_upgrade / specialist_uninstall")}
+    # #923: EVERY executor assignment is refused, bundled entries included —
+    # `plugin_assign(name="superpowers", target="executor:configurator")` is the
+    # operator composing a worker's plugin set through a tool, which is what the
+    # ruling forbids. Nothing Casa ships loses its worker: `seed_defaults`
+    # writes the shipped targets straight into the raw document and never calls
+    # this handler. The consequence is stated in the docs: an operator who
+    # unassigns a shipped default from its worker cannot restore it here.
+    if target.startswith("executor:"):
+        return {"ok": False, "kind": "executor_target_not_allowed",
+                "target": target,
+                "detail": ("for now a plugin cannot be assigned to a worker — "
+                           "workers use only the plugins Casa ships")}
     targets = entry.setdefault("targets", [])
     was_assigned = target in targets
     if not was_assigned:
@@ -14400,6 +14459,17 @@ def _tool_plugin_list() -> dict:
             "name": name, "version": e.get("version"),
             "revision": (e.get("source") or {}).get("revision"),
             "targets": e.get("targets") or [], "artifact_id": aid,
+            # #923: `targets` keeps its present meaning — the operator's STORED
+            # assignment, read from the registry document — because the shipped
+            # configurator doctrine already reads that field, and redefining a
+            # field a reader cannot see change is a silent misread. The
+            # distinction is ADDED beside it: what Casa actually serves, and
+            # what it stores but ignores. `targets` alone would imply an
+            # assignment that is not served; effective alone would imply the
+            # operator's configuration was deleted, which it never is.
+            "effective_targets": plugin_registry.effective_targets(e),
+            "ignored_targets": list(
+                plugin_registry.ignored_executor_targets(e)),
             "artifact_present": store_dir.is_dir(),
             "seeded_default": name in seeded,
         })
@@ -14412,7 +14482,9 @@ def _tool_plugin_list() -> dict:
 
 @tool(
     "plugin_assign",
-    "Assign a registered plugin to a target (resident:/specialist:/executor:).",
+    "Assign a registered plugin to a target (resident: or specialist:). For "
+    "now a plugin cannot be assigned to a worker (executor:) — workers use "
+    "only the plugins Casa ships with them.",
     {"name": str, "target": str},
 )
 async def plugin_assign(args: dict) -> dict:
@@ -14914,7 +14986,10 @@ async def consent_reprompt(args: dict) -> dict:
 @tool(
     "plugin_list",
     "List every registered plugin with its version, revision, targets, "
-    "artifact presence, and seeded-default status.",
+    "artifact presence, and seeded-default status. `targets` is what the "
+    "registry stores; `effective_targets` is what Casa actually serves and "
+    "`ignored_targets` what it stores but does not — for now a worker "
+    "(executor:) assignment on an operator-installed plugin is ignored.",
     {},
 )
 async def plugin_list(args: dict) -> dict:
@@ -15525,9 +15600,17 @@ def _tool_verify_plugin_state(
     return {
         "ready": top_ready,
         "reasons": reasons,
+        # #923: `desired` here is what verification GRADES against, and
+        # `entry` is the effective read view — so `targets` is the set that
+        # will actually be served, which is the only set a readiness row can
+        # honestly describe (grading a target the resolver will never serve is
+        # the verify/resolver disagreement Sol #8 forbids). What the operator
+        # stored and Casa ignores is disclosed beside it rather than dropped.
         "desired": {"artifact_id": artifact_id,
                     "version": entry.get("version"),
-                    "revision": revision, "targets": entry.get("targets", [])},
+                    "revision": revision, "targets": entry.get("targets", []),
+                    "ignored_targets": plugin_registry.ignored_targets_for(
+                        reg, plugin_name)},
         "artifact": {"present": present, "checksum_valid": checksum_valid,
                      "provenance_warning": provenance_warning},
         "tools": tools_status,
@@ -15601,7 +15684,10 @@ def _tool_get_item_fields(*, item: str, vault: str = "") -> dict:
 
 @tool(
     "verify_plugin_state",
-    "Check tool readiness, secret resolution, and MCP cache status for a plugin.",
+    "Check tool readiness, secret resolution, and MCP cache status for a "
+    "plugin. Readiness rows cover the assignments Casa serves; an ignored "
+    "worker (executor:) assignment is listed under desired.ignored_targets "
+    "and is not graded, because it is never loaded.",
     {"plugin_name": str},
 )
 async def verify_plugin_state(args: dict) -> dict:

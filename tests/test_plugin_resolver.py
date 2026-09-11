@@ -111,7 +111,8 @@ def test_unrelated_invalid_entry_does_not_pollute_other_targets(tmp_path):
     """Sol F2: a malformed RESIDENT entry must not appear in an EXECUTOR
     resolve (per-entry isolation, spec 3.1/3.5) — but health sees it."""
     store = tmp_path / "store"
-    good = _entry("good", ["executor:plugin-developer"])
+    # #923: a plugin ATTACHED to a worker is one Casa ships — bundled.
+    good = _entry("good", ["executor:plugin-developer"], source_type="bundled")
     _mk_artifact(store, "good", good["artifact_id"])
     bad = dict(_entry("bad", ["resident:assistant"]), artifact_id="0" * 64)
     reload_snapshot(registry_path=_mk_registry(tmp_path, [bad, good]),
@@ -129,7 +130,8 @@ def test_same_name_collision_does_not_lend_targets(tmp_path):
     entries; the valid one's duplicate issue scopes to its own targets,
     the invalid one's stays health-only.)"""
     store = tmp_path / "store"
-    valid_x = _entry("x", ["executor:plugin-developer"])
+    valid_x = _entry("x", ["executor:plugin-developer"],
+                     source_type="bundled")     # #923: attached ⇒ bundled
     _mk_artifact(store, "x", valid_x["artifact_id"])
     invalid_x = dict(_entry("x", ["resident:assistant"]), targets="oops")
     reload_snapshot(registry_path=_mk_registry(tmp_path, [invalid_x, valid_x]),
@@ -177,11 +179,17 @@ def test_malformed_protected_tools_degrades_only_that_plugin(tmp_path):
 
 def test_one_bad_entry_never_defeats_the_rest(tmp_path):
     store = tmp_path / "store"
-    good = _entry("good", ["executor:plugin-developer"])
+    # #923: `good` and `missing` must ATTACH, so they are bundled. `bad` stays
+    # github-sourced deliberately — it never survives validation, so it never
+    # reaches the effective-target projection, and its issue still scopes to
+    # the executor target through its own raw `scoped_targets` (F2). That is
+    # what keeps this test about per-entry isolation rather than about #923.
+    good = _entry("good", ["executor:plugin-developer"], source_type="bundled")
     _mk_artifact(store, "good", good["artifact_id"])
     bad = dict(_entry("bad", ["executor:plugin-developer"]),
                artifact_id="0" * 64)          # per-entry invalid, SAME target
-    missing = _entry("missing", ["executor:plugin-developer"])
+    missing = _entry("missing", ["executor:plugin-developer"],
+                     source_type="bundled")
     reload_snapshot(
         registry_path=_mk_registry(tmp_path, [bad, good, missing]),
         store_root=store)
@@ -313,3 +321,48 @@ def test_concurrent_reload_snapshot_is_serialized_and_monotonic(
         t.join()
     assert state["max_active"] == 1                  # mutual exclusion held
     assert plugin_registry.snapshot_generation() == start + n
+
+
+def test_operator_executor_target_is_ignored(tmp_path, monkeypatch):
+    """#923 (operator's decision, 2026-09-10): an operator-installed plugin —
+    one whose entry's ``source.type`` is not ``bundled`` — does not reach a
+    worker. Its stored ``executor:*`` target is IGNORED when a fresh executor
+    launch resolves, and reported as ignored; the entry keeps serving its other
+    targets and the registry file on disk is not rewritten.
+
+    Counts, not statuses: zero executor plugins, zero executor ISSUES (a row
+    carried into that target's resolution would make the worker unlaunchable
+    through the launch gate's refuse-on-any-issue rule), exactly one restriction
+    row in ``resolve_all()``, one resident plugin, zero registry saves.
+    """
+    store = tmp_path / "store"
+    e = _entry("redcase-probe", ["resident:ellen", "executor:plugin-developer"])
+    _mk_artifact(store, "redcase-probe", e["artifact_id"])
+    registry_path = _mk_registry(tmp_path, [e])
+    before_bytes = registry_path.read_bytes()
+    original_plugins = json.loads(before_bytes)["plugins"]
+
+    saves = []
+    monkeypatch.setattr(plugin_registry, "save_registry",
+                        lambda *a, **k: saves.append(a))
+
+    reload_snapshot(registry_path=registry_path, store_root=store)
+
+    executor = resolve_for("executor:plugin-developer")
+    assert len(executor.plugins) == 0
+    assert len(executor.issues) == 0
+    assert len(resolve_for("resident:ellen").plugins) == 1
+    assert plugin_registry.resolve_all().issues == [
+        plugin_registry.PluginIssue(
+            name="redcase-probe",
+            target="executor:plugin-developer",
+            stage="registry",
+            reason_code="operator_executor_target_ignored",
+            artifact_id=None,
+            scoped_targets=(),
+            detail="executor:plugin-developer",
+        )
+    ]
+    assert saves == []
+    assert registry_path.read_bytes() == before_bytes
+    assert plugin_registry.snapshot_registry().raw["plugins"] == original_plugins

@@ -285,6 +285,27 @@ registry records the latest decision in the same synchronous commit step that pe
 ack (Approve clears, Deny records, expiry writes nothing), so agent-driven re-issue can
 never nag past a Deny while mutations and reloads re-ask as they always did.
 
+**A refusal of an OPERATION, as against a malformed input,** belongs in the synchronous
+core and ahead of every side effect, not in the tool's input schema. The schema has no way
+to state a reason the operator can read, and the same target grammar that an operator may
+not use is the grammar Casa's own seeded assignments are written in — so the grammar check
+stays where it is and the population rule is a separate refusal beside it. Three of these
+now exist for executor targets (see *Plugins* for the rule): add and assign refuse before
+the registry is even read, and update refuses after the entry is found but before the ref
+is resolved, so a refused call publishes nothing, installs no system requirement and leaves
+the registry byte-identical. A successful update additionally relabels the entry's source
+as the operator's, in the same write as the new pin and never ahead of it — a publish that
+raises must not leave the label moved.
+
+**Reporting the operator's stored state alongside what Casa serves** is additive on
+purpose. The listing tool's `targets` keeps meaning the registry's stored value, because
+the shipped configurator doctrine already reads that field and a redefinition is a misread
+no reader can see; what Casa serves and what it ignores are named beside it. The
+verification tool is the other way round, and for its own reason: its rows grade what will
+actually be loaded, so its desired set is the served one, with the ignored assignments
+disclosed rather than dropped — grading a target the resolver will never serve is exactly
+the verification-versus-resolver disagreement that function exists to avoid.
+
 **A new plugin lifecycle operation** follows the established split: synchronous
 disk-and-registry ordering in a core, then the async wrapper that takes the lock, reloads,
 verifies and pins the envelope.

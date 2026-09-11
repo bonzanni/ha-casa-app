@@ -1555,6 +1555,71 @@ class TestEngageExecutorPluginGate:
             agent_mod.origin_var.reset(token)
         return json.loads(r["content"][0]["text"]), channel
 
+    async def test_a_worker_still_launches_while_an_ignored_assignment_stands(
+            self, tmp_path, monkeypatch):
+        """#923: the standing row for an operator plugin's ignored worker
+        assignment must NOT make the worker unlaunchable — that would be the
+        opposite of the ruling, which says workers keep running the bundled set.
+
+        The REAL resolver runs here, against a real registry file holding both
+        a bundled entry and an operator entry aimed at the same worker. The gate
+        refuses on ANY issue in `resolve_for("executor:<type>")`
+        (`tools.py:_resolve_and_gate`), and the row is kept out of that result by
+        its empty `scoped_targets` — so the proof is that the topic OPENS (the
+        gate is pre-topic) and that exactly the bundled plugin was resolved,
+        while `resolve_all()` carries exactly one restriction row.
+        """
+        from tools import engage_executor
+        import agent as agent_mod
+        import plugin_registry
+        import tools as tools_mod
+        from plugin_fixtures import entry, mk_artifact, mk_registry
+
+        # The published snapshot is MODULE-GLOBAL and outlives this test's
+        # tmp_path. Setting it through monkeypatch first makes teardown restore
+        # whatever was there, so the registry built below cannot follow this
+        # worker into another file whose paths are long gone.
+        monkeypatch.setattr(plugin_registry, "_snapshot", None)
+        store = tmp_path / "store"
+        shipped = entry("shipped", ["executor:configurator"],
+                        source_type="bundled")
+        mk_artifact(store, "shipped", shipped["artifact_id"])
+        operators = entry("operators", ["executor:configurator"])
+        mk_artifact(store, "operators", operators["artifact_id"])
+        plugin_registry.reload_snapshot(
+            registry_path=mk_registry(tmp_path, [shipped, operators]),
+            store_root=store)
+
+        res = plugin_registry.resolve_for("executor:configurator")
+        assert [rp.name for rp in res.plugins] == ["shipped"]
+        assert res.issues == []
+        assert [(i.name, i.reason_code)
+                for i in plugin_registry.resolve_all().issues] == [
+            ("operators", "operator_executor_target_ignored")]
+
+        reg = MagicMock()
+        reg.get = MagicMock(
+            return_value=_mock_executor_def(driver="claude_code"))
+        reg.list_types = MagicMock(return_value=["configurator"])
+        channel = await _setup(reg)
+        monkeypatch.setattr(tools_mod, "_tool_verify_plugin_state",
+                            lambda *, plugin_name: {"ready": True})
+        token = agent_mod.origin_var.set({
+            "role": "assistant", "channel": "telegram",
+            "chat_id": "c1", "cid": "x", "user_text": "hi",
+        })
+        try:
+            r = await engage_executor.handler({
+                "executor_type": "configurator", "task": "t", "context": "",
+            })
+        finally:
+            agent_mod.origin_var.reset(token)
+        payload = json.loads(r["content"][0]["text"])
+        assert payload.get("kind") not in ("plugin_unavailable",
+                                           "plugin_not_ready",
+                                           "plugin_registry_invalid")
+        assert channel.open_engagement_topic.await_count == 1
+
     async def test_engage_executor_blocks_on_registry_invalid(self, monkeypatch):
         from plugin_registry import ResolutionResult
         payload, channel = await self._run(

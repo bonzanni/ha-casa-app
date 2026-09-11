@@ -1524,3 +1524,174 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     assert sum(fragment in uninstall for fragment in (
         "report it to the operator verbatim",
         "do not restate it as a deletion or a revocation")) == 2
+
+
+# --- #923: operators cannot target workers, for now -------------------------
+#
+# The operator's decision on #923 (2026-09-10): "it should not be possible, for
+# now, to add plugin to 'workers' from an operator perspective. workers will
+# come with a bundled set of plugins that are shipped with casa". These pin the
+# ADMISSION half; the resolution half is the red case in test_plugin_resolver.
+
+def _bundled(name, targets, artifact_id="c" * 64, version="1.1.0"):
+    return {"name": name,
+            "source": {"type": "bundled", "repo": "o/r", "ref": "v1",
+                       "revision": "git:" + "c" * 40, "subdir": ""},
+            "artifact_id": artifact_id, "version": version,
+            "targets": list(targets)}
+
+
+async def test_plugin_add_refuses_a_worker_target_before_any_side_effect(
+        monkeypatch, tmp_path):
+    """Counts, not statuses: the refusal is worth nothing if it lands after the
+    publish. Placed after `publish` it would leave one artifact; after the
+    sysreq install it would also change the machine; after the append it would
+    change the operator's registry. `st.log` records all three.
+    """
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    r = await tools_mod.plugin_add.handler({
+        "name": "probe", "repo": "o/r", "ref": "v1",
+        "targets": ["executor:plugin-developer"]})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["kind"] == "executor_target_not_allowed"
+    assert payload["activation_committed"] is False
+    assert payload["runtime_ready"] is False
+    assert st.log == []
+    assert st.raw["plugins"] == []
+
+
+async def test_plugin_add_refuses_the_whole_mixed_request(monkeypatch, tmp_path):
+    """A resident+worker request is not partly installed: the acceptable subset
+    is not quietly kept, because the operator asked for one thing."""
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    r = await tools_mod.plugin_add.handler({
+        "name": "probe", "repo": "o/r", "ref": "v1",
+        "targets": ["resident:butler", "executor:plugin-developer"]})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["kind"] == "executor_target_not_allowed"
+    assert payload["invalid"] == ["executor:plugin-developer"]
+    assert st.log == []
+    assert st.raw["plugins"] == []
+
+
+async def test_plugin_assign_refuses_a_worker_target_even_when_bundled(
+        monkeypatch, tmp_path):
+    """`plugin_assign(name=<a bundled plugin>, target="executor:configurator")`
+    is the operator composing a worker's plugin set through a tool, which is
+    what the ruling forbids — so the refusal is by OPERATION, not by the
+    plugin's population. Nothing Casa ships loses its worker: `seed_defaults`
+    writes the shipped targets straight into the raw document and never reaches
+    this handler (pinned by ::test_seed_defaults_no_resurrection and by the
+    bundled-resolution regression below).
+    """
+    st = _State()
+    st.raw["plugins"].append(_bundled("shipped", ["executor:plugin-developer"]))
+    tools_mod = _wire(monkeypatch, tmp_path, st)
+    r = await tools_mod.plugin_assign.handler({
+        "name": "shipped", "target": "executor:configurator"})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["kind"] == "executor_target_not_allowed"
+    assert st.log == []
+    assert st.raw["plugins"][0]["targets"] == ["executor:plugin-developer"]
+
+
+async def test_plugin_assign_refuses_a_worker_target_for_an_operator_plugin(
+        monkeypatch, tmp_path):
+    st = _State()
+    st.raw["plugins"].append({
+        "name": "probe",
+        "source": {"type": "github", "repo": "o/r", "ref": "v1",
+                   "revision": "git:" + "c" * 40, "subdir": ""},
+        "artifact_id": "c" * 64, "version": "1.1.0",
+        "targets": ["resident:butler"]})
+    tools_mod = _wire(monkeypatch, tmp_path, st)
+    r = await tools_mod.plugin_assign.handler({
+        "name": "probe", "target": "executor:plugin-developer"})
+    assert json.loads(r["content"][0]["text"])["kind"] == \
+        "executor_target_not_allowed"
+    assert st.log == []
+    assert st.raw["plugins"][0]["targets"] == ["resident:butler"]
+
+
+async def test_plugin_update_refuses_a_bundled_plugin_that_serves_a_worker(
+        monkeypatch, tmp_path):
+    """Without this, an update repoints Casa's shipped plugin at an
+    operator-chosen ref while the entry keeps its `bundled` label — so the
+    operator's bytes keep reaching the worker, through a supported tool. Refused
+    before resolve, publish, sysreqs and save, so the pin is retained."""
+    st = _State()
+    st.raw["plugins"].append(_bundled("shipped", ["executor:plugin-developer"]))
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(version="2.0.0"))
+    r = await tools_mod.plugin_update.handler({"name": "shipped",
+                                               "new_ref": "v2"})
+    assert json.loads(r["content"][0]["text"])["kind"] == \
+        "executor_target_not_allowed"
+    assert st.log == []
+    entry = st.raw["plugins"][0]
+    assert entry["source"]["type"] == "bundled"
+    assert entry["source"]["ref"] == "v1"
+    assert entry["version"] == "1.1.0"
+
+
+async def test_plugin_update_stamps_the_operator_as_the_source(
+        monkeypatch, tmp_path):
+    """The other half of the same rule: once the operator chooses the bytes,
+    `source.type` — the ONE field that says which population an entry belongs
+    to — must stop saying Casa shipped them. Exactly one save."""
+    st = _State()
+    st.raw["plugins"].append(_bundled("shipped", ["resident:butler"]))
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(version="2.0.0"))
+    r = await tools_mod.plugin_update.handler({"name": "shipped",
+                                               "new_ref": "v2"})
+    assert json.loads(r["content"][0]["text"])["ok"] is True
+    assert st.log.count("save") == 1
+    entry = st.raw["plugins"][0]
+    assert entry["source"]["type"] == "github"
+    assert entry["source"]["ref"] == "v2"
+    assert entry["targets"] == ["resident:butler"]
+
+
+async def test_plugin_update_failing_before_commit_keeps_the_source(
+        monkeypatch, tmp_path):
+    """A publish that raises must not leave the entry relabelled: the stamp
+    rides the same save as the new pin, never ahead of it."""
+    from plugin_store import RefNotFound
+    st = _State()
+    st.raw["plugins"].append(_bundled("shipped", ["resident:butler"]))
+    tools_mod = _wire(monkeypatch, tmp_path, st,
+                      publish_exc=RefNotFound("v2"))
+    r = await tools_mod.plugin_update.handler({"name": "shipped",
+                                               "new_ref": "v2"})
+    assert json.loads(r["content"][0]["text"])["ok"] is False
+    assert st.log.count("save") == 0
+    assert st.raw["plugins"][0]["source"]["type"] == "bundled"
+
+
+async def test_plugin_list_shows_stored_and_effective_assignments(
+        monkeypatch, tmp_path):
+    """#923: `targets` keeps its stored meaning (the shipped configurator
+    doctrine reads that field), and the distinction is ADDED beside it —
+    otherwise the listing implies the worker receives the plugin. Both a
+    bundled and an operator entry, so the disclosure is shown to differ by
+    population and not merely to be present."""
+    st = _State()
+    st.raw["plugins"].append(_bundled("shipped", ["executor:plugin-developer"]))
+    st.raw["plugins"].append({
+        "name": "operators",
+        "source": {"type": "github", "repo": "o/r", "ref": "v1",
+                   "revision": "git:" + "c" * 40, "subdir": ""},
+        "artifact_id": "d" * 64, "version": "1.0.0",
+        "targets": ["resident:butler", "executor:plugin-developer"]})
+    tools_mod = _wire(monkeypatch, tmp_path, st)
+    rows = {r["name"]: r for r in tools_mod._tool_plugin_list()["plugins"]}
+
+    assert rows["shipped"]["targets"] == ["executor:plugin-developer"]
+    assert rows["shipped"]["effective_targets"] == ["executor:plugin-developer"]
+    assert rows["shipped"]["ignored_targets"] == []
+
+    assert rows["operators"]["targets"] == ["resident:butler",
+                                            "executor:plugin-developer"]
+    assert rows["operators"]["effective_targets"] == ["resident:butler"]
+    assert rows["operators"]["ignored_targets"] == ["executor:plugin-developer"]

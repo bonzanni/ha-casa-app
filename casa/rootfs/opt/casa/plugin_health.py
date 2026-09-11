@@ -332,6 +332,15 @@ _REASON_PHRASES = {
     # while its history cannot be read or was reset after damage.
     "setup_history_unavailable": "setup history could not be read",
     "target_pending": "is waiting for the specialist it belongs to",
+    # #923: the stored worker assignment Casa does not serve. Says IGNORED, not
+    # deleted — the assignment is still in the operator's registry file, and
+    # `plugin_unassign` is what clears it. No _REASON_SUFFIXES family matches
+    # `_ignored`, so without this entry the row would render the fallback and
+    # tell the operator the plugin is broken, which is a different and false
+    # thing. "For now" is the ruling's word.
+    "operator_executor_target_ignored": (
+        "has a worker assignment Casa ignores for now — workers use only the "
+        "plugins Casa ships"),
     "corrupt_artifact": "could not be loaded",
     "artifact_missing": "could not be found",
     "unsafe_archive": "could not be loaded safely",

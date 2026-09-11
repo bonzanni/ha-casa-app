@@ -170,6 +170,14 @@ immutable content-addressed artifact and lists its targets
 (`resident:`/`specialist:`/`executor:`). It is the ONLY place plugin
 assignments live — there is no `enabledPlugins`, no per-agent `plugins.yaml`.
 
+**Workers take only what Casa ships, for now.** An `executor:` target belongs
+to the bundled set Casa seeds; an operator-installed plugin cannot be given one
+(`plugin_add` and `plugin_assign` refuse it, `plugin_update` refuses to repoint
+a bundled plugin that serves a worker). A worker target already stored on an
+operator-installed entry stays in the file but is IGNORED: `plugin_list` shows
+it under `ignored_targets`, and the health report says so. `plugin_unassign`
+clears it.
+
 ### Store + resolver
 
 - Store: `/config/plugins/store/<name>/<artifact-id>/` — immutable artifacts,

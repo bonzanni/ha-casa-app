@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import plugin_health
+import plugin_registry as plugin_registry_mod
 import specialist_bundle_journal
 from plugin_registry import PluginIssue
 
@@ -188,6 +189,11 @@ def _live_reason_codes() -> set[str]:
     codes.update({"reload_required", "env_unresolved", "setup_env_unprovisioned",
                   "not_ready", "mcp_invalid", "artifact_missing",
                   "verify_exception", "authorization_missing"})
+    # #923: emitted through `plugin_registry.IGNORED_EXECUTOR_TARGET`, a
+    # constant — the patterns above only see a string LITERAL at the
+    # `reason_code=` keyword, so a code minted as a named constant is invisible
+    # to the sweep and would silently escape it.
+    codes.add(plugin_registry_mod.IGNORED_EXECUTOR_TARGET)
     codes.discard("")
     return codes
 
@@ -756,3 +762,61 @@ def test_notice_is_none_when_every_row_was_named(tmp_path):
         [plugin_health.fingerprint(r) for r in rows], path=p,
         generation=plugin_health.load_report(p)["generation"])
     assert plugin_health.render_notice("assistant", p) is None
+
+
+def test_describe_operator_executor_target_as_ignored():
+    """#923: the row for an ignored worker assignment must TELL the operator
+    what it is. `render_notice` excludes every `executor:*`-targeted row from
+    the in-band notice, so `describe_issue` is the only rendering the operator
+    ever sees of it — through the DM and `plugin_status`. Without a phrase it
+    renders `_REASON_FALLBACK` and says the plugin is broken, which is a
+    different and false thing. Assert the rendered SENTENCE, never the table:
+    a test reading `_REASON_PHRASES` would pin the lookup and not the telling.
+    """
+    line = plugin_health.describe_issue({
+        "name": "redcase-probe",
+        "target": "executor:plugin-developer",
+        "stage": "registry",
+        "reason_code": "operator_executor_target_ignored",
+        "artifact_id": None,
+        "detail": "executor:plugin-developer",
+    })
+
+    assert line.count("redcase-probe ") == 1, line
+    assert line.count("worker assignment Casa ignores") == 1, line
+    assert line.count("workers use only the plugins Casa ships") == 1, line
+    assert line.endswith(" — executor:plugin-developer"), line
+
+
+def test_ignored_worker_assignment_never_rides_the_in_band_notice(tmp_path):
+    """#923: the row is attributed to the worker target, which is exactly the
+    shape `render_notice` already excludes — so it reaches the operator by DM
+    and `plugin_status`, and never as an in-band line on a resident turn. An
+    empty report would prove nothing: the report here HOLDS the row, and a
+    resident-targeted row beside it proves the notice is otherwise working.
+    """
+    from plugin_fixtures import entry as _entry, mk_registry as _mk_registry
+
+    # Build the row through the REAL validator, not by hand: what has to hold
+    # end to end is that the row the validator MINTS is one the notice
+    # excludes, and a hand-built row would pass while the minting changed
+    # underneath it.
+    e = _entry("operators", ["resident:ellen", "executor:plugin-developer"])
+    data = plugin_registry_mod.load_registry(_mk_registry(tmp_path, [e]))
+    minted = [i for i in data.entry_issues
+              if i.reason_code == "operator_executor_target_ignored"]
+    assert len(minted) == 1
+
+    path = tmp_path / "plugin-health.json"
+    plugin_health.write_report(
+        issues=minted + [
+            PluginIssue(name="other", target="resident:ellen", stage="resolve",
+                        reason_code="artifact_missing"),
+        ],
+        warnings=[], path=path)
+    report = plugin_health.load_report(path)
+    assert len(report["issues"]) == 2
+
+    line = plugin_health.render_notice("ellen", path=path)
+    assert line.count("operators") == 0
+    assert line.count("other") == 1

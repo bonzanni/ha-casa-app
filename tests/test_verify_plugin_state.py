@@ -232,7 +232,9 @@ def test_verify_reload_required_is_never_green(tmp_path, monkeypatch):
 def test_verify_authorization_missing_vs_authorized(tmp_path, monkeypatch):
     import agent as agent_mod
     store = tmp_path / "store"
-    e = entry("probe", ["executor:plugin-developer"])
+    # #923: attached to a worker ⇒ bundled (an operator-installed plugin gets
+    # no worker target row at all, which is a different test).
+    e = entry("probe", ["executor:plugin-developer"], source_type="bundled")
     mk_artifact(store, "probe", e["artifact_id"],
                 mcp_servers={"probe": {}})               # grant mcp__plugin_probe_probe
     mk_registry(tmp_path, [e])
@@ -274,7 +276,9 @@ def test_verify_disabled_executor_target_not_authorization_missing(
     the executor's config carries the grant and works once enabled."""
     import agent as agent_mod
     store = tmp_path / "store"
-    e = entry("probe", ["executor:plugin-developer"])
+    # #923: attached to a worker ⇒ bundled (an operator-installed plugin gets
+    # no worker target row at all, which is a different test).
+    e = entry("probe", ["executor:plugin-developer"], source_type="bundled")
     mk_artifact(store, "probe", e["artifact_id"],
                 mcp_servers={"probe": {}})               # grant mcp__plugin_probe_probe
     mk_registry(tmp_path, [e])
@@ -321,7 +325,9 @@ def test_verify_running_engagement_on_previous_artifact_is_informational(
         tmp_path, monkeypatch):
     import tools as tools_mod
     store = tmp_path / "store"
-    e = entry("probe", ["executor:plugin-developer"])
+    # #923: attached to a worker ⇒ bundled (an operator-installed plugin gets
+    # no worker target row at all, which is a different test).
+    e = entry("probe", ["executor:plugin-developer"], source_type="bundled")
     mk_artifact(store, "probe", e["artifact_id"])
     mk_registry(tmp_path, [e])
     rec = SimpleNamespace(id="eng1", plugin_artifacts=[
@@ -385,8 +391,12 @@ def test_bundled_registry_authorized_for_plugin_developer(tmp_path, monkeypatch)
     for e in default_reg["plugins"]:
         servers = {"context7": {}} if e["name"] == "context7" else None
         src = e["source"]
+        # #923: carry the shipped entry's OWN source type. These ARE Casa's
+        # bundled plugins; building them as github-sourced would model the one
+        # population the ruling says never reaches a worker.
         ent = entry(e["name"], e["targets"], revision=src["revision"],
-                    subdir=src.get("subdir", ""))
+                    subdir=src.get("subdir", ""),
+                    source_type=src.get("type", "github"))
         mk_artifact(store, e["name"], ent["artifact_id"],
                     revision=src["revision"], subdir=src.get("subdir", ""),
                     mcp_servers=servers)
@@ -1262,3 +1272,21 @@ def test_verify_unreferenced_setup_var_clears_once_provisioned(
     r = _verify(tmp_path)
     assert r["ready"] is True
     assert r["secrets"] == []
+
+
+def test_verify_grades_only_the_assignments_casa_serves(tmp_path, monkeypatch):
+    """#923: verify must agree with the resolver (Sol #8). An operator plugin's
+    worker assignment is never served, so no readiness row grades it — grading
+    it would mint a second, wrong telling (today an `authorization_missing` row
+    against a worker that will never load the plugin). `desired` is what
+    verification grades against, so it names the served set; what the operator
+    stored and Casa ignores is disclosed beside it, never dropped.
+    """
+    store = tmp_path / "store"
+    e = entry("probe", ["resident:butler", "executor:plugin-developer"])
+    mk_artifact(store, "probe", e["artifact_id"])
+    mk_registry(tmp_path, [e])
+    r = _verify(tmp_path)
+    assert [row["target"] for row in r["targets"]] == ["resident:butler"]
+    assert r["desired"]["targets"] == ["resident:butler"]
+    assert r["desired"]["ignored_targets"] == ["executor:plugin-developer"]

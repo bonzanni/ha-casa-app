@@ -74,9 +74,17 @@ callback that runs, in order, contract admission, then the authorization decisio
 protected tool, then arming — because the SDK dispatches same-event matchers concurrently
 and arming must follow the authorization decision, never race it.
 
-What it does not cover: executor sessions of either driver (#923), and a plugin's setup
+What it does not cover: executor sessions of either driver, and a plugin's setup
 tool, which passes both hooks unchanged whoever calls it — the manual re-run of a setup
 tool is a documented flow.
+
+The executor exclusion is not a gap in the contract's reach, and the reason changed with
+#923. Everything an executor loads is Casa's own: an operator cannot give a worker a
+plugin, so a worker's set is the bundled set Casa ships. A contract whose purpose is to
+hold third-party code to a shape has nothing third-party to hold there — any bundled
+plugin that returns a capability is Casa's to make conformant before it ships. If workers
+are opened to operator-installed plugins later, this exclusion is the first thing that
+has to be revisited.
 
 **INV-PLUG-018**: A capability reference is bound to the grant identity of the call that minted it — operator, chat, enforcement role, artifact and engagement, derived by the same code the authorization hook uses — is single-use, expires after one approval-keyboard window plus one grant window, is redeemable only by a parameter a tool of the same plugin declared as consuming that slot, in a session with the same identity, through a per-call ticket the consumer receives in its rewritten input, and is purged with the artifact or role it was minted under and lost on restart.
 
