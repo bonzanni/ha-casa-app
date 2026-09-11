@@ -313,3 +313,48 @@ def test_concurrent_reload_snapshot_is_serialized_and_monotonic(
         t.join()
     assert state["max_active"] == 1                  # mutual exclusion held
     assert plugin_registry.snapshot_generation() == start + n
+
+
+def test_operator_executor_target_is_ignored(tmp_path, monkeypatch):
+    """#923 (operator's decision, 2026-09-10): an operator-installed plugin —
+    one whose entry's ``source.type`` is not ``bundled`` — does not reach a
+    worker. Its stored ``executor:*`` target is IGNORED when a fresh executor
+    launch resolves, and reported as ignored; the entry keeps serving its other
+    targets and the registry file on disk is not rewritten.
+
+    Counts, not statuses: zero executor plugins, zero executor ISSUES (a row
+    carried into that target's resolution would make the worker unlaunchable
+    through the launch gate's refuse-on-any-issue rule), exactly one restriction
+    row in ``resolve_all()``, one resident plugin, zero registry saves.
+    """
+    store = tmp_path / "store"
+    e = _entry("redcase-probe", ["resident:ellen", "executor:plugin-developer"])
+    _mk_artifact(store, "redcase-probe", e["artifact_id"])
+    registry_path = _mk_registry(tmp_path, [e])
+    before_bytes = registry_path.read_bytes()
+    original_plugins = json.loads(before_bytes)["plugins"]
+
+    saves = []
+    monkeypatch.setattr(plugin_registry, "save_registry",
+                        lambda *a, **k: saves.append(a))
+
+    reload_snapshot(registry_path=registry_path, store_root=store)
+
+    executor = resolve_for("executor:plugin-developer")
+    assert len(executor.plugins) == 0
+    assert len(executor.issues) == 0
+    assert len(resolve_for("resident:ellen").plugins) == 1
+    assert plugin_registry.resolve_all().issues == [
+        plugin_registry.PluginIssue(
+            name="redcase-probe",
+            target="executor:plugin-developer",
+            stage="registry",
+            reason_code="operator_executor_target_ignored",
+            artifact_id=None,
+            scoped_targets=(),
+            detail="executor:plugin-developer",
+        )
+    ]
+    assert saves == []
+    assert registry_path.read_bytes() == before_bytes
+    assert plugin_registry.snapshot_registry().raw["plugins"] == original_plugins
