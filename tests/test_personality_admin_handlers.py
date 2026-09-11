@@ -1438,6 +1438,8 @@ async def test_the_disclosed_inputs_are_what_completes_the_pending_install(
     from test_tools_specialist_install import _stub_bundle_sequencer
 
     import specialist_install
+    import sys
+
     import specialist_install_consent
     import specialist_receipt
     import tools as tools_mod
@@ -1593,6 +1595,8 @@ async def test_the_disclosed_inputs_never_pair_a_stale_root_with_a_newer_receipt
     from test_tools_specialist_install import _stub_bundle_sequencer
 
     import specialist_install
+    import sys
+
     import specialist_install_consent
     import specialist_receipt
     import tools as tools_mod
@@ -1763,6 +1767,8 @@ async def _resume_with_disclosed(ctx, disclosed, monkeypatch, *, upgrade=False):
     from test_tools_specialist_install import _stub_bundle_sequencer
 
     import specialist_install
+    import sys
+
     import specialist_install_consent
     import specialist_receipt
     import tools as tools_mod
@@ -2013,3 +2019,112 @@ def test_a_slug_that_is_not_a_plain_tree_name_reads_no_tree(
     payload = specialist_status_payload(object(), slug=traversed)
 
     assert payload == {"slug": traversed, "state": "not_installed"}
+
+
+# --- #929 red case (attempt 3, specified by astra) -------------------------
+#
+# The disclosure's guarantee is that the values it names are a set the tool
+# that consumes them ADMITS. For a pending UPGRADE the active tuple is still
+# in place, so `commit_specialist_install` refuses `concurrent_mutation`
+# (`specialist_install.py:241-246` at the attempt's base) while
+# `upgrade_specialist` activates the replacement and retains the prior. A
+# payload that names five values and not the tool that takes them therefore
+# sends a later engagement to a route that refuses — which is the one outcome
+# the disclosure exists to prevent.
+
+_ADMITTING_TOOLS = ("specialist_install_commit", "specialist_upgrade")
+
+
+def _real_lifecycle_counter(monkeypatch, name, ctx):
+    """Count calls to a REAL lifecycle function, injecting this test's
+    directories — the tool layer resolves them from `/config` defaults it does
+    not thread. Everything the function itself does is unstubbed."""
+    import specialist_install
+
+    real = getattr(specialist_install, name)
+    calls: list[dict] = []
+
+    def _wrapper(**kw):
+        calls.append(kw)
+        merged = dict(kw)
+        merged.update({k: v for k, v in ctx.kw.items()
+                       if k not in ("inspection", "receipt", "config",
+                                    "secret_names_provided", "acks")})
+        return real(**merged)
+
+    monkeypatch.setattr(specialist_install, name, _wrapper)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_verified_pending_upgrade_names_and_uses_its_admitting_tool(
+        tmp_path, monkeypatch, restore_installed_index) -> None:
+    """A pending upgrade's disclosed resume set names the tool that admits it,
+    and that tool — selected from the payload, never from the fixture —
+    activates the candidate."""
+    import sys
+
+    import specialist_install_consent
+    import specialist_receipt
+    import tools as tools_mod
+    from personality_admin_handlers import specialist_status_payload
+    from specialist_bundle_journal import recovery_debt
+    from specialist_registry import InstalledSpecialistIndex
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_tools_specialist_install import _payload, _stub_bundle_sequencer
+
+    active, pending = _pending_upgrade(tmp_path, monkeypatch)
+    index = _publish(pending, restore_installed_index, monkeypatch)
+
+    # 2. The state from disk, by count, before anything is read.
+    instance = index.get_instance("mtg")
+    assert (instance.active is not None, instance.desired is not None) == (True, True)
+    assert instance.desired.root != instance.active.root
+    # Two receipts: the fixture drives the LIBRARY, so generation A's receipt
+    # was never pruned (only the tool layer prunes). B's is the one the marker
+    # names and the one a resume needs.
+    assert len(list(pending.receipts_dir.glob("*.json"))) == 2
+    assert json.loads(pending.marker.read_text())["receipt_id"] == pending.receipt.receipt_id
+    assert Path(pending.inspection.staged_dir).is_dir()
+    assert len(list(recovery_debt(ops_dir=tmp_path / "ops"))) == 0
+
+    # 3. Five resume members AND exactly one admitting-tool designation.
+    payload = specialist_status_payload(object(), slug="mtg")
+    disclosed = payload.get("pending_commit", {})
+    assert sum(disclosed.get(k) is not None for k in _RESUME_KEYS) == 5
+    assert sum(disclosed.get("tool") == name for name in _ADMITTING_TOOLS) == 1
+    assert payload.get("pending_commit_check", {}).get("state") == "verified"
+
+    # 4. The REAL public handler, selected by the disclosed name alone.
+    real_loader = specialist_receipt.load
+    monkeypatch.setattr(specialist_receipt, "load",
+                        lambda rid, receipts_dir=None: real_loader(
+                            rid, receipts_dir=pending.receipts_dir))
+    monkeypatch.setattr(specialist_install_consent, "SpecialistInstallAckStore",
+                        lambda *a, **k: pending.acks)
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda *a, **k: None)
+    _stub_bundle_sequencer(monkeypatch)
+    commits = _real_lifecycle_counter(monkeypatch, "commit_specialist_install", pending)
+    upgrades = _real_lifecycle_counter(monkeypatch, "upgrade_specialist", pending)
+
+    handler = getattr(tools_mod, disclosed["tool"]).handler
+    result = _payload(await handler({
+        "slug": "mtg",
+        "component_id": disclosed["component_id"],
+        "version": disclosed["version"],
+        "root_digest": disclosed["root_digest"],
+        "staged_dir": disclosed["staged_dir"],
+        "receipt_id": disclosed["receipt_id"],
+        "config": {"region": "EU"},
+    }))
+
+    # 5. Counts, then the disk.
+    assert (len(upgrades), len(commits)) == (1, 0)
+    assert (result["ok"], result["state"]) == (True, "active")
+    after = InstalledSpecialistIndex(specialists_dir=str(pending.specialists_dir))
+    after.load()
+    landed = after.get_instance("mtg")
+    assert landed.active.root == instance.desired.root
+    assert landed.desired is None
+    assert not pending.marker.exists()
