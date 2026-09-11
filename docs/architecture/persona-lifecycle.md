@@ -141,8 +141,13 @@ restart.
 
 A resident's persona identity is an input of its binding digest, and that digest is a
 resume precondition, so the promotion INV-PERS-007 defers to the next restart starts
-every conversation that resident is holding fresh — on every channel, because the digest
-gate sits ahead of the freshness window. Voice is not a bank-writable channel, so a voice
+fresh every conversation whose own stored identity differs from the one promoted — on
+every channel, because the digest gate sits ahead of the freshness window. Note what the
+gate compares: each stored session's digest against the promoted one, never against the
+identity being left behind. So a conversation last held under the persona now being
+promoted RESUMES — an A-to-B-to-A round trip is the reachable case — which is why the
+notice says *a different persona identity* rather than *every conversation*, and says
+only that in the ordinary case those are the same set. Voice is not a bank-writable channel, so a voice
 conversation is lost outright. A Telegram transcript is *offered* to long-term memory on
 the way out, which is a weaker thing than being kept: memory is off by default, and even
 configured the cold retain discards behind the wipe fence, retains nothing for a snapshot

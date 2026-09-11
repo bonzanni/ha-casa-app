@@ -14110,6 +14110,15 @@ async def persona_install_commit(args: dict) -> dict:
 #     retries (session_saver.py:410-432). "Written out" promises what the code
 #     does not.
 #
+#   r8 (Astra, S2) the CENTRAL claim was itself too strong. "Every
+#     conversation starts fresh" is false: `_resume_decision` compares the
+#     promoted digest against EACH STORED SESSION's own digest, not against
+#     the identity being left behind, so a conversation last held under the
+#     persona now being promoted RESUMES. Astra reproduced A -> B -> A through
+#     three real reconciliations: 2 resumed, 2 fresh. The sentence now says
+#     "last held under a different persona identity", and says that in the
+#     ordinary case that is all of them.
+#
 # The conclusion the rounds force: this tool CANNOT know what survives — not
 # whether the identity moves (boot decides, after this call returns), and not
 # whether anything is recoverable afterwards (configuration, the wipe fence and
@@ -14120,15 +14129,18 @@ async def persona_install_commit(args: dict) -> dict:
 # only ever a way of softening it. INV-PERS-018, pinned by
 # tests/test_resident_persona_restart_notice.py.
 RESIDENT_CONVERSATION_RESET_NOTICE = (
-    "On the restart that promotes this binding, if the resident's persona "
-    "identity ends up different from the one it is running, every conversation "
-    "of this resident starts fresh on every channel — the persona is part of "
-    "the resident's session identity. Voice history is not carried at all, "
-    "and Casa promises nothing about recovering what any of those "
-    "conversations held. Boot decides "
-    "that, not this tool, and staging the persona the resident already appears "
-    "to have does not guarantee continuity. Relay this to the operator "
-    "verbatim before they restart; do not predict which way it will go."
+    "On the restart that promotes this binding, every conversation of this "
+    "resident that was last held under a different persona identity starts "
+    "fresh on every channel — the persona is part of the resident's session "
+    "identity, and each stored conversation is judged against the identity "
+    "that is actually promoted, not against the one being left behind. In the "
+    "ordinary case that is every conversation the resident is holding now. "
+    "Voice history is not carried at all, and Casa promises nothing about "
+    "recovering what any of those conversations held. Boot decides what is "
+    "promoted, not this tool, and staging the persona the resident already "
+    "appears to have does not guarantee continuity. Relay this to the "
+    "operator verbatim before they restart; do not predict which way it will "
+    "go."
 )
 
 

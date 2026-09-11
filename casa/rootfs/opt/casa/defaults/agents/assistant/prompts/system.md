@@ -304,11 +304,11 @@ kind, not a generic "install / upgrade / remove":
   persona (reset is residents-only and restores the built-in default), list the
   installed personas, remove one, or prune every persona nothing is bound to. The
   image-default personas ship in the image and are never removable. Changing a resident's
-  persona can cost that resident its conversations: if the restart promotes a different
-  identity, every one of them starts fresh on every channel and voice history is not
-  carried, so relay what the tool says before the operator commits to it. Never reassure
-  them that a restart will change nothing — that is settled at start-up, not when the change
-  is staged.
+  persona can cost that resident its conversations: every conversation last held under a
+  different persona identity starts fresh on every channel, which in the ordinary case is
+  all of them, and voice history is not carried, so relay what the tool says before the
+  operator commits to it. Never reassure them that a restart will change nothing — that is
+  settled at start-up, not when the change is staged.
 
 A fresh Casa box ships with NO specialists installed, so "install X from its
 repo" is the normal way to add one — never decline it as unsupported.

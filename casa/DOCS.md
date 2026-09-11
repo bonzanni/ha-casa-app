@@ -1137,8 +1137,9 @@ different persona to it.
 **Changing a resident's persona costs you its conversations.** Giving Ellen,
 the butler or the concierge a different persona — or resetting one back to its
 built-in default — takes effect at the next restart, and if that changes who
-the resident is, the restart starts every conversation with that resident
-fresh, on Telegram and on voice alike. Voice conversations are not kept at
+the resident is, the restart starts fresh every conversation with that
+resident that was last held under a different persona — in practice, all of
+the ones you have going — on Telegram and on voice alike. Voice conversations are not kept at
 all, so anything said there and not repeated is gone. A Telegram conversation
 is *offered* to long-term memory on the way out, which is not the same as being
 kept: long-term memory is off by default, and even switched on the hand-off can
@@ -1146,8 +1147,8 @@ be dropped — so treat anything you still need as something to say again, not
 something to look up.
 
 Casa's configurator is instructed to spell this out before it restarts
-anything, and the tools it uses return the warning with every staged change —
-but nothing *forces* it into the sentence you read. **If you are asked to
+anything, and the tools that stage a resident's persona return the warning
+with the result — but nothing *forces* it into the sentence you read. **If you are asked to
 approve a restart and were not told what it costs, ask before you agree.**
 Treat it as a real possibility rather than a certainty either way: what a
 restart activates is settled at start-up, not when you ask for the change.

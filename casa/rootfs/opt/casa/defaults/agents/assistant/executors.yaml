@@ -16,11 +16,12 @@ executors:
       resident:assistant, resident:butler or resident:concierge — or to an installed
       specialist (specialist:<slug>). Reset is residents-only and restores the built-in
       default — it is not a persona-content operation. Changing a resident's persona can
-      cost that resident its conversations: if the restart promotes a different identity,
-      every one of them starts fresh on every channel and voice history is not carried, so
-      relay what the tool says before the operator commits to it. Never reassure them that a
-      restart will change nothing — that is settled at start-up, not when the change is
-      staged. The image-default personas are part of the image and never
+      cost that resident its conversations: every conversation last held under a different
+      persona identity starts fresh on every channel, which in the ordinary case is all of
+      them, and voice history is not carried, so relay what the tool says before the
+      operator commits to it. Never reassure them that a restart will change nothing — that
+      is settled at start-up, not when the change is staged. The image-default personas are
+      part of the image and never
       removable; apply operates on an installed persona, not a fresh
       repo fetch. Repository locator shape owner/repo@ref, e.g.
       "install the finance specialist from owner/casa-specialist-finance@v0.1.0". Engage the

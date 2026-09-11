@@ -21,10 +21,11 @@
    it. **Relay the result's `conversation_notice` VERBATIM.** Do not paraphrase it, do not
    summarise it, and above all do not work out for yourself whether this particular
    staging will change anything — you cannot, and neither can this tool. It says: on the
-   restart that promotes this binding, if the resident's persona identity ends up
-   different from the one it is running, **every conversation of this resident starts
-   fresh on every channel**, because the persona is part of the resident's session
-   identity; **voice history is not carried** at all, and Casa promises nothing about
+   restart that promotes this binding, **every conversation of this resident that was last
+   held under a different persona identity starts fresh on every channel** — each stored
+   conversation is judged against the identity actually promoted, not against the one
+   being left behind, so in the ordinary case that is all of them; **voice history is not
+   carried** at all, and Casa promises nothing about
    recovering what any of those conversations held. Do NOT offer long-term memory as a
    consolation: it is off by default, and even switched on it can discard a transcript
    behind a memory wipe or give up retaining it. Say what is lost and let the operator

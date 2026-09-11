@@ -270,7 +270,7 @@ def test_apply_recipe_step_five_tells_the_resident_conversation_cost() -> None:
 
 NO_PROMISE_CLAUSES = (
     # r1-r3: it predicts nothing and promises no continuity.
-    "boot decides that, not this tool",
+    "boot decides what is promoted, not this tool",
     "does not guarantee continuity",
     "do not predict which way it will go",
     # r4 (Astra, S2) then r5 (Terra, S2): and it promises no CONSOLATION
@@ -346,15 +346,18 @@ def test_the_notice_promises_no_continuity_and_no_recall_and_predicts_nothing(
 
     assert notice == tools_mod.RESIDENT_CONVERSATION_RESET_NOTICE
     assert notice == (
-        "On the restart that promotes this binding, if the resident's persona "
-        "identity ends up different from the one it is running, every conversation "
-        "of this resident starts fresh on every channel — the persona is part of "
-        "the resident's session identity. Voice history is not carried at all, "
-        "and Casa promises nothing about recovering what any of those "
-        "conversations held. Boot decides "
-        "that, not this tool, and staging the persona the resident already appears "
-        "to have does not guarantee continuity. Relay this to the operator "
-        "verbatim before they restart; do not predict which way it will go."
+        "On the restart that promotes this binding, every conversation of this "
+        "resident that was last held under a different persona identity starts "
+        "fresh on every channel — the persona is part of the resident's session "
+        "identity, and each stored conversation is judged against the identity "
+        "that is actually promoted, not against the one being left behind. In the "
+        "ordinary case that is every conversation the resident is holding now. "
+        "Voice history is not carried at all, and Casa promises nothing about "
+        "recovering what any of those conversations held. Boot decides what is "
+        "promoted, not this tool, and staging the persona the resident already "
+        "appears to have does not guarantee continuity. Relay this to the "
+        "operator verbatim before they restart; do not predict which way it will "
+        "go."
     ), (
         "the operator-facing notice changed. That is not forbidden — but it is "
         "the sentence six review rounds were spent making true, so re-read it "
