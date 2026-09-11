@@ -1066,13 +1066,23 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # one here, is exactly what it exists to catch — and only then regenerate the
 # digest for that carrier. Never regenerate the map wholesale from the
 # candidate; that is the one move which turns this assertion back into nothing.
+#
+# MOVED 2026-09-10 (#934), the three `assistant:*` carriers ONLY. #934 adds one
+# sentence to the assistant's Core doctrine about answering a "why is this
+# plugin not working" question from the standing entries before the setup
+# history. Regenerated per carrier after measuring the residual diff, not from
+# the candidate: `difflib` over base-vs-new residual text reports exactly ONE
+# `insert` on each of the three, and the inserted span is that sentence and
+# nothing else; the six butler and concierge carriers are byte-identical. The
+# sentence makes no retention claim on any surface, which is what this pin
+# guards.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "2dd2928a69e7218e312d351a11e2f7a133ea93171db28dd864b5cb52e546b0ef",
+        "785d81df7f3d8cdebc03c9dc139bfd74ddad36055aee567a018c82819ff260e1",
     "assistant:text":
-        "62d7824d006638e101817422aa3ae0ece973c16c112a58bbeec2d02b61ecb08f",
+        "07a848a00841d35d4d140ceb746da80a8014828a7513bf8a9a862f90ec4686a2",
     "assistant:voice":
-        "33063c98973890148cfbad89b537e3bde6634e6ddc37e8313c10b413e7dfd5ed",
+        "a66d7692b42fc5cd1c1f5679502c0aaf9981d084766779f499e71ec8e47f49ee",
     "butler:restricted_webhook":
         "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
     "butler:text":
@@ -1214,3 +1224,129 @@ def test_the_retention_telling_is_scoped_by_channel_because_invoke_gets_text():
         got = projection_for(bundle, channel=channel, origin_route=origin_route)
         assert got.system_prompt == bodies[f"assistant:{surface}"], (
             channel, origin_route)
+
+
+# ---------------------------------------------------------------------------
+# #934 red case — the assistant is handed the blocking fact FIRST and is told
+# nothing about selecting it.
+#
+# `plugin_status` returns `{ok, standing, history}` and the standing order is
+# STRUCTURAL: `res.issues` (carrying the verify-stage row) precede the merged
+# setup-episode rows (`tools.py:12057-12061`), and `plugin_health.describe_issue`
+# renders each row with the detail its own comment calls "the one actionable
+# fact in the row". So `standing[0]` already held the answer. What the operator
+# got instead was a paraphrase of the LAST sentence — the setup history — and
+# "the cause is unknown", because no shipped carrier says how to choose: the
+# tool's description led with the setup-episode narrative and the assistant's
+# Core doctrine said nothing about plugins at all.
+#
+# This DECLARES an invariant (D34) rather than pinning a prior one. It asserts
+# PRESENCE and ORDER of the telling in the served carriers, and asserts nothing
+# about whether the model then selects correctly — an answer-selection defect is
+# not measurable at unit level, and the playbook's plugin-status play is the
+# measurement.
+#
+# Scoped to the ASSISTANT: `plugin_status` is granted to the assistant alone
+# (`defaults/agents/assistant/runtime.yaml:25`), so this imposes nothing on the
+# butler or the concierge.
+#
+# The telling names what the plugin is WAITING FOR, never the identifier naming
+# it, because the Text projection this Core sentence is carried into already
+# forbids putting environment-variable names and "raw fields copied out of a
+# tool result" in front of a household member (doctrine.md:14) and asks for "the
+# thing they have, not the thing you lack" (:16) — and the row to lead from is
+# literally `fx-setup still needs a value from you — CASA_PLUGIN_FX_BIN`.
+#
+# Specified by the red-case reviewer (Astra), 2026-09-10, before any production
+# change. Round 1's strings were RETURNED by this stream and re-specified: they
+# described `standing` as only what a plugin is "waiting for", which is a strict
+# subset of its phrase table (`plugin_health.py:324-361` renders "could not be
+# loaded", "clashes with another plugin's name", an open suffix family and the
+# "is not working" fallback) and of the corpus claim that the tool reports "the
+# whole standing set unfiltered" (`docs/architecture/plugin-health.md:86`).
+# ---------------------------------------------------------------------------
+
+_PLUGIN_STANDING_DOCTRINE = (
+    "When someone asks why a plugin is not working, answer first with what is "
+    "standing in that plugin's way now — the value or approval it is waiting "
+    "for, or what it could not do — and only then with what its automatic "
+    "setup already tried."
+)
+
+_PLUGIN_STATUS_SENTENCES = (
+    "Answer an operator asking why a plugin is not working from `standing` "
+    "first: it reports what is currently wrong with each installed plugin — "
+    "what is blocking it right now, such as a value it is still waiting for.",
+    "`history` comes after, and says what happened during each plugin's "
+    "automatic setup, including the error a failed setup last reported.",
+    "Read-only: it changes nothing, and it answers the question without "
+    "engaging the configurator.",
+)
+
+
+def _plugin_telling_pattern(sentence):
+    plain = _collapse_ws(sentence).strip().lower()
+    plain = plain.replace("*", "").replace("`", "")
+    return re.escape(plain.removesuffix("."))
+
+
+def test_plugin_standing_telling_reaches_assistant_core_and_projections():
+    """RED pre-fix: the telling occurs zero times in Core and in all three
+    compiled assistant projections.
+
+    Asserted on `_compiled_resident_carriers()` — the PRODUCTION compiler —
+    because a compiler that dropped Core would leave a `select_markdown_sections`
+    pin green while every real projection lost the rule. Core is asserted too,
+    so a telling smuggled into one projection's own section cannot pass."""
+    from markdown_sections import select_markdown_sections
+    from prompt_compiler import _PROJECTION_HEADINGS
+
+    carriers = [
+        (name, body)
+        for name, body in _compiled_resident_carriers()
+        if name.startswith("assistant:")
+    ]
+    # Check multiplicity before constructing any dictionary.
+    assert sorted(name for name, _ in carriers) == [
+        "assistant:restricted_webhook",
+        "assistant:text",
+        "assistant:voice",
+    ]
+
+    doctrine = (
+        _casa_root()
+        / "defaults/roles/resident/assistant/doctrine.md"
+    ).read_text(encoding="utf-8")
+    core = select_markdown_sections(
+        doctrine, ("Core doctrine",), exclude=_PROJECTION_HEADINGS
+    )
+
+    pattern = _plugin_telling_pattern(_PLUGIN_STANDING_DOCTRINE)
+    counts = [
+        _n(body, pattern) for _, body in sorted(carriers)
+    ] + [_n(core, pattern)]
+    assert counts == [1, 1, 1, 1]
+
+
+def test_plugin_status_description_leads_with_standing():
+    """RED pre-fix: the description leads with the setup-episode narrative.
+
+    The full-description equality is what makes this a pin rather than a
+    presence check: counts alone accept reordering, and a first-sentence pin
+    alone permits changes that narrow or remove the later promises (the setup
+    history, the last reported error, read-only, no configurator)."""
+    import tools
+
+    description = _collapse_ws(tools.plugin_status.description).strip()
+    sentences = [
+        _collapse_ws(sentence).strip()
+        for sentence in _PLUGIN_STATUS_SENTENCES
+    ]
+
+    counts = [
+        _n(description, _plugin_telling_pattern(sentence))
+        for sentence in sentences
+    ]
+    assert counts == [1, 1, 1]
+    assert description.startswith(sentences[0])
+    assert description == " ".join(sentences)

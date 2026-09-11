@@ -84,6 +84,10 @@ naming happens when something next regenerates health and notifies, which is a b
 plugin mutation or a reload. And a row the DM named goes unrecorded whenever the report
 moved during its send, so the notice may repeat it. The read-only status tool is what
 answers completely and at once, reporting the whole standing set unfiltered.
+Unfiltered is not unordered: the standing set leads that answer and the setup history
+follows it, and both the tool's description and the assistant's role doctrine now say so —
+see [`plugin-mutation-tools.md`](plugin-mutation-tools.md) for what those tellings are held
+to and what they deliberately are not.
 
 Coordinating the two *stores* was tried first and does not work, which is why the rule is a
 filter over one field rather than a second store. The surfaces select different rows: the DM

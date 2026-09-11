@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.295.0] - 2026-09-11
+
+### Fixed
+
+- Asked why a plugin is not working, the assistant now leads with what that
+  plugin is waiting for and offers the setup history afterwards. The answer was
+  already in the first line of what the tool handed it — the missing setting,
+  named — but nothing told the assistant to lead with it, so it narrated the
+  retry history and called the cause unknown.
+
 ## [0.294.0] - 2026-09-11
 
 ### Fixed
