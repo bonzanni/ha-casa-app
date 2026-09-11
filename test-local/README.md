@@ -22,7 +22,7 @@ Tier ladder rule of thumb:
 | Tier | When to run | What it asserts |
 |---|---|---|
 | `tier1` | Before every commit | Build, `/healthz`, dashboard, voice SSE + WS smoke. If this fails, nothing else matters. |
-| `tier2` | Before every push | Functional contract — unit pytest + the engagement E-block + the rest of the e2e suite. The PR-equivalent. |
+| `tier2` | Before every push | Functional contract — unit pytest + the engagement E-block + the rest of the e2e suite. The PR-equivalent. CI's `tier2-functional` additionally runs the MCP restart-survival harness (#937); this `make` target does not, so run `test-tier3` too when touching the driver. |
 | `tier3` | Before risky merges + nightly | Timing-sensitive + chaos: concurrency under simulated SDK latency, MCP-server restart-survival mid-flight. Run this when touching anything in the engagement / driver / MCP path. |
 
 Windows Git Bash typically ships without GNU Make. Either install it
@@ -48,7 +48,7 @@ bash test-local/e2e/test_voice_sse.sh
 | `e2e/test_scheduling.sh` | 2 | scheduled-task primitives |
 | `e2e/test_engagement_E.sh` | 2 | E-0..E-10 — Tier-2 specialist + Configurator engagements (mock TG forum supergroup) |
 | `e2e/test_concurrency.sh` | 3 | parallel `/invoke` with simulated SDK latency |
-| `e2e/test_mcp_restart_survival.sh` | 3 | engagement TCP keep-alive across `svc-casa-mcp` restart (needs `CASA_USE_MOCK_CLAUDE=1`) |
+| `e2e/test_mcp_restart_survival.sh` | 2 + 3 | engagement TCP keep-alive across `svc-casa-mcp` restart (needs `CASA_USE_MOCK_CLAUDE=1`). The only enabled harness that performs a real `ClaudeCodeDriver.start`, so since #937 CI runs it in `tier2-functional` (the push gate) as well as in `tier3-hardening` (the scheduled copy `nightly-alarm` covers). |
 | `e2e/test_engagement_D.sh` | 3 | D-1..D-12 — claude_code driver lifecycle on mock-CLI overlay (needs `CASA_USE_MOCK_CLAUDE=1`; CI step currently commented out, see "Deferred CI steps" below) |
 | `e2e/test_engagement_P.sh` | 2 | P-1..P-9 — plugin-developer + Configurator install flow (needs `CASA_USE_MOCK_CLAUDE=1` + `CASA_PLAN_4B=1`; CI step currently commented out) |
 
@@ -67,6 +67,36 @@ clauses. Same wallclock as the slowest tier — no `needs:` chaining.
 | Master push | yes | yes | no |
 | Nightly cron (04:00 UTC) | yes | no (already verified on master push) | yes |
 | Manual `workflow_dispatch` | yes | yes | yes |
+
+Two properties of that table are load-bearing and are pinned by
+`tests/test_qa_mcp_restart_launch.py` rather than left to this prose:
+
+- `tier2-functional` runs the MCP restart-survival harness, so every push and
+  every PR performs one real `claude_code` launch. Until #937 the only enabled
+  harness that launches one sat in `tier3-hardening`, which no push or PR runs
+  — and a base-image drift that broke every launch on every released image
+  (#925) was green in every push-time tier for three weeks.
+- `tier3-hardening` keeps its own copy of that step. The step is COPIED, not
+  moved: `nightly-alarm` is `needs: [tier1-smoke, tier3-hardening]`, so a move
+  would take the harness out of the scheduled run and out of the alarm.
+
+The harness exits 0 with a `SKIP:` line when `CASA_USE_MOCK_CLAUDE` is unset,
+so the tier2 step greps its own log for the harness's terminal pass marker: a
+dropped `env:` block, or any other early `exit 0`, turns the step red instead of
+green-and-empty. The two e2e image builds also print the built image's
+`io.hass.version` label, because `test-local/Dockerfile.test` now mirrors
+`casa/Dockerfile`'s floating base rather than pinning a digest — the base a run
+actually used is in that run's log, not in the tree.
+
+What that check does NOT establish: it detects a broken launch, it does not
+gate publication. `qa.yml` and `deploy.yml` both start on the same push to
+`main` and neither waits for the other, so the harness reports alongside a
+release that may already be published, not before it (#958 — an operator
+decision). And it runs on `ubuntu-latest`, so it covers `amd64` only, while
+`casa/config.yaml` publishes `aarch64` as well (#957). Both limits are
+pre-existing and this change narrows neither; what changed is that a broken
+launch now shows up on the push that causes it instead of in a scheduled run
+weeks later.
 
 Trigger tier 3 manually from any branch:
 
