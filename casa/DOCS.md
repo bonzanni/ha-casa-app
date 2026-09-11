@@ -1143,7 +1143,12 @@ all, so anything said there and not repeated is gone. A Telegram conversation
 is *offered* to long-term memory on the way out, which is not the same as being
 kept: long-term memory is off by default, and even switched on the hand-off can
 be dropped — so treat anything you still need as something to say again, not
-something to look up. Casa tells you this before you restart, so
+something to look up.
+
+Casa's configurator is instructed to spell this out before it restarts
+anything, and the tools it uses return the warning with every staged change —
+but nothing *forces* it into the sentence you read. If you are asked to approve
+a restart and were not told what it costs, ask before you agree. Casa tells you this before you restart, so
 finish what you are in the middle of first — and treat it as a real
 possibility rather than a certainty either way, because what the restart
 activates is settled at start-up, not when you ask for it.

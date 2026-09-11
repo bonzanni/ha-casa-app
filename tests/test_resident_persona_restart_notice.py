@@ -323,13 +323,30 @@ def test_the_notice_promises_no_continuity_and_no_recall_and_predicts_nothing(
     (r4's bug) nor a configured one (r5's bug) actually guarantees."""
     notice = _reset_payload()["conversation_notice"]
     assert_promises_nothing(notice, "resident_persona_reset result")
-    # And the cut is total: no consolation survives in any form. A future
-    # "it is retained to memory" restores exactly the r4/r5 shape.
+    # And the cut is TOTAL, pinned by TOPIC rather than by spelling. Astra
+    # (r6) measured that the previous guard listed five phrasings and let
+    # "Your Telegram transcript is preserved for future retrieval." through
+    # all ten tests — a denylist of wordings can always be worded around.
+    #
+    # After r5 the notice does not discuss survival at all, so the property to
+    # pin is that SILENCE, and the topic is identifiable by its nouns: any
+    # sentence promising a transcript survives has to name the thing that
+    # survives or the place it survives in. The disclaimer clause above is the
+    # only mention of recovery the notice is allowed to make.
     lowered = " ".join(notice.lower().split())
-    for offered in ("recallable", "written out", "retained to memory",
-                    "can be recovered", "still available"):
-        assert offered not in lowered, (
-            f"the notice offers a survival guarantee again: {offered!r}")
+    # The one sentence the notice IS required to make about stored content is
+    # the frozen red case's loss clause, which states the opposite of survival.
+    # Remove it, then the remaining text must not raise the topic at all.
+    loss_clause = "voice history is not carried"
+    assert loss_clause in lowered, "the frozen loss clause is gone"
+    remainder = lowered.replace(loss_clause, "", 1)
+    for noun in ("telegram", "memory", "transcript", "history", "recall",
+                 "bank", "archive"):
+        assert noun not in remainder, (
+            f"the notice discusses survival again ({noun!r}); after r5 it names "
+            f"the loss and the disclaimer only. If a survival statement is "
+            f"genuinely wanted, it needs a round, not a wording."
+        )
 
 
 def test_the_notice_is_identical_whether_or_not_the_binding_appears_to_move(
