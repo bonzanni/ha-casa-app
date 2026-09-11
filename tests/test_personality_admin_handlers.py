@@ -2187,38 +2187,81 @@ def test_a_live_recovery_journal_blocks_certification(
         "pending_commit_check"] == {"state": "verified"}
 
 
-def test_an_unreadable_candidate_claims_nothing_at_all(
-        tmp_path, monkeypatch, restore_installed_index) -> None:
-    """A candidate the process cannot READ is not a candidate that is ABSENT.
-
-    The earlier snapshot caught every exception and returned "absent", so one
-    injected read error produced zero disclosures AND a `state_is_stale` claim
-    — telling a reader the loaded view was wrong when nothing had been
-    established at all. `unknown` says so instead, and withholds the staleness
-    claim: "cannot tell" is not "they agree", in this direction too.
-    """
+def _break_read(monkeypatch, which, ctx):
+    """Make exactly one of the locked snapshot's four reads raise EIO."""
+    import personality_admin_handlers as handlers
     import personality_binding
-    from personality_admin_handlers import specialist_status_payload
+    import specialist_bundle_journal
 
-    ctx = _pending_install(tmp_path, monkeypatch)
-    _publish(ctx, restore_installed_index, monkeypatch)
-
-    real = personality_binding.InstanceDir.desired
-
-    def _eio(self):
+    def _eio(*a, **kw):
         raise OSError(5, "Input/output error")
 
-    monkeypatch.setattr(personality_binding.InstanceDir, "desired", _eio)
+    if which == "active":
+        monkeypatch.setattr(personality_binding.InstanceDir, "active", _eio)
+    elif which == "candidate":
+        monkeypatch.setattr(personality_binding.InstanceDir, "desired", _eio)
+    elif which == "marker":
+        # Only the marker: a blanket Path.read_text failure would break the
+        # tuple reads too and the test would pass on the wrong reason.
+        real_read_text = Path.read_text
+
+        def _marker_eio(self, *a, **kw):
+            if self.name == "pending-receipt.json":
+                _eio()
+            return real_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_text", _marker_eio)
+    elif which == "ops":
+        monkeypatch.setattr(specialist_bundle_journal, "recovery_debt", _eio)
+    else:  # pragma: no cover - guarded by the parametrisation
+        raise AssertionError(which)
+    assert handlers.SPECIALIST_OPS_DIR == ctx.kw["ops_dir"]
+
+
+@pytest.mark.parametrize("which", ["active", "candidate", "marker", "ops"])
+@pytest.mark.parametrize("shape", ["install", "upgrade"])
+def test_any_unreadable_read_makes_the_whole_observation_unknown(
+        tmp_path, monkeypatch, restore_installed_index, which, shape) -> None:
+    """Unreadable is not absent, at EVERY read — and that rule is applied
+    once rather than remembered four times.
+
+    Three findings in this one mechanism had the same shape: a hand-written
+    `except` turned a read this process could not perform into a fact about
+    the tree. The desired candidate first (so one injected error produced zero
+    disclosures AND a staleness claim, asserting the loaded view was wrong
+    when nothing had been established); then the receipt sidecar (so one
+    transient error would have licensed destroying a healthy install); then
+    the ACTIVE tuple, which decides WHICH TOOL the disclosed inputs go to — an
+    `EIO` there read as "not active", certified a pending upgrade, and named
+    `specialist_install_commit`, which refuses it `concurrent_mutation`.
+
+    The rule is now one rule over every read the snapshot makes: a failed read
+    makes the whole observation unreadable, names itself in the reason, and
+    certifies nothing. This test exists to fail when a FIFTH read is added
+    with its own private idea of what a failure means.
+    """
+    from personality_admin_handlers import specialist_status_payload
+
+    if shape == "install":
+        ctx = _pending_install(tmp_path, monkeypatch)
+    else:
+        _active, ctx = _pending_upgrade(tmp_path, monkeypatch)
+    _publish(ctx, restore_installed_index, monkeypatch)
+    assert specialist_status_payload(object(), slug="mtg")[
+        "pending_commit_check"] == {"state": "verified"}
+
+    _break_read(monkeypatch, which, ctx)
     payload = specialist_status_payload(object(), slug="mtg")
 
     assert payload["pending_commit_check"] == {"state": "unknown",
-                                               "reason": "unreadable_candidate"}
+                                               "reason": f"unreadable_{which}"}
     assert "pending_commit" not in payload
     assert "state_is_stale" not in payload
-
-    monkeypatch.setattr(personality_binding.InstanceDir, "desired", real)
-    assert specialist_status_payload(object(), slug="mtg")[
-        "pending_commit_check"] == {"state": "verified"}
+    # And nothing else about the slug was invented: the loaded-view keys are
+    # exactly the ones the route has always returned.
+    assert set(payload) == {"slug", "stable_agent_id", "state", "active",
+                            "desired", "last_activation_error",
+                            "pending_commit_check"}
 
 
 def test_an_unreadable_receipt_is_not_a_missing_one(

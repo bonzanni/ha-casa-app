@@ -60,6 +60,70 @@ def _json_type_name(value: object) -> str:
     return "object"
 
 
+class _Observation:
+    """One locked look at a slug's tree, with `read`/`absent`/**UNREADABLE**
+    kept apart for EVERY read rather than for the ones somebody remembered.
+
+    This is a generalisation, not a third special case, and the escalation
+    rule is why. "Unreadable was collapsed into absent" has now been a finding
+    three times in this one mechanism, at three different reads: the desired
+    candidate (seam round), the receipt sidecar (seam round), and the ACTIVE
+    tuple (diff review round 1 — an `EIO` on `active()` read as "not active",
+    so a pending UPGRADE was certified and routed to the install tool, which
+    refuses it `concurrent_mutation`). Each was a hand-written `try/except`
+    with its own private idea of what a failure means. Sharpening a fourth one
+    would be the same defect waiting at whichever read is added next, so the
+    rule is applied ONCE, here, to every read the snapshot makes.
+
+    The rule: a read either returns a value, is ABSENT for the exception
+    classes the caller names as meaning absence (a missing file is a real
+    answer), or is UNREADABLE — and one unreadable read makes the whole
+    observation unreadable, because nothing about a torn tree can be certified
+    from a partial look at it. `reason` names the first read that failed, so
+    the payload can say which.
+    """
+
+    __slots__ = ("active", "present", "root", "marker", "debt", "reason")
+
+    def __init__(self) -> None:
+        self.active = False
+        self.present = False
+        self.root: "str | None" = None
+        self.marker: "str | None" = None
+        self.debt = 0
+        self.reason: "str | None" = None
+
+    @property
+    def readable(self) -> bool:
+        return self.reason is None
+
+    def read(self, what: str, fn, *, default, absent: tuple = ()):
+        if self.reason is not None:
+            return default
+        try:
+            return fn()
+        except absent:
+            return default
+        except Exception:  # noqa: BLE001
+            # ValueError as well as OSError: a name the OS cannot express at
+            # all (an embedded NUL) is an unreadable read, not a 500 out of a
+            # status route. A candidate that will not LOAD — bad YAML, a
+            # schema failure, a #372 tombstone — is likewise a candidate this
+            # process could not read, not one that is absent; the index's own
+            # scan isolates that slug as state="error" and puts the reason in
+            # `last_activation_error`.
+            self.reason = f"unreadable_{what}"
+            return default
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _Observation):
+            return NotImplemented
+        return ((self.reason, self.active, self.present, self.root, self.marker,
+                 self.debt)
+                == (other.reason, other.active, other.present, other.root,
+                    other.marker, other.debt))
+
+
 def _candidate_snapshot(slug: str, slug_dir: "Path", ops_dir=None):
     """#929: everything about this slug's tree that a resume disclosure depends
     on, read as ONE snapshot under the lock every writer of those files holds:
@@ -110,52 +174,23 @@ def _candidate_snapshot(slug: str, slug_dir: "Path", ops_dir=None):
     import specialist_bundle_journal
     import specialist_materialize
 
-    active = False
-    candidate: "bool | None" = False
-    root: str | None = None
-    marker: str | None = None
-    debt = 0
+    obs = _Observation()
     with specialist_materialize.MATERIALIZE_LOCK:
         instance_dir = personality_binding.InstanceDir(slug_dir)
-        try:
-            active = instance_dir.active() is not None
-        except Exception:  # noqa: BLE001
-            active = False
-        try:
-            desired = instance_dir.desired()
-        except Exception:  # noqa: BLE001
-            # A candidate that will not LOAD — bad YAML, a schema failure, a
-            # #372 tombstone — is a candidate we cannot read, not one that is
-            # absent. The index's own scan isolates that slug as state="error"
-            # and puts the reason in `last_activation_error`; this route must
-            # answer for the slug an operator is diagnosing without raising,
-            # and without claiming the tree holds nothing.
-            candidate, desired = None, None
-        else:
-            candidate = desired is not None
-        root = getattr(desired, "root", None)
-        try:
-            marker = (slug_dir / "pending-receipt.json").read_text(encoding="utf-8")
-        except FileNotFoundError:
-            marker = None
-        except (OSError, ValueError):
-            # ValueError: a name the OS cannot express at all (an embedded
-            # NUL) is an unreadable marker, not a 500 out of a status route.
-            # Unreadable is not absent here either: it forbids certification.
-            marker = None
-            if candidate:
-                candidate = None
-        try:
-            debt = sum(1 for row in specialist_bundle_journal.recovery_debt(
+        obs.active = obs.read(
+            "active", lambda: instance_dir.active() is not None, default=False)
+        desired = obs.read("candidate", instance_dir.desired, default=None)
+        obs.present = desired is not None
+        obs.root = getattr(desired, "root", None)
+        obs.marker = obs.read(
+            "marker",
+            lambda: (slug_dir / "pending-receipt.json").read_text(encoding="utf-8"),
+            default=None, absent=(FileNotFoundError,))
+        obs.debt = obs.read("ops", lambda: sum(
+            1 for row in specialist_bundle_journal.recovery_debt(
                 **({} if ops_dir is None else {"ops_dir": ops_dir}))
-                if row["slug"] in (None, slug))
-        except Exception:  # noqa: BLE001
-            # An unreadable ops directory is outstanding debt for every slug as
-            # far as `require_no_recovery_debt` is concerned; fail closed the
-            # same way rather than certifying against a directory we could not
-            # read.
-            debt = 1
-    return active, candidate, root, marker, debt
+            if row["slug"] in (None, slug)), default=0)
+    return obs
 
 
 def _resume_inputs(root: "str | None", marker_text: "str | None",
@@ -394,20 +429,24 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
     receipts_dir = (SPECIALIST_RECEIPTS_DIR if SPECIALIST_RECEIPTS_DIR is not None
                     else _default_receipts_dir())
     ops_dir = SPECIALIST_OPS_DIR
-    active, candidate, root, marker, debt = _candidate_snapshot(slug, slug_dir, ops_dir)
+    obs = _candidate_snapshot(slug, slug_dir, ops_dir)
+
+    if not obs.readable:
+        # ANY read in the snapshot failed. No candidate assertion, no
+        # staleness claim, and a reason naming the read: nothing about a tree
+        # that could not be looked at whole can be certified from part of it.
+        return {"pending_commit_check": {"state": "unknown", "reason": obs.reason}}
 
     out: dict[str, object] = {}
-    if candidate is None:
-        # Unreadable. No candidate assertion, no staleness claim, and a reason.
-        return {"pending_commit_check": {"state": "unknown",
-                                         "reason": "unreadable_candidate"}}
-    if candidate:
-        inputs, receipt = _resume_inputs(root, marker, receipts_dir)
-        tool = "specialist_upgrade" if active else "specialist_install_commit"
+    if obs.present:
+        inputs, receipt = _resume_inputs(obs.root, obs.marker, receipts_dir)
+        # The tool is decided by the ACTIVE tuple, which is why an unreadable
+        # one had to stop the observation above rather than read as inactive.
+        tool = "specialist_upgrade" if obs.active else "specialist_install_commit"
         out["pending_commit"] = {**inputs, "tool": tool}
-        if debt:
+        if obs.debt:
             state, reason = "unknown", "recovery_pending"
-        elif _receipt_is_unreadable(marker, receipts_dir):
+        elif _receipt_is_unreadable(obs.marker, receipts_dir):
             state, reason = "unknown", "unreadable_receipt"
         else:
             state, reason = _certify(slug, inputs, receipt, receipts_dir)
@@ -418,9 +457,11 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
                 # held. One re-check — not a retry loop, which would be a new
                 # hazard on a status route — and the recovery-debt scan rides
                 # with it, so the last thing read before certifying is whether
-                # a writer opened a journal in the meantime.
-                if (active, candidate, root, marker, 0) != _candidate_snapshot(
-                        slug, slug_dir, ops_dir):
+                # a writer opened a journal in the meantime. An unreadable
+                # second look is a changed one: it is not the observation the
+                # validation was done against.
+                again = _candidate_snapshot(slug, slug_dir, ops_dir)
+                if obs != again or again.debt:
                     state, reason = "unknown", "observation_changed"
         out["pending_commit_check"] = ({"state": state} if state == "verified"
                                        else {"state": state, "reason": reason})
@@ -428,7 +469,7 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
     # `error` slug is exactly what it was before this change. A verdict key on
     # every status call would be noise about a question nobody asked.
     if (loaded_candidate is not None,
-            getattr(loaded_candidate, "root", None)) != (bool(candidate), root):
+            getattr(loaded_candidate, "root", None)) != (obs.present, obs.root):
         out["state_is_stale"] = True
     return out
 
