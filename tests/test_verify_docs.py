@@ -50,9 +50,12 @@ SKELETON_MANIFEST = """
 - doc: doctrine/invariants-f-m.md
   kind: generated
   summary: Generated invariant index (families F-M).
-- doc: doctrine/invariants-n-z.md
+- doc: doctrine/invariants-n-r.md
   kind: generated
-  summary: Generated invariant index (families N-Z).
+  summary: Generated invariant index (families N-R).
+- doc: doctrine/invariants-s-z.md
+  kind: generated
+  summary: Generated invariant index (families S-Z).
 - doc: doctrine/publishing.md
   summary: What may be written down here.
   when_changing: anything published
@@ -66,7 +69,8 @@ SKELETON_FILES = {
     "llms.txt": "",
     "doctrine/invariants.md": "",
     "doctrine/invariants-f-m.md": "",
-    "doctrine/invariants-n-z.md": "",
+    "doctrine/invariants-n-r.md": "",
+    "doctrine/invariants-s-z.md": "",
     "doctrine/publishing.md": CODE_WINS + SOURCEMAP,
     "contributing/doc-contract.md": CODE_WINS + SOURCEMAP,
 }
@@ -1123,7 +1127,8 @@ GENERATED = [
     "architecture/turn-loop.md",
     "contributing/doc-contract.md",
     "doctrine/invariants-f-m.md",
-    "doctrine/invariants-n-z.md",
+    "doctrine/invariants-n-r.md",
+    "doctrine/invariants-s-z.md",
     "doctrine/invariants.md",
     "doctrine/publishing.md",
     "llms.txt",

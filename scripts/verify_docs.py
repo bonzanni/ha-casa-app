@@ -80,7 +80,8 @@ REQUIRED_SKELETON = {
     "manifest.yaml",
     "doctrine/invariants.md",
     "doctrine/invariants-f-m.md",
-    "doctrine/invariants-n-z.md",
+    "doctrine/invariants-n-r.md",
+    "doctrine/invariants-s-z.md",
     "doctrine/publishing.md",
     "contributing/doc-contract.md",
 }
@@ -1281,18 +1282,30 @@ def _invariant_rows(repo_root: Path) -> list[tuple[str, str, str]]:
 
 
 # The index outgrew the 40 KB ceiling once the corpus passed ~200 invariants, so
-# it shards by FAMILY letter — the same A-M / N-Z convention the manifest shards
-# already use (#367). The split point is mechanical on purpose: an index that
-# shards by meaning would need re-deciding every time a family is added. Three
-# shards since the A-M shard outgrew the ceiling in turn (#843): each row is
-# (range label, corpus path, exclusive upper bound on the family string), and a
-# family lands in the FIRST shard whose bound it sorts below — the last shard
-# has no bound and takes the rest. Adding a shard is adding a row; the first
-# path is kept so every inbound link to the index still resolves.
+# it shards by FAMILY letter — the same alphabetic-range convention the manifest
+# shards already use (#367). The split point is mechanical on purpose: an index
+# that shards by meaning would need re-deciding every time a family is added.
+# Three shards once the A-M shard outgrew the ceiling in turn (#843), four once
+# the N-Z shard did (#953): each row is (range label, corpus path, exclusive
+# upper bound on the family string), and a family lands in the FIRST shard whose
+# bound it sorts below — the last shard has no bound and takes the rest. Adding
+# a shard is adding a row.
+#
+# A LABEL NAMES THE RANGE THE SHARD OWNS, NOT THE FAMILIES THAT HAPPEN TO BE IN
+# IT, and the path follows the label. `doctrine/invariants.md` is the exception
+# and stays the exception: it is generically named, so keeping it costs nothing
+# and every inbound link to the historical entry point still resolves. A
+# range-NAMED path cannot be kept the same way — #953 renamed `-n-z` to `-n-r`
+# rather than leave a file called N-Z holding N-R, for the reason #773 gave when
+# it split the A-E manifest shard: retaining the old range string "would put a
+# false range claim on whichever shard kept it". Renaming a shard is a corpus
+# document move; sweep the inbound citations by hand, because prose markdown
+# links are resolved by nothing here (#761).
 _INV_SHARDS: tuple[tuple[str, str, str | None], ...] = (
     ("A-E", "doctrine/invariants.md", "F"),
     ("F-M", "doctrine/invariants-f-m.md", "N"),
-    ("N-Z", "doctrine/invariants-n-z.md", None),
+    ("N-R", "doctrine/invariants-n-r.md", "S"),
+    ("S-Z", "doctrine/invariants-s-z.md", None),
 )
 
 
