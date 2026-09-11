@@ -50,20 +50,46 @@ APPLY_RECIPE = (
     / "recipes" / "persona" / "apply.md"
 )
 
-# The four clauses the notice must carry, on every surface. Specified by Astra
-# (`rounds-L/redcase-specify-astra.md`); asserted per clause per surface so one
-# missing clause cannot hide behind another.
+# The clauses the notice must carry, on every surface. RE-SPECIFIED by Astra
+# after round 8 (`rounds-L/redcase-respecify-astra.md`), because the original
+# set was satisfied by BOTH the true sentence and a false one.
+#
+# The defect: the original middle clause was the bare literal "every
+# conversation of this resident", specified to assert UNIVERSAL loss. Round 8
+# established that universal loss is not what happens —
+# `agent._resume_decision` compares the promoted digest against EACH STORED
+# SESSION's own digest, never against the identity being left behind, so a
+# conversation last held under the persona now being promoted RESUMES (Astra
+# reproduced A->B->A as 2 resumed / 2 fresh). When the notice was corrected,
+# that substring survived inside the qualified sentence and the assertion went
+# on passing: Astra measured it accepting the old universal claim and the new
+# narrow one alike, 2/2. A clause that both a true and a false sentence satisfy
+# pins nothing.
+#
+# The replacement carries the qualification INSIDE the clause, so a
+# universal-loss wording fails. Astra's measurement of the revised set: frozen
+# head 7 cases / 35 of 35 clauses present; base `ce4c4b53` 7 cases failed /
+# 0 of 35 present; 35/35 individual clause deletions rejected; and the
+# universal-loss mutation rejected 7/7, where the previous guard accepted it
+# 7/7.
 NOTICE_CLAUSES = (
     "on the restart that promotes this binding",
-    "every conversation of this resident",
+    "every conversation of this resident that was last held under a different persona identity",
     "starts fresh on every channel",
-    "voice history is not carried",
+    "voice history is not carried at all",
+    "casa promises nothing about recovering what any of those conversations held",
 )
 
 
 def assert_restart_notice(text: str, surface: str) -> None:
-    """Every clause, counted — never a substring `in` on the whole notice."""
-    normalized = " ".join((text or "").lower().split())
+    """Every clause, counted — never a substring `in` on the whole notice.
+
+    Markdown emphasis is stripped as well as case and whitespace: the recipe
+    carries the same sentence with `**` around parts of it, and a clause that
+    spans an emphasis boundary would otherwise be reported absent from a
+    surface that states it perfectly well.
+    """
+    normalized = " ".join((text or "").replace("**", "").lower().split())
     present = [clause for clause in NOTICE_CLAUSES if clause in normalized]
     assert len(present) == len(NOTICE_CLAUSES), (
         f"{surface}: {len(NOTICE_CLAUSES) - len(present)} of "
