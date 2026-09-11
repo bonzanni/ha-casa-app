@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.296.0] - 2026-09-11
+
+### Fixed
+
+- In the moments after a restart, before Casa is ready to answer, a resumed
+  engagement now hears the same "temporarily unavailable" message whichever way
+  it asks. The permission check and the tool call answered the same condition
+  with different wording, so the same interruption could read as a transient
+  hiccup one way and as a refusal the other. The refusal itself is unchanged —
+  the tool still does not run, and the attempt is still counted.
+
 ## [0.295.0] - 2026-09-11
 
 ### Fixed
