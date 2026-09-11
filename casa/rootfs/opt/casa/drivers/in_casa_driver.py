@@ -1067,13 +1067,14 @@ class InCasaDriver(DriverProtocol):
         # client and the response iterator can end with no ``ResultMessage``
         # on the happy path. The delivery task adjudicates instead, against
         # the registry's SETTLED status, which is the one place that
-        # distinction can be made.
+        # distinction can be made. #930: logged at INFO for that same reason,
+        # and claiming no reporter — see the launch arm's note below.
         if inbound_token is not None and result_msg is None:
             self._followup_incomplete.setdefault(
                 engagement.id, {})[inbound_token] = FOLLOWUP_MISSING_RESULT
-            logger.warning(
+            logger.info(
                 "Engagement %s follow-up turn ended with no ResultMessage "
-                "(frames=%d) — its delivery task reports it",
+                "(frames=%d) — recorded for its delivery task to adjudicate",
                 engagement.id[:8], idx,
             )
         elif (inbound_token is not None
@@ -1084,9 +1085,10 @@ class InCasaDriver(DriverProtocol):
             # an UNKNOWN lost-ack may be on the operator's screen.
             self._followup_incomplete.setdefault(
                 engagement.id, {})[inbound_token] = FOLLOWUP_TEXT_NOT_DELIVERED
-            logger.warning(
+            logger.info(
                 "Engagement %s follow-up turn's streamed text was not "
-                "delivered (frames=%d) — its delivery task reports it",
+                "delivered (frames=%d) — recorded for its delivery task to "
+                "adjudicate",
                 engagement.id[:8], idx,
             )
 
@@ -1101,9 +1103,24 @@ class InCasaDriver(DriverProtocol):
         # output it had not yet posted. Recorded, never raised — a raise here
         # would take ``start()``'s M14 rollback and log "first turn failed" on
         # a successful tool-only launch whose completion the owner is about to
-        # discover. ``evidence_seen`` is deliberately NOT consulted: it
+        # discover. That launch is not a rarity to guard against but the
+        # ORDINARY self-emit shape, and it is why this arm is an observation
+        # and not a diagnosis: ``emit_completion`` detaches the finalize tail,
+        # the tail closes THIS engagement's own SDK client, and the response
+        # iterator then ends with no ``ResultMessage`` on the happy path — the
+        # same mechanism the ticketed arm's comment names above.
+        # ``evidence_seen`` is deliberately NOT consulted: it
         # latches on the FIRST frame, so a turn cut off mid-tool-loop is
         # indistinguishable from a finished one on it.
+        #
+        # #930: logged at INFO, and the message claims no reporter. The
+        # distinction this line cannot make is made by the launch owner, which
+        # logs it — INFO when the record was already terminal (the engagement
+        # reported itself; nothing to tell) and WARNING only when the owner
+        # actually reports the death. A WARNING here fired on every healthy
+        # self-emit completion and asserted that the owner reports something
+        # it explicitly does not. The observation VALUE below is unchanged: it,
+        # not this line, is what the owner reads.
         #
         # NOTE (#692): this block used to justify its launch-only scope by
         # saying a follow-up turn's failure owner "is the Telegram delivery
@@ -1125,8 +1142,9 @@ class InCasaDriver(DriverProtocol):
                 reason = LAUNCH_TEXT_NOT_DELIVERED
             if reason:
                 self._launch_incomplete[engagement.id] = reason
-                logger.warning(
+                logger.info(
                     "Engagement %s launch turn left no terminal artifact "
-                    "(reason=%s frames=%d) — the launch owner reports it",
+                    "(reason=%s frames=%d) — recorded for the launch owner "
+                    "to adjudicate",
                     engagement.id[:8], reason, idx,
                 )

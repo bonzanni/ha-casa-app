@@ -864,6 +864,14 @@ async def _process_removal_records(spool: Any) -> None:
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — un-noted, retried next pass
+                # #930 (review round 1, Terra S2): NOT demoted with the
+                # driver's observation, deliberately. This line is the ONLY
+                # report a send failure gets — nothing else adjudicates it —
+                # so demoting it would silence a note that keeps failing after
+                # the channel is up. The boot-window noise it costs is owed to
+                # #955: the seam raises one bare error for a not-ready channel
+                # and for a real send failure alike, so the two cannot be told
+                # apart here, and a uniform demotion buys quiet with signal.
                 logger.exception("event removal note failed")
                 continue
         try:
@@ -933,6 +941,8 @@ async def _process_unnoted_exhaustions(spool: Any) -> None:
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — un-noted, retried next pass
+                # #930/#955: not demoted — see the removal note above; the
+                # same reasoning holds for this line.
                 logger.exception("event exhaustion note failed")
                 continue
         try:
