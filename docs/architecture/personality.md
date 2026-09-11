@@ -129,10 +129,9 @@ like the explain route; it reports a missing marker, receipt or staged tree as a
 rather than an error, and labels its own loaded view stale where that view is not describing
 the tree's candidate. Beside the inputs it reports one of three verdicts on them, and only the
 verdict licenses a call: verified, meaning they were checked against the consuming tool's own
-acceptance predicate; blocked, with the refusal's own reason, meaning the candidate cannot be
-resumed as it stands; or unknown, meaning nothing could be established — a transaction in
-flight, something unreadable, or a tree that moved while it was being read. Unknown says
-nothing about whether there is a candidate to resume, so nothing may be destroyed on it. The
+acceptance predicate, or not-verified with a reason, meaning they were not. There is no third
+state and no reason that means "gone for good": every read behind a verdict can fail
+transiently, so the reason says what to look at and never licenses removing anything. The
 slug a caller names must be a plain specialist slug, and a directory reached by any other
 string is never read.
 

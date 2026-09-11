@@ -1397,13 +1397,13 @@ def _rewrite_receipt(ctx, **fields) -> None:
 _MARKER_AND_RECEIPT = {"receipt_id", "staged_dir"}
 _FROM_ROOT = {"component_id", "version", "root_digest"}
 
-# Each arm: label, mutation, the members that stay populated, and the VERDICT
-# the payload must carry. Every one of these is `blocked` — a settled refusal
-# whose kind is the one the consuming tool would itself return — and NONE is
-# `unknown`, which is reserved for "I could not establish it" (a live journal,
-# an unreadable candidate or receipt, an observation that moved). The
-# distinction is load-bearing: a reader may act on `blocked`, and must only
-# look again on `unknown`.
+# Each arm: label, mutation, the members that stay populated, and the reason
+# the single non-verified verdict must carry — the one the consuming tool
+# would itself return. There is no second non-verified state: a settled
+# refusal and a failed read are reported the same way on purpose, because
+# five review findings in a row were a read this process could not perform
+# being reported as a fact about the tree, and the only action the "settled"
+# half ever licensed was destroying the candidate.
 _ARMS = [
     ("marker deleted", lambda c: c.marker.unlink(), _FROM_ROOT, "incomplete_inputs"),
     ("marker is not JSON", lambda c: _write_json(c.marker, "{not json"), _FROM_ROOT,
@@ -1461,9 +1461,10 @@ def test_specialist_status_reports_a_pending_slug_it_cannot_fully_resume(
         populated | {"tool"})
     assert {k: pending_commit[k] for k in populated} == {
         k: ctx.expected[k] for k in populated}
-    # And the verdict: never `verified`, and the reason is the one the
-    # consuming tool would itself return for this state.
-    assert payload["pending_commit_check"] == {"state": "blocked", "reason": reason}
+    # And the verdict: never `verified`, with the reason the consuming tool
+    # would itself return. `not_verified` is the ONLY non-verified state —
+    # this payload never claims a candidate is permanently unresumable.
+    assert payload["pending_commit_check"] == {"state": "not_verified", "reason": reason}
 
 
 @pytest.mark.asyncio
@@ -2177,7 +2178,7 @@ def test_a_live_recovery_journal_blocks_certification(
 
     payload = specialist_status_payload(object(), slug="mtg")
 
-    assert payload["pending_commit_check"] == {"state": "unknown",
+    assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": "recovery_pending"}
     # The values themselves are unchanged: blocked is not the same as gone.
     assert payload["pending_commit"] == ctx.expected
@@ -2253,7 +2254,7 @@ def test_any_unreadable_read_makes_the_whole_observation_unknown(
     _break_read(monkeypatch, which, ctx)
     payload = specialist_status_payload(object(), slug="mtg")
 
-    assert payload["pending_commit_check"] == {"state": "unknown",
+    assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": f"unreadable_{which}"}
     assert "pending_commit" not in payload
     assert "state_is_stale" not in payload
@@ -2283,12 +2284,16 @@ def test_an_unreadable_receipt_is_not_a_missing_one(
     finally:
         sidecar.chmod(0o600)
 
-    assert payload["pending_commit_check"] == {"state": "unknown",
+    assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": "unreadable_receipt"}
-    # A DELETED sidecar is the settled answer, and a different one.
+    # A DELETED sidecar gets a different REASON — the reason is advice about
+    # what to look at — but the same verdict: nothing here licenses an action
+    # on the candidate, because a read that failed once may succeed next time
+    # and this payload cannot tell the difference.
     sidecar.unlink()
     assert specialist_status_payload(object(), slug="mtg")[
-        "pending_commit_check"] == {"state": "blocked", "reason": "receipt_required"}
+        "pending_commit_check"] == {"state": "not_verified",
+                                    "reason": "receipt_required"}
 
 
 def test_a_transiently_unreadable_receipt_is_judged_by_the_read_that_failed(
@@ -2326,7 +2331,7 @@ def test_a_transiently_unreadable_receipt_is_judged_by_the_read_that_failed(
     payload = specialist_status_payload(object(), slug="mtg")
 
     assert len(probes) == 1
-    assert payload["pending_commit_check"] == {"state": "unknown",
+    assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": "unreadable_receipt"}
     assert sidecar.read_bytes()  # still perfectly readable, and irrelevant
 
@@ -2360,7 +2365,7 @@ def test_a_candidate_that_moves_under_the_validation_is_not_certified(
     payload = specialist_status_payload(object(), slug="mtg")
 
     assert moved == [True]
-    assert payload["pending_commit_check"] == {"state": "unknown",
+    assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": "observation_changed"}
 
 
@@ -2523,7 +2528,7 @@ def test_a_candidate_root_the_staged_bytes_do_not_produce_is_not_certified(
 
     # Every member is still derivable — this is not a degradation case.
     assert {k for k, v in payload["pending_commit"].items() if v is None} == set()
-    assert payload["pending_commit_check"] == {"state": "blocked",
+    assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": "checksum_changed"}
 
 
@@ -2561,6 +2566,6 @@ def test_a_marker_naming_another_slugs_receipt_is_not_certified(
     payload = specialist_status_payload(object(), slug="mtg")
 
     assert payload["pending_commit"]["receipt_id"] == other.receipt.receipt_id
-    assert payload["pending_commit_check"] == {"state": "blocked",
+    assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": "receipt_mismatch"}
     assert len(calls) == 0

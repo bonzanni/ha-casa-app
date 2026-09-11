@@ -284,9 +284,24 @@ def _certify(slug: str, inputs: dict, receipt, receipts_dir) -> "tuple[str, str]
     with the staged manifest, so adding them there would turn accepted calls
     into refusals (astra, seam round).
 
-    Returns `(state, reason)`. `"verified"` licenses a call; `"blocked"` is a
-    settled refusal with the tool's own kind; `"unknown"` is "I could not
-    establish it" and is NEVER evidence that there is nothing to resume.
+    Returns `(state, reason)`. There are exactly TWO states, and the missing
+    third one is the point. An earlier version separated a settled refusal
+    (`blocked`, carrying the tool's own kind) from "I could not establish it"
+    (`unknown`), so that a reader could act on the first and retry the
+    second — and the only action the first licensed was destroying the
+    candidate. Every read on the way to a verdict can fail transiently, and
+    five review findings in a row were one shape: a read this process could
+    not perform, reported as a fact about the tree. The fifth arrived AFTER
+    the observation rule had been generalised over every read the snapshot
+    makes and after the receipt load had been made to report its own
+    readability, because the shared validator loads again internally and
+    cannot know.
+
+    So the distinction is CUT rather than repaired a sixth time. This payload
+    never asserts that a candidate is permanently unresumable; `reason` is
+    advice about what to look at, never authority to destroy anything, and any
+    reason may be transient. The verdict a reader acts on is the one that says
+    the inputs were checked.
     """
     from specialist_install import validate_resume_inputs
 
@@ -296,16 +311,16 @@ def _certify(slug: str, inputs: dict, receipt, receipts_dir) -> "tuple[str, str]
         # not JSON or carries no usable id, a root string the checked parser
         # refuses. The caller has already separated "the receipt sidecar is
         # there and unreadable" from this, so what is left is settled.
-        return "blocked", "incomplete_inputs"
+        return "not_verified", "incomplete_inputs"
     if receipt is None:
         # The id is there and no sidecar loads for it: swept, or tampered and
         # failing its own digest re-derivation. The consuming tool answers
         # this exact refusal.
-        return "blocked", "receipt_required"
+        return "not_verified", "receipt_required"
     if inputs["staged_dir"] is None:
         # The receipt loaded, but the staging tree it names is gone, is not a
         # directory, or was never a usable string.
-        return "blocked", "staged_dir_invalid"
+        return "not_verified", "staged_dir_invalid"
 
     if receipt.slug != slug:
         # BEFORE the staged path is followed, not after: the receipt is reached
@@ -314,20 +329,20 @@ def _certify(slug: str, inputs: dict, receipt, receipts_dir) -> "tuple[str, str]
         # tree before refusing. The receipt carries no attested component root,
         # so id agreement alone would establish nothing either — which is why
         # the staged bytes still have to participate below.
-        return "blocked", "receipt_mismatch"
+        return "not_verified", "receipt_mismatch"
 
     checked = validate_resume_inputs(
         staged_dir=inputs["staged_dir"], receipt_id=inputs["receipt_id"],
         root_digest=inputs["root_digest"], receipts_dir=Path(receipts_dir))
     if not checked.ok:
-        return "blocked", checked.kind
+        return "not_verified", checked.kind
     if (checked.component.component_id, checked.component.version) != (
             inputs["component_id"], inputs["version"]):
         # The handlers read identity from the staged manifest and never compare
         # it to their arguments, so these two are exactly the members whose
         # wrongness the consuming tool cannot catch. The claim is made here, so
         # it is checked here.
-        return "blocked", "checksum_changed"
+        return "not_verified", "checksum_changed"
     return "verified", ""
 
 
@@ -358,11 +373,15 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
       active, because `commit_specialist_install` refuses an active tuple
       outright; `specialist_install_commit` otherwise). Present whenever a
       candidate is observed, members `None` where not derivable.
-    * `pending_commit_check` — `verified` / `blocked` / `unknown`, with a
-      reason. ONLY `verified` licenses a call. The verdict is separate from
-      the values on purpose: recovery debt can block five perfectly derivable,
-      mutually consistent values, and nulling an arbitrary member to signal
-      that would misdescribe the evidence.
+    * `pending_commit_check` — `verified`, or `not_verified` with a reason.
+      ONLY `verified` licenses a call, and `not_verified` licenses nothing
+      at all: it is never a claim that the candidate is permanently
+      unresumable, because every read on the way to a verdict can fail
+      transiently and five findings in a row were exactly that failure being
+      reported as a fact about the tree. The verdict is separate from the
+      values on purpose: recovery debt can withhold certification from five
+      perfectly derivable, mutually consistent values, and nulling an
+      arbitrary member to signal that would misdescribe the evidence.
     * `state_is_stale` — index-vs-tree only, true-only, computed from the
       OBSERVATION and never from the validation, so a torn tree still reports
       staleness truthfully. It is not a resume-validity flag.
@@ -411,7 +430,8 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
         # ANY read in the snapshot failed. No candidate assertion, no
         # staleness claim, and a reason naming the read: nothing about a tree
         # that could not be looked at whole can be certified from part of it.
-        return {"pending_commit_check": {"state": "unknown", "reason": obs.reason}}
+        return {"pending_commit_check": {"state": "not_verified",
+                                         "reason": obs.reason}}
 
     out: dict[str, object] = {}
     if obs.present:
@@ -421,9 +441,9 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
         tool = "specialist_upgrade" if obs.active else "specialist_install_commit"
         out["pending_commit"] = {**inputs, "tool": tool}
         if obs.debt:
-            state, reason = "unknown", "recovery_pending"
+            state, reason = "not_verified", "recovery_pending"
         elif receipt is _UNREADABLE:
-            state, reason = "unknown", "unreadable_receipt"
+            state, reason = "not_verified", "unreadable_receipt"
         else:
             state, reason = _certify(slug, inputs, receipt, receipts_dir)
             if state == "verified":
@@ -438,7 +458,7 @@ def _tree_candidate_disclosure(slug: str, loaded_candidate: object) -> dict[str,
                 # validation was done against.
                 again = _candidate_snapshot(slug, slug_dir, ops_dir)
                 if obs != again or again.debt:
-                    state, reason = "unknown", "observation_changed"
+                    state, reason = "not_verified", "observation_changed"
         out["pending_commit_check"] = ({"state": state} if state == "verified"
                                        else {"state": state, "reason": reason})
     # No candidate at all: the payload for a `not_installed`, `active` or

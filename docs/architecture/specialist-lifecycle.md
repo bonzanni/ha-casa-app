@@ -229,11 +229,13 @@ no caller hold it. So the assembled set is checked against the acceptance predic
 handler that will consume it — the same function that handler runs: the receipt loads and
 belongs to this slug, the staged bytes load, their dependency closure resolves against ONE
 registry generation, and their recomputed root digest and identity are the tree candidate's
-own. A set that passes is reported verified; one that fails is reported blocked with the
-refusal's own reason; and where nothing could be established — a transaction still in flight,
-a candidate or receipt that could not be read, a tree that moved while it was being checked —
-the answer is that it is unknown. Unknown is never evidence that there is nothing to resume,
-and no reader may destroy an install on it.
+own. A set that passes is reported verified; anything else is reported not-verified with a
+reason, and there is deliberately no third state. Separating a settled refusal from "could not
+tell" is what an earlier version did, so that a reader could act on the first — and the only
+action it licensed was destroying the candidate, while every read on the way to a verdict can
+fail transiently. So the payload never asserts that a candidate is permanently unresumable.
+The reason says what to look at; it is never authority to remove anything, and a reader that
+cannot make the call reports and looks again.
 
 Because the two sources answer different questions they can disagree, and the payload says
 so rather than leaving the contradiction to its reader. `state`, `active` and `desired` remain

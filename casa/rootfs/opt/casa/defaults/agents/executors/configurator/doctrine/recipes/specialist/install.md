@@ -69,25 +69,24 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    A LATER engagement that no longer has that result gets the same six from
    `casactl specialist status <slug>` under `pending_commit` (the operator runs it and pastes the
    result), beside `pending_commit_check`, which is the only thing that says whether they may be
-   used:
+   used. It has exactly two states:
    - `{"state": "verified"}` — the values were checked against the very predicate the named tool
      applies. Make the call.
-   - `{"state": "blocked", "reason": ...}` — the candidate cannot be resumed as it stands.
-     `receipt_required` / `staged_dir_invalid` / `incomplete_inputs` mean the receipt, the staged
-     bytes or the marker are gone; `checksum_changed` / `receipt_mismatch` mean what is on disk is
-     not what the candidate claims. Report the reason and what it implies, and let the OPERATOR
-     decide whether to `specialist_uninstall(slug=...)` and install afresh. **Never uninstall on
-     your own judgement here** — uninstalling is irreversible and a wrong reading destroys a
-     healthy install.
-   - `{"state": "unknown", "reason": ...}` — nothing could be established: a transaction is in
-     flight (`recovery_pending`), something could not be read (`unreadable_candidate`,
-     `unreadable_receipt`), or the tree moved while it was being checked
-     (`observation_changed`). This is NOT evidence that there is nothing to resume. Wait and run
-     `casactl specialist status <slug>` again; `recovery_pending` clears when the transaction
-     finishes or at the next restart.
+   - `{"state": "not_verified", "reason": ...}` — they were NOT checked, and you may not use
+     them. **This is never a finding that the install is unrecoverable, whatever the reason
+     says.** Every read on the way to that verdict can fail transiently: `receipt_required`,
+     `staged_dir_invalid` and `incomplete_inputs` say a resource did not come back on THIS read;
+     `checksum_changed` and `receipt_mismatch` say what was read did not match; `recovery_pending`
+     says a transaction is in flight; `unreadable_*` says a read failed; `observation_changed`
+     says the tree moved while it was being checked. Report the reason to the operator as what to
+     look at, run `casactl specialist status <slug>` again after a moment, and say plainly that
+     the candidate may still be resumable. **Never propose `specialist_uninstall` from this
+     payload** — it is irreversible, it destroys the operator's already-supplied configuration,
+     and this payload cannot tell a lost resource from a read that failed once. If the operator
+     asks to start over, that is their call and `recipes/specialist/uninstall.md` is the route.
    - No `pending_commit` and no `pending_commit_check` at all: the slug holds no candidate.
-   A null member of `pending_commit` is a value that could not be derived; it is a diagnosis, not
-   an instruction. `pending_commit_check` is what decides.
+   A null member of `pending_commit` is a value that could not be derived on this read; it is a
+   diagnosis, not an instruction. `pending_commit_check` is what decides.
 6. If `state == "active"`: wire delegation by applying ONLY the edit steps of
    `recipes/delegate/wire.md` (edit `delegates.yaml` idempotently + ensure the
    delegate tool is allowed). Do NOT run wire.md's own commit/reload/emit_completion

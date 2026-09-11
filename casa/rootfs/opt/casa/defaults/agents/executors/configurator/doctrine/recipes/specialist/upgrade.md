@@ -34,8 +34,8 @@
    still-active old version makes `specialist_install_commit` refuse `concurrent_mutation`. Pass
    the five back verbatim with `slug` and the supplied values. A later engagement reads the same
    six from `casactl specialist status <slug>`, and acts on `pending_commit_check` exactly as
-   `recipes/specialist/install.md` step 5 describes — including never uninstalling on its own
-   judgement.
+   `recipes/specialist/install.md` step 5 describes — including that `not_verified` is never a
+   finding that the candidate is unrecoverable, and never grounds to propose an uninstall.
 5. If `state == "error"`: report the validation failure; the OLD version, and its owned plugin set,
    are still live, unchanged.
 6. If `state == "active"`: `config_git_commit`, `casa_reload(scope="agents")`, `emit_completion`
