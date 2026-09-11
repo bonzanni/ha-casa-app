@@ -2031,8 +2031,27 @@ def commit_specialist_install(
         # the authority on whether staging may proceed at all.
         try:
             pending_before = instance_dir.desired()
-        except Exception:  # noqa: BLE001 — unreadable candidate: in-lock guard refuses
-            pending_before = None
+        except (ValueError, OSError, yaml.YAMLError,
+                jsonschema.ValidationError) as exc:
+            # #929 (diff review r4): NOT `None`. The old comment here said the
+            # in-lock `_refuse_if_active_present` is the authority on whether
+            # staging may proceed, and for a candidate that stays unreadable
+            # it is — but that guard performs its OWN `desired()` read, and a
+            # read that fails once can succeed the next time. A transient
+            # failure therefore carried nothing, the guard's later read saw
+            # the same root and allowed the restage, and the settings the
+            # operator had already supplied were replaced by the caller's
+            # alone. Reproduced end to end through both public handlers: one
+            # injected EIO, `ok: true`, and copies of the saved setting 1 -> 0
+            # with no journal left to recover from. Fail closed with the
+            # guard's own refusal instead: a candidate whose config we could
+            # not read is one we cannot merge with, and refusing costs a
+            # retry where proceeding costs the operator's settings.
+            raise SpecialistInstallError(
+                "concurrent_mutation",
+                f"{inspection.slug!r}: the pending candidate's configuration "
+                f"could not be read ({exc}); refusing to restage over it — "
+                f"retry, or uninstall and install afresh") from exc
         merged_config = dict(config)
         if pending_before is not None and pending_before.root == root:
             _secret_declared = set(component.config_schema.get("secret_names", []) or [])
@@ -2950,8 +2969,17 @@ def _upgrade_core(
                                   component_checksum=fresh_root_digest)
     try:
         _desired_before = instance_dir.desired()
-    except Exception:  # noqa: BLE001 — unreadable candidate contributes nothing
-        _desired_before = None
+    except (ValueError, OSError, yaml.YAMLError,
+            jsonschema.ValidationError) as exc:
+        # #929 (diff review r4): the install path's reasoning, verbatim — a
+        # read that fails once can succeed the next time, so treating the
+        # failure as "contributes nothing" silently drops the settings an
+        # earlier pending attempt already supplied. Fail closed.
+        raise SpecialistInstallError(
+            "concurrent_mutation",
+            f"{slug!r}: the pending candidate's configuration could not be "
+            f"read ({exc}); refusing to restage over it — retry, or "
+            f"uninstall and install afresh") from exc
     desired_carried = {}
     if _desired_before is not None and _desired_before.root == root:
         desired_carried = {

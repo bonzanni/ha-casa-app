@@ -2569,3 +2569,72 @@ def test_a_marker_naming_another_slugs_receipt_is_not_certified(
     assert payload["pending_commit_check"] == {"state": "not_verified",
                                                "reason": "receipt_mismatch"}
     assert len(calls) == 0
+
+
+@pytest.mark.parametrize("path", ["install", "upgrade"])
+def test_a_resume_whose_config_read_fails_refuses_instead_of_replacing(
+        tmp_path, monkeypatch, restore_installed_index, path) -> None:
+    """The resume this change makes discoverable must not be able to DESTROY
+    the settings it exists to preserve.
+
+    A pending candidate carries the settings an earlier attempt supplied, and
+    a retry merges them under the caller's. Both lifecycle paths read that
+    snapshot with `InstanceDir.desired()`, and both used to treat ANY
+    exception there as "contributes nothing" — on the stated grounds that the
+    in-lock guard is the authority on whether staging may proceed. That guard
+    performs its OWN read, and a read that fails once can succeed the next
+    time: one transient failure carried nothing, the guard's later read saw
+    the same root and allowed the restage, and the operator's already-supplied
+    settings were replaced by the caller's alone. Measured by a reviewer
+    through both public handlers: `ok: true`, and copies of the saved setting
+    1 -> 0 with no journal left to recover from.
+
+    Sixth occurrence of one shape in this change's review — a read this
+    process could not perform, treated as a fact. Here it is fail-closed at
+    the read: refusing costs a retry, proceeding costs the settings.
+    """
+    import personality_binding
+    import specialist_install
+    from specialist_install import SpecialistInstallError
+
+    if path == "install":
+        ctx = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                       required_config=("saved", "region"), config={"saved": "yes"})
+        assert ctx.state == "pending-configuration"
+        resume = lambda **kw: specialist_install.commit_specialist_install(**kw)  # noqa: E731
+    else:
+        active = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                          required_config=(), config={})
+        assert active.state == "active"
+        ctx = _install(tmp_path, monkeypatch, home=tmp_path / "b", slug="mtg",
+                       version="0.2.0", required_config=("saved", "region"),
+                       config={"saved": "yes"})
+        assert ctx.state == "pending-configuration"
+        resume = lambda **kw: specialist_install.upgrade_specialist(slug="mtg", **kw)  # noqa: E731
+
+    desired = ctx.specialists_dir / "mtg" / "desired.yaml"
+    before = desired.read_bytes()
+    assert b"saved" in before
+
+    # One failure, on the FIRST read only — the shape a "the later guard will
+    # catch it" argument cannot cover, because the guard reads again.
+    real = personality_binding.InstanceDir.desired
+    failures = []
+
+    def _one_bad_read(self):
+        if not failures:
+            failures.append(True)
+            raise OSError(5, "Input/output error")
+        return real(self)
+
+    monkeypatch.setattr(personality_binding.InstanceDir, "desired", _one_bad_read)
+    kw = dict(ctx.kw)
+    kw["config"] = {"region": "EU"}
+    with pytest.raises(SpecialistInstallError) as exc:
+        resume(**kw)
+
+    assert exc.value.kind == "concurrent_mutation"
+    assert len(failures) == 1
+    # The settings the operator already supplied are still on disk, byte for
+    # byte: the refusal happened before anything was written.
+    assert desired.read_bytes() == before
