@@ -834,14 +834,39 @@ def _apply_specialist_override_locked(
 # ---------------------------------------------------------------------------
 
 
+def image_personas_root() -> Path:
+    """The image-shipped personas root, derived from ``agent_loader.SCHEMA_DIR``
+    exactly as the resident loader derives it (``agent_loader._load_default``'s
+    ``personas_root``) — module-relative, so it resolves identically in the
+    container and under tests.
+
+    #945: named rather than reached for as ``persona_pack_roots()[1]``, because
+    one caller needs THIS root and not the approved-roots SEARCH ORDER.
+    ``resident_persona_reset`` restores a slot's in-image default, and for a
+    non-override selection the pack the resident actually serves is
+    re-materialized from this root by ``reconcile_resident_binding`` regardless
+    of what was staged — so a reset that resolved its candidate installed-first
+    validated and staged an identity no boot would promote, and an unreadable
+    pack parked at the image-default reference under the installed root made the
+    always-available reset refuse while the image default was intact."""
+    import agent_loader
+
+    return Path(agent_loader.SCHEMA_DIR).parent / "personas"
+
+
 def persona_pack_roots() -> tuple[Path, ...]:
     """The approved persona roots, installed-first — the SAME order (and the
     same seams) every persona consumer resolves through. ``tools._persona_roots``
-    delegates here so there is one authority for "where a persona may live"."""
-    import agent_loader
+    delegates here so there is one authority for "where a persona may live".
 
-    return (installed_personas_root(),
-            Path(agent_loader.SCHEMA_DIR).parent / "personas")
+    #945: deliberately NOT given an image-default mode. Its three callers are
+    ``tools._persona_roots`` (feeding ``resident_persona_swap``'s
+    caller-supplied ref), ``require_persona_present`` and ``tools.persona_list``,
+    and installed-first is the CORRECT order for the first two — the order
+    ``agent_loader._load_override`` mirrors. A caller that needs one root names
+    that root (``image_personas_root``), rather than threading a flag through
+    the seam every persona consumer shares."""
+    return (installed_personas_root(), image_personas_root())
 
 
 @dataclass(frozen=True, slots=True)

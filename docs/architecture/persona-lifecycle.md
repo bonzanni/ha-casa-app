@@ -42,6 +42,22 @@ derives the same root itself — so a pack installed under a custom config root 
 everything that later reads it. A tool that staged where boot does not look would report
 success for a swap that never activates.
 
+**Which root a ref resolves from depends on where the ref came from, and the rule is the
+loader's.** A ref a caller supplied — a swap, an apply — searches the approved roots
+installed-first, because an operator-installed pack is exactly what such a ref is usually
+naming, and the resident loader resolves an override the same way. The slot's in-image
+default reference is not a caller's ref: it is a constant this image ships, and for a
+non-override selection the pack the resident actually serves is re-materialized from the
+image root by boot's reconciliation, which ignores whatever persona bytes were staged. So
+the tool that restores a slot to its in-image default resolves that reference from the
+image root alone. Resolving it installed-first instead had two consequences, both real: a
+pack installed at the default's own reference was validated and staged under an identity no
+boot would ever promote, and an *unreadable* such pack made the always-available reset
+refuse — a recovery action refused by the very thing it exists to recover from — while the
+image default it should have restored was intact. Neither the approved-roots order nor its
+shared seam is conditioned on the caller; the one caller that needs a single root names
+that root.
+
 **A specialist's own default persona is not one of those roots.** The two approved roots
 are the installed-personas root and the image defaults tree; a specialist's
 component-default persona is read from that component's CAS store instead, which is
@@ -199,6 +215,13 @@ version with the ref and refuse a pack parked under the wrong directory rather t
 it under a name it does not carry — the same rule the resident loader applies to what it
 reloads.
 
+Sharing that resolver is not the same as searching the same roots, and this invariant says
+nothing about which roots a tool searches. Both guarantees hold for a reset exactly as they
+hold for a swap — its reference is validated and its pack must declare what the reference
+names — while the roots the reset hands that resolver are the image root alone, for the
+reason given with the approved-roots contract above. Reading a shared resolver as a shared
+search order is how installed-first resolution would come back.
+
 What it does not cover: the joins whose ref comes from an on-disk binding tuple or an
 in-image default constant rather than from a caller — the resident loader's binding
 activation, the specialist loader's activation, upgrade and rollback arms, the specialist
@@ -211,9 +234,10 @@ Removal and the sweep act on the directory a validated ref names and never read 
 pack there declares, so a mis-parked pack is listed, and removable, under its directory's
 ref; the install commit publishes under the pack's own declared identity, so no comparison
 arises there. And the resident loader derives the installed root itself rather than through
-the shared seam: the two agree by construction — same variable, same default,
-installed-then-image — and the agreement is pinned by behaviour, not by a single
-implementation. The loader's joins are [`personality.md`](personality.md)'s.
+the shared seam: for an OVERRIDE the two agree by construction — same variable, same
+default, installed-then-image. For an in-image DEFAULT they do not, and must not: the
+loader reads the image root alone, so that is the root the tool restoring an in-image
+default resolves from too. The loader's joins are [`personality.md`](personality.md)'s.
 
 ## Failure behavior
 

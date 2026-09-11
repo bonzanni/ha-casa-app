@@ -15793,12 +15793,20 @@ def _persona_roots() -> tuple[Path, ...]:
     return persona_pack_roots()
 
 
-def _resolve_local_persona(ref: str):
+def _resolve_local_persona(ref: str, *, roots: "tuple[Path, ...] | None" = None):
     """Load an ALREADY LOCALLY PRESENT persona pack by exact ref (this plan does
     not fetch a bare persona from a remote repo). Persona bytes are installed
     under <config>/personas/<ns>/<slug>/<version>/ (or the image defaults) by the
     same out-of-band means as any other locally-staged content; this only loads
     and validates what is already there.
+
+    #945: `roots` lets a caller name WHICH approved roots its ref may come from;
+    None keeps the approved installed-first search every caller-supplied ref
+    uses. The ref validation and the declaration check below are the part no
+    caller may vary, which is why this takes a root tuple instead of each caller
+    growing its own resolver — `resident_persona_reset` passes the image root
+    alone, and must still refuse a traversal-bearing or mis-parked pack for the
+    same reasons and with the same message shape as every other caller.
 
     #323: the ref's two path segments are validated with the SAME F1 patterns
     every other persona path join uses (a traversal-bearing ref like
@@ -15815,7 +15823,7 @@ def _resolve_local_persona(ref: str):
     except SpecialistInstallError as exc:
         # Callers uniformly handle ValueError as incompatible_or_missing.
         raise ValueError(f"invalid persona ref {ref!r}: {exc.detail}") from exc
-    for root in _persona_roots():
+    for root in (_persona_roots() if roots is None else roots):
         pack_dir = root / persona_id / version / "pack"
         manifest_path = root / persona_id / version / "manifest.json"
         if pack_dir.is_dir() and manifest_path.is_file():
@@ -15950,6 +15958,7 @@ async def resident_persona_swap(args: dict) -> dict:
     }, "required": ["role"]},
 )
 async def resident_persona_reset(args: dict) -> dict:
+    from persona_install import image_personas_root
     from personality_binding import (
         IMAGE_DEFAULT_PERSONA_BY_SLOT,
         check_persona_requirements,
@@ -15966,8 +15975,21 @@ async def resident_persona_reset(args: dict) -> dict:
     # compatibility failure is returned as a structured error, never an
     # unhandled ValueError out of the handler, and nothing is staged before
     # validation passes.
+    #
+    # #945: from the IMAGE root alone, which is the only root that decides what
+    # this reset actually delivers. `reconcile_resident_binding`'s non-override
+    # arm re-materializes the candidate from `agent_loader._load_default` — image
+    # root only — and ignores the staged tuple's persona bytes, so an
+    # installed-first resolution here validated and staged an identity boot would
+    # never promote; and because the resolver loads the FIRST root that answers
+    # for the ref and never falls through on a load failure, an unreadable pack
+    # parked at this ref under `$CASA_CONFIG_DIR/personas` turned the
+    # always-available reset (spec §4.4) into a refusal while the image default
+    # was intact — a recovery action refused by the very thing being recovered
+    # from. The swap's caller-supplied ref keeps its installed-first search; only
+    # this in-image constant is pinned to the image root.
     try:
-        persona = _resolve_local_persona(default_ref)
+        persona = _resolve_local_persona(default_ref, roots=(image_personas_root(),))
         check_persona_requirements(role.normalized, persona)  # rejects BEFORE any staging
     except ValueError as exc:
         return _result({"ok": False, "kind": "incompatible_or_missing_persona", "detail": str(exc)})
@@ -15997,7 +16019,7 @@ async def resident_persona_reset(args: dict) -> dict:
 )
 async def persona_list(args: dict) -> dict:
     from persona_install import (
-        list_installed_personas, persona_pack_roots, persona_references,
+        image_personas_root, list_installed_personas, persona_references,
     )
     from personality_binding import IMAGE_DEFAULT_PERSONA_BY_SLOT
     from specialist_install import SpecialistInstallError
@@ -16010,7 +16032,10 @@ async def persona_list(args: dict) -> dict:
         try:
             references = persona_references()
             installed = list_installed_personas(references=references)
-            image_root = persona_pack_roots()[1]
+            # #945: the named accessor, not an index into the approved-roots
+            # tuple — this probe has always wanted THIS root, and said so only
+            # by knowing that `persona_pack_roots()` happens to put it second.
+            image_root = image_personas_root()
             image_defaults = []
             for slot, ref in sorted(IMAGE_DEFAULT_PERSONA_BY_SLOT.items()):
                 persona_id, _, version = ref.partition("@")
