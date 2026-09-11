@@ -787,8 +787,14 @@ these tools:
   (`activation_committed` / `runtime_ready`) so a "pin landed, reload pending"
   state is actionable.
 - `plugin_assign(name, target)` / `plugin_unassign(name, target)` — change which
-  agents load a plugin. Targets look like `resident:ellen`, `specialist:finance`,
-  or `executor:plugin-developer`.
+  agents load a plugin. Targets look like `resident:ellen` or
+  `specialist:finance`. **For now you cannot give a plugin of your own to a
+  worker** (`executor:plugin-developer` and the like): workers come with the set
+  of plugins Casa ships with them, and adding, assigning or re-pinning one is
+  refused with the reason stated, before anything is installed. A worker target
+  that is already stored on a plugin you installed stays in the registry file
+  but is ignored — `plugin_list` shows it under `ignored_targets`, the plugin
+  health report says so, and `plugin_unassign` clears it.
 - `plugin_remove(name)` — drop a plugin from the registry (its artifact is left
   on disk for now; see disk usage).
 - `plugin_list()` / `verify_plugin_state(name)` — inspect the registry and check
@@ -1347,7 +1353,8 @@ Plugins are managed through the unified registry + immutable store — see
 assignment authority, and each pinned plugin resolves to an immutable artifact
 under `/config/plugins/store/<name>/<artifact-id>/`. The five defaults
 (superpowers, plugin-dev, skill-creator, mcp-server-dev, context7) are seeded
-from the app image and assigned to the plugin-developer executor.
+from the app image and assigned to the plugin-developer executor — that
+assignment is Casa's, and for now it is the only way a plugin reaches a worker.
 
 ## 1Password integration (v0.14.1)
 

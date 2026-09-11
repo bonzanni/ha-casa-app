@@ -111,7 +111,8 @@ def test_unrelated_invalid_entry_does_not_pollute_other_targets(tmp_path):
     """Sol F2: a malformed RESIDENT entry must not appear in an EXECUTOR
     resolve (per-entry isolation, spec 3.1/3.5) — but health sees it."""
     store = tmp_path / "store"
-    good = _entry("good", ["executor:plugin-developer"])
+    # #923: a plugin ATTACHED to a worker is one Casa ships — bundled.
+    good = _entry("good", ["executor:plugin-developer"], source_type="bundled")
     _mk_artifact(store, "good", good["artifact_id"])
     bad = dict(_entry("bad", ["resident:assistant"]), artifact_id="0" * 64)
     reload_snapshot(registry_path=_mk_registry(tmp_path, [bad, good]),
@@ -129,7 +130,8 @@ def test_same_name_collision_does_not_lend_targets(tmp_path):
     entries; the valid one's duplicate issue scopes to its own targets,
     the invalid one's stays health-only.)"""
     store = tmp_path / "store"
-    valid_x = _entry("x", ["executor:plugin-developer"])
+    valid_x = _entry("x", ["executor:plugin-developer"],
+                     source_type="bundled")     # #923: attached ⇒ bundled
     _mk_artifact(store, "x", valid_x["artifact_id"])
     invalid_x = dict(_entry("x", ["resident:assistant"]), targets="oops")
     reload_snapshot(registry_path=_mk_registry(tmp_path, [invalid_x, valid_x]),
@@ -177,11 +179,17 @@ def test_malformed_protected_tools_degrades_only_that_plugin(tmp_path):
 
 def test_one_bad_entry_never_defeats_the_rest(tmp_path):
     store = tmp_path / "store"
-    good = _entry("good", ["executor:plugin-developer"])
+    # #923: `good` and `missing` must ATTACH, so they are bundled. `bad` stays
+    # github-sourced deliberately — it never survives validation, so it never
+    # reaches the effective-target projection, and its issue still scopes to
+    # the executor target through its own raw `scoped_targets` (F2). That is
+    # what keeps this test about per-entry isolation rather than about #923.
+    good = _entry("good", ["executor:plugin-developer"], source_type="bundled")
     _mk_artifact(store, "good", good["artifact_id"])
     bad = dict(_entry("bad", ["executor:plugin-developer"]),
                artifact_id="0" * 64)          # per-entry invalid, SAME target
-    missing = _entry("missing", ["executor:plugin-developer"])
+    missing = _entry("missing", ["executor:plugin-developer"],
+                     source_type="bundled")
     reload_snapshot(
         registry_path=_mk_registry(tmp_path, [bad, good, missing]),
         store_root=store)

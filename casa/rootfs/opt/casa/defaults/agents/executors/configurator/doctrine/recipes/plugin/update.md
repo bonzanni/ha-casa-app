@@ -34,7 +34,12 @@ is derived from the fetched manifest** — you never pass it.
 4. Read the **phase fields** — they say what actually happened and what (if
    anything) to retry:
    - `ok:true` (`activation_committed:true, runtime_ready:true`) — done.
-     Every target runs the new artifact; report and `emit_completion(...)`.
+     Report readiness over the targets Casa SERVES — read them from
+     `verify_plugin_state`'s `desired.targets` — and never say "every target
+     runs the new artifact": a target listed under `desired.ignored_targets`
+     (for now, a worker assignment on an operator-installed plugin) runs
+     nothing, and saying otherwise reports an activation that never happened.
+     Name any ignored target in the same breath. Then `emit_completion(...)`.
    - `activation_committed:false` — nothing changed (resolve/guard/publish
      failed; `kind` says why: `ref_not_found`, `revision_mismatch`,
      `tag_version_mismatch`, `resolve_auth_failed`, `source_empty`,

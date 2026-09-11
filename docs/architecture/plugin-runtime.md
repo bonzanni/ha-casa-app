@@ -58,7 +58,9 @@ the secrets, or any agent-reconstructing scope — kicks the episode worker.
 
 What it does not cover: the executor path, whose options builder hands out plugin paths
 without this gate (the same asymmetry as INV-PLUG-006 — a configurator or plugin-developer
-executor must be able to work on a plugin whose secrets are not wired yet). A *malformed*
+executor must be able to work on a plugin whose secrets are not wired yet). Since #923 the
+paths handed out there are Casa's own: an executor resolves the bundled population only,
+so this ungated hand-out no longer reaches an operator-installed plugin at all. A *malformed*
 declaration yields no requirements and passes this gate deliberately: the shared parser
 gives the CLI nothing to spawn a server from, so no placeholder-credential path exists,
 and malformed-ness is reported on the verification surface instead. The withhold decision

@@ -125,7 +125,7 @@
     - tests/test_authz_hook.py
     - tests/test_plugin_boot.py
   related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md, architecture/plugin-health.md, architecture/plugin-mutation-tools.md]
-  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007]
+  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007, INV-PLUG-021]
   invariant_tests:
     INV-PLUG-001: [tests/test_plugin_registry.py::test_artifact_id_mismatch_is_per_entry_skip]
     INV-PLUG-002: [tests/test_pin_plugin_invariants.py::test_pin_inv_plug_002_checksum_drift_and_symlinked_locations]
@@ -134,6 +134,7 @@
     INV-PLUG-005: [tests/test_authz_hook.py::test_restart_loses_grants_fresh_store_rechallenges]
     INV-PLUG-006: [tests/test_agent_plugin_binding.py::test_executor_options_have_plugins_but_no_grants_no_callback]
     INV-PLUG-007: [tests/test_authz_hook.py::test_non_operator_sender_is_denied_with_no_challenge, tests/test_authz_hook.py::test_non_operator_with_live_grant_consumes_nothing, tests/test_authz_hook.py::test_accept_all_mode_denies_protected_tools_for_everyone]
+    INV-PLUG-021: [tests/test_plugin_resolver.py::test_operator_executor_target_is_ignored, tests/test_plugin_tools.py::test_plugin_add_refuses_a_worker_target_before_any_side_effect, tests/test_plugin_tools.py::test_plugin_assign_refuses_a_worker_target_even_when_bundled, tests/test_plugin_tools.py::test_plugin_update_refuses_a_bundled_plugin_that_serves_a_worker, tests/test_plugin_health.py::test_describe_operator_executor_target_as_ignored]
 - doc: architecture/prompt-file-guards.md
   summary: The per-agent prompt files a compiled bundle makes dead — response_shape.yaml and prompts/system.md — and the file-tool guards that refuse an edit to them.
   when_changing: the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused

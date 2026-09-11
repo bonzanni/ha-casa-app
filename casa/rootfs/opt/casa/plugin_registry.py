@@ -32,7 +32,10 @@ SCHEMA_VERSION = 1
 TARGET_RE = re.compile(r"^(resident|specialist|executor):[a-z0-9][a-z0-9_-]*$")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 REVISION_RE = re.compile(r"^(git:[0-9a-f]{40}|legacy-content:[0-9a-f]{64})$")
-_SOURCE_TYPES = {"github", "bundled"}
+BUNDLED_SOURCE = "bundled"
+_SOURCE_TYPES = {"github", BUNDLED_SOURCE}
+# #923: the reason code for a stored worker target Casa does not serve.
+IGNORED_EXECUTOR_TARGET = "operator_executor_target_ignored"
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 # spec §2: an OWNED entry (one belonging to a specialist plugin bundle, not an
@@ -110,6 +113,61 @@ class RegistryData:
     entries: list[dict] = field(default_factory=list)
     entry_issues: list[PluginIssue] = field(default_factory=list)
     valid: bool = True
+
+
+def is_bundled(entry: object) -> bool:
+    """#923: is this entry part of the set Casa SHIPS?
+
+    The population discriminator is stated NEGATIVELY on purpose — anything
+    that is not the seeded-default source type is an operator plugin — so a
+    third source type minted later is refused by default rather than admitted
+    by an incomplete allow-list. It is deliberately NOT "name in
+    seeded_defaults": that ledger is the permanent no-resurrection record, and
+    a default the operator removed and re-added through ``plugin_add`` is
+    github-sourced and is theirs, not Casa's.
+    """
+    if not isinstance(entry, dict):
+        return False
+    src = entry.get("source")
+    return isinstance(src, dict) and src.get("type") == BUNDLED_SOURCE
+
+
+def ignored_executor_targets(entry: object) -> tuple[str, ...]:
+    """#923: this entry's stored ``executor:*`` targets that Casa does not
+    serve — empty for a bundled entry, and deduplicated (a hand-edited file
+    can repeat a target, and one restriction is one row).
+
+    The operator's decision on #923 (2026-09-10) is that operators cannot
+    target executors ("workers") with plugins for now, and that workers come
+    with the bundled set Casa ships. The target GRAMMAR is unchanged:
+    ``resolve_for("executor:<type>")`` is how the bundled set reaches a worker.
+    """
+    if is_bundled(entry):
+        return ()
+    return tuple(t for t in dict.fromkeys(_own_targets(entry))
+                 if t.startswith("executor:"))
+
+
+def effective_targets(entry: object) -> list[str]:
+    """The targets Casa actually serves for *entry* (#923) — its stored targets
+    minus any worker target an operator plugin is not allowed to hold. This is
+    the reporting helper for the RAW surfaces; the runtime authority is the
+    projection `_validate_doc` puts into `RegistryData.entries`."""
+    if not isinstance(entry, dict):
+        return []
+    ignored = set(ignored_executor_targets(entry))
+    return [t for t in entry.get("targets") or [] if t not in ignored]
+
+
+def ignored_targets_for(data: "RegistryData", name: str) -> list[str]:
+    """The ignored worker targets recorded for *name* at validation time.
+
+    Derived from the issues the validator already emitted rather than kept in
+    a second field: one place decides, one place records.
+    """
+    return [i.target for i in data.entry_issues
+            if i.name == name and i.target is not None
+            and i.reason_code == IGNORED_EXECUTOR_TARGET]
 
 
 def _entry_error(entry: object) -> str | None:
@@ -262,7 +320,53 @@ def _validate_doc(raw: object) -> tuple[list[dict], list[PluginIssue], bool]:
                     scoped_targets=_own_targets(e)))
     if dropped:
         ordered = [e for e in ordered if id(e) not in dropped]
-    return ordered, issues, True
+
+    # #923: the EFFECTIVE-target projection, LAST — after every identity
+    # decision above, so `kept_ids`, `dropped` and `_own_targets` still compare
+    # the raw objects the collision passes built their lists from.
+    #
+    # An operator-installed plugin does not reach a worker (the operator's
+    # decision on #923, 2026-09-10). The stored target is NOT removed from the
+    # operator's file: `raw["plugins"]` is untouched here and nothing on a read
+    # path writes the registry. A strip made through the live entry/raw alias
+    # would be persisted by the next unrelated `save_registry` — after which
+    # the next validation emits no row at all and the restriction disappears
+    # silently — and a save placed inside this reader would make an unrelated
+    # READ rewrite the operator's configuration.
+    #
+    # What IS projected is a shallow COPY carrying a new target list, so every
+    # consumer of `entries` (the resolver, verify, health regeneration, the
+    # event and callback reconcilers, the setup seams, the pinned resolver)
+    # agrees by construction rather than by each remembering to call a
+    # predicate. `raw` stays the mutation authority; the mutating tools all
+    # reach their entry through `raw["plugins"]`.
+    projected: list[dict] = []
+    for e in ordered:
+        ignored = ignored_executor_targets(e)
+        if not ignored:
+            projected.append(e)
+            continue
+        copy = dict(e)
+        copy["targets"] = [t for t in e.get("targets", []) if t not in ignored]
+        projected.append(copy)
+        for t in ignored:
+            issues.append(PluginIssue(
+                name=e["name"], target=t, stage="registry",
+                reason_code=IGNORED_EXECUTOR_TARGET,
+                # The row diagnoses an ASSIGNMENT, not a download: with the
+                # entry's artifact id in the fingerprint a routine re-pin would
+                # re-announce the identical unchanged restriction.
+                artifact_id=None,
+                # EMPTY on purpose, and this is what keeps the worker
+                # launchable. `_resolve_from` carries an entry issue into a
+                # SPECIFIC target's result only when the target is in this set,
+                # and `_engage_executor_impl` refuses a launch on ANY issue in
+                # that result. The field is the set of resolutions this issue
+                # makes incomplete, which for a report-only row is none: every
+                # target the entry still serves resolves fully.
+                scoped_targets=(),
+                detail=t))
+    return projected, issues, True
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> RegistryData:
@@ -281,8 +385,15 @@ def load_registry(path: Path = REGISTRY_PATH) -> RegistryData:
 
 def save_registry(data: RegistryData, path: Path = REGISTRY_PATH) -> None:
     """Atomic write. `data.raw` is the document of record (unknown fields
-    preserved); `data.entries` view into raw['plugins'] — mutations to
-    entries must be applied to raw['plugins'] by the caller before save."""
+    preserved) AND the mutation authority: a caller changing an entry must
+    change it in raw['plugins'] before saving.
+
+    #923: `data.entries` is the EFFECTIVE READ view, not a live alias. Most
+    entries are still the raw objects, but one carrying a worker target Casa
+    does not serve is a shallow COPY with that target absent (see
+    `_validate_doc`), so a mutation written through an element of `entries`
+    can be silently lost. Every mutating tool already reaches its entry
+    through raw['plugins']."""
     from atomic_io import atomic_write_text  # lazy: not needed at build time
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(Path(path),
@@ -291,7 +402,8 @@ def save_registry(data: RegistryData, path: Path = REGISTRY_PATH) -> None:
 
 def _revalidate(data: RegistryData) -> None:
     """Refresh data.entries/entry_issues/valid to reflect data.raw. Entries
-    returned are live views into data.raw['plugins']."""
+    are the EFFECTIVE READ view of raw['plugins'] (#923: an entry with an
+    ignored worker target is a shallow copy) — see `save_registry`."""
     entries, issues, valid = _validate_doc(data.raw)
     data.entries, data.entry_issues, data.valid = entries, issues, valid
 

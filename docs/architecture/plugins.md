@@ -159,6 +159,15 @@ clamps, guard hooks and relay instead; its declared tool list is auto-approval, 
 Verification will report an executor whose declaration lacks a needed authorisation, but
 nothing merges it automatically.
 
+**INV-PLUG-021**: An operator-installed plugin — one whose registry entry's `source.type` is not the seeded-default type — cannot acquire an `executor:*` target through `plugin_add`, `plugin_assign` or `plugin_update`, each of which refuses the operation with a stated reason before any artifact is published, any system requirement is installed and any registry write; and an `executor:*` target already stored on such an entry is ignored when a fresh executor launch resolves its plugin set, is left in the registry document unchanged, and is reported to the operator as ignored. Outside this statement: bundled entries, an executor engagement resumed from recorded artifacts, and a registry file edited by hand outside the tools.
+
+Scoped deliberately to what the change guarantees. It says nothing about a registry file
+an operator edits by hand — that is their own act on their own machine, and the tools are
+the boundary this holds at — and nothing about an engagement already running, which
+resumes from the artifacts it recorded and never resolves again. It is a statement about
+the operator's supported operations and about fresh, registry-derived executor launches,
+which together are the paths by which a plugin could otherwise reach a worker.
+
 **INV-PLUG-007**: An authorization challenge is posted, and its grant minted, only for a turn whose sender is the configured operator; any other sender's protected call is denied outright, before any grant lookup and with no challenge.
 
 Enforced in the authorization hook through the Telegram channel's single operator rule —
@@ -212,9 +221,35 @@ loadable; the agents that should carry it still need their own reload to rebuild
 **Adding a plugin** means publishing it and registering it, then reloading. Editing the
 registry file directly is not sufficient: nothing takes effect until a snapshot reload runs.
 
-**Adding MCP tools** means shipping the declaration; grants are derived per server. If the
-plugin targets an executor, that executor's own declared tool list must be updated separately
-— verification will tell you it is missing, but no merge happens for you.
+**Which populations a plugin may be given to.** Residents and specialists take
+operator-installed plugins; executors, for now, do not. An executor's plugin set is the
+bundled set Casa seeds — the entries whose registry `source.type` is the seeded-default
+type — and the rule is stated as *not bundled* rather than as a list of names, so a source
+type added later is excluded by default and a default the operator removed and re-added
+counts as theirs. The three admission tools refuse the operation with the reason stated
+and before any artifact is published, any system requirement is installed or the registry
+is written: a plugin cannot be added with an executor target, cannot be assigned one
+afterwards (including a bundled plugin — composing a worker's set is the operator
+operation the rule forbids, and seeding does not go through that tool), and a bundled
+plugin that serves an executor cannot be re-pointed at an operator-chosen ref. Any other
+update relabels its source as the operator's, so the label never outlives the bytes it
+described.
+
+An executor target already stored on an operator-installed entry is **ignored, not
+deleted**. Validation leaves the registry document untouched and projects an effective
+entry without that target, so every reader of the entry list — the resolver, verification,
+health regeneration, the event and callback reconcilers — agrees without each of them
+restating the rule; nothing on a read path writes the registry. One report-only row per
+ignored target names the plugin and the executor, carries no artifact id so a routine
+re-pin does not re-announce it, and is scoped to no target's resolution at all: that is
+what keeps the executor launchable, since a launch is refused on any issue in its own
+resolution. It reaches the operator by direct message and `plugin_status`, never on the
+in-band notice, which excludes executor-addressed rows. `plugin_unassign` clears it, and
+`plugin_list` and `verify_plugin_state` show the stored and the served sets side by side.
+
+**Adding MCP tools** means shipping the declaration; grants are derived per server. If a
+bundled plugin targets an executor, that executor's own declared tool list must be updated
+separately — verification will tell you it is missing, but no merge happens for you.
 
 **Adding a protected tool** is a manifest declaration. Validation checks its shape and name
 uniqueness, **not that the named tool exists**; a typo produces a declaration that protects

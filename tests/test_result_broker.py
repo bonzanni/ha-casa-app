@@ -559,7 +559,10 @@ def test_executor_builder_carries_no_broker(tmp_path, monkeypatch):
     from plugin_fixtures import entry, mk_artifact, mk_registry
     from test_agent_plugin_binding import _exec_defn
     store = tmp_path / "store"
-    e = entry("execplug", ["executor:probe-exec"])
+    # #923: a plugin attached to a worker is one Casa ships — bundled. Keeping
+    # the non-empty plugin assertion below is the point: the restriction must
+    # not be accommodated by weakening INV-PLUG-006's sibling here.
+    e = entry("execplug", ["executor:probe-exec"], source_type="bundled")
     mk_artifact(store, "execplug", e["artifact_id"], mcp_servers={"execplug": {}})
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)

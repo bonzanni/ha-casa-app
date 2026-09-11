@@ -268,7 +268,9 @@ def test_executor_options_have_plugins_but_no_grants_no_callback(tmp_path,
     name to _build_executor_options' allowed_tools fails this test."""
     import tools as tools_mod
     store = tmp_path / "store"
-    e = entry("execplug", ["executor:probe-exec"])
+    # #923: attached to a worker ⇒ bundled. INV-PLUG-006's assertion that
+    # executor options DO carry plugins is preserved, never weakened.
+    e = entry("execplug", ["executor:probe-exec"], source_type="bundled")
     art = mk_artifact(store, "execplug", e["artifact_id"],
                       mcp_servers={"execplug": {}})
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)

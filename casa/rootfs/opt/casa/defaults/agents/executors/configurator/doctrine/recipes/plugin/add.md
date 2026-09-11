@@ -28,8 +28,12 @@ installs any system requirements, assigns it to targets, and reloads + verifies
    take it, plus the `revision` sha, verbatim from that engagement's
    completion handoff. (A sha or branch is acceptable only for a manual add
    of a third-party repo with no release handoff.)
-4. **Targets?** One or more of `resident:<role>`, `specialist:<role>`,
-   `executor:<type>` (e.g. `specialist:finance`).
+4. **Targets?** One or more of `resident:<role>` or `specialist:<role>`
+   (e.g. `specialist:finance`). **For now you cannot give a plugin to a
+   worker** (`executor:<type>`): workers use only the plugins Casa ships with
+   them. Asking for one is refused with `executor_target_not_allowed` and
+   nothing is installed — so do not offer a worker as a target, and if the
+   operator asks for one, say that workers come with Casa's own set for now.
 
 ## Do it
 

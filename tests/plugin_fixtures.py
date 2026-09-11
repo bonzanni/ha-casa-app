@@ -50,10 +50,19 @@ def mk_artifact(store: Path, name: str, artifact_id: str,
 
 
 def entry(name: str, targets: list[str], revision: str = "git:" + "a" * 40,
-          subdir: str = "", version: str = "1.0.0") -> dict:
+          subdir: str = "", version: str = "1.0.0",
+          source_type: str = "github") -> dict:
+    """A registry entry. `source_type` DEFAULTS to "github" — an
+    operator-installed plugin — and stays that way on purpose (#923): an
+    operator-installed plugin does not reach a worker, so a test that needs a
+    plugin ATTACHED to an `executor:*` target must say `source_type="bundled"`
+    explicitly. Flipping this default would make every such test pass for a
+    reason it never states, and would hide the very regression the
+    github-sourced red case exists to catch.
+    """
     return {
         "name": name,
-        "source": {"type": "github", "repo": "o/r", "ref": "v1",
+        "source": {"type": source_type, "repo": "o/r", "ref": "v1",
                    "revision": revision, "subdir": subdir},
         "artifact_id": compute_artifact_id(repo="o/r", revision=revision,
                                            subdir=subdir, name=name),

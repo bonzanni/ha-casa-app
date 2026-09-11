@@ -225,6 +225,17 @@ both surfaces.
 
 ## Extension points
 
+**A report-only row** is a shape worth naming, because it is not a failure. The row for a
+worker assignment Casa does not serve (see *Plugins*) diagnoses a stored assignment rather
+than an artifact: it carries no artifact id, so a routine re-pin leaves its dedup identity
+alone and re-announces nothing, and its `detail` names the executor. It is addressed TO
+that executor, which is what keeps it off the in-band notice — the notice selects rows
+addressed to the reading role or to nobody — so it reaches the operator by direct message
+and through the status tool, both of which report the standing set unfiltered. And it is
+scoped to no target's resolution, so it cannot make that executor unlaunchable. Such a row
+does earn a reason phrase of its own: the family classifier would degrade it to the plain
+statement, which tells the operator the plugin is broken when it is not.
+
 **A new health issue code** needs no renderer change: the operator-facing translation
 classifies by families of code rather than enumerating them, so a code minted later
 still reads as something actionable and an unrecognized one degrades to a plain
