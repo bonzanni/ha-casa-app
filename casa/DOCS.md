@@ -121,14 +121,19 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-Casa writes that clause into every prompt it generates itself (reminders, event
-wakes, the shipped heartbeat and morning-briefing triggers), and the
-Configurator writes it into every scheduled prompt it authors for you. It is a
-convention, not an enforced rule: **nothing rejects a hand-written prompt that
-omits the clause** — such a prompt still delivers twice, and the fix is to add
-the clause to the prompt. A prompt whose turn simply reports back needs no
-clause; there, the closing text IS the delivery. Webhook triggers have no prompt
-at all, so none of this applies to them.
+Casa writes that clause into the prompts it generates itself that have this
+shape — a reminder's prompt and an event wake's instruction — and the
+Configurator writes it into the scheduled prompts it authors for you whose turn
+sends with a tool. It is a convention, not an enforced rule: **nothing rejects a
+hand-written prompt that omits the clause** — such a prompt still delivers
+twice, and the fix is to add the clause to the prompt.
+
+A prompt whose turn does not send with a tool needs no clause, and adding one
+there would silence the delivery. That is the shape the shipped heartbeat and
+morning-briefing triggers use: they tell the agent to output only the final
+message text, so the closing text IS the delivery, and they name the sentinel
+only for the case where the turn has nothing worth saying. Webhook triggers have
+no prompt at all, so none of this applies to them.
 
 ## API endpoints
 

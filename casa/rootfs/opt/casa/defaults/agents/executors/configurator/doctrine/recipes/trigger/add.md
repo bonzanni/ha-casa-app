@@ -35,11 +35,18 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-That is exactly what Casa writes into the prompts it generates itself
-(reminders, event wakes, the shipped heartbeat and morning briefing). Write it
-into every scheduled prompt you author, in `prompt=` and in
-`prompts/<trigger_name>.md` alike. A prompt whose turn only reads something and
-reports back needs no clause: its closing text IS the delivery.
+That is exactly what Casa writes into the prompts it generates itself for this
+shape — a reminder's prompt and an event wake's instruction both send with a
+tool and then ask for the sentinel. Write it into every scheduled prompt you
+author whose turn sends with a tool, in `prompt=` and in
+`prompts/<trigger_name>.md` alike.
+
+**A prompt whose turn does not send with a tool needs no clause**, and adding
+one there would silence the delivery. That is the other shipped shape: the
+heartbeat and morning-briefing defaults tell the agent to output ONLY the final
+message text, so their closing text IS the delivery — they name the sentinel
+only for the case where the turn has nothing to say. Decide which shape the
+prompt you are writing is, and say so in it either way.
 
 ## Write the trigger — `config_trigger_upsert`, never a hand edit
 

@@ -88,13 +88,17 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-Casa writes that clause into the prompts it generates itself — reminder prompts
-([`architecture/reminders.md`](reminders.md)), event wakes
-([`architecture/plugin-events.md`](plugin-events.md)), and the shipped heartbeat and
-morning-briefing defaults — the configurator's trigger recipes instruct it for every
-scheduled prompt the configurator authors, and the app's user documentation states it for a
-hand-written `triggers.yaml`. **It is a convention, not a runtime guarantee**: nothing
-validates it, so a hand-authored prompt that omits the clause still delivers twice. The
+The clause belongs to prompts of one shape — the turn sends with a tool and then has
+nothing left to say. Casa writes it into the prompts it generates of that shape: a
+reminder's prompt ([`architecture/reminders.md`](reminders.md)) and an event wake's
+instruction ([`architecture/plugin-events.md`](plugin-events.md)). The configurator's
+trigger recipes instruct it for the scheduled prompts the configurator authors, and the
+app's user documentation states it for a hand-written `triggers.yaml`. The other shape
+needs no clause and is harmed by one: the shipped heartbeat and morning-briefing defaults
+tell the agent to output only the final message text, so their closing text IS the
+delivery, and they name the sentinel only for the turn that has nothing to say.
+**The convention is not a runtime guarantee**: nothing validates a prompt, so a
+hand-authored prompt of the first shape that omits the clause still delivers twice. The
 mechanics of the sentinel and the gate that reads it are
 [`architecture/turn-loop.md`](turn-loop.md)'s. A webhook trigger carries no prompt at all
 (INV-TRIG-013), so the convention does not reach it.
