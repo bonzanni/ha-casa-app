@@ -219,6 +219,7 @@
     - tests/test_config_trigger_tools.py
     - tests/test_scheduled_media_delivery.py
     - tests/test_scheduled_delivery_durable.py
+    - tests/test_scheduled_prompt_guidance.py
   related: [architecture/plugin-triggers.md, architecture/http-surface.md, architecture/overview.md, architecture/reminders.md, architecture/trigger-secrets.md]
   defines_invariants: [INV-TRIG-001, INV-TRIG-002, INV-TRIG-009, INV-TRIG-011, INV-TRIG-012, INV-TRIG-013]
   invariant_tests:

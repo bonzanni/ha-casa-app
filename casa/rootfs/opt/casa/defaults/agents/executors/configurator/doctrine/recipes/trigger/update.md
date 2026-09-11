@@ -23,6 +23,21 @@ that changed. Read the file first to see what it currently has; reads are fine.
 
 Per-trigger prompt in prompts/<trigger_name>.md — that one IS an ordinary edit.
 
+## Every scheduled prompt says how the turn ends
+
+The same convention `recipes/trigger/add.md` states, and it applies whenever you
+rewrite a prompt here: a scheduled turn that sends a message and then narrates
+delivers the narration as a SECOND message to the same chat, because Casa never
+suppresses a turn's closing text.
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+An existing prompt you are touching for another reason and that lacks the clause
+is worth mentioning to the operator; adding it is a prompt change like any
+other, so say what you changed.
+
 ## Reload — MANDATORY before emit_completion
 
 **Soft** - casa_reload_triggers(role). Canonical order:

@@ -107,6 +107,29 @@ setting by hand:
 5. **Per-agent triggers**: Each agent declares scheduled triggers (cron, interval or a one-off date) in its own `agents/<role>/triggers.yaml`. The TriggerRegistry registers them at boot, and fires them via the agent's normal turn loop.
 6. **Reminders**: Ellen can set her own reminders, which are ordinary triggers written to her `triggers.yaml` — so they survive restarts and updates. One-off reminders remove themselves after firing, and any reminder whose time fell while Casa was down is delivered on the next sweep rather than lost.
 
+### Writing a scheduled trigger prompt by hand
+
+A scheduled turn delivers whatever the agent says at the end of it. So a prompt
+that tells the agent to send you a message, and says nothing about how the turn
+ends, costs you two messages: the message itself, and then the agent's own
+closing "Sent." to the same chat. Casa does not suppress that closing text on
+your behalf — a scheduled turn that has something real to say must still be
+heard, and a correction after a send must still reach you — so the prompt is
+where you say it.
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+Casa writes that clause into every prompt it generates itself (reminders, event
+wakes, the shipped heartbeat and morning-briefing triggers), and the
+Configurator writes it into every scheduled prompt it authors for you. It is a
+convention, not an enforced rule: **nothing rejects a hand-written prompt that
+omits the clause** — such a prompt still delivers twice, and the fix is to add
+the clause to the prompt. A prompt whose turn simply reports back needs no
+clause; there, the closing text IS the delivery. Webhook triggers have no prompt
+at all, so none of this applies to them.
+
 ## API endpoints
 
 All endpoints are accessible through the ingress proxy.

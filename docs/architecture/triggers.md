@@ -74,6 +74,31 @@ config reconciler rewrites it from a worker thread too, and once did so without 
 #458 closed that by holding the same `PASS_LOCK` across the whole reconcile pass, so the
 reconciler and the in-Casa writers now serialize against each other rather than racing.
 
+**A scheduled turn's closing text is delivered, so the prompt is where silence is asked
+for.** A scheduled turn that sends a message with a tool and then ends with ordinary prose
+delivers twice to the same chat: the tool send happens immediately and leaves no mark the
+final-text path can read, and the turn's own closing text then rides the ordinary reply path.
+Neither half is narrowed, and both refusals are pinned: a scheduled turn with real text still
+delivers it exactly once, and prose *after* the silence sentinel is still delivered (the
+recant contract — a correction after a send must reach the operator). What closes the gap is
+therefore the prompt, per prompt, and it is a convention carried by every surface that
+authors or instructs the authoring of one.
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+Casa writes that clause into the prompts it generates itself — reminder prompts
+([`architecture/reminders.md`](reminders.md)), event wakes
+([`architecture/plugin-events.md`](plugin-events.md)), and the shipped heartbeat and
+morning-briefing defaults — the configurator's trigger recipes instruct it for every
+scheduled prompt the configurator authors, and the app's user documentation states it for a
+hand-written `triggers.yaml`. **It is a convention, not a runtime guarantee**: nothing
+validates it, so a hand-authored prompt that omits the clause still delivers twice. The
+mechanics of the sentinel and the gate that reads it are
+[`architecture/turn-loop.md`](turn-loop.md)'s. A webhook trigger carries no prompt at all
+(INV-TRIG-013), so the convention does not reach it.
+
 ## Contracts & invariants
 
 **INV-TRIG-001**: A resident's scheduled trigger registers only if the resident declares the channel it names.
@@ -326,6 +351,7 @@ there is none today.
 - `tests/test_config_trigger_tools.py`
 - `tests/test_scheduled_media_delivery.py`
 - `tests/test_scheduled_delivery_durable.py`
+- `tests/test_scheduled_prompt_guidance.py`
 
 **Related**
 - [`architecture/plugin-triggers.md`](../architecture/plugin-triggers.md)

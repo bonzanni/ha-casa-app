@@ -14,12 +14,32 @@ Triggers are per-agent scheduled or webhook-driven events. Residents only (speci
 5. **Channel?** interval/cron: telegram or voice (must be a channel the agent
    already owns). **A webhook trigger requires the agent to declare the
    `webhook` channel.**
-6. **Prompt?** (interval/cron/date only) One imperative sentence. **A webhook
-   trigger has no prompt and the schema refuses one** — see "Webhook triggers"
-   below for what its turn actually receives. If the operator describes what
-   the agent should *do* when a webhook fires, tell them that before writing
-   it: the instruction cannot be stored on the trigger.
+6. **Prompt?** (interval/cron/date only) One imperative sentence, plus the
+   closing-silence clause below when the turn delivers its own message. **A
+   webhook trigger has no prompt and the schema refuses one** — see "Webhook
+   triggers" below for what its turn actually receives. If the operator
+   describes what the agent should *do* when a webhook fires, tell them that
+   before writing it: the instruction cannot be stored on the trigger.
 7. **Webhook auth?** (webhook only) how does the caller authenticate — see below.
+
+## Every scheduled prompt says how the turn ends
+
+A scheduled turn delivers TWICE when its prompt tells the agent to send a
+message and says nothing about the closing text: the send goes out at once, and
+the turn's own final text is then delivered to the same chat as a second
+message ("Sent."). Casa never suppresses that final text — a scheduled turn
+that legitimately has something to say must still be heard, and a correction
+after a send must reach the operator — so the prompt is what closes the gap.
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+That is exactly what Casa writes into the prompts it generates itself
+(reminders, event wakes, the shipped heartbeat and morning briefing). Write it
+into every scheduled prompt you author, in `prompt=` and in
+`prompts/<trigger_name>.md` alike. A prompt whose turn only reads something and
+reports back needs no clause: its closing text IS the delivery.
 
 ## Write the trigger — `config_trigger_upsert`, never a hand edit
 
@@ -37,7 +57,7 @@ inside Casa, leaving every other entry exactly as it was.
         minutes=<N>,               # interval only
         schedule="<cron>",         # cron only
         channel="<telegram|voice>",
-        prompt="<one-line imperative>")
+        prompt="<one-line imperative> After the send, output the sentinel `<silent/>` and nothing else.")
 
     # webhook — served ONLY at POST /webhook/<name> (no `path` field; it was
     # removed in v0.97.0). The agent must declare the `webhook` channel.
@@ -62,6 +82,10 @@ reminders); ask the resident to change one of those instead.
 ### Add agents/<role>/prompts/<trigger_name>.md (cron/interval only)
 
     You are <name>. The <trigger-name> trigger just fired. <Task description.>
+    After the send, output the sentinel `<silent/>` and nothing else.
+
+The last line belongs there whenever the task description tells the agent to
+send something; drop it when the turn's own reply is the delivery.
 
 ## Reload — MANDATORY before emit_completion
 
