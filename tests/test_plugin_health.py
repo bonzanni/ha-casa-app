@@ -756,3 +756,27 @@ def test_notice_is_none_when_every_row_was_named(tmp_path):
         [plugin_health.fingerprint(r) for r in rows], path=p,
         generation=plugin_health.load_report(p)["generation"])
     assert plugin_health.render_notice("assistant", p) is None
+
+
+def test_describe_operator_executor_target_as_ignored():
+    """#923: the row for an ignored worker assignment must TELL the operator
+    what it is. `render_notice` excludes every `executor:*`-targeted row from
+    the in-band notice, so `describe_issue` is the only rendering the operator
+    ever sees of it — through the DM and `plugin_status`. Without a phrase it
+    renders `_REASON_FALLBACK` and says the plugin is broken, which is a
+    different and false thing. Assert the rendered SENTENCE, never the table:
+    a test reading `_REASON_PHRASES` would pin the lookup and not the telling.
+    """
+    line = plugin_health.describe_issue({
+        "name": "redcase-probe",
+        "target": "executor:plugin-developer",
+        "stage": "registry",
+        "reason_code": "operator_executor_target_ignored",
+        "artifact_id": None,
+        "detail": "executor:plugin-developer",
+    })
+
+    assert line.count("redcase-probe ") == 1, line
+    assert line.count("worker assignment Casa ignores") == 1, line
+    assert line.count("workers use only the plugins Casa ships") == 1, line
+    assert line.endswith(" — executor:plugin-developer"), line
