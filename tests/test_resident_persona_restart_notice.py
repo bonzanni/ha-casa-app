@@ -323,30 +323,44 @@ def test_the_notice_promises_no_continuity_and_no_recall_and_predicts_nothing(
     (r4's bug) nor a configured one (r5's bug) actually guarantees."""
     notice = _reset_payload()["conversation_notice"]
     assert_promises_nothing(notice, "resident_persona_reset result")
-    # And the cut is TOTAL, pinned by TOPIC rather than by spelling. Astra
-    # (r6) measured that the previous guard listed five phrasings and let
-    # "Your Telegram transcript is preserved for future retrieval." through
-    # all ten tests — a denylist of wordings can always be worded around.
+    # And the wording is PINNED WHOLE, because no string test can establish
+    # the property that actually matters.
     #
-    # After r5 the notice does not discuss survival at all, so the property to
-    # pin is that SILENCE, and the topic is identifiable by its nouns: any
-    # sentence promising a transcript survives has to name the thing that
-    # survives or the place it survives in. The disclaimer clause above is the
-    # only mention of recovery the notice is allowed to make.
-    lowered = " ".join(notice.lower().split())
-    # The one sentence the notice IS required to make about stored content is
-    # the frozen red case's loss clause, which states the opposite of survival.
-    # Remove it, then the remaining text must not raise the topic at all.
-    loss_clause = "voice history is not carried"
-    assert loss_clause in lowered, "the frozen loss clause is gone"
-    remainder = lowered.replace(loss_clause, "", 1)
-    for noun in ("telegram", "memory", "transcript", "history", "recall",
-                 "bank", "archive"):
-        assert noun not in remainder, (
-            f"the notice discusses survival again ({noun!r}); after r5 it names "
-            f"the loss and the disclaimer only. If a survival statement is "
-            f"genuinely wanted, it needs a round, not a wording."
-        )
+    # Two rounds proved that directly. r5 listed five forbidden phrasings and
+    # Astra worded around it ("Your Telegram transcript is preserved for
+    # future retrieval."). r6 replaced that with a forbidden-NOUN list and
+    # Astra worded around that too ("Everything you said remains available for
+    # future retrieval." names no noun on the list). The mechanism — enumerate
+    # what may not be said — cannot work: a promise can always be made in
+    # words the list does not hold, and each iteration only moves the gap.
+    #
+    # So it is cut, and replaced with the one thing a test CAN guarantee: the
+    # notice is exactly this reviewed text. That does not prove the sentence
+    # makes no false promise — only a reader can judge that, and it took seven
+    # review rounds here. What it does is make every future edit to this
+    # wording FAIL, so the edit has to be made deliberately and lands in front
+    # of a reviewer instead of sliding through a gap in a denylist. For a
+    # change whose entire deliverable is one sentence, the sentence is the
+    # thing to pin.
+    import tools as tools_mod
+
+    assert notice == tools_mod.RESIDENT_CONVERSATION_RESET_NOTICE
+    assert notice == (
+        "On the restart that promotes this binding, if the resident's persona "
+        "identity ends up different from the one it is running, every conversation "
+        "of this resident starts fresh on every channel — the persona is part of "
+        "the resident's session identity. Voice history is not carried at all, "
+        "and Casa promises nothing about recovering what any of those "
+        "conversations held. Boot decides "
+        "that, not this tool, and staging the persona the resident already appears "
+        "to have does not guarantee continuity. Relay this to the operator "
+        "verbatim before they restart; do not predict which way it will go."
+    ), (
+        "the operator-facing notice changed. That is not forbidden — but it is "
+        "the sentence six review rounds were spent making true, so re-read it "
+        "against the code before updating this literal: it must promise no "
+        "continuity, no recovery, and no delivery, and must predict nothing."
+    )
 
 
 def test_the_notice_is_identical_whether_or_not_the_binding_appears_to_move(
