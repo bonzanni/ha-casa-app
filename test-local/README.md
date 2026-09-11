@@ -88,6 +88,16 @@ green-and-empty. The two e2e image builds also print the built image's
 `casa/Dockerfile`'s floating base rather than pinning a digest — the base a run
 actually used is in that run's log, not in the tree.
 
+What that check does NOT establish: it detects a broken launch, it does not
+gate publication. `qa.yml` and `deploy.yml` both start on the same push to
+`main` and neither waits for the other, so the harness reports alongside a
+release that may already be published, not before it (#958 — an operator
+decision). And it runs on `ubuntu-latest`, so it covers `amd64` only, while
+`casa/config.yaml` publishes `aarch64` as well (#957). Both limits are
+pre-existing and this change narrows neither; what changed is that a broken
+launch now shows up on the push that causes it instead of in a scheduled run
+weeks later.
+
 Trigger tier 3 manually from any branch:
 
 ```bash
