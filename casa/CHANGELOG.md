@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.299.0] - 2026-09-11
+
+### Fixed
+
+- The log no longer reports a problem when an in-container agent launch finishes
+  normally. A launch that ends by emitting its own completion never produces a
+  terminal result message — that is how the path is built — and the driver
+  recorded that as a warning which also said the launch owner would report it.
+  The owner does report a launch that really died, at the level that deserves,
+  and on the healthy path it correctly records that the launch was already
+  finished. The observation is now recorded at a level matching what it is, and
+  the value the owner acts on is unchanged. The separate boot-time error about an
+  operator note that could not be sent before the messaging channel had started
+  is deliberately unchanged and still fires.
+
 ## [0.298.0] - 2026-09-11
 
 ### Fixed

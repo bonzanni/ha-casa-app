@@ -509,6 +509,9 @@ async def _process_unnoted_exhaustions(spool: Any) -> None:
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — un-noted, retried next pass
+                # #930/#955: not demoted, for the reason the event worker's
+                # removal-note handler states — this line is the only report a
+                # real send failure gets.
                 logger.exception("callback exhaustion note failed (plugin=%s)",
                                  plugin)
                 continue

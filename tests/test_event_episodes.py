@@ -966,3 +966,4 @@ async def test_removal_note_failure_leaves_it_unnoted_and_retries(wired):
     await ee._worker_pass()
     assert len(wired.notes) == 2
     assert wired.spool.list_removal_records()[0][1]["noted"] is True
+

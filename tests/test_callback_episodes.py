@@ -813,3 +813,4 @@ def test_worker_owns_no_episode_store():
                  "_reconcile_locked", "_mark_dispatched", "_update_episode",
                  "_any_tombstone", "_has_key", "_empty"):
         assert not hasattr(ce, gone), gone
+
