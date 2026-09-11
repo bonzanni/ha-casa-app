@@ -261,13 +261,26 @@ def test_sourceless_dep_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     import plugin_registry
     from plugin_registry import ResolutionResult, ResolvedPlugin
 
-    monkeypatch.setattr(
-        plugin_registry, "resolve_all",
-        lambda: ResolutionResult(registry_valid=True, plugins=[
-            ResolvedPlugin(name="mtg", artifact_id="x", path=str(installed_dir),
-                           version="1.0.0", manifest={}),
-        ]),
-    )
+    # #929: the closure binds ONE registry snapshot for all its rows
+    # (`pinned_resolver`, #454) instead of calling `resolve_all` per row, so
+    # THAT is the seam a double has to stand in for. `resolve_all` is left
+    # raising: if the closure ever reaches for the unpinned per-row reader
+    # again, this test says so rather than passing on a double nobody reads.
+    snapshot = ResolutionResult(registry_valid=True, plugins=[
+        ResolvedPlugin(name="mtg", artifact_id="x", path=str(installed_dir),
+                       version="1.0.0", manifest={}),
+    ])
+
+    def _pinned():
+        resolve = lambda target=None: snapshot  # noqa: E731
+        resolve.generation = 0
+        return resolve
+
+    def _unpinned():
+        raise AssertionError("the closure must resolve against one pinned snapshot")
+
+    monkeypatch.setattr(plugin_registry, "pinned_resolver", _pinned)
+    monkeypatch.setattr(plugin_registry, "resolve_all", _unpinned)
 
     resolutions = resolve_dependency_closure(component, component_dir)
     plugin_rows = [r for r in resolutions if r.kind == "plugin/implementation"]
