@@ -245,3 +245,84 @@ def test_apply_recipe_step_five_tells_the_resident_conversation_cost() -> None:
     step_5 = text.split("\n5. ", 1)[1].split("\n6. ", 1)[0]
     assert "casa_restart_supervised" in step_5
     assert_restart_notice(step_5, "recipes/persona/apply.md step 5")
+
+
+# --- the no-op stage: nothing is promoted, so nothing is claimed ----------
+#
+# Diff-review round 1 (Terra, S2) against the fix above: the notice was
+# unconditional, and a stage whose candidate EQUALS the already-active binding
+# is DISCARDED by boot reconciliation rather than promoted
+# (`personality_binding` returns the active tuple untouched when
+# `active.binding.binding_digest == candidate_binding.binding_digest`). The
+# digest never moves, the session resumes, and the notice was a confidently
+# worded FALSE warning on a reachable path.
+#
+# These are regression tests in this change's diff, NOT red cases: at the base
+# `conversation_notice` does not exist at all, so `.get(...)` is None and both
+# would pass there for the wrong reason. They pin the fix, and they are
+# reviewed like any other test rather than carrying a red-case receipt.
+
+
+def test_a_no_op_reset_claims_nothing_because_nothing_is_promoted(
+        resident, monkeypatch) -> None:
+    """The resident is ALREADY active on the binding the reset restores, so
+    reconciliation discards the staged candidate and the conversations survive.
+    The result must not warn about a loss that will not happen."""
+    from personality_binding import (
+        InstanceDir, materialize_image_default_binding, make_instance_tuple)
+    from tools import resident_persona_reset
+    import agent_loader
+    import tools as tools_mod
+
+    # Make the image default the ACTIVE binding, exactly as a boot reconcile
+    # would leave it — commit, do not merely stage.
+    persona = tools_mod._resolve_local_persona("casa/ellen@0.1.0")
+    binding = materialize_image_default_binding(
+        role=resident.role, persona=persona, image_default_root="casa/ellen@0.1.0")
+    instance_dir = InstanceDir(
+        agent_loader._resident_bindings_root(None) / "resident-assistant")
+    instance_dir.stage_desired(
+        make_instance_tuple(root="casa/ellen@0.1.0", binding=binding, config_snapshot={}))
+    instance_dir.commit_desired_to_active()
+    active = instance_dir.active()
+    assert active is not None
+    assert active.binding.binding_digest == binding.binding_digest
+
+    payload = _payload(asyncio.run(resident_persona_reset.handler({
+        "role": "resident:assistant",
+    })))
+
+    assert payload["ok"] is True
+    # The staged candidate equals the active binding, so reconciliation will
+    # discard it: no digest movement, no reset, and nothing to warn about.
+    assert payload["conversation_notice"] is None
+
+
+def test_a_reset_that_does_move_the_binding_still_tells(
+        resident, monkeypatch) -> None:
+    """The mutation guard for the case above: with a DIFFERENT active binding,
+    the same call must still carry the notice. Without this, returning None
+    unconditionally would pass the no-op test."""
+    from personality_binding import (
+        InstanceDir, materialize_override_binding, make_instance_tuple)
+    from tools import resident_persona_reset
+    import agent_loader
+
+    binding = materialize_override_binding(
+        role=resident.role, persona=resident.pack,
+        override_source="operator:casa/ellen@0.2.0")
+    instance_dir = InstanceDir(
+        agent_loader._resident_bindings_root(None) / "resident-assistant")
+    instance_dir.stage_desired(
+        make_instance_tuple(root="operator:casa/ellen@0.2.0", binding=binding,
+                            config_snapshot={}))
+    instance_dir.commit_desired_to_active()
+
+    payload = _payload(asyncio.run(resident_persona_reset.handler({
+        "role": "resident:assistant",
+    })))
+
+    assert payload["ok"] is True
+    assert_restart_notice(
+        payload.get("conversation_notice", ""),
+        "resident_persona_reset result (binding actually moves)")
