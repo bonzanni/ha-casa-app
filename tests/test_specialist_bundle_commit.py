@@ -1439,3 +1439,264 @@ def test_unapproved_bundle_upgrade_preserves_saved_tuple_pair(
     # Recorded separately: an empty journal directory is not itself evidence
     # that anything was preserved.
     assert set((tmp_path / "ops").glob("*.json")) - journals_before == set()
+
+
+def _declare_config_schema(component_dir: Path, manifest_path: Path, *,
+                           required: list[str], secret_names: list[str]) -> None:
+    """`_declare_required_config`'s general form — the red case's helper is
+    frozen, so the secret-name arm lives here."""
+    from specialist_component import compute_component_checksum
+
+    (component_dir / "config-schema.json").write_text(
+        _json.dumps({"required": required, "secret_names": secret_names}),
+        encoding="utf-8")
+    files = {
+        "role/role.yaml": (component_dir / "role" / "role.yaml").read_bytes(),
+        "role/doctrine.md": (component_dir / "role" / "doctrine.md").read_bytes(),
+        "config-schema.json": (component_dir / "config-schema.json").read_bytes(),
+    }
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["checksum"] = compute_component_checksum(files)
+    manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+
+
+class _UpgradeFixture:
+    """A plugin-less `mtg` installed with one declared, saved, non-secret
+    setting, plus the pieces needed to drive an upgrade to a second root."""
+
+    def __init__(self, tmp_path: Path, monkeypatch, *, v2_required=("k",),
+                 v2_secret_names=(), value: str = "v"):
+        from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+        from specialist_registry import InstalledSpecialistIndex
+
+        comp, mpath = write_minimal_component(tmp_path, slug="mtg")
+        _declare_config_schema(comp, mpath, required=["k"], secret_names=[])
+        monkeypatch.setattr(specialist_install, "resolve_and_fetch", _subdir_stub(comp))
+        idx = InstalledSpecialistIndex(specialists_dir=str(tmp_path / "installed-index"))
+        idx.load()
+        insp1 = specialist_install.inspect_specialist_repo(
+            "org/repo", "main", staging_root=tmp_path / "staging",
+            installed_index=idx, receipts_dir=tmp_path / "receipts")
+        receipt1 = specialist_receipt.load(insp1.receipt_id, receipts_dir=tmp_path / "receipts")
+        acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
+        acks.record(
+            identity=install_consent_identity(
+                component_id=insp1.component_id, version=insp1.version,
+                root_digest=insp1.root_digest, slug=insp1.slug,
+                receipt_digest=insp1.receipt_digest),
+            component_id=insp1.component_id, version=insp1.version,
+            component_checksum=insp1.root_digest, slug=insp1.slug,
+            receipt_digest=insp1.receipt_digest)
+        self.common = dict(
+            secret_names_provided=frozenset(), acks=acks,
+            specialists_dir=tmp_path / "specialists",
+            agents_specialists_dir=tmp_path / "agents",
+            registry_path=tmp_path / "registry.json",
+            plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
+        instance, txn1 = specialist_install.commit_specialist_install(
+            inspection=insp1, receipt=receipt1, config={"k": value}, **self.common)
+        specialist_bundle_journal.complete(txn1.journal_path)
+        assert instance.state == "active", instance.last_activation_error
+
+        self.tmp_path = tmp_path
+        self.acks = acks
+        self.insp1 = insp1
+        self.slug_dir = tmp_path / "specialists" / "mtg"
+        self.ops_dir = tmp_path / "ops"
+        self.store_root = tmp_path / "specialists" / "store"
+
+        comp2, mpath2 = write_minimal_component(tmp_path / "v2", slug="mtg")
+        _declare_config_schema(comp2, mpath2, required=list(v2_required),
+                               secret_names=list(v2_secret_names))
+        manifest2 = _json.loads(mpath2.read_text(encoding="utf-8"))
+        manifest2["version"] = "0.2.0"
+        mpath2.write_text(_json.dumps(manifest2), encoding="utf-8")
+        monkeypatch.setattr(specialist_install, "resolve_and_fetch",
+                            _subdir_stub(comp2, "b" * 40))
+        idx2 = InstalledSpecialistIndex(specialists_dir=str(tmp_path / "installed-index"))
+        idx2.load()
+        self.insp2 = specialist_install.inspect_specialist_repo(
+            "org/repo", "v2", staging_root=tmp_path / "staging2", installed_index=idx2,
+            mode="upgrade", target_slug="mtg", specialists_dir=tmp_path / "specialists",
+            receipts_dir=tmp_path / "receipts")
+        self.receipt2 = specialist_receipt.load(
+            self.insp2.receipt_id, receipts_dir=tmp_path / "receipts")
+        assert self.insp2.root_digest != insp1.root_digest
+
+    def approve_v2(self):
+        from specialist_install_consent import install_consent_identity
+        self.acks.record(
+            identity=install_consent_identity(
+                component_id=self.insp2.component_id, version=self.insp2.version,
+                root_digest=self.insp2.root_digest, slug="mtg",
+                receipt_digest=self.insp2.receipt_digest),
+            component_id=self.insp2.component_id, version=self.insp2.version,
+            component_checksum=self.insp2.root_digest, slug="mtg",
+            receipt_digest=self.insp2.receipt_digest)
+
+    def upgrade(self, **over):
+        kw = dict(slug="mtg", inspection=self.insp2, receipt=self.receipt2,
+                  config={}, **self.common)
+        kw.update(over)
+        return specialist_install.upgrade_specialist(**kw)
+
+    def journals(self):
+        return set(self.ops_dir.glob("*.json"))
+
+    def bytes_of(self, *names):
+        return {n: (self.slug_dir / n).read_bytes() for n in names
+                if (self.slug_dir / n).is_file()}
+
+
+def test_upgrade_refuses_when_the_target_store_entry_is_corrupt(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966: an ALREADY-PRESENT store directory for the incoming root is
+    verified, not trusted.
+
+    `_upgrade_core`'s publish short-circuits on `cas_dir.exists()`, so before
+    this change a present-but-corrupt target directory was never validated —
+    `begin` then could not read its declaration, classified every captured key
+    as possibly-secret, and the compensation wrote the emptied documents back.
+    Resolving the component before the journal opens means the refusal happens
+    with no journal in existence."""
+    fx = _UpgradeFixture(tmp_path, monkeypatch)
+    fx.approve_v2()
+    corrupt = specialist_install.cas_store_dir(
+        fx.insp2.root_digest, store_root=fx.store_root)
+    corrupt.mkdir(parents=True)
+    (corrupt / "manifest.json").write_text("{not json", encoding="utf-8")
+
+    before = fx.bytes_of("active.yaml")
+    journals_before = fx.journals()
+    with pytest.raises(Exception):
+        fx.upgrade()
+
+    assert fx.journals() - journals_before == set()
+    assert fx.bytes_of("active.yaml") == before
+
+
+def test_upgrade_refuses_when_the_prior_component_cannot_be_read_back(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966: a before-state that cannot be recorded honestly is a REFUSAL.
+
+    When the component a persisted tuple belongs to cannot be read back, which
+    of its saved settings are secret cannot be determined. The capture
+    sanitizer answers that correctly for a journal — remove every key — and
+    `rollback_disk` then asks the same answer a different question, "what was
+    on disk before?", and writes an emptiness that was never measured over
+    files the failed transaction never opened. So the transaction does not
+    start."""
+    fx = _UpgradeFixture(tmp_path, monkeypatch)
+    fx.approve_v2()
+    _shutil.rmtree(specialist_install.cas_store_dir(
+        fx.insp1.root_digest, store_root=fx.store_root))
+
+    before = fx.bytes_of("active.yaml")
+    journals_before = fx.journals()
+    with pytest.raises(specialist_install.SpecialistInstallError) as ei:
+        fx.upgrade()
+
+    assert ei.value.kind == "prior_schema_unreadable"
+    assert fx.journals() - journals_before == set()
+    assert fx.bytes_of("active.yaml") == before
+
+
+def test_upgrade_journal_records_the_saved_setting_it_found(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966: the journal's own capture is honest, with no monkeypatch of
+    `specialist_bundle_journal.SPECIALISTS_DIR`.
+
+    Two things are asserted at once. The capture keeps the saved value and a
+    real digest — before this change every first-attempt bundle upgrade wrote
+    a journal whose captured `active.yaml` was already emptied, so a crash
+    mid-upgrade left boot recovery a capture that could only restore a
+    tombstone. And it does so because `begin` now sanitizes against the
+    caller's specialists directory rather than the module-level one: with that
+    argument dropped, this test reads the emptied capture again."""
+    import yaml as _yaml
+
+    fx = _UpgradeFixture(tmp_path, monkeypatch)
+    fx.approve_v2()
+    journals_before = fx.journals()
+    instance, txn = fx.upgrade()
+    assert instance.state == "active", instance.last_activation_error
+
+    new = fx.journals() - journals_before
+    assert len(new) == 1
+    payload = _json.loads(next(iter(new)).read_text(encoding="utf-8"))
+    captured = _yaml.safe_load(payload["before"]["tuple_files"]["active.yaml"])
+    assert captured["config_snapshot"] == {"k": "v"}
+    assert captured["config_digest"] != "pre-guard:removed"
+    # The declarations the capture was classified against travel with it, so
+    # boot replay gets the same answer from the payload alone.
+    assert payload["declared_secret_names"][captured["root"]] == []
+
+
+def test_upgrade_rollback_restores_the_tuple_after_the_target_store_entry_is_lost(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966: the recorded before-state survives losing the incoming component.
+
+    `_publish_cas_staging` is a bare `os.replace` with no fsync of the
+    published contents or of its parent, so a power loss can leave a durable
+    journal whose incoming root is gone. Boot replay rebuilds its transaction
+    from the payload ALONE — the in-process one that knew the declarations is
+    gone with the process — so before this change the restore fell back to a
+    read of exactly the directory the crash had removed, and stripped a
+    capture the journal had recorded honestly."""
+    fx = _UpgradeFixture(tmp_path, monkeypatch)
+    fx.approve_v2()
+    before = fx.bytes_of("active.yaml")
+    journals_before = fx.journals()
+
+    instance, txn = fx.upgrade()
+    assert instance.state == "active", instance.last_activation_error
+    new = fx.journals() - journals_before
+    assert len(new) == 1                      # left in-progress, as the library does
+    assert fx.bytes_of("active.yaml") != before   # the upgrade did land
+
+    _shutil.rmtree(specialist_install.cas_store_dir(
+        fx.insp2.root_digest, store_root=fx.store_root))
+
+    actions = specialist_bundle_journal.reconcile_boot(
+        ops_dir=fx.ops_dir, registry_path=fx.common["registry_path"],
+        specialists_dir=fx.common["specialists_dir"],
+        acks_path=fx.acks.path,
+        agents_specialists_dir=fx.common["agents_specialists_dir"])
+
+    assert [a["action"] for a in actions] == ["rolled_back"]
+    assert fx.journals() - journals_before == set()
+    assert fx.bytes_of("active.yaml") == before
+
+
+def test_upgrade_journal_still_strips_a_key_the_incoming_component_declares_secret(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966 must not narrow #372: the union a capture is sanitized against is
+    the capture's own root's declaration UNIONED with the incoming root's.
+
+    Here the prior component declares `k` an ordinary required setting and the
+    incoming one reclassifies it as a secret name. The persisted snapshot's
+    plaintext must not reach the journal — and it would not have, before this
+    change, only because the whole snapshot was being removed for want of any
+    declaration at all. Carrying the declarations must keep this true for the
+    right reason."""
+    import yaml as _yaml
+
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=[], v2_secret_names=["k"],
+                         value="plaintext-that-must-not-reach-the-journal")
+    fx.approve_v2()
+    journals_before = fx.journals()
+    fx.upgrade()
+
+    new = fx.journals() - journals_before
+    assert len(new) == 1
+    payload = _json.loads(next(iter(new)).read_text(encoding="utf-8"))
+    captured = _yaml.safe_load(payload["before"]["tuple_files"]["active.yaml"])
+    assert captured["config_snapshot"] == {}
+    assert captured["config_digest"] == "pre-guard:removed"
+    assert ("plaintext-that-must-not-reach-the-journal"
+            not in payload["before"]["tuple_files"]["active.yaml"])

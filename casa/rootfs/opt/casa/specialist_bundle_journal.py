@@ -36,7 +36,7 @@ import stat
 import uuid
 
 import yaml
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -145,27 +145,62 @@ _CAPTURED_TUPLE_FILES = frozenset({
 })
 
 
+def _names_for_root(root: str, *, declared: "dict | None",
+                    specialists_dir: Path) -> "set[str] | None":
+    """#966: one root's declared secret names — from the journal's CARRIED
+    declarations when it has them, else by reading the content-addressed store.
+
+    The carried form exists because the store read is not available wherever
+    this runs, and it can fail for reasons that have nothing to do with the
+    data's secrecy: the incoming root is not in the store until the transaction
+    publishes it, that publish is not fsynced so a crash can lose it, and a
+    present directory can fail its own digest equation. Each of those returns
+    ``None`` — "I could not classify these keys" — which the caller correctly
+    reads as "treat every one of them as secret", and which the restore then
+    wrote over files the failed transaction never opened.
+
+    A carried entry is strictly MORE information than the read, never less: it
+    is produced by `_declared_secret_names_for_root` itself, or read off a
+    component whose root-digest equation was checked, at a point where the
+    answer WAS available — and it is recorded in the journal so every later
+    consumer, boot replay included, gets that same answer."""
+    from specialist_install import _declared_secret_names_for_root
+    if declared is not None:
+        carried = declared.get(root)
+        if isinstance(carried, (list, tuple, set, frozenset)) and all(
+                isinstance(n, str) for n in carried):
+            return set(carried)
+    return _declared_secret_names_for_root(root, specialists_dir=specialists_dir)
+
+
 def _captured_secret_union(*, op: str, target_root: str, tuple_root: object,
-                           specialists_dir: Path) -> "set[str] | None":
+                           specialists_dir: Path,
+                           declared: "dict | None" = None) -> "set[str] | None":
     """#372 (D9): the secret-name union a captured tuple snapshot is
     sanitized against — the capture's own root schema, plus (for install/
     upgrade ops) the incoming target root's schema. ``None`` means fail
     closed: strip every key (unloadable/tampered schema, unusable root, or —
     r7 amendment — an install/upgrade journal without a usable target_root,
-    the pre-provenance journal shape)."""
-    from specialist_install import _declared_secret_names_for_root
+    the pre-provenance journal shape).
+
+    #966: each half resolves through `_names_for_root`, so a journal that
+    CARRIES its declarations answers from them and never depends on the store
+    being readable at the moment the sanitizer runs. The union is still taken
+    per file against that file's OWN root — `active.yaml` and `desired.yaml`
+    can belong to different generations, and merging their declarations would
+    strip a key out of the snapshot whose own schema does not declare it."""
     if not isinstance(tuple_root, str) or not tuple_root:
         return None
-    union = _declared_secret_names_for_root(
-        tuple_root, specialists_dir=specialists_dir)
+    union = _names_for_root(
+        tuple_root, declared=declared, specialists_dir=specialists_dir)
     if union is None:
         return None
     union = set(union)
     if op in ("install", "upgrade"):
         if not isinstance(target_root, str) or not target_root:
             return None
-        incoming = _declared_secret_names_for_root(
-            target_root, specialists_dir=specialists_dir)
+        incoming = _names_for_root(
+            target_root, declared=declared, specialists_dir=specialists_dir)
         if incoming is None:
             return None
         union |= incoming
@@ -174,7 +209,7 @@ def _captured_secret_union(*, op: str, target_root: str, tuple_root: object,
 
 def _sanitize_captured_tuple_files(
     tuple_files: "dict[str, str | None]", *, op: str, target_root: str,
-    specialists_dir: Path,
+    specialists_dir: Path, declared: "dict | None" = None,
 ) -> "dict[str, str | None]":
     """#372 (D9): one sanitizer for BOTH journal ends — applied when a capture
     is serialized (a new journal never holds plaintext or a secret-derived
@@ -211,7 +246,8 @@ def _sanitize_captured_tuple_files(
         elif isinstance(snapshot, dict) and snapshot:
             union = _captured_secret_union(
                 op=op, target_root=target_root,
-                tuple_root=payload.get("root"), specialists_dir=specialists_dir)
+                tuple_root=payload.get("root"), specialists_dir=specialists_dir,
+                declared=declared)
             if union is None:
                 union = set(snapshot)
             kept = {k: v for k, v in snapshot.items() if k not in union}
@@ -265,6 +301,8 @@ def begin(op: str, slug: str, *, before_entries: list[dict],
           before_tuple_files: dict[str, "str | None"],
           ack_records: list[dict], receipt_digest: str = "",
           consent_identity: str = "", target_root: str = "",
+          specialists_dir: "Path | None" = None,
+          declared_secret_names: "dict | None" = None,
           ops_dir: Path = OPS_DIR) -> Path:
     """Write `<slug>.<uuid4hex>.json` with the full before-state, fsynced
     (file AND directory). Returns the journal path.
@@ -274,16 +312,31 @@ def begin(op: str, slug: str, *, before_entries: list[dict],
     generation's root string, `component_id@version#root_digest`) — provenance
     a forensic reader (or a future selective boot reconcile) needs to know
     exactly which approved artifact this op was landing. Additive: both default
-    to "" and `_valid_payload` tolerates their absence on pre-I journals."""
+    to "" and `_valid_payload` tolerates their absence on pre-I journals.
+
+    #966: two more, in the same additive shape. `specialists_dir` is the tree
+    the CAPTURE is sanitized against — it used to be read off the module global
+    while `op` and `target_root`, the sanitizer's other two inputs, were
+    parameters; a caller working in another tree recorded a capture classified
+    against a store its own restore would never read. `declared_secret_names`
+    maps each root this capture needs to that root's declared secret names,
+    resolved by the caller at a point where the answer was available and
+    recorded here so every later consumer — runtime compensation and boot
+    replay alike — classifies the snapshot the same way. Both default to the
+    prior behaviour: the module global, and a store read that fails closed."""
     ops_dir = Path(ops_dir)
     ops_dir.mkdir(parents=True, exist_ok=True)
     path = ops_dir / f"{slug}.{uuid.uuid4().hex}.json"
     # #372 (D9a): captures are sanitized BEFORE they are serialized — the
     # journal file itself must never hold a snapshot's secret-union keys or a
     # digest computed over them, at any moment of its life.
+    declared_secret_names = {
+        root: sorted(names) for root, names in (declared_secret_names or {}).items()}
     before_tuple_files = _sanitize_captured_tuple_files(
         dict(before_tuple_files), op=op, target_root=target_root,
-        specialists_dir=SPECIALISTS_DIR)
+        specialists_dir=Path(specialists_dir if specialists_dir is not None
+                             else SPECIALISTS_DIR),
+        declared=declared_secret_names)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "op": op,
@@ -297,6 +350,11 @@ def begin(op: str, slug: str, *, before_entries: list[dict],
         "receipt_digest": receipt_digest,
         "consent_identity": consent_identity,
         "target_root": target_root,
+        # #966: NAMES, never values. Which keys a component DECLARES secret is
+        # schema — it ships in the component's own config-schema.json — so this
+        # holds neither plaintext nor a secret-derived digest, and it is
+        # precisely the datum the sanitizer needs in order to REMOVE those keys.
+        "declared_secret_names": declared_secret_names,
         "steps_done": [],
     }
     _fsync_write(path, _dump(payload))
@@ -357,6 +415,12 @@ class BundleTxn:
     # all-keys stripping for any secret-bearing capture, never plaintext.
     op: str = ""
     target_root: str = ""
+    # #966: the declared secret names this transaction resolved for every root
+    # its capture needs, carried so the restore classifies the snapshot the
+    # same way the capture did — whatever the content store can be read for by
+    # the time the restore runs. Default {} keeps the prior store read and its
+    # fail-closed answer, which is what a pre-#966 journal gets.
+    declared_secret_names: "dict" = field(default_factory=dict)
     registry_path: Path = plugin_registry.REGISTRY_PATH
     specialists_dir: Path = SPECIALISTS_DIR
     acks_path: Path = ACKS_PATH
@@ -413,7 +477,8 @@ class BundleTxn:
         restored_tuple_files = _sanitize_captured_tuple_files(
             dict(self.before_tuple_files), op=self.op,
             target_root=self.target_root,
-            specialists_dir=Path(self.specialists_dir))
+            specialists_dir=Path(self.specialists_dir),
+            declared=dict(self.declared_secret_names or {}))
         with MATERIALIZE_LOCK:
             slug_dir = Path(self.specialists_dir) / self.slug
             for filename, content in restored_tuple_files.items():
@@ -698,6 +763,21 @@ def _valid_payload(payload: Any, slug: str) -> bool:
             return False
         if payload.get("state") not in ("in-progress", "complete"):
             return False
+        # #966: additive and optional, exactly like `consent_identity` and
+        # `target_root` before it — absent means a pre-#966 journal, which
+        # keeps the store read and its fail-closed answer. Present means a
+        # mapping of root string to a list of declared secret NAMES; anything
+        # else is a malformed journal, not a journal to guess at.
+        declared = payload.get("declared_secret_names")
+        if declared is not None:
+            if not isinstance(declared, dict):
+                return False
+            for root, names in declared.items():
+                if not isinstance(root, str) or not root:
+                    return False
+                if not isinstance(names, list) or not all(
+                        isinstance(n, str) for n in names):
+                    return False
         before = payload.get("before")
         if not isinstance(before, dict):
             return False
@@ -855,6 +935,14 @@ def _reconcile_journals(ops_dir: Path, *, registry_path: Path,
             # closed there.
             op=payload.get("op") or "",
             target_root=payload.get("target_root") or "",
+            # #966: rehydrate the carried declarations. Boot replay rebuilds
+            # this transaction from the payload ALONE — the in-process one that
+            # held them is long gone — so without this line the restore falls
+            # back to a store read that the crash may be exactly why it cannot
+            # satisfy, and strips a capture the journal recorded honestly.
+            declared_secret_names=(
+                payload.get("declared_secret_names")
+                if isinstance(payload.get("declared_secret_names"), dict) else {}),
             registry_path=registry_path,
             specialists_dir=specialists_dir,
             acks_path=acks_path,
