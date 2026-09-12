@@ -1300,3 +1300,142 @@ def test_a_pending_upgrade_records_no_dropped_names(
     assert pending_txn.owned_swap_committed is False
     assert pending_txn.removed_owned_names == ()
     assert len(pending_txn.before_entries) == 1
+
+
+# ===========================================================================
+# #966 — an upgrade refusal must not rewrite the tuple files it never touched
+# ===========================================================================
+
+def _declare_required_config(component_dir: Path, manifest_path: Path,
+                             required: list[str]) -> None:
+    """Rewrite a fixture component's `config-schema.json` with `required` keys
+    and recompute the component checksum, so the tree stays checksum-valid.
+
+    `write_minimal_component` ships `required: []`, and a tuple can only carry
+    a saved setting for a key the schema declares — `_upgrade_core`'s
+    `known_keys` is `required | secret_names`."""
+    from specialist_component import compute_component_checksum
+
+    (component_dir / "config-schema.json").write_text(
+        _json.dumps({"required": required, "secret_names": []}), encoding="utf-8")
+    files = {
+        "role/role.yaml": (component_dir / "role" / "role.yaml").read_bytes(),
+        "role/doctrine.md": (component_dir / "role" / "doctrine.md").read_bytes(),
+        "config-schema.json": (component_dir / "config-schema.json").read_bytes(),
+    }
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["checksum"] = compute_component_checksum(files)
+    manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+
+
+def _saved_copies(slug_dir: Path, names=("active.yaml", "desired.yaml")) -> dict:
+    """The raw YAML documents, read directly rather than through the tuple
+    loader — a typed loader refusal must not stand in for a surviving value."""
+    import yaml as _yaml
+    return {name: _yaml.safe_load((slug_dir / name).read_text(encoding="utf-8"))
+            for name in names}
+
+
+def test_unapproved_bundle_upgrade_preserves_saved_tuple_pair(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966 / INV-SPEC-003, receipt-bearing bundle arm.
+
+    An upgrade refused for a missing operator approval must leave the saved
+    configuration of BOTH persisted tuple files exactly as it found them. At
+    the base commit it did not: `upgrade_specialist` opened its journal before
+    `_upgrade_core` published the incoming component to the content-addressed
+    store, so for that window the incoming root could not be read back, the
+    capture sanitizer classified every key as possibly-secret, and
+    `rollback_disk` wrote the emptied documents over files the refused
+    transaction never opened — two saved copies to zero.
+
+    The invariant's other binding,
+    `test_specialist_lifecycle_matrix.py::test_upgrade_failure_leaves_the_complete_active_tuple_running`,
+    runs the legacy no-receipt branch, which has no journal and no
+    compensation, and asserts only the surviving root — it cannot observe
+    this.
+    """
+    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_registry import InstalledSpecialistIndex
+
+    # The capture-side sanitize reads the module-level directory rather than
+    # the caller's `specialists_dir`; point both at the fixture tree so the
+    # recording side is faithful too (the write-back side already uses
+    # BundleTxn.specialists_dir).
+    monkeypatch.setattr(specialist_bundle_journal, "SPECIALISTS_DIR",
+                        tmp_path / "specialists")
+
+    # --- v1: install, plugin-less, with one declared+saved setting ----------
+    comp, mpath = write_minimal_component(tmp_path, slug="mtg")
+    _declare_required_config(comp, mpath, ["k"])
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", _subdir_stub(comp))
+    idx = InstalledSpecialistIndex(specialists_dir=str(tmp_path / "installed-index"))
+    idx.load()
+    insp1 = specialist_install.inspect_specialist_repo(
+        "org/repo", "main", staging_root=tmp_path / "staging",
+        installed_index=idx, receipts_dir=tmp_path / "receipts")
+    receipt1 = specialist_receipt.load(insp1.receipt_id, receipts_dir=tmp_path / "receipts")
+    acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
+    acks.record(
+        identity=install_consent_identity(
+            component_id=insp1.component_id, version=insp1.version,
+            root_digest=insp1.root_digest, slug=insp1.slug,
+            receipt_digest=insp1.receipt_digest),
+        component_id=insp1.component_id, version=insp1.version,
+        component_checksum=insp1.root_digest, slug=insp1.slug,
+        receipt_digest=insp1.receipt_digest)
+    common = dict(
+        secret_names_provided=frozenset(), acks=acks,
+        specialists_dir=tmp_path / "specialists",
+        agents_specialists_dir=tmp_path / "agents",
+        registry_path=tmp_path / "registry.json",
+        plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
+    instance, txn1 = specialist_install.commit_specialist_install(
+        inspection=insp1, receipt=receipt1, config={"k": "v"}, **common)
+    specialist_bundle_journal.complete(txn1.journal_path)
+    assert instance.state == "active", instance.last_activation_error
+
+    # A pending candidate carrying the same v1 tuple, staged the way the
+    # lifecycle stages one: marker first, then the document.
+    slug_dir = tmp_path / "specialists" / "mtg"
+    specialist_install._record_pending_receipt(slug_dir, receipt1.receipt_id)
+    _shutil.copyfile(slug_dir / "active.yaml", slug_dir / "desired.yaml")
+
+    before = _saved_copies(slug_dir)
+    assert sum(d["config_snapshot"] == {"k": "v"} for d in before.values()) == 2
+
+    # --- v2: a DIFFERENT root, never published to the CAS, never approved ---
+    # A different root matters: `_upgrade_core` returns early when the CAS
+    # directory already exists, and with equal roots the output is correct.
+    comp2, mpath2 = write_minimal_component(tmp_path / "v2", slug="mtg")
+    _declare_required_config(comp2, mpath2, ["k"])
+    manifest2 = _json.loads(mpath2.read_text(encoding="utf-8"))
+    manifest2["version"] = "0.2.0"
+    mpath2.write_text(_json.dumps(manifest2), encoding="utf-8")
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch",
+                        _subdir_stub(comp2, "b" * 40))
+    idx2 = InstalledSpecialistIndex(specialists_dir=str(tmp_path / "installed-index"))
+    idx2.load()
+    insp2 = specialist_install.inspect_specialist_repo(
+        "org/repo", "v2", staging_root=tmp_path / "staging2", installed_index=idx2,
+        mode="upgrade", target_slug="mtg", specialists_dir=tmp_path / "specialists",
+        receipts_dir=tmp_path / "receipts")
+    receipt2 = specialist_receipt.load(insp2.receipt_id, receipts_dir=tmp_path / "receipts")
+    assert insp2.root_digest != insp1.root_digest
+    assert not specialist_install.cas_store_dir(
+        insp2.root_digest, store_root=tmp_path / "specialists" / "store").exists()
+    # NO ack is recorded for v2.
+
+    journals_before = set((tmp_path / "ops").glob("*.json"))
+    with pytest.raises(specialist_install.SpecialistInstallError) as ei:
+        specialist_install.upgrade_specialist(
+            slug="mtg", inspection=insp2, receipt=receipt2, config={}, **common)
+    assert ei.value.kind == "consent_missing"
+
+    after = _saved_copies(slug_dir)
+    assert sum(d["config_snapshot"] == {"k": "v"} for d in after.values()) == 2
+    assert after == before
+    # Recorded separately: an empty journal directory is not itself evidence
+    # that anything was preserved.
+    assert set((tmp_path / "ops").glob("*.json")) - journals_before == set()
