@@ -35,9 +35,32 @@ now_ms() {
     printf '%s\n' "$(( ns / 1000000 ))"
 }
 
+# NO --pull here, deliberately (#942). Dockerfile.test's base is a floating tag
+# and this build does not resolve it, so a warm local store decides which base
+# the run certifies -- but qa.yml's tier1/tier2/tier3 steps run these scripts,
+# and tier2 is the push gate on a protected main, so a mandatory registry
+# resolution here would turn a ghcr outage or a rate limit into a red main.
+# Refresh lives on the `make` paths, which CI never invokes; this reports.
+#
+# Reporting is not preventing, and the line says so: it names the base the
+# image actually carries, which is what turns "two harness runs measured the
+# wrong base" into one. It can no more check freshness than
+# tests/test_build_from_parity.py can.
+#
+# stderr, through log(), because the build's own stdout is suppressed on
+# purpose: harnesses parse their own stdout and one qa.yml step greps a harness
+# log for an exact terminal marker. And an unreadable label reports `unknown`
+# rather than failing a build that succeeded -- a diagnostic that can fail the
+# thing it diagnoses is worse than no diagnostic.
 build_image() {
     log "Building $IMAGE from test-local/Dockerfile.test"
     docker build -f test-local/Dockerfile.test -t "$IMAGE" . >/dev/null
+    local base
+    base="$(docker image inspect "$IMAGE" \
+        --format '{{index .Config.Labels "io.hass.version"}}' 2>/dev/null)" \
+        || base=""
+    case "$base" in ''|'<no value>') base="unknown" ;; esac
+    log "e2e base io.hass.version=$base (freshness not checked here)"
 }
 
 # --- Release A: /invoke + /webhook are fail-closed (401/403 without a valid
