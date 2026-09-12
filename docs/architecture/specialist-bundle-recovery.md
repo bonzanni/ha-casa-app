@@ -41,6 +41,16 @@ and INV-SPEC-014 (a writer refuses while standing recovery debt would be replaye
 Nothing is declared here; this document says what the code does when it fails, and the
 document next door says what that is required to guarantee.
 
+**INV-SPEC-003 has a known arm it does not hold on, and this is the document a reader holding
+recovery work lands on, so it says so here.** Every restore described below replays the
+before-state the journal recorded, and recording it re-runs the capture sanitizer: a captured
+snapshot's keys are dropped when some component declares them secret, so a restore can write
+back a snapshot emptier than the tuple it overwrites — a document the failed call never opened.
+That is a separate defect class, tracked as **#975**, and it is open. The preflight refusals
+listed first below are outside it, because they raise before a journal exists and compensate
+nothing. `specialist-bundle-transactions.md` states the bound in full, next to the sanitizer it
+belongs to; do not read the compensations below as lossless.
+
 ## Failure behavior
 
 **A bundle upgrade's preflight refuses.** No approval on record, a receipt that does not
