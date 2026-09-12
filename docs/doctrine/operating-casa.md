@@ -216,12 +216,18 @@ guarantees is the floor beneath the guidance — a table that arrives anyway sti
 with every cell and every link destination intact, and one whose shape is genuinely
 ambiguous stays literal rather than being rendered wrongly.
 
-**Recovery advice never proposes destroying what the refusal just preserved.** A
+**Recovery advice never proposes destroying what the refusal declined to touch.** A
 fail-closed refusal exists because some state is worth more than the operation being
-refused, and the state it protects is still on disk when the refusal is read. The advice
-that travels with it is therefore part of the guarantee, not commentary on it: a refusal
-that preserves an operator's settings and then offers an alternative that deletes them has
+refused: the operation stops rather than write over it. The advice that travels with the
+refusal is therefore part of the guarantee, not commentary on it: a refusal that declines
+to replace an operator's settings and then offers an alternative that deletes them has
 destroyed exactly what it was written to save, and the operator followed instructions.
+
+The rule governs what the advice PROPOSES. It is not a claim that the protected state is
+intact when the call returns — a refusal can still reach a transaction compensation that
+rewrites files the refused call never opened, which is a separate defect class and is
+tracked as one. Advice must therefore say what the call did and what to keep, and must not
+assert an outcome the calling path does not control.
 Recovery advice must preserve retained operator state and the resources needed to resume
 using it. Do not recommend an action that would discard, overwrite or make that state
 unrecoverable unless a usable recovery copy has been verified to survive the action.
@@ -248,9 +254,10 @@ rather than an exception to it. It is tracked separately. Both arms of
 `specialist_install.py`'s active-present guard comply: the arm reached when the pending
 candidate cannot be read at all, and the arm reached when a candidate for a different
 component root loads. Neither is named by the invariant and both were corrected alongside the
-two merge reads, for the reason the rule gives — each refuses with that candidate and its
-saved configuration intact, so each was proposing the destruction of what it had just
-preserved. Stating the rule wider than the pin is the point: the pin says what
+two merge reads, for the reason the rule gives — each declines to replace the candidate and
+then proposed destroying it. Neither says the candidate survives the call: on the journalled
+bundle arm both reach the transaction compensation, which is the separate defect class named
+above. Stating the rule wider than the pin is the point: the pin says what
 is proved, and the rule says what is owed.
 
 ## What this cannot tell you

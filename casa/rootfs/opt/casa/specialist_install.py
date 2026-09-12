@@ -267,8 +267,9 @@ def _refuse_if_active_present(instance_dir, *, slug: str, root: str) -> None:
         raise SpecialistInstallError(
             "concurrent_mutation",
             f"{slug!r}: an unreadable pending candidate already exists "
-            f"({exc}); refusing to replace it — the candidate and its saved "
-            f"configuration are untouched; resolve the read error and retry")
+            f"({exc}); refusing to replace it — this call has staged nothing over it; "
+            f"keep the candidate and its saved configuration; resolve the read "
+            f"error and retry")
     if pending is not None and pending.root != root:
         # INV-OPS-001's rule once more, on the arm reached when the candidate
         # LOADS. The refusal is right and unchanged — a pending candidate that
@@ -280,9 +281,9 @@ def _refuse_if_active_present(instance_dir, *, slug: str, root: str) -> None:
         raise SpecialistInstallError(
             "concurrent_mutation",
             f"{slug!r}: a different pending install ({pending.root}) already "
-            f"occupies this slug; refusing to replace it — that candidate and "
-            f"its saved configuration are untouched; finish configuring it "
-            f"before this slug takes another install")
+            f"occupies this slug; refusing to replace it — this call has staged "
+            f"nothing over it; keep that candidate and its saved configuration; "
+            f"finish configuring it before this slug takes another install")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2061,8 +2062,14 @@ def commit_specialist_install(
             # guard's own refusal instead: a candidate whose config we could
             # not read is one we cannot merge with, and refusing costs a
             # retry where proceeding costs the operator's settings.
-            # INV-OPS-001 (#929 attempt 4): the advice preserves exactly what
-            # the refusal preserved. The earlier wording offered "uninstall and
+            # INV-OPS-001 (#929): the advice does not propose destroying what
+            # the refusal declined to replace. It does NOT assert that the
+            # tuple files are intact when the call returns — on the bundle arm
+            # this refusal reaches the transaction compensation, which re-runs
+            # the #372 capture sanitizer and can write an emptied snapshot back
+            # (measured; filed separately). The rule is about what the advice
+            # PROPOSES, which is the part this module controls.
+            # The earlier wording offered "uninstall and
             # install afresh" as an alternative; `tools.py` relays this detail
             # verbatim and `_uninstall_core` rmtree's the instance directory, so
             # that alternative destroyed the only copy of the settings after one

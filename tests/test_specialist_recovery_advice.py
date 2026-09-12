@@ -202,9 +202,9 @@ def test_pending_read_recovery_rule_is_shipped() -> None:
 # what keeps it so.
 _EXPECTED_GUARD_DETAIL = (
     "'mtg': an unreadable pending candidate already exists "
-    "([Errno 5] Input/output error); refusing to replace it — the candidate "
-    "and its saved configuration are untouched; resolve the read error and "
-    "retry"
+    "([Errno 5] Input/output error); refusing to replace it — this call has "
+    "staged nothing over it; keep the candidate and its saved configuration; "
+    "resolve the read error and retry"
 )
 
 
@@ -274,8 +274,9 @@ def test_the_active_present_guards_unreadable_arm_advises_preservation(
 # admit "or clear the slug first"; this does not.
 _EXPECTED_DIFFERENT_ROOT_DETAIL = (
     "'mtg': a different pending install ({root}) already occupies this slug; "
-    "refusing to replace it — that candidate and its saved configuration are "
-    "untouched; finish configuring it before this slug takes another install"
+    "refusing to replace it — this call has staged nothing over it; keep that "
+    "candidate and its saved configuration; finish configuring it before this "
+    "slug takes another install"
 )
 
 

@@ -251,14 +251,17 @@ drifted still refuses. Nor does status refresh anything it reports — it trigge
 so a stale loaded view stays stale until something else reloads.
 
 The same reasoning binds what a refusal on this route SAYS. When either merge read of a
-pending candidate's configuration fails, the operation refuses with the candidate, its
-saved settings and its receipt and staging tree all intact — and the advice that travels
-with that refusal is part of the guarantee, because the tool result carries the refusal's
-`detail` verbatim to whoever paraphrases it to the operator. It therefore names what to
-keep and asks for a retry, and it does not offer an uninstall: uninstall removes the
-instance directory, which is where a pending candidate's supplied configuration lives, so
-following that advice after one transient read error would destroy the only copy of what
-the refusal preserved. This is the operating doctrine's general preservation rule, declared
+pending candidate's configuration fails, the operation refuses rather than restage over the
+candidate — and the advice that travels with that refusal is part of the guarantee, because
+the tool result carries the refusal's `detail` verbatim to whoever paraphrases it to the
+operator. It therefore names what to keep and asks for a retry, and it does not offer an
+uninstall: uninstall removes the instance directory, which is where a pending candidate's
+supplied configuration lives, so following that advice after one transient read error would
+destroy the only copy of what the refusal declined to replace. What the advice does NOT say
+is that the files are intact when the call returns. On the journalled bundle arm the refusal
+reaches the transaction compensation, which re-runs the capture sanitizer and can write an
+emptied snapshot back over a tuple the refused call never opened — a separate defect class,
+tracked separately, and the reason the advice is bounded to what this path controls. This is the operating doctrine's general preservation rule, declared
 narrowly over these two paths as INV-OPS-001 (`doctrine/operating-casa.md`).
 
 ## Failure behavior

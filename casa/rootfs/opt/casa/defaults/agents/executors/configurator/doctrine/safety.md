@@ -45,12 +45,18 @@ using it. Do not recommend an action that would discard, overwrite or make that 
 unrecoverable unless a usable recovery copy has been verified to survive the action.
 Failure to read or validate state is not evidence that it is expendable.**
 
-In practice: a refusal that says it preserved something is telling you the settings are
-still there. Report that, and the retry, and stop. Do NOT offer uninstall-and-reinstall as
-the way out - `specialist_uninstall` deletes the instance directory, which is where a
-pending candidate's supplied configuration lives, and nothing reconstructs it on reinstall.
-This binds YOUR paraphrase too: the rule is about what the operator is told to do, not
-about which words the tool used.
+In practice: a refusal that says it staged nothing over something is telling you what NOT to
+take away. Report what the refusal says, and the retry, and stop. Do NOT offer
+uninstall-and-reinstall as the way out - `specialist_uninstall` deletes the instance
+directory, which is where a pending candidate's supplied configuration lives, and nothing
+reconstructs it on reinstall. This binds YOUR paraphrase too: the rule is about what the
+operator is told to do, not about which words the tool used.
+
+Do not upgrade a refusal into an assurance. "This call staged nothing over your settings" is
+not "your settings are still there", and only the first is something a refusal can know: a
+failed operation can still run a compensation that rewrites files it never opened. If an
+operator needs to know whether the settings survived, have them read the current state back
+rather than inferring it from the refusal.
 
 Describing what an explicitly requested removal destroys is not recovery advice - the
 uninstall recipe's survival caveats are required, not forbidden.
