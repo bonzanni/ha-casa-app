@@ -16,6 +16,31 @@ themselves, their contracts and the invariants they declare are in
 [`specialist-bundle-transactions.md`](specialist-bundle-transactions.md); install identity,
 consent and materialization are in [`specialist-lifecycle.md`](specialist-lifecycle.md).
 
+## Mental model
+
+**Every durable step of a bundle transaction is recorded before it is taken, and failure is
+undoing the record rather than guessing at the tree.** A handler journals the pre-state,
+mutates, and then either completes the journal or rolls it back; a process that dies between
+those leaves the journal standing, and the next boot is what finishes the story. So there are
+exactly three places a failure can land — before the journal exists, inside the transaction,
+and at the next boot — and which one a given refusal lands in decides what the operator is
+left holding.
+
+**A refusal that happens before the journal exists costs nothing**, which is why the preflight
+is as long as it is. Once a journal is open the compensation runs, and the compensation
+restores what it recorded, not what is on disk now.
+
+## Contracts & invariants
+
+The invariants this document's behaviour satisfies are declared in
+[`specialist-bundle-transactions.md`](specialist-bundle-transactions.md), which owns the
+transactions themselves: INV-SPEC-003 (an upgrade failure retains the complete prior active
+tuple), INV-SPEC-011 (one generation at every lock release), INV-SPEC-012 (rollback after a
+model change), INV-SPEC-013 (a dispatched handler runs to a terminal journal disposition),
+and INV-SPEC-014 (a writer refuses while standing recovery debt would be replayed over it).
+Nothing is declared here; this document says what the code does when it fails, and the
+document next door says what that is required to guarantee.
+
 ## Failure behavior
 
 **A bundle upgrade's preflight refuses.** No approval on record, a receipt that does not
@@ -121,6 +146,13 @@ untouched either way.
 the bundle arm cannot swap the registry, so a retained generation whose plugin rows differ
 from the active sidecar's is refused as `bundle_required` before anything is written; the
 tool's rollback exchanges tuple and owned set together.
+
+## Extension points
+
+**A new failure arm inside a bundle transaction** must leave the journal in a terminal
+disposition — completed after a successful compensation, or standing so boot can finish it —
+and must not complete a journal whose compensation raised. A refusal that can be made before
+the journal opens belongs in the preflight instead, where there is nothing to undo.
 
 ## Source & test map
 
