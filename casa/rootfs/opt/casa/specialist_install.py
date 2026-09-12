@@ -2044,6 +2044,10 @@ def commit_specialist_install(
                 target_root=component_root_string(
                     component_id=inspection.component_id, version=inspection.version,
                     component_checksum=inspection.root_digest),
+                # #966: the capture is classified against the tree this
+                # transaction — and its own restore — actually uses, not the
+                # module default.
+                specialists_dir=specialists_dir,
                 ops_dir=ops_dir)
             rollback_txn = BundleTxn(
                 journal_path=journal, slug=inspection.slug,
@@ -2367,10 +2371,61 @@ def upgrade_specialist(
             eff_inspection = dataclasses.replace(inspection, staged_dir=recovered)
 
         slug_dir = specialists_dir / slug
+
+        # --- #966: everything the journal's capture depends on, resolved
+        # BEFORE the journal exists ----------------------------------------
+        #
+        # `commit_specialist_install` already orders its transaction consent ->
+        # publish -> begin. This one used to order it begin -> consent ->
+        # publish, and that asymmetry was the whole defect: for the window
+        # between `begin` and the publish the incoming root could not be read
+        # back, so the capture sanitizer could not classify any key, fell
+        # closed to "all of them are secret", and the compensation wrote the
+        # emptied documents over tuple files the refused transaction had never
+        # opened. Measured on the shipped tree, with an absent approval record
+        # and no injected failure of any kind: two saved-setting copies before
+        # the call, zero after it, and no journal left to recover from.
+        #
+        # Hoisting these makes the two paths symmetric AND makes every refusal
+        # the old window contained — receipt_mismatch, consent_missing,
+        # active_unreadable, no_active_tuple, dependency_unavailable,
+        # checksum_changed — raise with no journal in existence, so there is
+        # no compensation to run over state nothing changed. Each check is a
+        # pure read or is idempotent by content-address, and `_upgrade_core`
+        # re-runs all of them under the same SPECIALIST_LIFECYCLE_LOCK: the
+        # copies below are the bundle arm's ordering, not its authority, and
+        # removing them from the core would move a gate that the legacy
+        # no-receipt arm and every direct library caller still need.
+        _assert_receipt_matches_inspection(receipt, eff_inspection)
+        if not acks.is_acked(install_consent_identity(
+                component_id=eff_inspection.component_id,
+                version=eff_inspection.version,
+                root_digest=eff_inspection.root_digest, slug=eff_inspection.slug,
+                receipt_digest=eff_inspection.receipt_digest)):
+            raise SpecialistInstallError(
+                "consent_missing", "no recorded operator approval for the upgrade")
+        _instance_dir = InstanceDir(slug_dir)
+        try:
+            _active_before = _instance_dir.active()
+        except ValueError as exc:
+            raise SpecialistInstallError("active_unreadable", str(exc)) from exc
+        if _active_before is None:
+            raise SpecialistInstallError(
+                "no_active_tuple", f"{slug!r} has no active install to upgrade")
+        verified = _resolve_verified_component(
+            eff_inspection, slug=slug, specialists_dir=specialists_dir,
+            receipt=receipt)
+
         _reg = plugin_registry.load_registry(registry_path)
         before_owned = plugin_registry.owned_entries_for(slug, _reg)
         before_tuple_files = _tuple_files_snapshot(slug_dir)
         ack_records = acks.snapshot_slug(slug)
+        target_root = component_root_string(
+            component_id=inspection.component_id, version=inspection.version,
+            component_checksum=inspection.root_digest)
+        declared_secret_names = _declarations_for_capture(
+            before_tuple_files, target_root=target_root, verified=verified,
+            specialists_dir=specialists_dir, slug=slug)
         journal = specialist_bundle_journal.begin(
             "upgrade", slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
@@ -2379,17 +2434,16 @@ def upgrade_specialist(
                 component_id=inspection.component_id, version=inspection.version,
                 root_digest=inspection.root_digest, slug=inspection.slug,
                 receipt_digest=inspection.receipt_digest),
-            target_root=component_root_string(
-                component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest),
+            target_root=target_root,
+            specialists_dir=specialists_dir,
+            declared_secret_names=declared_secret_names,
             ops_dir=ops_dir)
         rollback_txn = BundleTxn(
             journal_path=journal, slug=slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
             op="upgrade",
-            target_root=component_root_string(
-                component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest),
+            target_root=target_root,
+            declared_secret_names=declared_secret_names,
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
@@ -2434,9 +2488,8 @@ def upgrade_specialist(
                 op="upgrade", owned_swap_committed=swapped,
                 removed_owned_names=_removed_owned_names(
                     before_entries, new_entries) if swapped else (),
-                target_root=component_root_string(
-                    component_id=inspection.component_id, version=inspection.version,
-                    component_checksum=inspection.root_digest),
+                target_root=target_root,
+                declared_secret_names=declared_secret_names,
                 registry_path=registry_path, specialists_dir=specialists_dir,
                 acks_path=acks.path,
                 agents_specialists_dir=agents_specialists_dir)
@@ -2454,6 +2507,182 @@ def upgrade_specialist(
     # the tool layer's sequencer decides terminal success (see
     # commit_specialist_install's identical note).
     return instance, txn
+
+
+@dataclass(frozen=True)
+class _VerifiedComponent:
+    """#966: the incoming component, published and fully verified, as one
+    value the caller can hold BEFORE it opens a journal."""
+    cas_dir: Path
+    component: object
+    deps: tuple
+    root_digest: str
+
+
+def _declarations_for_capture(
+    before_tuple_files: "dict[str, str | None]", *, target_root: str,
+    verified: "_VerifiedComponent", specialists_dir: Path, slug: str,
+) -> "dict[str, list[str]]":
+    """#966: resolve, once and before the journal opens, the declared secret
+    names for every component root this capture will be sanitized against.
+
+    Returns `{root_string: [declared secret names]}`, which `begin` records in
+    the journal and both `BundleTxn`s carry. Every later consumer — the runtime
+    compensation and, after a crash, boot replay rebuilding from the payload
+    alone — then classifies each captured snapshot exactly as the capture did,
+    without needing to read the content-addressed store at a moment when it may
+    no longer be readable.
+
+    A snapshot key is only ever removed from a capture because a component
+    DECLARES it secret. The sanitizer's fail-closed branch also removes every
+    key when it cannot find out, which is the right answer to "may I write this
+    to a journal?" and the wrong answer to "what was on disk before?" — and
+    `rollback_disk` asks it the second question. So an uncertainty is refused
+    here rather than recorded as an emptiness:
+
+        a before-state that cannot be recorded honestly is a refusal, and
+        no journal is opened at all.
+
+    Nothing is staged, nothing is captured, nothing is compensated, and the
+    operator's tuple is untouched — the same shape `active_unreadable` already
+    uses, and the same recovery (uninstall and reinstall).
+
+    Only roots that a capture actually NEEDS are resolved: a file with no
+    snapshot, or an unparseable one, needs no declaration (an unparseable file
+    is a determination — it gets the sentinel tombstone — not an uncertainty).
+    So a slug carrying no saved settings can never be refused by this.
+
+    Scope, stated because the omission is deliberate: this is the receipt-
+    bearing upgrade's preflight. `_rollback_core`, `uninstall_specialist` and
+    the persona override keep the existing fail-closed tombstone when a
+    captured root is unresolvable, because refusing to UNINSTALL a broken
+    install is worse than the tombstone.
+    """
+    from specialist_bundle_journal import _CAPTURED_TUPLE_FILES
+
+    declarations: "dict[str, list[str]]" = {
+        # The incoming root's declaration comes off the component
+        # `_resolve_verified_component` just checked the root-digest equation
+        # of — the same bytes `_declared_secret_names_for_root` would read, but
+        # read at a point where they are certainly there.
+        target_root: sorted(
+            set(verified.component.config_schema.get("secret_names", []) or [])),
+    }
+    for filename, content in before_tuple_files.items():
+        if content is None or filename not in _CAPTURED_TUPLE_FILES:
+            continue
+        try:
+            payload = yaml.safe_load(content)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        snapshot = payload.get("config_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            continue
+        root = payload.get("root")
+        if not isinstance(root, str) or not root:
+            # An unusable root is a determination about the file, not an
+            # uncertainty about a component: the sanitizer tombstones it and
+            # that is correct.
+            continue
+        if root in declarations:
+            continue
+        names = _declared_secret_names_for_root(root, specialists_dir=specialists_dir)
+        if names is None:
+            raise SpecialistInstallError(
+                "prior_schema_unreadable",
+                f"the component {root} that {slug!r}'s persisted {filename} belongs to "
+                f"cannot be read back from the content store, so which of its saved "
+                f"settings are secret cannot be determined; refusing to open a "
+                f"transaction whose before-state could only be recorded as empty")
+        declarations[root] = sorted(names)
+    return declarations
+
+
+def _resolve_verified_component(
+    inspection: "InspectionResult", *, slug: str, specialists_dir: Path,
+    receipt: "SourceReceipt | None",
+) -> "_VerifiedComponent":
+    """Publish the approved component into the content-addressed store if it is
+    not already there, then load it back and verify it end to end.
+
+    Same CAS-before-verify TEMP-staging + reload + recompute + compare +
+    os.replace pattern as commit_specialist_install (see that function's
+    comments for the full rationale) — a digest mismatch here must never leave
+    a wrong-digest-named CAS directory behind.
+
+    Extracted from `_upgrade_core` for #966 so the BUNDLE arm can run it before
+    `specialist_bundle_journal.begin`, the way `commit_specialist_install`
+    already does. It is PURE with respect to everything the journal covers: it
+    writes only content-addressed store bytes, stages no instance tuple,
+    changes no registry ownership and consumes no receipt. Idempotent, because
+    the store directory's name IS the digest and every check below is a
+    recomputation — so the bundle arm calling it and then `_upgrade_core`
+    calling it again, both under SPECIALIST_LIFECYCLE_LOCK, cannot disagree.
+
+    An ALREADY-PRESENT store directory is verified here too, not trusted: the
+    publish short-circuits on it, but the reload, the closure and the root
+    digest equation below all run regardless, so a present-but-corrupt or
+    wrong-digest directory is a typed refusal rather than a capture the
+    sanitizer cannot classify.
+    """
+    cas_dir = cas_store_dir(inspection.root_digest, store_root=specialists_dir / "store")
+    if not cas_dir.exists():
+        staging_root = specialists_dir / "store" / ".staging"
+        staging_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cas_staging_dir = staging_root / uuid.uuid4().hex
+        shutil.copytree(inspection.staged_dir, cas_staging_dir, dirs_exist_ok=False, symlinks=True)
+        for path in cas_staging_dir.rglob("*"):
+            if path.is_file():
+                path.chmod(0o400)
+        try:
+            staged_component = load_specialist_component(
+                cas_staging_dir, cas_staging_dir / "manifest.json")
+            staged_deps = resolve_dependency_closure(staged_component, cas_staging_dir)
+            staged_unavailable = [d for d in staged_deps if not d.available]
+            if staged_unavailable:
+                detail = "; ".join(
+                    f"{d.kind}:{d.identifier}: {d.detail}" for d in staged_unavailable)
+                raise SpecialistInstallError("dependency_unavailable", detail)
+            staged_root_digest = compute_install_root_digest(
+                staged_component, staged_deps,
+                manifest_bytes=(cas_staging_dir / "manifest.json").read_bytes())
+            if staged_root_digest != inspection.root_digest:
+                raise SpecialistInstallError(
+                    "checksum_changed",
+                    "staged component no longer matches the approved inspection")
+        except Exception:
+            shutil.rmtree(cas_staging_dir, ignore_errors=True)
+            raise
+        _publish_cas_staging(cas_staging_dir, cas_dir)
+    component = load_specialist_component(cas_dir, cas_dir / "manifest.json")
+    # The MCP tool boundary passes `slug` and `inspection` as INDEPENDENT
+    # arguments — specialist_upgrade builds `inspection` from the freshly-
+    # loaded staged component but takes `args["slug"]` separately, so
+    # nothing previously stopped a caller (compromised or mistaken tool-call
+    # sequence, or a test/direct caller that hand-builds InspectionResult)
+    # from upgrading slug X using component Y's bytes. Assert agreement at
+    # the lifecycle-function level — the layer every caller, sanctioned or
+    # not, must pass through.
+    if component.slug != slug:
+        raise SpecialistInstallError(
+            "slug_mismatch",
+            f"component slug {component.slug!r} does not match the requested upgrade slug {slug!r}")
+    _reject_receiptless_sourced_deps(component, receipt=receipt)
+    fresh_deps = resolve_dependency_closure(component, cas_dir)
+    fresh_unavailable = [d for d in fresh_deps if not d.available]
+    if fresh_unavailable:
+        detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in fresh_unavailable)
+        raise SpecialistInstallError("dependency_unavailable", detail)
+    fresh_root_digest = compute_install_root_digest(
+        component, fresh_deps, manifest_bytes=(cas_dir / "manifest.json").read_bytes())
+    if fresh_root_digest != inspection.root_digest:
+        raise SpecialistInstallError(
+            "checksum_changed", "CAS-persisted component no longer matches the approved inspection")
+    return _VerifiedComponent(
+        cas_dir=cas_dir, component=component, deps=tuple(fresh_deps),
+        root_digest=fresh_root_digest)
 
 
 def _upgrade_core(
@@ -2525,63 +2754,12 @@ def _upgrade_core(
     if active_before is None:
         raise SpecialistInstallError("no_active_tuple", f"{slug!r} has no active install to upgrade")
 
-    # Same CAS-before-verify TEMP-staging + reload + recompute + compare +
-    # os.replace pattern as commit_specialist_install (see that function's
-    # comments for the full rationale) — a digest mismatch here must never
-    # leave a wrong-digest-named CAS directory behind.
-    cas_dir = cas_store_dir(inspection.root_digest, store_root=specialists_dir / "store")
-    if not cas_dir.exists():
-        staging_root = specialists_dir / "store" / ".staging"
-        staging_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        cas_staging_dir = staging_root / uuid.uuid4().hex
-        shutil.copytree(inspection.staged_dir, cas_staging_dir, dirs_exist_ok=False, symlinks=True)
-        for path in cas_staging_dir.rglob("*"):
-            if path.is_file():
-                path.chmod(0o400)
-        try:
-            staged_component = load_specialist_component(
-                cas_staging_dir, cas_staging_dir / "manifest.json")
-            staged_deps = resolve_dependency_closure(staged_component, cas_staging_dir)
-            staged_unavailable = [d for d in staged_deps if not d.available]
-            if staged_unavailable:
-                detail = "; ".join(
-                    f"{d.kind}:{d.identifier}: {d.detail}" for d in staged_unavailable)
-                raise SpecialistInstallError("dependency_unavailable", detail)
-            staged_root_digest = compute_install_root_digest(
-                staged_component, staged_deps,
-                manifest_bytes=(cas_staging_dir / "manifest.json").read_bytes())
-            if staged_root_digest != inspection.root_digest:
-                raise SpecialistInstallError(
-                    "checksum_changed",
-                    "staged component no longer matches the approved inspection")
-        except Exception:
-            shutil.rmtree(cas_staging_dir, ignore_errors=True)
-            raise
-        _publish_cas_staging(cas_staging_dir, cas_dir)
-    component = load_specialist_component(cas_dir, cas_dir / "manifest.json")
-    # The MCP tool boundary passes `slug` and `inspection` as INDEPENDENT
-    # arguments — specialist_upgrade builds `inspection` from the freshly-
-    # loaded staged component but takes `args["slug"]` separately, so
-    # nothing previously stopped a caller (compromised or mistaken tool-call
-    # sequence, or a test/direct caller that hand-builds InspectionResult)
-    # from upgrading slug X using component Y's bytes. Assert agreement at
-    # the lifecycle-function level — the layer every caller, sanctioned or
-    # not, must pass through.
-    if component.slug != slug:
-        raise SpecialistInstallError(
-            "slug_mismatch",
-            f"component slug {component.slug!r} does not match the requested upgrade slug {slug!r}")
-    _reject_receiptless_sourced_deps(component, receipt=receipt)
-    fresh_deps = resolve_dependency_closure(component, cas_dir)
-    fresh_unavailable = [d for d in fresh_deps if not d.available]
-    if fresh_unavailable:
-        detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in fresh_unavailable)
-        raise SpecialistInstallError("dependency_unavailable", detail)
-    fresh_root_digest = compute_install_root_digest(
-        component, fresh_deps, manifest_bytes=(cas_dir / "manifest.json").read_bytes())
-    if fresh_root_digest != inspection.root_digest:
-        raise SpecialistInstallError(
-            "checksum_changed", "CAS-persisted component no longer matches the approved inspection")
+    _verified = _resolve_verified_component(
+        inspection, slug=slug, specialists_dir=specialists_dir, receipt=receipt)
+    cas_dir = _verified.cas_dir
+    component = _verified.component
+    fresh_deps = list(_verified.deps)
+    fresh_root_digest = _verified.root_digest
     role = materialize_role(
         source=load_role_artifact(cas_dir / "role"),
         # #355: resolve ha_option models exactly as the agent loader
@@ -3265,6 +3443,7 @@ def rollback_specialist(
     journal = specialist_bundle_journal.begin(
         "rollback", slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
+        specialists_dir=specialists_dir,   # #966
         ops_dir=ops_dir)
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,
@@ -3638,6 +3817,7 @@ def uninstall_specialist(
         journal = specialist_bundle_journal.begin(
             "uninstall", slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
+            specialists_dir=specialists_dir,   # #966
             ops_dir=ops_dir)
     except BaseException:
         acks.restore_records(ack_records)

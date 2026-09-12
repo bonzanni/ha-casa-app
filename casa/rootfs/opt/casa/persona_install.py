@@ -801,6 +801,9 @@ def _apply_specialist_override_locked(
     journal = specialist_bundle_journal.begin(
         "persona_override", slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
+        # #966: the same tree the BundleTxn below restores into — the capture
+        # was classified against the module default instead.
+        specialists_dir=slug_dir.parent,
         ops_dir=ops_dir)
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,

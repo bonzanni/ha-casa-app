@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.304.0] - 2026-09-12
+
+### Fixed
+
+- A specialist upgrade that is refused now leaves your saved settings exactly as
+  it found them. Whether the refusal was a missing approval, a component that
+  changed under it, or one it could not read, the upgrade was undoing work it had
+  never started: it erased the settings you had supplied, from both the running
+  and the pending copies, and left nothing to recover them from. A perfectly
+  ordinary refusal — asking to upgrade a specialist whose approval had not been
+  given — was enough. The upgrade now settles everything it would need to put
+  things back before it begins, so a refusal cannot restore an emptiness nobody
+  measured.
+  One thing this does not cover, said because it is the same shape: settings can
+  still be erased at startup when a specialist's component cannot be read back.
+  That is recorded separately and is not fixed here.
+
 ## [0.303.0] - 2026-09-12
 
 ### Fixed
