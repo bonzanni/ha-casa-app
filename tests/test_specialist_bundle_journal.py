@@ -371,6 +371,148 @@ def test_reconcile_boot_retains_pending_candidate_restored_by_replay(tmp_path):
     ) == (1, 2, 0, 0, 1, 2)
 
 
+def test_a_capture_the_sanitizer_tombstones_is_still_swept_after_replay(tmp_path):
+    """#950 (the counter-guard): replay-first must not become capture-aware by
+    accident. `rollback_disk` re-runs the #372 sanitizer, so a capture whose
+    `desired.yaml` carries a secret-bearing snapshot whose digests disagree
+    lands as a TOMBSTONE — not a live pending candidate — and its receipt and
+    staging tree are correctly still reclaimed. A retention set read from the
+    capture, or one that treats any restored `desired.yaml` as live, keeps a
+    receipt for a candidate that can never resume. Green before and after the
+    reorder; it exists to refuse a fix that over-retains."""
+    import json as _json
+    import os
+    import time
+    from personality_binding import PRE_GUARD_SENTINEL
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    specialists = tmp_path / "specialists"
+    slug_dir = specialists / "mtg"
+    slug_dir.mkdir(parents=True)
+    staging = specialists / ".staging"
+    staged_tree = staging / "deadbeef01"
+    staged_tree.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(staged_tree), "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (receipt_path, staged_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    # A secret-bearing capture whose digests were computed over the original
+    # mapping: the restore-side sanitizer tombstones it.
+    journal.begin(
+        "install", "mtg", before_entries=[],
+        before_tuple_files={
+            "active.yaml": None,
+            "desired.yaml": _tuple_yaml({"api_token": "hunter2"},
+                                        "sha256:" + "9" * 64),
+            "pending-receipt.json": _json.dumps({"receipt_id": "c" * 32})},
+        ack_records=[], ops_dir=ops_dir)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert {"slug": "mtg", "action": "rolled_back"} in actions
+    restored = (slug_dir / "desired.yaml").read_text(encoding="utf-8")
+    assert PRE_GUARD_SENTINEL in restored and "hunter2" not in restored
+    assert (
+        int(receipt_path.exists()),
+        int(staged_tree.is_dir()),
+        sum(a["count"] for a in actions if a["action"] == "swept_receipts"),
+        sum(a["count"] for a in actions
+            if a["action"] == "swept_staging_trees"),
+    ) == (0, 0, 1, 1)
+
+
+def test_reconcile_boot_still_reclaims_when_there_is_no_ops_dir(tmp_path):
+    """#950: the age sweeps are reachable on an install that has never
+    journalled. Before the reorder an early return sat AFTER them; after it
+    the journal phase is guarded instead. Asserted by COUNTS, because an
+    install with nothing to reclaim would satisfy an actions-only pin."""
+    import json as _json
+    import os
+    import time
+
+    specialists = tmp_path / "specialists"
+    staging = specialists / ".staging"
+    orphan_tree = staging / "feedface01"
+    orphan_tree.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    orphan_receipt = receipts / ("c" * 32 + ".json")
+    orphan_receipt.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg", "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (orphan_receipt, orphan_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    actions = journal.reconcile_boot(
+        ops_dir=tmp_path / "nope", registry_path=tmp_path / "registry.json",
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert (int(orphan_receipt.exists()), int(orphan_tree.is_dir())) == (0, 0)
+    assert actions == [{"slug": None, "action": "swept_receipts", "count": 1},
+                       {"slug": None, "action": "swept_staging_trees",
+                        "count": 1}]
+    assert journal.last_boot_reconcile_actions == actions
+
+
+def test_a_failing_journal_phase_does_not_disable_the_age_sweeps(tmp_path,
+                                                                 monkeypatch):
+    """#950: reclamation must survive a journal phase that raises. A present
+    but unreadable ops directory makes `sorted(ops_dir.iterdir())` raise; before
+    the reorder that raise happened AFTER both sweeps had already reclaimed, so
+    moving the journal phase in front of them without a boundary would silently
+    disable reclamation on exactly that input. Remove the boundary and this
+    test raises instead of asserting."""
+    import json as _json
+    import os
+    import time
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    specialists = tmp_path / "specialists"
+    staging = specialists / ".staging"
+    orphan_tree = staging / "feedface01"
+    orphan_tree.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    orphan_receipt = receipts / ("c" * 32 + ".json")
+    orphan_receipt.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg", "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (orphan_receipt, orphan_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    def _boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(ops_dir))
+
+    monkeypatch.setattr(journal, "_reconcile_journals", _boom)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=tmp_path / "registry.json",
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert (int(orphan_receipt.exists()), int(orphan_tree.is_dir())) == (0, 0)
+    assert actions == [{"slug": None, "action": "swept_receipts", "count": 1},
+                       {"slug": None, "action": "swept_staging_trees",
+                        "count": 1}]
+
+
 # --------------------------------------------------------------------------
 # #372 (D8/D9): journal residue sweeps + captured-tuple sanitization
 # --------------------------------------------------------------------------
