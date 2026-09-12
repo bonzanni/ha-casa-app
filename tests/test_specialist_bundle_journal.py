@@ -271,6 +271,106 @@ def test_reconcile_boot_keeps_pending_installs_receipt_and_staging(tmp_path):
     assert not orphan.exists()        # unreferenced aged tree swept
 
 
+def test_reconcile_boot_retains_pending_candidate_restored_by_replay(tmp_path):
+    """#950 (red case, specified by astra): liveness established by THIS call's
+    own journal replay counts for the age sweeps.
+
+    A pending candidate's `desired.yaml` and `pending-receipt.json` live only
+    inside an in-progress journal capture when boot starts. Pre-fix, the
+    retention set was derived before the replay loop ran, so the marker'd
+    receipt and both staging trees it references were swept and the replay then
+    restored a marker naming a receipt that no longer exists — a visible,
+    unresumable candidate whose only exit is uninstall and reinstall. The
+    exemption the corpus states for the boot pass as a whole
+    (`docs/architecture/specialist-bundle-transactions.md:205-217`,
+    `specialist_receipt.sweep_aged:217-233`,
+    `specialist_install.sweep_staging_aged:363-373`) has to hold here too.
+    """
+    import json as _json
+    import os
+    import time
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    specialists = tmp_path / "specialists"
+    slug_dir = specialists / "mtg"
+    slug_dir.mkdir(parents=True)
+    # Mid-mutation tree: the tuple that owns the receipt is NOT on disk.
+    (slug_dir / "active.yaml").write_text("mid-mutation", encoding="utf-8")
+
+    staging = specialists / ".staging"
+    staging.mkdir()
+    component_tree = staging / "deadbeef01"
+    plugin_tree = staging / "deadbeef02"
+    superseded_tree = staging / "0ldbeef03"
+    orphan_tree = staging / "feedface04"
+    for tree in (component_tree, plugin_tree, superseded_tree, orphan_tree):
+        tree.mkdir()
+        (tree / "manifest.json").write_text("{}", encoding="utf-8")
+
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(component_tree),
+        "plugins": [{"staged_path": str(plugin_tree)}]}), encoding="utf-8")
+    # A NEWER same-slug inspection for a different root: it cannot resume the
+    # pending tuple, so it sweeps whatever happens to the marker'd one.
+    newer_receipt = receipts / ("d" * 32 + ".json")
+    newer_receipt.write_text(_json.dumps({
+        "receipt_id": "d" * 32, "slug": "mtg",
+        "component_staged_path": str(superseded_tree), "plugins": []}),
+        encoding="utf-8")
+
+    month_ago = time.time() - 30 * 24 * 3600
+    older_ts = month_ago - 10 * 24 * 3600
+    for p in (receipt_path, component_tree, plugin_tree):
+        os.utime(p, (older_ts, older_ts))      # the marker'd set is the OLDER one
+    for p in (newer_receipt, superseded_tree, orphan_tree):
+        os.utime(p, (month_ago, month_ago))
+
+    desired_yaml = _honest_tuple_yaml({})
+    marker_json = _json.dumps({"receipt_id": "c" * 32})
+    journal.begin(
+        "install", "mtg", before_entries=[],
+        before_tuple_files={"active.yaml": None,
+                            "desired.yaml": desired_yaml,
+                            "pending-receipt.json": marker_json},
+        ack_records=[], ops_dir=ops_dir)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    # The candidate really did become live through a SUCCESSFUL replay — none
+    # of the retention assertions below mean anything otherwise.
+    assert [a for a in actions if a["slug"] == "mtg"] == [
+        {"slug": "mtg", "action": "rolled_back"}]
+    assert not any(a["action"] in ("quarantine", "quarantine_all")
+                   for a in actions)
+    assert list(ops_dir.iterdir()) == []
+    assert (slug_dir / "desired.yaml").read_text(
+        encoding="utf-8") == desired_yaml
+    assert (slug_dir / "pending-receipt.json").read_text(
+        encoding="utf-8") == marker_json
+    from specialist_install import _pre_guard_prior_reason
+    assert _pre_guard_prior_reason(slug_dir / "desired.yaml") is None
+
+    assert (
+        int(receipt_path.exists()),
+        sum(p.is_dir() for p in (component_tree, plugin_tree)),
+        int(newer_receipt.exists()),
+        sum(p.is_dir() for p in (superseded_tree, orphan_tree)),
+        sum(a["count"] for a in actions if a["action"] == "swept_receipts"),
+        sum(a["count"] for a in actions
+            if a["action"] == "swept_staging_trees"),
+    ) == (1, 2, 0, 0, 1, 2)
+
+
 # --------------------------------------------------------------------------
 # #372 (D8/D9): journal residue sweeps + captured-tuple sanitization
 # --------------------------------------------------------------------------
