@@ -116,7 +116,12 @@ outright, and tombstoning a pending `desired.yaml` releases its receipt marker).
 journals apply the same sanitizer to every captured tuple payload when a journal is
 written and again when any journal restores, failing closed to all-keys stripping when
 the schema union (the capture's own root plus an install/upgrade's target root) cannot
-be established.
+be established. An upgrade no longer reaches that fallback: it resolves the declarations
+its capture needs before it opens the journal and records them in the journal, so the
+capture and every restore of it — boot replay included — establish the same union from
+the journal itself, and a declaration that cannot be obtained refuses the upgrade instead
+of being journalled as an emptiness the compensation would then write back
+([`specialist-bundle-transactions.md`](specialist-bundle-transactions.md)).
 
 What it does not cover: the config git repository's *history* — commits that predate the
 guard may retain pre-guard digests (and, before the boot scrub existed, plaintext);
