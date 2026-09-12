@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.301.0] - 2026-09-12
+
+### Fixed
+
+- Resetting a resident back to the persona Casa ships now restores exactly that
+  persona. A persona pack installed under the same name used to decide the
+  answer, because the reset searched installed packs first while startup reads
+  only what the image ships — so the reset could stage a persona that startup
+  would never bring up. If that installed pack was unreadable, the reset refused
+  outright, even though the shipped persona was perfectly fine: the one action
+  that exists so there is always a way back was blocked by the thing you were
+  trying to get back from. An installed pack at that name can no longer change
+  what the reset restores, or refuse it.
+  Applying or swapping a persona you name yourself is unchanged and still
+  prefers an installed pack — that is what naming one means. The reset can still
+  refuse if the shipped persona itself is missing or does not suit the resident.
+
 ## [0.300.0] - 2026-09-11
 
 ### Changed

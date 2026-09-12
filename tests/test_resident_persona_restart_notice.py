@@ -41,6 +41,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import persona_install
+
 from test_persona_install import install_persona_for_apply
 
 CASA = Path(__file__).resolve().parent.parent / "casa" / "rootfs" / "opt" / "casa"
@@ -421,24 +423,40 @@ def test_the_notice_is_identical_whether_or_not_the_binding_appears_to_move(
 def test_an_installed_pack_shadowing_the_image_default_still_tells(
         resident, tmp_path, monkeypatch) -> None:
     """r2's state, kept as a regression (#945). An installed
-    `casa/ellen@0.1.0` shadows the image-default ref: `_resolve_local_persona`
-    searches the INSTALLED root first, so reset's candidate digest equals the
+    `casa/ellen@0.1.0` shadows the image-default ref. Before #945 the reset
+    searched the INSTALLED root first, so its candidate digest equalled the
     active one — while boot, which reads the image root ONLY, promotes a
     different binding. This is precisely the state in which r1's predicate went
     silent and the voice conversation was lost unannounced.
 
-    The staging divergence itself is #945 and is NOT fixed here. What this pins
-    is that the TELLING no longer depends on it: the notice must arrive whole.
+    What this pins is that the TELLING does not depend on the divergence: the
+    notice must arrive whole.
+
+    AMENDED for #945 (the fix this test anticipated). The divergence assertion
+    it carried — "the reset resolves the shadow, and if that ever stops holding
+    #945 was fixed" — named the wrong mechanism, so it survived the fix
+    unchanged and would have gone on describing a state that no longer exists.
+    `_resolve_local_persona`'s DEFAULT resolution is still installed-first, and
+    must be: that is `resident_persona_swap`'s caller-supplied-ref contract
+    (INV-PERS-013). What #945 changed is the one CALL SITE that resolves the
+    in-image default constant, which now names the image root alone. So the
+    default-resolver assertion is kept as the true statement it is, and the
+    state the reset is actually in is asserted positively alongside it.
     """
-    from personality_binding import materialize_image_default_binding
+    from personality_binding import (
+        InstanceDir, materialize_image_default_binding)
+    import agent_loader
     import tools as tools_mod
 
     shadow = install_persona_for_apply(
         tmp_path, monkeypatch, persona_id="casa/ellen", version="0.1.0")
     resolved = tools_mod._resolve_local_persona("casa/ellen@0.1.0")
-    # The shadow really is what the tool resolves — if this ever stops holding,
-    # #945 was fixed and this test is describing a state that no longer exists.
+    # A caller-supplied ref still resolves installed-first — the swap contract,
+    # unchanged by #945 — so the shadow really is in the way.
     assert resolved.checksum == shadow.checksum
+    image_pack = tools_mod._resolve_local_persona(
+        "casa/ellen@0.1.0", roots=(persona_install.image_personas_root(),))
+    assert image_pack.checksum != shadow.checksum
 
     _commit_active(materialize_image_default_binding(
         role=resident.role, persona=resolved,
@@ -446,6 +464,11 @@ def test_an_installed_pack_shadowing_the_image_default_still_tells(
 
     payload = _reset_payload()
     assert payload["ok"] is True
+    # #945: and what it staged is the IMAGE pack's binding — the one boot's
+    # non-override arm will re-materialise — not the shadow it is active on.
+    staged = InstanceDir(
+        agent_loader._resident_bindings_root(None) / "resident-assistant").desired()
+    assert staged.binding.persona_checksum == image_pack.checksum
     assert_restart_notice(
         payload["conversation_notice"], "reset result (shadowed image default)")
     assert_promises_nothing(
