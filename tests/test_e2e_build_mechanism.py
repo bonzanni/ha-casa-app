@@ -207,7 +207,14 @@ def test_build_image_reports_the_base_version_on_stderr(stub):
     inspects = [c for c in calls if c[:2] == ["image", "inspect"]]
     assert len(inspects) == 1, calls
     assert "probe-image" in inspects[0], inspects[0]
-    assert any("io.hass.version" in a for a in inspects[0]), inspects[0]
+    # The FORMAT EXPRESSION, compared whole. "an argument somewhere containing
+    # io.hass.version" is not enough: `--format '{{.Id}} io.hass.version'`
+    # satisfies that and reports an image ID against real docker, while the
+    # recording stub — which cannot evaluate a Go template — answers it
+    # identically. The label read is the mechanism, so it is what is asserted.
+    assert "--format" in inspects[0], inspects[0]
+    fmt = inspects[0][inspects[0].index("--format") + 1]
+    assert fmt == '{{index .Config.Labels "io.hass.version"}}', fmt
 
     reports = [ln for ln in proc.stderr.splitlines() if "io.hass.version" in ln]
     assert len(reports) == 1, proc.stderr
