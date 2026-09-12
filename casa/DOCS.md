@@ -107,6 +107,57 @@ setting by hand:
 5. **Per-agent triggers**: Each agent declares scheduled triggers (cron, interval or a one-off date) in its own `agents/<role>/triggers.yaml`. The TriggerRegistry registers them at boot, and fires them via the agent's normal turn loop.
 6. **Reminders**: Ellen can set her own reminders, which are ordinary triggers written to her `triggers.yaml` — so they survive restarts and updates. One-off reminders remove themselves after firing, and any reminder whose time fell while Casa was down is delivered on the next sweep rather than lost.
 
+### Writing a scheduled trigger prompt by hand
+
+A scheduled turn delivers whatever the agent says at the end of it. So a prompt
+that tells the agent to send you a message, and says nothing about how the turn
+ends, costs you two messages: the message itself, and then the agent's own
+closing "Sent." to the same chat. Casa does not suppress that closing text on
+your behalf — a scheduled turn that has something real to say must still be
+heard, and a correction after a send must still reach you — so the prompt is
+where you say it.
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+Casa writes that clause into the prompts it generates itself that have this
+shape — a reminder's prompt is the plain example — and the Configurator writes
+it into the scheduled prompts it authors for you that have it. It is a
+convention, not an enforced rule: **nothing rejects a hand-written prompt that
+omits the clause** — such a prompt still delivers twice, and the fix is to add
+the clause to the prompt.
+
+The question is never whether the turn uses a tool. It is where your copy of the
+message comes from, and there are only two answers. Either it arrives from a
+delivery tool call, which puts it in the chat by itself and leaves the turn with
+nothing left to say — that shape needs the clause. Or it arrives as the turn's
+own final text, which Casa delivers when the turn ends — that shape must NOT be
+given the clause, because the sentinel would then be the whole final text and
+you would get nothing. The shipped heartbeat and morning-briefing triggers are
+the second shape: they tell the agent to output only the final message text, and
+they name the sentinel only for the case where the turn has nothing worth
+saying. A turn that looks something up and then reports what it found is the
+second shape too, however many tools it called on the way.
+
+Decide which shape your prompt is before writing it:
+
+```yaml
+# shape A — your copy arrives from a DELIVERY tool call (send_message /
+# send_media), so the turn has nothing left to say.
+prompt: >-
+  Send this exact message via telegram: "Bins out tonight." After the send,
+  output the sentinel `<silent/>` and nothing else.
+
+# shape B — your copy arrives as the turn's OWN final text. No closing clause;
+# the sentinel appears only as the way to say nothing at all.
+prompt: >-
+  Output today's forecast as the final message text, with no preamble. If there
+  is nothing worth sending, output the sentinel `<silent/>` and nothing else.
+```
+
+Webhook triggers have no prompt at all, so none of this applies to them.
+
 ## API endpoints
 
 All endpoints are accessible through the ingress proxy.

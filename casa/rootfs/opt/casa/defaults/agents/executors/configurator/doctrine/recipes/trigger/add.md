@@ -14,12 +14,62 @@ Triggers are per-agent scheduled or webhook-driven events. Residents only (speci
 5. **Channel?** interval/cron: telegram or voice (must be a channel the agent
    already owns). **A webhook trigger requires the agent to declare the
    `webhook` channel.**
-6. **Prompt?** (interval/cron/date only) One imperative sentence. **A webhook
-   trigger has no prompt and the schema refuses one** — see "Webhook triggers"
-   below for what its turn actually receives. If the operator describes what
-   the agent should *do* when a webhook fires, tell them that before writing
-   it: the instruction cannot be stored on the trigger.
+6. **Prompt?** (interval/cron/date only) One imperative sentence, plus the
+   closing-silence clause below when the turn delivers its own message. **A
+   webhook trigger has no prompt and the schema refuses one** — see "Webhook
+   triggers" below for what its turn actually receives. If the operator
+   describes what the agent should *do* when a webhook fires, tell them that
+   before writing it: the instruction cannot be stored on the trigger.
 7. **Webhook auth?** (webhook only) how does the caller authenticate — see below.
+
+## Every scheduled prompt says how the turn ends
+
+A scheduled turn delivers TWICE when its prompt tells the agent to send a
+message and says nothing about the closing text: the send goes out at once, and
+the turn's own final text is then delivered to the same chat as a second
+message ("Sent."). Casa never suppresses that final text — a scheduled turn
+that legitimately has something to say must still be heard, and a correction
+after a send must reach the operator — so the prompt is what closes the gap.
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+**The question is never "does this turn call a tool". It is: where does the
+operator's copy of the message come from?** Exactly two answers exist, and they
+take opposite endings:
+
+- from a DELIVERY tool call — `send_message` or `send_media` — which puts the
+  message in the chat by itself, leaving the turn with nothing left to say. This
+  is the shape that needs the clause, and it is the shape a reminder's generated
+  prompt has.
+- from the turn's OWN final text, which Casa delivers when the turn ends. This
+  shape must NOT be given the clause: the sentinel would be the whole final text,
+  the turn would be suppressed, and the operator would get nothing. The heartbeat
+  and morning-briefing defaults are this shape — they tell the agent to output
+  ONLY the final message text — and so is any turn that calls tools to look
+  something up and then REPORTS what it found.
+
+A tool call that is not a delivery decides nothing here. A turn may read the
+calendar, query Home Assistant, or acknowledge a background wake and still be
+the second shape, because none of those put anything in the operator's chat.
+
+**Decide which before you write the prompt, and end it accordingly.** Both
+endings, written out:
+
+    # shape A — the operator's copy of the message arrives from a DELIVERY
+    # tool call (send_message / send_media), so the turn has nothing left
+    # to say. Any other tool the turn calls is irrelevant to this choice.
+    prompt="Send this exact message via telegram: \"Bins out tonight.\" After the send, output the sentinel `<silent/>` and nothing else."
+
+    # shape B — the operator's copy arrives as the turn's OWN final text. No
+    # closing clause; the sentinel appears only as the way to say nothing at
+    # all. A turn that calls tools and then REPORTS the result is this shape.
+    prompt="Output today's forecast as the final message text, with no preamble. If there is nothing worth sending, output the sentinel `<silent/>` and nothing else."
+
+Neither ending is the default. Copying shape A onto a shape-B prompt loses the
+delivery; leaving shape A's ending off a shape-A prompt costs a second message
+on every firing.
 
 ## Write the trigger — `config_trigger_upsert`, never a hand edit
 
@@ -37,7 +87,7 @@ inside Casa, leaving every other entry exactly as it was.
         minutes=<N>,               # interval only
         schedule="<cron>",         # cron only
         channel="<telegram|voice>",
-        prompt="<one-line imperative>")
+        prompt="<one-line imperative, ended as its shape requires — see above>")
 
     # webhook — served ONLY at POST /webhook/<name> (no `path` field; it was
     # removed in v0.97.0). The agent must declare the `webhook` channel.
@@ -62,6 +112,13 @@ reminders); ask the resident to change one of those instead.
 ### Add agents/<role>/prompts/<trigger_name>.md (cron/interval only)
 
     You are <name>. The <trigger-name> trigger just fired. <Task description.>
+    <closing line for this prompt's shape — see "Every scheduled prompt says
+    how the turn ends" above.>
+
+A prompt file ends the same way a `prompt=` string does, and the choice is the
+same one: shape A's closing clause when the task description tells the agent to
+deliver with `send_message` or `send_media`, shape B's no-clause ending when the
+turn's own reply is what the operator reads.
 
 ## Reload — MANDATORY before emit_completion
 

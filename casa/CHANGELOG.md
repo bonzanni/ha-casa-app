@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.302.0] - 2026-09-12
+
+### Fixed
+
+- Scheduled triggers no longer tend to say everything twice. A trigger prompt
+  that sends its message with a tool and then finishes with a few words of its
+  own delivered both — the message, then the narration about it. Casa already
+  avoided this in the prompts it writes for itself, with one closing instruction;
+  nothing told anyone writing a trigger prompt to do the same, so prompts written
+  through the configurator, or by hand, carried none. The guidance for writing
+  one — the Configurator's recipes for adding, updating and editing a trigger
+  prompt, and the app documentation for editing `triggers.yaml` yourself — now
+  states the convention, shows both endings rather than presenting one as the
+  default, and says which ending a prompt needs: the one where your copy of the
+  message comes from a delivery tool, not the one where it is the turn's own
+  closing text. A prompt that delivers through its own closing text must NOT
+  carry the instruction — that would silence its only message.
+
 ## [0.301.0] - 2026-09-12
 
 ### Fixed

@@ -74,6 +74,41 @@ config reconciler rewrites it from a worker thread too, and once did so without 
 #458 closed that by holding the same `PASS_LOCK` across the whole reconcile pass, so the
 reconciler and the in-Casa writers now serialize against each other rather than racing.
 
+**A scheduled turn's closing text is delivered, so the prompt is where silence is asked
+for.** A scheduled turn that sends a message with a tool and then ends with ordinary prose
+delivers twice to the same chat: the tool send happens immediately and leaves no mark the
+final-text path can read, and the turn's own closing text then rides the ordinary reply path.
+Neither half is narrowed, and both refusals are pinned: a scheduled turn with real text still
+delivers it exactly once, and prose *after* the silence sentinel is still delivered (the
+recant contract — a correction after a send must reach the operator). What closes the gap is
+therefore the prompt, per prompt, and it is a convention — carried by the surfaces
+`tests/test_scheduled_prompt_guidance.py` enumerates (this document, `casa/DOCS.md`, and the
+configurator's `trigger/add`, `trigger/update` and `prompt/edit` recipes), and extended to a
+new surface by adding it there.
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+**Which prompts the clause belongs to is decided by where the operator's copy comes from,
+never by whether the turn calls a tool.** A turn whose message reaches the operator from a
+delivery tool call has nothing left to say, and that is the shape the clause is for: a
+reminder's generated prompt ([`architecture/reminders.md`](reminders.md)) is the plain
+example, and an event wake carries the same clause for the same reason, its `ack_event` call
+being bookkeeping rather than the delivery
+([`architecture/plugin-events.md`](plugin-events.md)). A turn whose message reaches the
+operator as its own final text is the other shape, needs no clause, and is harmed by one —
+the sentinel would be its whole final text and the turn would be suppressed. The shipped
+heartbeat and morning-briefing defaults are that shape, telling the agent to output only the
+final message text; so is any turn that calls tools to look something up and then reports
+what it found. The configurator's trigger recipes and the app's user documentation both
+state the distinction in those terms.
+**The convention is not a runtime guarantee**: nothing validates a prompt, so a
+hand-authored prompt of the first shape that omits the clause still delivers twice. The
+mechanics of the sentinel and the gate that reads it are
+[`architecture/turn-loop.md`](turn-loop.md)'s. A webhook trigger carries no prompt at all
+(INV-TRIG-013), so the convention does not reach it.
+
 ## Contracts & invariants
 
 **INV-TRIG-001**: A resident's scheduled trigger registers only if the resident declares the channel it names.
@@ -326,6 +361,7 @@ there is none today.
 - `tests/test_config_trigger_tools.py`
 - `tests/test_scheduled_media_delivery.py`
 - `tests/test_scheduled_delivery_durable.py`
+- `tests/test_scheduled_prompt_guidance.py`
 
 **Related**
 - [`architecture/plugin-triggers.md`](../architecture/plugin-triggers.md)
