@@ -2576,6 +2576,29 @@ def upgrade_specialist(
         verified = _resolve_verified_component(
             eff_inspection, slug=slug, specialists_dir=specialists_dir,
             receipt=receipt)
+        # #929 (diff review r1): the pending-configuration merge read rises
+        # above `begin`, beside the receipt check, the consent gate and the
+        # active-tuple read that #966 hoisted for the same reason. It is the
+        # last fallible read this arm performs before its first durable write,
+        # and left where it was — inside `_upgrade_core`, after the journal is
+        # open — its refusal reached `rollback_disk`, whose capture sanitizer
+        # restores a document the refused call never opened. Measured: a
+        # refused upgrade left `active.yaml` tombstoned (`config_snapshot {}`,
+        # digest `pre-guard:removed`), which INV-SPEC-003 says an upgrade
+        # failure must not do. Refusing here records nothing and compensates
+        # nothing. The observation is handed to the core so this arm does not
+        # read a second time and put the same failure back inside the window;
+        # `None` is a real answer and travels as one.
+        try:
+            _pending_before = _instance_dir.desired()
+        except (ValueError, OSError, yaml.YAMLError,
+                jsonschema.ValidationError) as exc:
+            raise SpecialistInstallError(
+                "concurrent_mutation",
+                f"{slug!r}: the pending candidate's configuration could not be "
+                f"read ({exc}); refusing to restage over it — preserve the pending "
+                f"candidate, its saved configuration, and the receipt and staging "
+                f"tree needed to resume; resolve the read error and retry") from exc
 
         _reg = plugin_registry.load_registry(registry_path)
         before_owned = plugin_registry.owned_entries_for(slug, _reg)
@@ -2613,7 +2636,7 @@ def upgrade_specialist(
                 slug=slug, inspection=eff_inspection, config=config,
                 secret_names_provided=secret_names_provided, acks=acks,
                 specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
-                receipt=receipt)
+                receipt=receipt, _pending_before=_pending_before)
             if instance.state == "active":
                 published = _publish_owned_plugins(
                     slug, receipt, tree_paths, store_root=plugin_store_root)
@@ -2846,12 +2869,34 @@ def _resolve_verified_component(
         root_digest=fresh_root_digest)
 
 
+class _Unread:
+    """#929: "this caller has not observed the pending candidate" — distinct from
+    `None`, which is the observation that there is no candidate.
+
+    `_upgrade_core`'s pending-configuration read is the last fallible read the
+    receipt-bearing bundle arm performs between `specialist_bundle_journal.begin`
+    and its first durable write, and a refusal there reaches the transaction
+    compensation. The bundle arm therefore makes that observation BEFORE it opens
+    a journal and hands the result down; every other caller passes nothing and
+    reads for itself, unchanged. A plain default of `None` cannot express this —
+    it is a legitimate answer — so the absence needs its own value."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:   # pragma: no cover — diagnostics only
+        return "<unread>"
+
+
+_UNREAD = _Unread()
+
+
 def _upgrade_core(
     *, slug: str, inspection: "InspectionResult", config: "Mapping[str, str]",
     secret_names_provided: frozenset[str], acks: "SpecialistInstallAckStore",
     specialists_dir: Path = Path("/config/specialists"),
     agents_specialists_dir: Path = Path("/config/agents/specialists"),
     receipt: "SourceReceipt | None" = None,
+    _pending_before: "object" = _UNREAD,
 ) -> "SpecialistInstance":
     """Spec §2.4/§4.1's transactional reinstall/upgrade: stage the new
     version as desired, validate+compile it fully BEFORE touching active,
@@ -2996,23 +3041,33 @@ def _upgrade_core(
     # different-root or unreadable candidate contributes nothing.
     root = component_root_string(component_id=component.component_id, version=component.version,
                                   component_checksum=fresh_root_digest)
-    try:
-        _desired_before = instance_dir.desired()
-    except (ValueError, OSError, yaml.YAMLError,
-            jsonschema.ValidationError) as exc:
-        # #929 (diff review r4): the install path's reasoning, verbatim — a
-        # read that fails once can succeed the next time, so treating the
-        # failure as "contributes nothing" silently drops the settings an
-        # earlier pending attempt already supplied. Fail closed.
-        # INV-OPS-001 (#929 attempt 4): same advice change as the install arm,
-        # for the same reason — a refusal that preserved the settings must not
-        # recommend an action that destroys them.
-        raise SpecialistInstallError(
-            "concurrent_mutation",
-            f"{slug!r}: the pending candidate's configuration could not be "
-            f"read ({exc}); refusing to restage over it — preserve the pending "
-            f"candidate, its saved configuration, and the receipt and staging "
-            f"tree needed to resume; resolve the read error and retry") from exc
+    if _pending_before is not _UNREAD:
+        # #929 (diff review r1): the receipt-bearing bundle arm already made
+        # this observation, before it opened a journal, and handed it down. It
+        # holds SPECIALIST_LIFECYCLE_LOCK across that read and every write
+        # below, so no Casa lifecycle writer can have replaced the candidate in
+        # between — and reading a second time here would put the one fallible
+        # read this arm has left back inside the journal window, which is the
+        # whole reason the first one was moved. `None` here is the observation
+        # "no candidate", not "go and look".
+        _desired_before = _pending_before
+    else:
+        try:
+            _desired_before = instance_dir.desired()
+        except (ValueError, OSError, yaml.YAMLError,
+                jsonschema.ValidationError) as exc:
+            # #929 (diff review r4): a read that fails once can succeed the next
+            # time, so treating the failure as "contributes nothing" silently
+            # drops the settings an earlier pending attempt already supplied.
+            # Fail closed. This is the authority for the legacy no-receipt arm
+            # and every direct caller; the bundle arm reaches the identical
+            # refusal one frame up, before any journal exists.
+            raise SpecialistInstallError(
+                "concurrent_mutation",
+                f"{slug!r}: the pending candidate's configuration could not be "
+                f"read ({exc}); refusing to restage over it — preserve the pending "
+                f"candidate, its saved configuration, and the receipt and staging "
+                f"tree needed to resume; resolve the read error and retry") from exc
     desired_carried = {}
     if _desired_before is not None and _desired_before.root == root:
         desired_carried = {
