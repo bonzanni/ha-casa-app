@@ -197,6 +197,36 @@ def test_the_bundle_arm_reads_the_pending_candidate_exactly_once(
     assert snapshot == {"k": "v", "extra": "e"}
 
 
+def test_an_absent_candidate_is_an_observation_not_a_missing_one(
+        tmp_path, monkeypatch) -> None:
+    """`None` must mean "there is no candidate", never "go and look".
+
+    Every other test here works on a slug that HAS a pending candidate, so a
+    `_pending_before is not None` condition added to the core's consumption
+    would leave them all green while restoring exactly the fallible in-window
+    read the change removed — for the commonest case of all, an upgrade of a
+    slug with nothing pending. Mutation-checked: adding that condition turns
+    this test red and nothing else.
+    """
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=("k",))
+    assert not (fx.slug_dir / "desired.yaml").exists()
+    fx.approve_v2()
+
+    obs = {"begins": 0, "rollbacks": 0, "carried": None, "readers": [],
+           "raise_in": set()}
+    _watch_pending_reads(monkeypatch, obs)
+    _count_journal_starts(monkeypatch, obs)
+    _count_rollbacks(monkeypatch, obs)
+
+    instance, txn = fx.upgrade(config={"k": "v"})
+    specialist_bundle_journal.complete(txn.journal_path)
+
+    assert instance.state == "active", instance.last_activation_error
+    assert obs["readers"].count("upgrade_specialist") == 1
+    assert obs["readers"].count("_upgrade_core") == 0
+    assert obs["rollbacks"] == 0
+
+
 def test_the_legacy_no_receipt_arm_keeps_its_own_read_and_refusal(
         tmp_path, monkeypatch) -> None:
     """`_upgrade_core` is still the authority for every caller that has no
