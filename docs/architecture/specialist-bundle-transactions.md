@@ -22,7 +22,9 @@ owned registry entries, the journalled tuple/sidecar files (the pending prior-ro
 journalled before the visible swap; a sync-phase failure rolls that recorded state back,
 and boot reconciliation replays or quarantines whatever a crash left. The journal's reach
 is exactly what it records — component-store and plugin-store artifacts published earlier
-stay put as inert residue.
+stay put as inert residue, and the component-store publication is deliberately earlier
+than the journal on both the install and the upgrade, so the journal can always resolve
+what the incoming generation declares.
 
 **One lock serializes every instance mutation.** Install, upgrade, rollback, uninstall and
 the reconcile pass all run under the materialize lock, and mutations re-read the active
@@ -63,6 +65,36 @@ compiled and committed.
 
 Enforced by the upgrade core recording an error result without touching the running tuple,
 and by the rollback core's restoration from the retained prior.
+
+On the receipt-bearing bundle arm the retention depends on something further back than
+the core, because a *refusal* there runs the compensation, and the compensation rewrites
+tuple files from the journal's recorded before-state. So the upgrade resolves everything
+that before-state depends on **before it opens the journal**, the way the install does:
+the receipt check, the operator's approval, the active-tuple read and the publication and
+full verification of the incoming component all happen first. Every refusal they can
+raise therefore leaves no journal at all — nothing recorded, nothing to compensate. An
+already-present component-store directory is verified rather than trusted, so a corrupt
+one refuses here too.
+
+What the capture is sanitized against is then carried rather than looked up. A captured
+snapshot's keys are removed only because some component declares them secret, and the
+declarations for every root a capture needs — the tuples' own, and the incoming one, read
+off the component whose root digest was just checked — are resolved once at that point and
+recorded in the journal itself. Every later consumer reads them from there: the runtime
+compensation, and boot replay, which rebuilds its transaction from the payload alone. A
+declaration is a list of key *names*, which is schema the component already ships; the
+journal still holds no value and no secret-derived digest.
+
+That leaves the case where a declaration genuinely cannot be obtained, and it is a
+refusal rather than a record. "I cannot tell which of these keys are secret" is the right
+answer to *may this go in a journal* and the wrong answer to *what was on disk before* —
+and the compensation asks the second question. So the upgrade raises
+`prior_schema_unreadable` with nothing staged, captured or compensated, and the operator's
+tuple untouched; recovery is the reinstall `active_unreadable` already documents.
+
+The retention is bounded to what the upgrade call leaves on disk when it returns. The
+boot-time snapshot scrub reads the same declarations independently, with no journal and no
+carried provenance, and is not covered by this invariant.
 
 One explicit carve-out (#372): a retained prior that predates the secret-digest guard —
 its digests tombstoned by sanitization, or its snapshot still carrying a
@@ -181,6 +213,13 @@ until a boot resolves it. The operator's own repair paths are refused with every
 and that is the point: an uninstall permitted here would be undone by the very next boot.
 
 ## Failure behavior
+
+**A bundle upgrade's preflight refuses.** No approval on record, a receipt that does not
+match the approved inspection, an unreadable active tuple, no active tuple, an incoming
+component that fails its dependency closure or its root-digest equation, or a prior
+component whose declaration cannot be read back: all of these raise before the journal is
+created. Nothing is recorded and nothing is compensated, so the persisted tuple files are
+exactly as the call found them.
 
 **A bundle sync phase fails.** The journal rolls the recorded pre-state back; if rollback
 itself fails, the journal stays in progress for boot to finish, and that slug refuses
