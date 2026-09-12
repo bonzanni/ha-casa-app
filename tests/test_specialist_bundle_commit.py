@@ -1700,3 +1700,165 @@ def test_upgrade_journal_still_strips_a_key_the_incoming_component_declares_secr
     assert captured["config_digest"] == "pre-guard:removed"
     assert ("plaintext-that-must-not-reach-the-journal"
             not in payload["before"]["tuple_files"]["active.yaml"])
+
+
+def test_upgrade_preflight_refusals_open_no_journal_at_all(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966: the four refusals the old window contained reach ZERO journal
+    creations, counted rather than inferred.
+
+    An empty journal directory afterwards is not evidence of this: the old code
+    created a journal, compensated over it and unlinked it, leaving the same
+    empty directory behind. Count the calls.
+    """
+    calls = []
+    real_begin = specialist_bundle_journal.begin
+
+    def _counting_begin(*a, **kw):
+        calls.append(kw.get("target_root"))
+        return real_begin(*a, **kw)
+
+    monkeypatch.setattr(specialist_bundle_journal, "begin", _counting_begin)
+
+    # Each fixture's own INSTALL opens a journal too; the counter is about the
+    # upgrade call alone, so it is cleared once setup is done.
+    # (1) no operator approval recorded for the incoming root
+    fx = _UpgradeFixture(tmp_path / "a", monkeypatch)
+    calls.clear()
+    with pytest.raises(specialist_install.SpecialistInstallError) as ei:
+        fx.upgrade()
+    assert ei.value.kind == "consent_missing"
+    assert calls == []
+
+    # (2) the incoming root's store directory is present and corrupt
+    fx = _UpgradeFixture(tmp_path / "b", monkeypatch)
+    calls.clear()
+    fx.approve_v2()
+    corrupt = specialist_install.cas_store_dir(
+        fx.insp2.root_digest, store_root=fx.store_root)
+    corrupt.mkdir(parents=True)
+    (corrupt / "manifest.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(Exception):
+        fx.upgrade()
+    assert calls == []
+
+    # (3) the component the persisted tuple belongs to cannot be read back
+    fx = _UpgradeFixture(tmp_path / "c", monkeypatch)
+    calls.clear()
+    fx.approve_v2()
+    _shutil.rmtree(specialist_install.cas_store_dir(
+        fx.insp1.root_digest, store_root=fx.store_root))
+    with pytest.raises(specialist_install.SpecialistInstallError) as ei:
+        fx.upgrade()
+    assert ei.value.kind == "prior_schema_unreadable"
+    assert calls == []
+
+    # (4) the active tuple cannot be verified — a tombstoned pre-guard tuple,
+    # the shape `active_unreadable` exists for
+    fx = _UpgradeFixture(tmp_path / "d", monkeypatch)
+    calls.clear()
+    fx.approve_v2()
+    import yaml as _yaml
+    _doc = _yaml.safe_load((fx.slug_dir / "active.yaml").read_text(encoding="utf-8"))
+    _doc["config_digest"] = "pre-guard:removed"
+    _doc["binding"]["effective_config_digest"] = "pre-guard:removed"
+    (fx.slug_dir / "active.yaml").write_text(
+        _yaml.safe_dump(_doc, sort_keys=False), encoding="utf-8")
+    with pytest.raises(specialist_install.SpecialistInstallError) as ei:
+        fx.upgrade()
+    assert ei.value.kind == "active_unreadable"
+    assert calls == []
+
+    # The control: an approved upgrade with nothing wrong DOES open one.
+    fx = _UpgradeFixture(tmp_path / "e", monkeypatch)
+    calls.clear()
+    fx.approve_v2()
+    fx.upgrade()
+    assert len(calls) == 1
+
+
+def test_uninstall_journal_capture_is_classified_against_the_callers_tree(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#966: `begin` sanitizes against the specialists directory its caller is
+    using, not the module-level one.
+
+    The upgrade path no longer depends on this — it carries its declarations —
+    so the assertion has to be made on a producer that still resolves through
+    the store. An uninstall captures the active tuple and looks its root's
+    declaration up; with the module global in force that lookup reads
+    `/config/specialists`, finds nothing, and records a capture whose snapshot
+    is already emptied. Its own restore would then write that back.
+    """
+    import yaml as _yaml
+
+    fx = _UpgradeFixture(tmp_path, monkeypatch)
+    assert specialist_bundle_journal.SPECIALISTS_DIR != fx.common["specialists_dir"]
+    journals_before = fx.journals()
+
+    specialist_install.uninstall_specialist(
+        slug="mtg", bundle=True, acks=fx.acks,
+        specialists_dir=fx.common["specialists_dir"],
+        agents_specialists_dir=fx.common["agents_specialists_dir"],
+        registry_path=fx.common["registry_path"],
+        ops_dir=fx.ops_dir)
+
+    new = fx.journals() - journals_before
+    assert len(new) == 1
+    payload = _json.loads(next(iter(new)).read_text(encoding="utf-8"))
+    captured = _yaml.safe_load(payload["before"]["tuple_files"]["active.yaml"])
+    assert captured["config_snapshot"] == {"k": "v"}
+    assert captured["config_digest"] != "pre-guard:removed"
+
+
+def test_captured_declarations_are_applied_per_root_not_merged(
+    tmp_path: Path,
+) -> None:
+    """#966: each captured file is classified against ITS OWN root's
+    declaration unioned with the incoming one — never against every root in
+    the mapping.
+
+    Two persisted tuples can belong to different generations. A merged union
+    would remove a key from the snapshot of a component that does not declare
+    it secret, which is the same loss this change exists to stop, wearing the
+    opposite sign.
+    """
+    import yaml as _yaml
+    from personality_binding import compute_effective_config_digest
+
+    def _doc(root: str, snapshot: dict) -> str:
+        return _yaml.safe_dump({
+            "api_version": "casa.instance-tuple/v1",
+            "root": root,
+            "binding": {"effective_config_digest":
+                        compute_effective_config_digest(snapshot)},
+            "config_snapshot": snapshot,
+            "config_digest": compute_effective_config_digest(snapshot),
+        }, sort_keys=False)
+
+    root_a = "casa-test/mtg@0.1.0#sha256:" + "a" * 64
+    root_b = "casa-test/mtg@0.2.0#sha256:" + "b" * 64
+    target = "casa-test/mtg@0.3.0#sha256:" + "c" * 64
+    captured = {"active.yaml": _doc(root_a, {"k": "v"}),
+                "desired.yaml": _doc(root_b, {"m": "n"})}
+
+    out = specialist_bundle_journal._sanitize_captured_tuple_files(
+        dict(captured), op="upgrade", target_root=target,
+        specialists_dir=tmp_path / "nonexistent",
+        declared={root_a: [], root_b: ["k"], target: []})
+
+    # `k` is secret under root B's schema, and active.yaml belongs to root A.
+    assert _yaml.safe_load(out["active.yaml"])["config_snapshot"] == {"k": "v"}
+    assert out["active.yaml"] == captured["active.yaml"]      # byte-identical
+    assert _yaml.safe_load(out["desired.yaml"])["config_snapshot"] == {"m": "n"}
+
+    # The control: a key the INCOMING root declares secret IS removed, from
+    # whichever file carries it — the union is the file's root AND the target.
+    out = specialist_bundle_journal._sanitize_captured_tuple_files(
+        dict(captured), op="upgrade", target_root=target,
+        specialists_dir=tmp_path / "nonexistent",
+        declared={root_a: [], root_b: [], target: ["k"]})
+    assert _yaml.safe_load(out["active.yaml"])["config_snapshot"] == {}
+    assert _yaml.safe_load(out["active.yaml"])["config_digest"] == "pre-guard:removed"
+    assert _yaml.safe_load(out["desired.yaml"])["config_snapshot"] == {"m": "n"}
