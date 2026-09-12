@@ -204,7 +204,16 @@ compensation.
 
 **Boot finds journals.** Complete ones are pruned, valid in-progress ones rolled back,
 corrupt or unrollbackable ones quarantined — a filename that cannot be parsed quarantines
-every owned entry rather than guessing. The same boot pass age-sweeps orphan consent
+every owned entry rather than guessing. **That journal work runs first, and the age
+sweeps follow it in the same boot pass**, because the sweeps have to reason about the
+tree a replay has already restored into: a pending candidate can exist only inside a
+journal capture when boot starts, and deciding what is still owned before the replay
+lands reclaims exactly the inputs the replay is about to need. The sweeps run whether or
+not there were any journals to reconcile, and whether or not reconciling them failed —
+an install that has never journalled still reclaims — so the boot report carries the
+per-journal entries first and the two sweep entries last.
+
+The sweep half age-sweeps orphan consent
 receipts and abandoned staging trees (inspection, bundle and store staging, the persona
 staging root included) on a shared seven-day cutoff, so a denied or crashed flow's
 fetched repo copies never accumulate unbounded. A live pending-configuration install is
@@ -214,7 +223,13 @@ slug is only the fallback when no marker is readable, and keeping every pre-comm
 inspection would pin unbounded staging) — and the staged paths surviving receipts
 reference keep their trees. A pending candidate is durable operator-visible state, and
 sweeping its last usable receipt would make the supported configure re-commit
-permanently impossible.
+permanently impossible. Liveness is read from the tuple that is on disk when the sweeps
+run, never from what a capture holds: a restore re-runs the capture sanitizer, so a
+candidate whose captured tuple is stripped or undigestable lands as a tombstone, is not
+a live pending candidate, and its receipt and staged tree are still reclaimed. A replay
+that fails quarantines and restores nothing, and one that partly fails can quarantine
+while still leaving a live tuple behind — the tree after the journal pass is the only
+answer that covers all three.
 
 **Two mutations race.** The loser refuses as a concurrent mutation; nothing is overwritten
 or resurrected. The in-lock re-check covers both generations: an active tuple that appeared
