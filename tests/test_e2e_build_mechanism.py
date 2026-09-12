@@ -49,6 +49,15 @@ REPO = Path(__file__).resolve().parents[1]
 # descriptor — not stdout, which `build_image` suppresses and harnesses parse.
 _STUB = """#!/usr/bin/env bash
 { printf '%s\\0' "$@"; printf '\\n'; } >> "$DOCKER_ARGV_LOG"
+# A build writes a sentinel on STDOUT. Without it the `proc.stdout == ""`
+# assertions below are inert: dropping `>/dev/null` from build_image's build
+# line left all 12 tests green when the mutation was actually run. The sentinel
+# exercises the suppression contract the helper implements and nothing else --
+# it is not a simulation of any builder's progress output, and real BuildKit
+# writes progress to stderr.
+if [ "${1:-}" = build ]; then
+    printf '%s\\n' 'probe-build-stdout'
+fi
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
     printf '%s\\n' "${STUB_INSPECT_OUT-2099.12.probe}"
     exit "${STUB_INSPECT_RC-0}"
