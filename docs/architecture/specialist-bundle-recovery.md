@@ -45,10 +45,12 @@ document next door says what that is required to guarantee.
 
 **A bundle upgrade's preflight refuses.** No approval on record, a receipt that does not
 match the approved inspection, an unreadable active tuple, no active tuple, an incoming
-component that fails its dependency closure or its root-digest equation, or a prior
-component whose declaration cannot be read back: all of these raise before the journal is
-created. Nothing is recorded and nothing is compensated, so the persisted tuple files are
-exactly as the call found them.
+component that fails its dependency closure or its root-digest equation, a prior component
+whose declaration cannot be read back, or a pending candidate whose configuration cannot
+be read: all of these raise before the journal is created. Nothing is recorded and nothing
+is compensated, so the persisted tuple files are exactly as the call found them. The
+pending read's result is carried into the transaction rather than taken again afterwards,
+so the arm has no second chance to fail at it once a journal exists.
 
 **A bundle sync phase fails.** The journal rolls the recorded pre-state back; if rollback
 itself fails, the journal stays in progress for boot to finish, and that slug refuses

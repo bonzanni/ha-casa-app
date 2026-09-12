@@ -257,12 +257,19 @@ the tool result carries the refusal's `detail` verbatim to whoever paraphrases i
 operator. It therefore names what to keep and asks for a retry, and it does not offer an
 uninstall: uninstall removes the instance directory, which is where a pending candidate's
 supplied configuration lives, so following that advice after one transient read error would
-destroy the only copy of what the refusal declined to replace. What the advice does NOT say
-is that the files are intact when the call returns. On the journalled bundle arm the refusal
-reaches the transaction compensation, which re-runs the capture sanitizer and can write an
-emptied snapshot back over a tuple the refused call never opened — a separate defect class,
-tracked as #975, and the reason the advice is bounded to what this path controls. This is the operating doctrine's general preservation rule, declared
-narrowly over these two paths as INV-OPS-001 (`doctrine/operating-casa.md`).
+destroy the only copy of what the refusal declined to replace. Both of these reads happen
+before their call has recorded anything: the install's before it opens its journal, and the
+upgrade's above `specialist_bundle_journal.begin` with the rest of the bundle preflight
+(`architecture/specialist-bundle-transactions.md`). So on both paths a refused merge read
+leaves no journal and runs no compensation, and the files are as the call found them.
+
+What the advice still does NOT say is that they are intact whatever else happens. A failure
+raised later in a bundle transaction restores from the recorded before-state, and that
+restore re-runs the capture sanitizer, which can write an emptied snapshot back over a tuple
+the failed call never opened — a separate defect class, tracked as #975. Advice states what
+its own call did, not an outcome the calling path does not control. This is the operating
+doctrine's general preservation rule, declared narrowly over these two paths as INV-OPS-001
+(`doctrine/operating-casa.md`).
 
 ## Failure behavior
 

@@ -70,11 +70,25 @@ On the receipt-bearing bundle arm the retention depends on something further bac
 the core, because a *refusal* there runs the compensation, and the compensation rewrites
 tuple files from the journal's recorded before-state. So the upgrade resolves everything
 that before-state depends on **before it opens the journal**, the way the install does:
-the receipt check, the operator's approval, the active-tuple read and the publication and
-full verification of the incoming component all happen first. Every refusal they can
-raise therefore leaves no journal at all — nothing recorded, nothing to compensate. An
+the receipt check, the operator's approval, the active-tuple read, the publication and
+full verification of the incoming component, and the read of the pending candidate whose
+already-supplied settings a retry merges, all happen first. Every refusal they can raise
+therefore leaves no journal at all — nothing recorded, nothing to compensate. An
 already-present component-store directory is verified rather than trusted, so a corrupt
 one refuses here too.
+
+The pending read is the one of those the bundle arm CONSUMES rather than merely repeats:
+its result is handed to the upgrade core, so this arm reads that file once and does not
+take the same fallible read back inside the window it was moved out of. An absent
+candidate travels as an observation in its own right, distinct from "not looked at yet".
+Every caller that reaches the core without a journal — the legacy no-receipt arm and every
+direct library caller — still performs the read itself and raises the identical refusal;
+the hoist is the bundle arm's ordering, not the core's authority.
+
+What that ordering buys is bounded and worth stating exactly: it removes these refusals
+from the compensation's reach. It does not make the compensation lossless. A failure
+raised later in the window still restores from the recorded before-state, and that
+restore re-runs the capture sanitizer.
 
 What the capture is sanitized against is then carried rather than looked up. A captured
 snapshot's keys are removed only because some component declares them secret, and the
