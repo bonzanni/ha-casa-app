@@ -226,7 +226,7 @@ destroyed exactly what it was written to save, and the operator followed instruc
 The rule governs what the advice PROPOSES. It is not a claim that the protected state is
 intact when the call returns — a refusal can still reach a transaction compensation that
 rewrites files the refused call never opened, which is a separate defect class and is
-tracked as one. Advice must therefore say what the call did and what to keep, and must not
+tracked as one (#975). Advice must therefore say what the call did and what to keep, and must not
 assert an outcome the calling path does not control.
 Recovery advice must preserve retained operator state and the resources needed to resume
 using it. Do not recommend an action that would discard, overwrite or make that state

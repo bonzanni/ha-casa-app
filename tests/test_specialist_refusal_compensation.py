@@ -27,7 +27,7 @@ it certifies the classification-UNAVAILABLE case on the upgrade path only. A
 capture whose incoming root DECLARES a captured key secret is emptied by the
 same compensation with the carry complete and no store read at all, and the
 install and uninstall transactions pass no carry — all measured, all inherited,
-all tracked separately.
+and all tracked as #975.
 
 It also does not cover the journal PAYLOAD's copy of the declarations. Mutation-checked:
 removing `declared_secret_names=` from `specialist_bundle_journal.begin` leaves this file

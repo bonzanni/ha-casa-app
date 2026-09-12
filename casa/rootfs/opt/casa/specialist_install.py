@@ -2067,7 +2067,7 @@ def commit_specialist_install(
             # tuple files are intact when the call returns — on the bundle arm
             # this refusal reaches the transaction compensation, which re-runs
             # the #372 capture sanitizer and can write an emptied snapshot back
-            # (measured; filed separately). The rule is about what the advice
+            # (measured; #975). The rule is about what the advice
             # PROPOSES, which is the part this module controls.
             # The earlier wording offered "uninstall and
             # install afresh" as an alternative; `tools.py` relays this detail

@@ -261,7 +261,7 @@ destroy the only copy of what the refusal declined to replace. What the advice d
 is that the files are intact when the call returns. On the journalled bundle arm the refusal
 reaches the transaction compensation, which re-runs the capture sanitizer and can write an
 emptied snapshot back over a tuple the refused call never opened — a separate defect class,
-tracked separately, and the reason the advice is bounded to what this path controls. This is the operating doctrine's general preservation rule, declared
+tracked as #975, and the reason the advice is bounded to what this path controls. This is the operating doctrine's general preservation rule, declared
 narrowly over these two paths as INV-OPS-001 (`doctrine/operating-casa.md`).
 
 ## Failure behavior
