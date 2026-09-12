@@ -898,9 +898,10 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
     TWO PHASES, IN THIS ORDER (#950): the journal phase first, then the
     receipt and staging age sweeps, whose retention set is therefore read
     from the tree a replay has already restored into. The sweeps run whether
-    or not `ops_dir` exists and whether or not the journal phase failed, so
-    the returned `actions` carry the per-journal entries first and the two
-    sweep entries last."""
+    or not `ops_dir` exists, so the returned `actions` carry the per-journal
+    entries first and the two sweep entries last. The one thing that holds
+    them back is a journal phase that did not COMPLETE: they are then
+    deferred to the next boot and the deferral is reported in `actions`."""
     global last_boot_reconcile_actions
     ops_dir = Path(ops_dir)
     registry_path = Path(registry_path)
@@ -920,12 +921,6 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
     # sanitizer on the way out, so a capture whose tuple is tombstoned
     # restores as a non-live candidate whose receipt must still sweep.
     if ops_dir.is_dir():
-        # The sweeps below must stay reachable even when the journal phase
-        # fails: `sorted(ops_dir.iterdir())` can raise on a present but
-        # unreadable ops directory, and before #950 that raise happened
-        # AFTER both sweeps had already reclaimed. Degrade-and-boot — the
-        # single production caller swallows too, and a reconciliation
-        # failure must not also disable reclamation.
         try:
             _reconcile_journals(
                 ops_dir, registry_path=registry_path,
@@ -933,8 +928,39 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
                 agents_specialists_dir=agents_specialists_dir,
                 actions=actions)
         except Exception:  # noqa: BLE001 — degrade-and-boot
+            # A journal phase that did not COMPLETE leaves a tree the replay
+            # may be halfway through restoring into: a raise (from
+            # `sorted(ops_dir.iterdir())` on an unreadable ops directory, or
+            # from classifying one file) abandons every journal behind it,
+            # including one that may hold the ONLY copy of a pending
+            # candidate's tuple. Sweeping that tree reclaims the receipt and
+            # staging trees the abandoned replay still needs, and the next
+            # boot then restores a marker naming inputs that are gone — the
+            # #950 defect itself, reappearing on the failure path.
+            #
+            # So the DESTRUCTIVE half stops here. The two asymmetries decide
+            # it: reclamation is disk hygiene and is deferrable — the next
+            # boot does it — while a sweep after a partial replay destroys an
+            # operator's saved configuration and nothing recovers it.
+            # Failing safe means not destroying.
+            #
+            # The deferral is REPORTED, not silent: `plugin_health` surfaces
+            # `actions` as `boot_reconcile_actions`, so a boot that declined
+            # to reclaim is distinguishable from one that found nothing to do.
+            # `reconcile_boot` still never raises (its single production
+            # caller is entitled to that), and an install that has never
+            # journalled still reclaims — this return sits INSIDE the
+            # `is_dir()` branch, so a missing ops directory still falls
+            # through to the sweeps below.
             logger.exception(
-                "journal reconciliation failed; continuing to the age sweeps")
+                "journal reconciliation did not complete; deferring the "
+                "receipt and staging age sweeps to the next boot rather than "
+                "reclaiming against a tree the replay may not have finished "
+                "restoring into")
+            actions.append({"slug": None, "action": "deferred_age_sweeps",
+                            "reason": "journal_reconciliation_failed"})
+            last_boot_reconcile_actions = actions
+            return actions
 
     # Whole-branch N: age-sweep orphan receipt sidecars (an inspect that never
     # committed) on every boot, whether or not there was any journal work

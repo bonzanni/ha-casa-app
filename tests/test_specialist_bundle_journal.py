@@ -469,14 +469,18 @@ def test_reconcile_boot_still_reclaims_when_there_is_no_ops_dir(tmp_path):
     assert journal.last_boot_reconcile_actions == actions
 
 
-def test_a_failing_journal_phase_does_not_disable_the_age_sweeps(tmp_path,
-                                                                 monkeypatch):
-    """#950: reclamation must survive a journal phase that raises. A present
-    but unreadable ops directory makes `sorted(ops_dir.iterdir())` raise; before
-    the reorder that raise happened AFTER both sweeps had already reclaimed, so
-    moving the journal phase in front of them without a boundary would silently
-    disable reclamation on exactly that input. Remove the boundary and this
-    test raises instead of asserting."""
+def test_a_failing_journal_phase_defers_the_age_sweeps(tmp_path, monkeypatch):
+    """#950: a journal phase that did not COMPLETE holds the destructive half
+    back, and says so. A present but unreadable ops directory makes
+    `sorted(ops_dir.iterdir())` raise, so the tree the sweeps would read may be
+    missing a pending candidate an abandoned replay was about to restore.
+
+    Reclamation is deferrable — the next boot does it — and a sweep after a
+    partial replay is not: it destroys operator configuration nothing
+    recovers. So an aged, entirely unreferenced receipt and staging tree, which
+    any other boot would reclaim, survive this one; the deferral is REPORTED
+    rather than looking like a boot with nothing to do; and `reconcile_boot`
+    still returns instead of raising."""
     import json as _json
     import os
     import time
@@ -507,10 +511,103 @@ def test_a_failing_journal_phase_does_not_disable_the_age_sweeps(tmp_path,
         specialists_dir=specialists, acks_path=tmp_path / "acks.json",
         receipts_dir=receipts, personas_dir=tmp_path / "personas")
 
-    assert (int(orphan_receipt.exists()), int(orphan_tree.is_dir())) == (0, 0)
-    assert actions == [{"slug": None, "action": "swept_receipts", "count": 1},
-                       {"slug": None, "action": "swept_staging_trees",
-                        "count": 1}]
+    assert (int(orphan_receipt.exists()), int(orphan_tree.is_dir())) == (1, 1)
+    assert actions == [{"slug": None, "action": "deferred_age_sweeps",
+                        "reason": "journal_reconciliation_failed"}]
+    assert journal.last_boot_reconcile_actions == actions
+
+
+def test_a_journal_phase_that_aborts_sweeps_nothing_a_later_journal_needs(
+        tmp_path, monkeypatch):
+    """#950 (candidate review): the failure path must not reproduce the very
+    defect the reorder removes.
+
+    Two journals. The FIRST raises while being classified, which abandons every
+    journal behind it. The SECOND is the in-progress install whose capture
+    holds the only copy of a pending candidate's `desired.yaml` and
+    `pending-receipt.json`, and the aged receipt that marker names — plus the
+    two staging trees that receipt references — are on disk unrestored.
+
+    Sweeping after that abort reclaims exactly the inputs the unfinished replay
+    still needs: the next boot replays the surviving journal and restores a
+    marker naming a receipt and staged trees that are gone, leaving a visible
+    candidate the supported configure re-commit can never finish. Nothing may
+    be swept here, the pending journal must survive for that next boot, and the
+    skipped reclamation must be visible in the report."""
+    import json as _json
+    import os
+    import time
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    specialists = tmp_path / "specialists"
+    slug_dir = specialists / "mtg"
+    slug_dir.mkdir(parents=True)
+    (slug_dir / "active.yaml").write_text("mid-mutation", encoding="utf-8")
+
+    staging = specialists / ".staging"
+    staging.mkdir()
+    component_tree = staging / "deadbeef01"
+    plugin_tree = staging / "deadbeef02"
+    for tree in (component_tree, plugin_tree):
+        tree.mkdir()
+        (tree / "manifest.json").write_text("{}", encoding="utf-8")
+
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(component_tree),
+        "plugins": [{"staged_path": str(plugin_tree)}]}), encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (receipt_path, component_tree, plugin_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    # Sorted first by slug, so this one is classified — and raises — before the
+    # journal carrying the pending tuple is ever reached.
+    doomed = journal.begin(
+        "install", "aaa", before_entries=[], before_tuple_files={},
+        ack_records=[], ops_dir=ops_dir)
+    desired_yaml = _honest_tuple_yaml({})
+    marker_json = _json.dumps({"receipt_id": "c" * 32})
+    pending = journal.begin(
+        "install", "mtg", before_entries=[],
+        before_tuple_files={"active.yaml": None,
+                            "desired.yaml": desired_yaml,
+                            "pending-receipt.json": marker_json},
+        ack_records=[], ops_dir=ops_dir)
+    assert sorted(p.name for p in ops_dir.iterdir())[0] == doomed.name
+
+    real_classify = journal.classify_journal
+
+    def _classify(path):
+        if path.name == doomed.name:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_classify(path)
+
+    monkeypatch.setattr(journal, "classify_journal", _classify)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    # The pending candidate's tuple is still only inside the surviving
+    # journal — the abort is real, and the next boot is what resumes it.
+    assert pending.is_file()
+    assert not (slug_dir / "desired.yaml").exists()
+    assert (
+        int(receipt_path.exists()),
+        sum(p.is_dir() for p in (component_tree, plugin_tree)),
+        sum(a["count"] for a in actions if a["action"] == "swept_receipts"),
+        sum(a["count"] for a in actions
+            if a["action"] == "swept_staging_trees"),
+    ) == (1, 2, 0, 0)
+    assert {"slug": None, "action": "deferred_age_sweeps",
+            "reason": "journal_reconciliation_failed"} in actions
 
 
 # --------------------------------------------------------------------------

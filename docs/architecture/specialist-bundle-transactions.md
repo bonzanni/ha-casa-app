@@ -209,9 +209,16 @@ sweeps follow it in the same boot pass**, because the sweeps have to reason abou
 tree a replay has already restored into: a pending candidate can exist only inside a
 journal capture when boot starts, and deciding what is still owned before the replay
 lands reclaims exactly the inputs the replay is about to need. The sweeps run whether or
-not there were any journals to reconcile, and whether or not reconciling them failed —
-an install that has never journalled still reclaims — so the boot report carries the
-per-journal entries first and the two sweep entries last.
+not there were any journals to reconcile — an install that has never journalled still
+reclaims — so the boot report carries the per-journal entries first and the two sweep
+entries last. **A journal phase that does not COMPLETE is the one thing that holds them
+back.** Whatever raised abandons every journal behind it, so the tree the sweeps would
+read can still be missing the pending candidate an unfinished replay was about to
+restore, and reclaiming against it destroys that candidate's inputs exactly as
+reclaiming before the replay did. The reclamation is deferred to the next boot instead,
+and the report carries that skip rather than reading like a boot that found nothing to
+do: aged staging surviving a few more days is recoverable, an operator's saved
+configuration is not.
 
 The sweep half age-sweeps orphan consent
 receipts and abandoned staging trees (inspection, bundle and store staging, the persona
