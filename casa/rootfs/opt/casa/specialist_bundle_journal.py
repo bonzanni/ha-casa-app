@@ -899,9 +899,11 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
     receipt and staging age sweeps, whose retention set is therefore read
     from the tree a replay has already restored into. The sweeps run whether
     or not `ops_dir` exists, so the returned `actions` carry the per-journal
-    entries first and the two sweep entries last. The one thing that holds
-    them back is a journal phase that did not COMPLETE: they are then
-    deferred to the next boot and the deferral is reported in `actions`."""
+    entries first and the two sweep entries last. They run only when the
+    journal phase FINISHED, and that is read back off the tree: a journal
+    still standing in `ops_dir` (`recovery_debt`) means a replay or a
+    quarantine is still owed against it, so both sweeps are deferred to the
+    next boot and the deferral is reported in `actions`."""
     global last_boot_reconcile_actions
     ops_dir = Path(ops_dir)
     registry_path = Path(registry_path)
@@ -928,39 +930,64 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
                 agents_specialists_dir=agents_specialists_dir,
                 actions=actions)
         except Exception:  # noqa: BLE001 — degrade-and-boot
-            # A journal phase that did not COMPLETE leaves a tree the replay
-            # may be halfway through restoring into: a raise (from
-            # `sorted(ops_dir.iterdir())` on an unreadable ops directory, or
-            # from classifying one file) abandons every journal behind it,
-            # including one that may hold the ONLY copy of a pending
-            # candidate's tuple. Sweeping that tree reclaims the receipt and
-            # staging trees the abandoned replay still needs, and the next
-            # boot then restores a marker naming inputs that are gone — the
-            # #950 defect itself, reappearing on the failure path.
-            #
-            # So the DESTRUCTIVE half stops here. The two asymmetries decide
-            # it: reclamation is disk hygiene and is deferrable — the next
-            # boot does it — while a sweep after a partial replay destroys an
-            # operator's saved configuration and nothing recovers it.
-            # Failing safe means not destroying.
-            #
-            # The deferral is REPORTED, not silent: `plugin_health` surfaces
-            # `actions` as `boot_reconcile_actions`, so a boot that declined
-            # to reclaim is distinguishable from one that found nothing to do.
-            # `reconcile_boot` still never raises (its single production
-            # caller is entitled to that), and an install that has never
-            # journalled still reclaims — this return sits INSIDE the
-            # `is_dir()` branch, so a missing ops directory still falls
-            # through to the sweeps below.
-            logger.exception(
-                "journal reconciliation did not complete; deferring the "
-                "receipt and staging age sweeps to the next boot rather than "
-                "reclaiming against a tree the replay may not have finished "
-                "restoring into")
-            actions.append({"slug": None, "action": "deferred_age_sweeps",
-                            "reason": "journal_reconciliation_failed"})
-            last_boot_reconcile_actions = actions
-            return actions
+            # Logged, not acted on: whether the destructive half may run is
+            # decided below by reading the directory, not by which failures
+            # reached this handler. `reconcile_boot` still never raises —
+            # its single production caller is entitled to that.
+            logger.exception("journal reconciliation did not complete")
+
+    # #950: the destructive half runs only when the journal phase FINISHED,
+    # and that is OBSERVED on the tree rather than inferred from the failures
+    # this function happened to catch. Every disposition that completes
+    # removes the journal file — rolled back, pruned complete, or durably
+    # quarantined — so a file still standing in `ops_dir` means a replay or a
+    # quarantine is still owed AGAINST THIS TREE, whether the phase raised,
+    # caught a failure and carried on to the next journal, or retained a
+    # journal because its quarantine could not be persisted. Sweeping then
+    # reclaims the receipt and staging trees that unfinished replay still
+    # needs, and the next boot restores a marker naming inputs that are gone:
+    # this change's own defect, on its own failure path.
+    #
+    # `recovery_debt` is the reader, not a second copy of the rule (#543,
+    # #838): the same classification that decides what boot replays decides
+    # what still stands here, and it answers for the cases a caught exception
+    # cannot name — an ops directory that cannot be listed is debt, an absent
+    # one is a real answer, and residue that restores and removes nothing (a
+    # write temporary, a `.quarantined` file from an earlier boot, an entry
+    # boot's own scan skips) is not debt and must not defer reclamation
+    # forever.
+    #
+    # The asymmetry decides the direction: reclamation is disk hygiene and is
+    # deferrable — the next boot does it — while a sweep run against a tree a
+    # replay has not finished restoring into destroys an operator's saved
+    # configuration and nothing recovers it. The deferral is REPORTED, not
+    # silent: `plugin_health` surfaces `actions` as `boot_reconcile_actions`,
+    # so a boot that declined to reclaim is distinguishable from one that
+    # found nothing to do. A boot with no journals at all is debt-free and
+    # reclaims exactly as before.
+    try:
+        debt = recovery_debt(ops_dir=ops_dir)
+    except Exception:  # noqa: BLE001 — degrade-and-boot
+        # `recovery_debt` is documented never to raise, and this handler does
+        # not exist because that is doubted: it exists because
+        # `reconcile_boot`'s never-raises guarantee is owed to its caller by
+        # THIS function, and must not rest on another function's promise. The
+        # rule is the reader's own — "could not tell" is never read as "not
+        # there" — so an unobservable directory is an unfinished phase.
+        logger.exception("recovery debt could not be read; treating the "
+                         "journal phase as unfinished")
+        debt = [{"slug": None, "journal": None,
+                 "verdict": JOURNAL_UNREADABLE}]
+    if debt:
+        logger.warning(
+            "%d journal(s) still stand in %s after reconciliation; deferring "
+            "the receipt and staging age sweeps to the next boot rather than "
+            "reclaiming against a tree a replay has not finished restoring "
+            "into", len(debt), ops_dir)
+        actions.append({"slug": None, "action": "deferred_age_sweeps",
+                        "reason": "journal_reconciliation_incomplete"})
+        last_boot_reconcile_actions = actions
+        return actions
 
     # Whole-branch N: age-sweep orphan receipt sidecars (an inspect that never
     # committed) on every boot, whether or not there was any journal work

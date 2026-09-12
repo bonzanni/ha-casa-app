@@ -211,14 +211,20 @@ journal capture when boot starts, and deciding what is still owned before the re
 lands reclaims exactly the inputs the replay is about to need. The sweeps run whether or
 not there were any journals to reconcile — an install that has never journalled still
 reclaims — so the boot report carries the per-journal entries first and the two sweep
-entries last. **A journal phase that does not COMPLETE is the one thing that holds them
-back.** Whatever raised abandons every journal behind it, so the tree the sweeps would
-read can still be missing the pending candidate an unfinished replay was about to
-restore, and reclaiming against it destroys that candidate's inputs exactly as
-reclaiming before the replay did. The reclamation is deferred to the next boot instead,
-and the report carries that skip rather than reading like a boot that found nothing to
-do: aged staging surviving a few more days is recoverable, an operator's saved
-configuration is not.
+entries last. **They run only when the journal work FINISHED, and finishing is read
+off the directory rather than inferred from what failed.** Every disposition that
+completes removes the journal file — rolled back, pruned complete, or durably
+quarantined — so a journal still standing means a replay or a quarantine is still owed
+against that tree: the pass raised, or it caught a failure and carried on to the next
+journal, or it kept the journal because its quarantine could not be persisted.
+Reclaiming then destroys the inputs that unfinished replay needs, exactly as reclaiming
+before the replay did. A journal stands here on the same reading that makes it stand in
+a writer's way under INV-SPEC-014 below — one classification, asked twice — so residue
+that resolves without restoring or removing anything holds nothing back, and a journal
+directory that cannot be read at all does. Both sweeps are deferred to the next boot
+instead, and the report carries that skip rather than reading like a boot that found
+nothing to do: aged staging surviving a few more days is recoverable, an operator's
+saved configuration is not.
 
 The sweep half age-sweeps orphan consent
 receipts and abandoned staging trees (inspection, bundle and store staging, the persona
