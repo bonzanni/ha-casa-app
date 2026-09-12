@@ -49,9 +49,16 @@
     INV-TURN-010: [tests/test_sdk_client_pool_pool.py::test_pool_close_force_disconnects_invalidated_generation_without_waiting_for_turn_lock]
     INV-TURN-011: [tests/test_sdk_client_pool_pool.py::test_866_arm1_cold_connect_overlapping_pool_close_is_disconnected, tests/test_sdk_client_pool_pool.py::test_866_arm2_warm_replacement_overlapping_pool_close_is_disconnected, tests/test_sdk_client_pool_pool.py::test_866_arm3_invalidate_all_overlapping_connect_disconnects_it, tests/test_sdk_client_pool_pool.py::test_866_arm4_close_key_overlapping_connect_disconnects_it, tests/test_sdk_client_pool_pool.py::test_866_arm5_close_cancelled_mid_drain_still_leaves_no_live_client, tests/test_sdk_client_pool_pool.py::test_866_arm6_force_close_hook_receives_the_connecting_generation, tests/test_sdk_client_pool_pool.py::test_866_arm7_closing_set_while_membership_remains_refuses_the_turn, tests/test_sdk_client_pool_pool.py::test_866_arm8_a_connect_that_suppresses_cancellation_is_still_cut, tests/test_sdk_client_pool_pool.py::test_866_arm9_closing_before_the_reservation_opens_no_client, tests/test_sdk_client_pool_pool.py::test_866_arm10_a_reset_before_the_reservation_opens_no_client, tests/test_sdk_client_pool_pool.py::test_866_arm11_a_failed_connect_strands_no_map_entry, tests/test_sdk_client_pool_pool.py::test_a_cancelled_removal_leaves_no_client_the_pool_close_cannot_cut, tests/test_sdk_client_pool_pool.py::test_a_cancelled_close_cuts_every_recorded_entry_concurrently, tests/test_pool_close_final_sweep.py::test_final_sweep_cancels_the_reload_close_before_it_can_cut, tests/test_pool_close_final_sweep.py::test_final_sweep_cancels_a_disconnect_already_running, tests/test_shutdown_pool_and_refusal.py::test_the_real_shutdown_cuts_every_pooled_client_it_removed, tests/test_shutdown_pool_and_refusal.py::test_agent_close_cancelled_before_it_reaches_the_pool_still_cuts]
 
+- doc: architecture/specialist-bundle-recovery.md
+  summary: What a specialist bundle transaction does when it does not succeed — the pre-journal refusals, the sync-phase and sequencer compensations, the boot replay and quarantine pass, the age sweeps that follow it, and the race and failed-rotation refusals.
+  when_changing: bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps
+  tests:
+    - tests/test_specialist_bundle_journal.py
+  related: [architecture/specialist-bundle-transactions.md, architecture/specialist-lifecycle.md, architecture/personality.md]
+
 - doc: architecture/specialist-bundle-transactions.md
-  summary: What happens to an installed specialist after its install — the upgrade, rollback and uninstall transactions, the owned-plugin generation each publishes, the crash journal and boot recovery.
-  when_changing: a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, the bundle journal, or bundle-transaction recovery
+  summary: What happens to an installed specialist after its install — the upgrade, rollback and uninstall transactions, the owned-plugin generation each publishes, and the crash journal that makes a bundle transaction recoverable.
+  when_changing: a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts
   covers:
     - casa/rootfs/opt/casa/specialist_install.py::upgrade_specialist
     - casa/rootfs/opt/casa/specialist_install.py::rollback_specialist
@@ -70,7 +77,7 @@
     - tests/test_specialist_bundle_cancellation.py
     - tests/test_specialist_recovery_debt.py
     - tests/test_specialist_recovery_debt_scanner.py
-  related: [architecture/specialist-lifecycle.md, architecture/personality.md, architecture/plugin-mutation-tools.md, architecture/persona-lifecycle.md]
+  related: [architecture/specialist-bundle-recovery.md, architecture/specialist-lifecycle.md, architecture/personality.md, architecture/plugin-mutation-tools.md, architecture/persona-lifecycle.md]
   defines_invariants: [INV-SPEC-003, INV-SPEC-011, INV-SPEC-012, INV-SPEC-013, INV-SPEC-014]
   invariant_tests:
     INV-SPEC-011: [tests/test_specialist_rollback_owned_generation.py::test_r1_install_override_rollback_keeps_the_owned_set, tests/test_specialist_rollback_owned_generation.py::test_r5_tuple_identity_not_sidecar_bytes_controls_the_sidecar_rotation, tests/test_specialist_rollback_owned_generation.py::test_r10_a_failed_tuple_prior_promotion_is_completed_before_the_rollback_reads, tests/test_specialist_rollback_owned_generation.py::test_r13_a_direct_rollback_refuses_a_generation_whose_owned_set_differs, tests/test_specialist_lifecycle_lock.py::test_t1_every_lifecycle_lock_release_is_one_generation, tests/test_specialist_lifecycle_lock.py::test_t3_a_stale_caller_role_is_refused_at_the_library_boundary, tests/test_specialist_lifecycle_lock.py::test_t5_a_cancelled_handler_cannot_release_the_library_transaction_early]
