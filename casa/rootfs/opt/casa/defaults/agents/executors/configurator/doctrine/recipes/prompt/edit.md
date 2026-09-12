@@ -25,6 +25,20 @@ nothing until the triggers are reloaded. Always follow it with
 `casa_reload_triggers(role=<role>)`. (Webhook triggers carry no stored prompt at
 all; the schema refuses one. See `recipes/trigger/add.md`.)
 
+**A prompt you rewrite is a prompt you re-end.** This file is what a scheduled
+turn is told to do, so the closing-silence convention applies to your edit
+exactly as it does to a prompt written from scratch:
+
+For interval/cron/date prompts whose turn delivers its own message, keep
+the send instruction first and unconditional, and end the prompt with:
+After the send, output the sentinel `<silent/>` and nothing else.
+
+Whether this prompt is that shape at all is decided in `recipes/trigger/add.md`,
+under "Every scheduled prompt says how the turn ends" — read it before you edit,
+and do not decide from this file. A prompt whose delivery IS the turn's own
+final text must NOT be given the clause: the sentinel would be its whole final
+text and the operator would receive nothing.
+
 ## A resident's `prompts/system.md`
 
 There is no edit to make. A persona-bound resident is served its COMPILED

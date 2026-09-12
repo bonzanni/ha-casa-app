@@ -81,8 +81,10 @@ final-text path can read, and the turn's own closing text then rides the ordinar
 Neither half is narrowed, and both refusals are pinned: a scheduled turn with real text still
 delivers it exactly once, and prose *after* the silence sentinel is still delivered (the
 recant contract — a correction after a send must reach the operator). What closes the gap is
-therefore the prompt, per prompt, and it is a convention carried by every surface that
-authors or instructs the authoring of one.
+therefore the prompt, per prompt, and it is a convention — carried by the surfaces
+`tests/test_scheduled_prompt_guidance.py` enumerates (this document, `casa/DOCS.md`, and the
+configurator's `trigger/add`, `trigger/update` and `prompt/edit` recipes), and extended to a
+new surface by adding it there.
 
 For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
