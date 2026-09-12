@@ -70,11 +70,25 @@ On the receipt-bearing bundle arm the retention depends on something further bac
 the core, because a *refusal* there runs the compensation, and the compensation rewrites
 tuple files from the journal's recorded before-state. So the upgrade resolves everything
 that before-state depends on **before it opens the journal**, the way the install does:
-the receipt check, the operator's approval, the active-tuple read and the publication and
-full verification of the incoming component all happen first. Every refusal they can
-raise therefore leaves no journal at all — nothing recorded, nothing to compensate. An
+the receipt check, the operator's approval, the active-tuple read, the publication and
+full verification of the incoming component, and the read of the pending candidate whose
+already-supplied settings a retry merges, all happen first. Every refusal they can raise
+therefore leaves no journal at all — nothing recorded, nothing to compensate. An
 already-present component-store directory is verified rather than trusted, so a corrupt
 one refuses here too.
+
+The pending read is the one of those the bundle arm CONSUMES rather than merely repeats:
+its result is handed to the upgrade core, so this arm reads that file once and does not
+take the same fallible read back inside the window it was moved out of. An absent
+candidate travels as an observation in its own right, distinct from "not looked at yet".
+Every caller that reaches the core without a journal — the legacy no-receipt arm and every
+direct library caller — still performs the read itself and raises the identical refusal;
+the hoist is the bundle arm's ordering, not the core's authority.
+
+What that ordering buys is bounded and worth stating exactly: it removes these refusals
+from the compensation's reach. It does not make the compensation lossless. A failure
+raised later in the window still restores from the recorded before-state, and that
+restore re-runs the capture sanitizer.
 
 What the capture is sanitized against is then carried rather than looked up. A captured
 snapshot's keys are removed only because some component declares them secret, and the
@@ -214,101 +228,12 @@ and that is the point: an uninstall permitted here would be undone by the very n
 
 ## Failure behavior
 
-**A bundle upgrade's preflight refuses.** No approval on record, a receipt that does not
-match the approved inspection, an unreadable active tuple, no active tuple, an incoming
-component that fails its dependency closure or its root-digest equation, or a prior
-component whose declaration cannot be read back: all of these raise before the journal is
-created. Nothing is recorded and nothing is compensated, so the persisted tuple files are
-exactly as the call found them.
-
-**A bundle sync phase fails.** The journal rolls the recorded pre-state back; if rollback
-itself fails, the journal stays in progress for boot to finish, and that slug refuses
-further mutations until a restart (INV-SPEC-014).
-
-**The post-commit sequencer fails.** The transaction compensates: the recorded pre-state
-is restored, and for a fresh install (no prior active tuple) that restoration includes
-removing the op-symlink materialized during the commit — its content directory is
-garbage-collected under the same containment gate materialization uses — so a rolled-back
-install leaves nothing for agent discovery to keep tripping over. The failure result
-states the outcome explicitly: `rolled_back` when the disk state was restored (with
-`runtime_compensation_incomplete` when the compensating runtime sweep did not converge —
-the next reload or restart converges it), `compensation_failed` when the disk rollback
-itself failed and boot reconciliation is the backstop — that arm now also states what
-holds until then: the undo record is still standing, further changes to that specialist
-are refused, and a restart is what lets boot finish or quarantine it. A sequencer verdict that blocks
-only on integrity and binding reasons: config-pending readiness — an unresolved secret,
-a missing system-requirement binary, or a `casa.setupProvides` variable still
-unprovisioned on a fresh install — is a verified-legal terminal state and never triggers
-compensation.
-
-**Boot finds journals.** Complete ones are pruned, valid in-progress ones rolled back,
-corrupt or unrollbackable ones quarantined — a filename that cannot be parsed quarantines
-every owned entry rather than guessing. **That journal work runs first, and the age
-sweeps follow it in the same boot pass**, because the sweeps have to reason about the
-tree a replay has already restored into: a pending candidate can exist only inside a
-journal capture when boot starts, and deciding what is still owned before the replay
-lands reclaims exactly the inputs the replay is about to need. The sweeps run whether or
-not there were any journals to reconcile — an install that has never journalled still
-reclaims — so the boot report carries the per-journal entries first and the two sweep
-entries last. **They run only when the journal work FINISHED, and finishing is read
-off the directory rather than inferred from what failed.** Every disposition that
-completes removes the journal file — rolled back, pruned complete, or durably
-quarantined — so a journal still standing means a replay or a quarantine is still owed
-against that tree: the pass raised, or it caught a failure and carried on to the next
-journal, or it kept the journal because its quarantine could not be persisted.
-Reclaiming then destroys the inputs that unfinished replay needs, exactly as reclaiming
-before the replay did. A journal stands here on the same reading that makes it stand in
-a writer's way under INV-SPEC-014 below — one classification, asked twice — so residue
-that resolves without restoring or removing anything holds nothing back, and a journal
-directory that cannot be read at all does. Both sweeps are deferred to the next boot
-instead, and the report carries that skip rather than reading like a boot that found
-nothing to do: aged staging surviving a few more days is recoverable, an operator's
-saved configuration is not.
-
-The sweep half age-sweeps orphan consent
-receipts and abandoned staging trees (inspection, bundle and store staging, the persona
-staging root included) on a shared seven-day cutoff, so a denied or crashed flow's
-fetched repo copies never accumulate unbounded. A live pending-configuration install is
-exempt whatever its age — precisely the receipt its commit recorded in a durable
-per-slug marker (a same-slug receipt for a different root cannot resume it; newest per
-slug is only the fallback when no marker is readable, and keeping every pre-commit
-inspection would pin unbounded staging) — and the staged paths surviving receipts
-reference keep their trees. A pending candidate is durable operator-visible state, and
-sweeping its last usable receipt would make the supported configure re-commit
-permanently impossible. Liveness is read from the tuple that is on disk when the sweeps
-run, never from what a capture holds: a restore re-runs the capture sanitizer, so a
-candidate whose captured tuple is stripped or undigestable lands as a tombstone, is not
-a live pending candidate, and its receipt and staged tree are still reclaimed. A replay
-that fails quarantines and restores nothing, and one that partly fails can quarantine
-while still leaving a live tuple behind — the tree after the journal pass is the only
-answer that covers all three.
-
-**Two mutations race.** The loser refuses as a concurrent mutation; nothing is overwritten
-or resurrected. The in-lock re-check covers both generations: an active tuple that appeared
-while waiting refuses outright, and a pending (desired-only) candidate with a *different*
-component root refuses too — only the same component's own configure re-commit may replace
-its pending tuple. The commit and upgrade tools additionally re-load the consent receipt
-inside the mutation lock, so a receipt consumed by a concurrent bundle fails closed as
-receipt-required instead of rotating sidecar generations for a no-op; and the sidecar prior
-moves only with the tuple prior, so a no-op tuple recommit rotates neither (INV-SPEC-011).
-
-**A prior promotion fails after the new active is written.** The commit succeeds — the new
-active is durable — and the outgoing generation stays pending as a pair of temporaries
-until the next commit of any tuple, or the next rollback, completes it; a rollback that
-cannot complete the pair refuses (`pending_rotation_failed`) rather than restore the older
-visible prior.
-
-**A rollback after a model change.** The retained prior's binding no longer compiles as
-stored, because its role checksum covers the model that was resolved when it was active.
-The rollback re-derives it for the model now in force and restores the prior (INV-SPEC-012);
-it refuses, naming the cause, when the retained component's store bytes no longer hash to
-the prior's root or when the persona identity or agent id moved, and the active tuple is
-untouched either way.
-
-**A direct rollback would change the owned set.** A library caller that rolls back without
-the bundle arm cannot swap the registry, so a retained generation whose plugin rows differ
-from the active sidecar's is refused as `bundle_required` before anything is written; the
-tool's rollback exchanges tuple and owned set together.
+Moved out of this document when it crossed the corpus size ceiling (#974). What a bundle
+transaction does when it does not succeed — the pre-journal refusals, the sync-phase and
+sequencer compensations, the boot replay/quarantine pass and the age sweeps that follow
+it, and the race and failed-rotation refusals — is in
+[`specialist-bundle-recovery.md`](specialist-bundle-recovery.md). The invariants those
+behaviours satisfy are declared above, in this document.
 
 ## Extension points
 
@@ -341,6 +266,7 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - `tests/test_specialist_recovery_debt_scanner.py`
 
 **Related**
+- [`architecture/specialist-bundle-recovery.md`](../architecture/specialist-bundle-recovery.md)
 - [`architecture/specialist-lifecycle.md`](../architecture/specialist-lifecycle.md)
 - [`architecture/personality.md`](../architecture/personality.md)
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)

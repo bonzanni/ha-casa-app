@@ -49,9 +49,16 @@
     INV-TURN-010: [tests/test_sdk_client_pool_pool.py::test_pool_close_force_disconnects_invalidated_generation_without_waiting_for_turn_lock]
     INV-TURN-011: [tests/test_sdk_client_pool_pool.py::test_866_arm1_cold_connect_overlapping_pool_close_is_disconnected, tests/test_sdk_client_pool_pool.py::test_866_arm2_warm_replacement_overlapping_pool_close_is_disconnected, tests/test_sdk_client_pool_pool.py::test_866_arm3_invalidate_all_overlapping_connect_disconnects_it, tests/test_sdk_client_pool_pool.py::test_866_arm4_close_key_overlapping_connect_disconnects_it, tests/test_sdk_client_pool_pool.py::test_866_arm5_close_cancelled_mid_drain_still_leaves_no_live_client, tests/test_sdk_client_pool_pool.py::test_866_arm6_force_close_hook_receives_the_connecting_generation, tests/test_sdk_client_pool_pool.py::test_866_arm7_closing_set_while_membership_remains_refuses_the_turn, tests/test_sdk_client_pool_pool.py::test_866_arm8_a_connect_that_suppresses_cancellation_is_still_cut, tests/test_sdk_client_pool_pool.py::test_866_arm9_closing_before_the_reservation_opens_no_client, tests/test_sdk_client_pool_pool.py::test_866_arm10_a_reset_before_the_reservation_opens_no_client, tests/test_sdk_client_pool_pool.py::test_866_arm11_a_failed_connect_strands_no_map_entry, tests/test_sdk_client_pool_pool.py::test_a_cancelled_removal_leaves_no_client_the_pool_close_cannot_cut, tests/test_sdk_client_pool_pool.py::test_a_cancelled_close_cuts_every_recorded_entry_concurrently, tests/test_pool_close_final_sweep.py::test_final_sweep_cancels_the_reload_close_before_it_can_cut, tests/test_pool_close_final_sweep.py::test_final_sweep_cancels_a_disconnect_already_running, tests/test_shutdown_pool_and_refusal.py::test_the_real_shutdown_cuts_every_pooled_client_it_removed, tests/test_shutdown_pool_and_refusal.py::test_agent_close_cancelled_before_it_reaches_the_pool_still_cuts]
 
+- doc: architecture/specialist-bundle-recovery.md
+  summary: What a specialist bundle transaction does when it does not succeed — the pre-journal refusals, the sync-phase and sequencer compensations, the boot replay and quarantine pass, the age sweeps that follow it, and the race and failed-rotation refusals.
+  when_changing: bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps
+  tests:
+    - tests/test_specialist_bundle_journal.py
+  related: [architecture/specialist-bundle-transactions.md, architecture/specialist-lifecycle.md, architecture/personality.md]
+
 - doc: architecture/specialist-bundle-transactions.md
-  summary: What happens to an installed specialist after its install — the upgrade, rollback and uninstall transactions, the owned-plugin generation each publishes, the crash journal and boot recovery.
-  when_changing: a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, the bundle journal, or bundle-transaction recovery
+  summary: What happens to an installed specialist after its install — the upgrade, rollback and uninstall transactions, the owned-plugin generation each publishes, and the crash journal that makes a bundle transaction recoverable.
+  when_changing: a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts
   covers:
     - casa/rootfs/opt/casa/specialist_install.py::upgrade_specialist
     - casa/rootfs/opt/casa/specialist_install.py::rollback_specialist
@@ -70,7 +77,7 @@
     - tests/test_specialist_bundle_cancellation.py
     - tests/test_specialist_recovery_debt.py
     - tests/test_specialist_recovery_debt_scanner.py
-  related: [architecture/specialist-lifecycle.md, architecture/personality.md, architecture/plugin-mutation-tools.md, architecture/persona-lifecycle.md]
+  related: [architecture/specialist-bundle-recovery.md, architecture/specialist-lifecycle.md, architecture/personality.md, architecture/plugin-mutation-tools.md, architecture/persona-lifecycle.md]
   defines_invariants: [INV-SPEC-003, INV-SPEC-011, INV-SPEC-012, INV-SPEC-013, INV-SPEC-014]
   invariant_tests:
     INV-SPEC-011: [tests/test_specialist_rollback_owned_generation.py::test_r1_install_override_rollback_keeps_the_owned_set, tests/test_specialist_rollback_owned_generation.py::test_r5_tuple_identity_not_sidecar_bytes_controls_the_sidecar_rotation, tests/test_specialist_rollback_owned_generation.py::test_r10_a_failed_tuple_prior_promotion_is_completed_before_the_rollback_reads, tests/test_specialist_rollback_owned_generation.py::test_r13_a_direct_rollback_refuses_a_generation_whose_owned_set_differs, tests/test_specialist_lifecycle_lock.py::test_t1_every_lifecycle_lock_release_is_one_generation, tests/test_specialist_lifecycle_lock.py::test_t3_a_stale_caller_role_is_refused_at_the_library_boundary, tests/test_specialist_lifecycle_lock.py::test_t5_a_cancelled_handler_cannot_release_the_library_transaction_early]
@@ -100,11 +107,12 @@
     - tests/test_specialist_install_consent.py
     - tests/test_tools_specialist_install.py
   related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md, architecture/specialist-bundle-transactions.md]
-  defines_invariants: [INV-SPEC-001, INV-SPEC-002, INV-SPEC-004, INV-SPEC-005, INV-SPEC-006, INV-SPEC-007, INV-SPEC-008, INV-SPEC-009, INV-SPEC-010]
+  defines_invariants: [INV-SPEC-001, INV-SPEC-002, INV-SPEC-004, INV-SPEC-005, INV-SPEC-006, INV-SPEC-007, INV-SPEC-008, INV-SPEC-009, INV-SPEC-010, INV-SPEC-015]
   invariant_tests:
     INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
     INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]
     INV-SPEC-002: [tests/test_specialist_lifecycle_matrix.py::test_fresh_install_missing_config_is_pending_configuration_with_no_active_tuple]
+    INV-SPEC-015: [tests/test_tools_specialist_install.py::test_a_pending_install_commit_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_specialist_status_names_a_pending_slugs_resume_inputs, tests/test_personality_admin_handlers.py::test_a_pending_install_the_index_never_saw_still_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_verified_pending_upgrade_names_and_uses_its_admitting_tool, tests/test_personality_admin_handlers.py::test_a_live_recovery_journal_blocks_certification]
     INV-SPEC-004: [tests/test_specialist_materialize.py::test_materialize_operational_files_repeat_call_swaps_atomically_and_gcs_old_version]
     INV-SPEC-005: [tests/test_specialist_consent_receipt.py::test_pin_inv_spec_005_tampered_receipt_loads_as_none]
     INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses]

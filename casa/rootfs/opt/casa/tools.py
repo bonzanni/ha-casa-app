@@ -13586,6 +13586,37 @@ async def _settle_install_consent_post(handle) -> "dict | None":
                        "the inspect tool to be prompted again")}
 
 
+def _pending_resume_inputs(inspection, receipt, *, tool_name: str) -> dict:
+    """#929 (INV-SPEC-015): the arguments a re-commit of a pending-configuration
+    candidate takes, as this call validated them — never as the caller asserted
+    them (`component_id`/`version` are read from the staged manifest; only the
+    slug and the root digest are checked against the arguments) — AND the name
+    of the tool that takes them.
+
+    A pending outcome retains its receipt and its staging tree, and the SAME
+    `(inspection, receipt)` pair re-commits to `active` — but a fresh
+    re-inspect refuses the now-occupied slug (`slug_collision`, and
+    `no_active_tuple` in upgrade mode for a first install), so an engagement
+    that was not handed these five values had no supported route back. The
+    args schema is unchanged: `staged_dir` and `receipt_id` remain REQUIRED,
+    and the receipt-to-inspection binding is untouched. `casactl specialist
+    status` names the same five for a slug holding a desired candidate.
+
+    `tool` is the sixth member and it is not decoration. A pending UPGRADE
+    leaves the ACTIVE tuple in place, and `commit_specialist_install` refuses
+    an active tuple outright (`_refuse_if_active_present` ->
+    `concurrent_mutation`), so the five that resume a pending upgrade go to
+    `specialist_upgrade` and the five that resume a pending first install go
+    to `specialist_install_commit`. Naming five values and not the route that
+    takes them sends a later engagement to a tool that refuses — the one
+    outcome this disclosure exists to prevent. Here the answer is free: it is
+    the tool the caller just invoked.
+    """
+    return {"receipt_id": receipt.receipt_id, "staged_dir": str(inspection.staged_dir),
+            "component_id": inspection.component_id, "version": inspection.version,
+            "root_digest": inspection.root_digest, "tool": tool_name}
+
+
 @tool(
     "specialist_install_commit",
     "Persist an INSPECTED specialist component to CAS, compile, and activate it — REFUSES unless "
@@ -13603,42 +13634,37 @@ async def _settle_install_consent_post(handle) -> "dict | None":
 async def specialist_install_commit(args: dict) -> dict:
     from specialist_install import (
         InspectionResult, SpecialistInstallError, commit_specialist_install,
-        compute_install_root_digest, resolve_dependency_closure,
+        validate_resume_inputs,
     )
     from specialist_install_consent import SpecialistInstallAckStore
-    from specialist_component import load_specialist_component
     import specialist_bundle_journal
     import specialist_install as specialist_install_mod
     import specialist_receipt
 
     # Task 10: the trusted source receipt is loaded by opaque id ONLY — never
     # from caller-supplied coordinates. Required for EVERY install (plugin-less
-    # components included); a missing/unloadable id fails closed.
-    receipt_id = args.get("receipt_id")
-    receipt = specialist_receipt.load(receipt_id) if receipt_id else None
-    if receipt is None:
-        return _result({"ok": False, "kind": "receipt_required",
-                        "detail": "specialist_install_commit requires a valid receipt_id "
-                                  "from specialist_install_inspect"})
-
+    # components included); a missing/unloadable id fails closed. That load,
+    # and every other pre-transaction check, now lives in the shared predicate
+    # below.
+    # #929: the pre-transaction acceptance predicate is now ONE function
+    # (`specialist_install.validate_resume_inputs`), because the status route
+    # that DISCLOSES a resume set has to apply exactly the predicate the tool
+    # consuming it applies — a second copy would drift, and disclosing a set
+    # this handler refuses is the defect the disclosure exists to prevent.
+    # Behaviour here is unchanged: same order, same kinds, same details, and
+    # `expect_slug` reproduces this handler's slug comparison (which
+    # specialist_upgrade deliberately does not make).
     staged_dir = Path(args["staged_dir"])
-    try:
-        component = load_specialist_component(staged_dir, staged_dir / "manifest.json")
-    except (ValueError, OSError) as exc:
-        return _result({"ok": False, "kind": "staged_dir_invalid", "detail": str(exc)})
-    if component.slug != args["slug"]:
-        return _result({"ok": False, "kind": "checksum_changed",
-                         "detail": "staged component no longer matches the approved inspection"})
-    deps = resolve_dependency_closure(component, staged_dir)
-    unavailable = [d for d in deps if not d.available]
-    if unavailable:
-        detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)
-        return _result({"ok": False, "kind": "dependency_unavailable", "detail": detail})
-    root_digest = compute_install_root_digest(
-        component, deps, manifest_bytes=(staged_dir / "manifest.json").read_bytes())
-    if root_digest != args["root_digest"]:
-        return _result({"ok": False, "kind": "checksum_changed",
-                         "detail": "staged component no longer matches the approved inspection"})
+    checked = validate_resume_inputs(
+        staged_dir=staged_dir, receipt_id=args.get("receipt_id"),
+        root_digest=args["root_digest"], expect_slug=args["slug"])
+    if not checked.ok:
+        detail = (checked.detail if checked.kind != "receipt_required"
+                  else "specialist_install_commit requires a valid receipt_id "
+                       "from specialist_install_inspect")
+        return _result({"ok": False, "kind": checked.kind, "detail": detail})
+    receipt, component = checked.receipt, checked.component
+    deps, root_digest = checked.dependencies, checked.root_digest
     inspection = InspectionResult(
         component_id=component.component_id, version=component.version, slug=component.slug,
         component_checksum=component.checksum, root_digest=root_digest,
@@ -13711,6 +13737,12 @@ async def specialist_install_commit(args: dict) -> dict:
                          row.scoped_name: list(row.env_names)
                          for row in receipt.plugins if row.env_names
                 },
+                # #929: a pending outcome names its own resume. An active one
+                # does not — its receipt was just pruned and its staging tree
+                # reclaimed two lines above, so there is nothing to re-commit.
+                **(_pending_resume_inputs(inspection, receipt,
+                                          tool_name="specialist_install_commit")
+                   if instance.state == "pending-configuration" else {}),
                 # #676: an install's swap normally replaces an EMPTY owned
                 # set and drops nothing, so this adds no fields. It is not
                 # decoration: the swap runs unconditionally here, and a
@@ -13740,44 +13772,32 @@ async def specialist_install_commit(args: dict) -> dict:
      "required": ["slug", "component_id", "version", "root_digest", "staged_dir", "receipt_id"]},
 )
 async def specialist_upgrade(args: dict) -> dict:
-    from specialist_component import load_specialist_component
     from specialist_install import (
-        InspectionResult, SpecialistInstallError, compute_install_root_digest,
-        resolve_dependency_closure, upgrade_specialist,
+        InspectionResult, SpecialistInstallError, upgrade_specialist,
+        validate_resume_inputs,
     )
     from specialist_install_consent import SpecialistInstallAckStore
     import specialist_bundle_journal
     import specialist_install as specialist_install_mod
     import specialist_receipt
 
-    receipt_id = args.get("receipt_id")
-    receipt = specialist_receipt.load(receipt_id) if receipt_id else None
-    if receipt is None:
-        return _result({"ok": False, "kind": "receipt_required",
-                        "detail": "specialist_upgrade requires a valid receipt_id "
-                                  "from specialist_install_inspect(mode='upgrade')"})
-
+    # #929: the same shared acceptance predicate the install handler and the
+    # status disclosure use. Whole-branch M's staged_dir_invalid mapping and
+    # the fresh root re-validation ("upgrade must not trust a caller-supplied
+    # digest either") both live inside it now. `expect_slug` is NOT passed:
+    # this handler has never compared the staged component's slug to its
+    # argument, and the extraction preserves that.
     staged_dir = Path(args["staged_dir"])
-    # Whole-branch M: guard the staged component load (mirrors
-    # specialist_install_commit's staged_dir_invalid mapping) — a vanished/
-    # corrupt staging dir must surface as a structured envelope, not a raw
-    # ValueError/OSError out of the tool.
-    try:
-        component = load_specialist_component(staged_dir, staged_dir / "manifest.json")
-    except (ValueError, OSError) as exc:
-        return _result({"ok": False, "kind": "staged_dir_invalid", "detail": str(exc)})
-    # Same fresh re-validation as specialist_install_commit — upgrade must
-    # not trust a caller-supplied digest either.
-    deps = resolve_dependency_closure(component, staged_dir)
-    unavailable = [d for d in deps if not d.available]
-    if unavailable:
-        detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)
-        return _result({"ok": False, "kind": "dependency_unavailable", "detail": detail})
-    root_digest = compute_install_root_digest(
-        component, deps, manifest_bytes=(staged_dir / "manifest.json").read_bytes())
-    if root_digest != args["root_digest"]:
-        return _result({"ok": False, "kind": "checksum_changed",
-                         "detail": "staged component no longer matches the approved inspection"})
+    checked = validate_resume_inputs(
+        staged_dir=staged_dir, receipt_id=args.get("receipt_id"),
+        root_digest=args["root_digest"])
+    if not checked.ok:
+        detail = (checked.detail if checked.kind != "receipt_required"
+                  else "specialist_upgrade requires a valid receipt_id "
+                       "from specialist_install_inspect(mode='upgrade')")
+        return _result({"ok": False, "kind": checked.kind, "detail": detail})
+    receipt, component = checked.receipt, checked.component
+    deps, root_digest = checked.dependencies, checked.root_digest
     inspection = InspectionResult(
         component_id=component.component_id, version=component.version, slug=component.slug,
         component_checksum=component.checksum, root_digest=root_digest,
@@ -13828,6 +13848,12 @@ async def specialist_upgrade(args: dict) -> dict:
             specialist_install_mod.reclaim_staging_tree(staged_dir)
         return {"ok": True, "slug": instance.slug, "state": instance.state,
                 "reloaded": seq["reloaded"], "verify": seq["verify"],
+                # #929: parity with specialist_install_commit — an upgrade that
+                # lands pending-configuration keeps its receipt and staging
+                # tree, and names the five inputs the follow-up re-commit takes.
+                **(_pending_resume_inputs(inspection, receipt,
+                                          tool_name="specialist_upgrade")
+                   if instance.state == "pending-configuration" else {}),
                 # #676: an upgrade whose new owned generation omits an old
                 # plugin removed that plugin's registry entry. Same
                 # persisting removal, same disclosure.

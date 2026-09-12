@@ -232,12 +232,19 @@ def _refuse_if_active_present(instance_dir, *, slug: str, root: str) -> None:
 
     Deliberately NOT keyed on receipt/operation identity (Terra round-3):
     a same-root restage with different config is last-writer-wins pending
-    activation. An operator resuming configuration later re-inspects and
-    holds a NEW receipt for the same root, so demanding receipt equality
-    would refuse the legitimate resume flow; and both writers necessarily
-    hold consent for this exact install identity with byte-identical
-    content, so no consent or integrity boundary is crossed — only the
-    not-yet-activated config of one consented component."""
+    activation. Both writers necessarily hold consent for this exact install
+    identity with byte-identical content, so no consent or integrity
+    boundary is crossed — only the not-yet-activated config of one
+    consented component.
+
+    #929: the resume is a SECOND `commit_specialist_install` with the
+    RETAINED receipt, not a re-inspect — a fresh inspect refuses this very
+    slug (`slug_collision`), and upgrade-mode inspect refuses a first
+    install that never activated (`no_active_tuple`). The tool result and
+    `casactl specialist status` both name the retained receipt id and staged
+    directory for that call. A restage from an independently-obtained
+    receipt for the same root is still accepted here; it is simply not the
+    documented route any more."""
     if instance_dir.active() is not None:
         raise SpecialistInstallError(
             "concurrent_mutation",
@@ -252,16 +259,31 @@ def _refuse_if_active_present(instance_dir, *, slug: str, root: str) -> None:
         # or schema-invalid desired.yaml raises the raw parser/validator
         # error. All of them mean the same thing here: an occupant we cannot
         # prove is ours — fail closed.
+        # INV-OPS-001's rule, applied to this guard after the gate-owned review
+        # reproduced it: the guard is right to fail closed — it cannot prove the
+        # occupant is ours — but the candidate is intact when it does, and this
+        # read can fail transiently, so the advice must not send the operator to
+        # an uninstall that deletes the settings the refusal just preserved.
         raise SpecialistInstallError(
             "concurrent_mutation",
             f"{slug!r}: an unreadable pending candidate already exists "
-            f"({exc}); refusing to replace it — uninstall or repair first")
+            f"({exc}); refusing to replace it — this call has staged nothing over it; "
+            f"keep the candidate and its saved configuration; resolve the read "
+            f"error and retry")
     if pending is not None and pending.root != root:
+        # INV-OPS-001's rule once more, on the arm reached when the candidate
+        # LOADS. The refusal is right and unchanged — a pending candidate that
+        # is not ours occupies the slug, and replacing it would silently discard
+        # the configuration an earlier attempt supplied — and that candidate is
+        # whole when it refuses. So the advice must not offer the uninstall that
+        # rmtree's the instance directory holding it; the non-destructive route
+        # out of this state is the occupant's own pending -> active re-commit.
         raise SpecialistInstallError(
             "concurrent_mutation",
             f"{slug!r}: a different pending install ({pending.root}) already "
-            f"occupies this slug; refusing to replace it — complete or "
-            f"uninstall it first")
+            f"occupies this slug; refusing to replace it — this call has staged "
+            f"nothing over it; keep that candidate and its saved configuration; "
+            f"finish configuring it before this slug takes another install")
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,6 +475,96 @@ def resolve_and_fetch(
     return commit
 
 
+@dataclass(frozen=True, slots=True)
+class ResumeValidation:
+    """The verdict of `validate_resume_inputs`. `ok` carries the loaded
+    artifacts; otherwise `kind`/`detail` are the refusal the tool would have
+    returned."""
+    ok: bool
+    kind: str = ""
+    detail: str = ""
+    receipt: "SourceReceipt | None" = None
+    component: "SpecialistComponent | None" = None
+    dependencies: tuple["DependencyResolution", ...] = ()
+    root_digest: str = ""
+
+
+def validate_resume_inputs(
+    *, staged_dir: "Path | str", receipt_id: object, root_digest: object,
+    expect_slug: "str | None" = None, receipts_dir: "Path | None" = None,
+) -> ResumeValidation:
+    """#929: the acceptance predicate `specialist_install_commit` and
+    `specialist_upgrade` apply to a caller's resume inputs BEFORE they open a
+    transaction — extracted so the one surface that DISCLOSES those inputs can
+    apply the same predicate the tool that consumes them will.
+
+    Why an extraction and not a second verifier beside the disclosure. Three
+    candidate reviews of this change each found a different sequence under
+    which the disclosed values were assembled from two different candidates
+    and the tool then refused them: a stale index root beside a newer marker,
+    an empty index hiding the candidate entirely, and the tree itself
+    transiently inconsistent across a failed write's rollback. Each was fixed
+    by reasoning about WRITERS — that the files are written together, that a
+    locked read sees them together. Provenance is not coherence: after a
+    failed write the two files ARE contemporaneous and still name different
+    candidates, and the argument has to be remade for every failure path that
+    does not exist yet. Verifying the set against the consumer's own predicate
+    asks a question that is decidable from the bytes in hand, for every
+    sequence including the ones nobody has enumerated. Two COPIES of that
+    predicate would be the same defect one layer down, so there is one.
+
+    Behaviour-preserving by construction: the five steps, their order, their
+    refusal `kind`s and their `detail` strings are the handlers' own.
+    `expect_slug` is the install handler's extra slug comparison, which the
+    upgrade handler deliberately does not make (it derives the identity from
+    the staged manifest) — passing `None` reproduces that exactly. Nothing is
+    ADDED here; the disclosure's extra checks (the receipt's own slug, and the
+    identity triple against the tree candidate's root) belong to the caller
+    that makes the claim, because adding them here would turn currently
+    ACCEPTED tool calls into refusals — measured: both handlers activate today
+    with a caller-supplied `component_id`/`version` that disagrees with the
+    staged manifest.
+
+    Side-effect-free: it loads, resolves and hashes, and writes nothing.
+    """
+    import specialist_receipt
+
+    if not receipt_id:
+        return ResumeValidation(False, "receipt_required",
+                                "a valid receipt_id from specialist_install_inspect "
+                                "is required")
+    receipt = (specialist_receipt.load(receipt_id, receipts_dir) if receipts_dir is not None
+               else specialist_receipt.load(receipt_id))
+    if receipt is None:
+        return ResumeValidation(False, "receipt_required",
+                                "a valid receipt_id from specialist_install_inspect "
+                                "is required")
+
+    staged = Path(staged_dir)
+    try:
+        component = load_specialist_component(staged, staged / "manifest.json")
+    except (ValueError, OSError) as exc:
+        return ResumeValidation(False, "staged_dir_invalid", str(exc))
+    if expect_slug is not None and component.slug != expect_slug:
+        return ResumeValidation(False, "checksum_changed",
+                                "staged component no longer matches the approved inspection")
+    deps = resolve_dependency_closure(component, staged)
+    unavailable = [d for d in deps if not d.available]
+    if unavailable:
+        detail = "; ".join(f"{d.kind}:{d.identifier}: {d.detail}" for d in unavailable)
+        return ResumeValidation(False, "dependency_unavailable", detail)
+    try:
+        actual = compute_install_root_digest(
+            component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
+    except OSError as exc:
+        return ResumeValidation(False, "staged_dir_invalid", str(exc))
+    if actual != root_digest:
+        return ResumeValidation(False, "checksum_changed",
+                                "staged component no longer matches the approved inspection")
+    return ResumeValidation(True, receipt=receipt, component=component,
+                            dependencies=deps, root_digest=actual)
+
+
 def resolve_dependency_closure(
     component: SpecialistComponent, component_dir: Path,
 ) -> tuple[DependencyResolution, ...]:
@@ -467,6 +579,22 @@ def resolve_dependency_closure(
     import plugin_registry
     from persona_pack import PersonaPackError, load_persona_pack
     from plugin_store import content_checksum
+
+    # #929 (astra, attempt-3 seam round): ONE registry snapshot for the whole
+    # closure. The legacy/sourceless branch below used to call
+    # `plugin_registry.resolve_all()` per dependency ROW, so a `reload_snapshot`
+    # landing between two rows composed generation A's availability with
+    # generation B's — reproduced with a registry moving `{alpha} -> {} ->
+    # {beta}`, yielding a closure every row of which was "available" and which
+    # was never simultaneously satisfiable; the commit that consumed it then
+    # refused `dependency_unavailable`. `pinned_resolver()` is #454's existing
+    # answer to exactly this ("a resolver bound to ONE snapshot, for callers
+    # whose correctness depends on every read describing the same registry"),
+    # and it is captured HERE, at entry, rather than lazily on first legacy row.
+    # This is a change to a shipped mutation path: no closure that was
+    # simultaneously satisfiable becomes refused, and a mixed one — which never
+    # was — stops being accepted.
+    resolve_registry = plugin_registry.pinned_resolver()
 
     out: list[DependencyResolution] = []
     for dep in component.dependencies:
@@ -612,7 +740,7 @@ def resolve_dependency_closure(
             # snapshot-build time) and hash its on-disk artifact directory the
             # same way plugin_store always does.
             resolved = next(
-                (p for p in plugin_registry.resolve_all().plugins
+                (p for p in resolve_registry().plugins
                  if p.name == dep.identifier), None,
             )
             if resolved is None:
@@ -1918,8 +2046,41 @@ def commit_specialist_install(
         # the authority on whether staging may proceed at all.
         try:
             pending_before = instance_dir.desired()
-        except Exception:  # noqa: BLE001 — unreadable candidate: in-lock guard refuses
-            pending_before = None
+        except (ValueError, OSError, yaml.YAMLError,
+                jsonschema.ValidationError) as exc:
+            # #929 (diff review r4): NOT `None`. The old comment here said the
+            # in-lock `_refuse_if_active_present` is the authority on whether
+            # staging may proceed, and for a candidate that stays unreadable
+            # it is — but that guard performs its OWN `desired()` read, and a
+            # read that fails once can succeed the next time. A transient
+            # failure therefore carried nothing, the guard's later read saw
+            # the same root and allowed the restage, and the settings the
+            # operator had already supplied were replaced by the caller's
+            # alone. Reproduced end to end through both public handlers: one
+            # injected EIO, `ok: true`, and copies of the saved setting 1 -> 0
+            # with no journal left to recover from. Fail closed with the
+            # guard's own refusal instead: a candidate whose config we could
+            # not read is one we cannot merge with, and refusing costs a
+            # retry where proceeding costs the operator's settings.
+            # INV-OPS-001 (#929): the advice does not propose destroying what
+            # the refusal declined to replace. It does NOT assert that the
+            # tuple files are intact when the call returns — on the bundle arm
+            # this refusal reaches the transaction compensation, which re-runs
+            # the #372 capture sanitizer and can write an emptied snapshot back
+            # (measured; #975). The rule is about what the advice
+            # PROPOSES, which is the part this module controls.
+            # The earlier wording offered "uninstall and
+            # install afresh" as an alternative; `tools.py` relays this detail
+            # verbatim and `_uninstall_core` rmtree's the instance directory, so
+            # that alternative destroyed the only copy of the settings after one
+            # transient read error the next read recovers from.
+            raise SpecialistInstallError(
+                "concurrent_mutation",
+                f"{inspection.slug!r}: the pending candidate's configuration "
+                f"could not be read ({exc}); refusing to restage over it — "
+                f"preserve the pending candidate, its saved configuration, and "
+                f"the receipt and staging tree needed to resume; resolve the "
+                f"read error and retry") from exc
         merged_config = dict(config)
         if pending_before is not None and pending_before.root == root:
             _secret_declared = set(component.config_schema.get("secret_names", []) or [])
@@ -2415,6 +2576,29 @@ def upgrade_specialist(
         verified = _resolve_verified_component(
             eff_inspection, slug=slug, specialists_dir=specialists_dir,
             receipt=receipt)
+        # #929 (diff review r1): the pending-configuration merge read rises
+        # above `begin`, beside the receipt check, the consent gate and the
+        # active-tuple read that #966 hoisted for the same reason. It is the
+        # last fallible read this arm performs before its first durable write,
+        # and left where it was — inside `_upgrade_core`, after the journal is
+        # open — its refusal reached `rollback_disk`, whose capture sanitizer
+        # restores a document the refused call never opened. Measured: a
+        # refused upgrade left `active.yaml` tombstoned (`config_snapshot {}`,
+        # digest `pre-guard:removed`), which INV-SPEC-003 says an upgrade
+        # failure must not do. Refusing here records nothing and compensates
+        # nothing. The observation is handed to the core so this arm does not
+        # read a second time and put the same failure back inside the window;
+        # `None` is a real answer and travels as one.
+        try:
+            _pending_before = _instance_dir.desired()
+        except (ValueError, OSError, yaml.YAMLError,
+                jsonschema.ValidationError) as exc:
+            raise SpecialistInstallError(
+                "concurrent_mutation",
+                f"{slug!r}: the pending candidate's configuration could not be "
+                f"read ({exc}); refusing to restage over it — preserve the pending "
+                f"candidate, its saved configuration, and the receipt and staging "
+                f"tree needed to resume; resolve the read error and retry") from exc
 
         _reg = plugin_registry.load_registry(registry_path)
         before_owned = plugin_registry.owned_entries_for(slug, _reg)
@@ -2452,7 +2636,7 @@ def upgrade_specialist(
                 slug=slug, inspection=eff_inspection, config=config,
                 secret_names_provided=secret_names_provided, acks=acks,
                 specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
-                receipt=receipt)
+                receipt=receipt, _pending_before=_pending_before)
             if instance.state == "active":
                 published = _publish_owned_plugins(
                     slug, receipt, tree_paths, store_root=plugin_store_root)
@@ -2685,12 +2869,34 @@ def _resolve_verified_component(
         root_digest=fresh_root_digest)
 
 
+class _Unread:
+    """#929: "this caller has not observed the pending candidate" — distinct from
+    `None`, which is the observation that there is no candidate.
+
+    `_upgrade_core`'s pending-configuration read is the last fallible read the
+    receipt-bearing bundle arm performs between `specialist_bundle_journal.begin`
+    and its first durable write, and a refusal there reaches the transaction
+    compensation. The bundle arm therefore makes that observation BEFORE it opens
+    a journal and hands the result down; every other caller passes nothing and
+    reads for itself, unchanged. A plain default of `None` cannot express this —
+    it is a legitimate answer — so the absence needs its own value."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:   # pragma: no cover — diagnostics only
+        return "<unread>"
+
+
+_UNREAD = _Unread()
+
+
 def _upgrade_core(
     *, slug: str, inspection: "InspectionResult", config: "Mapping[str, str]",
     secret_names_provided: frozenset[str], acks: "SpecialistInstallAckStore",
     specialists_dir: Path = Path("/config/specialists"),
     agents_specialists_dir: Path = Path("/config/agents/specialists"),
     receipt: "SourceReceipt | None" = None,
+    _pending_before: "object" = _UNREAD,
 ) -> "SpecialistInstance":
     """Spec §2.4/§4.1's transactional reinstall/upgrade: stage the new
     version as desired, validate+compile it fully BEFORE touching active,
@@ -2835,10 +3041,33 @@ def _upgrade_core(
     # different-root or unreadable candidate contributes nothing.
     root = component_root_string(component_id=component.component_id, version=component.version,
                                   component_checksum=fresh_root_digest)
-    try:
-        _desired_before = instance_dir.desired()
-    except Exception:  # noqa: BLE001 — unreadable candidate contributes nothing
-        _desired_before = None
+    if _pending_before is not _UNREAD:
+        # #929 (diff review r1): the receipt-bearing bundle arm already made
+        # this observation, before it opened a journal, and handed it down. It
+        # holds SPECIALIST_LIFECYCLE_LOCK across that read and every write
+        # below, so no Casa lifecycle writer can have replaced the candidate in
+        # between — and reading a second time here would put the one fallible
+        # read this arm has left back inside the journal window, which is the
+        # whole reason the first one was moved. `None` here is the observation
+        # "no candidate", not "go and look".
+        _desired_before = _pending_before
+    else:
+        try:
+            _desired_before = instance_dir.desired()
+        except (ValueError, OSError, yaml.YAMLError,
+                jsonschema.ValidationError) as exc:
+            # #929 (diff review r4): a read that fails once can succeed the next
+            # time, so treating the failure as "contributes nothing" silently
+            # drops the settings an earlier pending attempt already supplied.
+            # Fail closed. This is the authority for the legacy no-receipt arm
+            # and every direct caller; the bundle arm reaches the identical
+            # refusal one frame up, before any journal exists.
+            raise SpecialistInstallError(
+                "concurrent_mutation",
+                f"{slug!r}: the pending candidate's configuration could not be "
+                f"read ({exc}); refusing to restage over it — preserve the pending "
+                f"candidate, its saved configuration, and the receipt and staging "
+                f"tree needed to resume; resolve the read error and retry") from exc
     desired_carried = {}
     if _desired_before is not None and _desired_before.root == root:
         desired_carried = {

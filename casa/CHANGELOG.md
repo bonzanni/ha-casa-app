@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.305.0] - 2026-09-12
+
+### Fixed
+
+- A specialist install left waiting for configuration now tells you how to finish
+  it. The route the documentation described refused, and the route that worked
+  was written down nowhere, so an install could sit in that state with nothing
+  saying what it wanted. The outcome now names the inputs it needs, names the
+  tool that accepts them, and says whether those inputs were actually checked
+  rather than leaving you to assume. What you are told is read from disk every
+  time, so it is what is there.
+- A refusal that declined to replace your settings no longer tells you to remove
+  them. Two fail-closed refusals used to end by suggesting an uninstall — one
+  when a read failed while resuming, one when a different install already
+  occupied the same name. Following either destroyed the only copy of the
+  settings you had supplied, and reinstalling could not bring them back. Both now
+  say what is preserved and ask for something that keeps it.
+
+### Changed
+
+- Casa states, as a rule it holds itself to, that nothing it tells you to do in
+  order to recover may destroy state it has just preserved. The rule covers
+  refusal messages, status diagnostics and the guidance its own agents follow.
+  One remaining message that breaks it is recorded as outstanding rather than
+  quietly excused, and so is a separate case where a refusal can still rewrite
+  settings it never opened.
+
 ## [0.304.0] - 2026-09-12
 
 ### Fixed

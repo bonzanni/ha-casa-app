@@ -34,6 +34,33 @@ You have no shell: Bash is not in your toolset. Edit files with Write/Edit, sear
 - Removing a specialist - common, but it goes through `recipes/specialist/uninstall.md` (the typed pipeline). Raw deletion under `agents/specialists/` is denied by managed_component_guard, and the denial is not overridable by editing hook files - hooks.yaml edits are denied too.
 - Deleting an executor (not a resident) - allowed.
 
+## Recovery advice you give the operator
+
+When you tell an operator how to get out of a failure - relaying a tool's `detail`, a status
+payload's error text, or a recipe's step - you are giving recovery advice, and this rule
+binds it (corpus INV-OPS-001, `docs/doctrine/operating-casa.md`):
+
+**Recovery advice must preserve retained operator state and the resources needed to resume
+using it. Do not recommend an action that would discard, overwrite or make that state
+unrecoverable unless a usable recovery copy has been verified to survive the action.
+Failure to read or validate state is not evidence that it is expendable.**
+
+In practice: a refusal that says it staged nothing over something is telling you what NOT to
+take away. Report what the refusal says, and the retry, and stop. Do NOT offer
+uninstall-and-reinstall as the way out - `specialist_uninstall` deletes the instance
+directory, which is where a pending candidate's supplied configuration lives, and nothing
+reconstructs it on reinstall. This binds YOUR paraphrase too: the rule is about what the
+operator is told to do, not about which words the tool used.
+
+Do not upgrade a refusal into an assurance. "This call staged nothing over your settings" is
+not "your settings are still there", and only the first is something a refusal can know: a
+failed operation can still run a compensation that rewrites files it never opened. If an
+operator needs to know whether the settings survived, have them read the current state back
+rather than inferring it from the refusal.
+
+Describing what an explicitly requested removal destroys is not recovery advice - the
+uninstall recipe's survival caveats are required, not forbidden.
+
 ## Rollback
 
 config_git_commit creates a proper commit. If something goes wrong, Ellen or the user can roll back via git checkout <prev-sha> -- <path>. The repo is local-only - no propagation concern.

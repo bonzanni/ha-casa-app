@@ -26,7 +26,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a plugin tool result, the result contract, a capability reference or its redemption, or the broker routes | [`architecture/plugin-result-contract.md`](architecture/plugin-result-contract.md) |
 | a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
 | a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule | [`architecture/scheduled-asks.md`](architecture/scheduled-asks.md) |
-| a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, the bundle journal, or bundle-transaction recovery | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |
+| a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, the question lifecycle, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
@@ -39,6 +39,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | anything published — docs, comments, commit messages, PR text, branch names | [`doctrine/publishing.md`](doctrine/publishing.md) |
 | anything structural, or when you need to find which document owns an area | [`architecture/overview.md`](architecture/overview.md) |
 | anything that must serialize, a new lock, bus dispatch, or blocking I/O placement | [`architecture/concurrency-model.md`](architecture/concurrency-model.md) |
+| bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps | [`architecture/specialist-bundle-recovery.md`](architecture/specialist-bundle-recovery.md) |
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |

@@ -103,7 +103,11 @@
     - tests/test_recall_absence_invariant.py
     - tests/test_authz_grants.py
     - tests/test_assistant_prompts.py
+    - tests/test_specialist_recovery_advice.py
   related: [architecture/memory.md, architecture/engagements.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/voice.md]
+  defines_invariants: [INV-OPS-001]
+  invariant_tests:
+    INV-OPS-001: [tests/test_specialist_recovery_advice.py::test_pending_read_failure_advice_preserves_resume_state, tests/test_specialist_recovery_advice.py::test_pending_read_recovery_rule_is_shipped]
 
 - doc: doctrine/working-on-casa.md
   summary: How to change this repository without breaking it, and how to establish that a claim about it is true.

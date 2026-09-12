@@ -2508,3 +2508,90 @@ def test_env_name_collision_sees_defaulted_refs_on_both_sides(monkeypatch,
         "SHARED_NAME"]
     # Sanity: an unrelated name is not a conflict.
     assert si._env_name_conflicts({"OTHER_NAME"}, exclude_owner="slug") == []
+
+
+# --- #929 attempt 3: one registry snapshot per dependency closure ----------
+
+
+def _sourceless_dep_row(identifier: str, digest: str) -> dict:
+    return {"kind": "plugin/implementation", "identifier": identifier, "digest": digest}
+
+
+def test_the_dependency_closure_reads_one_registry_generation(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A closure whose rows resolve against DIFFERENT registry generations can
+    report every row available while no single generation made them all so.
+
+    The legacy/sourceless branch called `plugin_registry.resolve_all()` once
+    per dependency ROW, so a `reload_snapshot` landing between two rows
+    composed generation A's availability with generation B's. Reproduced by a
+    reviewer with a registry moving `{alpha} -> {} -> {beta}`: three available
+    rows, zero generations in which both plugins were available, and the
+    commit that consumed the closure then refused `dependency_unavailable`.
+    That closure is the acceptance predicate a status disclosure now certifies
+    against, so a mixed one certifies a set the tool refuses.
+
+    `plugin_registry.pinned_resolver()` is #454's existing answer for exactly
+    this, and it is what the closure takes now: ONE snapshot for every row.
+
+    The registry is doubled at the module boundary the closure crosses — the
+    property under test is which generation each row reads, and that is the
+    boundary it is decided at. What is NOT doubled is the availability rule
+    itself: the digests below are real `content_checksum` values over real
+    directories, so `beta` is refused for the real reason.
+    """
+    import plugin_store
+    from types import SimpleNamespace
+
+    import plugin_registry
+    from specialist_component import load_specialist_component
+    from specialist_install import resolve_dependency_closure
+
+    installed = {}
+    for name in ("alpha", "beta"):
+        d = tmp_path / "installed" / name
+        d.mkdir(parents=True)
+        (d / "file.txt").write_text(name, encoding="utf-8")
+        installed[name] = (d, "sha256:" + plugin_store.content_checksum(d))
+
+    component_dir, manifest_path = write_minimal_component(tmp_path, slug="mtg-test")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dependencies"] += [_sourceless_dep_row(n, installed[n][1])
+                                 for n in ("alpha", "beta")]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    component = load_specialist_component(component_dir, manifest_path)
+
+    def _gen(names):
+        return SimpleNamespace(plugins=[SimpleNamespace(name=n, path=str(installed[n][0]))
+                                        for n in names])
+
+    generations = [_gen(["alpha"]), _gen(["beta"])]
+    counts = {"resolve_all": 0, "pinned": 0}
+
+    def _resolve_all():
+        counts["resolve_all"] += 1
+        return generations[min(counts["resolve_all"] - 1, len(generations) - 1)]
+
+    def _pinned_resolver():
+        counts["pinned"] += 1
+        snap = generations[0]          # bound ONCE, when the pass begins
+        resolve = lambda target=None: snap  # noqa: E731
+        resolve.generation = 0
+        return resolve
+
+    monkeypatch.setattr(plugin_registry, "resolve_all", _resolve_all)
+    monkeypatch.setattr(plugin_registry, "pinned_resolver", _pinned_resolver)
+
+    deps = resolve_dependency_closure(component, component_dir)
+
+    # One pin, taken once; the per-row unpinned reader is not used at all.
+    assert (counts["pinned"], counts["resolve_all"]) == (1, 0)
+    plugin_rows = {d.identifier: d for d in deps if d.kind == "plugin/implementation"}
+    assert sorted(plugin_rows) == ["alpha", "beta"]
+    # ONE generation decides both rows. Per-row resolution would have found
+    # alpha in generation A and beta in generation B and called both available
+    # — a closure no generation ever satisfied.
+    assert sum(row.available for row in plugin_rows.values()) == 1
+    assert plugin_rows["alpha"].available is True
+    assert plugin_rows["beta"].available is False
+    assert "not registered" in plugin_rows["beta"].detail

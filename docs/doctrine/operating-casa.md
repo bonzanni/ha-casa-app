@@ -216,6 +216,50 @@ guarantees is the floor beneath the guidance — a table that arrives anyway sti
 with every cell and every link destination intact, and one whose shape is genuinely
 ambiguous stays literal rather than being rendered wrongly.
 
+**Recovery advice never proposes destroying what the refusal declined to touch.** A
+fail-closed refusal exists because some state is worth more than the operation being
+refused: the operation stops rather than write over it. The advice that travels with the
+refusal is therefore part of the guarantee, not commentary on it: a refusal that declines
+to replace an operator's settings and then offers an alternative that deletes them has
+destroyed exactly what it was written to save, and the operator followed instructions.
+
+The rule governs what the advice PROPOSES. It is not a claim that the protected state is
+intact when the call returns — a refusal can still reach a transaction compensation that
+rewrites files the refused call never opened, which is a separate defect class and is
+tracked as one (#975). Advice must therefore say what the call did and what to keep, and must not
+assert an outcome the calling path does not control.
+Recovery advice must preserve retained operator state and the resources needed to resume
+using it. Do not recommend an action that would discard, overwrite or make that state
+unrecoverable unless a usable recovery copy has been verified to survive the action.
+Failure to read or validate state is not evidence that it is expendable. This applies to
+advice in tool results, status diagnostics, recipes, and their operator-facing paraphrases
+— a typed refusal's `detail` reaches an operator through the tool result verbatim, which is
+how the rule was first evaded.
+
+Describing the effects of an explicitly requested removal is not a recovery recommendation.
+An operator may expressly choose to discard the identified state after its loss is
+explained; a request to finish or repair an operation does not express that choice. That is
+what separates an uninstall recipe truthfully naming what uninstall destroys from a refusal
+offering an uninstall as a way out.
+
+**INV-OPS-001**: When the install or upgrade pending-configuration merge cannot read or validate `InstanceDir.desired()`, its refusal instructs preservation of the pending candidate, its saved configuration, and the receipt and staging tree needed to resume, followed by resolving the failure and retrying. These two refusal paths do not recommend uninstalling or starting afresh.
+
+The invariant is deliberately narrower than the rule above it. What is mechanically
+guaranteed is those two refusal paths and the presence of this rule in both the corpus and
+the shipped configurator doctrine that paraphrases refusals to an operator; nothing checks
+an arbitrary refusal detail, a `last_activation_error`, or a recipe's prose, and at the time
+of writing ONE shipped string — `personality_binding`'s pre-guard tombstone message, which
+reaches the operator through the status payload — is an outstanding violation of the rule
+rather than an exception to it. It is tracked separately. Both arms of
+`specialist_install.py`'s active-present guard comply: the arm reached when the pending
+candidate cannot be read at all, and the arm reached when a candidate for a different
+component root loads. Neither is named by the invariant and both were corrected alongside the
+two merge reads, for the reason the rule gives — each declines to replace the candidate and
+then proposed destroying it. Neither says the candidate survives the call: on the journalled
+bundle arm both reach the transaction compensation, which is the separate defect class named
+above. Stating the rule wider than the pin is the point: the pin says what
+is proved, and the rule says what is owed.
+
 ## What this cannot tell you
 
 These rules cover the failure modes the system's own structure creates. They do not cover the
@@ -236,6 +280,7 @@ the right action depends on something only the person knows, ask.
 - `tests/test_recall_absence_invariant.py`
 - `tests/test_authz_grants.py`
 - `tests/test_assistant_prompts.py`
+- `tests/test_specialist_recovery_advice.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)

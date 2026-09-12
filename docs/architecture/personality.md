@@ -120,7 +120,20 @@ fields must be JSON booleans; a request that sends anything else is refused with
 never the value. Those routes answer for an installed specialist whose binding has been
 activated exactly as they do for a resident, and for one whose binding has not been
 activated they answer for nothing at all; where a specialist's persona reference collides
-with a resident's, the resident's pack is the one inspect describes.
+with a resident's, the resident's pack is the one inspect describes. The specialist status
+route is the exception that proves it: a slug whose tree holds a desired candidate is exactly
+what it exists to report — from the tree, whether or not the loaded index knows of it — and it
+names the inputs that candidate's re-commit takes, and the tool that takes them (INV-SPEC-015,
+`architecture/specialist-lifecycle.md`). That is disk work, so it answers off the event loop
+like the explain route; it reports a missing marker, receipt or staged tree as an absent value
+rather than an error, and labels its own loaded view stale where that view is not describing
+the tree's candidate. Beside the inputs it reports one of three verdicts on them, and only the
+verdict licenses a call: verified, meaning they were checked against the consuming tool's own
+acceptance predicate, or not-verified with a reason, meaning they were not. There is no third
+state and no reason that means "gone for good": every read behind a verdict can fail
+transiently, so the reason says what to look at and never licenses removing anything. The
+slug a caller names must be a plain specialist slug, and a directory reached by any other
+string is never read.
 
 ## Contracts & invariants
 

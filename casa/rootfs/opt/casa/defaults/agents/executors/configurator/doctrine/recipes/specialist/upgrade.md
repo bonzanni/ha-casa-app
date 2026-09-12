@@ -29,7 +29,13 @@
    gone.
 4. If `state == "pending-configuration"`: the OLD version — and its OLD owned plugin set — is still
    live and answering delegations; tell the operator exactly which new config/secret names the new
-   version needs. Nothing broke.
+   version needs. Nothing broke. The result names the five values the resume takes and, as `tool`,
+   the handler that takes them — for an upgrade that is `specialist_upgrade` again, because the
+   still-active old version makes `specialist_install_commit` refuse `concurrent_mutation`. Pass
+   the five back verbatim with `slug` and the supplied values. A later engagement reads the same
+   six from `casactl specialist status <slug>`, and acts on `pending_commit_check` exactly as
+   `recipes/specialist/install.md` step 5 describes — including that `not_verified` is never a
+   finding that the candidate is unrecoverable, and never grounds to propose an uninstall.
 5. If `state == "error"`: report the validation failure; the OLD version, and its owned plugin set,
    are still live, unchanged.
 6. If `state == "active"`: `config_git_commit`, `casa_reload(scope="agents")`, `emit_completion`

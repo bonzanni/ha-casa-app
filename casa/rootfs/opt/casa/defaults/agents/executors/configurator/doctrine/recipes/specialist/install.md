@@ -57,10 +57,36 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    the same survival applies — no plugin data was deleted and nothing was
    revoked at the provider. Run `plugin_list()` to see which entries are
    gone.
-5. If `state == "pending-configuration"`: report which config/secret names are still missing; the
-   operator supplies them via a follow-up `specialist_install_commit` call with the SAME
-   `staged_dir` and `receipt_id` (re-inspect if `staged_dir` has been cleaned up — staging is not
-   guaranteed durable across a restart, and a re-inspect mints a fresh `receipt_id` too).
+5. If `state == "pending-configuration"`: report which config/secret names are still missing, then
+   finish the install by CALLING THE TOOL THE RESULT NAMES again — never by re-inspecting. The
+   pending result carries the five values that second call takes (`receipt_id`, `staged_dir`,
+   `component_id`, `version`, `root_digest`) and a sixth, `tool`, naming the handler that takes
+   them; pass the five back verbatim with `slug` and the config/secret values the operator
+   supplied. **Call the tool `tool` names and no other** — a pending UPGRADE keeps the old version
+   active, and `specialist_install_commit` refuses any slug with an active tuple
+   (`kind: "concurrent_mutation"`), so its resume goes to `specialist_upgrade`. The receipt and
+   the staged bytes are RETAINED for exactly this.
+   A LATER engagement that no longer has that result gets the same six from
+   `casactl specialist status <slug>` under `pending_commit` (the operator runs it and pastes the
+   result), beside `pending_commit_check`, which is the only thing that says whether they may be
+   used. It has exactly two states:
+   - `{"state": "verified"}` — the values were checked against the very predicate the named tool
+     applies. Make the call.
+   - `{"state": "not_verified", "reason": ...}` — they were NOT checked, and you may not use
+     them. **This is never a finding that the install is unrecoverable, whatever the reason
+     says.** Every read on the way to that verdict can fail transiently: `receipt_required`,
+     `staged_dir_invalid` and `incomplete_inputs` say a resource did not come back on THIS read;
+     `checksum_changed` and `receipt_mismatch` say what was read did not match; `recovery_pending`
+     says a transaction is in flight; `unreadable_*` says a read failed; `observation_changed`
+     says the tree moved while it was being checked. Report the reason to the operator as what to
+     look at, run `casactl specialist status <slug>` again after a moment, and say plainly that
+     the candidate may still be resumable. **Never propose `specialist_uninstall` from this
+     payload** — it is irreversible, it destroys the operator's already-supplied configuration,
+     and this payload cannot tell a lost resource from a read that failed once. If the operator
+     asks to start over, that is their call and `recipes/specialist/uninstall.md` is the route.
+   - No `pending_commit` and no `pending_commit_check` at all: the slug holds no candidate.
+   A null member of `pending_commit` is a value that could not be derived on this read; it is a
+   diagnosis, not an instruction. `pending_commit_check` is what decides.
 6. If `state == "active"`: wire delegation by applying ONLY the edit steps of
    `recipes/delegate/wire.md` (edit `delegates.yaml` idempotently + ensure the
    delegate tool is allowed). Do NOT run wire.md's own commit/reload/emit_completion
@@ -92,6 +118,10 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
 - Calling `specialist_install_commit` without `receipt_id`, or with one carried over from an
   EARLIER inspect — it refuses with `kind: "receipt_required"`; always use the id the LATEST
   `specialist_install_inspect` call returned.
+- Re-inspecting to resume a `pending-configuration` install — `specialist_install_inspect` refuses
+  the now-occupied slug with `kind: "slug_collision"`, and `mode="upgrade"` refuses a first install
+  that never activated with `kind: "no_active_tuple"`. Neither is a bug to work around: the resume
+  is the second `specialist_install_commit` with the retained values (step 5).
 - Calling `plugin_add`/`plugin_assign` for a dependency the component already declares — it never
   needs a separate add; inspect + commit install it as part of the SAME bundle. Once active, those
   tools (and `plugin_update`/`plugin_unassign`/`plugin_remove`) refuse the owned entry with `kind:
