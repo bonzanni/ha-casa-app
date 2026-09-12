@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.303.0] - 2026-09-12
+
+### Fixed
+
+- An install left waiting for configuration is no longer made unresumable by the
+  restart that was meant to recover it. On boot Casa replays any interrupted
+  install, and it separately reclaims receipts and staging directories that have
+  aged out. The reclaim ran first and read the disk as it stood before the replay,
+  so a candidate that existed only inside an interrupted transaction had the very
+  files it needed deleted, and the replay then restored a pending install pointing
+  at inputs that were gone. What you saw afterwards was an install sitting there
+  unfinishable, with uninstall and reinstall the only way out. The replay now runs
+  first, so what is reclaimed is judged against the disk as it stands afterwards.
+  This prevents the next occurrence; an install already left in that state is not
+  repaired by upgrading.
+
 ## [0.302.0] - 2026-09-12
 
 ### Fixed

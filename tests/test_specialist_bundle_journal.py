@@ -172,7 +172,11 @@ def test_rollback_over_invalid_registry_retains_the_journal(tmp_path):
     actions = journal.reconcile_boot(
         ops_dir=ops_dir, registry_path=reg,
         specialists_dir=tmp_path / "specialists", acks_path=tmp_path / "acks.json")
-    assert actions == []
+    # #950: the retained journal is still owed against this tree, so the boot
+    # pass reports the deferral of the age sweeps and nothing else — no
+    # "quarantine" action for a quarantine that never persisted.
+    assert actions == [{"slug": None, "action": "deferred_age_sweeps",
+                        "reason": "journal_reconciliation_incomplete"}]
     assert path.exists()   # retained: nothing durable was persisted
     # The unreadable registry was NOT overwritten with partial data.
     assert reg.read_text() == "{ not valid json"
@@ -269,6 +273,509 @@ def test_reconcile_boot_keeps_pending_installs_receipt_and_staging(tmp_path):
     assert not superseded_receipt.exists()   # newer same-slug receipt swept
     assert not superseded_tree.exists()      # and its staging with it
     assert not orphan.exists()        # unreferenced aged tree swept
+
+
+def test_reconcile_boot_retains_pending_candidate_restored_by_replay(tmp_path):
+    """#950 (red case, specified by astra): liveness established by THIS call's
+    own journal replay counts for the age sweeps.
+
+    A pending candidate's `desired.yaml` and `pending-receipt.json` live only
+    inside an in-progress journal capture when boot starts. Pre-fix, the
+    retention set was derived before the replay loop ran, so the marker'd
+    receipt and both staging trees it references were swept and the replay then
+    restored a marker naming a receipt that no longer exists — a visible,
+    unresumable candidate whose only exit is uninstall and reinstall. The
+    exemption the corpus states for the boot pass as a whole
+    (`docs/architecture/specialist-bundle-transactions.md:205-217`,
+    `specialist_receipt.sweep_aged:217-233`,
+    `specialist_install.sweep_staging_aged:363-373`) has to hold here too.
+    """
+    import json as _json
+    import os
+    import time
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    specialists = tmp_path / "specialists"
+    slug_dir = specialists / "mtg"
+    slug_dir.mkdir(parents=True)
+    # Mid-mutation tree: the tuple that owns the receipt is NOT on disk.
+    (slug_dir / "active.yaml").write_text("mid-mutation", encoding="utf-8")
+
+    staging = specialists / ".staging"
+    staging.mkdir()
+    component_tree = staging / "deadbeef01"
+    plugin_tree = staging / "deadbeef02"
+    superseded_tree = staging / "0ldbeef03"
+    orphan_tree = staging / "feedface04"
+    for tree in (component_tree, plugin_tree, superseded_tree, orphan_tree):
+        tree.mkdir()
+        (tree / "manifest.json").write_text("{}", encoding="utf-8")
+
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(component_tree),
+        "plugins": [{"staged_path": str(plugin_tree)}]}), encoding="utf-8")
+    # A NEWER same-slug inspection for a different root: it cannot resume the
+    # pending tuple, so it sweeps whatever happens to the marker'd one.
+    newer_receipt = receipts / ("d" * 32 + ".json")
+    newer_receipt.write_text(_json.dumps({
+        "receipt_id": "d" * 32, "slug": "mtg",
+        "component_staged_path": str(superseded_tree), "plugins": []}),
+        encoding="utf-8")
+
+    month_ago = time.time() - 30 * 24 * 3600
+    older_ts = month_ago - 10 * 24 * 3600
+    for p in (receipt_path, component_tree, plugin_tree):
+        os.utime(p, (older_ts, older_ts))      # the marker'd set is the OLDER one
+    for p in (newer_receipt, superseded_tree, orphan_tree):
+        os.utime(p, (month_ago, month_ago))
+
+    desired_yaml = _honest_tuple_yaml({})
+    marker_json = _json.dumps({"receipt_id": "c" * 32})
+    journal.begin(
+        "install", "mtg", before_entries=[],
+        before_tuple_files={"active.yaml": None,
+                            "desired.yaml": desired_yaml,
+                            "pending-receipt.json": marker_json},
+        ack_records=[], ops_dir=ops_dir)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    # The candidate really did become live through a SUCCESSFUL replay — none
+    # of the retention assertions below mean anything otherwise.
+    assert [a for a in actions if a["slug"] == "mtg"] == [
+        {"slug": "mtg", "action": "rolled_back"}]
+    assert not any(a["action"] in ("quarantine", "quarantine_all")
+                   for a in actions)
+    assert list(ops_dir.iterdir()) == []
+    assert (slug_dir / "desired.yaml").read_text(
+        encoding="utf-8") == desired_yaml
+    assert (slug_dir / "pending-receipt.json").read_text(
+        encoding="utf-8") == marker_json
+    from specialist_install import _pre_guard_prior_reason
+    assert _pre_guard_prior_reason(slug_dir / "desired.yaml") is None
+
+    assert (
+        int(receipt_path.exists()),
+        sum(p.is_dir() for p in (component_tree, plugin_tree)),
+        int(newer_receipt.exists()),
+        sum(p.is_dir() for p in (superseded_tree, orphan_tree)),
+        sum(a["count"] for a in actions if a["action"] == "swept_receipts"),
+        sum(a["count"] for a in actions
+            if a["action"] == "swept_staging_trees"),
+    ) == (1, 2, 0, 0, 1, 2)
+
+
+def test_a_capture_the_sanitizer_tombstones_is_still_swept_after_replay(tmp_path):
+    """#950 (the counter-guard): replay-first must not become capture-aware by
+    accident. `rollback_disk` re-runs the #372 sanitizer, so a capture whose
+    `desired.yaml` carries a secret-bearing snapshot whose digests disagree
+    lands as a TOMBSTONE — not a live pending candidate — and its receipt and
+    staging tree are correctly still reclaimed. A retention set read from the
+    capture, or one that treats any restored `desired.yaml` as live, keeps a
+    receipt for a candidate that can never resume. Green before and after the
+    reorder; it exists to refuse a fix that over-retains."""
+    import json as _json
+    import os
+    import time
+    from personality_binding import PRE_GUARD_SENTINEL
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    specialists = tmp_path / "specialists"
+    slug_dir = specialists / "mtg"
+    slug_dir.mkdir(parents=True)
+    staging = specialists / ".staging"
+    staged_tree = staging / "deadbeef01"
+    staged_tree.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(staged_tree), "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (receipt_path, staged_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    # A secret-bearing capture whose digests were computed over the original
+    # mapping: the restore-side sanitizer tombstones it.
+    journal.begin(
+        "install", "mtg", before_entries=[],
+        before_tuple_files={
+            "active.yaml": None,
+            "desired.yaml": _tuple_yaml({"api_token": "hunter2"},
+                                        "sha256:" + "9" * 64),
+            "pending-receipt.json": _json.dumps({"receipt_id": "c" * 32})},
+        ack_records=[], ops_dir=ops_dir)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert {"slug": "mtg", "action": "rolled_back"} in actions
+    restored = (slug_dir / "desired.yaml").read_text(encoding="utf-8")
+    assert PRE_GUARD_SENTINEL in restored and "hunter2" not in restored
+    assert (
+        int(receipt_path.exists()),
+        int(staged_tree.is_dir()),
+        sum(a["count"] for a in actions if a["action"] == "swept_receipts"),
+        sum(a["count"] for a in actions
+            if a["action"] == "swept_staging_trees"),
+    ) == (0, 0, 1, 1)
+
+
+def test_reconcile_boot_still_reclaims_when_there_is_no_ops_dir(tmp_path):
+    """#950: the age sweeps are reachable on an install that has never
+    journalled. Before the reorder an early return sat AFTER them; after it
+    the journal phase is guarded instead. Asserted by COUNTS, because an
+    install with nothing to reclaim would satisfy an actions-only pin."""
+    import json as _json
+    import os
+    import time
+
+    specialists = tmp_path / "specialists"
+    staging = specialists / ".staging"
+    orphan_tree = staging / "feedface01"
+    orphan_tree.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    orphan_receipt = receipts / ("c" * 32 + ".json")
+    orphan_receipt.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg", "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (orphan_receipt, orphan_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    actions = journal.reconcile_boot(
+        ops_dir=tmp_path / "nope", registry_path=tmp_path / "registry.json",
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert (int(orphan_receipt.exists()), int(orphan_tree.is_dir())) == (0, 0)
+    assert actions == [{"slug": None, "action": "swept_receipts", "count": 1},
+                       {"slug": None, "action": "swept_staging_trees",
+                        "count": 1}]
+    assert journal.last_boot_reconcile_actions == actions
+
+
+def test_an_ops_directory_that_cannot_be_listed_defers_the_age_sweeps(
+        tmp_path, monkeypatch):
+    """#950: the age sweeps run only when the journal phase FINISHED, and
+    finishing is read back off the tree — `recovery_debt` — not inferred from
+    which failures were caught.
+
+    A present ops directory that cannot be enumerated is the case that raises:
+    `sorted(ops_dir.iterdir())` fails in the pre-scan, so not one journal was
+    classified and the tree the sweeps would read may be missing a pending
+    candidate an unstarted replay was about to restore. The directory answers
+    for itself — an ops directory that cannot be listed IS debt — so nothing
+    aged is reclaimed here even though it is entirely unreferenced and any
+    other boot takes it; the deferral is REPORTED rather than looking like a
+    boot with nothing to do; and `reconcile_boot` still returns rather than
+    raising."""
+    import json as _json
+    import os
+    import time
+    from pathlib import Path as _Path
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    specialists = tmp_path / "specialists"
+    staging = specialists / ".staging"
+    orphan_tree = staging / "feedface01"
+    orphan_tree.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    orphan_receipt = receipts / ("c" * 32 + ".json")
+    orphan_receipt.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg", "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (orphan_receipt, orphan_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    # The real failure, at the real seam: THIS directory refuses to be listed,
+    # to the journal phase and to the debt reader alike. Every other path in
+    # the call (the specialists tree, the receipts dir) lists normally.
+    real_iterdir = _Path.iterdir
+
+    def _iterdir(self):
+        if self == ops_dir:
+            raise PermissionError(13, "Permission denied", str(ops_dir))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(_Path, "iterdir", _iterdir)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=tmp_path / "registry.json",
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert (int(orphan_receipt.exists()), int(orphan_tree.is_dir())) == (1, 1)
+    assert actions == [{"slug": None, "action": "deferred_age_sweeps",
+                        "reason": "journal_reconciliation_incomplete"}]
+    assert journal.last_boot_reconcile_actions == actions
+
+
+def test_a_journal_phase_that_aborts_sweeps_nothing_a_later_journal_needs(
+        tmp_path, monkeypatch):
+    """#950 (candidate review): the failure path must not reproduce the very
+    defect the reorder removes.
+
+    Two journals. The FIRST raises while being classified, which abandons every
+    journal behind it. The SECOND is the in-progress install whose capture
+    holds the only copy of a pending candidate's `desired.yaml` and
+    `pending-receipt.json`, and the aged receipt that marker names — plus the
+    two staging trees that receipt references — are on disk unrestored.
+
+    Sweeping after that abort reclaims exactly the inputs the unfinished replay
+    still needs: the next boot replays the surviving journal and restores a
+    marker naming a receipt and staged trees that are gone, leaving a visible
+    candidate the supported configure re-commit can never finish. Nothing may
+    be swept here, the pending journal must survive for that next boot, and the
+    skipped reclamation must be visible in the report."""
+    import json as _json
+    import os
+    import time
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    registry_path = tmp_path / "registry.json"
+    _write_registry(registry_path, [])
+    specialists = tmp_path / "specialists"
+    slug_dir = specialists / "mtg"
+    slug_dir.mkdir(parents=True)
+    (slug_dir / "active.yaml").write_text("mid-mutation", encoding="utf-8")
+
+    staging = specialists / ".staging"
+    staging.mkdir()
+    component_tree = staging / "deadbeef01"
+    plugin_tree = staging / "deadbeef02"
+    for tree in (component_tree, plugin_tree):
+        tree.mkdir()
+        (tree / "manifest.json").write_text("{}", encoding="utf-8")
+
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(component_tree),
+        "plugins": [{"staged_path": str(plugin_tree)}]}), encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (receipt_path, component_tree, plugin_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    # Sorted first by slug, so this one is classified — and raises — before the
+    # journal carrying the pending tuple is ever reached.
+    doomed = journal.begin(
+        "install", "aaa", before_entries=[], before_tuple_files={},
+        ack_records=[], ops_dir=ops_dir)
+    desired_yaml = _honest_tuple_yaml({})
+    marker_json = _json.dumps({"receipt_id": "c" * 32})
+    pending = journal.begin(
+        "install", "mtg", before_entries=[],
+        before_tuple_files={"active.yaml": None,
+                            "desired.yaml": desired_yaml,
+                            "pending-receipt.json": marker_json},
+        ack_records=[], ops_dir=ops_dir)
+    assert sorted(p.name for p in ops_dir.iterdir())[0] == doomed.name
+
+    real_classify = journal.classify_journal
+
+    def _classify(path):
+        if path.name == doomed.name:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_classify(path)
+
+    monkeypatch.setattr(journal, "classify_journal", _classify)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    # The pending candidate's tuple is still only inside the surviving
+    # journal — the abort is real, and the next boot is what resumes it.
+    assert pending.is_file()
+    assert not (slug_dir / "desired.yaml").exists()
+    assert (
+        int(receipt_path.exists()),
+        sum(p.is_dir() for p in (component_tree, plugin_tree)),
+        sum(a["count"] for a in actions if a["action"] == "swept_receipts"),
+        sum(a["count"] for a in actions
+            if a["action"] == "swept_staging_trees"),
+    ) == (1, 2, 0, 0)
+    deferrals = [a for a in actions if a["action"] == "deferred_age_sweeps"]
+    assert deferrals == [{"slug": None, "action": "deferred_age_sweeps",
+                          "reason": "journal_reconciliation_incomplete"}]
+
+
+def test_a_journal_the_loop_retained_defers_the_age_sweeps(tmp_path):
+    """#950 (candidate review r2): the harm does not need an exception. It
+    needs a journal still standing when the sweeps run.
+
+    Nothing is injected here. An invalid registry makes `rollback_disk` refuse
+    (it will not reconstruct a partial doc over unreadable bytes) and makes the
+    quarantine that follows report itself NOT durably persisted, so the loop
+    keeps the journal for the next boot to retry, CATCHES both failures and
+    CARRIES ON — the later journal is still pruned, and `reconcile_boot`
+    returns normally with no exception anywhere. A phase read as complete
+    because nothing escaped it therefore swept the aged receipt the retained
+    journal's capture names, and both staging trees that receipt references;
+    the next boot replays that journal and restores a marker pointing at
+    inputs that are gone. That is #950's own defect, reached without a single
+    raise, which is why completion is derived from what the directory still
+    holds rather than from which failures were caught."""
+    import json as _json
+    import os
+    import time
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    # Unreadable registry: rollback refuses over it, and the quarantine that
+    # follows skips its save — the two conditions the loop CONTINUES past.
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text("{ not valid json", encoding="utf-8")
+    specialists = tmp_path / "specialists"
+    slug_dir = specialists / "mtg"
+    slug_dir.mkdir(parents=True)
+    (slug_dir / "active.yaml").write_text("mid-mutation", encoding="utf-8")
+
+    staging = specialists / ".staging"
+    staging.mkdir()
+    component_tree = staging / "deadbeef01"
+    plugin_tree = staging / "deadbeef02"
+    for tree in (component_tree, plugin_tree):
+        tree.mkdir()
+        (tree / "manifest.json").write_text("{}", encoding="utf-8")
+
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt_path = receipts / ("c" * 32 + ".json")
+    receipt_path.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg",
+        "component_staged_path": str(component_tree),
+        "plugins": [{"staged_path": str(plugin_tree)}]}), encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (receipt_path, component_tree, plugin_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    desired_yaml = _honest_tuple_yaml({})
+    marker_json = _json.dumps({"receipt_id": "c" * 32})
+    pending = journal.begin(
+        "install", "mtg", before_entries=[owned_entry()],
+        before_tuple_files={"active.yaml": None,
+                            "desired.yaml": desired_yaml,
+                            "pending-receipt.json": marker_json},
+        ack_records=[], ops_dir=ops_dir)
+    # Sorted AFTER the retained one: it is disposed of, which is how we know
+    # the loop continued past the failure instead of abandoning the scan.
+    later = journal.begin(
+        "install", "zzz", before_entries=[], before_tuple_files={},
+        ack_records=[], ops_dir=ops_dir)
+    payload = _json.loads(later.read_text(encoding="utf-8"))
+    payload["state"] = "complete"
+    later.write_text(_json.dumps(payload), encoding="utf-8")
+    assert sorted(p.name for p in ops_dir.iterdir())[0] == pending.name
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=registry_path,
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    # The phase caught and continued: no quarantine was durable, the journal
+    # stayed, and the journal behind it was still disposed of.
+    assert pending.is_file()
+    assert not later.exists()
+    assert {"slug": "zzz", "action": "pruned_complete"} in actions
+    assert not any(a["action"] in ("quarantine", "quarantine_all")
+                   for a in actions)
+    # Its capture still holds the only copy of the pending tuple.
+    assert not (slug_dir / "desired.yaml").exists()
+    assert not (slug_dir / "pending-receipt.json").exists()
+
+    assert (
+        int(receipt_path.exists()),
+        sum(p.is_dir() for p in (component_tree, plugin_tree)),
+        sum(a["count"] for a in actions if a["action"] == "swept_receipts"),
+        sum(a["count"] for a in actions
+            if a["action"] == "swept_staging_trees"),
+    ) == (1, 2, 0, 0)
+    assert {"slug": None, "action": "deferred_age_sweeps",
+            "reason": "journal_reconciliation_incomplete"} in actions
+
+
+def test_residue_that_restores_nothing_does_not_hold_back_reclamation(
+        tmp_path, monkeypatch):
+    """#950: the condition is "a journal is still owed against this tree", not
+    "a file is still present" — the second would disable reclamation for good
+    over residue no boot will ever act on.
+
+    A `.quarantined` file from an earlier boot whose delete FAILS is exactly
+    that residue: the pre-scan logs the failure and carries on, the scan
+    classifies it IGNORED and skips it, and every later boot does the same.
+    It restores nothing and removes nothing, so the tree it sits beside is the
+    settled tree and the aged, unreferenced receipt and staging tree are
+    reclaimed here rather than accumulating on the /config volume forever."""
+    import json as _json
+    import os
+    import time
+    from pathlib import Path as _Path
+
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    stuck = ops_dir / ("mtg." + "a" * 32 + ".json.quarantined")
+    stuck.write_text("{}", encoding="utf-8")
+
+    specialists = tmp_path / "specialists"
+    staging = specialists / ".staging"
+    orphan_tree = staging / "feedface01"
+    orphan_tree.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    orphan_receipt = receipts / ("c" * 32 + ".json")
+    orphan_receipt.write_text(_json.dumps({
+        "receipt_id": "c" * 32, "slug": "mtg", "plugins": []}),
+        encoding="utf-8")
+    month_ago = time.time() - 30 * 24 * 3600
+    for path in (orphan_receipt, orphan_tree):
+        os.utime(path, (month_ago, month_ago))
+
+    real_unlink = _Path.unlink
+
+    def _unlink(self, *args, **kwargs):
+        if self == stuck:
+            raise PermissionError(13, "Permission denied", str(stuck))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, "unlink", _unlink)
+
+    actions = journal.reconcile_boot(
+        ops_dir=ops_dir, registry_path=tmp_path / "registry.json",
+        specialists_dir=specialists, acks_path=tmp_path / "acks.json",
+        receipts_dir=receipts, personas_dir=tmp_path / "personas")
+
+    assert stuck.is_file()            # the delete really did fail
+    assert (int(orphan_receipt.exists()), int(orphan_tree.is_dir())) == (0, 0)
+    assert actions == [{"slug": None, "action": "swept_receipts", "count": 1},
+                       {"slug": None, "action": "swept_staging_trees",
+                        "count": 1}]
 
 
 # --------------------------------------------------------------------------

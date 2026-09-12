@@ -745,133 +745,17 @@ def _quarantine_remove(path: Path) -> None:
 RECEIPTS_DIR = Path("/config/specialists/.receipts")
 
 
-def reconcile_boot(*, ops_dir: Path = OPS_DIR,
-                    registry_path: Path = plugin_registry.REGISTRY_PATH,
-                    specialists_dir: Path = SPECIALISTS_DIR,
-                    acks_path: Path = ACKS_PATH,
-                    receipts_dir: Path = RECEIPTS_DIR,
-                    personas_dir: "Path | None" = None,
-                    agents_specialists_dir: Path = Path(
-                        "/config/agents/specialists")) -> list[dict]:
-    """Scan EVERY regular file in `ops_dir` (skipping `*.quarantined`) and
-    reconcile it per the module docstring. Runs before the plugin snapshot
-    loads. Returns `[{slug, action}]` for the health report; also stashed on
-    `last_boot_reconcile_actions`. Idempotent — safe to run twice."""
-    global last_boot_reconcile_actions
-    ops_dir = Path(ops_dir)
-    registry_path = Path(registry_path)
-    specialists_dir = Path(specialists_dir)
-    acks_path = Path(acks_path)
-    actions: list[dict] = []
+def _reconcile_journals(ops_dir: Path, *, registry_path: Path,
+                        specialists_dir: Path, acks_path: Path,
+                        agents_specialists_dir: Path,
+                        actions: list[dict]) -> None:
+    """The journal half of `reconcile_boot`: sweep terminal `.ops` residue,
+    then classify and dispose of every journal file, appending to *actions*.
 
-    # Whole-branch N: age-sweep orphan receipt sidecars (an inspect that never
-    # committed) on every boot, independent of any journal work below. Never
-    # raises — a receipts-dir problem must not block boot.
-    # #331 (Sol r5-2): a slug with a LIVE pending-configuration candidate
-    # keeps its receipt (the configure re-commit requires it) and the staged
-    # paths that receipt references, whatever their age — a pending install
-    # is durable operator-visible state, not an abandoned flow.
-    pending_slugs: set[str] = set()
-    try:
-        if specialists_dir.is_dir():
-            for slug_dir in specialists_dir.iterdir():
-                if not slug_dir.is_dir() or not (slug_dir / "desired.yaml").is_file():
-                    continue
-                # #372 (D3c liveness, Terra design r3): a tombstoned or
-                # pre-guard desired is NOT a live pending candidate — its
-                # configure re-commit can never succeed, and counting it here
-                # would pin its receipt and staging tree through the age
-                # sweep forever.
-                import specialist_install as _si
-                if _si._pre_guard_prior_reason(slug_dir / "desired.yaml") is not None:
-                    logger.info(
-                        "pending slug %r excluded from receipt retention: its "
-                        "desired tuple is pre-guard/tombstoned (#372)",
-                        slug_dir.name)
-                    continue
-                pending_slugs.add(slug_dir.name)
-    except OSError:
-        pass
-    # Sol r6-2: prefer the durable marker naming the EXACT receipt the
-    # pending candidate was committed with; newest-per-slug is only the
-    # fallback for a pending slug with no readable marker.
-    keep_receipt_ids: set[str] = set()
-    marker_fallback_slugs: set[str] = set()
-    for _slug in pending_slugs:
-        marker = specialists_dir / _slug / "pending-receipt.json"
-        rid = None
-        try:
-            import json as _mjson
-            raw_marker = _mjson.loads(marker.read_text(encoding="utf-8"))
-            if isinstance(raw_marker, dict):
-                rid = raw_marker.get("receipt_id")
-        except (OSError, ValueError):
-            rid = None
-        if isinstance(rid, str) and rid:
-            keep_receipt_ids.add(rid)
-        else:
-            marker_fallback_slugs.add(_slug)
-    try:
-        import specialist_receipt
-        swept = specialist_receipt.sweep_aged(
-            receipts_dir=receipts_dir, keep_slugs=marker_fallback_slugs,
-            keep_receipt_ids=keep_receipt_ids)
-        if swept:
-            actions.append({"slug": None, "action": "swept_receipts",
-                            "count": swept})
-    except Exception:  # noqa: BLE001 — degrade-and-boot
-        logger.exception("receipt age-sweep failed")
-
-    # #306: age-sweep abandoned STAGING TREES with the same 7-day cutoff —
-    # denied/abandoned consent prompts and crashed flows leave full repo
-    # copies under the .staging roots (and crash-leaked bundle/CAS staging
-    # workspaces) that otherwise grow unbounded on the /config volume.
-    try:
-        import specialist_install
-        if personas_dir is None:
-            # #323 (Sol r3): the same env-aware seam every persona consumer
-            # resolves through — a call-time default, never a frozen literal.
-            from persona_install import installed_personas_root
-            personas_dir = installed_personas_root()
-        # Staged paths still referenced by a surviving receipt (pending
-        # installs kept theirs above) are exempt from the age sweep.
-        keep_paths: set[str] = set()
-        try:
-            import json as _json
-            for rp in Path(receipts_dir).iterdir():
-                if not (rp.is_file() and rp.suffix == ".json"):
-                    continue
-                try:
-                    raw = _json.loads(rp.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    continue
-                if not isinstance(raw, dict):
-                    continue
-                staged = raw.get("component_staged_path")
-                if isinstance(staged, str) and staged:
-                    keep_paths.add(staged)
-                for row in raw.get("plugins") or []:
-                    p = row.get("staged_path") if isinstance(row, dict) else None
-                    if isinstance(p, str) and p:
-                        keep_paths.add(p)
-        except OSError:
-            pass
-        swept_trees = specialist_install.sweep_staging_aged(roots=(
-            specialists_dir / ".staging",
-            specialists_dir / ".bundle-staging",
-            specialists_dir / "store" / ".staging",
-            Path(personas_dir) / ".staging",
-        ), keep_paths=keep_paths)
-        if swept_trees:
-            actions.append({"slug": None, "action": "swept_staging_trees",
-                            "count": swept_trees})
-    except Exception:  # noqa: BLE001 — degrade-and-boot
-        logger.exception("staging-tree age-sweep failed")
-
-    if not ops_dir.is_dir():
-        last_boot_reconcile_actions = actions
-        return actions
-
+    #950: extracted so the receipt and staging age sweeps can run AFTER it
+    from a single call site. The contents are unchanged — the whole point of
+    the extraction is that the disposition rules did not move, only the
+    moment at which the sweeps observe the tree they act on."""
     # #372 (D8): sweep terminal .ops residue BEFORE the scan.
     # - `_fsync_write`'s `<name>.tmp-<hex>` survives a hard kill between open
     #   and replace; its unrecognized filename would otherwise hit the
@@ -997,5 +881,217 @@ def reconcile_boot(*, ops_dir: Path = OPS_DIR,
         path.unlink()
         actions.append({"slug": slug, "action": "rolled_back"})
 
+
+def reconcile_boot(*, ops_dir: Path = OPS_DIR,
+                    registry_path: Path = plugin_registry.REGISTRY_PATH,
+                    specialists_dir: Path = SPECIALISTS_DIR,
+                    acks_path: Path = ACKS_PATH,
+                    receipts_dir: Path = RECEIPTS_DIR,
+                    personas_dir: "Path | None" = None,
+                    agents_specialists_dir: Path = Path(
+                        "/config/agents/specialists")) -> list[dict]:
+    """Scan EVERY regular file in `ops_dir` (skipping `*.quarantined`) and
+    reconcile it per the module docstring. Runs before the plugin snapshot
+    loads. Returns `[{slug, action}]` for the health report; also stashed on
+    `last_boot_reconcile_actions`. Idempotent — safe to run twice.
+
+    TWO PHASES, IN THIS ORDER (#950): the journal phase first, then the
+    receipt and staging age sweeps, whose retention set is therefore read
+    from the tree a replay has already restored into. The sweeps run whether
+    or not `ops_dir` exists, so the returned `actions` carry the per-journal
+    entries first and the two sweep entries last. They run only when the
+    journal phase FINISHED, and that is read back off the tree: a journal
+    still standing in `ops_dir` (`recovery_debt`) means a replay or a
+    quarantine is still owed against it, so both sweeps are deferred to the
+    next boot and the deferral is reported in `actions`."""
+    global last_boot_reconcile_actions
+    ops_dir = Path(ops_dir)
+    registry_path = Path(registry_path)
+    specialists_dir = Path(specialists_dir)
+    acks_path = Path(acks_path)
+    actions: list[dict] = []
+
+    # #950: the journal phase runs FIRST, so the receipt and staging age
+    # sweeps below observe the tree as it stands AFTER any replay has
+    # restored a pending tuple. Deriving the retention set before the
+    # replay loop unlinked the receipt (and rmtree'd the staging trees) of
+    # a pending candidate whose tuple existed only inside a journal
+    # capture; the replay then wrote back a marker naming a receipt that
+    # no longer existed, leaving a visible candidate the supported
+    # configure re-commit can never finish. Retention must be derived from
+    # what LANDED, never from a capture: `rollback_disk` re-runs the #372
+    # sanitizer on the way out, so a capture whose tuple is tombstoned
+    # restores as a non-live candidate whose receipt must still sweep.
+    if ops_dir.is_dir():
+        try:
+            _reconcile_journals(
+                ops_dir, registry_path=registry_path,
+                specialists_dir=specialists_dir, acks_path=acks_path,
+                agents_specialists_dir=agents_specialists_dir,
+                actions=actions)
+        except Exception:  # noqa: BLE001 — degrade-and-boot
+            # Logged, not acted on: whether the destructive half may run is
+            # decided below by reading the directory, not by which failures
+            # reached this handler. `reconcile_boot` still never raises —
+            # its single production caller is entitled to that.
+            logger.exception("journal reconciliation did not complete")
+
+    # #950: the destructive half runs only when the journal phase FINISHED,
+    # and that is OBSERVED on the tree rather than inferred from the failures
+    # this function happened to catch. Every disposition that completes
+    # removes the journal file — rolled back, pruned complete, or durably
+    # quarantined — so a file still standing in `ops_dir` means a replay or a
+    # quarantine is still owed AGAINST THIS TREE, whether the phase raised,
+    # caught a failure and carried on to the next journal, or retained a
+    # journal because its quarantine could not be persisted. Sweeping then
+    # reclaims the receipt and staging trees that unfinished replay still
+    # needs, and the next boot restores a marker naming inputs that are gone:
+    # this change's own defect, on its own failure path.
+    #
+    # `recovery_debt` is the reader, not a second copy of the rule (#543,
+    # #838): the same classification that decides what boot replays decides
+    # what still stands here, and it answers for the cases a caught exception
+    # cannot name — an ops directory that cannot be listed is debt, an absent
+    # one is a real answer, and residue that restores and removes nothing (a
+    # write temporary, a `.quarantined` file from an earlier boot, an entry
+    # boot's own scan skips) is not debt and must not defer reclamation
+    # forever.
+    #
+    # The asymmetry decides the direction: reclamation is disk hygiene and is
+    # deferrable — the next boot does it — while a sweep run against a tree a
+    # replay has not finished restoring into destroys an operator's saved
+    # configuration and nothing recovers it. The deferral is REPORTED, not
+    # silent: `plugin_health` surfaces `actions` as `boot_reconcile_actions`,
+    # so a boot that declined to reclaim is distinguishable from one that
+    # found nothing to do. A boot with no journals at all is debt-free and
+    # reclaims exactly as before.
+    try:
+        debt = recovery_debt(ops_dir=ops_dir)
+    except Exception:  # noqa: BLE001 — degrade-and-boot
+        # `recovery_debt` is documented never to raise, and this handler does
+        # not exist because that is doubted: it exists because
+        # `reconcile_boot`'s never-raises guarantee is owed to its caller by
+        # THIS function, and must not rest on another function's promise. The
+        # rule is the reader's own — "could not tell" is never read as "not
+        # there" — so an unobservable directory is an unfinished phase.
+        logger.exception("recovery debt could not be read; treating the "
+                         "journal phase as unfinished")
+        debt = [{"slug": None, "journal": None,
+                 "verdict": JOURNAL_UNREADABLE}]
+    if debt:
+        logger.warning(
+            "%d journal(s) still stand in %s after reconciliation; deferring "
+            "the receipt and staging age sweeps to the next boot rather than "
+            "reclaiming against a tree a replay has not finished restoring "
+            "into", len(debt), ops_dir)
+        actions.append({"slug": None, "action": "deferred_age_sweeps",
+                        "reason": "journal_reconciliation_incomplete"})
+        last_boot_reconcile_actions = actions
+        return actions
+
+    # Whole-branch N: age-sweep orphan receipt sidecars (an inspect that never
+    # committed) on every boot, whether or not there was any journal work
+    # above — an install that has never journalled still reclaims. Never
+    # raises — a receipts-dir problem must not block boot.
+    # #331 (Sol r5-2): a slug with a LIVE pending-configuration candidate
+    # keeps its receipt (the configure re-commit requires it) and the staged
+    # paths that receipt references, whatever their age — a pending install
+    # is durable operator-visible state, not an abandoned flow.
+    pending_slugs: set[str] = set()
+    try:
+        if specialists_dir.is_dir():
+            for slug_dir in specialists_dir.iterdir():
+                if not slug_dir.is_dir() or not (slug_dir / "desired.yaml").is_file():
+                    continue
+                # #372 (D3c liveness, Terra design r3): a tombstoned or
+                # pre-guard desired is NOT a live pending candidate — its
+                # configure re-commit can never succeed, and counting it here
+                # would pin its receipt and staging tree through the age
+                # sweep forever.
+                import specialist_install as _si
+                if _si._pre_guard_prior_reason(slug_dir / "desired.yaml") is not None:
+                    logger.info(
+                        "pending slug %r excluded from receipt retention: its "
+                        "desired tuple is pre-guard/tombstoned (#372)",
+                        slug_dir.name)
+                    continue
+                pending_slugs.add(slug_dir.name)
+    except OSError:
+        pass
+    # Sol r6-2: prefer the durable marker naming the EXACT receipt the
+    # pending candidate was committed with; newest-per-slug is only the
+    # fallback for a pending slug with no readable marker.
+    keep_receipt_ids: set[str] = set()
+    marker_fallback_slugs: set[str] = set()
+    for _slug in pending_slugs:
+        marker = specialists_dir / _slug / "pending-receipt.json"
+        rid = None
+        try:
+            import json as _mjson
+            raw_marker = _mjson.loads(marker.read_text(encoding="utf-8"))
+            if isinstance(raw_marker, dict):
+                rid = raw_marker.get("receipt_id")
+        except (OSError, ValueError):
+            rid = None
+        if isinstance(rid, str) and rid:
+            keep_receipt_ids.add(rid)
+        else:
+            marker_fallback_slugs.add(_slug)
+    try:
+        import specialist_receipt
+        swept = specialist_receipt.sweep_aged(
+            receipts_dir=receipts_dir, keep_slugs=marker_fallback_slugs,
+            keep_receipt_ids=keep_receipt_ids)
+        if swept:
+            actions.append({"slug": None, "action": "swept_receipts",
+                            "count": swept})
+    except Exception:  # noqa: BLE001 — degrade-and-boot
+        logger.exception("receipt age-sweep failed")
+
+    # #306: age-sweep abandoned STAGING TREES with the same 7-day cutoff —
+    # denied/abandoned consent prompts and crashed flows leave full repo
+    # copies under the .staging roots (and crash-leaked bundle/CAS staging
+    # workspaces) that otherwise grow unbounded on the /config volume.
+    try:
+        import specialist_install
+        if personas_dir is None:
+            # #323 (Sol r3): the same env-aware seam every persona consumer
+            # resolves through — a call-time default, never a frozen literal.
+            from persona_install import installed_personas_root
+            personas_dir = installed_personas_root()
+        # Staged paths still referenced by a surviving receipt (pending
+        # installs kept theirs above) are exempt from the age sweep.
+        keep_paths: set[str] = set()
+        try:
+            import json as _json
+            for rp in Path(receipts_dir).iterdir():
+                if not (rp.is_file() and rp.suffix == ".json"):
+                    continue
+                try:
+                    raw = _json.loads(rp.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                staged = raw.get("component_staged_path")
+                if isinstance(staged, str) and staged:
+                    keep_paths.add(staged)
+                for row in raw.get("plugins") or []:
+                    p = row.get("staged_path") if isinstance(row, dict) else None
+                    if isinstance(p, str) and p:
+                        keep_paths.add(p)
+        except OSError:
+            pass
+        swept_trees = specialist_install.sweep_staging_aged(roots=(
+            specialists_dir / ".staging",
+            specialists_dir / ".bundle-staging",
+            specialists_dir / "store" / ".staging",
+            Path(personas_dir) / ".staging",
+        ), keep_paths=keep_paths)
+        if swept_trees:
+            actions.append({"slug": None, "action": "swept_staging_trees",
+                            "count": swept_trees})
+    except Exception:  # noqa: BLE001 — degrade-and-boot
+        logger.exception("staging-tree age-sweep failed")
     last_boot_reconcile_actions = actions
     return actions
