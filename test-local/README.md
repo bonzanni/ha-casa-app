@@ -35,6 +35,44 @@ bash test-local/e2e/test_invoke_sessions.sh
 bash test-local/e2e/test_voice_sse.sh
 ```
 
+### Which base your run used (#942)
+
+`Dockerfile.test` mirrors `casa/Dockerfile`'s **floating** base tag rather than
+pinning a digest (#937), and docker builds from whatever copy of that tag is
+already in the local store. So a tier can report green against a base the
+product has not shipped for months — measured, and it cost two harness runs.
+
+- **The `make` targets resolve the tag on every build** (`--pull`). That is
+  where the refresh lives, because CI never invokes `make` (see "Adding a new
+  e2e test" below), so this flag can only ever fail a local build.
+- **Offline, or during a registry outage or rate limit, `--pull` fails the
+  build outright** even though the image is in your store. `DOCKER_PULL=` is
+  the way back, and it builds exactly as it did before:
+
+  ```bash
+  make -C test-local test-tier1 DOCKER_PULL=
+  make test-image DOCKER_PULL=
+  ```
+
+- **The scripts never pull.** `common.sh`'s `build_image` runs in CI as well as
+  locally, and a mandatory registry resolution there would turn an upstream
+  outage into a red push gate. Instead every build reports the base it got:
+
+  ```
+  [e2e] e2e base io.hass.version=2026.08.0 (freshness not checked here)
+  ```
+
+  That is a diagnostic, not a guarantee. It says which base you built on; it
+  does not say that base is current. Nothing here — and nothing in
+  `tests/test_build_from_parity.py`, which disclaims the same thing — compares
+  either reference against the registry.
+- **`make test-docker` reports but does not pull either** (#970).
+  `tests/test_baseline_runtime_assert.py` builds `casa/Dockerfile` itself, and
+  that build runs in CI's `baseline-runtime` job as well, so the same reasoning
+  applies: it resolves nothing and warns which base it got.
+- **The by-hand live build below is not covered at all.** Add `--pull` yourself
+  when the base matters.
+
 ## What the e2e suite covers
 
 | Script | Tier | Covers |

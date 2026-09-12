@@ -90,8 +90,22 @@ test-unit-serial: ## Same suite, one process (for debugging a failure)
 test-docker: ## Docker-backed unit tests
 	$(PY) -m pytest tests/ -m "docker and not slow" --tb=short
 
-test-image: ## Build the e2e test image (mirrors CI tier1/baseline)
-	docker build -f test-local/Dockerfile.test -t casa-test .
+# DOCKER_PULL (#942): `test-local/Dockerfile.test` mirrors `casa/Dockerfile`'s
+# FLOATING base rather than pinning a digest (#937), and docker will happily
+# build from whatever copy of that tag is already in the local store -- so a
+# warm store silently decides which base a local tier certifies. `--pull`
+# resolves the tag instead, and lives HERE rather than in the harness's
+# build_image because CI never invokes make (test-local/README.md): a failure
+# of this flag can only ever be local, never a red push gate.
+# It is a variable, not a literal, because `--pull` FAILS the build outright
+# when the base cannot be resolved -- offline, a ghcr outage, a rate limit --
+# even though the image sits in the store. `make test-image DOCKER_PULL=` is
+# the way back, and it is a decision the developer makes rather than one the
+# cache makes for them.
+DOCKER_PULL ?= --pull
+
+test-image: ## Build the e2e test image (mirrors CI tier1/baseline; DOCKER_PULL= to build from cache)
+	docker build $(DOCKER_PULL) -f test-local/Dockerfile.test -t casa-test .
 
 lint: ## (no linter configured yet)
 	@echo "No linter configured. CI gate is pytest tier2 (see make test-unit)."
