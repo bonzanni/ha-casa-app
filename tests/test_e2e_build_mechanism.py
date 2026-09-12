@@ -282,3 +282,69 @@ def test_the_mock_cli_derivative_build_never_pulls(stub):
     assert len(builds) == 2, stub.calls()
     assert [b.count("--pull") for b in builds] == [0, 0], builds
     assert "BASE=probe-image" in builds[1], builds[1]
+
+
+# --------------------------------------------------------------------------
+# 5. The baseline-runtime build: the same reporting, on the release Dockerfile.
+#    Found by the gate-owned review, filed as #970 before it was fixed here.
+# --------------------------------------------------------------------------
+
+def _baseline_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_casa_baseline_probe", REPO / "tests" / "test_baseline_runtime_assert.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _baseline_calls(stub, monkeypatch, **envkw):
+    """Run `build_and_report` in-process with the recording stub on PATH."""
+    mod = _baseline_module()
+    for k, v in stub.env(**envkw).items():
+        monkeypatch.setenv(k, v)
+    with pytest.warns(UserWarning) as rec:
+        mod.build_and_report("probe-baseline")
+    return stub.calls(), [str(w.message) for w in rec]
+
+
+def test_the_baseline_build_reports_its_base_and_still_does_not_pull(
+    stub, monkeypatch,
+):
+    """No `--pull` here on purpose: this build runs in qa.yml's
+    baseline-runtime job, and `main` is protected, so resolving the tag would
+    make an upstream outage a red push gate. It reports instead — which after
+    #942 was the only building path, local or CI, reporting nothing at all.
+    """
+    calls, warns = _baseline_calls(stub, monkeypatch)
+
+    builds = _builds(calls)
+    assert len(builds) == 1, calls
+    assert builds[0].count("--pull") == 0, builds[0]
+    assert "casa/Dockerfile" in builds[0], builds[0]
+
+    inspects = [c for c in calls if c[:2] == ["image", "inspect"]]
+    assert len(inspects) == 1, calls
+    assert "probe-baseline" in inspects[0], inspects[0]
+    fmt = inspects[0][inspects[0].index("--format") + 1]
+    assert fmt == '{{index .Config.Labels "io.hass.version"}}', fmt
+
+    reports = [w for w in warns if "io.hass.version" in w]
+    assert len(reports) == 1, warns
+    assert "2099.12.probe" in reports[0], reports[0]
+
+
+@pytest.mark.parametrize(
+    "inspect_out,inspect_rc",
+    [("", "0"), ("<no value>", "0"), ("", "1")],
+)
+def test_the_baseline_build_reports_unknown_rather_than_failing(
+    inspect_out, inspect_rc, stub, monkeypatch,
+):
+    calls, warns = _baseline_calls(stub, monkeypatch,
+                                   STUB_INSPECT_OUT=inspect_out,
+                                   STUB_INSPECT_RC=inspect_rc)
+    assert len(_builds(calls)) == 1, calls
+    reports = [w for w in warns if "io.hass.version" in w]
+    assert len(reports) == 1, warns
+    assert "unknown" in reports[0], reports[0]

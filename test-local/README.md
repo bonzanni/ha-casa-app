@@ -66,10 +66,12 @@ product has not shipped for months — measured, and it cost two harness runs.
   does not say that base is current. Nothing here — and nothing in
   `tests/test_build_from_parity.py`, which disclaims the same thing — compares
   either reference against the registry.
-- **Two paths are not covered at all**: `make test-docker`
-  (`tests/test_baseline_runtime_assert.py` builds `casa/Dockerfile` itself, and
-  that build also runs in CI) and the by-hand live build below. Pull those by
-  hand when the base matters.
+- **`make test-docker` reports but does not pull either** (#970).
+  `tests/test_baseline_runtime_assert.py` builds `casa/Dockerfile` itself, and
+  that build runs in CI's `baseline-runtime` job as well, so the same reasoning
+  applies: it resolves nothing and warns which base it got.
+- **The by-hand live build below is not covered at all.** Add `--pull` yourself
+  when the base matters.
 
 ## What the e2e suite covers
 
