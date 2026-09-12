@@ -717,12 +717,20 @@ def test_the_journal_classifier_is_the_one_boot_uses(tree, tmp_path) -> None:
 
     import specialist_bundle_journal
 
-    source = inspect.getsource(specialist_bundle_journal.reconcile_boot)
-    assert "classify_journal(path)" in source, (
-        "reconcile_boot must consume classify_journal — an independent copy of "
-        "the name/shape/state rules is what let the reference scan disagree "
-        "with what boot actually replays")
-    assert "_valid_payload(payload" not in source
+    # #950: boot's reconcile loop now lives in `_reconcile_journals`, which
+    # `reconcile_boot` calls before the age sweeps — so the property is read
+    # across both, and the call is pinned too. A copy of the rules in either
+    # function is the drift this test exists to catch.
+    boot = inspect.getsource(specialist_bundle_journal.reconcile_boot)
+    loop = inspect.getsource(specialist_bundle_journal._reconcile_journals)
+    assert "_reconcile_journals(" in boot, (
+        "reconcile_boot must reach the journal loop — the reference scan's "
+        "anti-drift property is about what BOOT dispatches on")
+    assert "classify_journal(path)" in loop, (
+        "boot's journal loop must consume classify_journal — an independent "
+        "copy of the name/shape/state rules is what let the reference scan "
+        "disagree with what boot actually replays")
+    assert "_valid_payload(payload" not in boot + loop
 
 
 # ---------------------------------------------------------------------------
