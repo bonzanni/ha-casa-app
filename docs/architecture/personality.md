@@ -124,7 +124,7 @@ with a resident's, the resident's pack is the one inspect describes. The special
 route is the exception that proves it: a slug whose tree holds a desired candidate is exactly
 what it exists to report — from the tree, whether or not the loaded index knows of it — and it
 names the inputs that candidate's re-commit takes, and the tool that takes them (INV-SPEC-015,
-`architecture/specialist-lifecycle.md`). That is disk work, so it answers off the event loop
+`architecture/specialist-instance-tuples.md`). That is disk work, so it answers off the event loop
 like the explain route; it reports a missing marker, receipt or staged tree as an absent value
 rather than an error, and labels its own loaded view stale where that view is not describing
 the tree's candidate. Beside the inputs it reports one of three verdicts on them, and only the

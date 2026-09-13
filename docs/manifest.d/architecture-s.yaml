@@ -86,8 +86,29 @@
     INV-SPEC-013: [tests/test_specialist_bundle_cancellation.py::test_cancel_after_commit_finishes_each_handler_transaction, tests/test_specialist_bundle_cancellation.py::test_cancel_during_failed_sequence_compensates_each_handler, tests/test_specialist_bundle_cancellation.py::test_failed_disk_compensation_leaves_exactly_one_replayable_journal, tests/test_specialist_bundle_cancellation.py::test_cancel_before_lock_starts_nothing_for_each_handler, tests/test_specialist_bundle_cancellation.py::test_bounded_abandonment_keeps_child_and_lock_until_terminal, tests/test_specialist_bundle_cancellation.py::test_boot_replays_one_real_process_crash_journal, tests/test_specialist_bundle_cancellation.py::test_repeated_cancellation_does_not_re_arm_the_grace]
     INV-SPEC-014: [tests/test_specialist_recovery_debt.py::test_failed_tool_compensation_fences_a_later_generation, tests/test_specialist_recovery_debt.py::test_failed_sync_rollback_fences_the_next_writer, tests/test_specialist_recovery_debt.py::test_install_refuses_before_publishing_anything, tests/test_specialist_recovery_debt.py::test_upgrade_refuses_in_both_arms, tests/test_specialist_recovery_debt.py::test_rollback_refuses_in_both_arms_before_completing_a_rotation, tests/test_specialist_recovery_debt.py::test_uninstall_refuses_in_both_arms_before_retiring_acks, tests/test_specialist_recovery_debt.py::test_persona_override_refuses_in_both_arms, tests/test_specialist_recovery_debt.py::test_a_clean_ops_directory_refuses_nothing, tests/test_specialist_recovery_debt_scanner.py::test_a_write_temporary_is_not_debt, tests/test_specialist_recovery_debt_scanner.py::test_an_unlistable_ops_directory_is_debt, tests/test_specialist_recovery_debt_scanner.py::test_entries_that_are_not_regular_files_are_not_debt, tests/test_specialist_recovery_debt_scanner.py::test_the_scan_follows_classify_journal_rather_than_the_bytes, tests/test_specialist_recovery_debt_scanner.py::test_the_fence_returns_the_directory_it_inspected]
 
+- doc: architecture/specialist-instance-tuples.md
+  summary: The instance tuples a specialist install leaves behind — what a tuple snapshot may hold and the digest derived from it, a pending candidate and the inputs its re-commit takes, and what boot does with a damaged tuple.
+  when_changing: what a specialist's persisted instance tuple may hold, the secret or digest guard on a tuple snapshot, the boot scrub of persisted tuples, a pending-configuration candidate and its re-commit, or how a damaged tuple is loaded at boot
+  covers:
+    - casa/rootfs/opt/casa/personality_binding.py::make_instance_tuple
+    - casa/rootfs/opt/casa/personality_binding.py::verify_instance_tuple
+    - casa/rootfs/opt/casa/specialist_install.py::sanitize_specialist_snapshots
+  tests:
+    - tests/test_specialist_install.py
+    - tests/test_personality_binding.py
+    - tests/test_specialist_lifecycle_matrix.py
+    - tests/test_tools_specialist_install.py
+    - tests/test_personality_admin_handlers.py
+  related: [architecture/specialist-lifecycle.md, architecture/specialist-bundle-transactions.md, architecture/specialist-bundle-recovery.md, architecture/personality.md]
+  defines_invariants: [INV-SPEC-002, INV-SPEC-006, INV-SPEC-009, INV-SPEC-015]
+  invariant_tests:
+    INV-SPEC-002: [tests/test_specialist_lifecycle_matrix.py::test_fresh_install_missing_config_is_pending_configuration_with_no_active_tuple]
+    INV-SPEC-015: [tests/test_tools_specialist_install.py::test_a_pending_install_commit_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_specialist_status_names_a_pending_slugs_resume_inputs, tests/test_personality_admin_handlers.py::test_a_pending_install_the_index_never_saw_still_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_verified_pending_upgrade_names_and_uses_its_admitting_tool, tests/test_personality_admin_handlers.py::test_a_live_recovery_journal_blocks_certification]
+    INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses]
+    INV-SPEC-009: [tests/test_personality_binding.py::test_verify_instance_tuple_rejects_a_digest_not_derived_from_the_snapshot, tests/test_personality_binding.py::test_atomic_write_refuses_a_mismatched_tuple_as_a_backstop, tests/test_specialist_install.py::test_boot_sweep_tombstones_an_already_sanitized_pre_guard_digest, tests/test_specialist_bundle_journal.py::test_begin_sanitizes_captured_tuple_files]
+
 - doc: architecture/specialist-lifecycle.md
-  summary: Specialist install — instance tuples, the content-addressed store, install identity, consent receipts and materialization.
+  summary: Specialist install — the content-addressed store, install identity, consent receipts and materialization.
   when_changing: specialist install identity, consent, or materialization
   covers:
     - casa/rootfs/opt/casa/specialist_install.py::commit_specialist_install
@@ -106,16 +127,12 @@
     - tests/test_system_requirements_installer_tarball.py
     - tests/test_specialist_install_consent.py
     - tests/test_tools_specialist_install.py
-  related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md, architecture/specialist-bundle-transactions.md]
-  defines_invariants: [INV-SPEC-001, INV-SPEC-002, INV-SPEC-004, INV-SPEC-005, INV-SPEC-006, INV-SPEC-007, INV-SPEC-008, INV-SPEC-009, INV-SPEC-010, INV-SPEC-015]
+  related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md, architecture/specialist-bundle-transactions.md, architecture/specialist-instance-tuples.md]
+  defines_invariants: [INV-SPEC-001, INV-SPEC-004, INV-SPEC-005, INV-SPEC-007, INV-SPEC-008, INV-SPEC-010]
   invariant_tests:
     INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
     INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]
-    INV-SPEC-002: [tests/test_specialist_lifecycle_matrix.py::test_fresh_install_missing_config_is_pending_configuration_with_no_active_tuple]
-    INV-SPEC-015: [tests/test_tools_specialist_install.py::test_a_pending_install_commit_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_specialist_status_names_a_pending_slugs_resume_inputs, tests/test_personality_admin_handlers.py::test_a_pending_install_the_index_never_saw_still_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_verified_pending_upgrade_names_and_uses_its_admitting_tool, tests/test_personality_admin_handlers.py::test_a_live_recovery_journal_blocks_certification]
     INV-SPEC-004: [tests/test_specialist_materialize.py::test_materialize_operational_files_repeat_call_swaps_atomically_and_gcs_old_version]
     INV-SPEC-005: [tests/test_specialist_consent_receipt.py::test_pin_inv_spec_005_tampered_receipt_loads_as_none]
-    INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses]
     INV-SPEC-007: [tests/test_system_requirements_installer_tarball.py::test_failed_reinstall_preserves_existing_install, tests/test_system_requirements_installer_tarball.py::test_invalid_install_cmd_shape_checked_before_touching_install]
     INV-SPEC-010: [tests/test_tools_specialist_install.py::test_662_terminal_or_gone_engagement_uses_the_production_outcome, tests/test_tools_specialist_install.py::test_662_production_reconcile_cb_reports_a_literal_false, tests/test_specialist_install_consent.py::test_662_only_a_literal_true_outcome_selects_the_success_edit]
-    INV-SPEC-009: [tests/test_personality_binding.py::test_verify_instance_tuple_rejects_a_digest_not_derived_from_the_snapshot, tests/test_personality_binding.py::test_atomic_write_refuses_a_mismatched_tuple_as_a_backstop, tests/test_specialist_install.py::test_boot_sweep_tombstones_an_already_sanitized_pre_guard_digest, tests/test_specialist_bundle_journal.py::test_begin_sanitizes_captured_tuple_files]
