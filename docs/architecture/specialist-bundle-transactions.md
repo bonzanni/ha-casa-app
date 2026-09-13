@@ -113,9 +113,11 @@ carried provenance, and is not covered by this invariant.
 One explicit carve-out (#372): a retained prior that predates the secret-digest guard —
 its digests tombstoned by sanitization, or its snapshot still carrying a
 secret-classified key — is refused with a typed `legacy_prior` error instead of being
-restored. The current active tuple is untouched; the rollback *target* requires a
-reinstall. The same applies to a prior sentineled by an upgrade whose incoming schema
-reclassified a persisted plain key as secret.
+restored. The current active tuple is untouched and stays in service, and the slug has no
+rollback *target* until its next upgrade rotates that active into the prior; the refusal says
+so rather than recommending a reinstall, which an installed slug reaches only through the
+uninstall that deletes the active tuple. The same applies to a prior sentineled by an upgrade
+whose incoming schema reclassified a persisted plain key as secret.
 
 One identity detail is easy to get wrong at exactly these commit points: a role's checksum
 covers the model it *resolved to*, not just the model policy it declares. Every path here

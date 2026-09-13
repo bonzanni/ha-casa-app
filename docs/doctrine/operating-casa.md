@@ -254,9 +254,10 @@ of both merge reads and of the active-present guard below, because each renders 
 caught. It used to recommend uninstalling and reinstalling, so under a tombstoned tuple those
 refusals advised preserving the candidate and destroying it in one sentence. It now says the
 tuple will not load and that its saved settings stay in the file, and a tombstone-caused case
-pins all three refusal details. `specialist_rollback`'s legacy-prior refusals still advise a
-reinstall, which only an uninstall makes possible; that is an outstanding violation of the
-rule, not an exception to it, and is tracked as #980. Both arms of
+pins all three refusal details. `specialist_rollback`'s two legacy-prior refusals advised a
+reinstall, which an installed slug reaches only through an uninstall that deletes the active
+tuple those refusals leave untouched (#980); they now say the active stays in service and that
+the next upgrade retains a rollback target, and a regression test pins both details. Both arms of
 `specialist_install.py`'s active-present guard comply: the arm reached when the pending
 candidate cannot be read at all, and the arm reached when a candidate for a different
 component root loads. Neither is named by the invariant and both were corrected alongside the

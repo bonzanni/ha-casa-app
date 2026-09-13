@@ -3781,15 +3781,20 @@ def _rollback_core(
     prior_path = specialists_dir / slug / "active.prior.yaml"
     # #372 (D5): classify the RAW prior before the strict loader touches it —
     # a sentineled or equation-violating prior must surface as a typed
-    # legacy_prior refusal (active untouched; the rollback target requires a
-    # reinstall), never as an escaped ValueError.
+    # legacy_prior refusal (active untouched), never as an escaped ValueError.
+    # #980: the advice used to say "reinstall to obtain a rollback target", and
+    # an installed slug can only be reinstalled after the uninstall that deletes
+    # the active tuple this refusal just left untouched. The next upgrade's
+    # commit rotates the active into the prior, which is the non-destructive way
+    # a rollback target comes back.
     legacy_reason = _pre_guard_prior_reason(prior_path)
     if legacy_reason is not None:
         raise SpecialistInstallError(
             "legacy_prior",
             f"{slug!r}: retained prior tuple predates the secret-digest guard "
-            f"(#372): {legacy_reason}; the current active is untouched — "
-            "reinstall to obtain a rollback target")
+            f"(#372): {legacy_reason}; the current active is untouched and stays "
+            "in service — this slug has no rollback target until its next "
+            "upgrade retains the current active as one")
     prior = load_instance_tuple(prior_path)
     if prior is None:
         raise SpecialistInstallError("no_prior_tuple", f"{slug!r} has no retained prior tuple")
@@ -3928,7 +3933,9 @@ def _rollback_core(
             "legacy_prior",
             f"{slug!r}: retained prior tuple carries secret-classified key(s) "
             f"{_present} from before the secret-digest guard (#372); the "
-            "current active is untouched — reinstall to obtain a rollback target")
+            "current active is untouched and stays in service — this slug has no "
+            "rollback target until its next upgrade retains the current active "
+            "as one")
 
     # Commit FIRST, same reordering as commit_specialist_install/
     # upgrade_specialist — `prior` is a previously-active, already-validated

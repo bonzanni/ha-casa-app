@@ -566,3 +566,120 @@ def test_active_present_guard_tombstone_advises_preservation(
     lowered = exc.value.detail.lower()
     assert [w for w in _DESTRUCTIVE if w in lowered] == []
     assert exc.value.detail == _EXPECTED_TOMBSTONE_GUARD_DETAIL.format(desired=desired)
+
+
+# #980, not a red case and not part of the pinned declaration: regression tests
+# in the diff, added after the diff review reproduced this path (an uninstall
+# taking the ACTIVE's saved setting 1 -> 0). Rollback's two legacy-prior refusals
+# leave the active untouched and used to advise "reinstall to obtain a rollback
+# target" — and an installed slug is reinstallable only after the uninstall that
+# deletes that active. Literals written here, with only the refusal's own
+# reason/key list substituted.
+_EXPECTED_LEGACY_TOMBSTONED_DETAIL = (
+    "'mtg': retained prior tuple predates the secret-digest guard (#372): its "
+    "digests were tombstoned by sanitization; the current active is untouched "
+    "and stays in service — this slug has no rollback target until its next "
+    "upgrade retains the current active as one"
+)
+
+_EXPECTED_LEGACY_SECRET_KEY_DETAIL = (
+    "'mtg': retained prior tuple carries secret-classified key(s) ['api_token'] "
+    "from before the secret-digest guard (#372); the current active is untouched "
+    "and stays in service — this slug has no rollback target until its next "
+    "upgrade retains the current active as one"
+)
+
+
+def test_rollback_legacy_prior_tombstoned_advice_keeps_the_active(tmp_path) -> None:
+    import yaml
+    from personality_binding import PRE_GUARD_SENTINEL
+    from specialist_install import (
+        SpecialistInstallError, commit_specialist_install, rollback_specialist,
+        upgrade_specialist,
+    )
+    from test_specialist_install import (
+        _acked, _plain_schema_inspection, _v2_inspection, _v2_secret_schema_inspection,
+    )
+
+    v1 = _plain_schema_inspection(tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    agents = tmp_path / "agents-specialists"
+    commit_specialist_install(
+        inspection=v1, config={"api_token": "plain-then-reclassified"},
+        secret_names_provided=frozenset(), acks=_acked(v1, tmp_path),
+        specialists_dir=specialists_dir, agents_specialists_dir=agents)
+    v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
+    upgrade_specialist(
+        slug="mtg", inspection=v2, config={},
+        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path),
+        specialists_dir=specialists_dir, agents_specialists_dir=agents)
+
+    slug_dir = specialists_dir / "mtg"
+    raw_prior = yaml.safe_load((slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
+    assert raw_prior["config_digest"] == PRE_GUARD_SENTINEL
+    active_before = (slug_dir / "active.yaml").read_bytes()
+
+    with pytest.raises(SpecialistInstallError) as exc:
+        rollback_specialist(slug="mtg", specialists_dir=specialists_dir,
+                            agents_specialists_dir=agents)
+
+    assert exc.value.kind == "legacy_prior"
+    assert (slug_dir / "active.yaml").read_bytes() == active_before
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+    assert exc.value.detail == _EXPECTED_LEGACY_TOMBSTONED_DETAIL
+
+
+def test_rollback_legacy_prior_secret_key_advice_keeps_the_active(tmp_path) -> None:
+    import yaml
+    from personality_binding import compute_binding_digest, compute_effective_config_digest
+    from specialist_install import (
+        SpecialistInstallError, commit_specialist_install, rollback_specialist,
+        upgrade_specialist,
+    )
+    from test_specialist_install import (
+        _acked, _secret_schema_inspection, _v2_inspection, _v2_secret_schema_inspection,
+    )
+
+    v1 = _secret_schema_inspection(tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    agents = tmp_path / "agents-specialists"
+    commit_specialist_install(
+        inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
+        acks=_acked(v1, tmp_path), specialists_dir=specialists_dir,
+        agents_specialists_dir=agents)
+    v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
+    upgrade_specialist(
+        slug="mtg", inspection=v2, config={},
+        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path),
+        specialists_dir=specialists_dir, agents_specialists_dir=agents)
+
+    # The pre-v0.137 shape: a secret-named key present AND a valid equation, so
+    # the raw classification passes it and the declared-secret check refuses it.
+    slug_dir = specialists_dir / "mtg"
+    prior_path = slug_dir / "active.prior.yaml"
+    raw = yaml.safe_load(prior_path.read_text(encoding="utf-8"))
+    snapshot = {"api_token": "hunter2-legacy-plaintext"}
+    raw["config_snapshot"] = snapshot
+    raw["config_digest"] = compute_effective_config_digest(snapshot)
+    b = raw["binding"]
+    b["effective_config_digest"] = raw["config_digest"]
+    b["binding_digest"] = compute_binding_digest(
+        stable_agent_id=b["stable_agent_id"], role_checksum=b["role_checksum"],
+        persona_id=b["persona_id"], persona_version=b["persona_version"],
+        persona_checksum=b["persona_checksum"],
+        compiler_schema_version=b["compiler_schema_version"],
+        dependency_digests=tuple(b.get("dependency_digests") or ()),
+        effective_config_digest=b["effective_config_digest"])
+    prior_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    active_before = (slug_dir / "active.yaml").read_bytes()
+
+    with pytest.raises(SpecialistInstallError) as exc:
+        rollback_specialist(slug="mtg", specialists_dir=specialists_dir,
+                            agents_specialists_dir=agents)
+
+    assert exc.value.kind == "legacy_prior"
+    assert (slug_dir / "active.yaml").read_bytes() == active_before
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+    assert exc.value.detail == _EXPECTED_LEGACY_SECRET_KEY_DETAIL
