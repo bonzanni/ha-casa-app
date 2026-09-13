@@ -20,9 +20,13 @@
   kind: meta
   summary: Manifest shard — architecture documents plugin-m through R.
 
-- doc: manifest.d/architecture-s-z.yaml
+- doc: manifest.d/architecture-s.yaml
   kind: meta
-  summary: Manifest shard — architecture documents S-Z.
+  summary: Manifest shard — architecture documents S.
+
+- doc: manifest.d/architecture-t-z.yaml
+  kind: meta
+  summary: Manifest shard — architecture documents T-Z.
 
 - doc: manifest.yaml
   kind: meta

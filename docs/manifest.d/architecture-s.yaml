@@ -1,0 +1,121 @@
+# Manifest shard (#367, split #978) — architecture documents S. Loaded with the root
+# docs/manifest.yaml by scripts/verify_docs.py; same entry format.
+
+- doc: architecture/scheduled-asks.md
+  summary: A scheduled question as a durable obligation — its record on disk, its terminal delivery back to the session that asked, and its manners in the operator's attention lane.
+  when_changing: a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule
+  covers:
+    - casa/rootfs/opt/casa/scheduled_asks.py::ScheduledAskStore
+    - casa/rootfs/opt/casa/scheduled_asks.py::make_finish_hook
+    - casa/rootfs/opt/casa/scheduled_asks.py::reconcile_at_boot
+  tests:
+    - tests/test_scheduled_ask_user.py
+    - tests/test_scheduled_ask_attention_lane.py
+    - tests/test_challenge_delivery_displacement.py
+    - tests/test_scheduled_ask_boot_window_displacement.py
+  related: [architecture/jobs-and-delivery.md, architecture/triggers.md, architecture/plugins.md]
+  defines_invariants: [INV-JOB-007, INV-JOB-008, INV-JOB-012, INV-JOB-013, INV-JOB-014]
+  invariant_tests:
+    INV-JOB-013: [tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_revocation_during_the_boot_window_is_not_undone, tests/test_scheduled_ask_user.py::TestBootReconcile::test_an_untouched_role_is_still_restored, tests/test_scheduled_ask_user.py::TestDurableRecord::test_posting_record_is_written_before_the_keyboard, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_settling_is_persisted_before_the_edit, tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_legacy_settling_record_makes_no_edit_and_no_dispatch, tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_settling_record_replays_its_persisted_edit_and_never_dispatches, tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_settling_record_with_no_message_id_edits_nothing, tests/test_telegram_dm_settle.py::test_crash_after_settling_cas_replays_exact_edit_once_without_dispatch, tests/test_scheduled_ask_user.py::TestBootReconcile::test_live_record_is_restored_and_still_answerable]
+    INV-JOB-007: [tests/test_scheduled_ask_attention_lane.py::test_new_retires_scheduled_once_with_new_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_every_cancellation_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_timeout_reaches_the_session, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_settles_nothing_and_keeps_the_record, tests/test_scheduled_ask_user.py::TestAttribution::test_the_continuation_is_machine_authored]
+    INV-JOB-008: [tests/test_scheduled_ask_attention_lane.py::test_plain_text_cancels_only_same_dm_interactive, tests/test_scheduled_ask_attention_lane.py::test_restored_scheduled_ask_survives_plain_text, tests/test_scheduled_ask_attention_lane.py::test_delivered_human_ask_displaces_scheduled_after_post_once, tests/test_scheduled_ask_attention_lane.py::test_undelivered_human_ask_leaves_scheduled_live, tests/test_scheduled_ask_attention_lane.py::test_plain_text_during_human_post_cancels_replacement_not_scheduled, tests/test_scheduled_ask_attention_lane.py::test_failed_challenge_post_leaves_scheduled_live, tests/test_challenge_delivery_displacement.py::test_delivered_challenge_displaces_exactly_the_scheduled_ask, tests/test_challenge_delivery_displacement.py::test_challenge_cancelled_while_posting_displaces_nothing, tests/test_challenge_delivery_displacement.py::test_a_sibling_challenge_does_not_license_the_displacement, tests/test_challenge_delivery_displacement.py::test_a_duplicate_arrival_posts_once_and_displaces_once, tests/test_challenge_delivery_displacement.py::test_the_liveness_check_and_the_displacement_share_one_loop_turn, tests/test_scheduled_ask_boot_window_displacement.py::test_a_challenge_that_failed_to_post_lets_the_reconciler_restore, tests/test_scheduled_ask_boot_window_displacement.py::test_a_delivered_challenge_lets_the_reconciler_settle_operator_busy, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_a_plain_dm_ask_is_live, tests/test_scheduled_ask_user.py::TestLane::test_refuses_when_an_authz_challenge_is_live]
+    INV-JOB-012: [tests/test_scheduled_ask_user.py::TestBootReconcile::test_boot_revocation_uses_the_first_matching_callers_reason, tests/test_scheduled_ask_user.py::TestBootReconcile::test_every_live_reason_survives_the_boot_window, tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_revocation_during_the_boot_window_is_not_undone]
+    INV-JOB-014: [tests/test_scheduled_ask_boot_window_displacement.py::test_reconcile_skips_an_undelivered_challenge_when_testing_lane_idle, tests/test_scheduled_ask_boot_window_displacement.py::test_reconcile_skips_an_undelivered_human_ask_when_testing_lane_idle, tests/test_scheduled_ask_boot_window_displacement.py::test_a_challenge_delivered_after_a_restore_retires_it_truthfully, tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_human_question_still_posting_does_not_keep_the_lane, tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_live_human_question_keeps_the_lane, tests/test_scheduled_ask_user.py::TestBootReconcile::test_a_scheduled_ask_still_posting_keeps_the_lane]
+
+- doc: architecture/sdk-client-pool.md
+  summary: The life of the warm, conversation-bound client a turn runs on.
+  when_changing: the warm client pool, client reuse or invalidation, a key reset, or pool teardown
+  covers:
+    - casa/rootfs/opt/casa/agent.py::Agent.aclose
+    - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn
+    - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.close_key
+    - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.invalidate_all
+    - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.aclose
+    - casa/rootfs/opt/casa/sdk_client_pool.py::ManagedSdkClient
+    - casa/rootfs/opt/casa/sdk_client_pool.py::PoolUnavailable
+    - casa/rootfs/opt/casa/sdk_client_pool.py::PoolClosing
+  tests:
+    - tests/test_sdk_client_pool_pool.py
+    - tests/test_sdk_client_pool_client.py
+    - tests/test_pool_close_final_sweep.py
+    - tests/test_shutdown_pool_and_refusal.py
+  related: [architecture/turn-loop.md, architecture/concurrency-model.md, architecture/overview.md]
+  defines_invariants: [INV-TURN-001, INV-TURN-002, INV-TURN-003, INV-TURN-006, INV-TURN-010, INV-TURN-011]
+  invariant_tests:
+    INV-TURN-001: [tests/test_sdk_client_pool_pool.py::test_sid_mismatch_reconnects_on_registry_sid]
+    INV-TURN-002: [tests/test_sdk_client_pool_client.py::test_error_result_nonretryable_returns_but_invalidates]
+    INV-TURN-003: [tests/test_sdk_client_pool_client.py::test_cancel_interrupts_drains_and_stays_warm]
+    INV-TURN-006: [tests/test_sdk_client_pool_pool.py::test_close_key_joins_inflight_invalidation_flush]
+    INV-TURN-010: [tests/test_sdk_client_pool_pool.py::test_pool_close_force_disconnects_invalidated_generation_without_waiting_for_turn_lock]
+    INV-TURN-011: [tests/test_sdk_client_pool_pool.py::test_866_arm1_cold_connect_overlapping_pool_close_is_disconnected, tests/test_sdk_client_pool_pool.py::test_866_arm2_warm_replacement_overlapping_pool_close_is_disconnected, tests/test_sdk_client_pool_pool.py::test_866_arm3_invalidate_all_overlapping_connect_disconnects_it, tests/test_sdk_client_pool_pool.py::test_866_arm4_close_key_overlapping_connect_disconnects_it, tests/test_sdk_client_pool_pool.py::test_866_arm5_close_cancelled_mid_drain_still_leaves_no_live_client, tests/test_sdk_client_pool_pool.py::test_866_arm6_force_close_hook_receives_the_connecting_generation, tests/test_sdk_client_pool_pool.py::test_866_arm7_closing_set_while_membership_remains_refuses_the_turn, tests/test_sdk_client_pool_pool.py::test_866_arm8_a_connect_that_suppresses_cancellation_is_still_cut, tests/test_sdk_client_pool_pool.py::test_866_arm9_closing_before_the_reservation_opens_no_client, tests/test_sdk_client_pool_pool.py::test_866_arm10_a_reset_before_the_reservation_opens_no_client, tests/test_sdk_client_pool_pool.py::test_866_arm11_a_failed_connect_strands_no_map_entry, tests/test_sdk_client_pool_pool.py::test_a_cancelled_removal_leaves_no_client_the_pool_close_cannot_cut, tests/test_sdk_client_pool_pool.py::test_a_cancelled_close_cuts_every_recorded_entry_concurrently, tests/test_pool_close_final_sweep.py::test_final_sweep_cancels_the_reload_close_before_it_can_cut, tests/test_pool_close_final_sweep.py::test_final_sweep_cancels_a_disconnect_already_running, tests/test_shutdown_pool_and_refusal.py::test_the_real_shutdown_cuts_every_pooled_client_it_removed, tests/test_shutdown_pool_and_refusal.py::test_agent_close_cancelled_before_it_reaches_the_pool_still_cuts]
+
+- doc: architecture/specialist-bundle-recovery.md
+  summary: What a specialist bundle transaction does when it does not succeed — the pre-journal refusals, the sync-phase and sequencer compensations, the boot replay and quarantine pass, the age sweeps that follow it, and the race and failed-rotation refusals.
+  when_changing: bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps
+  tests:
+    - tests/test_specialist_bundle_journal.py
+  related: [architecture/specialist-bundle-transactions.md, architecture/specialist-lifecycle.md, architecture/personality.md]
+
+- doc: architecture/specialist-bundle-transactions.md
+  summary: What happens to an installed specialist after its install — the upgrade, rollback and uninstall transactions, the owned-plugin generation each publishes, and the crash journal that makes a bundle transaction recoverable.
+  when_changing: a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts
+  covers:
+    - casa/rootfs/opt/casa/specialist_install.py::upgrade_specialist
+    - casa/rootfs/opt/casa/specialist_install.py::rollback_specialist
+    - casa/rootfs/opt/casa/specialist_install.py::_rollback_core
+    - casa/rootfs/opt/casa/specialist_install.py::uninstall_specialist
+    - casa/rootfs/opt/casa/specialist_bundle_journal.py::reconcile_boot
+    - casa/rootfs/opt/casa/tools.py::_run_bundle_transaction
+    - casa/rootfs/opt/casa/specialist_install.py::_rederive_stale_binding
+    - casa/rootfs/opt/casa/personality_binding.py::InstanceDir.complete_pending_rotation
+  tests:
+    - tests/test_specialist_bundle_journal.py
+    - tests/test_specialist_rollback_owned_generation.py
+    - tests/test_specialist_rollback_model_flip.py
+    - tests/test_specialist_lifecycle_lock.py
+    - tests/test_specialist_rollback_persona_override.py
+    - tests/test_specialist_bundle_cancellation.py
+    - tests/test_specialist_recovery_debt.py
+    - tests/test_specialist_recovery_debt_scanner.py
+  related: [architecture/specialist-bundle-recovery.md, architecture/specialist-lifecycle.md, architecture/personality.md, architecture/plugin-mutation-tools.md, architecture/persona-lifecycle.md]
+  defines_invariants: [INV-SPEC-003, INV-SPEC-011, INV-SPEC-012, INV-SPEC-013, INV-SPEC-014]
+  invariant_tests:
+    INV-SPEC-011: [tests/test_specialist_rollback_owned_generation.py::test_r1_install_override_rollback_keeps_the_owned_set, tests/test_specialist_rollback_owned_generation.py::test_r5_tuple_identity_not_sidecar_bytes_controls_the_sidecar_rotation, tests/test_specialist_rollback_owned_generation.py::test_r10_a_failed_tuple_prior_promotion_is_completed_before_the_rollback_reads, tests/test_specialist_rollback_owned_generation.py::test_r13_a_direct_rollback_refuses_a_generation_whose_owned_set_differs, tests/test_specialist_lifecycle_lock.py::test_t1_every_lifecycle_lock_release_is_one_generation, tests/test_specialist_lifecycle_lock.py::test_t3_a_stale_caller_role_is_refused_at_the_library_boundary, tests/test_specialist_lifecycle_lock.py::test_t5_a_cancelled_handler_cannot_release_the_library_transaction_early]
+    INV-SPEC-012: [tests/test_specialist_rollback_model_flip.py::test_m1_direct_rollback_after_a_model_flip_restores_the_rederived_prior, tests/test_specialist_rollback_model_flip.py::test_m4_a_prior_whose_store_bytes_drifted_is_refused_by_name_with_nothing_written, tests/test_specialist_rollback_model_flip.py::test_m5_a_prior_whose_agent_id_moved_is_refused_naming_the_agent_id, tests/test_specialist_rollback_model_flip.py::test_m6_an_override_prior_after_a_model_flip_is_restored_with_its_override_identity]
+    INV-SPEC-003: [tests/test_specialist_bundle_commit.py::test_unapproved_bundle_upgrade_preserves_saved_tuple_pair, tests/test_specialist_bundle_commit.py::test_upgrade_preflight_refusals_open_no_journal_at_all, tests/test_specialist_bundle_commit.py::test_upgrade_rollback_restores_the_tuple_after_the_target_store_entry_is_lost, tests/test_specialist_lifecycle_matrix.py::test_upgrade_failure_leaves_the_complete_active_tuple_running, tests/test_specialist_install.py::test_rollback_restores_the_prior_tuple]
+    INV-SPEC-013: [tests/test_specialist_bundle_cancellation.py::test_cancel_after_commit_finishes_each_handler_transaction, tests/test_specialist_bundle_cancellation.py::test_cancel_during_failed_sequence_compensates_each_handler, tests/test_specialist_bundle_cancellation.py::test_failed_disk_compensation_leaves_exactly_one_replayable_journal, tests/test_specialist_bundle_cancellation.py::test_cancel_before_lock_starts_nothing_for_each_handler, tests/test_specialist_bundle_cancellation.py::test_bounded_abandonment_keeps_child_and_lock_until_terminal, tests/test_specialist_bundle_cancellation.py::test_boot_replays_one_real_process_crash_journal, tests/test_specialist_bundle_cancellation.py::test_repeated_cancellation_does_not_re_arm_the_grace]
+    INV-SPEC-014: [tests/test_specialist_recovery_debt.py::test_failed_tool_compensation_fences_a_later_generation, tests/test_specialist_recovery_debt.py::test_failed_sync_rollback_fences_the_next_writer, tests/test_specialist_recovery_debt.py::test_install_refuses_before_publishing_anything, tests/test_specialist_recovery_debt.py::test_upgrade_refuses_in_both_arms, tests/test_specialist_recovery_debt.py::test_rollback_refuses_in_both_arms_before_completing_a_rotation, tests/test_specialist_recovery_debt.py::test_uninstall_refuses_in_both_arms_before_retiring_acks, tests/test_specialist_recovery_debt.py::test_persona_override_refuses_in_both_arms, tests/test_specialist_recovery_debt.py::test_a_clean_ops_directory_refuses_nothing, tests/test_specialist_recovery_debt_scanner.py::test_a_write_temporary_is_not_debt, tests/test_specialist_recovery_debt_scanner.py::test_an_unlistable_ops_directory_is_debt, tests/test_specialist_recovery_debt_scanner.py::test_entries_that_are_not_regular_files_are_not_debt, tests/test_specialist_recovery_debt_scanner.py::test_the_scan_follows_classify_journal_rather_than_the_bytes, tests/test_specialist_recovery_debt_scanner.py::test_the_fence_returns_the_directory_it_inspected]
+
+- doc: architecture/specialist-lifecycle.md
+  summary: Specialist install — instance tuples, the content-addressed store, install identity, consent receipts and materialization.
+  when_changing: specialist install identity, consent, or materialization
+  covers:
+    - casa/rootfs/opt/casa/specialist_install.py::commit_specialist_install
+    - casa/rootfs/opt/casa/specialist_install.py::compute_install_root_digest
+    - casa/rootfs/opt/casa/specialist_install.py::sweep_staging_aged
+    - casa/rootfs/opt/casa/specialist_materialize.py::current_specialist_roles_dir
+    - casa/rootfs/opt/casa/specialist_materialize.py::materialize_specialist_operational_files
+    - casa/rootfs/opt/casa/specialist_receipt.py::compute_receipt_digest
+    - casa/rootfs/opt/casa/specialist_registry.py::InstalledSpecialistIndex
+    - casa/rootfs/opt/casa/system_requirements/tarball.py::install_tarball
+    - casa/rootfs/opt/casa/system_requirements/manifest.py::ensure_bin_claim
+  tests:
+    - tests/test_specialist_install.py
+    - tests/test_specialist_lifecycle_matrix.py
+    - tests/test_specialist_materialize.py
+    - tests/test_system_requirements_installer_tarball.py
+    - tests/test_specialist_install_consent.py
+    - tests/test_tools_specialist_install.py
+  related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md, architecture/specialist-bundle-transactions.md]
+  defines_invariants: [INV-SPEC-001, INV-SPEC-002, INV-SPEC-004, INV-SPEC-005, INV-SPEC-006, INV-SPEC-007, INV-SPEC-008, INV-SPEC-009, INV-SPEC-010, INV-SPEC-015]
+  invariant_tests:
+    INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
+    INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]
+    INV-SPEC-002: [tests/test_specialist_lifecycle_matrix.py::test_fresh_install_missing_config_is_pending_configuration_with_no_active_tuple]
+    INV-SPEC-015: [tests/test_tools_specialist_install.py::test_a_pending_install_commit_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_specialist_status_names_a_pending_slugs_resume_inputs, tests/test_personality_admin_handlers.py::test_a_pending_install_the_index_never_saw_still_names_its_resume_inputs, tests/test_personality_admin_handlers.py::test_verified_pending_upgrade_names_and_uses_its_admitting_tool, tests/test_personality_admin_handlers.py::test_a_live_recovery_journal_blocks_certification]
+    INV-SPEC-004: [tests/test_specialist_materialize.py::test_materialize_operational_files_repeat_call_swaps_atomically_and_gcs_old_version]
+    INV-SPEC-005: [tests/test_specialist_consent_receipt.py::test_pin_inv_spec_005_tampered_receipt_loads_as_none]
+    INV-SPEC-006: [tests/test_specialist_install.py::test_commit_rejects_a_secret_valued_config_key, tests/test_specialist_install.py::test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses]
+    INV-SPEC-007: [tests/test_system_requirements_installer_tarball.py::test_failed_reinstall_preserves_existing_install, tests/test_system_requirements_installer_tarball.py::test_invalid_install_cmd_shape_checked_before_touching_install]
+    INV-SPEC-010: [tests/test_tools_specialist_install.py::test_662_terminal_or_gone_engagement_uses_the_production_outcome, tests/test_tools_specialist_install.py::test_662_production_reconcile_cb_reports_a_literal_false, tests/test_specialist_install_consent.py::test_662_only_a_literal_true_outcome_selects_the_success_edit]
+    INV-SPEC-009: [tests/test_personality_binding.py::test_verify_instance_tuple_rejects_a_digest_not_derived_from_the_snapshot, tests/test_personality_binding.py::test_atomic_write_refuses_a_mismatched_tuple_as_a_backstop, tests/test_specialist_install.py::test_boot_sweep_tombstones_an_already_sanitized_pre_guard_digest, tests/test_specialist_bundle_journal.py::test_begin_sanitizes_captured_tuple_files]
