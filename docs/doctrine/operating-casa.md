@@ -247,10 +247,17 @@ offering an uninstall as a way out.
 The invariant is deliberately narrower than the rule above it. What is mechanically
 guaranteed is those two refusal paths and the presence of this rule in both the corpus and
 the shipped configurator doctrine that paraphrases refusals to an operator; nothing checks
-an arbitrary refusal detail, a `last_activation_error`, or a recipe's prose, and at the time
-of writing ONE shipped string — `personality_binding`'s pre-guard tombstone message, which
-reaches the operator through the status payload — is an outstanding violation of the rule
-rather than an exception to it. It is tracked separately. Both arms of
+an arbitrary refusal detail, a `last_activation_error`, or a recipe's prose. One cause is
+checked beyond the injected read error: `personality_binding`'s pre-guard tombstone message
+reaches the operator through the status payload and also, verbatim, inside the refusal detail
+of both merge reads and of the active-present guard below, because each renders the error it
+caught. It used to recommend uninstalling and reinstalling, so under a tombstoned tuple those
+refusals advised preserving the candidate and destroying it in one sentence. It now says the
+tuple will not load and that its saved settings stay in the file, and a tombstone-caused case
+pins all three refusal details. `specialist_rollback`'s two legacy-prior refusals advised a
+reinstall, which an installed slug reaches only through an uninstall that deletes the active
+tuple those refusals leave untouched (#980); they now say the active stays in service and that
+the next upgrade retains a rollback target, and a regression test pins both details. Both arms of
 `specialist_install.py`'s active-present guard comply: the arm reached when the pending
 candidate cannot be read at all, and the arm reached when a candidate for a different
 component root loads. Neither is named by the invariant and both were corrected alongside the

@@ -104,7 +104,9 @@ refusal rather than a record. "I cannot tell which of these keys are secret" is 
 answer to *may this go in a journal* and the wrong answer to *what was on disk before* —
 and the compensation asks the second question. So the upgrade raises
 `prior_schema_unreadable` with nothing staged, captured or compensated, and the operator's
-tuple untouched; recovery is the reinstall `active_unreadable` already documents.
+tuple untouched and still in service. The refusal offers no uninstall and reinstall as its
+recovery, and neither does this document: an uninstall deletes the instance directory, and with
+it the saved settings the refusal preserved.
 
 The retention is bounded to what the upgrade call leaves on disk when it returns. The
 boot-time snapshot scrub reads the same declarations independently, with no journal and no
@@ -113,9 +115,11 @@ carried provenance, and is not covered by this invariant.
 One explicit carve-out (#372): a retained prior that predates the secret-digest guard —
 its digests tombstoned by sanitization, or its snapshot still carrying a
 secret-classified key — is refused with a typed `legacy_prior` error instead of being
-restored. The current active tuple is untouched; the rollback *target* requires a
-reinstall. The same applies to a prior sentineled by an upgrade whose incoming schema
-reclassified a persisted plain key as secret.
+restored. The current active tuple is untouched and stays in service, and the slug has no
+rollback *target* until its next upgrade rotates that active into the prior; the refusal says
+so rather than recommending a reinstall, which an installed slug reaches only through the
+uninstall that deletes the active tuple. The same applies to a prior sentineled by an upgrade
+whose incoming schema reclassified a persisted plain key as secret.
 
 One identity detail is easy to get wrong at exactly these commit points: a role's checksum
 covers the model it *resolved to*, not just the model policy it declares. Every path here

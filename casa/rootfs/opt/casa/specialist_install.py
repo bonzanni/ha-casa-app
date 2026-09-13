@@ -2729,7 +2729,8 @@ def _declarations_for_capture(
 
     Nothing is staged, nothing is captured, nothing is compensated, and the
     operator's tuple is untouched — the same shape `active_unreadable` already
-    uses, and the same recovery (uninstall and reinstall).
+    uses. Neither offers an uninstall and reinstall as the recovery: an uninstall
+    deletes the saved settings the refusal preserved (#956).
 
     Only roots that a capture actually NEEDS are resolved: a file with no
     snapshot, or an unparseable one, needs no declaration (an unparseable file
@@ -2955,7 +2956,8 @@ def _upgrade_core(
         active_before = instance_dir.active()
     except ValueError as exc:
         # #372: a pre-guard (or otherwise unverifiable) active is a typed
-        # refusal, not an escaped ValueError — recovery is uninstall+reinstall.
+        # refusal, not an escaped ValueError. Its detail is the loader's text,
+        # which recommends no destructive recovery (#956).
         raise SpecialistInstallError("active_unreadable", str(exc)) from exc
     if active_before is None:
         raise SpecialistInstallError("no_active_tuple", f"{slug!r} has no active install to upgrade")
@@ -3414,7 +3416,8 @@ def sanitize_specialist_snapshots(
         atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False), mode=0o600)
         logger.warning(
             "specialist %r: %s carries a digest not derived from its "
-            "persisted snapshot — tombstoned (#372); uninstall and reinstall",
+            "persisted snapshot — tombstoned (#372); it will not load, and the "
+            "file is kept",
             slug, filename)
         if filename == "desired.yaml":
             marker = path.parent / "pending-receipt.json"
@@ -3781,15 +3784,20 @@ def _rollback_core(
     prior_path = specialists_dir / slug / "active.prior.yaml"
     # #372 (D5): classify the RAW prior before the strict loader touches it —
     # a sentineled or equation-violating prior must surface as a typed
-    # legacy_prior refusal (active untouched; the rollback target requires a
-    # reinstall), never as an escaped ValueError.
+    # legacy_prior refusal (active untouched), never as an escaped ValueError.
+    # #980: the advice used to say "reinstall to obtain a rollback target", and
+    # an installed slug can only be reinstalled after the uninstall that deletes
+    # the active tuple this refusal just left untouched. The next upgrade's
+    # commit rotates the active into the prior, which is the non-destructive way
+    # a rollback target comes back.
     legacy_reason = _pre_guard_prior_reason(prior_path)
     if legacy_reason is not None:
         raise SpecialistInstallError(
             "legacy_prior",
             f"{slug!r}: retained prior tuple predates the secret-digest guard "
-            f"(#372): {legacy_reason}; the current active is untouched — "
-            "reinstall to obtain a rollback target")
+            f"(#372): {legacy_reason}; the current active is untouched and stays "
+            "in service — this slug has no rollback target until its next "
+            "upgrade retains the current active as one")
     prior = load_instance_tuple(prior_path)
     if prior is None:
         raise SpecialistInstallError("no_prior_tuple", f"{slug!r} has no retained prior tuple")
@@ -3928,7 +3936,9 @@ def _rollback_core(
             "legacy_prior",
             f"{slug!r}: retained prior tuple carries secret-classified key(s) "
             f"{_present} from before the secret-digest guard (#372); the "
-            "current active is untouched — reinstall to obtain a rollback target")
+            "current active is untouched and stays in service — this slug has no "
+            "rollback target until its next upgrade retains the current active "
+            "as one")
 
     # Commit FIRST, same reordering as commit_specialist_install/
     # upgrade_specialist — `prior` is a previously-active, already-validated

@@ -312,9 +312,16 @@ class InstanceTuple:
 # the real cause instead of an opaque pattern error.
 PRE_GUARD_SENTINEL = "pre-guard:removed"
 
+# #956: this text is relayed verbatim — into `last_activation_error`, and through
+# `({exc})` into refusal details that tell the operator to preserve the pending
+# candidate and its saved configuration. So it must not recommend an action that
+# destroys the file it describes: the tombstone replaces digests, not the file,
+# and an uninstall would delete whatever settings the file still holds.
 _PRE_GUARD_MESSAGE = (
     "instance tuple predates the secret-digest guard (#372) and was "
-    "tombstoned; uninstall and reinstall this specialist"
+    "tombstoned, so Casa will not load it; tombstoning keeps the file and "
+    "whatever saved settings it holds — read them back from it rather than "
+    "assuming they are gone"
 )
 
 

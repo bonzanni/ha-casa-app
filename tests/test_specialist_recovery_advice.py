@@ -414,3 +414,272 @@ def test_the_active_present_guards_different_root_arm_advises_preservation(
     assert snapshot["saved"] == _SAVED
     assert snapshot["region"] == "EU"
     assert _recovery_journals(ops_dir) == journals_before
+
+
+# #956: the SECOND cause. Every refusal above interpolates the caught exception
+# verbatim through `({exc})`, and the EIO literals pin exactly one such cause. A
+# tuple the #372 boot scrub tombstoned raises the loader's own typed ValueError
+# inside the same caught set, so whatever that message advises reaches the
+# operator inside a sentence that also says to preserve the candidate. These are
+# independent literals written HERE, with only the filesystem path substituted;
+# the EIO literals above are untouched, because loosening them to admit a second
+# cause would remove the property that makes them a pin.
+_EXPECTED_TOMBSTONE_CAUSE = (
+    "{desired}: instance tuple predates the secret-digest guard (#372) and was "
+    "tombstoned, so Casa will not load it; tombstoning keeps the file and "
+    "whatever saved settings it holds — read them back from it rather than "
+    "assuming they are gone"
+)
+
+_EXPECTED_TOMBSTONE_MERGE_DETAIL = (
+    "'mtg': the pending candidate's configuration could not be read ("
+    + _EXPECTED_TOMBSTONE_CAUSE
+    + "); refusing to restage over it — preserve the pending candidate, its "
+    "saved configuration, and the receipt and staging tree needed to resume; "
+    "resolve the read error and retry"
+)
+
+_EXPECTED_TOMBSTONE_GUARD_DETAIL = (
+    "'mtg': an unreadable pending candidate already exists ("
+    + _EXPECTED_TOMBSTONE_CAUSE
+    + "); refusing to replace it — this call has staged nothing over it; keep "
+    "the candidate and its saved configuration; resolve the read error and retry"
+)
+
+
+def _tombstone_in_place(path: Path) -> None:
+    """The boot scrub's tuple shape (`specialist_install._tombstone`): both
+    digest fields replaced by the sentinel, the snapshot left where it is. The
+    scrub also releases `pending-receipt.json`; that marker is kept here on
+    purpose so the resume inputs exist and the merge read is what refuses —
+    this fixture is the TUPLE shape, not a claim about a completed scrub."""
+    import yaml
+    from personality_binding import PRE_GUARD_SENTINEL
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["config_digest"] = PRE_GUARD_SENTINEL
+    raw["binding"]["effective_config_digest"] = PRE_GUARD_SENTINEL
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+
+def _inventory(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+@pytest.mark.parametrize("path", ["install", "upgrade-bundle", "upgrade-core"])
+def test_pending_tombstone_advice_preserves_resume_state(
+        tmp_path, monkeypatch, restore_installed_index, path) -> None:  # noqa: F811
+    import specialist_install
+
+    if path == "install":
+        ctx = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                       required_config=("saved", "region"),
+                       config={"saved": _SAVED})
+        resume = lambda **kw: specialist_install.commit_specialist_install(**kw)  # noqa: E731
+        active_before = None
+    else:
+        first = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                         required_config=(), config={})
+        assert first.state == "active"
+        ctx = _install(tmp_path, monkeypatch, home=tmp_path / "b", slug="mtg",
+                       version="0.2.0", required_config=("saved", "region"),
+                       config={"saved": _SAVED})
+        resume = lambda **kw: specialist_install.upgrade_specialist(slug="mtg", **kw)  # noqa: E731
+        active_before = (ctx.specialists_dir / "mtg" / "active.yaml").read_bytes()
+    assert ctx.state == "pending-configuration"
+
+    slug_dir = ctx.specialists_dir / "mtg"
+    desired = slug_dir / "desired.yaml"
+    ops_dir = ctx.kw["ops_dir"]
+    _tombstone_in_place(desired)
+
+    assert _saved_value_copies(slug_dir) == 1
+    assert _recovery_journals(ops_dir) == 0
+    before = desired.read_bytes()
+    marker_before = (slug_dir / "pending-receipt.json").read_bytes()
+    receipts_before = _inventory(ctx.receipts_dir)
+    staged_before = _inventory(Path(ctx.inspection.staged_dir))
+    assert staged_before
+
+    kw = dict(ctx.kw)
+    kw["config"] = {"region": "EU"}
+    if path == "upgrade-core":
+        # `_upgrade_core`'s own merge read: the bundle arm refuses one frame up
+        # and never reaches it.
+        kw["receipt"] = None
+    with pytest.raises(specialist_install.SpecialistInstallError) as exc:
+        resume(**kw)
+
+    # The intended cause: the loader's typed tombstone error, not a schema or
+    # I/O error that happens to share the refusal.
+    assert exc.value.kind == "concurrent_mutation"
+    assert type(exc.value.__cause__) is ValueError
+    assert "secret-digest guard" in str(exc.value.__cause__)
+    assert str(desired) in str(exc.value.__cause__)
+
+    # Preservation first, so a red advice assertion cannot hide these.
+    assert desired.read_bytes() == before
+    assert (slug_dir / "pending-receipt.json").read_bytes() == marker_before
+    assert _inventory(ctx.receipts_dir) == receipts_before
+    assert _inventory(Path(ctx.inspection.staged_dir)) == staged_before
+    assert _saved_value_copies(slug_dir) == 1                   # 1 -> 1
+    assert _recovery_journals(ops_dir) == 0                     # 0 -> 0
+    if active_before is not None:
+        assert (slug_dir / "active.yaml").read_bytes() == active_before
+
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+    assert exc.value.detail == _EXPECTED_TOMBSTONE_MERGE_DETAIL.format(desired=desired)
+
+
+def test_active_present_guard_tombstone_advises_preservation(
+        tmp_path, monkeypatch, restore_installed_index) -> None:  # noqa: F811
+    """The guard's unreadable arm precedes its root comparison, so a tombstoned
+    pending candidate with no active tuple reaches it directly — no concurrent
+    writer and no bundle compensation are needed to isolate it."""
+    import personality_binding
+    import specialist_install
+
+    ctx = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
+                   required_config=("saved", "region"),
+                   config={"saved": _SAVED})
+    assert ctx.state == "pending-configuration"
+    slug_dir = ctx.specialists_dir / "mtg"
+    desired = slug_dir / "desired.yaml"
+    assert not (slug_dir / "active.yaml").exists()
+    _tombstone_in_place(desired)
+    before = desired.read_bytes()
+    assert _saved_value_copies(slug_dir) == 1
+
+    with pytest.raises(specialist_install.SpecialistInstallError) as exc:
+        specialist_install._refuse_if_active_present(
+            personality_binding.InstanceDir(slug_dir), slug="mtg",
+            root=ctx.inspection.root_digest)
+
+    assert exc.value.kind == "concurrent_mutation"
+    assert type(exc.value.__context__) is ValueError
+    assert "secret-digest guard" in str(exc.value.__context__)
+    assert desired.read_bytes() == before
+    assert _saved_value_copies(slug_dir) == 1
+
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+    assert exc.value.detail == _EXPECTED_TOMBSTONE_GUARD_DETAIL.format(desired=desired)
+
+
+# #980, not a red case and not part of the pinned declaration: regression tests
+# in the diff, added after the diff review reproduced this path (an uninstall
+# taking the ACTIVE's saved setting 1 -> 0). Rollback's two legacy-prior refusals
+# leave the active untouched and used to advise "reinstall to obtain a rollback
+# target" — and an installed slug is reinstallable only after the uninstall that
+# deletes that active. Literals written here, with only the refusal's own
+# reason/key list substituted.
+_EXPECTED_LEGACY_TOMBSTONED_DETAIL = (
+    "'mtg': retained prior tuple predates the secret-digest guard (#372): its "
+    "digests were tombstoned by sanitization; the current active is untouched "
+    "and stays in service — this slug has no rollback target until its next "
+    "upgrade retains the current active as one"
+)
+
+_EXPECTED_LEGACY_SECRET_KEY_DETAIL = (
+    "'mtg': retained prior tuple carries secret-classified key(s) ['api_token'] "
+    "from before the secret-digest guard (#372); the current active is untouched "
+    "and stays in service — this slug has no rollback target until its next "
+    "upgrade retains the current active as one"
+)
+
+
+def test_rollback_legacy_prior_tombstoned_advice_keeps_the_active(tmp_path) -> None:
+    import yaml
+    from personality_binding import PRE_GUARD_SENTINEL
+    from specialist_install import (
+        SpecialistInstallError, commit_specialist_install, rollback_specialist,
+        upgrade_specialist,
+    )
+    from test_specialist_install import (
+        _acked, _plain_schema_inspection, _v2_inspection, _v2_secret_schema_inspection,
+    )
+
+    v1 = _plain_schema_inspection(tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    agents = tmp_path / "agents-specialists"
+    commit_specialist_install(
+        inspection=v1, config={"api_token": "plain-then-reclassified"},
+        secret_names_provided=frozenset(), acks=_acked(v1, tmp_path),
+        specialists_dir=specialists_dir, agents_specialists_dir=agents)
+    v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
+    upgrade_specialist(
+        slug="mtg", inspection=v2, config={},
+        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path),
+        specialists_dir=specialists_dir, agents_specialists_dir=agents)
+
+    slug_dir = specialists_dir / "mtg"
+    raw_prior = yaml.safe_load((slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
+    assert raw_prior["config_digest"] == PRE_GUARD_SENTINEL
+    active_before = (slug_dir / "active.yaml").read_bytes()
+
+    with pytest.raises(SpecialistInstallError) as exc:
+        rollback_specialist(slug="mtg", specialists_dir=specialists_dir,
+                            agents_specialists_dir=agents)
+
+    assert exc.value.kind == "legacy_prior"
+    assert (slug_dir / "active.yaml").read_bytes() == active_before
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+    assert exc.value.detail == _EXPECTED_LEGACY_TOMBSTONED_DETAIL
+
+
+def test_rollback_legacy_prior_secret_key_advice_keeps_the_active(tmp_path) -> None:
+    import yaml
+    from personality_binding import compute_binding_digest, compute_effective_config_digest
+    from specialist_install import (
+        SpecialistInstallError, commit_specialist_install, rollback_specialist,
+        upgrade_specialist,
+    )
+    from test_specialist_install import (
+        _acked, _secret_schema_inspection, _v2_inspection, _v2_secret_schema_inspection,
+    )
+
+    v1 = _secret_schema_inspection(tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    agents = tmp_path / "agents-specialists"
+    commit_specialist_install(
+        inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
+        acks=_acked(v1, tmp_path), specialists_dir=specialists_dir,
+        agents_specialists_dir=agents)
+    v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
+    upgrade_specialist(
+        slug="mtg", inspection=v2, config={},
+        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path),
+        specialists_dir=specialists_dir, agents_specialists_dir=agents)
+
+    # The pre-v0.137 shape: a secret-named key present AND a valid equation, so
+    # the raw classification passes it and the declared-secret check refuses it.
+    slug_dir = specialists_dir / "mtg"
+    prior_path = slug_dir / "active.prior.yaml"
+    raw = yaml.safe_load(prior_path.read_text(encoding="utf-8"))
+    snapshot = {"api_token": "hunter2-legacy-plaintext"}
+    raw["config_snapshot"] = snapshot
+    raw["config_digest"] = compute_effective_config_digest(snapshot)
+    b = raw["binding"]
+    b["effective_config_digest"] = raw["config_digest"]
+    b["binding_digest"] = compute_binding_digest(
+        stable_agent_id=b["stable_agent_id"], role_checksum=b["role_checksum"],
+        persona_id=b["persona_id"], persona_version=b["persona_version"],
+        persona_checksum=b["persona_checksum"],
+        compiler_schema_version=b["compiler_schema_version"],
+        dependency_digests=tuple(b.get("dependency_digests") or ()),
+        effective_config_digest=b["effective_config_digest"])
+    prior_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    active_before = (slug_dir / "active.yaml").read_bytes()
+
+    with pytest.raises(SpecialistInstallError) as exc:
+        rollback_specialist(slug="mtg", specialists_dir=specialists_dir,
+                            agents_specialists_dir=agents)
+
+    assert exc.value.kind == "legacy_prior"
+    assert (slug_dir / "active.yaml").read_bytes() == active_before
+    lowered = exc.value.detail.lower()
+    assert [w for w in _DESTRUCTIVE if w in lowered] == []
+    assert exc.value.detail == _EXPECTED_LEGACY_SECRET_KEY_DETAIL
