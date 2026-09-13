@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.307.0] - 2026-09-14
+
+### Fixed
+
+- A specialist whose saved settings were set aside no longer tells you to
+  uninstall and reinstall it. That advice would have deleted the settings the
+  same operation had just preserved — and they were still on disk when it said
+  so. The message now says what actually happened: the stored settings are not
+  loaded, the file holding them is kept, and whatever it holds can be read back
+  rather than assumed gone. Two refusals that relay this message already promised
+  to preserve your configuration, and they were promising it in the same sentence
+  that told you to destroy it.
+
 ## [0.306.0] - 2026-09-13
 
 ### Fixed
