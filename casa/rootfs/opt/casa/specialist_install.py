@@ -3355,13 +3355,26 @@ def sanitize_specialist_snapshots(
     every persisted specialist tuple snapshot. Two gaps this closes: a
     pre-guard install keeps its plaintext until that slug's next
     upgrade/rollback, and the upgrade's post-commit prior sanitization has a
-    crash window — both are healed at the next boot, BEFORE the boot
-    config-git snapshot can commit the plaintext.
+    crash window — both are healed in the live files at the next boot, before
+    ``casa_core``'s Python config-git snapshot. It does NOT keep a boot's
+    bytes out of config history: the ``init-setup-configs`` oneshot commits
+    the same tuple whitelist earlier in every boot (``setup-configs.sh``).
 
     Works on the raw YAML payload (so ``desired.error.yaml``'s extra
     ``_error_reason`` and a pending ``.rollback-tmp`` are handled uniformly)
     and strips each snapshot against ITS OWN component root's declared
     ``secret_names``.
+
+    #972 (INV-SPEC-016): a mapping snapshot whose keys cannot be classified —
+    its component cannot be read back (the classifier answers ``None``), or
+    the tuple names no usable root — keeps every value. ``None`` is the right
+    answer to "may these keys be carried?" and the wrong one to "which of
+    these are secret?": reading it as "every key is secret" emptied every
+    honest tuple of a slug whose store was damaged, and after the boot journal
+    replay it emptied what the replay had just restored. Post-guard installs
+    cannot persist a declared-secret value at all (INV-SPEC-006), so what the
+    strip still does is remove plaintext its component POSITIVELY declares.
+    The digest equation below is unaffected and still decides the file.
 
     #372 (D3): after the strip, every file is checked against the digest
     equation — ``config_digest == digest(config_snapshot)``. A mismatch means
@@ -3468,19 +3481,22 @@ def sanitize_specialist_snapshots(
                         "specialist %r: replaced a non-mapping config_snapshot "
                         "in %s (#337)", slug_dir.name, filename)
                 elif isinstance(snapshot, dict) and snapshot:
-                    if not isinstance(root, str) or not root:
-                        # Sol r4: an unusable root cannot be classified — scrub
-                        # everything rather than skipping into the git snapshot.
-                        secret_names: "set[str] | None" = set(snapshot)
-                    else:
+                    secret_names: "set[str] | None" = None
+                    if isinstance(root, str) and root:
                         if root not in schema_cache:
                             schema_cache[root] = _declared_secret_names_for_root(
                                 root, specialists_dir=specialists_dir)
                         secret_names = schema_cache[root]
-                        if secret_names is None:
-                            # Sol r3: unloadable schema — scrub EVERY key rather
-                            # than silently skipping; the config-git snapshot follows.
-                            secret_names = set(snapshot)
+                    if secret_names is None:
+                        # #972: an unusable root or an unreadable component
+                        # leaves the keys unclassified — strip nothing. The
+                        # digest check below still runs on the retained mapping.
+                        logger.warning(
+                            "specialist %r: cannot classify the config_snapshot "
+                            "keys of %s — its component cannot be read back or "
+                            "the tuple names no usable root; every value kept "
+                            "(#972)", slug_dir.name, filename)
+                        secret_names = set()
                     # Sol r5: str() before sorting — mixed-type mapping keys must
                     # not TypeError out of a fail-closed scrub into the skip arm.
                     stripped = sorted(str(k) for k in snapshot if k in secret_names)

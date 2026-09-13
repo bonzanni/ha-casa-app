@@ -49,7 +49,8 @@ included, so a key reclassified to plain never carries its old plaintext forward
 post-commit sanitization of the retained prior tuple that strips the plaintext and
 tombstones the prior's digests in the same atomic write, by the rollback core refusing a
 prior that still carries a secret-classified key, and by a boot-time scrub of every
-persisted tuple snapshot that runs before the boot config-git snapshot.
+persisted tuple snapshot that strips what each tuple's own readable component declares
+secret (INV-SPEC-016).
 
 What it does not cover: bundle-journal captures are sanitized at write and at restore
 (INV-SPEC-009), but a journal quarantined during a boot keeps its file for one boot as
@@ -78,10 +79,34 @@ of being journalled as an emptiness the compensation would then write back
 ([`specialist-bundle-transactions.md`](specialist-bundle-transactions.md)).
 
 What it does not cover: the config git repository's *history* — commits that predate the
-guard may retain pre-guard digests (and, before the boot scrub existed, plaintext);
-remediation for an affected install is secret rotation. A slug whose tuple was
+guard may retain pre-guard digests and plaintext, and the boot scrub does not keep a boot's
+tuple bytes out of it either: the `init-setup-configs` oneshot commits the tracked tuples
+earlier in every boot than the scrub runs; remediation for an affected install is secret
+rotation. A slug whose tuple was
 tombstoned surfaces as an error-state instance; recovery is uninstall + reinstall with
 fresh consent.
+
+**INV-SPEC-016**: The boot-time snapshot scrub never removes a value from a persisted tuple's mapping snapshot for want of a classification — it strips only keys the tuple's own component is read to declare secret, and a mapping snapshot whose component cannot be read back, or whose tuple names no usable root, keeps every value; its digest equation alone then decides whether the file is tombstoned or deleted.
+
+Enforced in the scrub itself. The classifier it asks answers "cannot tell" when the stored
+component is gone, damaged or no longer hashes to the root the tuple names, and that answer
+is still the right one for its other readers, which decide whether a key may be carried or
+journalled. It is the wrong answer to the question the scrub asks — which of these values
+are secret — and reading it as "all of them" emptied every saved copy of a slug's settings,
+tombstoned their digests and released the pending receipt marker whenever the store could
+not be read back, including the tuples the boot journal replay had restored one boot phase
+earlier. What the strip still has to remove is narrow: an install or upgrade refuses a
+declared-secret value in the plain channel (INV-SPEC-006), so only legacy plaintext can hold
+one, and that is removed wherever the component can be read. An honest tuple over an
+unreadable store is therefore left exactly as it was found, and it loads. A tuple whose
+digest does not cover its mapping is still tombstoned (INV-SPEC-009) — with its values in
+place when they could not be classified.
+
+What it does not cover: the boot journal replay's own sanitizer, which strips every key when
+its union of declarations cannot be established and is tracked as #975; an unparseable tuple
+and a snapshot that is not a mapping, which still fail closed; and a legacy plaintext that
+meets an unreadable store, which stays in the live file until a boot at which its component
+can be read — for a tuple with no usable root, indefinitely, though such a tuple never loads.
 
 **INV-SPEC-015**: A pending-configuration outcome names the inputs its own re-commit takes AND the tool that takes them — the commit and upgrade tool results, and the status of any slug whose tree holds a desired candidate, carry the retained receipt id and staged directory together with the component id, version and root digest, plus the name of the handler that admits them; status reads that candidate's presence and its values from one locked snapshot of the tree rather than from the loaded index, certifies the assembled set against the very acceptance predicate that handler applies before reporting it usable, reports no usable set and no staleness whenever that cannot be established, and marks its own loaded view stale when that view does not describe the tree's candidate.
 
