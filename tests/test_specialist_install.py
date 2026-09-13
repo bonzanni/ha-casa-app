@@ -1908,11 +1908,17 @@ def test_upgrade_with_unloadable_prior_schema_carries_nothing(tmp_path: Path) ->
     assert "api_token" not in staged.config_snapshot
 
 
-def test_boot_sweep_with_unloadable_schema_scrubs_every_key(tmp_path: Path) -> None:
-    """Sol r3 (#337): the boot sweep must not silently skip a snapshot whose
-    component schema is unloadable — it scrubs EVERY snapshot key instead, so
-    the config-git snapshot that follows can never commit unclassifiable
-    plaintext."""
+def test_boot_sweep_with_unloadable_schema_keeps_the_mapping_and_the_digest_decides(
+    tmp_path: Path,
+) -> None:
+    """Sol r3 (#337), revised by #972 (INV-SPEC-016): a snapshot whose
+    component schema is unloadable is not skipped — the digest equation still
+    runs over it — but nothing is stripped for want of a classification. This
+    one is a hand-written mapping beside a digest that does not cover it, so
+    the #372 detector tombstones it with its values in place. (Stripping it
+    never kept those bytes out of config history: the init-setup-configs
+    boot snapshot commits the tuple whitelist before this scrub runs.)"""
+    from personality_binding import PRE_GUARD_SENTINEL
     from specialist_install import sanitize_specialist_snapshots
 
     v1 = _secret_schema_inspection(tmp_path)
@@ -1933,15 +1939,21 @@ def test_boot_sweep_with_unloadable_schema_scrubs_every_key(tmp_path: Path) -> N
 
     assert cleaned == 1
     payload = yaml.safe_load((slug_dir / "active.yaml").read_text(encoding="utf-8"))
-    assert payload["config_snapshot"] == {}
+    assert payload["config_snapshot"] == {"api_token": "hunter2", "timezone": "UTC"}
+    assert payload["config_digest"] == PRE_GUARD_SENTINEL
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
 
 
 def test_tampered_but_parseable_schema_fails_closed(tmp_path: Path) -> None:
     """Sol r4 (#337): a damaged schema that still parses (e.g. truncated to
     `{}`) must not be trusted as "declares no secrets" — the component
-    checksum no longer matches, so the strip treats every key as potentially
-    secret. A GENUINE no-secret schema (checksum intact) keeps its meaning."""
-    from specialist_install import sanitize_specialist_snapshots
+    checksum no longer matches, so the classifier answers None rather than
+    an empty set. #972 (INV-SPEC-016): the scrub reads that None as "cannot
+    classify", strips nothing, and lets the digest equation decide — here the
+    mapping is hand-written beside a digest that does not cover it, so the
+    tuple is tombstoned with its values in place."""
+    from personality_binding import PRE_GUARD_SENTINEL
+    from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
 
     v1 = _secret_schema_inspection(tmp_path)
     acks = _acked(v1, tmp_path)
@@ -1958,16 +1970,20 @@ def test_tampered_but_parseable_schema_fails_closed(tmp_path: Path) -> None:
     for schema_file in (specialists_dir / "store").rglob("config-schema.json"):
         schema_file.chmod(0o600)
         schema_file.write_text("{}", encoding="utf-8")  # parseable, checksum-broken
+    assert _declared_secret_names_for_root(raw["root"], specialists_dir=specialists_dir) is None
 
     assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 1
     payload = yaml.safe_load((slug_dir / "active.yaml").read_text(encoding="utf-8"))
-    assert payload["config_snapshot"] == {}
+    assert payload["config_snapshot"] == {"api_token": "hunter2", "timezone": "UTC"}
+    assert payload["config_digest"] == PRE_GUARD_SENTINEL
 
 
-def test_boot_sweep_scrubs_a_snapshot_with_an_unusable_root(tmp_path: Path) -> None:
-    """Sol r4 (#337): a non-empty snapshot whose `root` is missing or
-    malformed cannot be classified — it must be scrubbed entirely, never
-    silently skipped into the config-git snapshot that follows."""
+def test_boot_sweep_keeps_the_values_of_a_snapshot_with_an_unusable_root(tmp_path: Path) -> None:
+    """Sol r4 (#337), revised by #972 (INV-SPEC-016): a non-empty snapshot
+    whose `root` is missing cannot be classified — it is not skipped (the
+    digest equation still runs), and nothing is stripped. Its digest here does
+    not cover its mapping, so it is tombstoned with its values in place."""
+    from personality_binding import PRE_GUARD_SENTINEL
     from specialist_install import sanitize_specialist_snapshots
 
     slug_dir = tmp_path / "specialists" / "mtg"
@@ -1980,15 +1996,19 @@ def test_boot_sweep_scrubs_a_snapshot_with_an_unusable_root(tmp_path: Path) -> N
 
     assert sanitize_specialist_snapshots(specialists_dir=tmp_path / "specialists") == 1
     payload = yaml.safe_load((slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
-    assert payload["config_snapshot"] == {}
+    assert payload["config_snapshot"] == {"api_token": "hunter2"}
+    assert payload["config_digest"] == PRE_GUARD_SENTINEL
 
 
 def test_consistently_rewritten_schema_and_manifest_fails_closed(tmp_path: Path) -> None:
     """Sol r5 (#337): rewriting config-schema.json AND updating manifest.json's
     internal checksum keeps load_specialist_component happy — only recomputing
     the FULL root digest and comparing it to the digest embedded in the
-    component root detects the tamper. The strip must fail closed."""
-    from specialist_install import sanitize_specialist_snapshots
+    component root detects the tamper. The classifier must fail closed (None);
+    #972 (INV-SPEC-016): the scrub then strips nothing and the digest equation
+    decides — here a hand-written mapping beside a stale digest, tombstoned."""
+    from personality_binding import PRE_GUARD_SENTINEL
+    from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
 
     v1 = _secret_schema_inspection(tmp_path)
     acks = _acked(v1, tmp_path)
@@ -2017,15 +2037,20 @@ def test_consistently_rewritten_schema_and_manifest_fails_closed(tmp_path: Path)
         manifest["checksum"] = compute_component_checksum(files)
         manifest_path.chmod(0o600)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert _declared_secret_names_for_root(raw["root"], specialists_dir=specialists_dir) is None
 
     assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 1
     payload = yaml.safe_load((slug_dir / "active.yaml").read_text(encoding="utf-8"))
-    assert payload["config_snapshot"] == {}
+    assert payload["config_snapshot"] == {"api_token": "hunter2", "timezone": "UTC"}
+    assert payload["config_digest"] == PRE_GUARD_SENTINEL
 
 
 def test_boot_sweep_handles_mixed_type_snapshot_keys(tmp_path: Path) -> None:
     """Sol r5 (#337): mixed-type mapping keys must not TypeError out of the
-    fail-closed scrub into the broad skip handler."""
+    scrub into the broad skip handler. #972: with no usable root nothing is
+    stripped; the mapping still fails the digest equation, so the file is
+    tombstoned (cleaned, not skipped) with its values in place."""
+    from personality_binding import PRE_GUARD_SENTINEL
     from specialist_install import sanitize_specialist_snapshots
 
     slug_dir = tmp_path / "specialists" / "mtg"
@@ -2038,7 +2063,69 @@ def test_boot_sweep_handles_mixed_type_snapshot_keys(tmp_path: Path) -> None:
 
     assert sanitize_specialist_snapshots(specialists_dir=tmp_path / "specialists") == 1
     payload = yaml.safe_load((slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
+    assert payload["config_snapshot"] == {"api_token": "hunter2", 1: "x"}
+    assert payload["config_digest"] == PRE_GUARD_SENTINEL
+
+
+def test_boot_sweep_tombstones_a_stripped_legacy_secret_whose_digest_covered_it(
+    tmp_path: Path,
+) -> None:
+    """#972 (INV-SPEC-016, the readable-store arm): a legacy tuple whose digest
+    was computed over its secret-bearing mapping — so it passes the digest
+    equation as found — loses the key its readable component declares secret,
+    and the strip itself breaks the equation, so the tuple is tombstoned with
+    the plaintext gone. The sibling legacy test injects the plaintext WITHOUT
+    recomputing the digest, where the strip restores the equation instead;
+    together they pin both histories."""
+    from personality_binding import PRE_GUARD_SENTINEL, compute_effective_config_digest
+    from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
+
+    v1 = _secret_schema_inspection(tmp_path)
+    acks = _acked(v1, tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    commit_specialist_install(
+        inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
+        acks=acks, specialists_dir=specialists_dir,
+        agents_specialists_dir=tmp_path / "agents-specialists",
+    )
+    active_path = specialists_dir / "mtg" / "active.yaml"
+    raw = yaml.safe_load(active_path.read_text(encoding="utf-8"))
+    assert _declared_secret_names_for_root(raw["root"], specialists_dir=specialists_dir) == {"api_token"}
+    legacy = {"api_token": "hunter2-legacy-plaintext", "timezone": "UTC"}
+    raw["config_snapshot"] = legacy
+    raw["config_digest"] = compute_effective_config_digest(legacy)
+    raw["binding"]["effective_config_digest"] = raw["config_digest"]
+    active_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 1
+    text = active_path.read_text(encoding="utf-8")
+    assert "hunter2-legacy-plaintext" not in text
+    payload = yaml.safe_load(text)
+    assert payload["config_snapshot"] == {"timezone": "UTC"}
+    assert payload["config_digest"] == PRE_GUARD_SENTINEL
+    assert payload["binding"]["effective_config_digest"] == PRE_GUARD_SENTINEL
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
+
+
+def test_boot_sweep_still_replaces_a_non_mapping_snapshot(tmp_path: Path) -> None:
+    """#972 seam pin: INV-SPEC-016 covers MAPPING snapshots only. A truthy
+    non-mapping `config_snapshot` holds no classifiable settings and keeps its
+    fail-closed arm — replaced by `{}` — even beside a root the scrub can read.
+    Here the tuple's digest was computed over `{}`, so the replacement restores
+    the equation: the file is rewritten, not tombstoned."""
+    from specialist_install import sanitize_specialist_snapshots
+
+    specialists_dir, _agents_dir, _v1 = _installed_mtg(tmp_path)
+    prior_path = specialists_dir / "mtg" / "active.prior.yaml"
+    raw = yaml.safe_load((specialists_dir / "mtg" / "active.yaml").read_text(encoding="utf-8"))
+    raw["config_snapshot"] = ["value"]
+    prior_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 1
+    payload = yaml.safe_load(prior_path.read_text(encoding="utf-8"))
     assert payload["config_snapshot"] == {}
+    assert payload["config_digest"] == raw["config_digest"]
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
 
 
 # --- #372 (D3): the boot scrub detects and tombstones pre-guard digests -----
@@ -2152,6 +2239,186 @@ def test_boot_sweep_leaves_healthy_files_byte_identical(tmp_path: Path) -> None:
     assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
     assert active_path.read_bytes() == before
 
+
+
+@pytest.mark.parametrize("damage", ["store-removed", "manifest-truncated", "stored-file-appended"])
+def test_boot_scrub_keeps_every_saved_copy_and_the_marker_when_the_store_is_damaged(
+    tmp_path: Path, damage: str,
+) -> None:
+    """#972 (INV-SPEC-016), the slug-level arm the issue measured: an honest
+    install with all five tuple files and a pending-receipt marker, then the
+    component store damaged three ways. Measured at the base: 5 files cleaned,
+    saved copies 5 -> 0, both residue files deleted, the marker unlinked, and
+    the slug isolated as state=error. After the fix nothing is written or
+    deleted, every tuple still loads, and the index does not isolate the slug."""
+    from personality_binding import load_instance_tuple
+    from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
+
+    inspection = _plain_schema_inspection(tmp_path)
+    acks = _acked(inspection, tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    commit_specialist_install(
+        inspection=inspection, config={"api_token": "honest-plain-value"},
+        secret_names_provided=frozenset(), acks=acks,
+        specialists_dir=specialists_dir,
+        agents_specialists_dir=tmp_path / "agents-specialists",
+    )
+    slug_dir = specialists_dir / "mtg"
+    active_path = slug_dir / "active.yaml"
+    for name in ("desired.yaml", "active.prior.yaml", "active.yaml.rollback-tmp", "desired.error.yaml"):
+        shutil.copyfile(active_path, slug_dir / name)
+    (slug_dir / "pending-receipt.json").write_text(json.dumps({"receipt_id": "r-1"}), encoding="utf-8")
+    root = yaml.safe_load(active_path.read_text(encoding="utf-8"))["root"]
+    assert isinstance(_declared_secret_names_for_root(root, specialists_dir=specialists_dir), set)
+
+    store = specialists_dir / "store"
+    if damage == "store-removed":
+        shutil.rmtree(store)
+    elif damage == "manifest-truncated":
+        manifests = list(store.rglob("manifest.json"))
+        assert manifests
+        for manifest in manifests:
+            manifest.chmod(0o600)
+            manifest.write_text("{}", encoding="utf-8")
+    else:
+        schema_file = next(store.rglob("config-schema.json"))
+        schema_file.chmod(0o600)
+        schema_file.write_bytes(schema_file.read_bytes() + b" ")
+    assert _declared_secret_names_for_root(root, specialists_dir=specialists_dir) is None
+
+    names = ("active.yaml", "desired.yaml", "active.prior.yaml",
+             "active.yaml.rollback-tmp", "desired.error.yaml", "pending-receipt.json")
+    before = {name: (slug_dir / name).read_bytes() for name in names}
+
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
+    assert {name: (slug_dir / name).read_bytes() for name in names} == before
+    for name in ("active.yaml", "desired.yaml", "active.prior.yaml"):
+        assert load_instance_tuple(slug_dir / name).config_snapshot == {"api_token": "honest-plain-value"}
+    index = InstalledSpecialistIndex(specialists_dir=str(specialists_dir))
+    index.load()
+    instance = index.get_instance("mtg")
+    assert instance is not None and instance.state != "error"
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
+
+# --- #972: the boot scrub never removes a value it cannot classify (INV-SPEC-016) ---
+
+_UNCLASSIFIED_TUPLE_FILES = (
+    "active.yaml", "desired.yaml", "active.prior.yaml",
+    "active.yaml.rollback-tmp", "desired.error.yaml",
+)
+_UNCLASSIFIED_ROOT_CONDITIONS = (
+    "schema-deleted", "missing", "empty", "none", "int", "malformed",
+)
+
+
+@pytest.mark.parametrize("mismatching", [False, True], ids=["digest-matches", "digest-mismatches"])
+@pytest.mark.parametrize("root_condition", _UNCLASSIFIED_ROOT_CONDITIONS)
+@pytest.mark.parametrize("filename", _UNCLASSIFIED_TUPLE_FILES)
+def test_boot_scrub_preserves_unclassified_mapping(
+    tmp_path: Path, filename: str, root_condition: str, mismatching: bool,
+) -> None:
+    """#972 red case (INV-SPEC-016, specified by astra). A persisted tuple whose
+    snapshot keys cannot be classified — its component's stored schema is gone,
+    or the tuple names no usable root — must keep every value: the digest
+    equation is evaluated over the RETAINED mapping, and that equation alone
+    decides whether the file is tombstoned (tuple) or deleted (residue). At the
+    base the scrub reads "cannot classify" as "every key is secret", strips the
+    mapping, and hands the digest check `{}` — tombstoning an honest tuple."""
+    import shutil
+    from unittest import mock
+
+    import personality_binding
+    from personality_binding import PRE_GUARD_SENTINEL, compute_effective_config_digest
+    from specialist_install import (
+        _declared_secret_names_for_root, cas_store_dir, sanitize_specialist_snapshots,
+    )
+
+    inspection = _plain_schema_inspection(tmp_path)
+    acks = _acked(inspection, tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    commit_specialist_install(
+        inspection=inspection, config={"api_token": "plain-value"},
+        secret_names_provided=frozenset(), acks=acks,
+        specialists_dir=specialists_dir,
+        agents_specialists_dir=tmp_path / "agents-specialists",
+    )
+    slug_dir = specialists_dir / "mtg"
+    active_path = slug_dir / "active.yaml"
+    installed = yaml.safe_load(active_path.read_text(encoding="utf-8"))
+    snapshot = {"api_token": "plain-value"}
+    assert installed["config_snapshot"] == snapshot
+    assert installed["config_digest"] == compute_effective_config_digest(snapshot)
+    assert installed["binding"]["effective_config_digest"] == compute_effective_config_digest(snapshot)
+
+    # Exactly ONE of the five tuple filenames is present.
+    target = slug_dir / filename
+    if filename != "active.yaml":
+        shutil.copyfile(active_path, target)
+        active_path.unlink()
+
+    payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+    root = payload["root"]
+    if root_condition == "schema-deleted":
+        _, _, checksum = parse_component_root(root)
+        schema_file = cas_store_dir(checksum, store_root=specialists_dir / "store") / "config-schema.json"
+        assert schema_file.is_file()
+        assert isinstance(_declared_secret_names_for_root(root, specialists_dir=specialists_dir), set)
+        schema_file.unlink()
+    elif root_condition == "missing":
+        del payload["root"]
+    elif root_condition == "empty":
+        payload["root"] = ""
+    elif root_condition == "none":
+        payload["root"] = None
+    elif root_condition == "int":
+        payload["root"] = 17
+    elif root_condition == "malformed":
+        payload["root"] = "malformed"
+    if isinstance(payload.get("root"), str) and payload["root"]:
+        assert _declared_secret_names_for_root(
+            payload["root"], specialists_dir=specialists_dir) is None
+
+    if mismatching:
+        other = compute_effective_config_digest({"different": "value"})
+        assert other != compute_effective_config_digest(snapshot)
+        payload["config_digest"] = other
+        payload["binding"]["effective_config_digest"] = other
+    target.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    prepared = yaml.safe_load(target.read_text(encoding="utf-8"))
+    prepared_bytes = target.read_bytes()
+
+    real_digest = personality_binding.compute_effective_config_digest
+    with mock.patch.object(
+        personality_binding, "compute_effective_config_digest", wraps=real_digest,
+    ) as digest_spy:
+        cleaned = sanitize_specialist_snapshots(specialists_dir=specialists_dir)
+
+    assert digest_spy.call_count == 1, f"digest evaluations: {digest_spy.call_count} != 1"
+    assert digest_spy.call_args.args == (snapshot,), "digest must see retained mapping"
+    assert cleaned == int(mismatching)
+
+    present = [name for name in _UNCLASSIFIED_TUPLE_FILES if (slug_dir / name).is_file()]
+    residue = filename in ("active.yaml.rollback-tmp", "desired.error.yaml")
+    if not mismatching:
+        assert present == [filename]
+        assert yaml.safe_load(target.read_text(encoding="utf-8")) == prepared
+        assert yaml.safe_load(target.read_text(encoding="utf-8"))["config_snapshot"] == snapshot
+        assert target.read_bytes() == prepared_bytes
+    elif not residue:
+        assert present == [filename]
+        expected = yaml.safe_load(yaml.safe_dump(prepared, sort_keys=False))
+        expected["config_digest"] = PRE_GUARD_SENTINEL
+        expected["binding"]["effective_config_digest"] = PRE_GUARD_SENTINEL
+        after = yaml.safe_load(target.read_text(encoding="utf-8"))
+        assert after == expected
+        assert after["config_snapshot"] == snapshot
+    else:
+        assert present == []
+
+    survivors = {name: (slug_dir / name).read_bytes() for name in present}
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
+    for name, before in survivors.items():
+        assert (slug_dir / name).read_bytes() == before, name
 
 # ---------------------------------------------------------------------------
 # casa.callbacks is PERMITTED on a sourced/bundled plugin

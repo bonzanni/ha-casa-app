@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.306.0] - 2026-09-13
+
+### Fixed
+
+- A boot that cannot read a specialist's stored component no longer empties its
+  saved settings. The check that keeps secrets out of the configuration snapshot
+  asks the component which values are sensitive, and when it could not get an
+  answer it removed all of them — from every persisted file for that specialist,
+  along with the marker for an install still waiting to be configured. The
+  specialist then came up in an error state asking to be reinstalled, and what
+  you had supplied was gone. It now keeps every value it cannot classify. A
+  component that can be read and does declare a value sensitive still has it
+  removed, exactly as before.
+
 ## [0.305.0] - 2026-09-12
 
 ### Fixed
