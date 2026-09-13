@@ -2153,6 +2153,127 @@ def test_boot_sweep_leaves_healthy_files_byte_identical(tmp_path: Path) -> None:
     assert active_path.read_bytes() == before
 
 
+
+# --- #972: the boot scrub never removes a value it cannot classify (INV-SPEC-016) ---
+
+_UNCLASSIFIED_TUPLE_FILES = (
+    "active.yaml", "desired.yaml", "active.prior.yaml",
+    "active.yaml.rollback-tmp", "desired.error.yaml",
+)
+_UNCLASSIFIED_ROOT_CONDITIONS = (
+    "schema-deleted", "missing", "empty", "none", "int", "malformed",
+)
+
+
+@pytest.mark.parametrize("mismatching", [False, True], ids=["digest-matches", "digest-mismatches"])
+@pytest.mark.parametrize("root_condition", _UNCLASSIFIED_ROOT_CONDITIONS)
+@pytest.mark.parametrize("filename", _UNCLASSIFIED_TUPLE_FILES)
+def test_boot_scrub_preserves_unclassified_mapping(
+    tmp_path: Path, filename: str, root_condition: str, mismatching: bool,
+) -> None:
+    """#972 red case (INV-SPEC-016, specified by astra). A persisted tuple whose
+    snapshot keys cannot be classified — its component's stored schema is gone,
+    or the tuple names no usable root — must keep every value: the digest
+    equation is evaluated over the RETAINED mapping, and that equation alone
+    decides whether the file is tombstoned (tuple) or deleted (residue). At the
+    base the scrub reads "cannot classify" as "every key is secret", strips the
+    mapping, and hands the digest check `{}` — tombstoning an honest tuple."""
+    import shutil
+    from unittest import mock
+
+    import personality_binding
+    from personality_binding import PRE_GUARD_SENTINEL, compute_effective_config_digest
+    from specialist_install import (
+        _declared_secret_names_for_root, cas_store_dir, sanitize_specialist_snapshots,
+    )
+
+    inspection = _plain_schema_inspection(tmp_path)
+    acks = _acked(inspection, tmp_path)
+    specialists_dir = tmp_path / "specialists"
+    commit_specialist_install(
+        inspection=inspection, config={"api_token": "plain-value"},
+        secret_names_provided=frozenset(), acks=acks,
+        specialists_dir=specialists_dir,
+        agents_specialists_dir=tmp_path / "agents-specialists",
+    )
+    slug_dir = specialists_dir / "mtg"
+    active_path = slug_dir / "active.yaml"
+    installed = yaml.safe_load(active_path.read_text(encoding="utf-8"))
+    snapshot = {"api_token": "plain-value"}
+    assert installed["config_snapshot"] == snapshot
+    assert installed["config_digest"] == compute_effective_config_digest(snapshot)
+    assert installed["binding"]["effective_config_digest"] == compute_effective_config_digest(snapshot)
+
+    # Exactly ONE of the five tuple filenames is present.
+    target = slug_dir / filename
+    if filename != "active.yaml":
+        shutil.copyfile(active_path, target)
+        active_path.unlink()
+
+    payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+    root = payload["root"]
+    if root_condition == "schema-deleted":
+        _, _, checksum = parse_component_root(root)
+        schema_file = cas_store_dir(checksum, store_root=specialists_dir / "store") / "config-schema.json"
+        assert schema_file.is_file()
+        assert isinstance(_declared_secret_names_for_root(root, specialists_dir=specialists_dir), set)
+        schema_file.unlink()
+    elif root_condition == "missing":
+        del payload["root"]
+    elif root_condition == "empty":
+        payload["root"] = ""
+    elif root_condition == "none":
+        payload["root"] = None
+    elif root_condition == "int":
+        payload["root"] = 17
+    elif root_condition == "malformed":
+        payload["root"] = "malformed"
+    if isinstance(payload.get("root"), str) and payload["root"]:
+        assert _declared_secret_names_for_root(
+            payload["root"], specialists_dir=specialists_dir) is None
+
+    if mismatching:
+        other = compute_effective_config_digest({"different": "value"})
+        assert other != compute_effective_config_digest(snapshot)
+        payload["config_digest"] = other
+        payload["binding"]["effective_config_digest"] = other
+    target.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    prepared = yaml.safe_load(target.read_text(encoding="utf-8"))
+    prepared_bytes = target.read_bytes()
+
+    real_digest = personality_binding.compute_effective_config_digest
+    with mock.patch.object(
+        personality_binding, "compute_effective_config_digest", wraps=real_digest,
+    ) as digest_spy:
+        cleaned = sanitize_specialist_snapshots(specialists_dir=specialists_dir)
+
+    assert digest_spy.call_count == 1, f"digest evaluations: {digest_spy.call_count} != 1"
+    assert digest_spy.call_args.args == (snapshot,), "digest must see retained mapping"
+    assert cleaned == int(mismatching)
+
+    present = [name for name in _UNCLASSIFIED_TUPLE_FILES if (slug_dir / name).is_file()]
+    residue = filename in ("active.yaml.rollback-tmp", "desired.error.yaml")
+    if not mismatching:
+        assert present == [filename]
+        assert yaml.safe_load(target.read_text(encoding="utf-8")) == prepared
+        assert yaml.safe_load(target.read_text(encoding="utf-8"))["config_snapshot"] == snapshot
+        assert target.read_bytes() == prepared_bytes
+    elif not residue:
+        assert present == [filename]
+        expected = yaml.safe_load(yaml.safe_dump(prepared, sort_keys=False))
+        expected["config_digest"] = PRE_GUARD_SENTINEL
+        expected["binding"]["effective_config_digest"] = PRE_GUARD_SENTINEL
+        after = yaml.safe_load(target.read_text(encoding="utf-8"))
+        assert after == expected
+        assert after["config_snapshot"] == snapshot
+    else:
+        assert present == []
+
+    survivors = {name: (slug_dir / name).read_bytes() for name in present}
+    assert sanitize_specialist_snapshots(specialists_dir=specialists_dir) == 0
+    for name, before in survivors.items():
+        assert (slug_dir / name).read_bytes() == before, name
+
 # ---------------------------------------------------------------------------
 # casa.callbacks is PERMITTED on a sourced/bundled plugin
 # dependency (unlike casa.triggers) — regression pin for the lifted
