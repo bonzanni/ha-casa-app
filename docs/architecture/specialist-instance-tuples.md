@@ -65,7 +65,7 @@ the atomic write primitive independently re-checks the same equation; and the lo
 rejects any persisted tuple that violates it. Pre-guard files — snapshots sanitized while
 their digest, computed over the original secret-bearing mapping, was retained — fail the
 equation and are tombstoned at boot: both digest fields are replaced by a sentinel the
-loader turns into a typed "uninstall and reinstall" error (an unparseable tuple file
+loader turns into a typed error naming the secret-digest guard (an unparseable tuple file
 fails closed to the same tombstone; `desired.error.yaml` and crash residue are deleted
 outright, and tombstoning a pending `desired.yaml` releases its receipt marker). Bundle
 journals apply the same sanitizer to every captured tuple payload when a journal is
@@ -83,8 +83,13 @@ guard may retain pre-guard digests and plaintext, and the boot scrub does not ke
 tuple bytes out of it either: the `init-setup-configs` oneshot commits the tracked tuples
 earlier in every boot than the scrub runs; remediation for an affected install is secret
 rotation. A slug whose tuple was
-tombstoned surfaces as an error-state instance; recovery is uninstall + reinstall with
-fresh consent.
+tombstoned surfaces as an error-state instance, and nothing in Casa adopts that tuple back:
+its digest no longer attests the snapshot beside it. The tombstone rewrites the two digest
+fields in place rather than deleting the file, so whatever settings the snapshot still holds
+stay readable there, and the loader's error says so instead of recommending an uninstall —
+which deletes the instance directory, that file included. Uninstalling and reinstalling with
+fresh consent yields a usable tuple, at the cost of those settings unless they were read back
+first.
 
 **INV-SPEC-016**: The boot-time snapshot scrub never removes a value from a persisted tuple's mapping snapshot for want of a classification — it strips only keys the tuple's own component is read to declare secret, and a mapping snapshot whose component cannot be read back, or whose tuple names no usable root, keeps every value; its digest equation alone then decides whether the file is tombstoned or deleted.
 
