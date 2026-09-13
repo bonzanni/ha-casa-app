@@ -104,7 +104,9 @@ refusal rather than a record. "I cannot tell which of these keys are secret" is 
 answer to *may this go in a journal* and the wrong answer to *what was on disk before* —
 and the compensation asks the second question. So the upgrade raises
 `prior_schema_unreadable` with nothing staged, captured or compensated, and the operator's
-tuple untouched; recovery is the reinstall `active_unreadable` already documents.
+tuple untouched and still in service. The refusal offers no uninstall and reinstall as its
+recovery, and neither does this document: an uninstall deletes the instance directory, and with
+it the saved settings the refusal preserved.
 
 The retention is bounded to what the upgrade call leaves on disk when it returns. The
 boot-time snapshot scrub reads the same declarations independently, with no journal and no

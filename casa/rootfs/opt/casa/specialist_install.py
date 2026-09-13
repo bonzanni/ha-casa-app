@@ -2729,7 +2729,8 @@ def _declarations_for_capture(
 
     Nothing is staged, nothing is captured, nothing is compensated, and the
     operator's tuple is untouched — the same shape `active_unreadable` already
-    uses, and the same recovery (uninstall and reinstall).
+    uses. Neither offers an uninstall and reinstall as the recovery: an uninstall
+    deletes the saved settings the refusal preserved (#956).
 
     Only roots that a capture actually NEEDS are resolved: a file with no
     snapshot, or an unparseable one, needs no declaration (an unparseable file
@@ -2955,7 +2956,8 @@ def _upgrade_core(
         active_before = instance_dir.active()
     except ValueError as exc:
         # #372: a pre-guard (or otherwise unverifiable) active is a typed
-        # refusal, not an escaped ValueError — recovery is uninstall+reinstall.
+        # refusal, not an escaped ValueError. Its detail is the loader's text,
+        # which recommends no destructive recovery (#956).
         raise SpecialistInstallError("active_unreadable", str(exc)) from exc
     if active_before is None:
         raise SpecialistInstallError("no_active_tuple", f"{slug!r} has no active install to upgrade")
@@ -3414,7 +3416,8 @@ def sanitize_specialist_snapshots(
         atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False), mode=0o600)
         logger.warning(
             "specialist %r: %s carries a digest not derived from its "
-            "persisted snapshot — tombstoned (#372); uninstall and reinstall",
+            "persisted snapshot — tombstoned (#372); it will not load, and the "
+            "file is kept",
             slug, filename)
         if filename == "desired.yaml":
             marker = path.parent / "pending-receipt.json"
