@@ -32,6 +32,8 @@ nothing here depends on the tree being writable.
 """
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -191,3 +193,114 @@ def test_no_doctrine_file_naming_a_per_trigger_prompt_is_unclassified():
         if "prompts/<" in path.read_text(encoding="utf-8")
     }
     assert named == COVERED_DOCTRINE | set(EXEMPT_DOCTRINE)
+
+
+# --- #962 / #963: the class the surfaces name, and the rules they state -----
+#
+# #962: `ask_user` gained a scheduled arm (#573) and so joined the tools that put
+# a scheduled turn's message in the operator's chat, and no surface said so. A
+# scheduled turn that asks and then narrates delivers twice. #963: the rule that
+# a tool call which is not a delivery decides nothing was stated four ways and
+# pinned nowhere — the frozen case above stays green with add.md's rule block
+# replaced by its opposite. The red cases below each bind their own literals, so
+# a later edit to a shared constant cannot quietly change what they pin.
+
+_TOOLS_PY = REPO_ROOT / "casa/rootfs/opt/casa/tools.py"
+
+
+def test_every_delivering_tool_is_named_on_every_surface():
+    """#962. Every tool whose successful call puts a scheduled turn's message
+    in the operator's chat is named, by its declared name, on each surface that
+    defines how such a prompt ends. The class is stipulated here; whether it is
+    still the whole class is what the tool-axis classification checks."""
+    tree = ast.parse(_TOOLS_PY.read_text(encoding="utf-8"))
+    registry = [
+        node for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "CASA_TOOLS"
+    ]
+    assert len(registry) == 1, ("CASA_TOOLS", len(registry))
+    assert isinstance(registry[0].value, ast.Tuple)
+    registered = [e.id for e in registry[0].value.elts if isinstance(e, ast.Name)]
+
+    missing = []
+    for key in ("send_message", "send_media", "ask_user"):
+        assert registered.count(key) == 1, (
+            f"tools.py::{key}", "CASA_TOOLS", registered.count(key))
+        functions = [
+            node for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == key
+        ]
+        assert len(functions) == 1, (f"tools.py::{key}", "async def", len(functions))
+        decorators = [
+            d for d in functions[0].decorator_list
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+            and d.func.id == "tool"
+        ]
+        assert len(decorators) == 1, (f"tools.py::{key}", "@tool", len(decorators))
+        first = decorators[0].args[0]
+        assert isinstance(first, ast.Constant) and isinstance(first.value, str)
+        declared = first.value
+        for path in SURFACES:
+            count = len(re.findall(
+                r"(?<!\w)" + re.escape(declared) + r"(?!\w)", _normalized(path)))
+            if count < 1:
+                missing.append((f"tools.py::{key}", str(path.relative_to(REPO_ROOT)), count))
+    assert missing == []
+
+
+def test_every_surface_states_the_non_delivery_rule_in_one_wording():
+    """Pins a WORDING on five carriers, not a closed class of tools.
+
+    What this pins is a WORDING, not a closed class. Nothing in the tree reads
+    these files at runtime — they are prompt surfaces consumed by a model — so
+    there is no property here a test could execute, and the strongest assertion
+    available is a string match on prose. Measured, it catches the three
+    mutations this module was green on before it existed: deleting the rule,
+    re-wording it on one surface, and replacing it with its opposite. It catches
+    none of these: a contradiction added beside the sentence, a surface that
+    carries the sentence and then works its example the other way, or the prompt
+    an author actually writes after reading it. A reader must not take this test
+    as evidence that the class of tools is closed — what closes that class
+    against the code is
+    `test_no_declared_tool_is_unclassified_for_the_closing_convention`, and what
+    closes nothing at all is the runtime, which is #960's.
+    """
+    NON_DELIVERY_RULE = (
+        "Which prompts the clause belongs to is decided by where the operator's "
+        "copy of the message comes from, never by whether the turn calls a tool: "
+        "a tool call that is not a delivery decides nothing here."
+    )
+    counts = {
+        str(path.relative_to(REPO_ROOT)): _normalized(path).count(NON_DELIVERY_RULE)
+        for path in [*SURFACES, PROMPT_EDIT]
+    }
+    assert counts == dict.fromkeys(counts, 1)
+
+
+def test_every_carrier_says_what_a_turn_outputs_when_the_ask_was_not_awaiting():
+    """Pins a WORDING on five carriers, not a behaviour.
+
+    A scheduled `ask_user` call can return without posting anything — the
+    operator already has a question or an authorization challenge waiting, or
+    the post landed no message id — and a turn that then outputs only the
+    sentinel delivers NOTHING. Naming `ask_user` as a delivery (the case above)
+    is only safe beside this rule. Its reach, stated: it pins that every carrier
+    says what the turn outputs when the ask was not awaiting the operator's
+    answer; it does not run that turn, and it does not make an agent follow the
+    sentence. It deliberately says nothing about `send_message` or `send_media`,
+    whose reports are not reliable in either direction (#990), so no rule an
+    author could follow from them is stated.
+    """
+    ASK_RULE = (
+        "A turn that asks with `ask_user` has put its question in the chat only "
+        "when the ask reports that it is awaiting the operator's answer; when it "
+        "reports anything else, the turn outputs what the ask reported as its "
+        "final text instead of the sentinel."
+    )
+    counts = {
+        str(path.relative_to(REPO_ROOT)): _normalized(path).count(ASK_RULE)
+        for path in [*SURFACES, PROMPT_EDIT]
+    }
+    assert counts == dict.fromkeys(counts, 1)
