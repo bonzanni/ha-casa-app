@@ -383,9 +383,16 @@ async def test_terminal_expired_nudges_outcome_phase_from_ended_ts(wired):
     await ce._worker_pass()
     assert len(wired.dispatches) == 1
     _role, text, _ctx = wired.dispatches[0]
-    assert text == (f"Authorization attempt for '{PLUGIN}' ended without "
-                    f"collection (handle {HASH}) — check the plugin's "
-                    "attempt list.")
+    assert text == (
+        f"Authorization attempt for '{PLUGIN}' ended without collection "
+        f"(handle {HASH}): outcome 'expired'. This is a casa system notice "
+        "about a background flow, not a message from the operator. Nothing "
+        "remains to collect for this handle, and casa exposes no tool that "
+        "reads a plugin's attempt ledger, so there is nothing here for you "
+        "to look up and no action is required of you. Output the sentinel "
+        "`<silent/>` and nothing else, unless the operator is waiting on "
+        "this authorization — in which case tell them it ended without "
+        "completing. Any other closing text lands in the operator's chat.")
     after = wired.attempt(HASH)
     assert after["next_nudge_ts"] == (
         ended + callback_attempts.OUTCOME_PHASE_OFFSETS[1])
@@ -442,6 +449,54 @@ async def test_callback_notice_text_addresses_its_recipient(wired, outcome):
         "exhaustion: contains attempt list"
     )
     assert "ask the agent to read" not in text.lower()
+
+
+def test_the_exhaustion_note_wording_is_outcome_blind():
+    """#935 regression pin (not a red case): the settled exhaustion wording.
+    Every sentence must hold for ANY spent budget — including a
+    ``result_ready`` attempt whose result is still collectable — so it may
+    not claim the flow expired or that nothing can be recovered, and its one
+    forward path is conditional."""
+    assert ce._exhaustion_text(PLUGIN, HASH) == (
+        f"Plugin {PLUGIN}: the authorization delivery nudge for handle "
+        f"{HASH} went unanswered after "
+        f"{callback_attempts.MAX_NUDGES} attempts, so casa has stopped "
+        "nudging for it. The flow's record stays in the plugin's own "
+        "spool until the plugin reads and acks it, or until it ages out. "
+        "Casa exposes no tool that reads that record and the assistant "
+        "has none either, so there is nothing to ask for here. If this "
+        "authorization still matters, start it again — casa can neither "
+        "revive nor inspect the old flow.")
+
+
+async def test_the_nudge_log_line_never_carries_the_handle(wired, caplog):
+    """INV-CB-009's log discipline extended to the #935 dispatch record: the
+    handle lives in the nudge TEXT and never in a log record. Swept over
+    every record from every logger, across a result-phase and an
+    outcome-phase accept, against the rendered message AND the raw args — a
+    ``%``-style record hides its payload in args until something formats it
+    (the shape test_meta_never_reaches_any_log_surface uses)."""
+    handle = "5eed" * 16
+    caplog.set_level(logging.DEBUG)
+    wired.seed_result(handle)
+    await ce._worker_pass()
+    rec = wired.attempt(handle)
+    assert rec["nudges"] == 1
+    wired.result_path(handle).unlink()
+    ended = wired.advance(900.0)
+    assert wired.spool.write_attempt(
+        PLUGIN, handle,
+        callback_attempts.terminalize(rec, "expired_unread", now=ended))
+    wired.clock = ended + callback_attempts.OUTCOME_PHASE_OFFSETS[0]
+    await ce._worker_pass()
+    assert len(wired.dispatches) == 2
+    assert all(handle in text for _r, text, _c in wired.dispatches)
+    lines = [r for r in caplog.records
+             if r.getMessage().startswith("callback nudge dispatched:")]
+    assert len(lines) == 2, "both accepts must have logged"
+    for record in caplog.records:
+        rendered = f"{record.getMessage()} {record.args!r}"
+        assert handle not in rendered, record.name
 
 
 # ---------------------------------------------------------------------------

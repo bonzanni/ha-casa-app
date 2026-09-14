@@ -160,6 +160,12 @@ that could render the value, and worker, sweep and removal diagnostics carry a p
 reason enum and an errno — never a hash, state, query, `meta` or raw `OSError`, whose text names
 the entry it failed on. The one hash casa composes for a human is the flow *handle* in the nudge
 text, which is not a log line — INV-CB-006's discipline extended to the attempt surface.
+An accepted nudge dispatch emits exactly one INFO record naming the plugin, the phase
+(`result` or `outcome`), the outcome enum and the target role, and never the handle. It is
+emitted inside the branch that spends the budget unit, before the ledger write, so the count of
+those records is INV-CB-008's accepted-dispatch count: a pass whose dispatches were all
+rejected logs none, and a crash between the accept and the ledger write logs the one duplicate
+that invariant already admits.
 
 What it does not cover: casa cannot inspect an opaque value, so "no bearer material in `meta`"
 is a consumer obligation, not enforced.

@@ -755,7 +755,8 @@ async def test_publish_failure_records_the_outcome_and_still_redirects(
 
     # the consumer learns about it: a terminal, unacked attempt is nudged on
     # the outcome phase (+30 m from `ended_ts`) and the turn names the
-    # attempt list, which is where the outcome now lives
+    # outcome — #935: it no longer points at the attempt list, which only the
+    # plugin can read
     await facility.casa_pass()
     assert facility.attempt(plugin, h)["outcome"] == "publish_failed"
     await facility.worker_pass()
