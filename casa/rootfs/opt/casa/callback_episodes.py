@@ -3,13 +3,17 @@
 An authorization code dies in 30–600 s; a pull-only pickup with a long TTL is
 a live-looking corpse. So casa nudges: when a result lands in the spool
 (:mod:`callback_spool`) — or when a flow ends without one — this worker
-dispatches a fixed **casa-authored** turn to the plugin's assigned role:
+dispatches a fixed **casa-authored** turn to the plugin's assigned role — for a
+result that is waiting:
 
     Authorization result for '<plugin>' is waiting (handle <hash>) —
     collect it now.
 
-    Authorization attempt for '<plugin>' ended without collection
-    (handle <hash>) — check the plugin's attempt list.
+and, for a flow that ended without one, a terminal notice that names the outcome,
+states that casa exposes no tool for reading a plugin's attempt ledger, and asks
+for the silence sentinel when there is nothing the operator needs. That terminal
+text is deliberately NOT quoted here — :func:`_message` is its single source, and
+a quoted copy is a copy that lies (#935).
 
 The turn is internal and **system-attributed** (the ``synthetic`` context
 marker, mirroring ``plugin_setup_episodes``/``_setup_dispatch``), so it needs
@@ -158,13 +162,37 @@ def kick(plugin: str, result_hash: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _message(plugin: str, h: str, rec: dict) -> str:
-    """The fixed casa-authored nudge for one attempt. A ``result_ready``
-    record asks for a collection; a TERMINAL one (expired, evicted, publish
-    failure — never ``collected``) tells the consumer to read its attempt list,
-    which is where the outcome now lives."""
+    """The fixed casa-authored nudge for one attempt.
+
+    A ``result_ready`` record asks for a collection — the v0.146 wording,
+    pinned by name, because a real verb exists for it.
+
+    A TERMINAL one (expired, evicted, publish failure — never ``collected``)
+    asks for NOTHING. #935: it used to tell the target to "check the plugin's
+    attempt list", which is the CONSUMER's read surface — an in-process
+    listing of ``attempts/`` the plugin performs in its own next life. No
+    resident tool, no ``casactl`` command and no read policy reaches it, so
+    the target could only narrate the instruction into the operator's chat.
+    The terminal text therefore names the outcome, says that casa holds no
+    reader for the ledger, and directs the turn to the silence sentinel —
+    the convention ``event_episodes._wake_instruction`` already uses — so a
+    notice with nothing to tell the operator ends as a no-op instead of a
+    non-sequitur. It does not retire the consumer's ack obligation, which
+    the plugin still discharges on its next life.
+    """
     if rec.get("status") == "done":
+        outcome = str(rec.get("outcome") or "unknown")
         return (f"Authorization attempt for '{plugin}' ended without "
-                f"collection (handle {h}) — check the plugin's attempt list.")
+                f"collection (handle {h}): outcome '{outcome}'. This is a "
+                "casa system notice about a background flow, not a message "
+                "from the operator. Nothing remains to collect for this "
+                "handle, and casa exposes no tool that reads a plugin's "
+                "attempt ledger, so there is nothing here for you to look up "
+                "and no action is required of you. Output the sentinel "
+                "`<silent/>` and nothing else, unless the operator is "
+                "waiting on this authorization — in which case tell them it "
+                "ended without completing. Any other closing text lands in "
+                "the operator's chat.")
     return (f"Authorization result for '{plugin}' is waiting "
             f"(handle {h}) — collect it now.")
 
@@ -398,6 +426,19 @@ async def _run_nudge(spool: Any, plugin: str, h: str, rec: dict) -> None:
         return
     ok = await _dispatch_with_retry(role, instruction, plugin, h)
     if ok:
+        # #935: the ONE log record per INV-CB-008 budget unit. It sits after
+        # the seam that spends the unit and inside the branch that writes it,
+        # so the log's line count IS the accepted-dispatch count. A line
+        # anywhere earlier reports the retry loop's rejected passes, which
+        # spend nothing (3 dispatch calls, 0 budget). No handle —
+        # callback-delivery.md's log discipline (INV-CB-009).
+        logger.info(
+            "callback nudge dispatched: plugin=%s phase=%s outcome=%s role=%s",
+            plugin,
+            "outcome" if rec.get("status") == "done" else "result",
+            rec.get("outcome") or "-",
+            role,
+        )
         await _accept(spool, plugin, h, rec)
     else:
         await _defer(spool, plugin, h, rec)
@@ -462,10 +503,32 @@ async def _defer(spool: Any, plugin: str, h: str, rec: dict) -> None:
 
 
 def _exhaustion_text(plugin: str, h: str) -> str:
+    """The one operator note a spent budget raises (INV-CB-008).
+
+    Deliberately says nothing about WHICH outcome ended the attempt, and
+    nothing that is true of only one of them: the selector that reaches here
+    is outcome-blind by design (callback-delivery.md, pinned by
+    test_the_owed_note_does_not_depend_on_which_outcome_ended_it), and the
+    budget can be spent by a ``result_ready`` attempt whose result is still
+    collectable.
+
+    Its one forward path is CONDITIONAL for that same reason (#935): an
+    unconditional "start it again" reads as a report that the flow is dead
+    and tells the operator to redo work the plugin may still complete from
+    the record it already holds. The condition is one the operator can
+    settle without a tool they do not have — whether the authorization ever
+    came through — and the clause naming what CASA cannot do is true on
+    every arm.
+    """
     return (f"Plugin {plugin}: the authorization delivery nudge for handle "
             f"{h} went unanswered after "
-            f"{callback_attempts.MAX_NUDGES} attempts. The outcome is in "
-            "the plugin's attempt list; ask the agent to read it.")
+            f"{callback_attempts.MAX_NUDGES} attempts, so casa has stopped "
+            "nudging for it. The flow's record stays in the plugin's own "
+            "spool until the plugin reads and acks it, or until it ages out. "
+            "Casa exposes no tool that reads that record and the assistant "
+            "has none either, so there is nothing to ask for here. If the "
+            "authorization never comes through and you still need it, start "
+            "it again — casa can neither revive nor inspect the old flow.")
 
 
 async def _process_unnoted_exhaustions(spool: Any) -> None:

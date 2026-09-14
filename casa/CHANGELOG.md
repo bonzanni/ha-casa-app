@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.308.0] - 2026-09-14
+
+### Fixed
+
+- A notice about a sign-in that ended without being collected no longer asks
+  you to read an attempt list. That list lives inside the plugin, and neither
+  you nor the assistant has any way to open it — so the request could not be
+  acted on by anyone who received it, and the assistant would repeat it to you
+  as if it were something you could do. The notice now says how the sign-in
+  ended and asks for nothing that cannot be reached.
+- Each nudge Casa sends is now logged once, so a turn that starts on its own
+  leaves a record that it happened.
+
 ## [0.307.0] - 2026-09-14
 
 ### Fixed

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
 
@@ -302,6 +303,72 @@ async def test_accept_after_deferral_resets_the_streak(wired):
     assert rec["next_nudge_ts"] == max(wired.clock, mtime + 60.0)
 
 
+@pytest.mark.parametrize("phase", ["result", "outcome"])
+async def test_an_accepted_nudge_logs_exactly_one_line_and_a_rejected_pass_logs_none(
+        wired, caplog, monkeypatch, phase):
+    """#935 red case (arm 2). One INFO record per bus-ACCEPTED dispatch —
+    INV-CB-008's own unit — emitted before ``_accept`` starts, and none for a
+    pass whose three dispatches were all rejected, which spends no budget."""
+    caplog.set_level(logging.DEBUG, logger="callback_episodes")
+
+    def records():
+        return [
+            r for r in caplog.records
+            if r.name == "callback_episodes"
+            and r.getMessage().startswith("callback nudge dispatched:")
+        ]
+
+    before_accept = []
+    real_accept = ce._accept
+
+    async def observe_accept(*args, **kwargs):
+        before_accept.append(len(records()))
+        return await real_accept(*args, **kwargs)
+
+    monkeypatch.setattr(ce, "_accept", observe_accept)
+
+    if phase == "result":
+        wired.seed_result()
+    else:
+        rec = wired.seed_terminal(outcome="expired")
+        wired.clock = rec["next_nudge_ts"]
+
+    wired.dispatch_ok = False
+    caplog.clear()
+    await ce._worker_pass()
+
+    # Reach the retry loop; do not mistake a skipped nudge for rejection.
+    assert len(wired.dispatches) == 3
+    assert wired.attempt(HASH)["nudges"] == 0
+    assert len(before_accept) == 0
+    assert len(records()) == 0, "rejected pass emitted nudge records"
+
+    wired.clock = wired.attempt(HASH)["next_nudge_ts"]
+    wired.dispatches.clear()
+    wired.dispatch_ok = True
+    caplog.clear()
+    await ce._worker_pass()
+
+    assert len(wired.dispatches) == 1
+    assert wired.attempt(HASH)["nudges"] == 1
+    found = records()
+    assert len(found) == 1, f"accepted nudge records: {len(found)} != 1"
+    assert before_accept == [1], "record must exist before _accept starts"
+
+    record = found[0]
+    message = record.getMessage()
+    assert record.levelno == logging.INFO
+    assert record.funcName == "_run_nudge"
+    assert f"plugin={PLUGIN}" in message
+    assert f"phase={phase}" in message
+    expected_outcome = "expired" if phase == "outcome" else "-"
+    assert f"outcome={expected_outcome}" in message
+    assert wired.dispatches[0][0] == "assistant"
+    assert "role=assistant" in message
+    assert HASH not in message
+    assert HASH not in repr(record.args)
+
+
 # ---------------------------------------------------------------------------
 # terminal attempts — outcome-phase nudges anchored on ended_ts
 # ---------------------------------------------------------------------------
@@ -316,12 +383,120 @@ async def test_terminal_expired_nudges_outcome_phase_from_ended_ts(wired):
     await ce._worker_pass()
     assert len(wired.dispatches) == 1
     _role, text, _ctx = wired.dispatches[0]
-    assert text == (f"Authorization attempt for '{PLUGIN}' ended without "
-                    f"collection (handle {HASH}) — check the plugin's "
-                    "attempt list.")
+    assert text == (
+        f"Authorization attempt for '{PLUGIN}' ended without collection "
+        f"(handle {HASH}): outcome 'expired'. This is a casa system notice "
+        "about a background flow, not a message from the operator. Nothing "
+        "remains to collect for this handle, and casa exposes no tool that "
+        "reads a plugin's attempt ledger, so there is nothing here for you "
+        "to look up and no action is required of you. Output the sentinel "
+        "`<silent/>` and nothing else, unless the operator is waiting on "
+        "this authorization — in which case tell them it ended without "
+        "completing. Any other closing text lands in the operator's chat.")
     after = wired.attempt(HASH)
     assert after["next_nudge_ts"] == (
         ended + callback_attempts.OUTCOME_PHASE_OFFSETS[1])
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["expired", "expired_unread", "publish_failed", "evicted", None],
+    ids=["expired", "expired_unread", "publish_failed", "evicted", "exhaustion"],
+)
+async def test_callback_notice_text_addresses_its_recipient(wired, outcome):
+    """#935 red case (arm 1). Terminal nudges name their outcome, identify
+    themselves as casa system notices, retain the handle, offer <silent/>,
+    and never direct their recipient to the attempt list. The exhaustion
+    note neither points the operator there nor asks an agent to read it.
+    """
+    if outcome is not None:
+        rec = wired.seed_terminal(outcome=outcome)
+        wired.clock = rec["next_nudge_ts"]
+        await ce._worker_pass()
+
+        assert len(wired.dispatches) == 1
+        assert wired.attempt(HASH)["nudges"] == 1
+
+        text = ce._message(
+            PLUGIN, HASH, {"status": "done", "outcome": outcome}
+        )
+        assert wired.dispatches[0][1] == text
+        assert "attempt list" not in text.lower(), (
+            f"terminal {outcome}: contains attempt list"
+        )
+        assert f"outcome '{outcome}'" in text
+        assert "casa system notice" in text
+        assert HASH in text
+        assert "<silent/>" in text
+        return
+
+    # Exhaust the budget while the result remains collectable.
+    wired.seed_result()
+    assert wired.spool.update_attempt_nudge(
+        PLUGIN, HASH, nudges=callback_attempts.MAX_NUDGES - 1
+    )
+    await ce._worker_pass()
+
+    assert len(wired.dispatches) == 1
+    assert wired.attempt(HASH)["nudges"] == callback_attempts.MAX_NUDGES
+    assert wired.spool.has_result(PLUGIN, HASH)
+    assert len(wired.notes) == 1
+    assert wired.delivered == 1
+
+    text = ce._exhaustion_text(PLUGIN, HASH)
+    assert wired.notes == [text]
+    assert "attempt list" not in text.lower(), (
+        "exhaustion: contains attempt list"
+    )
+    assert "ask the agent to read" not in text.lower()
+
+
+def test_the_exhaustion_note_wording_is_outcome_blind():
+    """#935 regression pin (not a red case): the settled exhaustion wording.
+    Every sentence must hold for ANY spent budget — including a
+    ``result_ready`` attempt whose result is still collectable — so it may
+    not claim the flow expired or that nothing can be recovered, and its one
+    forward path is conditional."""
+    assert ce._exhaustion_text(PLUGIN, HASH) == (
+        f"Plugin {PLUGIN}: the authorization delivery nudge for handle "
+        f"{HASH} went unanswered after "
+        f"{callback_attempts.MAX_NUDGES} attempts, so casa has stopped "
+        "nudging for it. The flow's record stays in the plugin's own "
+        "spool until the plugin reads and acks it, or until it ages out. "
+        "Casa exposes no tool that reads that record and the assistant "
+        "has none either, so there is nothing to ask for here. If the "
+        "authorization never comes through and you still need it, start "
+        "it again — casa can neither revive nor inspect the old flow.")
+
+
+async def test_the_nudge_log_line_never_carries_the_handle(wired, caplog):
+    """INV-CB-009's log discipline extended to the #935 dispatch record: the
+    handle lives in the nudge TEXT and never in a log record. Swept over
+    every record from every logger, across a result-phase and an
+    outcome-phase accept, against the rendered message AND the raw args — a
+    ``%``-style record hides its payload in args until something formats it
+    (the shape test_meta_never_reaches_any_log_surface uses)."""
+    handle = "5eed" * 16
+    caplog.set_level(logging.DEBUG)
+    wired.seed_result(handle)
+    await ce._worker_pass()
+    rec = wired.attempt(handle)
+    assert rec["nudges"] == 1
+    wired.result_path(handle).unlink()
+    ended = wired.advance(900.0)
+    assert wired.spool.write_attempt(
+        PLUGIN, handle,
+        callback_attempts.terminalize(rec, "expired_unread", now=ended))
+    wired.clock = ended + callback_attempts.OUTCOME_PHASE_OFFSETS[0]
+    await ce._worker_pass()
+    assert len(wired.dispatches) == 2
+    assert all(handle in text for _r, text, _c in wired.dispatches)
+    lines = [r for r in caplog.records
+             if r.getMessage().startswith("callback nudge dispatched:")]
+    assert len(lines) == 2, "both accepts must have logged"
+    for record in caplog.records:
+        rendered = f"{record.getMessage()} {record.args!r}"
+        assert handle not in rendered, record.name
 
 
 # ---------------------------------------------------------------------------
