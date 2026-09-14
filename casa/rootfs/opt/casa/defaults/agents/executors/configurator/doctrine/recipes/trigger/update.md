@@ -35,16 +35,33 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-The question is never whether the turn calls a tool. It is where the operator's
-copy of the message comes from: a DELIVERY tool call (`send_message`,
-`send_media`), or the turn's own final text. A prompt of the second kind must
-NOT be given the clause — the sentinel would be its whole final text and the
-turn would be suppressed — and a turn that calls tools to look something up and
-then reports what it found is the second kind. Both endings, written out:
+Which prompts the clause belongs to is decided by where the operator's copy of
+the message comes from, never by whether the turn calls a tool: a tool call that
+is not a delivery decides nothing here. The copy comes either from a DELIVERY
+tool call (`send_message`, `send_media`, or the question `ask_user` posts), or
+from the turn's own final text. A prompt of the second kind must NOT be given
+the clause — the sentinel would be its whole final text and the turn would be
+suppressed — and a turn that calls tools to look something up and then reports
+what it found is the second kind. A turn that asks with `ask_user` is the first
+kind: whatever else it has to say, on any branch, it sends with `send_message`.
+A turn that asks with `ask_user` has put its question in the chat only when the
+ask reports that it is awaiting the operator's answer; when it reports anything
+else, the turn outputs what the ask reported as its final text instead of the
+sentinel.
+
+A Home Assistant notification that carries this turn's message to the operator
+is a delivery, including when it is reached through the Home Assistant proxy, so
+that prompt takes the clause; a Home Assistant read or device action whose result
+the turn then reports is not a delivery, because the operator's copy is still the
+turn's own final text.
+
+Both endings, written out:
 
     # shape A — the operator's copy of the message arrives from a DELIVERY
-    # tool call (send_message / send_media), so the turn has nothing left
-    # to say. Any other tool the turn calls is irrelevant to this choice.
+    # tool call: send_message, send_media and ask_user are the ones Casa
+    # declares, and a Home Assistant notification is one too. The turn has
+    # nothing left to say. Any NON-DELIVERY tool the turn calls is
+    # irrelevant to this choice.
     prompt="Send this exact message via telegram: \"Bins out tonight.\" After the send, output the sentinel `<silent/>` and nothing else."
 
     # shape B — the operator's copy arrives as the turn's OWN final text. No

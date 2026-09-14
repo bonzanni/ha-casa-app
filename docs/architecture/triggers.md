@@ -90,9 +90,11 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-**Which prompts the clause belongs to is decided by where the operator's copy comes from,
-never by whether the turn calls a tool.** A turn whose message reaches the operator from a
-delivery tool call has nothing left to say, and that is the shape the clause is for: a
+**Which prompts the clause belongs to is decided by where the operator's copy of the message
+comes from, never by whether the turn calls a tool: a tool call that is not a delivery decides
+nothing here.** A turn whose message reaches the operator from a delivery tool call —
+`send_message`, `send_media`, or the question `ask_user` posts — has nothing left to say, and
+that is the shape the clause is for: a
 reminder's generated prompt ([`architecture/reminders.md`](reminders.md)) is the plain
 example, and an event wake carries the same clause for the same reason, its `ack_event` call
 being bookkeeping rather than the delivery
@@ -101,8 +103,34 @@ operator as its own final text is the other shape, needs no clause, and is harme
 the sentinel would be its whole final text and the turn would be suppressed. The shipped
 heartbeat and morning-briefing defaults are that shape, telling the agent to output only the
 final message text; so is any turn that calls tools to look something up and then reports
-what it found. The configurator's trigger recipes and the app's user documentation both
-state the distinction in those terms.
+what it found. A turn that asks with `ask_user` has put its question in the chat only when the
+ask reports that it is awaiting the operator's answer; when it reports anything else, the turn
+outputs what the ask reported as its final text instead of the sentinel. That rule covers
+`ask_user` alone: `send_message` and `send_media` do not report delivery reliably in either
+direction (#990), so no surface states one for them.
+
+A Home Assistant notification that carries this turn's message to the operator is a
+delivery, including when it is reached through the Home Assistant proxy, so that prompt
+takes the clause; a Home Assistant read or device action whose result the turn then reports
+is not a delivery, because the operator's copy is still the turn's own final text. The three
+names above are the deliveries Casa declares, not the definition of one — the property is,
+and a family of tools the classification records as CONDITIONAL is what keeps the names from
+closing it again.
+
+The configurator's trigger recipes and the app's user documentation state the distinction in
+the same words and name the same three tools. That enumeration is classified against the code
+rather than asserted: every tool declared in the code root is either in it, recorded as outside
+it with a reason, or filed in the CONDITIONAL family — tools whose one declaration reaches both
+a notification that is this turn's delivery and a read that is not, so that no name can file
+them either way and only the property decides. A new tool cannot join any of those without
+failing
+`tests/test_scheduled_prompt_guidance.py::test_no_declared_tool_is_unclassified_for_the_closing_convention`,
+a member of the CONDITIONAL family whose two arms are not worked on all four naming surfaces
+fails
+`tests/test_scheduled_prompt_guidance.py::test_the_conditional_delivery_family_is_worked_on_every_naming_surface`,
+and an existing tool that gains the scheduled-delivery eligibility fails
+`tests/test_scheduled_prompt_guidance.py::test_only_the_recorded_tools_use_the_scheduled_delivery_eligibility`.
+Neither reads a prompt, sees a chat write reached by another route, or sees a plugin's tools.
 **The convention is not a runtime guarantee**: nothing validates a prompt, so a
 hand-authored prompt of the first shape that omits the clause still delivers twice. The
 mechanics of the sentinel and the gate that reads it are

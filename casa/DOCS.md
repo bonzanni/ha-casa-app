@@ -128,10 +128,12 @@ convention, not an enforced rule: **nothing rejects a hand-written prompt that
 omits the clause** — such a prompt still delivers twice, and the fix is to add
 the clause to the prompt.
 
-The question is never whether the turn uses a tool. It is where your copy of the
-message comes from, and there are only two answers. Either it arrives from a
-delivery tool call, which puts it in the chat by itself and leaves the turn with
-nothing left to say — that shape needs the clause. Or it arrives as the turn's
+Which prompts the clause belongs to is decided by where the operator's copy of
+the message comes from, never by whether the turn calls a tool: a tool call that
+is not a delivery decides nothing here. There are only two answers. Either your
+copy arrives from a delivery tool call (`send_message`, `send_media`, or the
+question `ask_user` posts), which puts it in the chat by itself and leaves the
+turn with nothing left to say — that shape needs the clause. Or it arrives as the turn's
 own final text, which Casa delivers when the turn ends — that shape must NOT be
 given the clause, because the sentinel would then be the whole final text and
 you would get nothing. The shipped heartbeat and morning-briefing triggers are
@@ -140,11 +142,24 @@ they name the sentinel only for the case where the turn has nothing worth
 saying. A turn that looks something up and then reports what it found is the
 second shape too, however many tools it called on the way.
 
+A turn that asks you something with `ask_user` is the first shape: whatever else
+it has to tell you, on any branch, it sends with `send_message`. A turn that asks with `ask_user` has put its question in the chat only when the
+ask reports that it is awaiting the operator's answer; when it reports anything
+else, the turn outputs what the ask reported as its final text instead of the
+sentinel.
+
+A Home Assistant notification that carries this turn's message to the operator
+is a delivery, including when it is reached through the Home Assistant proxy, so
+that prompt takes the clause; a Home Assistant read or device action whose result
+the turn then reports is not a delivery, because the operator's copy is still the
+turn's own final text.
+
 Decide which shape your prompt is before writing it:
 
 ```yaml
-# shape A — your copy arrives from a DELIVERY tool call (send_message /
-# send_media), so the turn has nothing left to say.
+# shape A — your copy arrives from a DELIVERY tool call: send_message,
+# send_media and ask_user are the ones Casa declares, and a Home Assistant
+# notification is one too. The turn has nothing left to say.
 prompt: >-
   Send this exact message via telegram: "Bins out tonight." After the send,
   output the sentinel `<silent/>` and nothing else.
