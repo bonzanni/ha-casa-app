@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.310.0] - 2026-09-14
+
+### Fixed
+
+- The guidance for ending a scheduled trigger prompt now covers a turn that asks
+  you a question. Before, it named only the two tools that send a message, so an
+  author writing a prompt that asks — and finds no match in that list — would end
+  the turn with ordinary prose and you would get the question and the narration
+  as two separate messages. The recipes and the Documentation tab now say how a
+  prompt that asks should end, and state the rule one way across every surface
+  that carries it.
+- A new check keeps that guidance honest: every tool Casa declares is now
+  classified against the convention, so a tool added later that can message you
+  from a scheduled turn cannot go unclassified without the test suite failing.
+
 ## [0.309.0] - 2026-09-14
 
 ### Fixed
