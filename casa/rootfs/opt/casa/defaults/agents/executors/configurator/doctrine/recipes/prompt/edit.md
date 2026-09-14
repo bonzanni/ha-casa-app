@@ -33,11 +33,17 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-Whether this prompt is that shape at all is decided in `recipes/trigger/add.md`,
-under "Every scheduled prompt says how the turn ends" — read it before you edit,
-and do not decide from this file. A prompt whose delivery IS the turn's own
-final text must NOT be given the clause: the sentinel would be its whole final
-text and the operator would receive nothing.
+Which prompts the clause belongs to is decided by where the operator's copy of
+the message comes from, never by whether the turn calls a tool: a tool call that
+is not a delivery decides nothing here. A turn that asks with `ask_user` has put its question in the chat only when the
+ask reports that it is awaiting the operator's answer; when it reports anything
+else, the turn outputs what the ask reported as its final text instead of the
+sentinel. Which tool calls put
+the copy there, and the worked cases, are in `recipes/trigger/add.md`, under
+"Every scheduled prompt says how the turn ends" — read it before you edit rather
+than deciding from this file. A prompt whose delivery IS the turn's own final
+text must NOT be given the clause: the sentinel would be its whole final text
+and the operator would receive nothing.
 
 ## A resident's `prompts/system.md`
 

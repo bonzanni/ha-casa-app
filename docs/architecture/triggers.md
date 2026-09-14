@@ -90,9 +90,11 @@ For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
 After the send, output the sentinel `<silent/>` and nothing else.
 
-**Which prompts the clause belongs to is decided by where the operator's copy comes from,
-never by whether the turn calls a tool.** A turn whose message reaches the operator from a
-delivery tool call has nothing left to say, and that is the shape the clause is for: a
+**Which prompts the clause belongs to is decided by where the operator's copy of the message
+comes from, never by whether the turn calls a tool: a tool call that is not a delivery decides
+nothing here.** A turn whose message reaches the operator from a delivery tool call —
+`send_message`, `send_media`, or the question `ask_user` posts — has nothing left to say, and
+that is the shape the clause is for: a
 reminder's generated prompt ([`architecture/reminders.md`](reminders.md)) is the plain
 example, and an event wake carries the same clause for the same reason, its `ack_event` call
 being bookkeeping rather than the delivery
@@ -101,8 +103,20 @@ operator as its own final text is the other shape, needs no clause, and is harme
 the sentinel would be its whole final text and the turn would be suppressed. The shipped
 heartbeat and morning-briefing defaults are that shape, telling the agent to output only the
 final message text; so is any turn that calls tools to look something up and then reports
-what it found. The configurator's trigger recipes and the app's user documentation both
-state the distinction in those terms.
+what it found. A turn that asks with `ask_user` has put its question in the chat only when the
+ask reports that it is awaiting the operator's answer; when it reports anything else, the turn
+outputs what the ask reported as its final text instead of the sentinel. That rule covers
+`ask_user` alone: `send_message` and `send_media` do not report delivery reliably in either
+direction (#990), so no surface states one for them.
+
+The configurator's trigger recipes and the app's user documentation state the distinction in
+the same words and name the same three tools. That enumeration is classified against the code
+rather than asserted: every tool declared in the code root is either in it or recorded as
+outside it with a reason, so a new tool cannot join it without failing
+`tests/test_scheduled_prompt_guidance.py::test_no_declared_tool_is_unclassified_for_the_closing_convention`,
+and an existing tool that gains the scheduled-delivery eligibility fails
+`tests/test_scheduled_prompt_guidance.py::test_only_the_recorded_tools_use_the_scheduled_delivery_eligibility`.
+Neither reads a prompt, sees a chat write reached by another route, or sees a plugin's tools.
 **The convention is not a runtime guarantee**: nothing validates a prompt, so a
 hand-authored prompt of the first shape that omits the clause still delivers twice. The
 mechanics of the sentinel and the gate that reads it are
