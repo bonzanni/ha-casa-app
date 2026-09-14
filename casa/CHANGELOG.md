@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.309.0] - 2026-09-14
+
+### Fixed
+
+- A release whose image cannot start the programs an engagement launch runs, or
+  cannot compile its launch database, now fails that architecture's build and is
+  not published. Casa publishes two architectures from a base image it does not
+  pin. A push-time check already starts a real engagement, but it runs on one
+  architecture and against a test image rather than the released one, so a base
+  that stopped shipping a working copy of one of those programs could reach the
+  published `aarch64` image and fail at the first engagement launch there. The
+  release build is the only place that runs per architecture, and it now checks.
+- The local Docker-backed test tier no longer reuses one fixed image name, so two
+  runs started close together can no longer test each other's image while
+  reporting their own.
+
 ## [0.308.0] - 2026-09-14
 
 ### Fixed
