@@ -136,7 +136,7 @@ published is [`plugin-triggers.md`](plugin-triggers.md)'s. Every publication of 
 overlay — a map or that marker, the marker again — advances one generation counter the
 registry exposes, incremented right after the rebind in the same synchronous step; the
 setup-dispatch worker compares two readings of it to know that nothing was published across
-its route check ([`plugin-setup.md`](plugin-setup.md), INV-PLUG-016).
+its route check ([`plugin-setup-dispatch-gate.md`](plugin-setup-dispatch-gate.md), INV-PLUG-016).
 
 **INV-TRIG-013**: A webhook trigger carries no prompt — writing one is refused, while a document already holding one still loads, with a warning, and delivers nothing extra.
 

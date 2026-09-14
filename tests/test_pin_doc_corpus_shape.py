@@ -4,6 +4,7 @@ These pin observable properties of the tracked docs/ tree itself: the parts of
 the doctrine and doc-contract rules a test can check mechanically. Each test
 names the invariant it pins and records the demonstrated red case.
 """
+import posixpath
 import re
 from pathlib import Path
 
@@ -208,6 +209,61 @@ def test_every_document_naming_consent_reprompt_links_to_its_contract():
         assert link.search(body), doc
         checked += 1
     assert checked >= 4, checked
+
+
+# #947: the setup-dispatch gate (INV-PLUG-011, INV-PLUG-016) is declared apart
+# from the setup obligation (INV-PLUG-010), and four prose passages in other
+# documents cite the gate by a markdown PATH link. Nothing resolves a prose link
+# (#761), so a split that moves the gate but leaves one of these links on the
+# obligation's document passes the verifier, the navigation check and the
+# coverage ledger. Each passage is located by text that excludes its link; the
+# link beside it is resolved relative to the citing document and compared with
+# the declaring document the manifest names — never a hard-coded owner path.
+SETUP_GATE_INVARIANTS = ("INV-PLUG-011", "INV-PLUG-016")
+
+# (citing document, link-independent locator, where the link sits, invariant cited)
+SETUP_GATE_CITATIONS = [
+    ("architecture/callbacks.md", "reads the marker pair", "before", "INV-PLUG-011"),
+    ("architecture/triggers.md", "its route check (", "after", "INV-PLUG-016"),
+    ("architecture/plugin-triggers.md", "(INV-PLUG-011 in ", "after", "INV-PLUG-011"),
+    ("architecture/plugin-triggers.md",
+     "while either stands or while any publication has landed since (", "after",
+     "INV-PLUG-016"),
+]
+
+_INLINE_LINK = r"\[[^\]]*\]\(([^)\s]+)\)"
+_SOURCEMAP_BLOCK = re.compile(r"<!-- BEGIN SOURCEMAP -->.*?<!-- END SOURCEMAP -->", re.S)
+
+
+def test_setup_dispatch_gate_ownership_and_inbound_links():
+    """#947: the gate's invariants have their own declaring document, and every
+    inbound path citation of the gate arrives at the document that declares
+    what it cites.
+
+    Red case demonstrated: at d2e9b4cb one document declares INV-PLUG-010,
+    -011 and -016, so the separated-owner count is 0, not 2 (the only arm red
+    at the base). The four link arms are regression arms, green at the base:
+    after the split, reverting any ONE of the four re-pointings to
+    `plugin-setup.md` turns exactly that position of `matched` to 0.
+    """
+    obligation_owner = _declaring_document("INV-PLUG-010")
+    separated = sum(_declaring_document(inv) != obligation_owner
+                    for inv in SETUP_GATE_INVARIANTS)
+    assert separated == 2, separated
+
+    matched = []
+    for doc, locator, position, inv in SETUP_GATE_CITATIONS:
+        body = _normalized(_SOURCEMAP_BLOCK.sub("", (DOCS / doc).read_text()))
+        assert body.count(locator) == 1, (doc, locator, body.count(locator))
+        at = body.index(locator)
+        if position == "before":
+            links = re.findall(_INLINE_LINK + r" $", body[:at])
+        else:
+            links = re.findall("^" + _INLINE_LINK, body[at + len(locator):])
+        assert len(links) == 1, (doc, locator, len(links))
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(doc), links[0]))
+        matched.append(int(target == _declaring_document(inv)))
+    assert matched == [1, 1, 1, 1], matched
 
 
 # #668: `architecture/triggers.md` restated the plugin-declared-trigger rules
