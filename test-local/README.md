@@ -148,6 +148,12 @@ database from the merged service tree. What is still NOT checked on `aarch64`:
 that a launched program then works, that an engagement actually starts (a
 native `aarch64` lane, #985), the base image's own boot programs, and the other
 programs on the launch path (`with-contenv`, `bashio`, `setpriv`, `claude`).
+And what no image check can establish: that a runtime launch resolves those bare
+names to the programs the image installed. `setup-configs.sh` prepends
+`/config/tools/bin` — which an installed plugin publishes binaries into — ahead
+of the entire image PATH for every s6-supervised service (#987), so the probe
+covers the image it builds and says nothing about the PATH a running system
+assembles.
 
 Trigger tier 3 manually from any branch:
 

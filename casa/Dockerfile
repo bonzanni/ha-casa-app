@@ -97,7 +97,14 @@ ENV PATH="/opt/casa/venv/bin:${PATH}"
 # build fails only when a launch RAISES (not found, not executable, or a file
 # the kernel cannot execute). A mode test would pass a foreign-architecture
 # binary, and a shell probe runs an empty or shebang-less file as a script.
-# What it does not show: that a program works once launched.
+# What it does not show: that a program works once launched; and not that a
+# runtime launch resolves these same bare names to the programs this image
+# installed. setup-configs.sh prepends /config/tools/bin — a directory an
+# installed plugin publishes binaries into — ahead of the entire image PATH
+# for every s6-supervised service, so a file placed there under one of these
+# names is found first at runtime (#987). That is a property of the running
+# system, not of this image: this probe neither covers it nor is weakened by
+# it.
 # tests/test_launch_path_guard.py keeps this list equal to the driver's.
 RUN python3 -c 'import subprocess, sys; [subprocess.run([p], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for p in sys.argv[1:]]' \
         s6-rc-compile s6-rc-update s6-rc s6-svc s6-svstat \

@@ -20,6 +20,13 @@ about an image as built on any architecture; that is what a lane runs, not what
 a test asserts. It does not reach programs outside `drivers/s6_rc.py` either:
 the run template's `setpriv`/`claude`, the `with-contenv`/`bashio` shebangs, and
 the base image's own boot programs.
+
+Nor does the probe it pins establish that a runtime launch resolves these bare
+names to the programs the image installed: `setup-configs.sh` prepends
+`/config/tools/bin`, which an installed plugin publishes binaries into, ahead of
+the entire image PATH for every s6-supervised service (#987). That is a property
+of the running system rather than of the image, so the probe neither covers it
+nor is weakened by it.
 """
 from __future__ import annotations
 
