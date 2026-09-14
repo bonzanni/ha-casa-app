@@ -19,9 +19,13 @@ author a scheduled prompt: the configurator's two trigger recipes, the
 operator-facing ``triggers.yaml`` guidance, and the corpus document that records
 the convention once, plus the recipe for EDITING an existing per-trigger prompt,
 which points at ``trigger/add.md`` for the shape rather than restating it. That
-enumeration is checked rather than claimed as a total: the last test in this
-module fails when a configurator doctrine file naming a per-trigger prompt path
-is neither covered nor exempted with a reason.
+enumeration is checked rather than claimed as a total:
+``test_no_doctrine_file_naming_a_per_trigger_prompt_is_unclassified`` fails when a
+configurator doctrine file naming a per-trigger prompt path is neither covered
+nor exempted with a reason. The TOOLS those surfaces name are checked on a
+second axis the same way: every tool declared in the code root is in one of
+three recorded buckets, or
+``test_no_declared_tool_is_unclassified_for_the_closing_convention`` fails.
 
 It is a pin on TEXT and claims nothing about runtime — a hand-authored prompt
 that omits the clause still delivers twice, by design, because the alternative
@@ -33,6 +37,7 @@ nothing here depends on the tree being writable.
 from __future__ import annotations
 
 import ast
+import functools
 import re
 from pathlib import Path
 
@@ -304,3 +309,213 @@ def test_every_carrier_says_what_a_turn_outputs_when_the_ask_was_not_awaiting():
         for path in [*SURFACES, PROMPT_EDIT]
     }
     assert counts == dict.fromkeys(counts, 1)
+
+
+# --- The tool axis: the class the surfaces name is checked, not claimed -----
+#
+# The same checked-not-claimed shape as the FILE axis above, applied to TOOLS.
+# Every function declared as a tool anywhere in the code root is in exactly one
+# of three recorded buckets, keyed on the FUNCTION (a facade declares its tool
+# with a name only the Home Assistant server knows at runtime), so a tool nobody
+# has written yet fails the suite until somebody answers the question below.
+
+_CODE_ROOT = REPO_ROOT / "casa/rootfs/opt/casa"
+
+# The convention counts a call to one of these as the turn's delivery: when it
+# reports success, the turn has nothing left to say. That is what the tool is
+# FOR, not a guarantee that something landed — `send_message` can report success
+# for a send that delivered nothing (#990), and a refused `ask_user` posts
+# nothing, which is why the surfaces state `ask_user`'s rule. Named on every
+# authoring surface; adding a member here is a prose change too.
+DELIVERS_THE_OPERATORS_COPY = {
+    "tools.py::send_message",
+    "tools.py::send_media",
+    "tools.py::ask_user",
+}
+
+# Tools a reader could take for a delivery because they put something in a
+# chat, each with the reason it is not a scheduled turn's delivery of its
+# message. Membership here is a judgement, recorded so it can be contested.
+WRITES_TO_A_CHAT_ELSEWHERE = {
+    "tools.py::wipe_memory":
+        "posts a confirmation keyboard to the operator's DM and is refused "
+        "unless the turn is a direct DM or button turn; it has no scheduled arm",
+    "channels/casa_engagement_channel.py::reply":
+        "the engagement channel's tool: a specialist inside an engagement posts "
+        "to that engagement's topic, never a resident's trigger turn",
+    "channels/casa_engagement_channel.py::ask":
+        "same server and reason as reply: a question posted to an engagement's topic",
+    "ha_mcp_facade.py::proxy":
+        "one proxy per Home Assistant tool, named by the HA server at runtime. A "
+        "notify service reached through it CAN put a message in the operator's "
+        "chat; only the property the surfaces state covers that, no name can",
+    "tools.py::emit_completion":
+        "posts an engagement's completion summary to that engagement's topic; "
+        "its caller is the engaged executor or specialist, not a scheduled turn",
+    "tools.py::cancel_engagement":
+        "closes an engagement's topic and notifies the engager; that notice is "
+        "Casa's, not the calling turn's message",
+    "tools.py::consent_reprompt":
+        "re-posts Casa's own consent keyboards to the operator's DM; none of "
+        "them is the calling turn's message",
+    "tools.py::react":
+        "sets a reaction on an active engagement's current inbound message and "
+        "does nothing without one; a reaction is not a message",
+}
+
+# NOT a delivery: calling it is not how a scheduled turn delivers its message.
+# This bucket claims only that. It is NOT audited for incidental posts — several
+# members make Casa post something of its own (a consent prompt, a rewrite
+# notice) — so membership here is not a claim that a tool writes nothing.
+NOT_A_DELIVERY = {
+    "tools.py::ack_event",
+    "tools.py::callback_ack_revoke",
+    "tools.py::cancel_reminder",
+    "tools.py::cancel_voice_job",
+    "tools.py::casa_reload",
+    "tools.py::casa_reload_triggers",
+    "tools.py::casa_restart_supervised",
+    "tools.py::cleanup_engagement_topics",
+    "tools.py::config_git_commit",
+    "tools.py::config_trigger_delete",
+    "tools.py::config_trigger_upsert",
+    "tools.py::continue_voice_job",
+    "tools.py::delegate_to_agent",
+    "tools.py::delete_engagement_workspace",
+    "tools.py::engage_executor",
+    "tools.py::event_ack_revoke",
+    "tools.py::get_item_fields",
+    "tools.py::get_schedule",
+    "tools.py::list_engagement_workspaces",
+    "tools.py::list_vault_items",
+    "tools.py::peek_engagement_workspace",
+    "tools.py::persona_ack_revoke",
+    "tools.py::persona_apply",
+    "tools.py::persona_install_commit",
+    "tools.py::persona_install_inspect",
+    "tools.py::persona_list",
+    "tools.py::persona_prune",
+    "tools.py::persona_remove",
+    "tools.py::plugin_add",
+    "tools.py::plugin_assign",
+    "tools.py::plugin_list",
+    "tools.py::plugin_remove",
+    "tools.py::plugin_status",
+    "tools.py::plugin_unassign",
+    "tools.py::plugin_update",
+    "tools.py::query_engager",
+    "tools.py::recall_memory",
+    "tools.py::remove_plugin_env_reference",
+    "tools.py::resident_persona_reset",
+    "tools.py::resident_persona_swap",
+    "tools.py::set_plugin_env_reference",
+    "tools.py::set_reminder",
+    "tools.py::specialist_install_commit",
+    "tools.py::specialist_install_inspect",
+    "tools.py::specialist_rollback",
+    "tools.py::specialist_uninstall",
+    "tools.py::specialist_upgrade",
+    "tools.py::trigger_ack_revoke",
+    "tools.py::verify_plugin_secrets",
+    "tools.py::verify_plugin_state",
+    "tools.py::voice_job_status",
+}
+
+# The declared tools whose OWN source consults the one shared predicate for "a
+# scheduled turn may deliver to the operator" (`tools.py`
+# `_scheduled_operator_target`).
+SCHEDULED_ELIGIBILITY_CONSUMERS = {
+    "tools.py::send_media",
+    "tools.py::ask_user",
+}
+
+_UNCLASSIFIED_QUESTION = (
+    "is a tool nobody has classified. Does a scheduled turn that calls it put "
+    "the operator's copy of the turn's message in the chat? If yes, add it to "
+    "DELIVERS_THE_OPERATORS_COPY and name it on the four surfaces; if it writes "
+    "to a chat for another reason, add it to WRITES_TO_A_CHAT_ELSEWHERE with that "
+    "reason; otherwise add it to NOT_A_DELIVERY."
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _declared_tools() -> dict[str, str]:
+    """`<module path under the code root>::<function>` -> that function's own
+    source, for every function whose decorator's identifier is `tool` — the SDK
+    form `@tool(...)` and the FastMCP form `@server.tool()` alike. AST over
+    source text: nothing under the code root is imported."""
+    found: dict[str, str] = {}
+    for path in sorted(_CODE_ROOT.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                target = decorator.func if isinstance(decorator, ast.Call) else decorator
+                ident = (target.id if isinstance(target, ast.Name)
+                         else target.attr if isinstance(target, ast.Attribute)
+                         else None)
+                if ident == "tool":
+                    key = f"{path.relative_to(_CODE_ROOT).as_posix()}::{node.name}"
+                    assert key not in found, ("declared twice", key)
+                    found[key] = ast.get_source_segment(source, node) or ""
+    return found
+
+
+def test_no_declared_tool_is_unclassified_for_the_closing_convention():
+    """Classification BY DECLARATION: the input is the decorator, not what the
+    body does, so a tool nobody has written yet fails here until it is filed.
+
+    What it does not close, stated so a green run is not over-read: an EXISTING
+    tool that starts writing to a chat by a route other than the shared
+    eligibility predicate (the next test sees only that route); a tool a plugin
+    supplies, which lives outside the code root and is never scanned; a decorator
+    whose identifier is not `tool`; and a wrong answer — a chat-writing tool filed
+    in NOT_A_DELIVERY passes. The check makes the classification a recorded,
+    reviewable act in the diff; it cannot make it a correct one."""
+    declared = set(_declared_tools())
+    buckets = [DELIVERS_THE_OPERATORS_COPY, set(WRITES_TO_A_CHAT_ELSEWHERE), NOT_A_DELIVERY]
+    filed_twice = sorted(
+        key for i, first in enumerate(buckets) for second in buckets[i + 1:]
+        for key in first & second
+    )
+    assert filed_twice == []
+    classified = set().union(*buckets)
+    unclassified = sorted(declared - classified)
+    assert unclassified == [], f"{unclassified} {_UNCLASSIFIED_QUESTION}"
+    assert sorted(classified - declared) == []
+
+    # The one registration path the decorator scan cannot see: a tool handed to
+    # the framework server without a decorator. `CASA_TOOLS` must list exactly
+    # the functions `tools.py` declares.
+    tree = ast.parse((_CODE_ROOT / "tools.py").read_text(encoding="utf-8"))
+    registry = [
+        node for node in tree.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        and node.target.id == "CASA_TOOLS"
+    ]
+    assert len(registry) == 1, ("CASA_TOOLS", len(registry))
+    registered = [e.id if isinstance(e, ast.Name) else ast.dump(e)
+                  for e in registry[0].value.elts]
+    in_tools_py = {key.split("::", 1)[1] for key in declared if key.startswith("tools.py::")}
+    assert sorted(set(registered) ^ in_tools_py) == []
+    assert len(registered) == len(set(registered))
+
+
+def test_only_the_recorded_tools_use_the_scheduled_delivery_eligibility():
+    """The totality check above would NOT have caught #962: `ask_user` already
+    existed, and was already classified, when #573 gave it a scheduled arm. A
+    check on declarations fires on a new declaration, not on a new capability of
+    an old one. This fires on that event: a declared tool whose own source starts
+    consulting the shared scheduled-delivery predicate. It is lexical containment
+    in the decorated function's own source, not a call-graph walk — a helper that
+    consults the predicate on a tool's behalf is not seen."""
+    consumers = {
+        key for key, source in _declared_tools().items()
+        if "_scheduled_operator_target" in source
+    }
+    assert sorted(consumers ^ SCHEDULED_ELIGIBILITY_CONSUMERS) == [], (
+        "a tool gained or lost the scheduled-delivery eligibility; decide whether "
+        "it now puts a scheduled turn's message in the operator's chat, and update "
+        "DELIVERS_THE_OPERATORS_COPY and the four surfaces with it")
+    assert SCHEDULED_ELIGIBILITY_CONSUMERS <= DELIVERS_THE_OPERATORS_COPY
