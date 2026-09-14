@@ -47,12 +47,21 @@ kind: whatever else it has to say, on any branch, it sends with `send_message`.
 A turn that asks with `ask_user` has put its question in the chat only when the
 ask reports that it is awaiting the operator's answer; when it reports anything
 else, the turn outputs what the ask reported as its final text instead of the
-sentinel. Both endings, written out:
+sentinel.
+
+A Home Assistant notification that carries this turn's message to the operator
+is a delivery, including when it is reached through the Home Assistant proxy, so
+that prompt takes the clause; a Home Assistant read or device action whose result
+the turn then reports is not a delivery, because the operator's copy is still the
+turn's own final text.
+
+Both endings, written out:
 
     # shape A — the operator's copy of the message arrives from a DELIVERY
-    # tool call (send_message / send_media / ask_user), so the turn has
-    # nothing left to say. Any other tool the turn calls is irrelevant to
-    # this choice.
+    # tool call: send_message, send_media and ask_user are the ones Casa
+    # declares, and a Home Assistant notification is one too. The turn has
+    # nothing left to say. Any NON-DELIVERY tool the turn calls is
+    # irrelevant to this choice.
     prompt="Send this exact message via telegram: \"Bins out tonight.\" After the send, output the sentinel `<silent/>` and nothing else."
 
     # shape B — the operator's copy arrives as the turn's OWN final text. No

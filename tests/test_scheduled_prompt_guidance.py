@@ -24,8 +24,12 @@ enumeration is checked rather than claimed as a total:
 configurator doctrine file naming a per-trigger prompt path is neither covered
 nor exempted with a reason. The TOOLS those surfaces name are checked on a
 second axis the same way: every tool declared in the code root is in one of
-three recorded buckets, or
-``test_no_declared_tool_is_unclassified_for_the_closing_convention`` fails.
+four recorded buckets, or
+``test_no_declared_tool_is_unclassified_for_the_closing_convention`` fails. The
+fourth of those buckets exists because a name is not always enough to answer the
+question: one declaration can reach both a notification that IS this turn's
+delivery and a read that is not, so it is filed as CONDITIONAL and its
+membership costs a worked conditional on every surface instead of a name.
 
 It is a pin on TEXT and claims nothing about runtime — a hand-authored prompt
 that omits the clause still delivers twice, by design, because the alternative
@@ -315,9 +319,14 @@ def test_every_carrier_says_what_a_turn_outputs_when_the_ask_was_not_awaiting():
 #
 # The same checked-not-claimed shape as the FILE axis above, applied to TOOLS.
 # Every function declared as a tool anywhere in the code root is in exactly one
-# of three recorded buckets, keyed on the FUNCTION (a facade declares its tool
+# of four recorded buckets, keyed on the FUNCTION (a facade declares its tool
 # with a name only the Home Assistant server knows at runtime), so a tool nobody
 # has written yet fails the suite until somebody answers the question below.
+#
+# The buckets are exhaustive and disjoint BY DECLARATION, and both halves are
+# asserted: the union equals the declared set, and no key is filed twice. The
+# fourth bucket is the one that keeps the classification from re-closing the
+# property — see CONDITIONAL_DELIVERY_FAMILY.
 
 _CODE_ROOT = REPO_ROOT / "casa/rootfs/opt/casa"
 
@@ -345,10 +354,6 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
         "to that engagement's topic, never a resident's trigger turn",
     "channels/casa_engagement_channel.py::ask":
         "same server and reason as reply: a question posted to an engagement's topic",
-    "ha_mcp_facade.py::proxy":
-        "one proxy per Home Assistant tool, named by the HA server at runtime. A "
-        "notify service reached through it CAN put a message in the operator's "
-        "chat; only the property the surfaces state covers that, no name can",
     "tools.py::emit_completion":
         "posts an engagement's completion summary to that engagement's topic; "
         "its caller is the engaged executor or specialist, not a scheduled turn",
@@ -361,6 +366,45 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::react":
         "sets a reaction on an active engagement's current inbound message and "
         "does nothing without one; a reaction is not a message",
+}
+
+# CONDITIONAL: one declaration, and whether a call to it is the turn's delivery
+# depends on which call it is. A member is declared with a name only a remote
+# server knows at runtime, and the same declaration reaches both a notification
+# that puts THIS turn's message in the operator's chat and a read whose result
+# the turn still has to report itself. No name can file it either way, so the
+# only thing that decides is the property the surfaces state — and a property an
+# author cannot apply is a property that fails. Membership therefore costs a
+# WORKED CONDITIONAL: both arms, in one wording, on every naming surface, which
+# is what `test_the_conditional_delivery_family_is_worked_on_every_naming_surface`
+# asserts.
+#
+# Why this is a fourth file and not a member of DELIVERS_THE_OPERATORS_COPY:
+# filing it as a delivery would name it on the surfaces as one, telling an author
+# that a scheduled prompt touching Home Assistant at all takes the closing clause.
+# That suppresses the final text of every scheduled turn whose only delivery IS
+# its final text — a turn that reads a sensor and reports what it read would
+# deliver NOTHING. Requiring both arms to be documented has no such effect.
+CONDITIONAL_DELIVERY_FAMILY = {
+    "ha_mcp_facade.py::proxy":
+        "one proxy per Home Assistant tool, named by the HA server at runtime. A "
+        "notify service reached through it puts this turn's message in the "
+        "operator's chat and IS the delivery; a read or a device action leaves the "
+        "operator's copy to be the turn's own final text",
+}
+
+# The worked conditional each member owes, verbatim, on each naming surface. A
+# member added to the family above without an entry here fails, and an entry
+# whose sentence is not on a surface fails — which is what keeps a member from
+# being filed with the question left unanswered for the author.
+CONDITIONAL_DELIVERY_EXAMPLES = {
+    "ha_mcp_facade.py::proxy": (
+        "A Home Assistant notification that carries this turn's message to the "
+        "operator is a delivery, including when it is reached through the Home "
+        "Assistant proxy, so that prompt takes the clause; a Home Assistant read "
+        "or device action whose result the turn then reports is not a delivery, "
+        "because the operator's copy is still the turn's own final text."
+    ),
 }
 
 # NOT a delivery: calling it is not how a scheduled turn delivers its message.
@@ -432,9 +476,11 @@ SCHEDULED_ELIGIBILITY_CONSUMERS = {
 _UNCLASSIFIED_QUESTION = (
     "is a tool nobody has classified. Does a scheduled turn that calls it put "
     "the operator's copy of the turn's message in the chat? If yes, add it to "
-    "DELIVERS_THE_OPERATORS_COPY and name it on the four surfaces; if it writes "
-    "to a chat for another reason, add it to WRITES_TO_A_CHAT_ELSEWHERE with that "
-    "reason; otherwise add it to NOT_A_DELIVERY."
+    "DELIVERS_THE_OPERATORS_COPY and name it on the four surfaces; if that "
+    "depends on WHICH call it is, add it to CONDITIONAL_DELIVERY_FAMILY and work "
+    "both arms on those surfaces; if it writes to a chat for another reason, add "
+    "it to WRITES_TO_A_CHAT_ELSEWHERE with that reason; otherwise add it to "
+    "NOT_A_DELIVERY."
 )
 
 
@@ -474,7 +520,8 @@ def test_no_declared_tool_is_unclassified_for_the_closing_convention():
     in NOT_A_DELIVERY passes. The check makes the classification a recorded,
     reviewable act in the diff; it cannot make it a correct one."""
     declared = set(_declared_tools())
-    buckets = [DELIVERS_THE_OPERATORS_COPY, set(WRITES_TO_A_CHAT_ELSEWHERE), NOT_A_DELIVERY]
+    buckets = [DELIVERS_THE_OPERATORS_COPY, set(CONDITIONAL_DELIVERY_FAMILY),
+               set(WRITES_TO_A_CHAT_ELSEWHERE), NOT_A_DELIVERY]
     filed_twice = sorted(
         key for i, first in enumerate(buckets) for second in buckets[i + 1:]
         for key in first & second
@@ -519,3 +566,36 @@ def test_only_the_recorded_tools_use_the_scheduled_delivery_eligibility():
         "it now puts a scheduled turn's message in the operator's chat, and update "
         "DELIVERS_THE_OPERATORS_COPY and the four surfaces with it")
     assert SCHEDULED_ELIGIBILITY_CONSUMERS <= DELIVERS_THE_OPERATORS_COPY
+
+
+def test_the_conditional_delivery_family_is_worked_on_every_naming_surface():
+    """A tool filed as CONDITIONAL is filed with a question still open — WHICH
+    call is the delivery — and the only place that question can be answered is
+    the prose an author reads. So membership costs a worked conditional, both
+    arms, in one wording, on each of the four surfaces that name the class.
+
+    It is not filed as a delivery instead: naming it on the surfaces as one
+    would tell an author that any scheduled prompt touching that tool takes the
+    closing clause, and a turn whose only delivery IS its final text would then
+    be suppressed and deliver nothing. Requiring the two arms to be documented
+    does not carry that instruction.
+
+    `prompt/edit.md` is deliberately NOT in this set. It carries the rule and
+    defers which tool calls put the copy there to `recipes/trigger/add.md`,
+    which a committed test pins; a worked conditional there would be the second
+    copy of a classification that recipe owns.
+
+    Reach, stated so a green run is not over-read: this pins a WORDING on four
+    prose surfaces. It does not run a Home Assistant notification, does not know
+    whether a given proxy call is one, and does not make an agent apply the
+    sentence to the prompt it writes.
+    """
+    assert sorted(CONDITIONAL_DELIVERY_EXAMPLES) == sorted(CONDITIONAL_DELIVERY_FAMILY), (
+        "every member of CONDITIONAL_DELIVERY_FAMILY owes a worked conditional "
+        "naming both arms; add it here and to the four surfaces")
+    counts = {
+        (key, str(path.relative_to(REPO_ROOT))): _normalized(path).count(example)
+        for key, example in CONDITIONAL_DELIVERY_EXAMPLES.items()
+        for path in SURFACES
+    }
+    assert counts == dict.fromkeys(counts, 1)

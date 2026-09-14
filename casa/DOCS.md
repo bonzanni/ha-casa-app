@@ -148,11 +148,18 @@ ask reports that it is awaiting the operator's answer; when it reports anything
 else, the turn outputs what the ask reported as its final text instead of the
 sentinel.
 
+A Home Assistant notification that carries this turn's message to the operator
+is a delivery, including when it is reached through the Home Assistant proxy, so
+that prompt takes the clause; a Home Assistant read or device action whose result
+the turn then reports is not a delivery, because the operator's copy is still the
+turn's own final text.
+
 Decide which shape your prompt is before writing it:
 
 ```yaml
-# shape A — your copy arrives from a DELIVERY tool call (send_message /
-# send_media / ask_user), so the turn has nothing left to say.
+# shape A — your copy arrives from a DELIVERY tool call: send_message,
+# send_media and ask_user are the ones Casa declares, and a Home Assistant
+# notification is one too. The turn has nothing left to say.
 prompt: >-
   Send this exact message via telegram: "Bins out tonight." After the send,
   output the sentinel `<silent/>` and nothing else.
