@@ -511,6 +511,14 @@ def _exhaustion_text(plugin: str, h: str) -> str:
     test_the_owed_note_does_not_depend_on_which_outcome_ended_it), and the
     budget can be spent by a ``result_ready`` attempt whose result is still
     collectable.
+
+    Its one forward path is CONDITIONAL for that same reason (#935): an
+    unconditional "start it again" reads as a report that the flow is dead
+    and tells the operator to redo work the plugin may still complete from
+    the record it already holds. The condition is one the operator can
+    settle without a tool they do not have — whether the authorization ever
+    came through — and the clause naming what CASA cannot do is true on
+    every arm.
     """
     return (f"Plugin {plugin}: the authorization delivery nudge for handle "
             f"{h} went unanswered after "
@@ -518,9 +526,9 @@ def _exhaustion_text(plugin: str, h: str) -> str:
             "nudging for it. The flow's record stays in the plugin's own "
             "spool until the plugin reads and acks it, or until it ages out. "
             "Casa exposes no tool that reads that record and the assistant "
-            "has none either, so there is nothing to ask for here. If this "
-            "authorization still matters, start it again — casa can neither "
-            "revive nor inspect the old flow.")
+            "has none either, so there is nothing to ask for here. If the "
+            "authorization never comes through and you still need it, start "
+            "it again — casa can neither revive nor inspect the old flow.")
 
 
 async def _process_unnoted_exhaustions(spool: Any) -> None:

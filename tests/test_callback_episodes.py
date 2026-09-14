@@ -464,9 +464,9 @@ def test_the_exhaustion_note_wording_is_outcome_blind():
         "nudging for it. The flow's record stays in the plugin's own "
         "spool until the plugin reads and acks it, or until it ages out. "
         "Casa exposes no tool that reads that record and the assistant "
-        "has none either, so there is nothing to ask for here. If this "
-        "authorization still matters, start it again — casa can neither "
-        "revive nor inspect the old flow.")
+        "has none either, so there is nothing to ask for here. If the "
+        "authorization never comes through and you still need it, start "
+        "it again — casa can neither revive nor inspect the old flow.")
 
 
 async def test_the_nudge_log_line_never_carries_the_handle(wired, caplog):
