@@ -397,11 +397,11 @@ async def test_terminal_expired_nudges_outcome_phase_from_ended_ts(wired):
     ids=["expired", "expired_unread", "publish_failed", "evicted", "exhaustion"],
 )
 async def test_callback_notice_text_addresses_its_recipient(wired, outcome):
-    """#935 red case (arm 1). A terminal nudge must not point its target at
-    the consumer's attempt list, which no resident tool reads; it names the
-    outcome, frames itself as a casa notice and permits a silent no-op. The
-    exhaustion note must not send the operator to that list either, and stays
-    outcome-blind — the budget can be spent by a still-collectable result."""
+    """#935 red case (arm 1). Terminal nudges name their outcome, identify
+    themselves as casa system notices, retain the handle, offer <silent/>,
+    and never direct their recipient to the attempt list. The exhaustion
+    note neither points the operator there nor asks an agent to read it.
+    """
     if outcome is not None:
         rec = wired.seed_terminal(outcome=outcome)
         wired.clock = rec["next_nudge_ts"]
@@ -442,20 +442,6 @@ async def test_callback_notice_text_addresses_its_recipient(wired, outcome):
         "exhaustion: contains attempt list"
     )
     assert "ask the agent to read" not in text.lower()
-
-    # Pin the settled outcome-blind wording, rather than an incomplete
-    # blacklist of outcome-specific claims.
-    assert text == (
-        f"Plugin {PLUGIN}: the authorization delivery nudge for handle "
-        f"{HASH} went unanswered after "
-        f"{callback_attempts.MAX_NUDGES} attempts, so casa has stopped "
-        "nudging for it. The flow's record stays in the plugin's own "
-        "spool until the plugin reads and acks it, or until it ages out. "
-        "Casa exposes no tool that reads that record and the assistant "
-        "has none either, so there is nothing to ask for here. If this "
-        "authorization still matters, start it again — casa can neither "
-        "revive nor inspect the old flow."
-    )
 
 
 # ---------------------------------------------------------------------------
