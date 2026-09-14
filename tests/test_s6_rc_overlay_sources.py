@@ -63,3 +63,27 @@ def test_compile_reads_overlay_sources_at_call_time(monkeypatch):
     for path in ("/fake/overlay-first", "/fake/overlay-second"):
         monkeypatch.setattr(s6_rc, "S6_OVERLAY_SOURCES", path)
         assert _compile_overlay_argument(monkeypatch) == path
+
+
+def test_release_build_compile_smoke_reads_the_driver_sources():
+    """#957 regression (green once the smoke exists): `casa/Dockerfile`'s
+    compile smoke hands `s6-rc-compile` the same two source directories the
+    driver compiles from, and runs after `COPY rootfs /`, because the merged
+    `/etc/s6-overlay/s6-rc.d` only exists from there. A path moved in the driver
+    and not in the Dockerfile would leave the smoke compiling something the
+    launch never reads. This pins the TEXT; the smoke's execution is covered by
+    `tests/test_baseline_runtime_assert.py` on the runner's architecture."""
+    import re
+    from pathlib import Path
+
+    from drivers import s6_rc
+
+    dockerfile = (
+        Path(__file__).resolve().parents[1] / "casa" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    smokes = list(re.finditer(
+        r's6-rc-compile "\$\{scratch\}/db" (\S+) (\S+) \\', dockerfile))
+    assert len(smokes) == 1, [m.group(0) for m in smokes]
+    assert smokes[0].groups() == (s6_rc.S6_OVERLAY_SOURCES, s6_rc.CASA_SOURCES)
+    assert dockerfile.count("\nCOPY rootfs /\n") == 1
+    assert dockerfile.index("\nCOPY rootfs /\n") < smokes[0].start()

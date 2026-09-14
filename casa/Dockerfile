@@ -11,9 +11,11 @@ FROM ${BUILD_FROM}
 # the base image's own s6-overlay sources, resolved through the version-less
 # /package/admin/s6-overlay link the base ships (-> s6-overlay-<version>).
 # BUILD_FROM floats on a tag, so the overlay version inside the image is
-# whatever the base carries at build time; this is the only check that runs
-# against the image actually released. A base that stops shipping the link
-# fails the build here, not the first engagement launch on an install.
+# whatever the base carries at build time; this check runs against the image
+# actually released. A base that stops shipping the link fails the build here,
+# not the first engagement launch on an install. The compile smoke after
+# `COPY rootfs /` below covers this too; this one stays because it fails before
+# the long install layers and names #925's exact diagnosis.
 RUN test -d /package/admin/s6-overlay/etc/s6-rc/sources \
     || { echo "s6-overlay sources not found at /package/admin/s6-overlay/etc/s6-rc/sources (base image layout changed; see drivers/s6_rc.py S6_OVERLAY_SOURCES)" >&2; exit 1; }
 
@@ -85,6 +87,29 @@ RUN set -eux; \
 RUN python3 -m venv /opt/casa/venv
 ENV PATH="/opt/casa/venv/bin:${PATH}"
 
+# #957: the released image must be able to execute every program an engagement
+# launch runs, on the architecture it is published for. deploy.yml builds each
+# architecture natively, so an image in which one of them cannot be launched
+# fails that architecture's build here and nothing publishes.
+# The probe is the runtime's own call: drivers/s6_rc.py launches each program by
+# bare name with subprocess.run, from this venv's python3, on this PATH. With no
+# arguments each program only prints its usage, and any exit status passes; the
+# build fails only when a launch RAISES (not found, not executable, or a file
+# the kernel cannot execute). A mode test would pass a foreign-architecture
+# binary, and a shell probe runs an empty or shebang-less file as a script.
+# What it does not show: that a program works once launched; and not that a
+# runtime launch resolves these same bare names to the programs this image
+# installed. setup-configs.sh prepends /config/tools/bin — a directory an
+# installed plugin publishes binaries into — ahead of the entire image PATH
+# for every s6-supervised service, so a file placed there under one of these
+# names is found first at runtime (#987). That is a property of the running
+# system, not of this image: this probe neither covers it nor is weakened by
+# it.
+# tests/test_launch_path_guard.py keeps this list equal to the driver's.
+RUN python3 -c 'import subprocess, sys; [subprocess.run([p], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for p in sys.argv[1:]]' \
+        s6-rc-compile s6-rc-update s6-rc s6-svc s6-svstat \
+    || { echo "a program an engagement launch runs cannot be launched in this image (the traceback above names it; see drivers/s6_rc.py)" >&2; exit 1; }
+
 COPY requirements.txt /tmp/
 RUN /opt/casa/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
@@ -118,6 +143,19 @@ RUN chmod +x /etc/s6-overlay/scripts/*.sh \
     | xargs chmod +x \
     && chmod +x /opt/casa/scripts/*.sh \
     && chmod +x /usr/local/bin/casactl
+
+# #957: the launch database compiles in this image, as drivers/s6_rc.py compiles
+# it at every claude_code launch: the base's overlay sources plus the MERGED
+# /etc/s6-overlay/s6-rc.d. The base ships its own bundles in that directory, and
+# Casa's half does not compile alone, so this must follow `COPY rootfs /` and the
+# permissions above. The runtime passes a third source, the engagement services
+# under /data, which does not exist at build time and is left out. The database
+# is thrown away inside this layer. tests/test_s6_rc_overlay_sources.py keeps the
+# two paths equal to the driver's.
+RUN scratch="$(mktemp -d)" \
+    && s6-rc-compile "${scratch}/db" /package/admin/s6-overlay/etc/s6-rc/sources /etc/s6-overlay/s6-rc.d \
+    && rm -rf "${scratch}" \
+    || { echo "the s6-rc launch database does not compile in this image (see drivers/s6_rc.py)" >&2; exit 1; }
 
 
 # io.hass.* labels are injected by the deploy workflow (build-image action).

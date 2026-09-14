@@ -69,7 +69,11 @@ product has not shipped for months — measured, and it cost two harness runs.
 - **`make test-docker` reports but does not pull either** (#970).
   `tests/test_baseline_runtime_assert.py` builds `casa/Dockerfile` itself, and
   that build runs in CI's `baseline-runtime` job as well, so the same reasoning
-  applies: it resolves nothing and warns which base it got.
+  applies: it resolves nothing and warns which base it got. Each session tags
+  its image `casa:local-baseline-<random>` and untags it at the end, so two
+  overlapping runs never assert against each other's build. A run that is
+  killed leaves its tag behind; sweep strays with
+  `docker images --filter 'reference=casa:local-baseline-*' -q | xargs -r docker image rm`.
 - **The by-hand live build below is not covered at all.** Add `--pull` yourself
   when the base matters.
 
@@ -130,11 +134,26 @@ What that check does NOT establish: it detects a broken launch, it does not
 gate publication. `qa.yml` and `deploy.yml` both start on the same push to
 `main` and neither waits for the other, so the harness reports alongside a
 release that may already be published, not before it (#958 — an operator
-decision). And it runs on `ubuntu-latest`, so it covers `amd64` only, while
-`casa/config.yaml` publishes `aarch64` as well (#957). Both limits are
-pre-existing and this change narrows neither; what changed is that a broken
-launch now shows up on the push that causes it instead of in a scheduled run
-weeks later.
+decision). And it runs on `ubuntu-latest`, so the real launch it performs
+covers `amd64` only, while `casa/config.yaml` publishes `aarch64` as well
+(#957). Both limits are pre-existing and this change narrows neither; what
+changed is that a broken launch now shows up on the push that causes it instead
+of in a scheduled run weeks later.
+
+What IS checked per architecture, because `deploy.yml` builds each one natively
+and a failed build publishes nothing: `casa/Dockerfile` launches each program
+`drivers/s6_rc.py` runs (`s6-rc-compile`, `s6-rc-update`, `s6-rc`, `s6-svc`,
+`s6-svstat`) with the driver's own `subprocess.run`, and compiles the launch
+database from the merged service tree. What is still NOT checked on `aarch64`:
+that a launched program then works, that an engagement actually starts (a
+native `aarch64` lane, #985), the base image's own boot programs, and the other
+programs on the launch path (`with-contenv`, `bashio`, `setpriv`, `claude`).
+And what no image check can establish: that a runtime launch resolves those bare
+names to the programs the image installed. `setup-configs.sh` prepends
+`/config/tools/bin` — which an installed plugin publishes binaries into — ahead
+of the entire image PATH for every s6-supervised service (#987), so the probe
+covers the image it builds and says nothing about the PATH a running system
+assembles.
 
 Trigger tier 3 manually from any branch:
 
