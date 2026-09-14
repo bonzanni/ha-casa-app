@@ -118,7 +118,7 @@ than only the first. Released at the first one, the lock would let a successor c
 files the orphan has not finished writing.
 
 The kick is the terminal act of the two hops that follow the swap, and it fires only once the
-future has settled — never from a `finally`. The [setup-dispatch gate](plugin-setup.md) reads the
+future has settled — never from a `finally`. The [setup-dispatch gate](plugin-setup-dispatch-gate.md) reads the
 marker pair under the spool's own lock, so a worker woken between the two writes of a pair reads a
 half-published one, which the writer then deletes and records as a `callback_spool_error`: the
 same held obligation, reached the other way round. The trigger half's fence

@@ -35,7 +35,7 @@ that plugin's triggers route. Partial routing is deliberately not offered.
 persists in the operator's tap; the per-trigger secret is minted by the reconcile that
 follows, and anything deciding whether a plugin's ingress is *usable by an external
 service*, the setup-tool dispatch gate above all, has to read the minted secret rather than
-infer it from the approval (INV-PLUG-011 in [`plugin-setup.md`](plugin-setup.md)). The secret
+infer it from the approval (INV-PLUG-011 in [`plugin-setup-dispatch-gate.md`](plugin-setup-dispatch-gate.md)). The secret
 is written before the route it backs is published, so the artifact leads the route — which
 is why a pass that will write one first publishes the unavailable marker, closing plugin
 ingress for the duration of its writes, and swaps the map in only afterwards
@@ -118,7 +118,7 @@ and one identical report per pass; the report's fingerprints do not change, so n
 announced again. The kicks this pass fires from its trigger half land before its callback
 half has swapped, and they wake a setup worker that reads both applied markers itself — before
 its recomputation and again, with no yield, before the send — and defers on its own timer
-while either stands or while any publication has landed since ([`plugin-setup.md`](plugin-setup.md),
+while either stands or while any publication has landed since ([`plugin-setup-dispatch-gate.md`](plugin-setup-dispatch-gate.md),
 INV-PLUG-016); so a released obligation woken by a half-healed pair defers rather than
 dispatching against the half still closed.
 
@@ -268,5 +268,5 @@ those leaves the old overlay live until a covered scope runs.
 - [`architecture/trigger-secrets.md`](../architecture/trigger-secrets.md)
 - [`architecture/plugins.md`](../architecture/plugins.md)
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
-- [`architecture/plugin-setup.md`](../architecture/plugin-setup.md)
+- [`architecture/plugin-setup-dispatch-gate.md`](../architecture/plugin-setup-dispatch-gate.md)
 <!-- END SOURCEMAP -->
