@@ -24,7 +24,7 @@
 # instead from the image itself: the workflow's image-build steps print the
 # built image's `io.hass.version` label, so the base a run actually used is in
 # that run's log. Under buildx the multi-arch tag still resolves to the
-# runner's own platform layer, and TARGETARCH below still defaults to amd64.
+# runner's own platform layer.
 ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm
 FROM ${BUILD_FROM}
 
@@ -38,7 +38,12 @@ RUN apt-get update \
     && npm cache clean --force
 
 ARG TTYD_VERSION=1.7.7
-ARG TARGETARCH=amd64
+# Bare, exactly as in casa/Dockerfile (#982): BuildKit supplies the target
+# platform's value, and a default here would shadow it, so an arm64 build
+# installed ttyd.x86_64. The legacy builder (DOCKER_BUILDKIT=0) supplies
+# nothing, so the case below fails there with "Unsupported arch" — the same
+# exposure casa/Dockerfile has always carried. tests/test_targetarch_platform.py.
+ARG TARGETARCH
 RUN case "${TARGETARCH}" in \
         amd64) TTYD_ARCH="x86_64" ;; \
         arm64) TTYD_ARCH="aarch64" ;; \

@@ -348,3 +348,19 @@ def test_the_baseline_build_reports_unknown_rather_than_failing(
     reports = [w for w in warns if "io.hass.version" in w]
     assert len(reports) == 1, warns
     assert "unknown" in reports[0], reports[0]
+
+
+def test_the_baseline_image_tag_is_unique_per_session():
+    """#970: a constant tag let two overlapping local `make test-docker` runs
+    share one image, so the first run asserted against the second run's build.
+    Each session's tag is fresh, keeps the fixed prefix the README's stray-tag
+    sweep matches, and is a valid docker reference. This pins the helper; it
+    does not run two sessions."""
+    import re
+
+    mod = _baseline_module()
+    tags = {mod.unique_image_tag() for _ in range(50)}
+    assert len(tags) == 50, tags
+    for tag in tags:
+        assert tag.startswith("casa:local-baseline-"), tag
+        assert re.fullmatch(r"casa:local-baseline-[0-9a-f]{12}", tag), tag

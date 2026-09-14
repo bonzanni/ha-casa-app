@@ -146,7 +146,7 @@ jobs:
       # boot-path NameError, so it must be installed here, not just locally.
       - run: pip install -r casa/requirements.txt pytest pytest-asyncio pytest-xdist anyio pyflakes
       - name: Baseline runtime CI assertion
-        run: python -m pytest tests/test_baseline_runtime_assert.py -v -m "docker and not slow" --tb=short
+        run: python -m pytest tests/test_baseline_runtime_assert.py tests/test_targetarch_resolution.py -v -m "docker and not slow" --tb=short
 
   tier3-hardening:
     runs-on: ubuntu-latest
