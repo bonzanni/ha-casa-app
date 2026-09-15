@@ -142,6 +142,10 @@ secrets** — `secret_candidates`: ids, roles and types, never an operator-typed
 tools it shares a projection with, and the classified `op` failure are
 [`architecture/plugin-secret-exploration.md`](plugin-secret-exploration.md)'s.
 
+**A mutation result names the ref it actually pinned** — `resolved_ref`: the tag the literal
+`latest` resolved to, or the exact ref given; the contract is INV-PLUG-022 in
+[`architecture/plugins.md`](plugins.md).
+
 **INV-TOOL-007**: A committed plugin removal reported by `plugin_remove`, by the owned-set swap of a SUCCESSFUL specialist bundle — install, upgrade, rollback or uninstall alike — or by a bundle compensation that measured the entry still removed — or that could not read the registry back and says so in the same envelope — discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
 
 A plugin's persistent data directory belongs to the Claude CLI, not to Casa: it lives on the

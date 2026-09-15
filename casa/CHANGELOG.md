@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.313.0] - 2026-09-16
+
+### Added
+
+- Asking for the latest version of a plugin now installs its newest published
+  release. The configurator passes `ref="latest"` and Casa resolves it
+  server-side: GitHub's latest release when its name is a release tag, else
+  the highest `v<semver>` tag, looked up in the tag namespace and never a
+  branch of the same name. The tag is what the registry stores and the
+  completion reports. A repository with no published release is refused,
+  with nothing installed, rather than silently installing a branch. Before,
+  the configurator had no way to find the newest version and, on the 2026-09-15
+  install, spent a minute and a half trying web tools it does not have before
+  installing the main branch.
+
 ## [0.312.0] - 2026-09-15
 
 ### Fixed

@@ -140,11 +140,15 @@
     - casa/rootfs/opt/casa/plugin_store.py::safe_extract_tar
     - casa/rootfs/opt/casa/plugin_store.py::artifact_verdict
     - casa/rootfs/opt/casa/plugin_store.py::manifest_protected_tools
+    - casa/rootfs/opt/casa/plugin_store.py::resolve_latest_release
+    - casa/rootfs/opt/casa/plugin_store.py::_peel_tag
     - casa/rootfs/opt/casa/plugin_grants.py::protected_map
     - casa/rootfs/opt/casa/authz_grants.py::GrantKey
     - casa/rootfs/opt/casa/authz_grants.py::GrantStore
     - casa/rootfs/opt/casa/plugin_boot.py::main
   tests:
+    - tests/test_plugin_store_latest.py
+    - tests/test_plugin_add_latest.py
     - tests/test_plugin_registry.py
     - tests/test_plugin_store_publish.py
     - tests/test_plugin_grants.py
@@ -152,8 +156,9 @@
     - tests/test_authz_hook.py
     - tests/test_plugin_boot.py
   related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md, architecture/plugin-health.md, architecture/plugin-mutation-tools.md]
-  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007, INV-PLUG-021]
+  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-004, INV-PLUG-005, INV-PLUG-006, INV-PLUG-007, INV-PLUG-021, INV-PLUG-022]
   invariant_tests:
+    INV-PLUG-022: [tests/test_plugin_store_latest.py::test_latest_release_with_a_lightweight_tag, tests/test_plugin_store_latest.py::test_latest_release_with_an_annotated_tag_is_peeled, tests/test_plugin_store_latest.py::test_no_releases_falls_back_to_the_highest_release_tag_numerically, tests/test_plugin_store_latest.py::test_a_release_named_like_a_branch_is_not_latest, tests/test_plugin_store_latest.py::test_a_stale_release_naming_a_missing_tag_is_no_release_found, tests/test_plugin_store_latest.py::test_a_prefix_match_list_is_not_the_tag, tests/test_plugin_add_latest.py::test_latest_installs_the_release_tag_and_stores_it, tests/test_plugin_add_latest.py::test_no_release_refuses_before_anything_moves, tests/test_plugin_add_latest.py::test_the_tag_version_guard_runs_on_the_resolved_tag, tests/test_plugin_add_latest.py::test_expected_revision_is_compared_with_the_peel, tests/test_plugin_add_latest.py::test_plugin_update_to_latest_repoints_to_the_tag]
     INV-PLUG-001: [tests/test_plugin_registry.py::test_artifact_id_mismatch_is_per_entry_skip]
     INV-PLUG-002: [tests/test_pin_plugin_invariants.py::test_pin_inv_plug_002_checksum_drift_and_symlinked_locations]
     INV-PLUG-003: [tests/test_plugin_store.py::test_safe_extract_rejects]

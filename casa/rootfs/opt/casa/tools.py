@@ -12938,10 +12938,27 @@ def _resolve_and_guard(*, repo: str, ref: str,
                        expected_revision: str | None) -> "str | dict":
     """C.2 steps 1-2 (v0.74.0): resolve ref -> sha, then the
     expected_revision guard. Returns the 40-hex commit on success, else a
-    failure envelope dict. resolve_unavailable envelopes carry the
-    resolver's structured retry_after_s when known (C.3)."""
+    failure envelope dict. See ``_resolve_ref_and_guard`` for the pair."""
+    got = _resolve_ref_and_guard(repo=repo, ref=ref, expected_revision=expected_revision)
+    return got if isinstance(got, dict) else got[1]
+
+
+def _resolve_ref_and_guard(*, repo: str, ref: str,
+                           expected_revision: str | None) -> "tuple[str, str] | dict":
+    """Resolve ``ref`` -> ``(effective_ref, commit)``, then the
+    expected_revision guard. Design 2026-09-15 §2.C: the literal ``latest``
+    resolves to a published release tag (``plugin_store.resolve_latest_release``,
+    tag namespace, never a branch) and the TAG is the effective ref — what the
+    registry stores and the result reports; an exact ref is its own effective
+    ref. Returns a failure envelope dict otherwise; ``no_release_found`` is a
+    hard refusal that mutates nothing."""
     try:
-        commit = plugin_store.resolve_ref(repo, ref)
+        if ref == plugin_store.LATEST_REF:
+            effective, commit = plugin_store.resolve_latest_release(repo)
+        else:
+            effective, commit = ref, plugin_store.resolve_ref(repo, ref)
+    except plugin_store.NoReleaseFound:
+        return {"ok": False, "kind": "no_release_found", "repo": repo}
     except plugin_store.RefNotFound:
         return {"ok": False, "kind": "ref_not_found"}
     except plugin_store.ResolveAuthFailed:
@@ -12965,7 +12982,7 @@ def _resolve_and_guard(*, repo: str, ref: str,
             # (spec C.2 step 2) — hard abort, nothing mutated.
             return {"ok": False, "kind": "revision_mismatch",
                     "expected_revision": want, "resolved_revision": commit}
-    return commit
+    return effective, commit
 
 
 def _tag_version_guard(ref: str, manifest: dict) -> dict | None:
@@ -13025,13 +13042,14 @@ def _plugin_add_sync(*, name: str, repo: str, ref: str, subdir: str = "",
     if any(isinstance(e, dict) and e.get("name") == name
            for e in data.raw.get("plugins", [])):
         return {"ok": False, "kind": "plugin_exists", "name": name}
-    guarded = _resolve_and_guard(repo=repo, ref=ref,
-                                 expected_revision=expected_revision)
+    guarded = _resolve_ref_and_guard(repo=repo, ref=ref,
+                                     expected_revision=expected_revision)
     if isinstance(guarded, dict):
         return guarded
+    ref, commit = guarded          # "latest" -> the release tag it resolved to
     try:
         result = plugin_store.publish(name=name, repo=repo, ref=ref,
-                                      subdir=subdir, commit=guarded)
+                                      subdir=subdir, commit=commit)
     except plugin_store.RefNotFound:
         return {"ok": False, "kind": "ref_not_found"}
     except plugin_store.ResolveUnavailable:
@@ -13056,6 +13074,7 @@ def _plugin_add_sync(*, name: str, repo: str, ref: str, subdir: str = "",
     return {"ok": True, "name": name, "targets": targets,
             "artifact_id": result.artifact_id, "version": result.version,
             "revision": result.revision, "path": result.path,
+            "resolved_ref": ref,
             # #241: hand the JUST-published manifest to _resolved_observability
             # so the setup declaration is read from the activated artifact, not
             # a possibly-stale resolve_all() snapshot. Popped before the result.
@@ -13110,13 +13129,14 @@ def _plugin_update_sync(*, name: str, new_ref: str,
     old_artifact_id = entry.get("artifact_id")
     src = entry.get("source") or {}
     repo, subdir = src.get("repo", ""), src.get("subdir", "")
-    guarded = _resolve_and_guard(repo=repo, ref=new_ref,
-                                 expected_revision=expected_revision)
+    guarded = _resolve_ref_and_guard(repo=repo, ref=new_ref,
+                                     expected_revision=expected_revision)
     if isinstance(guarded, dict):
         return guarded
+    new_ref, commit = guarded      # "latest" -> the release tag it resolved to
     try:
         result = plugin_store.publish(name=name, repo=repo, ref=new_ref,
-                                      subdir=subdir, commit=guarded)
+                                      subdir=subdir, commit=commit)
     except plugin_store.RefNotFound:
         return {"ok": False, "kind": "ref_not_found"}
     except plugin_store.ResolveUnavailable:
@@ -13142,6 +13162,7 @@ def _plugin_update_sync(*, name: str, new_ref: str,
     return {"ok": True, "name": name, "targets": list(entry.get("targets") or []),
             "artifact_id": result.artifact_id, "version": result.version,
             "revision": result.revision, "path": result.path,
+            "resolved_ref": new_ref,
             "old_artifact_id": old_artifact_id,
             # #241: see _plugin_add_sync — read the setup declaration from THIS
             # freshly-published manifest, not a possibly-stale resolve_all().
@@ -13311,6 +13332,10 @@ def _explore_vault(vault: str, queries: list[str], unresolved: list[str]) -> dic
     "plugin_add",
     "Add a plugin to the registry: publish its pinned artifact, install any "
     "system requirements, assign it to targets, then reload + verify. Version "
+    "ref may be a tag, a sha, a branch, or the literal 'latest' — the newest "
+    "published release tag (GitHub's latest release, else the highest v<semver> "
+    "tag), never a branch; the result's resolved_ref names it and the registry "
+    "stores it. "
     "is derived from the plugin manifest (never supplied). Targets are "
     "resident: or specialist: roles; for now a plugin cannot be given to a "
     "worker (executor:) — workers use only the plugins Casa ships with them.",
@@ -13362,7 +13387,9 @@ async def plugin_add(args: dict) -> dict:
 
 @tool(
     "plugin_update",
-    "Update a registered plugin to a new ref: re-publish, install new system "
+    "Update a registered plugin to a new ref (a tag, sha or branch, or the "
+    "literal 'latest' for the newest published release tag — never a branch): "
+    "re-publish, install new system "
     "requirements, repoint the registry, reload + verify. Version derives "
     "from the fetched manifest. Pass expected_revision (the producer's "
     "handed-off sha) so a tag that moved after the build aborts before "

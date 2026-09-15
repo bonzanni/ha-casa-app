@@ -26,8 +26,16 @@ installs any system requirements, assigns it to targets, and reloads + verifies
    URL). For a plugin-developer build, take it from that engagement's topic.
 3. **Pin (ref)?** The release tag (`vX.Y.Z`) for a plugin-developer build —
    take it, plus the `revision` sha, verbatim from that engagement's
-   completion handoff. (A sha or branch is acceptable only for a manual add
-   of a third-party repo with no release handoff.)
+   completion handoff. When the operator asks for the latest version, or
+   names no version at all, pass `ref="latest"`: `plugin_add` resolves it
+   server-side to the newest published release tag (GitHub's latest release,
+   else the highest `v<semver>` tag), stores that tag as the entry's ref, and
+   reports it as `resolved_ref` — say that tag in your completion. You have
+   no web tool: do not try to browse releases or tags, and never choose a
+   branch on your own — a branch or a sha is passed only when the operator
+   names it. A repo with no published release refuses with
+   `no_release_found` and nothing is installed; report that and ask the
+   operator whether to install a branch or a sha they name.
 4. **Targets?** One or more of `resident:<role>` or `specialist:<role>`
    (e.g. `specialist:finance`). **For now you cannot give a plugin to a
    worker** (`executor:<type>`): workers use only the plugins Casa ships with
