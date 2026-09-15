@@ -25,7 +25,10 @@ undefined `${VAR}` would otherwise reach the plugin's MCP server as the literal 
 which then runs "successfully" with placeholder credentials.
 
 **The artifact id is not a content hash.** It is computed over source coordinates —
-repository, resolved revision, subdirectory, and the registry name — and nothing else. Two
+repository, resolved revision, subdirectory, and the registry name — and nothing else. A
+ref is an exact tag, sha or branch the operator or a producer handoff named, or the literal
+`latest`, which the tool resolves to a published release tag before anything else happens
+(INV-PLUG-022). Two
 different byte trees fetched for the same coordinates produce the *same* artifact id. Bytes
 are pinned separately, by a checksum recorded in the artifact's own metadata and verified
 when the artifact is validated. Reasoning about integrity from the artifact id alone is the
@@ -184,6 +187,19 @@ with none configured it denies immediately rather than posting one); in-engageme
 not authorization. Sender identity itself is Telegram's authentication of its user ids,
 not an additional Casa-side proof.
 
+**INV-PLUG-022**: The ref literal `latest`, given to `plugin_add` or `plugin_update`, resolves only to a published release tag — GitHub's latest release when its name is a release tag (`v<semver>`), else the highest release tag by numeric order — looked up in the tag namespace and peeled, through any chain of annotated tags to a terminal commit and to nothing else, never through a commit lookup that a same-named branch could satisfy; the tag, never the literal, is what the registry stores and the result reports as `resolved_ref`, the tag-version and expected-revision guards run against that tag and its peel, and a repository with no published release is refused with `no_release_found` before any artifact is published, any system requirement is installed or any registry write.
+
+The configurator has no web tool, and until this release its recipe told it to resolve
+"latest" itself; on 2026-09-15 it spent a minute and a half failing to browse and then
+installed `main`. The literal is now the tool's to resolve. Two rules were settled in design
+review: a release whose name is not a release tag is not "latest" (a release named `main`
+falls through to the tags listing), and the chosen name is resolved in the tag namespace,
+because `commits/<name>` resolves a same-named branch when the release metadata names a tag
+that no longer exists — a stale release would have published a branch head under a tag's
+name. A prefix match, which GitHub returns as a list, is not the tag either. The literal is
+never written to the registry: a later update, rollback or `expected_revision` check reads
+`source.ref` as an exact ref, and the word "latest" would poison all three.
+
 ## Failure behavior
 
 **The registry document is malformed.** It loads as invalid, no plugins resolve, and the
@@ -293,12 +309,16 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - `casa/rootfs/opt/casa/plugin_store.py::safe_extract_tar`
 - `casa/rootfs/opt/casa/plugin_store.py::artifact_verdict`
 - `casa/rootfs/opt/casa/plugin_store.py::manifest_protected_tools`
+- `casa/rootfs/opt/casa/plugin_store.py::resolve_latest_release`
+- `casa/rootfs/opt/casa/plugin_store.py::_peel_tag`
 - `casa/rootfs/opt/casa/plugin_grants.py::protected_map`
 - `casa/rootfs/opt/casa/authz_grants.py::GrantKey`
 - `casa/rootfs/opt/casa/authz_grants.py::GrantStore`
 - `casa/rootfs/opt/casa/plugin_boot.py::main`
 
 **Tests**
+- `tests/test_plugin_store_latest.py`
+- `tests/test_plugin_add_latest.py`
 - `tests/test_plugin_registry.py`
 - `tests/test_plugin_store_publish.py`
 - `tests/test_plugin_grants.py`
