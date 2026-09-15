@@ -15769,7 +15769,15 @@ async def remove_plugin_env_reference(args: dict) -> dict:
     "List 1Password vault items, optionally filtered by query string and/or "
     "vault name. An omitted vault falls back to the configured "
     "onepassword_default_vault.",
-    {"query": str, "vault": str},
+    # An explicit JSON Schema: the shorthand {key: type} form marks EVERY key
+    # required, so the omitted-vault call the description promises was rejected
+    # by the MCP input validator before the handler's #535 fallback could run
+    # (measured on the N150, 2026-09-15). `query` stays required — the recipe's
+    # "never enumerate the whole vault" is enforced here, not in prose.
+    {"type": "object",
+     "properties": {"query": {"type": "string"},
+                    "vault": {"type": "string"}},
+     "required": ["query"]},
 )
 async def list_vault_items(args: dict) -> dict:
     return _result(await asyncio.to_thread(
@@ -15784,7 +15792,11 @@ async def list_vault_items(args: dict) -> dict:
     "Get field labels and types for a 1Password item (does not return secret "
     "values). An omitted vault falls back to the configured "
     "onepassword_default_vault.",
-    {"item": str, "vault": str},
+    # Explicit schema for the same reason as list_vault_items: `vault` optional.
+    {"type": "object",
+     "properties": {"item": {"type": "string"},
+                    "vault": {"type": "string"}},
+     "required": ["item"]},
 )
 async def get_item_fields(args: dict) -> dict:
     return _result(await asyncio.to_thread(
