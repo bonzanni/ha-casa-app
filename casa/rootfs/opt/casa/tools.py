@@ -13217,6 +13217,56 @@ def _resolved_observability(name: str, *, manifest: dict | None = None) -> dict:
     return {"granted_tools": [], "required_env_vars": [], "setup_tool": None}
 
 
+_SECRET_CANDIDATE_MAX_QUERIES = 3
+_SECRET_CANDIDATE_MAX_ITEMS = 5
+
+
+def _secret_candidate_queries(name: str, unresolved: list[str]) -> list[str]:
+    """The plugin name, then each distinct vendor stem of the unresolved vars
+    (``GMAIL_CLIENT_ID`` → ``gmail``), deduplicated, at most three."""
+    queries: list[str] = []
+    for q in [name.lower()] + [v.split("_", 1)[0].lower() for v in unresolved]:
+        if q and q not in queries:
+            queries.append(q)
+    return queries[:_SECRET_CANDIDATE_MAX_QUERIES]
+
+
+def _secret_candidates(name: str, required_env_vars: list[str]) -> dict:
+    """Explore the configured default vault for a just-installed plugin's
+    unresolved secrets and return what is there — item names, ids and field
+    LABELS, never values (the projection is ``_project_item_fields``, the same
+    one ``get_item_fields`` uses). Wires nothing: ``set_plugin_env_reference``
+    stays the deciding step, so "ask when not sure" is the configurator's call.
+
+    Absent (``{}``) when there is nothing to explore for: no required var, no
+    default vault, or no 1Password token. A failed ``op`` is reported as the
+    classified ``op_failed`` and never fails the mutation that called this.
+    Runs AFTER the registry write and reload, so it cannot delay activation.
+    """
+    unresolved = [v for v in required_env_vars if not os.environ.get(v)]
+    vault = _default_vault()
+    if not unresolved or not vault or not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        return {}
+    queries = _secret_candidate_queries(name, unresolved)
+    items: list[dict] = []
+    seen: set[str] = set()
+    for q in queries:
+        listed = _tool_list_vault_items(query=q, vault=vault)
+        if "error" in listed:
+            return {"secret_candidates": listed}
+        for it in listed.get("items", []):
+            if it.get("id") in seen or len(items) >= _SECRET_CANDIDATE_MAX_ITEMS:
+                continue
+            seen.add(it.get("id"))
+            got = _tool_get_item_fields(item=str(it.get("id")), vault=vault)
+            if "error" in got:
+                return {"secret_candidates": got}
+            items.append({"name": it.get("name"), "id": it.get("id"),
+                          "fields": got.get("fields", [])})
+    return {"secret_candidates": {"vault": vault, "queries": queries,
+                                  "items": items, "unresolved": unresolved}}
+
+
 @tool(
     "plugin_add",
     "Add a plugin to the registry: publish its pinned artifact, install any "
@@ -13262,6 +13312,11 @@ async def plugin_add(args: dict) -> dict:
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(
             core["name"], manifest=published_manifest))
+        # Design 2026-09-15 §2.D: the tool explores the default vault for the
+        # unresolved secrets; the configurator decides what to wire.
+        core.update(await asyncio.to_thread(
+            _secret_candidates, core["name"],
+            list(core.get("required_env_vars") or [])))
         return _result(core)
 
 
@@ -13303,6 +13358,11 @@ async def plugin_update(args: dict) -> dict:
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(
             core["name"], manifest=published_manifest))
+        # Design 2026-09-15 §2.D: the tool explores the default vault for the
+        # unresolved secrets; the configurator decides what to wire.
+        core.update(await asyncio.to_thread(
+            _secret_candidates, core["name"],
+            list(core.get("required_env_vars") or [])))
         return _result(core)
 
 
