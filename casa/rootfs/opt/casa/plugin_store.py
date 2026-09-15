@@ -71,8 +71,26 @@ class SourceEmpty(StoreError):
     reason_code = "source_empty"
 
 
+class NoReleaseFound(StoreError):
+    """Design 2026-09-15 §2.C: ``ref="latest"`` found no published release —
+    no release whose name is a release tag, no release tag at all, or a
+    release naming a tag that does not exist in the tag namespace. Hard,
+    non-retryable; a branch is never chosen in its place."""
+    reason_code = "no_release_found"
+
+
+LATEST_REF = "latest"
+
 # C.2/A.2 (v0.74.0): a release ref is exactly "v" + semver.
 RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def _release_tuple(tag) -> tuple[int, int, int] | None:
+    """Numeric order for release tags (``v0.10.0`` > ``v0.9.9``); None for
+    anything that is not a release tag."""
+    if not isinstance(tag, str) or not RELEASE_TAG_RE.match(tag):
+        return None
+    return tuple(int(x) for x in tag[1:].split("."))  # type: ignore[return-value]
 
 _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -855,6 +873,78 @@ def resolve_ref(repo: str, ref: str, *, timeout: float = 20.0,
         waited += wait
     raise ResolveUnavailable(f"resolve retries exhausted for {repo}@{ref}",
                              retry_after_s=last_retry_after)
+
+
+def _gh_json(repo: str, path: str, *, timeout: float = 20.0):
+    """``gh api -i`` for ``path`` with the resolver's failure taxonomy applied:
+    a 200 returns the parsed JSON body; 404 is returned as ``None`` (the
+    caller decides what absence means); every other status goes through
+    ``_classify_resolve_failure`` and is RAISED (rate-limited 403/429
+    included — the listing calls are not retried here; the caller owns retry,
+    as for the transient branch of ``resolve_ref``)."""
+    status, headers, body = gh_api_probe(path, timeout=timeout)
+    if status == 200:
+        try:
+            return json.loads(body or "null")
+        except ValueError as exc:
+            raise ResolveUnavailable(f"unparseable body for {path}") from exc
+    if status == 404:
+        return None
+    raise _classify_resolve_failure(repo, path, status, headers, body)
+
+
+def _peel_tag(repo: str, name: str, *, timeout: float = 20.0) -> str | None:
+    """The commit a release tag points at, resolved in the TAG NAMESPACE —
+    never through ``commits/<name>``, which resolves a same-named branch when
+    the release metadata is stale. Only an exact-ref JSON object counts
+    (GitHub answers a prefix match with a list); an annotated tag is peeled
+    through ``git/tags/<sha>``. None when the tag does not exist or cannot be
+    peeled."""
+    ref = _gh_json(repo, f"repos/{repo}/git/ref/tags/{name}", timeout=timeout)
+    if not isinstance(ref, dict) or ref.get("ref") != f"refs/tags/{name}":
+        return None
+    obj = ref.get("object") or {}
+    sha = _sha_from_body(json.dumps({"sha": obj.get("sha")})) if isinstance(obj, dict) else None
+    if sha is None:
+        return None
+    if obj.get("type") == "commit":
+        return sha
+    if obj.get("type") == "tag":
+        tag_obj = _gh_json(repo, f"repos/{repo}/git/tags/{sha}", timeout=timeout)
+        inner = (tag_obj or {}).get("object") if isinstance(tag_obj, dict) else None
+        peeled = _sha_from_body(json.dumps({"sha": (inner or {}).get("sha")})) if isinstance(inner, dict) else None
+        return peeled
+    return None
+
+
+def resolve_latest_release(repo: str, *, timeout: float = 20.0) -> tuple[str, str]:
+    """Design 2026-09-15 §2.C: the newest PUBLISHED version of ``repo`` as
+    ``(tag, commit)``. GitHub's latest release, accepted only when its name is
+    a release tag (``v<semver>``); else the highest release tag by numeric
+    order; the chosen name is then resolved in the tag namespace by
+    ``_peel_tag``. Raises ``NoReleaseFound`` when nothing qualifies — a
+    branch is never chosen — and ``RefNotFound`` when the repository itself
+    is not visible. Transport failures keep ``resolve_ref``'s taxonomy."""
+    candidates: list[str] = []
+    rel = _gh_json(repo, f"repos/{repo}/releases/latest", timeout=timeout)
+    repo_seen = rel is not None
+    if isinstance(rel, dict) and _release_tuple(rel.get("tag_name")) is not None:
+        candidates.append(rel["tag_name"])
+    if not candidates:
+        tags = _gh_json(repo, f"repos/{repo}/tags?per_page=100", timeout=timeout)
+        if tags is None and not repo_seen:
+            raise RefNotFound(f"{repo}: repository not visible (HTTP 404)")
+        names = [t.get("name") for t in (tags or []) if isinstance(t, dict)]
+        release = [n for n in names if _release_tuple(n) is not None]
+        release.sort(key=_release_tuple, reverse=True)
+        candidates.extend(release[:1])
+    for tag in candidates:
+        sha = _peel_tag(repo, tag, timeout=timeout)
+        if sha is not None:
+            return tag, sha
+        raise NoReleaseFound(
+            f"{repo}: release {tag} names a tag that does not exist or cannot be peeled")
+    raise NoReleaseFound(f"{repo}: no published release tag (v<semver>) found")
 
 
 def fetch_commit_tree(repo: str, commit: str, subdir: str, dest: Path,
