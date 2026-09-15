@@ -71,6 +71,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the setup tool's dispatch obligation or its consent gating | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
 | the setup-dispatch gate — the applied state it recomputes before a setup tool is dispatched, or the overlay reads that fence the send | [`architecture/plugin-setup-dispatch-gate.md`](architecture/plugin-setup-dispatch-gate.md) |
 | the turn lifecycle, retry behaviour, or how a turn's output and faults are classified | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
+| the vault exploration a plugin mutation result carries, the configurator's vault tools or their schemas, the item-field projection, or what a failing op call may report | [`architecture/plugin-secret-exploration.md`](architecture/plugin-secret-exploration.md) |
 | the warm client pool, client reuse or invalidation, a key reset, or pool teardown | [`architecture/sdk-client-pool.md`](architecture/sdk-client-pool.md) |
 | trigger types, resident webhook routing, one-shot firing and cleanup, scheduling, or who may write a resident's trigger file | [`architecture/triggers.md`](architecture/triggers.md) |
 | turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed | [`architecture/engagement-turn-admission.md`](architecture/engagement-turn-admission.md) |

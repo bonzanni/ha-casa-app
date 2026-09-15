@@ -95,9 +95,11 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
 7. **Wire bundled plugins' env vars — part of THIS install, not a follow-up.** For each bundled
    plugin the inspection listed with a non-empty `env_names` (mirrored as `required_env_vars` in
    the commit result, keyed by the SCOPED registry name `<slug>.<plugin>` — use that exact key as
-   the plugin identifier below), run the `recipes/plugin/secrets.md` flow now: ask the operator
-   for each value or 1Password reference you cannot derive (e.g. a vault name is the installer's
-   choice — never guess it), `set_plugin_env_reference(plugin="<slug>.<plugin>", ...)` once per
+   the plugin identifier below), run the `recipes/plugin/secrets.md` flow now — explore, then
+   wire, then ask: the default vault is named in your world state, so search it
+   (`list_vault_items`, `get_item_fields`) before asking, and ask the operator only for an item
+   or field name you could not settle — never for a value —
+   then `set_plugin_env_reference(plugin="<slug>.<plugin>", ...)` once per
    var, then `casa_reload(scope="plugin_env")`, and confirm via
    `verify_plugin_state(plugin_name="<slug>.<plugin>")` that no `secrets[*].status: unresolved`
    remains. An unresolved required var withholds the plugin from

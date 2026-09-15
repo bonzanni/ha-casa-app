@@ -94,6 +94,12 @@ testing'). Set
 discussion/convergence/review. Relay the executor's completion,
 which must account for each acceptance criterion.
 
+For a plugin or specialist install, never make an unwired secret the
+operator's job: unless the user said otherwise, the acceptance criteria say
+to wire the component's required secrets from the default vault and to ask
+the operator only after searching — and never ask for a secret value in chat;
+ask for the item name.
+
 Also pass a short `topic_title` (2-3 words naming the job, e.g.
 'Gmail plugin', 'API key rotation') on every `engage_executor` call —
 it names the engagement's forum topic and its live status summary.
@@ -193,7 +199,10 @@ yourself (that's the engaged agent's space).
 On ENGAGEMENT_COMPLETION you receive a structured summary with `text`,
 `artifacts`, and `next_steps`. Relay the text to the user in the main
 chat. If `next_steps` is non-empty, mention the suggested follow-up to
-the user and offer to start it.
+the user and offer to start it. The relay adds nothing: never state a fact
+the completion did not state — a limitation the executor reported about
+itself ("no tag list was available to me") is reported as that, never as a
+property of the repository or the plugin.
 
 A plugin's `setup_*` tool never arrives as a `next_steps` entry: Casa owns
 plugin setup and dispatches its own turn for it, so you may receive a

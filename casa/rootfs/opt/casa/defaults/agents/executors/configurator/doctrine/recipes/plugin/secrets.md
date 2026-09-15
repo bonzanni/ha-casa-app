@@ -19,36 +19,70 @@ asked to rotate a secret on an already-installed plugin.
 - The operator asks to update an existing secret (1P field changed,
   vendor rotated the key, etc.).
 
-## Discover the source
+## Discover the source — explore before asking
 
-If the operator already has a 1Password reference in mind
-(`op://Casa/openai-key/credential`), skip to Set the entry below.
-Otherwise help them pick:
+`plugin_add` and `plugin_update` already searched the default vault for you:
+when a plugin declares required variables that are unresolved, their result
+carries `secret_candidates` — the vault searched, the queries tried (the
+plugin name, then each vendor stem of the variables), up to five matching
+items (each named by the query term it matched, with its id) and, per field,
+the field's id, its `role` (`client_id`, `client_secret`, `api_key`, `token`,
+`refresh_token`, `access_token`, `credential`, `username`, `password`, `email`,
+`hostname`, `url`, `account`, `region`, `other_known`, or null) and its type —
+never a label, a section or a value — and the variables still `unresolved`.
+Read it before anything else, and decide from it:
 
-    list_vault_items(query="<vendor-or-plugin-keyword>", vault="<vault-name>")
-    # → { items: [ { name, id, category, updated_at }, ... ] }
+- When exactly one item matches and every unresolved variable maps to exactly
+  one field role, wire it (Set the entry below): the mapping is variable →
+  role (`GMAIL_CLIENT_ID` → `client_id`, `GMAIL_USER_EMAIL` → `email`,
+  `ELEVENLABS_API_KEY` → `api_key`), the reference is
+  `op://<vault>/<item id>/<field id>`, one `set_plugin_env_reference` per
+  variable; then reload and verify, and name the item id and field roles you
+  used in your completion.
+- When several items match, or a variable has no field with a matching role
+  or two fields share the role, ask in the engagement topic, naming what you
+  found ("two items match 'gmail' — ids abc123 and def456 — which one?"; "the
+  item has two fields I cannot place, ids f7 and f9 — which is
+  ELEVENLABS_API_KEY?"). Never ask the operator for a secret value; ask for
+  the item or field name, or which id is which.
+- When nothing matches (empty `items`), call `list_vault_items(query=...)`
+  once more with a different keyword if one is plausible (a product name from
+  the plugin's README, say); then report that vault, the queries tried, that
+  nothing matched, and which variables stay unwired. That report — not a
+  request for values — is your completion's job.
+- When the vault could not be read (`secret_candidates.error` is `op_failed`,
+  `op_timeout` or `op_unreadable`), that is NOT "nothing matched": try
+  `list_vault_items` once by hand; if it fails the same way, report that vault
+  as unreadable, with the classification, and which variables stay unwired.
 
-`vault` defaults to the operator's configured `onepassword_default_vault`
-(see `config.yaml`). Filter by the operator's keyword — don't enumerate
-the whole vault. Return the candidate items and let the operator
-choose by name.
+The default vault is named in your world state (`Default vault:`); omit
+`vault` to use it, or pass it explicitly to name it in your report. If the
+operator already gave a 1Password reference (`op://<vault>/<item id>/<field id>`;
+an operator may type names instead of ids, and the resolver accepts them,
+but you pass it through unchanged and never repeat it), skip to Set the
+entry below. For a manual search:
 
-Once the item is chosen, list its fields:
+    list_vault_items(query="<vendor-or-plugin-keyword>")
+    # → { items: [ { name, id, category }, ... ] }   # name = the term matched
 
-    get_item_fields(item="<id-or-title>", vault="<vault-name>")
-    # → { fields: [ { label, section, type }, ... ] }
+Filter by a keyword — the schema requires one; don't enumerate the whole
+vault.
 
-The resolver shells `op read op://<vault>/<id>/<field>` at boot, so the
-field label here becomes the third path segment. Plain-typed values
-(`type: STRING`, `type: CONCEALED`) work directly — file/document fields
-don't.
+Once an item is chosen, list its fields:
+
+    get_item_fields(item="<item id>")
+    # → { fields: [ { id, role, type }, ... ] }   # never labels or values
+
+The resolver shells `op read op://<vault>/<item id>/<field id>` at boot; the
+field id is the third path segment. Plain-typed values (`type: STRING`,
+`type: CONCEALED`) work directly — file/document fields don't.
 
 ## Set the entry
 
     set_plugin_env_reference(
       plugin="<plugin_name>",
       var_name="<VAR>",
-      op_ref_or_value="op://<vault>/<id>/<field>",
+      op_ref_or_value="op://<vault>/<item id>/<field id>",
     )
 
 Or, if the operator wants a literal value:
@@ -115,8 +149,8 @@ per target role at the end of the install.
 ## Common mistakes
 
 - Setting the var without surfacing it through `get_item_fields` first.
-  Misspelled field labels resolve to empty strings and the MCP server
-  fails to start with no clear error in the agent log.
+  A mistyped field id resolves to an empty string and the MCP server fails
+  to start with no clear error in the agent log — copy ids from the result.
 - Using `op://` syntax for a literal value, or omitting `op://` for a
   vault reference. The resolver only follows the prefix — anything
   else passes through verbatim.
@@ -145,11 +179,12 @@ to `set_plugin_env_reference` is a label only; the line is written flat into
 `plugin-env.conf` and re-sourced into `os.environ`, which the plugin's MCP
 subprocess inherits):
 
-    # operator gives the reference, e.g. op://Casa/Context7/credential
+    # the operator gives the reference, or you find the item and its field
+    # id as above: op://<vault>/<item id>/<field id>
     set_plugin_env_reference(
       plugin="context7",
       var_name="CONTEXT7_API_KEY",
-      op_ref_or_value="op://Casa/Context7/credential",
+      op_ref_or_value="op://<vault>/<item id>/<field id>",
     )
     config_git_commit(message="context7: wire optional CONTEXT7_API_KEY via 1Password")
     casa_reload(scope="plugin_env")

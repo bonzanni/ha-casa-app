@@ -48,7 +48,7 @@ is derived from the fetched manifest** — you never pass it.
    - `activation_committed:true, runtime_ready:false` — **the pin already
      moved.** Do NOT repeat `plugin_update` as if nothing happened. The
      remedy is a reload/verify retry: `casa_reload(scope="agent",
-     role=<affected role>)` then `verify_plugin_state(name)`. A persisting
+     role=<affected role>)` then `verify_plugin_state(plugin_name=name)`. A persisting
      `reload_required` on a target means that agent is still bound to the
      previous artifact — surface it, do not mask it.
    - `ok:true` with a non-empty `pending_targets` — success: those
@@ -67,7 +67,11 @@ running its RECORDED artifact; verify lists those under
 up the new code on their next launch.
 
 **No separate casa_reload is needed on the happy path** — `plugin_update`
-reloads + verifies internally. Report the outcome and `emit_completion(...)`.
+reloads + verifies internally. If the result's `required_env_vars` is
+non-empty, wiring them is a REQUIRED stage of this update, not a follow-up:
+its `secret_candidates` carries what the default vault holds for them —
+follow `secrets.md` (explore, then wire, then ask). Report the outcome and
+`emit_completion(...)`.
 
 ## Setup is Casa's, not yours to route
 

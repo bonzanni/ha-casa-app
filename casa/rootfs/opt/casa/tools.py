@@ -2230,15 +2230,17 @@ def _build_world_state_summary() -> str:
         exec_types = []
     lines.append(f"Enabled executors:    {', '.join(exec_types) or '(none)'}")
 
-    version = "unknown"
-    for candidate in ("/opt/casa/VERSION", "/config/VERSION"):
-        try:
-            with open(candidate) as fh:
-                version = fh.read().strip()
-                break
-        except OSError:
-            continue
+    # The version is exported by svc-casa/run as CASA_VERSION; the VERSION
+    # files this block used to read never existed, so every engagement read
+    # "unknown" (N150, v0.311.0, 2026-09-15).
+    version = os.environ.get("CASA_VERSION", "").strip() or "unknown"
     lines.append(f"Addon version:        {version}")
+
+    # Defaults are the configurator's to know, not the operator's to repeat:
+    # the configured 1Password vault is rendered here so a secrets recipe can
+    # name it (and omit it — the vault tools fall back to it).
+    vault = _default_vault()
+    lines.append(f"Default vault:        {vault or '(none configured)'}")
 
     return "\n".join(lines)
 
@@ -7159,7 +7161,14 @@ async def config_git_commit(args: dict) -> dict:
     "'policies', 'plugin_env', 'agents', 'executors', 'config_sync', 'full'. Use 'full' "
     "as a catch-all when unsure. Does NOT restart the addon - for that, "
     "see casa_restart_supervised. Restricted to the configurator role.",
-    {"scope": str, "role": str, "include_env": bool},
+    # Explicit schema: the shorthand marked role and include_env required, so
+    # the recipes' own `casa_reload(scope="plugin_env")` was rejected by the
+    # MCP validator before this handler ran (batch-1 diff round 1, Astra D5).
+    {"type": "object",
+     "properties": {"scope": {"type": "string"},
+                    "role": {"type": "string"},
+                    "include_env": {"type": "boolean"}},
+     "required": ["scope"]},
 )
 async def casa_reload(args: dict) -> dict:
     caller = _effective_caller_role()
@@ -10219,7 +10228,17 @@ _COMPLETION_GUARDED_EXECUTOR_TYPES = frozenset({"plugin-developer"})
     "Mark this engagement complete. Ellen receives the summary. Must be called "
     "from inside an active engagement. status: 'ok' | 'partial' | 'failed' | "
     "'cancelled'.",
-    {"text": str, "artifacts": list, "next_steps": list, "status": str},
+    # Explicit schema: artifacts, next_steps and status are optional in the
+    # handler and in every recipe's example call; the shorthand made all four
+    # required (batch-1 diff round 1, Astra D5).
+    {"type": "object",
+     "properties": {"text": {"type": "string"},
+                    "artifacts": {"type": "array"},
+                    "next_steps": {"type": "array"},
+                    "status": {"type": "string"}},
+     # Round 2 E3: recipes/executor/scaffold.md's `emit_completion(status="partial")`
+     # carries no text; the handler defaults every field, so none is required.
+     "required": []},
 )
 async def emit_completion(args: dict) -> dict:
     engagement = engagement_var.get(None)
@@ -11485,7 +11504,12 @@ _TOPIC_CLEANUP_SCOPES = ("due", "all_terminal")
     "7-day retention window; 'all_terminal' purges every ledger entry "
     "immediately and is configurator-only. Deletion is irreversible — pass "
     "dry_run=true first to preview what would be deleted.",
-    {"scope": str, "dry_run": bool},
+    # Explicit schema: the assistant prompt's `cleanup_engagement_topics()`
+    # passes nothing; the handler defaults scope to "due" (round 2 E3).
+    {"type": "object",
+     "properties": {"scope": {"type": "string"},
+                    "dry_run": {"type": "boolean"}},
+     "required": []},
 )
 async def cleanup_engagement_topics(args: dict) -> dict:
     """Configurator-owned on-demand topic cleanup [AR-7] — ledger-only.
@@ -13215,6 +13239,74 @@ def _resolved_observability(name: str, *, manifest: dict | None = None) -> dict:
     return {"granted_tools": [], "required_env_vars": [], "setup_tool": None}
 
 
+_SECRET_CANDIDATE_MAX_QUERIES = 3
+_SECRET_CANDIDATE_MAX_ITEMS = 5
+
+
+def _secret_candidate_queries(name: str, unresolved: list[str]) -> list[str]:
+    """The plugin name, then each distinct vendor stem of the unresolved vars
+    (``GMAIL_CLIENT_ID`` → ``gmail``), deduplicated, at most three."""
+    queries: list[str] = []
+    for q in [name.lower()] + [v.split("_", 1)[0].lower() for v in unresolved]:
+        if q and q not in queries:
+            queries.append(q)
+    return queries[:_SECRET_CANDIDATE_MAX_QUERIES]
+
+
+def _secret_candidates(name: str, required_env_vars: list[str]) -> dict:
+    """Explore the configured default vault for a just-installed plugin's
+    unresolved secrets and return what is there — per item the query term it
+    matched and its id, per field its id, its role and its type; never a
+    title, a label, a section or a value (the projection is
+    ``_project_item_fields``, the same one ``get_item_fields`` uses). Wires
+    nothing: ``set_plugin_env_reference`` stays the deciding step, so "ask
+    when not sure" is the configurator's call.
+
+    Absent (``{}``) when there is nothing to explore for: no required var, no
+    default vault, or no 1Password token. A failed ``op`` is reported as the
+    classified ``op_failed`` and never fails the mutation that called this.
+    Runs AFTER the registry write and reload, so it cannot delay activation.
+    """
+    unresolved = [v for v in required_env_vars if not os.environ.get(v)]
+    vault = _default_vault()
+    if not unresolved or not vault or not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        return {}
+    queries = _secret_candidate_queries(name, unresolved)
+    try:
+        return {"secret_candidates": _explore_vault(vault, queries, unresolved)}
+    except Exception as exc:  # noqa: BLE001 — the exploration never fails the mutation
+        # Terra diff r1 D2: anything the helpers did not classify (a foreign
+        # exception, a non-string id) is still reported as a fixed
+        # classification. Round 2 E2: only the exception's CLASS is logged;
+        # its message can carry what op printed, and so can a traceback.
+        logger.warning("secret exploration for %s failed (%s)", name,
+                       type(exc).__name__)
+        return {"secret_candidates": _op_failed(-1)}
+
+
+def _explore_vault(vault: str, queries: list[str], unresolved: list[str]) -> dict:
+    items: list[dict] = []
+    seen: set[str] = set()
+    for q in queries:
+        listed = _op_item_list(q, vault)
+        if "error" in listed:
+            return listed
+        for it in listed.get("rows", []):
+            if it.get("id") in seen or len(items) >= _SECRET_CANDIDATE_MAX_ITEMS:
+                continue
+            seen.add(it.get("id"))
+            got = _op_item_get(str(it.get("id")), vault)
+            if "error" in got:
+                return got
+            doc = got["doc"]
+            iid = it.get("id")
+            items.append({"name": _matched_term(it.get("title"), [q]),
+                          "id": iid if isinstance(iid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", iid) else None,
+                          "fields": _project_item_fields(doc)})
+    return {"vault": vault, "queries": queries, "items": items,
+            "unresolved": unresolved}
+
+
 @tool(
     "plugin_add",
     "Add a plugin to the registry: publish its pinned artifact, install any "
@@ -13260,6 +13352,11 @@ async def plugin_add(args: dict) -> dict:
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(
             core["name"], manifest=published_manifest))
+        # Design 2026-09-15 §2.D: the tool explores the default vault for the
+        # unresolved secrets; the configurator decides what to wire.
+        core.update(await asyncio.to_thread(
+            _secret_candidates, core["name"],
+            list(core.get("required_env_vars") or [])))
         return _result(core)
 
 
@@ -13301,6 +13398,11 @@ async def plugin_update(args: dict) -> dict:
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(
             core["name"], manifest=published_manifest))
+        # Design 2026-09-15 §2.D: the tool explores the default vault for the
+        # unresolved secrets; the configurator decides what to wire.
+        core.update(await asyncio.to_thread(
+            _secret_candidates, core["name"],
+            list(core.get("required_env_vars") or [])))
         return _result(core)
 
 
@@ -15681,35 +15783,180 @@ def _default_vault() -> str:
     return os.environ.get("ONEPASSWORD_DEFAULT_VAULT", "")
 
 
-def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
-    vault = vault or _default_vault()
+def _op_item_list(query: str, vault: str) -> dict:
+    """The parsed ``op item list`` rows matching ``query`` (case-folded
+    substring of the title), or a classified error dict. Rows carry titles;
+    they never leave the two callers below unprojected."""
     cmd = ["op", "item", "list", "--format", "json"]
     if vault:
         cmd += ["--vault", vault]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return _op_timeout()
     if r.returncode != 0:
-        return {"error": r.stderr.strip()}
-    items = json.loads(r.stdout)
+        return _op_failed(r.returncode)
+    try:
+        items = json.loads(r.stdout)
+        if not isinstance(items, list):
+            raise ValueError("op item list did not return a list")
+    except ValueError:
+        return _op_unreadable()
     if query:
-        items = [i for i in items if query.lower() in (i.get("title", "")).lower()]
-    return {"items": [{"name": i.get("title"), "id": i.get("id"),
-                       "category": i.get("category"),
-                       "updated_at": i.get("updated_at")} for i in items]}
+        items = [i for i in items if isinstance(i, dict)
+                 and query.lower() in str(i.get("title", "")).lower()]
+    return {"rows": items}
+
+
+def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
+    vault = vault or _default_vault()
+    got = _op_item_list(query, vault)
+    if "error" in got:
+        return got
+    rows = []
+    for i in got["rows"]:
+        iid = i.get("id")
+        cat = i.get("category")
+        rows.append({"name": _matched_term(i.get("title"), [query]),
+                     "id": iid if isinstance(iid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", iid) else None,
+                     "category": cat if isinstance(cat, str) and re.fullmatch(r"[A-Z_]{1,40}", cat) else None})
+    return {"items": rows}
+
+
+def _op_item_get(item: str, vault: str) -> dict:
+    """The parsed ``op item get`` document, or a classified error dict. The
+    document holds VALUES; it never leaves the two callers below unprojected."""
+    cmd = ["op", "item", "get", item, "--format", "json"]
+    if vault:
+        cmd += ["--vault", vault]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return _op_timeout()
+    if r.returncode != 0:
+        return _op_failed(r.returncode)
+    try:
+        doc = json.loads(r.stdout)
+        if not isinstance(doc, dict):
+            raise ValueError("op item get did not return an object")
+    except ValueError:
+        return _op_unreadable()
+    return {"doc": doc}
 
 
 def _tool_get_item_fields(*, item: str, vault: str = "") -> dict:
     vault = vault or _default_vault()
-    cmd = ["op", "item", "get", item, "--format", "json"]
-    if vault:
-        cmd += ["--vault", vault]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if r.returncode != 0:
-        return {"error": r.stderr.strip()}
-    data = json.loads(r.stdout)
-    return {"fields": [{"label": f.get("label"),
-                        "section": (f.get("section") or {}).get("label", ""),
-                        "type": f.get("type")}
-                       for f in data.get("fields", [])]}
+    got = _op_item_get(item, vault)
+    if "error" in got:
+        return got
+    return {"fields": _project_item_fields(got["doc"])}
+
+
+def _op_failed(exit_code: int) -> dict:
+    """A classified ``op`` failure. NEVER the subprocess's stderr or stdout:
+    whatever ``op`` prints on failure lands in the configurator's transcript
+    and from there in Telegram, and truncation is not redaction."""
+    return {"error": "op_failed", "exit_code": int(exit_code)}
+
+
+def _op_timeout() -> dict:
+    """``op`` did not return within its budget (fixed string, no output)."""
+    return {"error": "op_timeout"}
+
+
+def _op_unreadable() -> dict:
+    """``op`` exited 0 but its stdout was not the JSON document expected — a
+    fixed string; the unparseable bytes are never forwarded."""
+    return {"error": "op_unreadable"}
+
+
+# Casa never repeats an operator-typed vault string. Three review rounds
+# tried to decide which metadata strings were safe to echo by comparing them
+# against where secrets live (field values; then every string in the
+# document; then also by shape) and each round found a string that got
+# through: a value duplicated into a label, a value split across labels, a
+# plain-shaped secret typed as the label itself, and — the other way — an
+# ordinary label withheld because the item's notes mentioned it. The mechanism
+# is cut. What is returned about an item is: its op-generated id, and for each
+# field its op-generated id, its type, and a ROLE from the closed set below,
+# derived in-process from the label (which is never returned). In place of a
+# title, the query term the item matched. A wiring reference is
+# ``op://<vault>/<item id>/<field id>``, which the resolver accepts.
+_FIELD_ROLES = (
+    # (regex over the case-folded, whitespace-normalised label, role)
+    (re.compile(r"^(oauth[ -]?)?client[ _-]?id$"), "client_id"),
+    (re.compile(r"^(oauth[ -]?)?client[ _-]?secret$"), "client_secret"),
+    (re.compile(r"^refresh[ _-]?token$"), "refresh_token"),
+    (re.compile(r"^access[ _-]?token$"), "access_token"),
+    (re.compile(r"^(api[ _-]?)?(token|bearer( token)?)$"), "token"),
+    (re.compile(r"^(api[ _-]?)?(key|api key|apikey|secret[ _-]?key)$"), "api_key"),
+    (re.compile(r"^(client|app|application|consumer)[ _-]?(key|secret)$"), "api_key"),
+    (re.compile(r"^(secret|credential|credentials)$"), "credential"),
+    (re.compile(r"^(user ?name|user|login|account[ _-]?name)$"), "username"),
+    (re.compile(r"^(pass ?word|pass|pin|passphrase)$"), "password"),
+    (re.compile(r"^(e[ -]?mail|e[ -]?mail address|mail|user[ _-]?email)$"), "email"),
+    (re.compile(r"^(host ?name|host|server|domain)$"), "hostname"),
+    (re.compile(r"^(url|uri|endpoint|base[ _-]?url|website|address)$"), "url"),
+    (re.compile(r"^(account|account[ _-]?id|tenant|tenant[ _-]?id|org|organi[sz]ation|project|project[ _-]?id)$"), "account"),
+    (re.compile(r"^(region|zone|environment|env)$"), "region"),
+    # 1Password's own templates (API Credential, Login, Database, Server) and
+    # the plugins Casa ships today (finance's BANKFEED_OP_VAULT → "Vault").
+    (re.compile(r"^(vault|vault[ _-]?name|database|db|schema|port|type|connection[ _-]?options|"
+                r"phone|phone number|number|chat[ _-]?id|bot[ _-]?token|webhook[ _-]?secret|"
+                r"voice[ _-]?id|model|one[ _-]?time[ _-]?password|otp|notes?)$"), "other_known"),
+)
+_FIELD_TYPES = frozenset({"STRING", "CONCEALED", "EMAIL", "URL", "OTP", "DATE",
+                          "MONTH_YEAR", "MENU", "PHONE", "ADDRESS", "REFERENCE",
+                          "FILE", "SSHKEY", "CREDIT_CARD_NUMBER", "CREDIT_CARD_TYPE",
+                          "GENDER", "UNKNOWN"})
+
+
+def _field_role(label: object) -> str | None:
+    """The fixed role a field label denotes, or None. The LABEL never leaves
+    this function; a role is one of a closed set of Casa-chosen tokens, so
+    nothing operator-typed reaches the result and nothing is compared against
+    the document. An unrecognised label is a field the configurator asks the
+    operator about, by the field's id."""
+    t = label if isinstance(label, str) else ""
+    t = re.sub(r"\s+", " ", t.strip().lower())
+    if not t:
+        return None
+    for rx, role in _FIELD_ROLES:
+        if rx.match(t):
+            return role
+    return None
+
+
+def _matched_term(title: object, queries: list[str]) -> str:
+    """The query term an item's title matched, never the title. Case-folded
+    substring match, the same rule the listing filters by; the first matching
+    query wins; an item that matched none reads ``(unnamed)``."""
+    t = title.lower() if isinstance(title, str) else ""
+    for q in queries:
+        if q and q.lower() in t:
+            return q.lower()
+    return "(unnamed)"
+
+
+def _project_item_fields(item: dict) -> list[dict]:
+    """The ONE projection of an ``op item get`` document: per field its
+    op-generated ``id``, its ``role`` (a closed set derived from the label,
+    which is never returned) and its ``type`` (validated against op's own
+    enum, else None). Never a label, a section, a value, a reference or a
+    note. Shared by ``get_item_fields`` and ``plugin_add``'s
+    ``secret_candidates`` so there is a single parser to audit for disclosure."""
+    out: list[dict] = []
+    for f in (item or {}).get("fields", []) or []:
+        if not isinstance(f, dict):
+            continue
+        fid = f.get("id")
+        ftype = f.get("type")
+        out.append({
+            "id": fid if isinstance(fid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", fid) else None,
+            "role": _field_role(f.get("label")),
+            "type": ftype if isinstance(ftype, str) and ftype in _FIELD_TYPES else None,
+        })
+    return out
 
 
 @tool(
@@ -15766,10 +16013,19 @@ async def remove_plugin_env_reference(args: dict) -> dict:
 
 @tool(
     "list_vault_items",
-    "List 1Password vault items, optionally filtered by query string and/or "
-    "vault name. An omitted vault falls back to the configured "
+    "List 1Password vault items whose title contains the query: each as the "
+    "query term it matched, its op item id and its category (never the "
+    "title). An omitted vault falls back to the configured "
     "onepassword_default_vault.",
-    {"query": str, "vault": str},
+    # An explicit JSON Schema: the shorthand {key: type} form marks EVERY key
+    # required, so the omitted-vault call the description promises was rejected
+    # by the MCP input validator before the handler's #535 fallback could run
+    # (measured on the N150, 2026-09-15). `query` stays required — the recipe's
+    # "never enumerate the whole vault" is enforced here, not in prose.
+    {"type": "object",
+     "properties": {"query": {"type": "string"},
+                    "vault": {"type": "string"}},
+     "required": ["query"]},
 )
 async def list_vault_items(args: dict) -> dict:
     return _result(await asyncio.to_thread(
@@ -15781,10 +16037,16 @@ async def list_vault_items(args: dict) -> dict:
 
 @tool(
     "get_item_fields",
-    "Get field labels and types for a 1Password item (does not return secret "
-    "values). An omitted vault falls back to the configured "
-    "onepassword_default_vault.",
-    {"item": str, "vault": str},
+    "Get a 1Password item's fields as op field ids, roles (client_id, "
+    "client_secret, api_key, token, email, username, password, hostname, url, "
+    "account, ...) and types. Never returns labels, sections or values; wire "
+    "with op://<vault>/<item id>/<field id>. An omitted vault falls back to "
+    "the configured onepassword_default_vault.",
+    # Explicit schema for the same reason as list_vault_items: `vault` optional.
+    {"type": "object",
+     "properties": {"item": {"type": "string"},
+                    "vault": {"type": "string"}},
+     "required": ["item"]},
 )
 async def get_item_fields(args: dict) -> dict:
     return _result(await asyncio.to_thread(

@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.312.0] - 2026-09-15
+
+### Fixed
+
+- Installing a plugin whose secrets live in your 1Password vault no longer ends
+  with the configurator asking you for them. Adding or updating a plugin now
+  searches your default vault for the plugin's required variables and hands the
+  configurator what it found — item names and field labels, never values — so
+  it wires a single clear match itself, asks you a specific question when there
+  are several, and reports what it searched when there is nothing. Its guidance
+  says the same: explore, then wire, then ask, and never ask for a secret
+  value. Before, the one vault call it made was refused because the tool
+  demanded a vault name the deployment already knew, and it gave up.
+- The configurator's vault tools accept an omitted vault name and fall back to
+  the configured default vault, as their guidance always said (#535's fix ran
+  below the validator that refused the call). A failing, hanging or unreadable
+  `op` call now reports a fixed classification instead of the CLI's own text,
+  which could have carried a value into the chat. Casa never repeats a vault
+  item's title or field labels at all: an item is named by the search term it
+  matched and its id, and each field by its id, its type and a role Casa
+  recognised from the label (client id, client secret, API key, email, and so
+  on); a field Casa cannot place is one the configurator asks you about.
+- The configurator's reload and completion tools, and the assistant's topic
+  cleanup tool, accept the calls their own guidance spells out: `casa_reload`
+  now requires only a scope, and `emit_completion` and
+  `cleanup_engagement_topics` nothing at all. Before, each demanded every
+  optional argument, so the literal `casa_reload(scope="plugin_env")`,
+  `emit_completion(status=...)` and `cleanup_engagement_topics()` calls were
+  refused before running. The plugin recipes also named the verification
+  tool's argument wrongly; they now call it as its schema requires.
+- Every executor engagement's world state now names the configured default
+  vault and the real Casa version. Before, the version line read `unknown` on
+  every install, and the default vault was not stated anywhere the
+  configurator could see.
+- When the assistant briefs an install, it no longer makes an unwired secret
+  your job, and it never invites a secret value into the chat. When it relays
+  an executor's completion, it adds nothing the completion did not say — a
+  tool the executor lacked is reported as that, not as a property of the
+  repository or the plugin.
+
 ## [0.311.0] - 2026-09-15
 
 ### Fixed

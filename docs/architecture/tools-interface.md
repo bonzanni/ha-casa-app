@@ -69,6 +69,24 @@ names its referrers; the sweep reports what it kept and why, so "some were skipp
 the whole story an operator gets. What each refusal means, and why removal is decided by
 references rather than by use, belongs to [`architecture/personality.md`](personality.md).
 
+**A vault is read by id and role, never repeated by name.** The configurator's two vault
+tools, `list_vault_items` and `get_item_fields`, return an item's op id and the query term it
+matched, and per field the op id, a role from a closed set and a validated type — never a
+title, a label, a section, a value, a reference or a note — through one projection shared
+with the exploration `plugin_add` performs. Their `vault` argument is optional and
+falls back to the configured default vault, which every executor engagement's world-state
+block names (`Default vault:`, beside the real `Addon version:`), so the configurator can
+omit it or name it; the search key stays required by schema, so the whole vault is never
+enumerated. A failing `op` call yields a fixed classification and the exit code, never the
+CLI's own text, because whatever `op` prints on failure would otherwise reach the
+configurator's transcript and, from there, the chat. The contract is
+[`architecture/plugin-secret-exploration.md`](plugin-secret-exploration.md)'s.
+The same schema discipline holds for the two tools every recipe's canonical order ends
+with: `casa_reload` requires only `scope`, and `emit_completion` nothing at all, because the
+recipes' literal calls (`casa_reload(scope="plugin_env")`, `emit_completion(status=..., text=...)`)
+omit the rest, and the shorthand declaration had made every key required — a call the
+validator refused before the handler ran.
+
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner
 (INV-ENG-001); everything observable — permits, brokers, topics, notifications, retention —

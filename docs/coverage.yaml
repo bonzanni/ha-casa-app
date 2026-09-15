@@ -374,7 +374,7 @@
 - item: tool:event_ack_revoke
   doc: architecture/plugin-events.md
 - item: tool:get_item_fields
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-secret-exploration.md
 - item: tool:get_schedule
   doc: architecture/tools-interface.md
 - item: tool:set_reminder
@@ -384,7 +384,7 @@
 - item: tool:list_engagement_workspaces
   doc: architecture/tools-interface.md
 - item: tool:list_vault_items
-  doc: architecture/tools-interface.md
+  doc: architecture/plugin-secret-exploration.md
 - item: tool:peek_engagement_workspace
   doc: architecture/tools-interface.md
 - item: tool:persona_ack_revoke
@@ -638,6 +638,8 @@
 - item: env:LOG_LEVEL
   doc: reference/operator-options.md
 - item: env:ONEPASSWORD_DEFAULT_VAULT
+  doc: reference/operator-options.md
+- item: env:OP_SERVICE_ACCOUNT_TOKEN
   doc: reference/operator-options.md
 - item: env:PUBLIC_URL
   doc: reference/operator-options.md

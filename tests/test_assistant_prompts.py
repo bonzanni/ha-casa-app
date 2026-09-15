@@ -1076,13 +1076,21 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # nothing else; the six butler and concierge carriers are byte-identical. The
 # sentence makes no retention claim on any surface, which is what this pin
 # guards.
+#
+# MOVED 2026-09-15 (plugin-install flow, batch 1), the three `assistant:*`
+# carriers ONLY. The Core doctrine gains one paragraph: briefing an install
+# never makes an unwired secret the operator's job, and relaying a completion
+# never states a fact the completion did not state. Measured with `difflib`
+# over base-vs-new residual text: exactly ONE `insert` of 75 words on each of
+# the three assistant carriers, that paragraph and nothing else; the six
+# butler and concierge carriers byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "785d81df7f3d8cdebc03c9dc139bfd74ddad36055aee567a018c82819ff260e1",
+        "f4d8e0bd8a70b548d2fbe2c9958d531c2b57bd9eda57af0b1bb9b98da4b340b9",
     "assistant:text":
-        "07a848a00841d35d4d140ceb746da80a8014828a7513bf8a9a862f90ec4686a2",
+        "fddc3c05b08d784a5e2dbf31e84d1209bddadbc87edd719ae9455c0ceae38cc1",
     "assistant:voice":
-        "a66d7692b42fc5cd1c1f5679502c0aaf9981d084766779f499e71ec8e47f49ee",
+        "b836dc2ebcabb24a0755fb74c4f64b325af1d9602442c224562f2ce976278b23",
     "butler:restricted_webhook":
         "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
     "butler:text":
