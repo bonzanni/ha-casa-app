@@ -128,9 +128,11 @@
     - tests/test_system_requirements_installer_tarball.py
     - tests/test_specialist_install_consent.py
     - tests/test_tools_specialist_install.py
+    - tests/test_specialist_bundled_inspect.py
   related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md, architecture/specialist-bundle-transactions.md, architecture/specialist-instance-tuples.md]
-  defines_invariants: [INV-SPEC-001, INV-SPEC-004, INV-SPEC-005, INV-SPEC-007, INV-SPEC-008, INV-SPEC-010]
+  defines_invariants: [INV-SPEC-001, INV-SPEC-004, INV-SPEC-005, INV-SPEC-007, INV-SPEC-008, INV-SPEC-010, INV-SPEC-017]
   invariant_tests:
+    INV-SPEC-017: [tests/test_specialist_bundled_inspect.py::test_consent_requires_exactly_what_the_withhold_gate_holds_on, tests/test_specialist_bundled_inspect.py::test_a_plugin_with_only_exempt_references_requires_nothing, tests/test_specialist_bundled_inspect.py::test_sibling_env_name_collision_sees_exempt_references, tests/test_tools_specialist_install.py::test_inspect_ok_payload_surfaces_receipt_and_plugins]
     INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
     INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]
     INV-SPEC-004: [tests/test_specialist_materialize.py::test_materialize_operational_files_repeat_call_swaps_atomically_and_gcs_old_version]

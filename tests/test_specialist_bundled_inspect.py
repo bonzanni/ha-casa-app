@@ -366,6 +366,166 @@ def test_render_consent_message_includes_bundled_plugin_surfaces(
 
 
 # ---------------------------------------------------------------------------
+# #994: the consent's "Secrets required" list, and the commit result's
+# `required_env_vars`, were built from the COLLISION-preflight extraction
+# (both reference forms), not from the withhold gate's predicate (bare form
+# minus `casa.setupProvides`). The configurator, following install.md step 7,
+# asked the operator for every `${VAR:-}` optional and for the names the
+# plugin's own setup tool forges. INV-SPEC-017.
+# ---------------------------------------------------------------------------
+
+
+def _resolved_plugin_view(row):
+    """The `rp` shape `plugin_grants` reads: name, path and the parsed
+    manifest — built over the receipt row's OWN staged tree, so the parity
+    assertion runs the production gate against the real artifact."""
+    from types import SimpleNamespace
+    tree = Path(row.staged_path)
+    manifest = json.loads(
+        (tree / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    return SimpleNamespace(name=row.manifest_name, path=str(tree), manifest=manifest)
+
+
+def test_consent_requires_exactly_what_the_withhold_gate_holds_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """INV-SPEC-017. One bundled `.mcp.json` with a bare `${A_TOKEN}`, a
+    defaulted `${B_MODE:-}` and a bare `${CASA_PLUGIN_X_C}` the manifest
+    declares in `casa.setupProvides`:
+
+    - the receipt row's `env_names` (the consent's "Secrets required" line,
+      the commit result's `required_env_vars`) is exactly what
+      `plugin_grants.blocking_unresolved_env_vars_for_resolved` returns for
+      the same tree in an empty environment — measured, not restated;
+    - the two exempt names are still disclosed, on their own line, and
+      never on the required line;
+    - the collision preflight still sees all three names (#431).
+
+    Red at the base: `env_names` carried all three names, and
+    `exempt_env_names` did not exist."""
+    from plugin_grants import blocking_unresolved_env_vars_for_resolved
+
+    component_dir, manifest_path = write_minimal_component(tmp_path, slug="mtg-test")
+    digest = write_bundled_plugin(
+        component_dir, "mtg",
+        env_names=["A_TOKEN"],
+        optional_env_names=["B_MODE"],
+        setup_provides=["CASA_PLUGIN_X_C"],
+    )
+    _add_dependency_row(manifest_path, _bundled_dep_row("mtg", digest, "plugins/mtg"))
+
+    seen_by_preflight: dict[str, set[str]] = {}
+    real_conflicts = specialist_install._env_name_conflicts
+
+    def _spy(tree_env_names, *, exclude_owner):
+        seen_by_preflight["names"] = set(tree_env_names)
+        return real_conflicts(tree_env_names, exclude_owner=exclude_owner)
+
+    monkeypatch.setattr(specialist_install, "_env_name_conflicts", _spy)
+
+    result = _inspect(tmp_path, component_dir, monkeypatch=monkeypatch)
+    row = result.plugin_resolutions[0]
+
+    # The gate's own answer, over the row's own staged tree, nothing wired.
+    gate_holds_on = blocking_unresolved_env_vars_for_resolved(
+        _resolved_plugin_view(row), environ={})
+    assert gate_holds_on == ["A_TOKEN"]
+    assert list(row.env_names) == gate_holds_on
+    assert row.exempt_env_names == ("B_MODE", "CASA_PLUGIN_X_C")
+
+    # #431 is intact: the collision preflight still sees every referenced name.
+    assert seen_by_preflight["names"] == {"A_TOKEN", "B_MODE", "CASA_PLUGIN_X_C"}
+
+    # The consent DM: required on one line, the exempt names disclosed on another.
+    text = render_install_consent_message(result)
+    lines = text.splitlines()
+    required_line = next(ln for ln in lines if "Secrets required:" in ln)
+    assert required_line.strip() == "Secrets required: A_TOKEN"
+    assert "B_MODE" in text and "CASA_PLUGIN_X_C" in text
+    assert "B_MODE" not in required_line and "CASA_PLUGIN_X_C" not in required_line
+
+    # Attested: the field round-trips through the persisted receipt and a
+    # row stripped of it hashes differently (same discipline as the other
+    # three consent surfaces).
+    loaded = specialist_receipt.load(result.receipt_id, receipts_dir=tmp_path / "receipts")
+    assert loaded is not None
+    assert loaded.plugins[0].exempt_env_names == row.exempt_env_names
+    stripped = specialist_receipt.PluginReceiptRow(
+        identifier=row.identifier, scoped_name=row.scoped_name,
+        manifest_name=row.manifest_name, version=row.version,
+        source_type=row.source_type, repo=row.repo, ref=row.ref,
+        revision=row.revision, subdir=row.subdir,
+        content_digest=row.content_digest, staged_path=row.staged_path,
+        mcp_servers=row.mcp_servers, protected_tools=row.protected_tools,
+        env_names=row.env_names,
+    )
+    assert specialist_receipt.compute_receipt_digest(
+        slug=result.slug, component_repo="org/repo", component_ref="main",
+        component_revision="git:" + "a" * 40, component_subdir="",
+        plugins=(stripped,),
+    ) != loaded.receipt_digest
+
+
+def test_a_plugin_with_only_exempt_references_requires_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """INV-SPEC-017, the live case (#994): a plugin whose every reference is
+    defaulted or setup-provisioned has NO required line at all — the gate
+    would never hold on it, so the consent must not say "required" and the
+    commit result must not list it under `required_env_vars`."""
+    component_dir, manifest_path = write_minimal_component(tmp_path, slug="mtg-test")
+    digest = write_bundled_plugin(
+        component_dir, "mtg",
+        optional_env_names=["BANKFEED_EB_ENVIRONMENT"],
+        setup_provides=["CASA_PLUGIN_BANKFEED_EB_CP_TOKEN"],
+    )
+    _add_dependency_row(manifest_path, _bundled_dep_row("mtg", digest, "plugins/mtg"))
+
+    result = _inspect(tmp_path, component_dir, monkeypatch=monkeypatch)
+    row = result.plugin_resolutions[0]
+    assert row.env_names == ()
+    assert row.exempt_env_names == (
+        "BANKFEED_EB_ENVIRONMENT", "CASA_PLUGIN_BANKFEED_EB_CP_TOKEN")
+    text = render_install_consent_message(result)
+    assert "Secrets required" not in text
+    assert "BANKFEED_EB_ENVIRONMENT" in text
+
+
+def test_sibling_env_name_collision_sees_exempt_references() -> None:
+    """#431 across siblings after #994: a name one sibling requires and
+    another references only in the DEFAULTED form is still a collision — the
+    sibling check reads the union of both surfaces, not the required set."""
+    from specialist_install import DependencyResolution, _sibling_env_name_collisions
+    deps = (
+        DependencyResolution(kind="plugin/implementation", identifier="a",
+                             digest="sha256:" + "a" * 64, available=True, detail="",
+                             env_names=("SHARED_KEY",)),
+        DependencyResolution(kind="plugin/implementation", identifier="b",
+                             digest="sha256:" + "b" * 64, available=True, detail="",
+                             env_names=(), exempt_env_names=("SHARED_KEY",)),
+    )
+    assert _sibling_env_name_collisions(deps) == ["SHARED_KEY"]
+
+
+def test_sibling_defaulted_reference_collides_through_inspect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end: the defaulted spelling on one sibling and the bare one on
+    the other refuse with env_name_collision. Green at the base (both were
+    in `env_names` then); exists so narrowing `env_names` cannot silently
+    drop the defaulted form from the sibling preflight."""
+    component_dir, manifest_path = write_minimal_component(tmp_path, slug="mtg-test")
+    d1 = write_bundled_plugin(component_dir, "aa", optional_env_names=["SHARED_KEY"])
+    d2 = write_bundled_plugin(component_dir, "bb", env_names=["SHARED_KEY"])
+    _add_dependency_row(manifest_path, _bundled_dep_row("aa", d1, "plugins/aa"))
+    _add_dependency_row(manifest_path, _bundled_dep_row("bb", d2, "plugins/bb"))
+    with pytest.raises(SpecialistInstallError) as exc:
+        _inspect(tmp_path, component_dir, monkeypatch=monkeypatch)
+    assert exc.value.kind == "env_name_collision"
+    assert "SHARED_KEY" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
 # Minor-2 regression: strip-before-checksum must apply BEFORE both the
 # declared-digest comparison (inspect must still pass) and the receipt row's
 # content_digest (must equal the STRIPPED tree's digest, never the raw

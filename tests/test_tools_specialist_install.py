@@ -925,7 +925,7 @@ async def test_inspect_ok_payload_surfaces_receipt_and_plugins(monkeypatch, tmp_
         revision="d" * 40, subdir="", content_digest="sha256:" + "e" * 64,
         staged_path=str(tmp_path / "staged" / ".dep-plugins" / "mtg-corpus"),
         mcp_servers=("corpus: python server.py",), protected_tools=("corpus_search",),
-        env_names=("MTG_CORPUS_TOKEN",),
+        env_names=("MTG_CORPUS_TOKEN",), exempt_env_names=("MTG_CORPUS_REGION",),
     )
     fake, tmp_store_cls = _wire_inspect(
         monkeypatch, tmp_path, channel=None, plugin_resolutions=(row,))
@@ -947,6 +947,8 @@ async def test_inspect_ok_payload_surfaces_receipt_and_plugins(monkeypatch, tmp_
         "scoped_name": "mtg__mtg-corpus", "manifest_name": "mtg-corpus", "version": "1.0.0",
         "mcp_servers": ["corpus: python server.py"], "protected_tools": ["corpus_search"],
         "env_names": ["MTG_CORPUS_TOKEN"],
+        # #994: disclosed, never asked for — the recipe reads this key by name.
+        "exempt_env_names": ["MTG_CORPUS_REGION"],
     }]
 
 

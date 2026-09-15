@@ -13396,7 +13396,11 @@ async def specialist_install_inspect(args: dict) -> dict:
             {"scoped_name": row.scoped_name, "manifest_name": row.manifest_name,
              "version": row.version, "mcp_servers": list(row.mcp_servers),
              "protected_tools": list(row.protected_tools),
-             "env_names": list(row.env_names)}
+             # #994: `env_names` is what the withhold gate holds on — the
+             # install recipe asks the operator for these. `exempt_env_names`
+             # (defaulted or setup-provisioned) is disclosure only.
+             "env_names": list(row.env_names),
+             "exempt_env_names": list(row.exempt_env_names)}
             for row in result.plugin_resolutions
         ],
     }

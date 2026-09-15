@@ -264,8 +264,18 @@ def render_install_consent_message(inspection: Any) -> str:
             lines.append(f"    MCP servers: {', '.join(row.mcp_servers)}")
         if row.protected_tools:
             lines.append(f"    Protected tools: {', '.join(row.protected_tools)}")
+        # #994: "required" is what the withhold gate holds the plugin on —
+        # the configurator asks the operator for these and nothing else. The
+        # exempt names (a `${VAR:-default}` the CLI satisfies itself, a
+        # `casa.setupProvides` name the plugin's own setup tool forges) are
+        # still disclosed, on a line whose label says they are not asks.
         if row.env_names:
             lines.append(f"    Secrets required: {', '.join(row.env_names)}")
+        exempt = getattr(row, "exempt_env_names", ()) or ()
+        if exempt:
+            lines.append(
+                "    Env referenced, not required (defaulted or provisioned by "
+                f"the plugin's own setup): {', '.join(exempt)}")
         plugin_blocks.append("\n".join(lines))
     plugin_section = ("\n".join(plugin_blocks) + "\n") if plugin_blocks else ""
     # #541: the role's own casa-framework tool grants — the one place spawn/

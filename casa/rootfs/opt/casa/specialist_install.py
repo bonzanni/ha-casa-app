@@ -302,7 +302,16 @@ class DependencyResolution:
     # before reaching the point these are extracted.
     mcp_servers: tuple[str, ...] = ()
     protected_tools: tuple[str, ...] = ()
+    # #994: `env_names` is what the withhold gate holds the plugin on — the
+    # bare `${VAR}` references minus the manifest's `casa.setupProvides`,
+    # the predicate of `plugin_grants.blocking_unresolved_env_vars_for_
+    # resolved`. `exempt_env_names` is every OTHER referenced name (a
+    # `${VAR:-default}` the CLI satisfies itself; a setup-provisioned name
+    # the plugin's own setup tool forges): disclosed at consent, never an
+    # ask. The two are disjoint; their union is what the collision
+    # preflights read (#431).
     env_names: tuple[str, ...] = ()
+    exempt_env_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -722,7 +731,8 @@ def resolve_dependency_closure(
                            "sourced plugin content does not match the pinned digest",
                     mcp_servers=surfaces.mcp_servers,
                     protected_tools=surfaces.protected_tools,
-                    env_names=surfaces.env_names))
+                    env_names=surfaces.env_names,
+                    exempt_env_names=surfaces.exempt_env_names))
                 continue
             # Legacy/sourceless (spec §1 "no source -> legacy behavior"):
             # UNCHANGED — the dependency must already be plugin_add-installed.
@@ -869,15 +879,22 @@ def _sibling_env_name_collisions(
     SIBLINGS in the same incoming bundle. Two bundled plugins each requiring the
     same `${VAR}` would both pass (the name is not yet installed) and both
     publish, then collide in the global env namespace. Aggregate every sourced
-    plugin's env surface across the closure and flag any name required by more
-    than one sibling. Each DependencyResolution.env_names is already a set, so a
-    duplicate across the aggregate means DISTINCT siblings share the name."""
+    plugin's env surface across the closure and flag any name claimed by more
+    than one sibling. #994: the surface is the UNION of `env_names` and
+    `exempt_env_names` — a collision is about which names are claimed, not
+    which must resolve (#431), and a sibling claiming a name in the defaulted
+    form must still collide with one requiring it bare. Each row's pair is
+    disjoint, so a duplicate across the aggregate means DISTINCT siblings
+    share the name."""
     from collections import Counter
 
     counts: "Counter[str]" = Counter()
     for dep in dependencies:
-        if dep.kind == "plugin/implementation" and dep.env_names:
-            counts.update(set(dep.env_names))
+        if dep.kind != "plugin/implementation":
+            continue
+        claimed = set(dep.env_names) | set(dep.exempt_env_names)
+        if claimed:
+            counts.update(claimed)
     return sorted(name for name, count in counts.items() if count > 1)
 
 
@@ -920,10 +937,12 @@ class _PluginSurfaces:
     captured once here (into the row `resolve_dependency_closure` builds)
     rather than re-parsed at the PluginReceiptRow-building site in
     `inspect_specialist_repo`. Empty (the default) for a tree that failed
-    validation before reaching the extraction point."""
+    validation before reaching the extraction point. `env_names` /
+    `exempt_env_names` split as on `DependencyResolution` (#994)."""
     mcp_servers: tuple[str, ...] = ()
     protected_tools: tuple[str, ...] = ()
     env_names: tuple[str, ...] = ()
+    exempt_env_names: tuple[str, ...] = ()
 
 
 _EMPTY_SURFACES = _PluginSurfaces()
@@ -1185,15 +1204,30 @@ def _validate_sourced_plugin_tree(
         return ("mcp_command_missing: " + "; ".join(
             f"{v['server']}:{v['ref']} ({v.get('reason', '')})" for v in missing), _EMPTY_SURFACES)
 
-    # #431: BOTH reference forms here — the consent enumeration and the
-    # collision preflight are about which names the tree touches, not which
-    # must resolve. Using the requirement set would let a bundled plugin
-    # reuse a name another plugin owns by writing ``${VAR:-}``.
+    # #431: BOTH reference forms here — the collision preflight is about
+    # which names the tree touches, not which must resolve. Using the
+    # requirement set would let a bundled plugin reuse a name another plugin
+    # owns by writing ``${VAR:-}``.
     tree_env_names = plugin_env_extractor.extract_referenced_env_vars(
         mcp_json_path)
     conflicts = _env_name_conflicts(tree_env_names, exclude_owner=slug)
     if conflicts:
         return f"{ENV_NAME_COLLISION}: colliding env name(s): " + ", ".join(conflicts), _EMPTY_SURFACES
+
+    # #994: the consent's "Secrets required" line and the commit result's
+    # `required_env_vars` are asks — the configurator interrogates the
+    # operator from them — so they carry exactly what the withhold gate
+    # holds the plugin on: the bare references minus the manifest's
+    # `casa.setupProvides`, the predicate of
+    # `plugin_grants.blocking_unresolved_env_vars_for_resolved`. Reusing the
+    # collision set here asked the operator for every `${VAR:-}` optional
+    # and for the names the plugin's own setup tool forges. The remainder
+    # of the referenced set is still disclosed, as `exempt_env_names`.
+    # `manifest_setup_provides` cannot raise here: `validate_manifest` above
+    # already ran it and refused a malformed declaration.
+    required_env_names = (
+        plugin_env_extractor.extract_env_vars(mcp_json_path)
+        - set(plugin_store.manifest_setup_provides(raw_manifest)))
 
     # Task 8 fix-round-1: the consent-enumeration surfaces (spec §3.2),
     # extracted from state already parsed above — `raw_manifest` (step 3/4)
@@ -1206,7 +1240,8 @@ def _validate_sourced_plugin_tree(
             for name, cfg in sorted(plugin_store.mcp_servers_map(mcp_json_path).items())),
         protected_tools=tuple(
             e["name"] for e in plugin_store.manifest_protected_tools(raw_manifest)),
-        env_names=tuple(sorted(tree_env_names)),
+        env_names=tuple(sorted(required_env_names)),
+        exempt_env_names=tuple(sorted(tree_env_names - required_env_names)),
     )
     return "", surfaces
 
@@ -1448,6 +1483,7 @@ def inspect_specialist_repo(
                 mcp_servers=resolution.mcp_servers,
                 protected_tools=resolution.protected_tools,
                 env_names=resolution.env_names,
+                exempt_env_names=resolution.exempt_env_names,
             ))
 
         receipt = specialist_receipt.build_receipt(

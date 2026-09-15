@@ -32,10 +32,13 @@ _VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 # #431: both documented forms. ``${VAR:-default}`` is NOT a requirement (the
 # CLI substitutes the default, so nothing is missing and no placeholder can
 # leak) — but it IS a reference, and the surfaces that answer "which env
-# names does this tree touch?" must see it: the install-consent enumeration
-# and the cross-plugin ENV_NAME_COLLISION preflight. Keeping them on the
-# bare-form pattern would let a bundled plugin quietly reuse a name another
-# plugin owns simply by writing the defaulted form.
+# names does this tree touch?" must see it: the cross-plugin
+# ENV_NAME_COLLISION preflight, and the install consent's DISCLOSURE of
+# referenced names. Keeping them on the bare-form pattern would let a
+# bundled plugin quietly reuse a name another plugin owns simply by writing
+# the defaulted form. #994: the consent's "Secrets required" line and the
+# commit result's `required_env_vars` are NOT such a surface — they are
+# asks, and they take the requirement set (minus casa.setupProvides).
 _ANY_VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-[^{}]*)?\}")
 
 
@@ -89,5 +92,7 @@ def extract_env_vars(mcp_json_path: Path | str) -> set[str]:
 def extract_referenced_env_vars(mcp_json_path: Path | str) -> set[str]:
     """EVERY referenced name, both forms (#431) — for the surfaces that ask
     "which env names does this tree touch?" rather than "what must resolve":
-    the install-consent enumeration and the cross-plugin collision preflight."""
+    the cross-plugin collision preflight and the consent's disclosure line.
+    Never for an ask (#994): what the operator is asked to supply is
+    :func:`extract_env_vars` minus the manifest's ``casa.setupProvides``."""
     return _extract(mcp_json_path, _ANY_VAR_PATTERN)
