@@ -116,6 +116,8 @@ def write_bundled_plugin(
     component_dir: Path, name: str = "mtg", *,
     triggers: object = None, sysreqs: list[dict] | None = None,
     env_names: list[str] | None = None,
+    optional_env_names: list[str] | None = None,
+    setup_provides: list[str] | None = None,
     protected_tools: list | None = None,
     mcp_command_servers: dict[str, dict] | None = None,
 ) -> str:
@@ -135,6 +137,14 @@ def write_bundled_plugin(
     a "missing" verdict for an executable/PATH entry that may not exist in
     the test sandbox; this fixture is about env-name extraction, not
     command resolvability.
+
+    ``optional_env_names`` (#994) are written on the same server in the
+    DEFAULTED form, ``${N:-}`` — a reference the CLI satisfies from its own
+    default, which the withhold gate never holds on. ``setup_provides``
+    (#994) declares ``casa.setupProvides`` (with the ``casa.setupTool`` the
+    declaration requires) and references each declared name BARE on the
+    same server — a reference the gate exempts because the plugin's own
+    setup tool provisions it.
 
     ``protected_tools`` (fix-round-1, spec §3.2) is written verbatim to
     ``casa.protectedTools`` — pass the legacy string form or the
@@ -160,15 +170,21 @@ def write_bundled_plugin(
         casa["triggers"] = triggers
     if protected_tools is not None:
         casa["protectedTools"] = protected_tools
+    if setup_provides:
+        casa["setupTool"] = f"setup_{name.replace('-', '_')}"
+        casa["setupProvides"] = list(setup_provides)
     if casa:
         manifest["casa"] = casa
     (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
         json.dumps(manifest), encoding="utf-8")
     servers: dict = {}
-    if env_names:
+    env_block = {n: f"${{{n}}}" for n in (env_names or ())}
+    env_block.update({n: f"${{{n}:-}}" for n in (optional_env_names or ())})
+    env_block.update({n: f"${{{n}}}" for n in (setup_provides or ())})
+    if env_block:
         servers["main"] = {
             "url": "https://example.invalid/mcp",
-            "env": {n: f"${{{n}}}" for n in env_names},
+            "env": env_block,
         }
     if mcp_command_servers:
         servers.update(mcp_command_servers)

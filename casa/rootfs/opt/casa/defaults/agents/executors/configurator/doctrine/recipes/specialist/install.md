@@ -104,6 +104,13 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    session builds entirely: the specialist's very first tool call would be refused with
    "required env unresolved", costing the operator a second configurator engagement (#499).
    A plugin with empty `env_names` needs nothing here.
+   `env_names` is exactly what Casa withholds the plugin on. The inspection's
+   `exempt_env_names` (and the consent's "Env referenced, not required" line) are the other
+   names the plugin's `.mcp.json` mentions — a `${VAR:-default}` the CLI satisfies from its own
+   default, or a `casa.setupProvides` name the plugin's own setup tool creates. **Never ask the
+   operator for one of those** (#994): nothing is withheld on them, `verify_plugin_state` never
+   lists them as unresolved, and a setup-provisioned name is filled in by the plugin's setup
+   episode after this install.
 8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")`.
 9. `casa_reload(scope="agents")` (mandatory — see `completion.md`; an `active` install is on disk
    but not in the live registry until reload runs).
@@ -132,6 +139,8 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
   reports success, but the unresolved var keeps the plugin withheld and the specialist's first
   use hits the requires gate. Do not describe such a var as something the specialist's own setup
   tool will provision: a var in `env_names` is the installer's to wire, in step 7, here.
+- The mirror image (#994): asking the operator for a name from `exempt_env_names`. Those are
+  disclosed so the operator knows what the plugin reads; they are not the installer's to wire.
 - Relaying a bundled plugin's OWN consent (a trigger/callback/event
   `*_pending_ack` after commit) through this engagement's ask, or asking the
   assistant to `ask_user` it (#494): those surfaces accept the Approve tap and

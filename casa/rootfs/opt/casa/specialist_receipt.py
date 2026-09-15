@@ -63,7 +63,13 @@ class PluginReceiptRow:
     # the receipt digest the same way a tampered digest/repo/ref would.
     mcp_servers: tuple[str, ...] = ()      # one-line "name: command arg1 arg2…" per server
     protected_tools: tuple[str, ...] = ()  # names, from plugin_store.manifest_protected_tools
-    env_names: tuple[str, ...] = ()        # required env var names — the secrets surface
+    # #994: `env_names` is exactly what the withhold gate holds the plugin on
+    # (bare references minus casa.setupProvides) — the "Secrets required"
+    # line and the commit result's `required_env_vars`. `exempt_env_names`
+    # is every other referenced name (defaulted or setup-provisioned):
+    # disclosed at consent, never an ask. Attested like the other three.
+    env_names: tuple[str, ...] = ()
+    exempt_env_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +158,7 @@ def _from_json(raw: dict) -> "SourceReceipt | None":
                 mcp_servers=tuple(r.get("mcp_servers") or ()),
                 protected_tools=tuple(r.get("protected_tools") or ()),
                 env_names=tuple(r.get("env_names") or ()),
+                exempt_env_names=tuple(r.get("exempt_env_names") or ()),
             )
             for r in raw["plugins"]
         )

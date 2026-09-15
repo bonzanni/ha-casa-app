@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-01
+last_reviewed: 2026-09-15
 ---
 
 # The specialist install lifecycle
@@ -82,6 +82,31 @@ Enforced by digest recomputation in the receipt loader.
 What it does not cover: freshness of the fetched bytes. A valid receipt attests what was
 inspected; the commit separately re-checks that what it fetched still matches.
 
+**INV-SPEC-017**: The environment names a specialist install consent lists as required, and the `required_env_vars` its commit reports, are exactly the names Casa would withhold the bundled plugin on — a reference the withhold gate exempts is disclosed as referenced and never presented as an ask.
+
+Enforced at inspection. The sourced-plugin validator derives the required set with the
+predicate the withhold gate applies — the bare `${VAR}` references in the plugin's
+`.mcp.json`, minus the names its manifest declares in `casa.setupProvides` — and records
+the remainder of the referenced set (a `${VAR:-default}` the CLI satisfies from its own
+default, a name the plugin's own setup tool creates) as a separate, equally attested
+receipt-row field. The consent DM renders the two on differently labelled lines, the
+inspect and commit payloads carry them under different keys, and the install recipe tells
+the configurator to wire the first and never to ask for the second. The collision
+preflights — against installed plugins and between siblings of one bundle — keep reading
+the union: a name claimed in the defaulted form still collides (#431).
+
+Before this held, the consent and the commit result reused the collision preflight's
+extraction as the requirement set, and the configurator interrogated the operator for
+every optional and every setup-provisioned name while the plugin's setup episode waited on
+two names it had never been asked for.
+
+What it does not cover: whether a required value the operator supplies is usable — that is
+the verify surface's question after reload. And the parity is by shared predicate, not by
+shared call: the gate reads a resolved registry entry after install, the validator reads
+the staged tree before it. The pinning test runs the gate over the same staged tree; a
+declaration that changes afterwards arrives through an upgrade, which re-inspects and
+re-consents.
+
 **INV-SPEC-010**: An install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
 
 The invariant is conditioned on a recorded approval because an approval can legitimately
@@ -159,9 +184,10 @@ secret channel (INV-SPEC-006), and a slug whose earlier bundle transaction still
 recovery (INV-SPEC-014, `architecture/specialist-bundle-transactions.md`) — a commit there
 would be undone by the next boot, so the install is refused before the component store is
 written to at all. Sourced plugin dependencies are additionally refused categorically when they
-declare system requirements or triggers of their own, or when a required environment name
-collides with another installed plugin's — otherwise-valid bundles fail with dedicated
-error kinds the dependency model alone would not predict. A sourced dependency *may*,
+declare system requirements or triggers of their own, or when an environment name they
+reference — in either expansion form — collides with another installed plugin's —
+otherwise-valid bundles fail with dedicated error kinds the dependency model alone would
+not predict. A sourced dependency *may*,
 however, declare `casa.callbacks` — a callback grants no turn or memory access — and it
 may likewise declare `casa.emits`/`casa.subscribes`: an emit is inert without an
 operator-consented subscriber, and a subscribe, though it *does* wake the plugin's agent,
@@ -230,6 +256,7 @@ inspection time, or consent will not cover it.
 - `tests/test_system_requirements_installer_tarball.py`
 - `tests/test_specialist_install_consent.py`
 - `tests/test_tools_specialist_install.py`
+- `tests/test_specialist_bundled_inspect.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)

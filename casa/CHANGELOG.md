@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.311.0] - 2026-09-15
+
+### Fixed
+
+- Installing a specialist no longer asks you for environment variables its
+  bundled plugin does not need. The consent message's "Secrets required" line,
+  and the list the configurator wires right after the install, now name exactly
+  the variables Casa would withhold the plugin on. A variable the plugin's
+  `.mcp.json` gives a default for, or one the plugin's own setup tool creates,
+  still appears on the consent message — on a line that says it is referenced
+  but not required — and you are not asked for it. Before, both kinds were
+  listed as required, so installing a plugin with only such variables had the
+  configurator interrogate you for values the plugin never waited on, while the
+  variables it did wait on went unmentioned.
+- A consent receipt issued before this release no longer loads (its attested
+  row shape changed). An install left pending on one refuses its re-commit with
+  `receipt_required`; re-run the install from a fresh inspect.
+
 ## [0.310.0] - 2026-09-14
 
 ### Fixed
