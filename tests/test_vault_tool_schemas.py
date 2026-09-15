@@ -82,3 +82,19 @@ async def test_list_vault_items_handler_runs_without_vault(monkeypatch):
     assert payload == {"items": []}
     assert captured and "--vault" in captured[0]
     assert captured[0][captured[0].index("--vault") + 1] == "Casa"
+
+
+# --- the same class on the two tools every recipe's canonical order calls ----
+#
+# `casa_reload(scope="plugin_env")` and `emit_completion(status=..., text=...)`
+# are the literal calls in recipes/plugin/secrets.md; both were rejected by the
+# validator under the shorthand schema (Astra, batch-1 diff round 1, D5).
+
+@pytest.mark.parametrize("tool_def, required, recipe_call", [
+    (tools.casa_reload, ["scope"], {"scope": "plugin_env"}),
+    (tools.emit_completion, ["text"], {"status": "ok", "text": "Wired X"}),
+], ids=["casa_reload", "emit_completion"])
+def test_recipe_literal_calls_pass_the_served_schema(tool_def, required, recipe_call):
+    schema = _served_schema(tool_def)
+    assert schema["required"] == required
+    jsonschema.validate(recipe_call, schema)

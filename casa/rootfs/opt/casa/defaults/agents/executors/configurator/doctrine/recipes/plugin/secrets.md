@@ -37,11 +37,15 @@ variables still `unresolved`. Read it before anything else, and decide from it:
   match, Gmail and Gmail Old — which one?"; "the item has `api key` and
   `legacy key` — which is ELEVENLABS_API_KEY?"). Never ask the operator for a
   secret value; ask for the item or field name.
-- When nothing matches (empty `items`, or `secret_candidates.error`), call
-  `list_vault_items(query=...)` once more with a different keyword if one is
-  plausible (a product name from the plugin's README, say); then report that
-  vault, the queries tried, that nothing matched, and which variables stay
-  unwired. That report — not a request for values — is your completion's job.
+- When nothing matches (empty `items`), call `list_vault_items(query=...)`
+  once more with a different keyword if one is plausible (a product name from
+  the plugin's README, say); then report that vault, the queries tried, that
+  nothing matched, and which variables stay unwired. That report — not a
+  request for values — is your completion's job.
+- When the vault could not be read (`secret_candidates.error` is `op_failed`,
+  `op_timeout` or `op_unreadable`), that is NOT "nothing matched": try
+  `list_vault_items` once by hand; if it fails the same way, report that vault
+  as unreadable, with the classification, and which variables stay unwired.
 
 The default vault is named in your world state (`Default vault:`); omit
 `vault` to use it, or pass it explicitly to name it in your report. If the

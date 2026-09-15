@@ -204,3 +204,117 @@ async def test_plugin_update_explores_too(monkeypatch, tmp_path):
     payload = json.loads(r["content"][0]["text"])
     assert payload["ok"] is True, payload
     assert payload["secret_candidates"]["items"][0]["id"] == "abc123"
+
+
+# --- Terra diff r1 D2: unreadable and timed-out op calls are classified -----
+
+async def test_malformed_op_output_is_classified_and_the_envelope_holds(
+        monkeypatch, tmp_path):
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(name="gmail", version="0.7.0"))
+    _observability(tools_mod, monkeypatch, _REQUIRED)
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "t")
+
+    def _garbage(cmd, **_kw):
+        return _Res(0, stdout=f"not json {_CANARY}")
+
+    with patch.object(tools_mod.subprocess, "run", _garbage):
+        payload = await _add(tools_mod)
+    assert payload["ok"] is True
+    assert payload["secret_candidates"] == {"error": "op_unreadable"}
+    assert _CANARY not in json.dumps(payload)
+    for key in ("artifact_id", "version", "revision", "activation_committed",
+                "runtime_ready", "verify", "granted_tools",
+                "required_env_vars", "setup_tool"):
+        assert key in payload, key
+
+
+async def test_op_timeout_is_classified_and_the_envelope_holds(
+        monkeypatch, tmp_path):
+    import subprocess as _sp
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(name="gmail", version="0.7.0"))
+    _observability(tools_mod, monkeypatch, _REQUIRED)
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "t")
+
+    def _slow(cmd, **kw):
+        raise _sp.TimeoutExpired(cmd, kw.get("timeout", 30))
+
+    with patch.object(tools_mod.subprocess, "run", _slow):
+        payload = await _add(tools_mod)
+    assert payload["ok"] is True
+    assert payload["secret_candidates"] == {"error": "op_timeout"}
+
+
+async def test_a_foreign_exception_in_exploration_is_classified(
+        monkeypatch, tmp_path):
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(name="gmail", version="0.7.0"))
+    _observability(tools_mod, monkeypatch, _REQUIRED)
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "t")
+
+    def _boom(cmd, **_kw):
+        raise OSError(f"op binary missing {_CANARY}")
+
+    with patch.object(tools_mod.subprocess, "run", _boom):
+        payload = await _add(tools_mod)
+    assert payload["ok"] is True
+    assert payload["secret_candidates"] == {"error": "op_failed", "exit_code": -1}
+    assert _CANARY not in json.dumps(payload)
+
+
+# --- Astra/Terra diff r1 D1: a title that repeats a secret is withheld -------
+
+async def test_a_title_repeating_a_field_value_is_withheld(monkeypatch, tmp_path):
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(name="gmail", version="0.7.0"))
+    _observability(tools_mod, monkeypatch, _REQUIRED)
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_CANARY_TOKEN")
+    leaky_item = dict(_GMAIL_ITEM, title=f"Gmail {_CANARY}")
+    with patch.object(tools_mod.subprocess, "run",
+                      _fake_op([leaky_item], {"abc123": _GMAIL_DOC})):
+        payload = await _add(tools_mod)
+    item = payload["secret_candidates"]["items"][0]
+    assert item["id"] == "abc123"
+    assert item["name"] == tools_mod._TITLE_WITHHELD
+    assert _CANARY not in json.dumps(payload)
+
+
+async def test_a_title_repeating_the_token_is_withheld(monkeypatch, tmp_path):
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(name="gmail", version="0.7.0"))
+    _observability(tools_mod, monkeypatch, _REQUIRED)
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_CANARY_TOKEN")
+    leaky_item = dict(_GMAIL_ITEM, title="Gmail ops_CANARY_TOKEN")
+    with patch.object(tools_mod.subprocess, "run",
+                      _fake_op([leaky_item], {"abc123": _GMAIL_DOC})):
+        payload = await _add(tools_mod)
+    assert payload["secret_candidates"]["items"][0]["name"] == tools_mod._TITLE_WITHHELD
+    assert "ops_CANARY_TOKEN" not in json.dumps(payload)
+
+
+async def test_exploration_runs_after_the_reload(monkeypatch, tmp_path):
+    """Astra diff r1 D2 test gap: every op call lands AFTER the reload and
+    verify the sequencer performs — activation is never delayed by it."""
+    st = _State()
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr(name="gmail", version="0.7.0"))
+    _observability(tools_mod, monkeypatch, _REQUIRED)
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "t")
+    inner = _fake_op([_GMAIL_ITEM], {"abc123": _GMAIL_DOC})
+
+    def _logging_op(cmd, **kw):
+        st.log.append("op")
+        return inner(cmd, **kw)
+
+    with patch.object(tools_mod.subprocess, "run", _logging_op):
+        payload = await _add(tools_mod)
+    assert payload["ok"] is True
+    assert "op" in st.log
+    assert st.log.index("dispatch:assistant") < st.log.index("op")
+    assert st.log.index("reload_snapshot") < st.log.index("op")

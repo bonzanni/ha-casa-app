@@ -20,6 +20,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = _ROOT / "casa/rootfs/opt/casa/defaults"
 _SECRETS = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/plugin/secrets.md"
 _ADD = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/plugin/add.md"
+_UPDATE = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/plugin/update.md"
+_SPEC_INSTALL = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/specialist/install.md"
 _SYSTEM = _DEFAULTS / "agents/assistant/prompts/system.md"
 _DOCTRINE = _DEFAULTS / "roles/resident/assistant/doctrine.md"
 
@@ -107,3 +109,24 @@ def test_rules_reach_a_persona_bound_assistant():
                 exclude=("Text projection", "Voice projection",
                          "Restricted webhook projection"))
             assert sentence in _collapse_ws(selected), (sentence, surface)
+
+
+# --- the other two recipes that wire secrets say the same (diff r1, D6) -----
+
+def test_update_recipe_makes_wiring_a_required_stage():
+    text = _read(_UPDATE)
+    assert "wiring them is a REQUIRED stage of this update, not a follow-up" in text
+    assert "secret_candidates" in text
+
+
+def test_specialist_install_asks_for_names_never_values():
+    text = _read(_SPEC_INSTALL)
+    assert "never for a value" in text
+    assert "the default vault is named in your world state" in text
+    assert "a vault name is the installer's choice" not in text
+
+
+def test_secrets_recipe_distinguishes_unreadable_from_nothing_matched():
+    text = _read(_SECRETS)
+    assert "that is NOT \"nothing matched\"" in text
+    assert "report that vault as unreadable" in text

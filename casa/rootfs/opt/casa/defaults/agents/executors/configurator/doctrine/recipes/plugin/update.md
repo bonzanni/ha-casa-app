@@ -67,7 +67,11 @@ running its RECORDED artifact; verify lists those under
 up the new code on their next launch.
 
 **No separate casa_reload is needed on the happy path** — `plugin_update`
-reloads + verifies internally. Report the outcome and `emit_completion(...)`.
+reloads + verifies internally. If the result's `required_env_vars` is
+non-empty, wiring them is a REQUIRED stage of this update, not a follow-up:
+its `secret_candidates` carries what the default vault holds for them —
+follow `secrets.md` (explore, then wire, then ask). Report the outcome and
+`emit_completion(...)`.
 
 ## Setup is Casa's, not yours to route
 

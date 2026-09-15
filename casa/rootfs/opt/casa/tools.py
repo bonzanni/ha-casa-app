@@ -7161,7 +7161,14 @@ async def config_git_commit(args: dict) -> dict:
     "'policies', 'plugin_env', 'agents', 'executors', 'config_sync', 'full'. Use 'full' "
     "as a catch-all when unsure. Does NOT restart the addon - for that, "
     "see casa_restart_supervised. Restricted to the configurator role.",
-    {"scope": str, "role": str, "include_env": bool},
+    # Explicit schema: the shorthand marked role and include_env required, so
+    # the recipes' own `casa_reload(scope="plugin_env")` was rejected by the
+    # MCP validator before this handler ran (batch-1 diff round 1, Astra D5).
+    {"type": "object",
+     "properties": {"scope": {"type": "string"},
+                    "role": {"type": "string"},
+                    "include_env": {"type": "boolean"}},
+     "required": ["scope"]},
 )
 async def casa_reload(args: dict) -> dict:
     caller = _effective_caller_role()
@@ -10221,7 +10228,15 @@ _COMPLETION_GUARDED_EXECUTOR_TYPES = frozenset({"plugin-developer"})
     "Mark this engagement complete. Ellen receives the summary. Must be called "
     "from inside an active engagement. status: 'ok' | 'partial' | 'failed' | "
     "'cancelled'.",
-    {"text": str, "artifacts": list, "next_steps": list, "status": str},
+    # Explicit schema: artifacts, next_steps and status are optional in the
+    # handler and in every recipe's example call; the shorthand made all four
+    # required (batch-1 diff round 1, Astra D5).
+    {"type": "object",
+     "properties": {"text": {"type": "string"},
+                    "artifacts": {"type": "array"},
+                    "next_steps": {"type": "array"},
+                    "status": {"type": "string"}},
+     "required": ["text"]},
 )
 async def emit_completion(args: dict) -> dict:
     engagement = engagement_var.get(None)
@@ -13248,23 +13263,37 @@ def _secret_candidates(name: str, required_env_vars: list[str]) -> dict:
     if not unresolved or not vault or not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         return {}
     queries = _secret_candidate_queries(name, unresolved)
+    try:
+        return {"secret_candidates": _explore_vault(vault, queries, unresolved)}
+    except Exception:  # noqa: BLE001 — the exploration never fails the mutation
+        # Terra diff r1 D2: anything the helpers did not classify (a foreign
+        # exception, a non-string id) is still reported as a fixed
+        # classification; the exception text is logged, never returned.
+        logger.warning("secret exploration for %s failed", name, exc_info=True)
+        return {"secret_candidates": _op_failed(-1)}
+
+
+def _explore_vault(vault: str, queries: list[str], unresolved: list[str]) -> dict:
     items: list[dict] = []
     seen: set[str] = set()
     for q in queries:
         listed = _tool_list_vault_items(query=q, vault=vault)
         if "error" in listed:
-            return {"secret_candidates": listed}
+            return listed
         for it in listed.get("items", []):
             if it.get("id") in seen or len(items) >= _SECRET_CANDIDATE_MAX_ITEMS:
                 continue
             seen.add(it.get("id"))
-            got = _tool_get_item_fields(item=str(it.get("id")), vault=vault)
+            got = _op_item_get(str(it.get("id")), vault)
             if "error" in got:
-                return {"secret_candidates": got}
-            items.append({"name": it.get("name"), "id": it.get("id"),
-                          "fields": got.get("fields", [])})
-    return {"secret_candidates": {"vault": vault, "queries": queries,
-                                  "items": items, "unresolved": unresolved}}
+                return got
+            doc = got["doc"]
+            items.append({"name": _project_item_title(
+                              it.get("name"), _item_secret_strings(doc)),
+                          "id": it.get("id"),
+                          "fields": _project_item_fields(doc)})
+    return {"vault": vault, "queries": queries, "items": items,
+            "unresolved": unresolved}
 
 
 @tool(
@@ -15748,26 +15777,55 @@ def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
     cmd = ["op", "item", "list", "--format", "json"]
     if vault:
         cmd += ["--vault", vault]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return _op_timeout()
     if r.returncode != 0:
         return _op_failed(r.returncode)
-    items = json.loads(r.stdout)
+    try:
+        items = json.loads(r.stdout)
+        if not isinstance(items, list):
+            raise ValueError("op item list did not return a list")
+    except ValueError:
+        return _op_unreadable()
     if query:
         items = [i for i in items if query.lower() in (i.get("title", "")).lower()]
-    return {"items": [{"name": i.get("title"), "id": i.get("id"),
+    token = [os.environ.get("OP_SERVICE_ACCOUNT_TOKEN", "")]
+    token = [t for t in token if len(t) >= 3]
+    return {"items": [{"name": _project_item_title(i.get("title"), token),
+                       "id": i.get("id"),
                        "category": i.get("category"),
                        "updated_at": i.get("updated_at")} for i in items]}
 
 
-def _tool_get_item_fields(*, item: str, vault: str = "") -> dict:
-    vault = vault or _default_vault()
+def _op_item_get(item: str, vault: str) -> dict:
+    """The parsed ``op item get`` document, or a classified error dict. The
+    document holds VALUES; it never leaves the two callers below unprojected."""
     cmd = ["op", "item", "get", item, "--format", "json"]
     if vault:
         cmd += ["--vault", vault]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return _op_timeout()
     if r.returncode != 0:
         return _op_failed(r.returncode)
-    return {"fields": _project_item_fields(json.loads(r.stdout))}
+    try:
+        doc = json.loads(r.stdout)
+        if not isinstance(doc, dict):
+            raise ValueError("op item get did not return an object")
+    except ValueError:
+        return _op_unreadable()
+    return {"doc": doc}
+
+
+def _tool_get_item_fields(*, item: str, vault: str = "") -> dict:
+    vault = vault or _default_vault()
+    got = _op_item_get(item, vault)
+    if "error" in got:
+        return got
+    return {"fields": _project_item_fields(got["doc"])}
 
 
 def _op_failed(exit_code: int) -> dict:
@@ -15775,6 +15833,47 @@ def _op_failed(exit_code: int) -> dict:
     whatever ``op`` prints on failure lands in the configurator's transcript
     and from there in Telegram, and truncation is not redaction."""
     return {"error": "op_failed", "exit_code": int(exit_code)}
+
+
+def _op_timeout() -> dict:
+    """``op`` did not return within its budget (fixed string, no output)."""
+    return {"error": "op_timeout"}
+
+
+def _op_unreadable() -> dict:
+    """``op`` exited 0 but its stdout was not the JSON document expected — a
+    fixed string; the unparseable bytes are never forwarded."""
+    return {"error": "op_unreadable"}
+
+
+def _item_secret_strings(item: dict) -> list[str]:
+    """Every string in an ``op item get`` document that is, or points at, a
+    secret: field values, references and notes. Used ONLY to withhold metadata
+    that repeats one of them; never returned."""
+    out: list[str] = []
+    for f in (item or {}).get("fields", []) or []:
+        for key in ("value", "reference"):
+            v = f.get(key)
+            if isinstance(v, str) and len(v) >= 3:
+                out.append(v)
+    token = os.environ.get("OP_SERVICE_ACCOUNT_TOKEN", "")
+    if len(token) >= 3:
+        out.append(token)
+    return out
+
+
+_TITLE_WITHHELD = "(title withheld: it repeats a secret)"
+
+
+def _project_item_title(title: object, secrets: list[str]) -> str:
+    """An item's title, unless it contains one of the item's own secret
+    strings or the service-account token — a title is operator-typed metadata
+    and the one place a value can bypass the field projection (Astra/Terra,
+    batch-1 diff round 1)."""
+    t = title if isinstance(title, str) else ""
+    if any(sec in t for sec in secrets):
+        return _TITLE_WITHHELD
+    return t
 
 
 def _project_item_fields(item: dict) -> list[dict]:

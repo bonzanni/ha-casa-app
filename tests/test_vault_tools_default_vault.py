@@ -135,3 +135,41 @@ def test_get_item_fields_projects_labels_only():
         {"label": "client secret", "section": "OAuth", "type": "CONCEALED"},
     ]
     assert _CANARY not in json.dumps(fields)
+
+
+def test_list_vault_items_unreadable_output_is_classified():
+    class _Garbage:
+        returncode = 0
+        stderr = ""
+        stdout = f"not json {_CANARY}"
+
+    with patch.object(tools.subprocess, "run", lambda *a, **k: _Garbage()):
+        out = tools._tool_list_vault_items(query="gmail", vault="Casa")
+    assert out == {"error": "op_unreadable"}
+
+
+def test_get_item_fields_timeout_is_classified():
+    import subprocess as _sp
+
+    def _slow(cmd, **kw):
+        raise _sp.TimeoutExpired(cmd, kw.get("timeout", 30))
+
+    with patch.object(tools.subprocess, "run", _slow):
+        out = tools._tool_get_item_fields(item="Gmail", vault="Casa")
+    assert out == {"error": "op_timeout"}
+
+
+def test_list_vault_items_withholds_a_title_repeating_the_token(monkeypatch):
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_CANARY_TOKEN")
+
+    class _Listing:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps([{"id": "x", "title": "Gmail ops_CANARY_TOKEN",
+                              "category": "API_CREDENTIAL"},
+                             {"id": "y", "title": "Gmail"}])
+
+    with patch.object(tools.subprocess, "run", lambda *a, **k: _Listing()):
+        out = tools._tool_list_vault_items(query="gmail", vault="Casa")
+    assert [i["name"] for i in out["items"]] == [tools._TITLE_WITHHELD, "Gmail"]
+    assert "ops_CANARY_TOKEN" not in json.dumps(out)
