@@ -19,23 +19,44 @@ asked to rotate a secret on an already-installed plugin.
 - The operator asks to update an existing secret (1P field changed,
   vendor rotated the key, etc.).
 
-## Discover the source
+## Discover the source — explore before asking
 
-If the operator already has a 1Password reference in mind
-(`op://Casa/openai-key/credential`), skip to Set the entry below.
-Otherwise help them pick:
+`plugin_add` and `plugin_update` already searched the default vault for you:
+when a plugin declares required variables that are unresolved, their result
+carries `secret_candidates` — the vault searched, the queries tried (the
+plugin name, then each vendor stem of the variables), up to five matching
+items with their field labels, sections and types (never values), and the
+variables still `unresolved`. Read it before anything else, and decide from it:
 
-    list_vault_items(query="<vendor-or-plugin-keyword>", vault="<vault-name>")
+- When exactly one item matches and every unresolved variable maps to exactly
+  one field label, wire it (Set the entry below) — one
+  `set_plugin_env_reference` per variable — then reload and verify, and name
+  the item and the fields you used in your completion.
+- When several items match, or a variable has no field or two plausible
+  fields, ask in the engagement topic, naming what you found ("two items
+  match, Gmail and Gmail Old — which one?"; "the item has `api key` and
+  `legacy key` — which is ELEVENLABS_API_KEY?"). Never ask the operator for a
+  secret value; ask for the item or field name.
+- When nothing matches (empty `items`, or `secret_candidates.error`), call
+  `list_vault_items(query=...)` once more with a different keyword if one is
+  plausible (a product name from the plugin's README, say); then report that
+  vault, the queries tried, that nothing matched, and which variables stay
+  unwired. That report — not a request for values — is your completion's job.
+
+The default vault is named in your world state (`Default vault:`); omit
+`vault` to use it, or pass it explicitly to name it in your report. If the
+operator already gave a 1Password reference (`op://Casa/Gmail/client id`),
+skip to Set the entry below. For a manual search:
+
+    list_vault_items(query="<vendor-or-plugin-keyword>")
     # → { items: [ { name, id, category, updated_at }, ... ] }
 
-`vault` defaults to the operator's configured `onepassword_default_vault`
-(see `config.yaml`). Filter by the operator's keyword — don't enumerate
-the whole vault. Return the candidate items and let the operator
-choose by name.
+Filter by a keyword — the schema requires one; don't enumerate the whole
+vault.
 
-Once the item is chosen, list its fields:
+Once an item is chosen, list its fields:
 
-    get_item_fields(item="<id-or-title>", vault="<vault-name>")
+    get_item_fields(item="<id-or-title>")
     # → { fields: [ { label, section, type }, ... ] }
 
 The resolver shells `op read op://<vault>/<id>/<field>` at boot, so the
