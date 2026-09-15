@@ -181,3 +181,42 @@ def test_release_tuple_orders_numerically():
     assert plugin_store._release_tuple("v0.10.0") > plugin_store._release_tuple("v0.9.9")
     assert plugin_store._release_tuple("v1.0.0") > plugin_store._release_tuple("v0.99.99")
     assert plugin_store._release_tuple("main") is None
+
+
+def test_a_nested_annotated_tag_is_peeled_to_the_commit():
+    """Terra batch-2 r1 J1: tag A -> tag B -> commit C must store C."""
+    A, B, C = "d" * 40, "e" * 40, "f" * 40
+    routes = {
+        "repos/o/r/releases/latest": (200, {"tag_name": "v1.2.3"}),
+        "repos/o/r/git/ref/tags/v1.2.3": (200, _tag_ref("v1.2.3", A, "tag")),
+        f"repos/o/r/git/tags/{A}": (200, {"object": {"type": "tag", "sha": B}}),
+        f"repos/o/r/git/tags/{B}": (200, {"object": {"type": "commit", "sha": C}}),
+    }
+    calls: list = []
+    with patch("plugin_store.subprocess.run", _gh(routes, calls)):
+        assert resolve_latest_release("o/r") == ("v1.2.3", C)
+    assert any(c[3] == f"repos/o/r/git/tags/{B}" for c in calls)
+
+
+def test_a_tag_chain_that_never_reaches_a_commit_is_no_release_found():
+    A = "d" * 40
+    routes = {
+        "repos/o/r/releases/latest": (200, {"tag_name": "v1.2.3"}),
+        "repos/o/r/git/ref/tags/v1.2.3": (200, _tag_ref("v1.2.3", A, "tag")),
+        f"repos/o/r/git/tags/{A}": (200, {"object": {"type": "tag", "sha": A}}),   # a loop
+        "repos/o/r/tags?per_page=100": (200, []),
+    }
+    with patch("plugin_store.subprocess.run", _gh(routes)):
+        with pytest.raises(NoReleaseFound):
+            resolve_latest_release("o/r")
+
+
+def test_a_tag_pointing_at_a_non_commit_object_is_no_release_found():
+    routes = {
+        "repos/o/r/releases/latest": (200, {"tag_name": "v1.2.3"}),
+        "repos/o/r/git/ref/tags/v1.2.3": (200, _tag_ref("v1.2.3", SHA, "blob")),
+        "repos/o/r/tags?per_page=100": (200, []),
+    }
+    with patch("plugin_store.subprocess.run", _gh(routes)):
+        with pytest.raises(NoReleaseFound):
+            resolve_latest_release("o/r")

@@ -80,6 +80,7 @@ class NoReleaseFound(StoreError):
 
 
 LATEST_REF = "latest"
+_PEEL_MAX_HOPS = 5   # tag -> tag -> ... -> commit; deeper is refused
 
 # C.2/A.2 (v0.74.0): a release ref is exactly "v" + semver.
 RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
@@ -903,17 +904,23 @@ def _peel_tag(repo: str, name: str, *, timeout: float = 20.0) -> str | None:
     ref = _gh_json(repo, f"repos/{repo}/git/ref/tags/{name}", timeout=timeout)
     if not isinstance(ref, dict) or ref.get("ref") != f"refs/tags/{name}":
         return None
-    obj = ref.get("object") or {}
-    sha = _sha_from_body(json.dumps({"sha": obj.get("sha")})) if isinstance(obj, dict) else None
-    if sha is None:
-        return None
-    if obj.get("type") == "commit":
-        return sha
-    if obj.get("type") == "tag":
+    obj = ref.get("object")
+    # Peel while the object is a tag (an annotated tag may point at another
+    # annotated tag — Terra, batch-2 diff round 1: one level stored the inner
+    # tag object's sha as the revision), boundedly; accept only a terminal
+    # commit.
+    for _hop in range(_PEEL_MAX_HOPS):
+        if not isinstance(obj, dict):
+            return None
+        sha = _sha_from_body(json.dumps({"sha": obj.get("sha")}))
+        if sha is None:
+            return None
+        if obj.get("type") == "commit":
+            return sha
+        if obj.get("type") != "tag":
+            return None
         tag_obj = _gh_json(repo, f"repos/{repo}/git/tags/{sha}", timeout=timeout)
-        inner = (tag_obj or {}).get("object") if isinstance(tag_obj, dict) else None
-        peeled = _sha_from_body(json.dumps({"sha": (inner or {}).get("sha")})) if isinstance(inner, dict) else None
-        return peeled
+        obj = tag_obj.get("object") if isinstance(tag_obj, dict) else None
     return None
 
 
