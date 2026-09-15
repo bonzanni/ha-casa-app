@@ -48,7 +48,7 @@ is derived from the fetched manifest** — you never pass it.
    - `activation_committed:true, runtime_ready:false` — **the pin already
      moved.** Do NOT repeat `plugin_update` as if nothing happened. The
      remedy is a reload/verify retry: `casa_reload(scope="agent",
-     role=<affected role>)` then `verify_plugin_state(name)`. A persisting
+     role=<affected role>)` then `verify_plugin_state(plugin_name=name)`. A persisting
      `reload_required` on a target means that agent is still bound to the
      previous artifact — surface it, do not mask it.
    - `ok:true` with a non-empty `pending_targets` — success: those

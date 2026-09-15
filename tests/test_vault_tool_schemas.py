@@ -92,8 +92,10 @@ async def test_list_vault_items_handler_runs_without_vault(monkeypatch):
 
 @pytest.mark.parametrize("tool_def, required, recipe_call", [
     (tools.casa_reload, ["scope"], {"scope": "plugin_env"}),
-    (tools.emit_completion, ["text"], {"status": "ok", "text": "Wired X"}),
-], ids=["casa_reload", "emit_completion"])
+    (tools.emit_completion, [], {"status": "partial"}),          # executor/scaffold.md
+    (tools.emit_completion, [], {"status": "ok", "text": "Wired X"}),
+    (tools.cleanup_engagement_topics, [], {}),                    # assistant prompt
+], ids=["casa_reload", "emit_completion-scaffold", "emit_completion", "cleanup_engagement_topics"])
 def test_recipe_literal_calls_pass_the_served_schema(tool_def, required, recipe_call):
     schema = _served_schema(tool_def)
     assert schema["required"] == required

@@ -63,7 +63,7 @@ the plugin's MCP server won't start without them, and the result's
 follow `secrets.md` (explore, then wire, then ask). A completion that leaves a
 required variable unwired without saying which vault was searched, for what,
 and what was found is a doctrine violation. Then read
-`verify_plugin_state(name)`: `ready:true`
+`verify_plugin_state(plugin_name=name)`: `ready:true`
 means every target agrees. The result carries the same phase fields as
 `plugin_update` (`activation_committed` / `runtime_ready`) — on
 `activation_committed:true, runtime_ready:false` the registry entry exists

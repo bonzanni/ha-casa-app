@@ -41,7 +41,7 @@ _SECRETS_RULES = [
     # the result field is where exploration lands
     "`plugin_add` and `plugin_update` already searched the default vault for you",
     # one match, every var maps to one field → wire
-    "exactly one item matches and every unresolved variable maps to exactly one field label, wire it",
+    "exactly one item matches and every unresolved variable maps to exactly one field role, wire it",
     # several / unmappable → ask in the topic with what was found
     "ask in the engagement topic, naming what you found",
     # never ask for a value
@@ -130,3 +130,24 @@ def test_secrets_recipe_distinguishes_unreadable_from_nothing_matched():
     text = _read(_SECRETS)
     assert "that is NOT \"nothing matched\"" in text
     assert "report that vault as unreadable" in text
+
+
+def test_recipes_call_verify_plugin_state_by_its_real_keyword():
+    """diff r2 E3: the tool's schema names `plugin_name`; a recipe example
+    with `name` is a call the validator refuses."""
+    for path in (_ADD, _UPDATE):
+        text = _read(path)
+        assert "verify_plugin_state(name)" not in text, path.name
+        assert "verify_plugin_state(plugin_name=name)" in text, path.name
+
+
+def test_secrets_recipe_never_speaks_of_labels():
+    """diff r4 G3 / r5 H2: the cut returns ids and roles; a recipe sentence or
+    example that routes the configurator through labels or titles reintroduces
+    the echo. Every example op:// path is id-shaped."""
+    text = _read(_SECRETS)
+    assert "field label" not in text
+    assert "a label works" not in text
+    assert "id-or-title" not in text
+    assert "op://Casa/" not in text
+    assert "op://<vault>/<item id>/<field id>" in text
