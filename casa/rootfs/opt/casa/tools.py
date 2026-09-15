@@ -2230,15 +2230,17 @@ def _build_world_state_summary() -> str:
         exec_types = []
     lines.append(f"Enabled executors:    {', '.join(exec_types) or '(none)'}")
 
-    version = "unknown"
-    for candidate in ("/opt/casa/VERSION", "/config/VERSION"):
-        try:
-            with open(candidate) as fh:
-                version = fh.read().strip()
-                break
-        except OSError:
-            continue
+    # The version is exported by svc-casa/run as CASA_VERSION; the VERSION
+    # files this block used to read never existed, so every engagement read
+    # "unknown" (N150, v0.311.0, 2026-09-15).
+    version = os.environ.get("CASA_VERSION", "").strip() or "unknown"
     lines.append(f"Addon version:        {version}")
+
+    # Defaults are the configurator's to know, not the operator's to repeat:
+    # the configured 1Password vault is rendered here so a secrets recipe can
+    # name it (and omit it — the vault tools fall back to it).
+    vault = _default_vault()
+    lines.append(f"Default vault:        {vault or '(none configured)'}")
 
     return "\n".join(lines)
 
@@ -15688,7 +15690,7 @@ def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
         cmd += ["--vault", vault]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
-        return {"error": r.stderr.strip()}
+        return _op_failed(r.returncode)
     items = json.loads(r.stdout)
     if query:
         items = [i for i in items if query.lower() in (i.get("title", "")).lower()]
@@ -15704,12 +15706,26 @@ def _tool_get_item_fields(*, item: str, vault: str = "") -> dict:
         cmd += ["--vault", vault]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
-        return {"error": r.stderr.strip()}
-    data = json.loads(r.stdout)
-    return {"fields": [{"label": f.get("label"),
-                        "section": (f.get("section") or {}).get("label", ""),
-                        "type": f.get("type")}
-                       for f in data.get("fields", [])]}
+        return _op_failed(r.returncode)
+    return {"fields": _project_item_fields(json.loads(r.stdout))}
+
+
+def _op_failed(exit_code: int) -> dict:
+    """A classified ``op`` failure. NEVER the subprocess's stderr or stdout:
+    whatever ``op`` prints on failure lands in the configurator's transcript
+    and from there in Telegram, and truncation is not redaction."""
+    return {"error": "op_failed", "exit_code": int(exit_code)}
+
+
+def _project_item_fields(item: dict) -> list[dict]:
+    """The ONE projection of an ``op item get`` document: label, section label
+    and type — never ``value``, ``reference`` or ``notes``. Shared by
+    ``get_item_fields`` and ``plugin_add``'s ``secret_candidates`` so there is a
+    single parser to audit for disclosure."""
+    return [{"label": f.get("label"),
+             "section": (f.get("section") or {}).get("label", ""),
+             "type": f.get("type")}
+            for f in (item or {}).get("fields", [])]
 
 
 @tool(

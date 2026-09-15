@@ -78,3 +78,60 @@ def test_empty_default_keeps_account_wide_listing(monkeypatch):
     with patch.object(tools.subprocess, "run", _run_capturing(captured)):
         tools._tool_list_vault_items(query="", vault="")
     assert "--vault" not in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# Classified failures: no subprocess output ever enters a tool result.
+#
+# Both helpers returned ``op``'s raw stderr on a non-zero exit. Truncation is
+# not redaction: whatever ``op`` prints on failure — an item title, a field
+# value echoed in an error, a token fragment — would have reached the
+# configurator's transcript and, from there, Telegram. The result now carries a
+# fixed classification and the exit code, nothing else (design 2026-09-15 §2.D,
+# Terra round 1 S1).
+# ---------------------------------------------------------------------------
+
+_CANARY = "sk-live-CANARY-9f8e7d6c5b4a"
+
+
+class _FailingResult:
+    returncode = 1
+    stderr = f"[ERROR] 2026/09/15 op read failed: value {_CANARY} rejected"
+    stdout = ""
+
+
+def _run_failing(cmd, **_kw):
+    return _FailingResult()
+
+
+def test_list_vault_items_failure_is_classified_not_quoted(monkeypatch):
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    with patch.object(tools.subprocess, "run", _run_failing):
+        out = tools._tool_list_vault_items(query="gmail", vault="")
+    assert out == {"error": "op_failed", "exit_code": 1}
+    assert _CANARY not in json.dumps(out)
+
+
+def test_get_item_fields_failure_is_classified_not_quoted(monkeypatch):
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    with patch.object(tools.subprocess, "run", _run_failing):
+        out = tools._tool_get_item_fields(item="Gmail", vault="")
+    assert out == {"error": "op_failed", "exit_code": 1}
+    assert _CANARY not in json.dumps(out)
+
+
+def test_get_item_fields_projects_labels_only():
+    """One projection, shared with plugin_add's ``secret_candidates``: label,
+    section label, type — never ``value``, ``reference`` or ``notes``."""
+    item = {"fields": [
+        {"id": "u", "label": "client id", "type": "STRING",
+         "value": _CANARY, "reference": "op://Casa/x/client id"},
+        {"id": "p", "label": "client secret", "type": "CONCEALED",
+         "section": {"id": "s", "label": "OAuth"}, "value": _CANARY},
+    ]}
+    fields = tools._project_item_fields(item)
+    assert fields == [
+        {"label": "client id", "section": "", "type": "STRING"},
+        {"label": "client secret", "section": "OAuth", "type": "CONCEALED"},
+    ]
+    assert _CANARY not in json.dumps(fields)
