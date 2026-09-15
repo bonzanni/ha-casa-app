@@ -35,7 +35,10 @@ setup: ## One-time WSL dev setup (Linux venv + git hooks)
 # taking the binding pre-push gate down with it. Both reviewers made this their
 # top finding, and it passes on this machine, which is exactly why it needed a
 # real probe rather than my judgement.
-CAGE := $(shell systemd-run --user --scope -q true >/dev/null 2>&1 && echo "systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=2G")
+# DRIVE_SLICE, when a supervising caller exports it, names the systemd slice the
+# cage joins: a nested --scope without --slice is a SIBLING of the caller's
+# scope, invisible to a supervisor that watches only its own cgroup subtree.
+CAGE := $(shell systemd-run --user --scope -q true >/dev/null 2>&1 && echo "systemd-run --user --scope -q $(if $(DRIVE_SLICE),--slice=$(DRIVE_SLICE) )-p MemoryMax=8G -p MemorySwapMax=2G")
 
 # LOCK := mutual exclusion for the memory-hungry unit suite. Two 8G-caged runs
 # do not fit on a 23G developer box, and callers cannot be trusted to
