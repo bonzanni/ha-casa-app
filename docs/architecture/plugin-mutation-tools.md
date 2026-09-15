@@ -137,6 +137,11 @@ assert each shipped surface carries the prohibition and has not reverted to a
 previously-shipped phrasing, which is not the same as proving no new phrasing can express the
 claim.
 
+**A mutation result also carries what the default vault holds for the plugin's unresolved
+secrets** — `secret_candidates`: ids, roles and types, never an operator-typed string, wired by nothing here. Its contract, the vault
+tools it shares a projection with, and the classified `op` failure are
+[`architecture/plugin-secret-exploration.md`](plugin-secret-exploration.md)'s.
+
 **INV-TOOL-007**: A committed plugin removal reported by `plugin_remove`, by the owned-set swap of a SUCCESSFUL specialist bundle — install, upgrade, rollback or uninstall alike — or by a bundle compensation that measured the entry still removed — or that could not read the registry back and says so in the same envelope — discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
 
 A plugin's persistent data directory belongs to the Claude CLI, not to Casa: it lives on the
@@ -329,4 +334,5 @@ verifies and pins the envelope.
 - [`architecture/plugins.md`](../architecture/plugins.md)
 - [`architecture/plugin-setup.md`](../architecture/plugin-setup.md)
 - [`architecture/plugin-health.md`](../architecture/plugin-health.md)
+- [`architecture/plugin-secret-exploration.md`](../architecture/plugin-secret-exploration.md)
 <!-- END SOURCEMAP -->
