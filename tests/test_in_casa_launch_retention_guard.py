@@ -88,7 +88,9 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
     envelope = await _launch(engage_executor)
 
     payload = json.loads(envelope["content"][0]["text"])
-    assert payload["status"] == "error", payload
+    assert payload["status"] == "pending", payload   # §2.A: detached owner
+    await tools_mod.drain_launch_turns()
+    await tools_mod.drain_launch_death_reports()
 
     created_id = next(iter(registry._records))
 

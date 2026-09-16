@@ -1,0 +1,60 @@
+# Manifest shard: engagement launch and telling (split from architecture-e.yaml at the 40 KB index ceiling, 2026-09-16)
+- doc: architecture/engagement-terminal-telling.md
+  summary: What a terminal engagement's topic and its engager are told — the outcome mark withheld until the topic was told, the unconfirmed-post disclosure, and the durable obligation to notify the party that asked.
+  when_changing: what a terminal engagement's topic or its engager is told, the outcome mark, the unconfirmed-post disclosure, or the durable obligation to notify
+  covers:
+    - casa/rootfs/opt/casa/tools.py::_finalize_engagement
+    - casa/rootfs/opt/casa/tools.py::_finalize_engagement_tail
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.records_owing_terminal_notification
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.ack_terminal_notification
+    - casa/rootfs/opt/casa/casa_core.py::_notify_recovered_engagement_outcomes
+  tests:
+    - tests/test_finalize_engagement.py
+    - tests/test_engagement_terminal_notification.py
+    - tests/test_engagement_terminal_notification_replay.py
+  related: [architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-failure-and-restart.md, architecture/engagements.md]
+  defines_invariants: [INV-ENG-013, INV-ENG-018]
+  invariant_tests:
+    INV-ENG-013: [tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_raising_direct_post_leaves_the_topic_unmarked, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_an_unconfirmed_sequencer_post_falls_back_to_the_direct_send, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_an_unconfirmed_sequencer_and_a_failing_direct_send, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_confirmed_sequencer_post_paints_and_closes_once, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_confirmed_direct_post_paints_and_closes_once, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_partway_sequencer_failure_is_not_replayed, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_wedged_disclosure_is_bounded, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_an_unconfirmed_cancel_also_stays_unmarked, tests/test_finalize_engagement.py::TestFinalizeCompletionConfirmation::test_a_wedged_close_cannot_strand_the_tail]
+    INV-ENG-018: [tests/test_engagement_terminal_notification.py::TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery::test_a_finalized_outcome_owes_a_telling_that_acceptance_does_not_clear, tests/test_engagement_terminal_notification.py::TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery::test_a_rolled_back_finalize_owes_nothing, tests/test_engagement_terminal_notification.py::TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery::test_a_legacy_row_without_the_field_owes_nothing, tests/test_engagement_terminal_notification.py::TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery::test_the_obligation_follows_the_writer_not_the_record, tests/test_engagement_terminal_notification.py::TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery::test_an_owing_terminal_is_exempt_from_retention_expiry, tests/test_engagement_terminal_notification_replay.py::TestBootReplaysOnlyWhatIsStillOwed::test_two_owing_outcomes_replay_to_their_persisted_origins, tests/test_engagement_terminal_notification_replay.py::TestBootReplaysOnlyWhatIsStillOwed::test_each_callback_acknowledges_the_id_it_owns, tests/test_engagement_terminal_notification_replay.py::TestBootReplaysOnlyWhatIsStillOwed::test_an_unroutable_role_retains_the_obligation_for_the_next_boot, tests/test_engagement_terminal_notification_replay.py::TestBootReplaysOnlyWhatIsStillOwed::test_acceptance_without_a_consumer_replays_at_the_next_boot, tests/test_engagement_terminal_notification_replay.py::TestBootActuallyInvokesTheReplayOwner::test_main_replays_owed_outcomes_after_the_agent_loops_start]
+- doc: architecture/engagement-launch-detach.md
+  summary: How an in_casa launch turn is detached from the tool call that launched it — the two-call launch, the anchored owner that tells the engager every outcome, the stop's drains, and the one engagement-outcome envelope.
+  when_changing: the in_casa launch handoff, the launch-turn owner, what the engager is told about a launch outcome, the graceful stop's launch drains, or the engagement-outcome envelope
+  covers:
+    - casa/rootfs/opt/casa/tools.py::_hand_off_launch_turn
+    - casa/rootfs/opt/casa/tools.py::_own_in_casa_launch
+    - casa/rootfs/opt/casa/tools.py::_launch_turn_done
+    - casa/rootfs/opt/casa/tools.py::_tell_engager_launch_outcome
+    - casa/rootfs/opt/casa/tools.py::send_engagement_outcome
+    - casa/rootfs/opt/casa/tools.py::_schedule_terminal_ack
+    - casa/rootfs/opt/casa/tools.py::drain_launch_turns
+    - casa/rootfs/opt/casa/tools.py::stop_engagement_launches
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.open
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.run_launch_turn
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.launch_shutdown_active
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.mark_launch_drains_complete
+  tests:
+    - tests/test_in_casa_launch_detach.py
+    - tests/test_launch_death_reporter.py
+    - tests/test_in_casa_launch_terminal_artifact.py
+  related: [architecture/engagements.md, architecture/engagement-failure-and-restart.md, architecture/engagement-terminal-telling.md, architecture/engagement-finalization.md, architecture/sdk-client-pool.md]
+  defines_invariants: [INV-ENG-021]
+  invariant_tests:
+    INV-ENG-021: [tests/test_in_casa_launch_detach.py::test_the_engager_gets_pending_before_the_launch_turn_starts, tests/test_in_casa_launch_detach.py::test_a_cutoff_after_pending_tells_the_engager_live, tests/test_in_casa_launch_detach.py::test_a_pre_frame_api_fault_after_pending_is_told_once, tests/test_in_casa_launch_detach.py::test_a_dropped_bus_target_leaves_the_obligation_owed, tests/test_in_casa_launch_detach.py::test_cancelling_the_tool_task_after_return_does_not_cancel_the_turn, tests/test_in_casa_launch_detach.py::test_the_stop_drains_a_running_owner_and_reports_the_cancellation, tests/test_in_casa_launch_detach.py::test_a_stop_latched_during_open_mints_no_owner, tests/test_in_casa_launch_detach.py::test_an_owner_cancelled_before_its_first_step_is_reported_by_its_callback, tests/test_in_casa_launch_detach.py::test_after_the_drains_a_never_started_owner_is_only_logged, tests/test_in_casa_launch_detach.py::test_a_persist_failure_after_pending_tells_the_engager_the_outcome_is_uncommitted, tests/test_in_casa_launch_detach.py::test_the_consumer_narrates_an_uncommitted_outcome_as_still_open, tests/test_in_casa_launch_detach.py::test_an_inline_named_abort_is_acknowledged_on_return, tests/test_in_casa_launch_detach.py::test_the_shared_envelope_carries_context_extra_and_routes_from_the_origin, tests/test_in_casa_launch_detach.py::test_the_interactive_specialist_launch_returns_pending_before_its_turn, tests/test_in_casa_launch_detach.py::test_an_inline_abort_cancelled_before_its_return_is_told_live, tests/test_in_casa_launch_detach.py::test_an_owner_cancelled_inside_its_live_telling_tells_the_engager_once, tests/test_in_casa_launch_detach.py::test_a_stop_whose_cancellation_report_cannot_persist_still_tells, tests/test_in_casa_launch_detach.py::test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing, tests/test_in_casa_launch_detach.py::test_a_losing_inline_abort_does_not_clear_another_writers_obligation, tests/test_in_casa_launch_detach.py::test_a_launcher_cancelled_after_the_drains_mints_no_compensation, tests/test_in_casa_launch_detach.py::test_an_owner_cancelled_inside_its_uncommitted_telling_tells_once, tests/test_in_casa_launch_detach.py::test_an_inline_abort_reached_after_the_drains_mints_nothing, tests/test_in_casa_launch_detach.py::test_the_boot_replay_addresses_a_roleless_record_to_the_configured_assistant, tests/test_in_casa_launch_detach.py::test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_mint, tests/test_in_casa_launch_detach.py::test_the_stop_drains_a_pre_record_topic_abort, tests/test_in_casa_launch_detach.py::test_a_pre_record_cancellation_after_the_drains_mints_nothing, tests/test_in_casa_launch_detach.py::test_the_stop_returns_only_when_no_anchor_has_pending_work]
+- doc: architecture/engagement-failure-and-restart.md
+  summary: A launch that does not become a live engagement — which gate refused it, what its rollback removes, which arms answer the caller rather than the topic, and what a restart replays or refuses.
+  when_changing: a launch failure or abort, what a launch rollback removes, or restart replay
+  covers:
+    - casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements
+    - casa/rootfs/opt/casa/tools.py::_abort_engagement_topic
+  tests:
+    - tests/test_claude_code_driver.py
+    - tests/test_boot_replay.py
+    - tests/test_engage_executor_tool.py
+    - tests/test_launch_failure_terminal_authority.py
+  related: [architecture/engagements.md, architecture/engagement-containment.md, architecture/engagement-finalization.md, architecture/delegation.md]
+  defines_invariants: [INV-ENG-019]
+  invariant_tests:
+    INV-ENG-019: [tests/test_launch_failure_terminal_authority.py::TestOnlyADurableWinMayCloseTheTopic::test_a_lost_terminal_race_leaves_the_topic_open, tests/test_launch_failure_terminal_authority.py::TestOnlyADurableWinMayCloseTheTopic::test_a_rolled_back_persist_leaves_the_topic_open, tests/test_launch_failure_terminal_authority.py::TestOnlyADurableWinMayCloseTheTopic::test_a_durable_win_still_paints_closes_and_appends_once, tests/test_launch_failure_terminal_authority.py::TestTheAuthorityOutlivesItsLauncher::test_cancelling_the_awaiter_does_not_cancel_the_abort]
+

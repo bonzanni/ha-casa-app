@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-01
+last_reviewed: 2026-09-16
 ---
 
 # Engagement finalization
@@ -137,14 +137,16 @@ falls back to a direct send that bypasses sequencing entirely.
 
 **One terminal path deliberately stays outside this funnel.** A launch turn that ends
 without leaving any artifact (INV-ENG-011, [`architecture/engagements.md`](engagements.md))
-is reported by its launcher, not finalized here, and the exclusion is what makes it safe.
-This funnel retains a tier-classified engagement summary onto the shared memory bank on
+is reported by the launch's owner, not finalized here, and the exclusion is what makes it
+safe. This funnel retains a tier-classified engagement summary onto the shared memory bank on
 *every* outcome; a launch death recorded as a completion with empty text would put a
 fabricated success into a store with no other copy. It also hard-codes a single completion
-error kind, which would erase the specific kind the report exists to name, and it notifies
-the engager over the bus, which the launcher's own error envelope already does. So that path
-uses the strict terminal primitive directly, writes only `error`, and touches neither the bus
-notification nor any retention. Nothing outside a completion or the operator's complete
+error kind, which would erase the specific kind the report exists to name. So that path
+uses the strict terminal primitive directly, writes only `error`, tells the engager itself —
+over the same engagement-outcome envelope this funnel's notify step uses, with the fault's
+own kind and no result (INV-ENG-021,
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)) — and touches no
+retention. Nothing outside a completion or the operator's complete
 command ever writes `completed`.
 
 Two properties of the primitive make that direct use correct rather than a shortcut, and
