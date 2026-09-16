@@ -14,7 +14,15 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
 
 ## Ask the user
 
-1. **Repository locator** (`owner/repo` + a ref — branch/tag/sha).
+1. **Repository locator** (`owner/repo` + a ref — branch/tag/sha). When the operator asks for
+   the latest version, or names no version at all, pass `ref="latest"`:
+   `specialist_install_inspect` resolves it server-side to the newest published release tag
+   (GitHub's latest release, else the highest `v<semver>` tag), records that tag in the receipt,
+   and reports it as `resolved_ref` — write `<repo>@<resolved_ref>` in your commit message and
+   completion. You have no web tool: do not try to browse releases or tags, and never choose a
+   branch on your own — a branch or a sha is passed only when the operator names it. A repo with
+   no published release refuses with `no_release_found` and nothing is staged; report that and ask
+   the operator whether to install a branch or a sha they name.
 2. Nothing else up front — `specialist_install_inspect` reports the component's own declared
    mission, default persona, dependencies (including any bundled/declared plugin), and required
    config/secret names; ask the operator to supply THOSE by name once inspection returns.
@@ -113,7 +121,7 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    operator for one of those** (#994): nothing is withheld on them, `verify_plugin_state` never
    lists them as unresolved, and a setup-provisioned name is filled in by the plugin's setup
    episode after this install.
-8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")`.
+8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")` — for `latest`, `<ref>` is the `resolved_ref` the inspect returned.
 9. `casa_reload(scope="agents")` (mandatory — see `completion.md`; an `active` install is on disk
    but not in the live registry until reload runs).
 10. `emit_completion(status="ok", text="Installed specialist <slug> from <repo>@<ref>; reloaded and

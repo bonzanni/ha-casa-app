@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-26
+last_reviewed: 2026-09-16
 ---
 
 # Plugin mutation tools
@@ -144,7 +144,8 @@ tools it shares a projection with, and the classified `op` failure are
 
 **A mutation result names the ref it actually pinned** — `resolved_ref`: the tag the literal
 `latest` resolved to, or the exact ref given; the contract is INV-PLUG-022 in
-[`architecture/plugins.md`](plugins.md).
+[`architecture/plugins.md`](plugins.md). A specialist inspection reports the same field under
+the same rule (INV-SPEC-018, [`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)).
 
 **INV-TOOL-007**: A committed plugin removal reported by `plugin_remove`, by the owned-set swap of a SUCCESSFUL specialist bundle — install, upgrade, rollback or uninstall alike — or by a bundle compensation that measured the entry still removed — or that could not read the registry back and says so in the same envelope — discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
 

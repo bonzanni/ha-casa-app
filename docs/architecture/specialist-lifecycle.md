@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-15
+last_reviewed: 2026-09-16
 ---
 
 # The specialist install lifecycle
@@ -69,6 +69,19 @@ runtime.yaml is clamped at load with a warning (the specialist keeps running min
 forbidden grants), and a live engagement record that already pinned such a grant is
 refused at dispatch (INV-MCP-009). Non-casa entries — CC built-ins, plugin servers — are
 governed by the role schema and the bundled-plugin consent surfaces, not this list.
+
+**INV-SPEC-018**: The ref literal `latest`, given to a specialist inspection for install or upgrade, is resolved before anything is staged to the published release tag `plugin_add` would choose for the same repository (INV-PLUG-022) — the tag, never the literal, is the ref the receipt records and the result reports as `resolved_ref`, the fetch is guarded against that release's peeled commit, and a repository with no published release is refused with `no_release_found` leaving no staging tree and no receipt.
+
+Enforced at the top of the inspection, which shares the plugin store's release resolver
+and its failure taxonomy; a caller-supplied expected revision must be the release's peeled
+commit, or the inspection refuses with `revision_mismatch`. The configurator's specialist
+recipes tell it to pass the literal when the operator asks for the latest version or names
+none, and to name the resolved tag in its commit message and completion.
+
+What it does not cover: a plugin dependency a component manifest declares — its ref is
+resolved as an exact ref against the manifest's own pinned revision, and a manifest that
+wrote `latest` there is refused as a reference not found. Which tag counts as the
+published release is INV-PLUG-022's rule, defined in `architecture/plugins.md`.
 
 **INV-SPEC-004**: Operational materialization writes a fresh content directory and atomically retargets the slug symlink, with deletion containment-gated.
 
@@ -178,7 +191,8 @@ generations of a tarball requirement occupy disk between installs.
 ## Failure behavior
 
 **Resolution, fetch, manifest or dependency problems.** Typed refusals before anything
-durable — reference not found, fetch failure, invalid manifest, slug collision, dependency
+durable — reference not found, no published release for `latest` (INV-SPEC-018), fetch
+failure, invalid manifest, slug collision, dependency
 unavailable, a secret value in the plain config channel, an undeclared secret name in the
 secret channel (INV-SPEC-006), and a slug whose earlier bundle transaction still owes boot
 recovery (INV-SPEC-014, `architecture/specialist-bundle-transactions.md`) — a commit there
@@ -241,6 +255,8 @@ inspection time, or consent will not cover it.
 **Source**
 - `casa/rootfs/opt/casa/specialist_install.py::commit_specialist_install`
 - `casa/rootfs/opt/casa/specialist_install.py::compute_install_root_digest`
+- `casa/rootfs/opt/casa/specialist_install.py::inspect_specialist_repo`
+- `casa/rootfs/opt/casa/specialist_install.py::resolve_release_ref`
 - `casa/rootfs/opt/casa/specialist_install.py::sweep_staging_aged`
 - `casa/rootfs/opt/casa/specialist_materialize.py::current_specialist_roles_dir`
 - `casa/rootfs/opt/casa/specialist_materialize.py::materialize_specialist_operational_files`
@@ -257,6 +273,7 @@ inspection time, or consent will not cover it.
 - `tests/test_specialist_install_consent.py`
 - `tests/test_tools_specialist_install.py`
 - `tests/test_specialist_bundled_inspect.py`
+- `tests/test_specialist_install_latest.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)

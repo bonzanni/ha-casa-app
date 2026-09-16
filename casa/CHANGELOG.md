@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.316.0] - 2026-09-16
+
+### Fixed
+
+- A specialist can be installed at its latest released version. Asking the
+  configurator for "the latest version" of a specialist used to fail: the
+  plugin tools already understood `latest`, but `specialist_install_inspect`
+  handed the word to GitHub as a ref and got "no such ref" back, and the
+  configurator, which has no web access, could only stop and ask the operator
+  for a tag. Now `latest` means the same thing on both paths: the newest
+  published release tag (GitHub's latest release, else the highest `v<semver>`
+  tag), never a branch. The tag is what the install receipt records and what
+  the tool reports as `resolved_ref`; a repository with no published release is
+  refused with `no_release_found` before anything is staged. Upgrades resolve
+  `latest` the same way. (#1007)
+
 ## [0.315.0] - 2026-09-16
 
 ### Fixed

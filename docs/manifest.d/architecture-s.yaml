@@ -114,6 +114,8 @@
   covers:
     - casa/rootfs/opt/casa/specialist_install.py::commit_specialist_install
     - casa/rootfs/opt/casa/specialist_install.py::compute_install_root_digest
+    - casa/rootfs/opt/casa/specialist_install.py::inspect_specialist_repo
+    - casa/rootfs/opt/casa/specialist_install.py::resolve_release_ref
     - casa/rootfs/opt/casa/specialist_install.py::sweep_staging_aged
     - casa/rootfs/opt/casa/specialist_materialize.py::current_specialist_roles_dir
     - casa/rootfs/opt/casa/specialist_materialize.py::materialize_specialist_operational_files
@@ -129,9 +131,11 @@
     - tests/test_specialist_install_consent.py
     - tests/test_tools_specialist_install.py
     - tests/test_specialist_bundled_inspect.py
+    - tests/test_specialist_install_latest.py
   related: [architecture/agent-taxonomy.md, architecture/personality.md, architecture/plugins.md, architecture/specialist-bundle-transactions.md, architecture/specialist-instance-tuples.md]
-  defines_invariants: [INV-SPEC-001, INV-SPEC-004, INV-SPEC-005, INV-SPEC-007, INV-SPEC-008, INV-SPEC-010, INV-SPEC-017]
+  defines_invariants: [INV-SPEC-001, INV-SPEC-004, INV-SPEC-005, INV-SPEC-007, INV-SPEC-008, INV-SPEC-010, INV-SPEC-017, INV-SPEC-018]
   invariant_tests:
+    INV-SPEC-018: [tests/test_specialist_install_latest.py::test_latest_resolves_to_the_release_tag_and_guards_the_fetch_on_its_peel, tests/test_specialist_install_latest.py::test_no_published_release_is_refused_before_anything_is_staged, tests/test_specialist_install_latest.py::test_release_lookup_failures_keep_the_resolve_taxonomy, tests/test_specialist_install_latest.py::test_an_expected_revision_that_is_not_the_peel_is_a_revision_mismatch, tests/test_specialist_install_latest.py::test_upgrade_mode_resolves_latest_the_same_way, tests/test_specialist_install_latest.py::test_a_commits_lookup_that_disagrees_with_the_peel_fetches_nothing, tests/test_tools_specialist_install.py::test_inspect_ok_payload_reports_the_resolved_ref]
     INV-SPEC-017: [tests/test_specialist_bundled_inspect.py::test_consent_requires_exactly_what_the_withhold_gate_holds_on, tests/test_specialist_bundled_inspect.py::test_a_plugin_with_only_exempt_references_requires_nothing, tests/test_specialist_bundled_inspect.py::test_sibling_env_name_collision_sees_exempt_references, tests/test_tools_specialist_install.py::test_inspect_ok_payload_surfaces_receipt_and_plugins]
     INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
     INV-SPEC-001: [tests/test_specialist_lifecycle_matrix.py::test_install_never_writes_cas_without_a_recorded_consent]

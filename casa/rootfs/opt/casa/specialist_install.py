@@ -343,6 +343,11 @@ class InspectionResult:
     # allowlist), so always consumer-safe, but the operator approving the
     # install still sees them. Defaulted for hand-built InspectionResults.
     role_tool_grants: tuple[str, ...] = ()
+    # INV-SPEC-018 (#1007): the ref the inspection actually fetched — the
+    # release tag when the caller passed the literal ``latest``, else the
+    # caller's own ref. The receipt records the same value; the literal is
+    # never persisted. Defaulted for hand-built InspectionResults.
+    resolved_ref: str = ""
 
 
 def _record_pending_receipt(slug_dir: Path, receipt_id: str) -> None:
@@ -445,6 +450,34 @@ def compute_install_root_digest(
         "manifest_checksum": checksum_bytes(manifest_bytes),
         "dependency_digests": sorted(d.digest for d in dependencies),
     })
+
+
+def resolve_release_ref(repo: str) -> tuple[str, str]:
+    """INV-SPEC-018 (#1007): the ref literal ``latest`` names the newest
+    PUBLISHED release of *repo* — ``(tag, peeled_commit)`` from
+    ``plugin_store.resolve_latest_release`` (INV-PLUG-022's resolver: GitHub's
+    latest release when its name is a release tag, else the highest
+    ``v<semver>`` tag, peeled in the tag namespace, never a branch). Raises
+    SpecialistInstallError with ``plugin_add``'s own kinds: ``no_release_found``
+    when nothing qualifies, else the resolve taxonomy ``resolve_and_fetch``
+    maps."""
+    import plugin_store
+
+    try:
+        return plugin_store.resolve_latest_release(repo)
+    except plugin_store.NoReleaseFound as exc:
+        raise SpecialistInstallError("no_release_found", str(exc)) from exc
+    except plugin_store.RefNotFound as exc:
+        raise SpecialistInstallError("ref_not_found", str(exc)) from exc
+    except plugin_store.ResolveAuthFailed as exc:
+        raise SpecialistInstallError("resolve_auth_failed", str(exc)) from exc
+    except plugin_store.SourceEmpty as exc:
+        raise SpecialistInstallError("source_empty", str(exc)) from exc
+    except plugin_store.ResolveUnavailable as exc:
+        raise SpecialistInstallError("resolve_unavailable", str(exc)) from exc
+    except plugin_store.StoreError as exc:
+        raise SpecialistInstallError(
+            getattr(exc, "reason_code", "store_error"), str(exc)) from exc
 
 
 def resolve_and_fetch(
@@ -1342,6 +1375,7 @@ def inspect_specialist_repo(
     (`specialist_receipt`) so a bundled/declared plugin closure's provenance
     is bound into consent (`receipt_digest`) and available to commit."""
     import plugin_registry
+    import plugin_store
     import specialist_receipt
     from specialist_registry import InstalledSpecialistIndex, _discover_image_role_slots
 
@@ -1351,6 +1385,22 @@ def inspect_specialist_repo(
         # F1: a caller-supplied target_slug is joined as `specialists_dir /
         # target_slug` below (InstanceDir.active()) — validate before any join.
         validate_specialist_slug(target_slug)
+
+    # INV-SPEC-018 (#1007): the literal ``latest`` is resolved to the newest
+    # published release tag BEFORE anything is staged, and the tag is the ref
+    # from here on — the receipt records it, the result reports it, and the
+    # fetch below is guarded against the release's peeled commit, so a
+    # same-named branch that a commits lookup might prefer can never be what
+    # gets fetched. A caller-supplied expected_revision must BE that peel.
+    if ref == plugin_store.LATEST_REF:
+        ref, peeled = resolve_release_ref(repo)
+        if expected_revision is not None and \
+                plugin_store.normalize_revision(expected_revision) != peeled:
+            raise SpecialistInstallError(
+                "revision_mismatch",
+                f"expected_revision {expected_revision!r} does not match the commit "
+                f"{peeled!r} that release {ref} of {repo} names")
+        expected_revision = peeled
 
     staging_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     component_dir = staging_root / uuid.uuid4().hex
@@ -1519,6 +1569,7 @@ def inspect_specialist_repo(
                             .get("allowed") or ())
                 if isinstance(t, str) and t.startswith("mcp__casa-framework")
             ),
+            resolved_ref=ref,
         )
     except BaseException:
         shutil.rmtree(component_dir, ignore_errors=True)

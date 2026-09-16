@@ -679,6 +679,8 @@ def _fake_inspection(tmp_path, *, plugin_resolutions=(), receipt_digest=""):
         default_persona_checksum="sha256:" + "c" * 64,
         required_config_names=(), required_secret_names=(),
         dependencies=(), staged_dir=tmp_path / "staged",
+        # INV-SPEC-018: a real call always reports the ref it fetched.
+        resolved_ref="main",
         # Fix round 1 (task-12): a real inspect_specialist_repo call ALWAYS
         # populates these (specialist_install.py InspectionResult) — every
         # fake here mirrors that so the ok_payload's receipt_id/
@@ -986,7 +988,7 @@ async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path)
         default_persona_checksum=component.default_persona_checksum,
         required_config_names=(), required_secret_names=(), dependencies=deps,
         staged_dir=staged, receipt_id=real_receipt_id, receipt_digest="",
-        plugin_resolutions=(),
+        plugin_resolutions=(), resolved_ref="main",
     )
     monkeypatch.setattr(
         specialist_install, "inspect_specialist_repo", lambda *a, **k: fake_inspection)
@@ -2594,3 +2596,27 @@ async def test_a_pending_upgrade_names_its_resume_inputs(
         ["ok", "reloaded", "slug", "state", "tool", "verify"] if pending
         else ["ok", "reloaded", "slug", "state", "verify"])
     assert payload.get("tool") == ("specialist_upgrade" if pending else None)
+
+
+@pytest.mark.asyncio
+async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path) -> None:
+    """INV-SPEC-018 (#1007): the configurator names the installed version in
+    its commit message and completion from the ref the tool resolved — for
+    ``latest`` that is the release tag, so the payload must carry it."""
+    from specialist_install_consent import install_consent_identity
+    from tools import specialist_install_inspect
+
+    fake, tmp_store_cls = _wire_inspect(monkeypatch, tmp_path, channel=None)
+    fake.resolved_ref = "v1.2.0"
+    identity = install_consent_identity(
+        component_id=fake.component_id, version=fake.version,
+        root_digest=fake.root_digest, slug=fake.slug)
+    tmp_store_cls().record(
+        identity=identity, component_id=fake.component_id, version=fake.version,
+        component_checksum=fake.root_digest, slug=fake.slug)
+
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "latest"}))
+
+    assert payload["ok"] is True
+    assert payload["resolved_ref"] == "v1.2.0"

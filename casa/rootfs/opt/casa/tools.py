@@ -14061,6 +14061,10 @@ async def specialist_install_inspect(args: dict) -> dict:
         "dependencies": [{"kind": d.kind, "identifier": d.identifier, "available": d.available}
                           for d in result.dependencies],
         "staged_dir": str(result.staged_dir),
+        # INV-SPEC-018 (#1007): the ref actually fetched — the release tag
+        # when the caller passed ``latest`` — for the configurator's commit
+        # message and completion, exactly as plugin_add reports resolved_ref.
+        "resolved_ref": result.resolved_ref,
         # Fix round 1 (task-12): specialist_install_commit/specialist_upgrade
         # REQUIRE args["receipt_id"] (see their "required" schemas below) —
         # without it in this payload every real install/upgrade dead-ends at
