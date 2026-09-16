@@ -17,6 +17,12 @@ addon. For changes that genuinely need a process restart, use
 | `config_sync` | `casa_reload(scope='config_sync')` | <1s | no | re-run the default-sync reconciler live (adds/updates from image defaults), then cascades `agents` + `policies` reloads |
 | `full` | `casa_reload(scope='full')` | <1s | no | catch-all when unsure or multiple categories edited |
 
+`role` is the agent's directory name — `assistant`, `butler`, `concierge`, or a
+specialist's slug. The tier-prefixed forms the plugin tools use for the same role
+(`resident:assistant`, `specialist:<slug>`, as in `plugin_add`'s `targets` and its
+`reloaded:` list) are accepted too: the prefix is stripped before the reload runs, and
+the reply's `role` names the directory the reload ran for.
+
 `casa_restart_supervised` (~10-15s) is reserved for s6 service-tree
 changes, addon options.json mutations, or kernel concerns.
 

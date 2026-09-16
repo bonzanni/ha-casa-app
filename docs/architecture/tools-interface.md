@@ -86,6 +86,14 @@ with: `casa_reload` requires only `scope`, and `emit_completion` nothing at all,
 recipes' literal calls (`casa_reload(scope="plugin_env")`, `emit_completion(status=..., text=...)`)
 omit the rest, and the shorthand declaration had made every key required — a call the
 validator refused before the handler ran.
+Where a scope needs a `role`, the handler canonicalises the argument before dispatch:
+the value is the agent's directory name (`assistant`, a specialist's slug), and the
+tier-prefixed forms every plugin surface uses for the same role — `resident:assistant`,
+`specialist:<slug>`, the shape of `plugin_add`'s `targets` and of its `reloaded:` list —
+are accepted with the prefix stripped (`tools.py::_reload_role_arg`), so an executor can
+hand back exactly what it just read; a bare prefix is still `role_required`, and any
+other prefix is the role as given. The same canonicalisation applies to
+`casa_reload_triggers`.
 
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner
@@ -296,6 +304,7 @@ that distinction is the contract.
 - `casa/rootfs/opt/casa/mcp_envelope.py::_tool_schema`
 
 **Tests**
+- `tests/test_casa_reload_role_forms.py`
 - `tests/test_internal_handlers.py`
 - `tests/test_emit_completion_tool.py`
 

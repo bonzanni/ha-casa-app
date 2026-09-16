@@ -7197,6 +7197,24 @@ async def config_git_commit(args: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _reload_role_arg(raw) -> "str | None":
+    """The role a reload tool was asked for, as the agent DIRECTORY name.
+
+    #1004: every plugin surface names a role in its tier-prefixed form
+    (``plugin_add``'s ``targets``, its ``reloaded:`` list, the engagement
+    brief that quotes them), while the reload scopes key on the directory
+    name under ``agents/``. The tool is the trust boundary for the argument,
+    so it canonicalises here: a leading ``resident:`` or ``specialist:`` is
+    stripped; anything else (including an unknown prefix) is the role as
+    given, and the reload answers for that. ``None`` when nothing is left."""
+    role = (raw or "").strip() if isinstance(raw, str) else ""
+    for prefix in ("resident:", "specialist:"):
+        if role.startswith(prefix):
+            role = role[len(prefix):].strip()
+            break
+    return role or None
+
+
 @tool(
     "casa_reload",
     "In-process reload of Casa runtime state at a given scope. "
@@ -7229,7 +7247,14 @@ async def casa_reload(args: dict) -> dict:
             ),
         })
 
-    role = (args.get("role") or "").strip() or None
+    role = _reload_role_arg(args.get("role"))
+    if scope in ("agent", "triggers") and role is None:
+        return _result({
+            "status": "error", "kind": "role_required",
+            "message": f"casa_reload(scope={scope!r}) requires a non-empty "
+                       "'role' — the agent's directory name (a leading "
+                       "resident:/specialist: prefix is accepted and stripped)",
+        })
     include_env = bool(args.get("include_env", False))
 
     import agent as agent_mod
@@ -11593,11 +11618,13 @@ async def casa_reload_triggers(args: dict) -> dict:
     if caller not in _PRIVILEGED_CONFIG_ROLES:
         return _refuse_unprivileged("casa_reload_triggers", caller)
 
-    role = args.get("role")
+    role = _reload_role_arg(args.get("role"))
     if not role:
         return _result({
             "status": "error", "kind": "role_required",
-            "message": "casa_reload_triggers requires 'role'",
+            "message": "casa_reload_triggers requires 'role' — the agent's "
+                       "directory name (a leading resident:/specialist: prefix "
+                       "is accepted and stripped)",
         })
 
     import agent as agent_mod
@@ -15700,6 +15727,12 @@ def _episode_sentence(row: dict) -> str:
         "stale": "setup started and stopped partway",
         "refused": "setup was not allowed to run",
     }.get(status, f"setup is {status}")
+    # #1003: a row settled by turn evidence records a successful run of the
+    # setup tool by the assistant's own hand, whatever status a later removal
+    # left on it. Said independently of `status`; no claim about the
+    # external side, which Casa cannot see.
+    if row.get("settled_by") == "turn_evidence":
+        said = "setup ran (the assistant ran the setup tool itself)"
     parts = [f"{plugin}: {said}"]
     attempts = _status_int(row.get("attempts"))
     retries = _status_int(row.get("execution_retries"))

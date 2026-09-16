@@ -1514,6 +1514,8 @@ class Agent:
                 )
                 on_message, state = self._make_on_message(
                     on_token, turn_guard,
+                    settle_evidence=(
+                        msg.context.get("synthetic") != "plugin_setup"),
                 )
                 turn_state["state"] = state
                 # #521: keep EVERY attempt's state — a setup tool can run in
@@ -1638,6 +1640,8 @@ class Agent:
                 )
                 on_message, state = self._make_on_message(
                     on_token, turn_guard,
+                    settle_evidence=(
+                        msg.context.get("synthetic") != "plugin_setup"),
                 )
                 turn_state["state"] = state
                 turn_state.setdefault("states", []).append(state)
@@ -1755,6 +1759,21 @@ class Agent:
             # starts fresh.
             async with _turn_admission().admitted(), \
                     session_write_gate(channel_key):
+                # #1003: a Casa-dispatched setup turn re-checks its obligation
+                # HERE — holding the per-session gate, before any client or
+                # prompt — because an ordinary turn ahead of it on the same
+                # gate settles the row from its tool result while it holds the
+                # gate. A settled obligation is not requested again; the
+                # finally's report then meets the store's settled no-op.
+                if msg.context.get("synthetic") == "plugin_setup":
+                    import plugin_setup_episodes as _pse
+                    _episode = str(msg.context.get("setup_episode") or "")
+                    if not _pse.dispatch_still_owed(_episode):
+                        logger.info(
+                            "setup turn skipped: obligation %s was settled "
+                            "by turn evidence before it ran (role=%s)",
+                            _episode, self.config.role)
+                        return None
                 try:
                     try:
                         response_text, sdk_session_id, usage, used_resume, \
@@ -1899,6 +1918,20 @@ class Agent:
             self._report_setup_outcome(msg, turn_state)
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
+
+    def _settle_from_tool_evidence(self, tool: str, invoked_at) -> None:
+        """#1003: hand one successful plugin-tool invocation of an ordinary
+        turn to the setup-obligation store, with THIS instance's resolved
+        plugin binding (the artifact its session was built on — a retained
+        old Agent after a failed reload still reports its old artifact).
+        Synchronous, fail-safe, never raises into the message handler."""
+        try:
+            import plugin_setup_episodes
+            plugin_setup_episodes.settle_from_tool_evidence(
+                role=self.config.role, tool=tool, invoked_at=invoked_at,
+                binding=self.active_plugin_binding)
+        except Exception:  # noqa: BLE001
+            logger.exception("setup-episode evidence handover failed")
 
     def _report_setup_outcome(self, msg: BusMessage,
                               turn_state: dict) -> None:
@@ -2476,6 +2509,7 @@ class Agent:
         self,
         on_token: OnTokenCallback | None,
         turn_guard: VoiceTurnGuard | None = None,
+        settle_evidence: bool = True,
     ):
         """Build the per-turn ``on_message(sdk_msg)`` handler + its ``state``.
 
@@ -2511,6 +2545,10 @@ class Agent:
             # observed tool result's is_error, keyed like tool_names_by_id.
             "available_tools": None,
             "tool_results": {},
+            # #1003: wall-clock instant each tool_use block was observed — a
+            # lower bound on that tool's execution start, the per-invocation
+            # fence evidence settlement compares with the release stamp.
+            "tool_use_at": {},
         }
 
         def _cum() -> str:
@@ -2608,6 +2646,9 @@ class Agent:
                             state["tool_names_by_id"][
                                 getattr(block, "id", "")
                             ] = getattr(block, "name", "?")
+                            state["tool_use_at"][
+                                getattr(block, "id", "")
+                            ] = time.time()
                             sdk_logging.log_tool_use(
                                 block,
                                 idx=state["idx"],
@@ -2629,6 +2670,21 @@ class Agent:
                             state["tool_results"][
                                 getattr(block, "tool_use_id", "")
                             ] = getattr(block, "is_error", None)
+                            # #1003: a NON-error result from a plugin tool in
+                            # an ordinary turn is evidence a released setup
+                            # obligation may rest on. Handed over HERE — under
+                            # the session gate and the client lock, before the
+                            # reply and before any queued setup turn can hold
+                            # the gate — not in the turn's finally. Cheap
+                            # prefix check first: setup tools are always
+                            # plugin-namespaced.
+                            if (settle_evidence
+                                    and getattr(block, "is_error", None)
+                                    is not True
+                                    and name.startswith("mcp__plugin_")):
+                                self._settle_from_tool_evidence(
+                                    name, state["tool_use_at"].get(
+                                        getattr(block, "tool_use_id", "")))
                 elif isinstance(sdk_msg, ResultMessage):
                     sdk_logging.log_turn_done(
                         sdk_msg, started_ms=state["started_ms"],

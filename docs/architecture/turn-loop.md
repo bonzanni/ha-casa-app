@@ -96,6 +96,15 @@ author — not humanity: a signed `/invoke` automation is in scope, while heartb
 wakes, scheduled work and setup dispatches stay doctrinally silent through any upstream
 congestion window.
 
+Two things happen inside that gate that the rest of the loop never sees. A Casa-dispatched
+plugin-setup turn re-checks its obligation the moment it holds the gate, before any client
+or prompt, and returns without running when the obligation was settled meanwhile; and the
+message handler hands every non-error plugin-tool result of an ordinary turn to the setup
+store as it is observed, while the gate and the client lock are still held, so a setup turn
+queued behind that turn finds the row settled rather than asking for the setup again. Both
+are [`architecture/plugin-setup.md`](plugin-setup.md)'s (INV-PLUG-023); the loop only
+orders them.
+
 The streak half guards against a poisoned resume: each trusted turn that resumed its
 conversation commits a health note — while still holding the per-key session write gate,
 which is what orders notes against the decisions that read them — striking on a terminal
