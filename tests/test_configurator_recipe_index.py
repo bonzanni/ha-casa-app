@@ -107,3 +107,37 @@ def test_lifecycle_recipes_order_commit_before_reload_before_emit():
                     < positions["emit_completion"]), (
                 f"{p.relative_to(RECIPES_DIR)} violates the canonical "
                 "commit -> reload -> emit_completion order")
+
+
+def test_specialist_recipes_reload_the_resident_whose_delegates_they_edit():
+    """#1009: the install recipe wires the specialist into a resident's
+    `delegates.yaml` (step 6) and used to finish with `scope="agents"` alone.
+    That sweep adds and evicts roles; it never re-reads a live resident, so
+    the resident kept its boot-time delegate list and refused the new
+    specialist with `delegation_not_declared`, while the completion text
+    claimed "wired for delegation". Pin, for install AND uninstall, that the
+    per-role reload is staged AFTER the agents sweep and BEFORE
+    emit_completion, and that the install's completion text no longer claims
+    a wiring the sequence did not perform."""
+    for name in ("specialist/install.md", "specialist/uninstall.md"):
+        text = (RECIPES_DIR / name).read_text(encoding="utf-8")
+        agents = re.search(r'casa_reload\(scope="agents"\)', text)
+        per_role = re.search(
+            r'casa_reload\(scope="agent",\s*role="<resident>"\)', text)
+        emit = re.search(r"^\s*\d+\.\s[^\n]*?emit_completion", text, re.M)
+        assert agents and per_role and emit, name
+        assert agents.start() < per_role.start() < emit.start(), (
+            f"{name}: the per-role reload must follow the agents sweep and "
+            "precede emit_completion")
+        # The per-role reload is a numbered STEP's instruction, not a
+        # common-mistakes aside: it must sit on the same step as the sweep.
+        step = re.search(
+            r'^\s*\d+\.\s[^\n]*?casa_reload\(scope="agents"\)(?:.|\n)*?'
+            r'casa_reload\(scope="agent",\s*role="<resident>"\)', text, re.M)
+        assert step is not None, name
+        assert "emit_completion" not in step.group(0), name
+    # Whitespace-normalized: the shipped phrase wrapped across two lines, and
+    # an un-normalized check passed against it.
+    install = " ".join((RECIPES_DIR / "specialist/install.md")
+                       .read_text(encoding="utf-8").split())
+    assert "reloaded and wired for delegation" not in install

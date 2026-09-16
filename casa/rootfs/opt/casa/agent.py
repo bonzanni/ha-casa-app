@@ -1909,6 +1909,11 @@ class Agent:
             if _pending_budget is not None:
                 self._budget_tracker.record(*_pending_budget)
 
+            # The turn reached its end: the reply above was produced and
+            # delivered. Read by the setup-outcome report in the finally — a
+            # raising or cancelled turn never sets it, so availability-only
+            # evidence cannot consume an obligation whose reply was lost.
+            turn_state["completed"] = True
             return response_text or None
         finally:
             # #521: correlate a Casa-dispatched setup turn's outcome with its
@@ -1953,6 +1958,7 @@ class Agent:
             used_ok: set[str] = set()
             attempted: set[str] = set()
             available: set[str] | None = None
+            delegated_ok: set[str] = set()
             for state in turn_state.get("states") or []:
                 names = state.get("tool_names_by_id") or {}
                 results = state.get("tool_results") or {}
@@ -1960,15 +1966,39 @@ class Agent:
                 used_ok.update(
                     n for i, n in names.items()
                     if n and i in results and results[i] is not True)
+                # #1010: the targets of the delegations that produced a
+                # non-error result, canonicalised exactly as the ACL
+                # resolves them (#433: a persona display name becomes its
+                # role id), so the store compares role id with role id.
+                targets = state.get("delegate_targets_by_id") or {}
+                delegated_ok.update(
+                    self._canonical_delegate_target(t)
+                    for i, t in targets.items()
+                    if t and i in results and results[i] is not True)
                 tools = state.get("available_tools")
                 if tools is not None:
                     available = (available or set()) | set(tools)
             import plugin_setup_episodes
             plugin_setup_episodes.report_dispatch_outcome(
                 episode_id, tools_used_ok=used_ok,
-                tools_attempted=attempted, available_tools=available)
+                tools_attempted=attempted, available_tools=available,
+                turn_completed=bool(turn_state.get("completed")),
+                delegated_ok_targets=delegated_ok)
         except Exception:  # noqa: BLE001 — the reply is already produced
             logger.exception("setup-episode outcome report failed")
+
+    @staticmethod
+    def _canonical_delegate_target(name: str) -> str:
+        """#1010: *name* as the role id the delegation ACL would resolve it
+        to for the current origin (a declared delegate's display name maps
+        to its role id, #433), else *name* unchanged. Deferred import: tools
+        imports agent. Never raises — an unresolvable name stays itself,
+        which the store then simply fails to match."""
+        try:
+            from tools import _canonical_delegate_target
+            return _canonical_delegate_target(name, origin_var.get() or {})
+        except Exception:  # noqa: BLE001
+            return name
 
     def _stash_explanation_draft(
         self, *, projection: str, bundle, system_prompt: str,
@@ -2545,6 +2575,14 @@ class Agent:
             # observed tool result's is_error, keyed like tool_names_by_id.
             "available_tools": None,
             "tool_results": {},
+            # #1010: the target of each delegate_to_agent call (its `agent`
+            # input, the schema's one required field), keyed like
+            # tool_names_by_id — a specialist-courier setup row is consumed
+            # only by a non-error delegation to ITS target, never by one to
+            # some other agent (diff round 3, Astra S1). Round 4 caught this
+            # reading a field the schema does not have, and the fixture
+            # supplying the same wrong field: pinned against the schema now.
+            "delegate_targets_by_id": {},
             # #1003: wall-clock instant each tool_use block was observed — a
             # lower bound on that tool's execution start, the per-invocation
             # fence evidence settlement compares with the release stamp.
@@ -2646,6 +2684,13 @@ class Agent:
                             state["tool_names_by_id"][
                                 getattr(block, "id", "")
                             ] = getattr(block, "name", "?")
+                            if str(getattr(block, "name", "")).endswith(
+                                    "__delegate_to_agent"):
+                                _inp = getattr(block, "input", None) or {}
+                                state["delegate_targets_by_id"][
+                                    getattr(block, "id", "")
+                                ] = str(_inp.get("agent") or "") \
+                                    if isinstance(_inp, dict) else ""
                             state["tool_use_at"][
                                 getattr(block, "id", "")
                             ] = time.time()

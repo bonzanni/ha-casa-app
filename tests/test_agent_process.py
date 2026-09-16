@@ -2774,6 +2774,8 @@ class TestSetupOutcomeReport:
             "tools_used_ok": {_SETUP_NS},
             "tools_attempted": {_SETUP_NS},
             "available_tools": {"Read", _SETUP_NS},
+            "turn_completed": True,
+            "delegated_ok_targets": set(),
         })]
 
     async def test_tool_absent_reports_availability_without_it(self, tmp_path):
@@ -2791,6 +2793,8 @@ class TestSetupOutcomeReport:
             "tools_used_ok": set(),
             "tools_attempted": set(),
             "available_tools": {"Read"},
+            "turn_completed": True,
+            "delegated_ok_targets": set(),
         })]
 
     async def test_no_init_reports_unknown_availability(self, tmp_path):
@@ -2845,6 +2849,7 @@ class TestSetupOutcomeReport:
                 await agent._process(_setup_msg("op-6"))
         assert len(calls) == 1
         assert calls[0][1]["tools_used_ok"] == set()
+        assert calls[0][1]["turn_completed"] is False
 
     async def test_cancelled_turn_still_reports(self, tmp_path):
         # Sol design r1 S1: role teardown cancels in-flight dispatches;
@@ -2864,6 +2869,65 @@ class TestSetupOutcomeReport:
         assert len(calls) == 1
         # Evidence collected before the cancel still counts (tool DID run).
         assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
+        assert calls[0][1]["turn_completed"] is False
+
+    async def test_delegation_targets_are_reported_canonicalised(self, tmp_path):
+        # Diff r3, Astra S1: a courier turn whose delegation to the intended
+        # specialist errored and whose later delegation to another agent
+        # succeeded must report the SUCCESSFUL target, canonicalised as the
+        # ACL resolves it (a display name → its role id), and never the
+        # errored one.
+        agent = _make_agent(tmp_path)
+        courier = "mcp__casa-framework__delegate_to_agent"
+        # The input field is read off the REAL tool schema (diff r4, Astra
+        # S1: the recorder and this fixture both used a field the schema
+        # does not have, so a schema-correct delegation reported no target
+        # and a completed setup was re-dispatched to exhaustion).
+        import tools as tools_mod
+        schema = tools_mod.delegate_to_agent.input_schema
+        field = "agent"
+        assert field in schema["required"] and field in schema["properties"]
+        assert "agent_name" not in schema["properties"]
+        ScriptedToolClient.reset([
+            _mk_init("sid-i", [courier]),
+            _mk_tool_use("t1", courier, {field: "finance"}),
+            _mk_tool_result("t1", is_error=True, text="not declared"),
+            _mk_tool_use("t2", courier, {field: "Wendy"}),
+            _mk_tool_result("t2", is_error=False, text="done"),
+            _mk_assistant("<silent/>"),
+            _mk_result("sid-i"),
+        ])
+        import tools as tools_mod
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls, \
+                patch.object(tools_mod, "_canonical_delegate_target",
+                             lambda name, origin: {"Wendy": "weather"}.get(
+                                 name, name)):
+            await agent._process(_setup_msg("op-10"))
+        assert calls[0][1]["delegated_ok_targets"] == {"weather"}
+        assert calls[0][1]["tools_used_ok"] == {courier}
+
+    async def test_cancelled_before_any_call_reports_uncompleted(self, tmp_path):
+        # Diff r1, Astra S1: init lists the tool, the turn is cancelled before
+        # any call. The report must say the turn did not complete, so the
+        # store cannot consume the obligation on availability alone — the
+        # reply the availability rule relies on was never produced.
+        agent = _make_agent(tmp_path)
+        ScriptedToolClient.reset([
+            _mk_init("sid-g", [_SETUP_NS, "Read"]),
+            asyncio.CancelledError(),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), _capture_reports() as calls:
+            with pytest.raises(asyncio.CancelledError):
+                await agent._process(_setup_msg("op-8"))
+        assert calls == [("ep-521", {
+            "tools_used_ok": set(),
+            "tools_attempted": set(),
+            "available_tools": {_SETUP_NS, "Read"},
+            "turn_completed": False,
+            "delegated_ok_targets": set(),
+        })]
 
     async def test_bypass_path_turn_reports_evidence(self, tmp_path):
         # Sol diff r1 hardening: the per-turn BYPASS path (SCHEDULED turns

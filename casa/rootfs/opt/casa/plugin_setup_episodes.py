@@ -145,6 +145,15 @@ _MAX_RESOLVE_DEFERRALS = 10
 # past the bound the obligation fails with an operator note rather than
 # looping through operator-visible synthetic turns forever.
 _MAX_EXECUTION_RETRIES = 3
+
+# #1010: the namespaced tool a specialist-target setup COURIER turn must call —
+# the assistant's own delegation tool, as the SDK names it. A courier session
+# never carries the specialist's setup tool, but it does carry this one, and
+# whether the delegation went through is the only outcome the courier turn
+# can evidence. Recorded on the row under its own key (never `expected_tool`,
+# which feeds the ordinary-turn evidence watch — INV-PLUG-023 excludes a
+# specialist target from settlement, and this name must never open that door).
+_COURIER_TOOL = "mcp__casa-framework__delegate_to_agent"
 # The only member states a round may carry. Anything else is unreadable, and an
 # unreadable state must never be counted as a DECISION — settlement requires a
 # positive "approved", it does not infer one from "neither open nor denied".
@@ -1458,6 +1467,52 @@ def start_worker() -> None:
         _kick.set()
 
 
+_UNTRACKED_DISPATCH_ERROR = (
+    "dispatched before its outcome could be tracked; whether the setup tool "
+    "ran is unknown — ask the assistant to have the plugin's setup tool run, "
+    "or remove and reinstall the plugin to retry automatically")
+
+
+async def _retire_untracked_dispatches() -> None:
+    """#1010 (diff round 4, Terra S1): a row left ``dispatched`` by a version
+    that recorded no outcome key for it — a specialist-courier row from before
+    the courier keys existed, or a resident row from before the expected tool
+    was captured — can never be settled or reported on: no turn will ever
+    write to it. Leaving it is a silent spend (nothing in health, no note);
+    re-arming it is an evidence-free re-dispatch that could run a setup tool a
+    second time against an external service. So it is RETIRED, visibly: the
+    row becomes ``failed`` with a reason that names the manual run, plugin
+    health carries it, the operator is told once, and a removal followed by a
+    reinstall of the same artifact re-arms it as a fresh attempt
+    (INV-PLUG-020). A row that carries either key, or a settlement mark, is
+    tracked and is left alone. Never raises; idempotent (a retired row no
+    longer matches)."""
+    try:
+        data = _load()
+        retired = []
+        for row in data.get("episodes", []):
+            if not isinstance(row, dict) or row.get("status") != "dispatched":
+                continue
+            if row.get("settled_by") or row.get("expected_tool") \
+                    or row.get("courier_tool"):
+                continue
+            row.update({"status": "failed", "updated_ts": _now(),
+                        "last_error": _UNTRACKED_DISPATCH_ERROR})
+            retired.append(row)
+        if not retired:
+            return
+        _save(data)
+        for row in retired:
+            logger.warning(
+                "setup episode %s retired (plugin=%s): dispatched with no "
+                "outcome key, cannot be settled", row.get("id"),
+                row.get("plugin"))
+            await _note(f"Plugin {row.get('plugin')}: automatic setup was "
+                        f"{_UNTRACKED_DISPATCH_ERROR}.")
+    except Exception:  # noqa: BLE001 — a worker pass must not die on this
+        logger.exception("untracked-dispatch retirement failed")
+
+
 async def _worker_pass() -> bool:
     """One drain pass: recover/settle rounds, then dispatch pending episodes.
     Returns True if any episode DEFERRED on transient registry unavailability
@@ -1466,6 +1521,7 @@ async def _worker_pass() -> bool:
     the one that already fired (resolver failure is internal, not tied to a
     reconcile that would kick again)."""
     await _recover_and_settle()
+    await _retire_untracked_dispatches()
     retry_wanted = False
     for ep in episodes("pending"):
         try:
@@ -1791,12 +1847,22 @@ async def _run_episode(ep: dict) -> bool:
         # delivery-only semantics stand there, disclosed.
         # `last_error=""` clears a stale gate-hold message ("waiting for
         # live trigger route") that used to survive into the terminal row.
-        exec_tier, _ = plugin_dispatch.execution_target(entry)
+        # #1010: delivery-only was also a spend-on-failure: a courier whose
+        # delegate_to_agent call errored (observed live: the ACL refused it,
+        # delegation_not_declared) left the row consumed with no retry and no
+        # note. The courier session DOES carry the delegation tool, so that
+        # is the tool `report_dispatch_outcome` correlates for a specialist
+        # row — under its own key, so the evidence watch never sees it.
+        exec_tier, exec_role = plugin_dispatch.execution_target(entry)
         expected_tool = (
             f"{sorted(entry.get('granted_tools') or [])[0]}__{tool}"
             if exec_tier == "resident" else "")
+        courier = {}
+        if exec_tier == "specialist":
+            courier = {"courier_tool": _COURIER_TOOL,
+                       "courier_target": exec_role or ""}
         _update_episode(ep["id"], status="dispatched", attempts=attempts,
-                        last_error="", expected_tool=expected_tool)
+                        last_error="", expected_tool=expected_tool, **courier)
     else:
         # #451 r4 (Sol): a rejected dispatch HOLDS; it is not terminal. Bus
         # rejection is transient by nature — the commonest cause is that no
@@ -1816,7 +1882,9 @@ async def _run_episode(ep: dict) -> bool:
 
 def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
                             tools_attempted: set,
-                            available_tools: "set | None") -> None:
+                            available_tools: "set | None",
+                            turn_completed: bool = True,
+                            delegated_ok_targets: "set | None" = None) -> None:
     """#521: correlate a dispatched setup turn's outcome with its episode.
 
     Called by the executing agent at the END of the turn that carried the
@@ -1830,10 +1898,13 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
       ``used_ok`` entry) ⇒ NOT run, even when the session init listed the
       tool — a listed tool can still be categorically uncallable in the turn
       (Sol design r1: a denied protected tool; an erroring server).
-    * not attempted, and the session init POSITIVELY listed the tool
-      (``available_tools``) ⇒ consumed — "consumed ⇒ the tool was available
-      to the turn" is the invariant, and an available tool the agent chose
-      not to call is its reply's business, not a dispatch failure.
+    * not attempted, the session init POSITIVELY listed the tool
+      (``available_tools``) AND the turn completed (``turn_completed``) ⇒
+      consumed — "consumed ⇒ the tool was available to the turn" is the
+      invariant, and an available tool the agent chose not to call is its
+      reply's business, not a dispatch failure. A turn that raised or was
+      cancelled produced no reply (diff round 1, Astra S1): availability
+      alone then evidences nothing, and only a positive result consumes.
     * anything else — tool absent from the init list, or availability
       UNKNOWN (``available_tools is None``: a warm-reuse session replays no
       init; a turn that died before one) ⇒ NOT evidenced.
@@ -1849,9 +1920,20 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
     note (best-effort, scheduled — this function stays synchronous so a
     cancelled turn's ``finally`` can call it).
 
+    #1010: a specialist-target row carries no ``expected_tool`` (the courier
+    session never has the specialist's tool) but does carry ``courier_tool``
+    and ``courier_target``. Such a row is consumed by exactly one thing: a
+    non-error delegation whose canonical target is ``courier_target``
+    (``delegated_ok_targets``, role ids). A delegation that errored, one to
+    some other agent (diff round 3, Astra S1: the intended specialist refused,
+    another delegated fine, the courier silent — the row must not be spent),
+    or no delegation at all, whether or not the turn completed, returns the
+    row to ``pending`` under the same bounded budget, and the exhaustion note
+    names the delegation rather than a tool the session never had.
+
     Rows keyed away by id (superseded by a re-arm or a new artifact), rows
-    no longer ``dispatched``, and rows with no ``expected_tool`` (specialist
-    courier) are all no-ops. SYNCHRONOUS + yield-free; never raises."""
+    no longer ``dispatched``, and rows with neither tool name are all no-ops.
+    SYNCHRONOUS + yield-free; never raises."""
     try:
         data = _load()
         row = next((e for e in data["episodes"]
@@ -1865,31 +1947,61 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
             # add to that nor reopen it.
             return
         expected = row.get("expected_tool") or ""
+        courier_target = ""
+        if not expected:
+            expected = row.get("courier_tool") or ""
+            courier_target = str(row.get("courier_target") or "")
         if not expected:
             return
-        if expected in tools_used_ok:
+        if courier_target:
+            # #1010 (diff rounds 1-3, one shape thrice — the courier rule is
+            # CUT to its one positive fact, not sharpened again): "listed but
+            # uncalled ⇒ consumed" rests on the agent's reply reaching the
+            # operator, and this report runs before silence suppression and
+            # delivery; tool-name success alone accepted a delegation to
+            # ANY agent. A courier row is consumed only by a non-error
+            # delegation to its own target; everything else returns it to
+            # pending under the bounded budget. The resident rule below
+            # stays as committed (INV-PLUG-012); its residual is #1012.
+            if courier_target in (delegated_ok_targets or set()):
+                return
+        elif expected in tools_used_ok:
             return
-        if (expected not in tools_attempted and available_tools is not None
+        elif (turn_completed and expected not in tools_attempted
+                and available_tools is not None
                 and expected in available_tools):
             return
         retries = int(row.get("execution_retries") or 0) + 1
         plugin = row.get("plugin")
+        # What the turn could not do, in the words of the turn that was sent:
+        # a resident session runs the setup tool; a courier session delegates
+        # it to the specialist.
+        could_not = (
+            f"delegate the setup tool to '{courier_target}'"
+            if courier_target else "run the setup tool")
         if retries >= _MAX_EXECUTION_RETRIES:
             row.update({
                 "status": "failed", "execution_retries": retries,
                 "updated_ts": _now(),
-                "last_error": ("dispatched turn could not run the setup "
-                               f"tool ({retries} execution attempt(s))"),
+                "last_error": (f"dispatched turn could not {could_not} "
+                               f"({retries} execution attempt(s))"),
             })
             _save(data)
             logger.warning(
                 "setup episode %s failed (plugin=%s): no dispatched turn "
-                "evidenced the setup tool in %d attempts", episode_id,
-                plugin, retries)
-            note = (f"Plugin {plugin}: automatic setup was dispatched "
-                    f"{retries} times but the agent's session could not run "
-                    "the setup tool. Run it manually once the plugin's "
-                    "tools load.")
+                "evidenced %s in %d attempts", episode_id, plugin,
+                expected, retries)
+            if courier_target:
+                note = (f"Plugin {plugin}: automatic setup was dispatched "
+                        f"{retries} times but the assistant could not "
+                        f"delegate it to '{courier_target}'. Ask the "
+                        f"assistant to have '{courier_target}' run the "
+                        "plugin's setup tool once it can delegate to it.")
+            else:
+                note = (f"Plugin {plugin}: automatic setup was dispatched "
+                        f"{retries} times but the agent's session could not "
+                        "run the setup tool. Run it manually once the "
+                        "plugin's tools load.")
             try:
                 asyncio.get_running_loop().create_task(_note(note))
             except RuntimeError:
@@ -1898,7 +2010,7 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
         row.update({
             "status": "pending", "attempts": 0,
             "execution_retries": retries, "updated_ts": _now(),
-            "last_error": ("dispatched turn could not run the setup tool "
+            "last_error": (f"dispatched turn could not {could_not} "
                            f"(execution retry {retries}/"
                            f"{_MAX_EXECUTION_RETRIES}); the next agent "
                            "reload re-dispatches"),
@@ -1906,8 +2018,8 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
         _save(data)
         logger.info(
             "setup episode %s returned to pending (plugin=%s): dispatched "
-            "turn did not evidence the setup tool (retry %d/%d)",
-            episode_id, plugin, retries, _MAX_EXECUTION_RETRIES)
+            "turn did not evidence %s (retry %d/%d)",
+            episode_id, plugin, expected, retries, _MAX_EXECUTION_RETRIES)
     except Exception:  # noqa: BLE001 — the turn path must never see a raise
         logger.exception("setup-episode outcome report failed (id=%s)",
                          episode_id)

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.317.0] - 2026-09-16
+
+### Fixed
+
+- Installing a specialist leaves it delegatable. The configurator's install
+  recipe wired the new specialist into the assistant's delegate list and then
+  reloaded only the specialist registry, which never re-reads a resident that
+  is already running; the assistant kept its old delegate list in memory and
+  refused every delegation to the new specialist with
+  `delegation_not_declared` until a restart. The install and uninstall
+  recipes now also reload each resident whose delegates they edited, and the
+  install's completion message says what was reloaded (#1009).
+- A bundled plugin's automatic setup is retried when the assistant could not
+  hand it to the specialist. For a plugin that only a specialist uses, Casa
+  runs its setup tool by asking the assistant to delegate; if that delegation
+  failed, the setup obligation was marked done anyway and the plugin stayed
+  unprovisioned with no retry and no notice. The assistant's turn now reports
+  whether the delegation went through: only a completed delegation to that
+  specialist counts, anything else returns the obligation to pending for the
+  next reload, and after three failed attempts the operator is told (#1010).
+  For a resident's own setup turn, one that was cancelled or failed before
+  it could reply no longer counts a listed-but-uncalled setup tool as done
+  (a silent or undelivered reply still does; tracked in #1012). A setup
+  obligation left "dispatched" by an earlier version with no way to report
+  its outcome is retired visibly on the next pass: it shows in plugin health
+  with a note naming the manual run, and removing and reinstalling the plugin
+  retries it; it is never re-run blindly.
+
 ## [0.316.0] - 2026-09-16
 
 ### Fixed

@@ -77,7 +77,7 @@ call that asked for it. Report promptly after the reload.
 - Touched only triggers, or a `prompts/<trigger>.md`, for one agent → `triggers`.
 - Touched a single role's other YAMLs → `agent` for that role.
 - Touched policies/*.yaml → `policies`.
-- Installed or uninstalled a specialist via the pipeline → call `casa_reload(scope="agents")` yourself after `config_git_commit` (the install/uninstall tools do NOT reload; only the `plugin_*` tools self-sequence their own reload).
+- Installed or uninstalled a specialist via the pipeline → call `casa_reload(scope="agents")` yourself after `config_git_commit` (the install/uninstall tools do NOT reload; only the `plugin_*` tools self-sequence their own reload), then `casa_reload(scope="agent", role="<resident>")` for each resident whose `delegates.yaml` you wired or unwired — `agents` never re-reads a live resident (#1009).
 - Edited an executor's `definition.yaml` (enable / permission_mode / allowed tools / model) → `executors`.
 - Created or deleted an executor → `executors`.
 - Touched `plugin-env.conf` (via `set_plugin_env_reference`) → `plugin_env`.

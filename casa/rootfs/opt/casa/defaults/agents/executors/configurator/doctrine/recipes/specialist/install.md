@@ -123,9 +123,13 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    episode after this install.
 8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")` — for `latest`, `<ref>` is the `resolved_ref` the inspect returned.
 9. `casa_reload(scope="agents")` (mandatory — see `completion.md`; an `active` install is on disk
-   but not in the live registry until reload runs).
-10. `emit_completion(status="ok", text="Installed specialist <slug> from <repo>@<ref>; reloaded and
-    wired for delegation.")`.
+   but not in the live registry until reload runs), THEN `casa_reload(scope="agent",
+   role="<resident>")` once for EACH resident whose `delegates.yaml` step 6 edited. The `agents`
+   sweep only adds and evicts roles; it never re-reads a resident that is already live, so
+   without the per-role reload the resident keeps its old delegate list in memory and every
+   delegation to the new specialist is refused with `delegation_not_declared` (#1009).
+10. `emit_completion(status="ok", text="Installed specialist <slug> from <repo>@<ref>; reloaded the
+    specialist registry and reloaded <resident> so it can delegate to <slug>.")`.
 
 ## Common mistakes
 
@@ -145,6 +149,10 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
   "owned_by_specialist"` — use `specialist_upgrade`/`specialist_uninstall` on the SLUG instead.
 - Forgetting `casa_reload(scope="agents")` — an `active` install is on disk but not in the live
   registry until reload runs.
+- Stopping at `casa_reload(scope="agents")` after editing a resident's `delegates.yaml` — the
+  specialist loads, but the resident's live delegate list is unchanged until
+  `casa_reload(scope="agent", role="<resident>")` runs, and its delegations are refused with
+  `delegation_not_declared` (#1009).
 - Completing the engagement with a bundled plugin's `env_names` unwired (#499) — the install
   reports success, but the unresolved var keeps the plugin withheld and the specialist's first
   use hits the requires gate. Do not describe such a var as something the specialist's own setup
