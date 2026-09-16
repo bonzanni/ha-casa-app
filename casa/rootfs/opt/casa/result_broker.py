@@ -40,6 +40,17 @@ seam Casa owns is the CLI's hook protocol, and the boundary is built there:
   only when every declared slot carries the reference of a deposit bound to
   that very call. :func:`make_failure_hook` (PostToolUseFailure) can replace
   nothing — the event has no replacement field — and only closes the call.
+* **Delivery** (#1015): a slot the tool declares ``delivers`` as an
+  ``operator_link`` never reaches the model at all. After the structural
+  check, the same PostToolUse hook takes the deposit once and posts ONE
+  labelled-link message to the chat of the call's grant identity — the chat
+  the operator asked in, never a task topic — with the destination host
+  printed by Casa from the URL. Proven delivery REPLACES the result with a
+  receipt (``casa_delivery.status = "delivered"``); anything short of it
+  withholds the result and drops the deposit. The producer's own result is
+  delivery-neutral: the CLI abandons a hook past its matcher timeout and
+  lets the original result through, so the receipt is the only carrier of
+  the positive claim, and a result without one claims nothing.
 
 Scope (the invariant's own): sessions that carry the authorization seam —
 resident, delegated specialist, specialist engagement. Executor sessions are
@@ -48,6 +59,7 @@ plugin-author trust boundary #785 rules on; Casa detects no such violation.
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import hmac
 import json
@@ -57,6 +69,7 @@ import secrets
 import threading
 import time
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -76,6 +89,21 @@ ENV_SOCKET = "CASA_BROKER_SOCKET"
 INFLIGHT_CAP_S = 600.0
 MAX_VALUE_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
+# #1015: operator-link delivery. The hook's own bound on a slow Telegram —
+# NOT the ordering guarantee: the CLI's matcher deadline runs independently of
+# this process, which is why only the replacement receipt carries the claim.
+DELIVERY_TIMEOUT_S = 20.0
+# The matcher timeout the three broker matchers set EXPLICITLY (the SDK's
+# default is also 60 s; a default is not a commitment).
+HOOK_TIMEOUT_S = 60.0
+MAX_LINK_BYTES = 2048
+MAX_CAPTION_CHARS = 200
+MAX_LABEL_CHARS = 40
+DEFAULT_LINK_LABEL = "Open"
+DELIVERED_TO = "operator_chat"
+OPERATOR_LINK = "operator_link"
+_WS_RE = re.compile(r"\s")
+_DOMAINISH_RE = re.compile(r"\.[A-Za-z]")
 
 
 def reference_ttl_s() -> float:
@@ -113,6 +141,7 @@ class _InFlight:
     provides: tuple
     opened_at: float
     deposits: dict = dataclasses.field(default_factory=dict)   # slot -> ref
+    delivers: dict = dataclasses.field(default_factory=dict)   # slot -> kind (#1015)
 
 
 @dataclasses.dataclass
@@ -124,10 +153,49 @@ class _Reference:
     expires_at: float
     armed: tuple | None = None    # (client_id, tool_use_id, ticket)
     used: bool = False
+    caption: str = ""             # #1015: delivered slots only, validated
+    label: str = ""
 
     def __repr__(self) -> str:      # never the value
         return (f"_Reference(slot={self.slot!r}, armed={self.armed is not None}, "
                 f"used={self.used})")
+
+
+# -- #1015: what a delivered slot's deposit may carry ------------------------
+
+def _link_ok(value: Any) -> bool:
+    """``https``, a hostname, ≤ MAX_LINK_BYTES, printable, no whitespace."""
+    if not isinstance(value, str) or not value:
+        return False
+    if len(value.encode("utf-8", "surrogateescape")) > MAX_LINK_BYTES:
+        return False
+    if not value.isprintable() or _WS_RE.search(value):
+        return False
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return parts.scheme == "https" and bool(host)
+
+
+def _text_ok(value: Any, limit: int) -> bool:
+    """A single printable line of at most *limit* characters that cannot
+    itself read as a link: no scheme separator, no ``www.``."""
+    if not isinstance(value, str) or len(value) > limit or not value.isprintable():
+        return False
+    lowered = value.lower()
+    return "://" not in lowered and "www." not in lowered
+
+
+def _caption_ok(value: Any) -> bool:
+    return _text_ok(value, MAX_CAPTION_CHARS)
+
+
+def _label_ok(value: Any) -> bool:
+    """A label additionally may not look like a domain (``.`` followed by a
+    letter): the host is Casa's to print from the URL, never the plugin's."""
+    return _text_ok(value, MAX_LABEL_CHARS) and not _DOMAINISH_RE.search(value)
 
 
 class ReferenceStore:
@@ -159,17 +227,20 @@ class ReferenceStore:
 
     # -- in-flight calls --------------------------------------------------
     def open_call(self, *, client_id: str, artifact_id: str, tool_name: str,
-                  tool_use_id: str, identity, provides: tuple) -> None:
+                  tool_use_id: str, identity, provides: tuple,
+                  delivers: dict | None = None) -> None:
         """Register a ``capability`` call at admission. The identity is stored
         HERE, atomically with the call, so a deposit can bind it: the plugin's
-        deposit request carries no identity and asserts none."""
+        deposit request carries no identity and asserts none. ``delivers``
+        (#1015) is the contract's ``{slot: kind}`` — the slot whose deposit
+        the result hook delivers instead of passing."""
         with self._lock:
             self._sweep_locked()
             self._inflight[(client_id, tool_use_id)] = _InFlight(
                 client_id=client_id, artifact_id=artifact_id,
                 tool_name=tool_name, tool_use_id=tool_use_id,
                 identity=identity, provides=tuple(provides),
-                opened_at=self._now())
+                opened_at=self._now(), delivers=dict(delivers or {}))
 
     def close_call(self, client_id: str, tool_use_id: str):
         """Close a call (PostToolUse / PostToolUseFailure). Returns the record
@@ -178,11 +249,20 @@ class ReferenceStore:
             return self._inflight.pop((client_id, tool_use_id), None)
 
     # -- deposit ----------------------------------------------------------
-    def deposit(self, *, client_id: str, slot: str, value: str) -> tuple[str | None, str | None]:
+    def deposit(self, *, client_id: str, slot: str, value: str,
+                caption: str | None = None,
+                label: str | None = None) -> tuple[str | None, str | None]:
         """Bind ``value`` to the UNIQUE in-flight capability call of
         ``client_id`` whose contract provides ``slot``; mint and return a
         reference. Zero or more than one such call ⇒ refused (fail closed).
-        Returns ``(reference, None)`` or ``(None, error_code)``."""
+        Returns ``(reference, None)`` or ``(None, error_code)``.
+
+        For a slot the call DELIVERS (#1015) the value must be an ``https``
+        link Casa can post, and the optional ``caption``/``label`` must be
+        printable single lines that cannot read as a link themselves —
+        ``bad_link`` / ``bad_caption`` / ``bad_label`` otherwise, BEFORE any
+        reference is minted. For any other slot both are ignored, so a
+        producer library can send them uniformly."""
         with self._lock:
             self._sweep_locked()
             matches = [c for c in self._inflight.values()
@@ -196,13 +276,44 @@ class ReferenceStore:
                 return None, "no_identity"
             if slot in call.deposits:
                 return None, "slot_already_deposited"
+            caption_s, label_s = "", ""
+            if slot in call.delivers:
+                # Only a DELIVERED slot judges the metadata (type included):
+                # for any other slot both fields are ignored whatever they
+                # are, exactly as the base ignored unknown request members.
+                if not _link_ok(value):
+                    return None, "bad_link"
+                if caption is not None and caption != "":
+                    if not _caption_ok(caption):
+                        return None, "bad_caption"
+                    caption_s = caption
+                if label is not None and label != "":
+                    if not _label_ok(label):
+                        return None, "bad_label"
+                    label_s = label
             ref = new_reference()
             now = self._now()
             self._refs[ref] = _Reference(
                 value=value, slot=slot, identity=call.identity,
-                minted_at=now, expires_at=now + reference_ttl_s())
+                minted_at=now, expires_at=now + reference_ttl_s(),
+                caption=caption_s, label=label_s)
             call.deposits[slot] = ref
             return ref, None
+
+    def take_for_delivery(self, reference: str):
+        """#1015: release a delivered slot's deposit ONCE to the result hook —
+        the reference must exist, be unexpired, unused and unarmed; it is
+        marked used (so ``arm``, ``redeem`` and a second take all refuse it;
+        the next sweep removes it) and its value blanked. Returns
+        ``(value, caption, label, identity)`` or ``None``."""
+        with self._lock:
+            self._sweep_locked()
+            r = self._refs.get(reference)
+            if r is None or r.used or r.armed is not None:
+                return None
+            r.used = True
+            value, r.value = r.value, ""
+            return value, r.caption, r.label, r.identity
 
     def validate_result(self, call: _InFlight, parsed: dict) -> bool:
         """True iff every declared slot of ``call`` is present in ``parsed``
@@ -335,6 +446,11 @@ _REASON_BAD_CAPABILITY = (
     "The tool is declared to return a capability, but its result did not carry "
     "the references its contract declares, so the result is withheld. Tell the "
     "operator the plugin needs updating; do not retry.")
+_REASON_LINK_NOT_DELIVERED = (
+    "The tool produced a link for the operator, but Casa could not confirm it "
+    "reached their chat, so the result is withheld. Tell the operator: if a "
+    "link message arrived just now it is valid; otherwise ask again for a "
+    "fresh one. Do not retry on this turn.")
 
 _DENY_NON_ADOPTING = (
     "not executed: this plugin has not adopted the Casa result contract "
@@ -426,14 +542,19 @@ def make_plugin_admission_hook(
         try:
             seg = contract_map.plugin_seg_of(tool_name)
             plugin = contract_map.plugins.get(seg) if seg is not None else None
-            is_setup = plugin is not None and tool_name in plugin.setup_tools
-            entry = None
-            if not is_setup:
+            entry = contract_map.tools.get(tool_name) if plugin is not None else None
+            # The exempt setup tool: declared absent or safe. A setup tool
+            # declared as a CAPABILITY (#1015, it delivers its link) takes
+            # the capability path like any other tool.
+            is_setup = (plugin is not None and tool_name in plugin.setup_tools
+                        and (entry is None or entry.kind != "capability"))
+            if is_setup:
+                entry = None
+            else:
                 if plugin is None:
                     return _deny(_DENY_UNKNOWN_PLUGIN)
                 if not plugin.adopted:
                     return _deny(_DENY_NON_ADOPTING)
-                entry = contract_map.tools.get(tool_name)
                 if entry is None:
                     return _deny(_DENY_UNDECLARED)
 
@@ -460,7 +581,8 @@ def make_plugin_admission_hook(
                 store.open_call(
                     client_id=client_id, artifact_id=entry.artifact_id,
                     tool_name=tool_name, tool_use_id=str(tool_use_id or ""),
-                    identity=identity, provides=entry.provides)
+                    identity=identity, provides=entry.provides,
+                    delivers=getattr(entry, "delivers", None))
             if entry.consumes:
                 updated = dict(tool_input)
                 armed_any = False
@@ -506,11 +628,91 @@ def make_plugin_admission_hook(
     return _hook
 
 
+def compose_operator_link(value: str, *, caption: str = "", label: str = ""):
+    """#1015: the ONE message Casa posts for a delivered link — ``(text,
+    entities, plain)`` for ``TelegramChannel.deliver_operator_link``. The
+    link text is ``"<label> (<host>)"`` with the host printed by Casa from
+    the URL (lower-cased ``urlsplit().hostname``), never supplied by the
+    plugin; one ``text_link`` entity spans it, its length in UTF-16 code
+    units (Telegram's unit); the caption follows on its own line as the
+    bytes it is (this never goes through the markdown renderer). ``plain``
+    is the fallback the channel sends when the entity is refused: the same
+    text with the URL spelled out."""
+    from telegram import MessageEntity
+    from text_util import utf16_len
+    host = (urlsplit(value).hostname or "").lower()
+    label = label or DEFAULT_LINK_LABEL
+    link_text = f"{label} ({host})"
+    tail = f"\n{caption}" if caption else ""
+    entities = [MessageEntity(type=MessageEntity.TEXT_LINK, offset=0,
+                              length=utf16_len(link_text), url=value)]
+    return link_text + tail, entities, f"{link_text}: {value}{tail}"
+
+
+async def _post_operator_link(chat_id: int, text: str, entities, plain: str):
+    """Reach the Telegram channel the way the delegated authz factory does
+    (``tools._channel_manager``); absent ⇒ ``NOT_DELIVERED``."""
+    import tools as tools_mod
+    from channels import DeliveryOutcome
+    manager = getattr(tools_mod, "_channel_manager", None)
+    channel = manager.get("telegram") if manager is not None else None
+    if channel is None:
+        return DeliveryOutcome.NOT_DELIVERED
+    return await channel.deliver_operator_link(chat_id, text, entities, plain)
+
+
+async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
+                               parsed: dict) -> dict[str, Any]:
+    """#1015, after the structural check passed: take the delivered slot's
+    deposit once, post it, and REPLACE the result — with the receipt on
+    proven delivery, with the not-delivered notice on anything else (the
+    deposit dropped either way: a delivered reference is used, a withheld
+    one must not be redeemable through a notice). The hook's own
+    cancellation (the CLI's deadline) drops the deposit and re-raises: no
+    replacement, the model holds the delivery-neutral original."""
+    from channels import DeliveryOutcome
+    slot = next(iter(call.delivers))
+    delivered = False
+    try:
+        taken = store.take_for_delivery(call.deposits.get(slot, ""))
+        if taken is not None:
+            value, caption, label, identity = taken
+            text, entities, plain = compose_operator_link(
+                value, caption=caption, label=label)
+            outcome = await asyncio.wait_for(
+                _post_operator_link(identity.chat_id, text, entities, plain),
+                DELIVERY_TIMEOUT_S)
+            delivered = outcome is DeliveryOutcome.DELIVERED
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — not proven ⇒ withheld
+        # The class only: an upstream error's text could quote the request
+        # (the URL is in the entity and the plain fallback), and no error
+        # echoes a value.
+        logger.warning(
+            "operator link delivery failed (plugin=%s slot=%s): %s — withholding",
+            seg, slot, type(exc).__name__)
+        delivered = False
+    finally:
+        if not delivered:
+            store.drop_call_deposits(call)
+    if not delivered:
+        return _withheld(seg, _REASON_LINK_NOT_DELIVERED)
+    receipt = dict(parsed)
+    receipt["casa_delivery"] = {
+        "slot": slot, "status": "delivered", "to": DELIVERED_TO}
+    return {"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                   "updatedToolOutput": json.dumps(receipt)}}
+
+
 def make_result_hook(
     contract_map, *, client_id: str, store: ReferenceStore | None = None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """The PostToolUse callback (#792 §3.3): the second boundary. Any
-    exception is the withheld replacement, never a pass."""
+    exception is the withheld replacement, never a pass. A ``capability``
+    result whose call delivers a slot (#1015) is, after the structural
+    check, replaced by the delivery receipt or the not-delivered notice —
+    never passed as returned."""
     store = store or STORE
 
     async def _hook(input_data, tool_use_id, context):
@@ -521,13 +723,14 @@ def make_result_hook(
         try:
             seg = contract_map.plugin_seg_of(tool_name) or "?"
             plugin = contract_map.plugins.get(seg)
-            if plugin is not None and tool_name in plugin.setup_tools:
-                return {}
+            entry = contract_map.tools.get(tool_name) if plugin is not None else None
+            if (plugin is not None and tool_name in plugin.setup_tools
+                    and (entry is None or entry.kind != "capability")):
+                return {}      # the exempt setup tool (declared absent or safe)
             if plugin is None:
                 return _withheld(seg, _REASON_UNKNOWN_PLUGIN)
             if not plugin.adopted:
                 return _withheld(seg, _REASON_NON_ADOPTING)
-            entry = contract_map.tools.get(tool_name)
             if entry is None:
                 return _withheld(seg, _REASON_UNDECLARED)
             call = store.close_call(client_id, str(tool_use_id or ""))
@@ -539,7 +742,11 @@ def make_result_hook(
                 if call is not None:
                     store.drop_call_deposits(call)
                 return _withheld(seg, _REASON_BAD_CAPABILITY)
-            return {}
+            if not call.delivers:
+                return {}
+            return await _deliver_and_replace(store, seg, call, parsed)
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001 — fail closed
             logger.exception(
                 "result broker replacement error (tool=%s) — withholding",
@@ -586,17 +793,20 @@ def broker_matchers(
     from plugin_grants import result_contract_map
 
     contract_map = result_contract_map(resolution)
+    # #1015: the timeout is set explicitly — the result hook now awaits a
+    # Telegram send (bounded by DELIVERY_TIMEOUT_S) and the CLI cancels a
+    # hook past this deadline and proceeds with the ORIGINAL result.
     return {
         "PreToolUse": [HookMatcher(
-            matcher=PLUGIN_TOOL_MATCHER,
+            matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
             hooks=[make_plugin_admission_hook(
                 role, contract_map, client_id=client_id,
                 authz_hook=authz_hook, protected=protected, store=store)])],
         "PostToolUse": [HookMatcher(
-            matcher=PLUGIN_TOOL_MATCHER,
+            matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
             hooks=[make_result_hook(contract_map, client_id=client_id, store=store)])],
         "PostToolUseFailure": [HookMatcher(
-            matcher=PLUGIN_TOOL_MATCHER,
+            matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
             hooks=[make_failure_hook(contract_map, client_id=client_id, store=store)])],
     }
 
@@ -617,9 +827,10 @@ def _bad(code: str, status: int = 200) -> web.Response:
 
 
 def build_broker_deposit_handler(store: ReferenceStore | None = None):
-    """``POST /internal/broker/deposit`` ``{"client", "slot", "value"}`` ⇒
-    ``{"reference"}`` or ``{"error"}``. Write-only: nothing here reads a
-    value back, and no error echoes one."""
+    """``POST /internal/broker/deposit`` ``{"client", "slot", "value"}`` plus
+    the optional ``"caption"``/``"label"`` strings a delivered slot may carry
+    (#1015) ⇒ ``{"reference"}`` or ``{"error"}``. Write-only: nothing here
+    reads a value back, and no error echoes one."""
     store = store or STORE
 
     async def handler(request: web.Request) -> web.Response:
@@ -640,7 +851,13 @@ def build_broker_deposit_handler(store: ReferenceStore | None = None):
             return _bad("bad_value")
         if len(value.encode("utf-8")) > MAX_VALUE_BYTES:
             return _bad("value_too_large")
-        ref, err = store.deposit(client_id=client, slot=slot, value=value)
+        # Passed through as they are: the store judges them only for a
+        # delivered slot (#1015); for any other slot they are ignored, so a
+        # producer library can send them uniformly and the base's behaviour
+        # for such a deposit is unchanged.
+        ref, err = store.deposit(client_id=client, slot=slot, value=value,
+                                 caption=body.get("caption"),
+                                 label=body.get("label"))
         if err:
             return _bad(err)
         return web.json_response({"reference": ref})

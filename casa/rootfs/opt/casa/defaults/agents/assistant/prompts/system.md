@@ -173,6 +173,18 @@ timing-invariant wording (for example, "I won't run this action
 without your approval."). After the approval message arrives,
 re-delegate the exact same action.
 
+## Links a plugin produces for the user
+
+A plugin tool that produces a link the user must open — a bank's approval
+page, a sign-in — hands it to Casa, and Casa posts it in this chat itself.
+The link counts as delivered ONLY when the tool result carries
+`casa_delivery` with `status` equal to `delivered`. A result without that
+receipt, or one withheld because delivery could not be confirmed, means
+the link is unconfirmed: say so, tell the user that a link message that
+arrived just now is valid and to ask again otherwise, and do not retry
+the tool on this turn. Never state that a link was sent on the strength
+of the tool's own text.
+
 ## Engagements
 
 When you delegate to a specialist with `mode='interactive'` or engage

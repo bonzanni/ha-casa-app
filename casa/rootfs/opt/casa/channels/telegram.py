@@ -4610,11 +4610,36 @@ class TelegramChannel(Channel):
             )
             return False
         except BadRequest as exc:
-            logger.warning("rich-text send fell back to plain: %s", exc)
+            # The class only (#1015): a delivered operator link rides through
+            # here, and the platform's error text can quote the message it
+            # refused — a log line must never echo a credential.
+            logger.warning("rich-text send fell back to plain: %s",
+                           type(exc).__name__)
             await self._app.bot.send_message(
                 chat_id=chat_id, text=original, **kw,
             )
             return True
+
+    async def deliver_operator_link(
+        self, chat_id: int, text: str, entities, plain: str,
+    ) -> DeliveryOutcome:
+        """#1015: post ONE Casa-composed labelled-link message to *chat_id* —
+        the chat of a capability call's grant identity — for a plugin slot
+        declared ``operator_link``. The result broker composes ``text`` (the
+        display text), ``entities`` (its one ``text_link``) and ``plain``
+        (the fallback that spells the URL out) and never goes through
+        ``render_paged``: the caption and label are sent as the bytes they
+        are. Returns ``NOT_DELIVERED`` when the channel is not started;
+        ``DELIVERED`` on any normal return of ``_send_one`` (its bool only
+        says whether the plain retry happened); an exception — including a
+        TimedOut after Telegram may already have accepted the message —
+        propagates, and the broker reads it as not proven."""
+        if self._app is None:
+            logger.warning(
+                "Telegram channel not started; cannot deliver operator link")
+            return DeliveryOutcome.NOT_DELIVERED
+        await self._send_one(chat_id, plain, text, entities)
+        return DeliveryOutcome.DELIVERED
 
     async def send_response(
         self, message: str, context: dict[str, Any],

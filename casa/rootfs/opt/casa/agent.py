@@ -160,9 +160,11 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #   _operator_turn             — #283 live-operator marker for the spawn cap
 #   _scheduled_delivery        — #485 Casa's own schedule fired this turn
 #   _scheduled_epoch           — #573 the trigger-lifecycle epoch it fired under
+#   plugin_setup_target        — #1015 the role a plugin-setup dispatch is FOR
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
+    "plugin_setup_target",
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``

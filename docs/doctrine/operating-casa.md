@@ -169,6 +169,12 @@ which of its tools return a capability, the capability is deposited with Casa an
 model is handed a single-use reference instead, and a plugin that has not adopted that
 contract has its tools refused before they run
 ([`architecture/plugin-result-contract.md`](../architecture/plugin-result-contract.md)).
+A link the operator must open themselves — a bank's approval page, a sign-in — is the one
+capability that has to reach a chat, and the plugin declares it so Casa delivers it: one
+message from Casa into the chat the operator asked in, and the tool result replaced by a
+receipt. A link counts as delivered only when the result carries that receipt
+(`casa_delivery.status` equal to `delivered`); a result without one is reported as
+unconfirmed, and the operator is asked for a fresh one, never told the link arrived.
 Beside it, a protected tool's approval is single-use and bound to one argument set, so a
 repeat call needs a fresh one. Where a tool is neither protected nor a declared capability,
 no gate exists — which is why the rule above matters: an earlier agreement to fetch or send

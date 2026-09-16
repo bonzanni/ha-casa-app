@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-08
+last_reviewed: 2026-09-16
 ---
 
 # The plugin setup obligation
@@ -13,7 +13,9 @@ environment that tool provisions, and the two side channels a plugin reaches Cas
 through, are [`plugin-runtime.md`](plugin-runtime.md); the consents this obligation waits
 on are [`triggers.md`](triggers.md) and [`callbacks.md`](callbacks.md); installation and
 artifact identity are [`plugins.md`](plugins.md).
-The gate a released obligation passes through before it is dispatched is [`plugin-setup-dispatch-gate.md`](plugin-setup-dispatch-gate.md).
+The gate a released obligation passes through before it is dispatched is [`plugin-setup-dispatch-gate.md`](plugin-setup-dispatch-gate.md);
+what the dispatched turn itself evidences, how a courier turn's delegation is correlated,
+and whose identity the turn carries are [`plugin-setup-turn.md`](plugin-setup-turn.md).
 
 ## Mental model
 
@@ -24,11 +26,14 @@ an obligation with no verdict holds rather than guessing (INV-PLUG-010). That th
 is the whole design: the alternative, deciding at mutation time which of two runners owns
 the job, has no correct answer for a plugin whose consent the operator has not yet decided.
 
-**Release is not dispatch.** A released obligation still passes through the setup-dispatch
-gate, which recomputes the applied state the reconcile has actually written and reads the
-applied routing overlays before the send (INV-PLUG-011, INV-PLUG-016); that gate is
-[`plugin-setup-dispatch-gate.md`](plugin-setup-dispatch-gate.md), and it is the route gate
-this document refers to below.
+**Release is not dispatch, and dispatch is not consumption.** A released obligation still
+passes through the setup-dispatch gate, which recomputes the applied state the reconcile
+has actually written and reads the applied routing overlays before the send (INV-PLUG-011,
+INV-PLUG-016); that gate is [`plugin-setup-dispatch-gate.md`](plugin-setup-dispatch-gate.md),
+and it is the route gate this document refers to below. Bus acceptance marks the row
+`dispatched`, but the turn itself reports back what it evidenced, and only positive
+evidence keeps the row consumed (INV-PLUG-012, INV-PLUG-023, INV-PLUG-024) —
+[`plugin-setup-turn.md`](plugin-setup-turn.md).
 
 **A reconcile pass describes one registry snapshot.** Each pass pins a single registry
 resolution and serves every read from it — the plugins and their manifests, each target's
@@ -40,12 +45,6 @@ generation had removed.
 ## Contracts & invariants
 
 **INV-PLUG-010**: A plugin's declared setup tool is dispatched by Casa alone — no tool result, completion or prompt routes it to an agent — and an artifact's setup obligation dispatches only after a consent verdict has been positively sealed for that exact artifact and settled with no denial; the absence of a sealed verdict never permits a dispatch, and a verdict asserting that an artifact needs no consent is sealed only when the pending-consent computes for both trigger and callback consents succeeded.
-
-**INV-PLUG-012**: A resident-execution setup obligation rests consumed (`dispatched`) only when its dispatched turn positively evidenced the setup tool — the tool produced a non-error result, or the turn completed with the session's init listing the tool and no attempted call erring without one; a turn with no such evidence (including one that raised or was cancelled, whose listed-but-uncalled tool evidences nothing because no reply was produced) returns the obligation to `pending` with its released verdict intact, boundedly, and past the bound it fails with an operator note rather than being silently spent.
-
-**INV-PLUG-023**: A released resident-execution setup obligation is also consumed when its setup tool produces a non-error result in any turn of the executing resident, provided the invocation is proven to follow the release and to run in a session built on the obligation's exact artifact — a finite `tool_use` timestamp not earlier than the row's finite `released_ts`, and the executing agent instance's own plugin binding carrying that artifact while the registry still resolves to it; a row so settled (`settled_by`) is never re-dispatched, a dispatched turn that finds it settled once it holds the session gate does not run, and a later toolless report from the dispatched turn cannot reopen it — evidence that proves less (an earlier invocation, an unstamped or non-finite stamp, another artifact, another role, another tool, a specialist target) settles nothing.
-
-**INV-PLUG-024**: A specialist-target setup obligation, whose dispatched turn is a courier turn asking the assistant to delegate the setup to the specialist, rests consumed (`dispatched`) only when that courier turn produced a non-error `delegate_to_agent` result whose target, canonicalised as the delegation ACL resolves it, is the row's specialist — a delegation to any other agent, an errored one, and a listed but uncalled delegation tool all evidence nothing for a courier, whether or not the turn completed; a courier turn with no such result (including one that raised, was cancelled, or replied with silence) returns the obligation to `pending` with its released verdict intact, under the same bounded budget as a resident turn, and past the bound it fails with an operator note naming the delegation that could not be made; the delegation tool is recorded under its own key, never as the row's expected setup tool, so no ordinary turn's delegation result can settle a specialist-target row; and a `dispatched` row that carries neither an expected tool nor a courier key and no settlement mark — one no turn will ever report on — is retired by the next worker pass as `failed` with a reason naming the manual run and one operator note, never re-dispatched.
 
 **A plugin's declared setup tool is run by Casa and by nothing else — released only by a
 positively sealed consent verdict for that exact artifact, and then only once its trigger
@@ -192,81 +191,9 @@ registry, so a release can never be lost this way.
 to exactly one server grant fails with that reason rather than guessing a namespace;
 verification blocks such plugins upstream.
 
-**The dispatch is accepted but the session cannot run the tool.** Bus acceptance marks the
-obligation `dispatched` before the turn runs, and until v0.184.0 that was terminal even
-when the turn then had no setup tool to call — observed live when a just-published
-artifact's MCP server failed to come up in a session built moments after an agent
-reconstruction, so the one automatic run was silently spent. Now the turn itself reports
-back (INV-PLUG-012): the agent correlates the episode marker on the dispatched turn with
-what the turn actually evidenced — a non-error result from the tool consumes the
-obligation; a completed turn whose init listed the tool consumes it too (an available tool
-the agent chose not to call is its reply's business); anything else — the tool absent,
-availability unknown, every attempted call an error, the turn raising or cancelled before
-it could reply — returns the row to `pending` with its released verdict kept, and the next
-reload or reconcile kick re-dispatches. Completion matters for the availability rule
-alone: that rule rests on the agent's reply reporting what it chose, and a raising or
-cancelled turn produced no reply, so listing without a call evidences nothing there while
-a non-error result collected before the cancel still counts. Deliberately no immediate retry: the broken session is
-usually a warm one that would fail identically, and the healer in practice is the next
-agent reload. The budget is bounded; exhausting it fails the obligation with a note naming
-the manual run.
-
-**The assistant runs the setup tool itself before the re-dispatch.** Observed live on
-2026-09-16: the dispatched turn ran toolless (a cold session whose plugin MCP server was
-still connecting), the row went back to `pending`, and on its next ordinary turn the
-assistant ran the setup tool and the operator completed the authorisation — after which
-the next reload would have asked for the setup again. The row is now settled from that
-evidence (INV-PLUG-023): the agent hands every non-error plugin-tool result of an
-ordinary turn to `settle_from_tool_evidence` the moment it observes it, under the
-per-session write gate and the client lock, with the wall-clock instant of the
-`tool_use` block and the agent instance's own resolved binding. That handover is I/O-free
-on the common path: the release captures the composed setup-tool name on the row (the
-dispatch captures the same name; an artifact is immutable, so it cannot drift), an
-in-memory watch holds the names carried by released unsettled rows — recomputed from the
-store on every loop-thread read and every save, never from a reader on another thread,
-whose snapshot may predate a release — and only a result for a watched name reads the
-file; every other result returns without a store read or a resolver call. The store
-settles only
-on positive proof — a finite invocation time not before the row's `released_ts`
-(stamped at release, so a row released before v0.315.0 is never settled this way), the
-binding and the registry both naming the row's artifact, the plugin's execution target
-being this resident, and the tool being the one the dispatch would compose. The worker
-re-reads the row immediately before every send, a dispatched turn re-checks
-`dispatch_still_owed` once it holds the session gate and returns without a client or a
-prompt when the obligation is settled, and the dispatched turn's own report is a no-op on
-a settled row. Turns on different session keys are not serialised against each other, so
-a setup run from another channel while a dispatch is already executing can still be
-followed by that dispatch's run. The status tool reads a settled row as "setup ran (the
-assistant ran the setup tool itself)" whatever status a later removal leaves on it. A specialist-target dispatch stays delivery-only as far as the SETUP tool goes — the
-assistant is just the delegation courier there, and its own session says nothing about the
-specialist's — but the courier turn does say whether the delegation went through.
-
-**The courier's delegation is the evidence.** A plugin that targets only a specialist has
-its setup composed as a courier turn to the assistant, and the courier session never
-carries the specialist's setup tool, so the row records no expected setup tool. What the
-courier session does carry is the delegation tool, and the dispatch records that name and
-the target specialist on the row under their own keys. The courier turn's report
-correlates the delegation by target (INV-PLUG-024): the agent records the target of every
-`delegate_to_agent` call it observes, canonicalises the targets of the calls that produced
-a non-error result exactly as the ACL resolves them (a persona display name becomes its
-role id), and hands the set over; a non-error delegation to the row's own specialist
-consumes the row (the specialist's own reply, relayed by the assistant, reports the setup
-result), and nothing else does — a delegation to some other agent, an errored one, an
-absent or merely listed-but-uncalled one, all return the row to `pending` under the same
-bounded budget a resident row has, and exhaustion fails it with a note naming the
-delegation that could not be made. The resident rule's "listed but uncalled is the reply's
-business" clause is not carried over: that clause rests on the reply reaching the
-operator, the report runs before silence suppression and delivery, and for a courier the
-delegation *is* the turn, so there is no reply for it to be the business of. The keys are
-deliberately not `expected_tool`: that name feeds the ordinary-turn evidence watch, and a
-specialist target must stay outside settlement (INV-PLUG-023). A `dispatched` row that
-carries neither key and no settlement mark — one dispatched before the courier keys existed,
-which no turn will ever report on — is neither left as it is (a silent spend: nothing in
-health, no note) nor re-armed (an evidence-free re-dispatch could run a setup tool a second
-time against an external service). The next worker pass retires it as `failed` with a
-reason naming the manual run; plugin health carries it, the operator is told once, and a
-removal followed by a reinstall of the same artifact re-arms it as a fresh attempt
-(INV-PLUG-020).
+**The dispatch is accepted but the turn could not run or hand over the tool.** The turn
+reports what it evidenced and the row returns to `pending` or is retired visibly, never
+silently spent — [`plugin-setup-turn.md`](plugin-setup-turn.md).
 
 **The plugin is removed after its setup failed, and reinstalled from the same download.**
 The removal stamps the failed row and the next sweep that resolves the same artifact
@@ -275,11 +202,6 @@ dispatches, and either settles or exhausts a new budget with a new note. Nothing
 while the plugin is absent, and the earlier failure stays readable in the status tool
 throughout. A failed row whose plugin was never removed is settled and is never retried by
 a reconcile — the routes out remain an update to a different commit and the manual run.
-
-**The dispatch is accepted and the tool runs, but the integration is broken.** Delivery
-and in-session execution are what the obligation tracks; the executing agent reports the
-tool's own outcome to the operator. Casa makes no claim of its own about whether the
-integration works — it cannot see the external side (INV-TOOL-005).
 
 ## Extension points
 
@@ -306,8 +228,6 @@ verdict; adding an inference there would reintroduce the defect this design remo
 - `casa/rootfs/opt/casa/plugin_registry.py::pinned_resolver`
 
 **Tests**
-- `tests/test_plugin_setup_evidence_settlement.py`
-- `tests/test_agent_setup_evidence_turn.py`
 - `tests/test_plugin_setup_single_runner.py`
 - `tests/test_plugin_setup_episodes.py`
 
@@ -317,4 +237,5 @@ verdict; adding an inference there would reintroduce the defect this design remo
 - [`architecture/triggers.md`](../architecture/triggers.md)
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
 - [`architecture/plugin-setup-dispatch-gate.md`](../architecture/plugin-setup-dispatch-gate.md)
+- [`architecture/plugin-setup-turn.md`](../architecture/plugin-setup-turn.md)
 <!-- END SOURCEMAP -->

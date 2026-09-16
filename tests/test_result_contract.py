@@ -39,10 +39,71 @@ def test_valid_declaration_is_normalized():
         "done": {"result": "safe", "consumes": {"l": "link"}},
     })})
     assert out == {"version": 1, "tools": {
-        "list": {"result": "safe", "provides": [], "consumes": {}},
-        "fetch": {"result": "capability", "provides": ["link"], "consumes": {}},
-        "done": {"result": "safe", "provides": [], "consumes": {"l": "link"}},
+        "list": {"result": "safe", "provides": [], "consumes": {}, "delivers": {}},
+        "fetch": {"result": "capability", "provides": ["link"], "consumes": {},
+                  "delivers": {}},
+        "done": {"result": "safe", "provides": [], "consumes": {"l": "link"},
+                 "delivers": {}},
     }}
+
+
+# --- #1015: `delivers` ---------------------------------------------------------
+
+def _setup_rc(tools):
+    return {"name": "p", "casa": {"setupTool": "setup_p",
+                                  "resultContract": {"version": 1, "tools": tools}}}
+
+
+@pytest.mark.parametrize("manifest", [
+    _rc({"a": {"result": "safe", "delivers": {"x": "operator_link"}}}),      # on a safe tool
+    _rc({"a": {"result": "safe", "delivers": {}}}),                          # on a safe tool, empty
+    _rc({"a": {"result": "safe", "delivers": None}}),                        # explicit null (base: unknown key)
+    _rc({"a": {"result": "capability", "provides": ["x"], "delivers": None}}),
+    _rc({"a": {"result": "capability", "provides": ["x"],
+               "delivers": {"y": "operator_link"}}}),                        # slot not provided
+    _rc({"a": {"result": "capability", "provides": ["x"],
+               "delivers": {"x": "operator_email"}}}),                       # unknown kind
+    _rc({"a": {"result": "capability", "provides": ["x", "y"],
+               "delivers": {"x": "operator_link", "y": "operator_link"}}}),  # two delivered
+    _rc({"a": {"result": "capability", "provides": ["x"],
+               "delivers": ["x"]}}),                                         # not an object
+    _rc({"a": {"result": "capability", "provides": ["x"],
+               "delivers": {"x": "operator_link"}},
+         "b": {"result": "safe", "consumes": {"p": "x"}}}),                  # delivered AND consumed
+    _rc({"a": {"result": "capability", "provides": ["x"],
+               "delivers": {"x": "operator_link"}, "consumes": {"p": "x"}}}),  # by the same tool
+    _setup_rc({"setup_p": {"result": "capability", "provides": ["x", "y"],
+                           "delivers": {"x": "operator_link"}}}),            # setup: undelivered slot
+    _setup_rc({"setup_p": {"result": "capability", "provides": ["x"]}}),     # setup: nothing delivered
+    _setup_rc({"setup_p": {"result": "capability", "provides": ["x"],
+                           "delivers": {"x": "operator_link"},
+                           "consumes": {"p": "x"}}}),                        # setup: consumes
+], ids=["safe", "safe-empty", "safe-null", "capability-null", "unprovided", "kind", "two",
+        "shape", "consumed", "self-consumed", "setup-undelivered", "setup-none",
+        "setup-consumes"])
+def test_malformed_delivers_declarations_raise_result_contract_invalid(manifest):
+    with pytest.raises(StoreError) as ei:
+        manifest_result_contract({"name": "p", **manifest})
+    assert ei.value.reason_code == "result_contract_invalid"
+
+
+def test_delivers_is_normalized_and_a_delivering_setup_tool_is_accepted():
+    out = manifest_result_contract({"name": "p", **_rc({
+        "link": {"result": "capability", "provides": ["approval_link"],
+                 "delivers": {"approval_link": "operator_link"}},
+        "plain": {"result": "capability", "provides": ["token"]},
+    })})
+    assert out["tools"]["link"]["delivers"] == {"approval_link": "operator_link"}
+    assert out["tools"]["plain"]["delivers"] == {}
+    out = manifest_result_contract(_setup_rc({
+        "setup_p": {"result": "capability", "provides": ["auth_url"],
+                    "delivers": {"auth_url": "operator_link"}}}))
+    assert out["tools"]["setup_p"] == {
+        "result": "capability", "provides": ["auth_url"], "consumes": {},
+        "delivers": {"auth_url": "operator_link"}}
+    # the exempt form of the setup tool is still accepted beside it
+    assert manifest_result_contract(_setup_rc({"setup_p": {"result": "safe"}}))[
+        "tools"]["setup_p"]["delivers"] == {}
 
 
 def test_setup_tool_may_be_listed_only_as_safe_without_consumes():
@@ -166,6 +227,45 @@ def test_map_expands_each_declared_tool_across_every_server(tmp_path):
     assert m.plugin_seg_of("mcp__plugin_probe_api__fetch") == "probe"
     assert m.plugin_seg_of("mcp__plugin_nope_x__y") is None
     assert m.plugin_seg_of("Bash") is None
+
+
+def test_map_carries_delivers_and_keeps_a_capability_setup_entry(tmp_path):
+    """#1015, through the REAL mapper: the delivered slot rides on the
+    entry, and a setup tool declared as a capability is MAPPED (the exempt
+    skip is narrowed to the safe/absent declaration) — or no setup entry
+    could ever reach either hook. Its name is still listed among the
+    plugin's setup tools; the hooks read the entry to decide."""
+    from plugin_grants import result_contract_map
+    store = tmp_path / "store"
+    e = entry("probe", ["resident:assistant"])
+    mk_artifact(store, "probe", e["artifact_id"], mcp_servers={"api": {}},
+                extra_manifest={"casa": {"setupTool": "setup_probe", "resultContract": {
+                    "version": 1, "tools": {
+                        "link": {"result": "capability", "provides": ["approval_link"],
+                                 "delivers": {"approval_link": "operator_link"}},
+                        "fetch": {"result": "capability", "provides": ["token"]},
+                        "setup_probe": {"result": "capability", "provides": ["auth_url"],
+                                        "delivers": {"auth_url": "operator_link"}}}}}})
+    _install(tmp_path, [e])
+    m = result_contract_map(resolve_for("resident:assistant"))
+    assert sorted(m.tools) == [
+        "mcp__plugin_probe_api__fetch", "mcp__plugin_probe_api__link",
+        "mcp__plugin_probe_api__setup_probe"]
+    assert m.tools["mcp__plugin_probe_api__link"].delivers == {"approval_link": "operator_link"}
+    assert m.tools["mcp__plugin_probe_api__fetch"].delivers == {}
+    setup = m.tools["mcp__plugin_probe_api__setup_probe"]
+    assert (setup.kind, setup.provides, setup.delivers) == (
+        "capability", ("auth_url",), {"auth_url": "operator_link"})
+    assert m.plugins["probe"].setup_tools == frozenset({"mcp__plugin_probe_api__setup_probe"})
+    # a safe setup declaration stays unmapped (exempt), as before
+    e2 = entry("plain", ["resident:assistant"])
+    mk_artifact(store, "plain", e2["artifact_id"], mcp_servers={"api": {}},
+                extra_manifest={"casa": {"setupTool": "setup_plain", "resultContract": {
+                    "version": 1, "tools": {"setup_plain": {"result": "safe"}}}}})
+    _install(tmp_path, [e, e2])
+    m = result_contract_map(resolve_for("resident:assistant"))
+    assert "mcp__plugin_plain_api__setup_plain" not in m.tools
+    assert m.plugins["plain"].setup_tools == frozenset({"mcp__plugin_plain_api__setup_plain"})
 
 
 def test_map_represents_a_non_adopting_plugin_and_skips_skill_only(tmp_path):

@@ -102,7 +102,7 @@ or prompt, and returns without running when the obligation was settled meanwhile
 message handler hands every non-error plugin-tool result of an ordinary turn to the setup
 store as it is observed, while the gate and the client lock are still held, so a setup turn
 queued behind that turn finds the row settled rather than asking for the setup again. Both
-are [`architecture/plugin-setup.md`](plugin-setup.md)'s (INV-PLUG-023); the loop only
+are [`architecture/plugin-setup-turn.md`](plugin-setup-turn.md)'s (INV-PLUG-023); the loop only
 orders them. A third is a mark, not an action: the turn records that it completed only as
 its last step, after the reply is produced and delivered, and the setup-outcome report the
 loop makes in its `finally` carries that mark, so a turn that raised or was cancelled

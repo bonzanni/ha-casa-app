@@ -952,7 +952,33 @@ returning it:
 - Return a JSON **object** from a capability tool (a `dict` in FastMCP); a
   plain string has no fields to carry a reference. Never place a capability
   in an error message — an error is shown to the assistant unchanged.
-- The setup tool is exempt: its consent page is meant to be opened by you.
+- The setup tool is exempt unless the plugin declares it as a capability
+  tool that delivers its link (below).
+
+#### Links you must open arrive in your chat with the assistant (v0.318.0)
+
+A bank's approval page, a Google sign-in — a link only you can act on. A
+plugin says so by adding `delivers` to the capability tool that produces it:
+
+```json
+"link_bank": {"result": "capability", "provides": ["approval_link"],
+              "delivers": {"approval_link": "operator_link"}}
+```
+
+The tool deposits the `https` URL as any capability, optionally with a
+`label` (up to 40 characters) and a `caption` (up to 200), and returns the
+reference. Casa itself then posts **one message to the chat you asked in** —
+your chat with the assistant, never a specialist's task topic — as a link
+whose text is the label and the real destination host, with the caption
+beneath. The assistant's tool result is replaced by a receipt saying the link
+was delivered; if Casa could not confirm delivery, the result is withheld and
+the assistant tells you a fresh link is needed. The plugin's own text never
+claims the link arrived, so an assistant that never received the receipt
+reports it as unconfirmed. A delivered link is consumed by the delivery — no
+tool may `consumes` it — and a plugin's `casa.setupTool` may adopt the same
+declaration for its sign-in link, provided it delivers every slot it
+provides. A plugin declaring `delivers` needs Casa 0.318.0 or later; an
+older Casa refuses its manifest at install.
 
 **What changes for an installed plugin.** A plugin that has not adopted the
 contract has every tool except its setup tool refused, from this release on,

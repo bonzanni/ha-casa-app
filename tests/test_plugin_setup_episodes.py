@@ -926,6 +926,23 @@ _COURIER = "mcp__casa-framework__delegate_to_agent"
 
 
 @pytest.mark.asyncio
+async def test_dispatch_stamps_the_role_the_obligation_is_for(wired):
+    # #1015: the dispatch context carries `plugin_setup_target` beside the
+    # marker — the resident for a resident row, the specialist for a courier
+    # row — so the grant identity binds to the executing role it names.
+    await _dispatched(wired)
+    _role, _text, context = wired["dispatches"][-1]
+    assert (context["synthetic"], context["plugin_setup_target"]) == (
+        "plugin_setup", "assistant")
+    wired["entry"]["targets"] = ["specialist:finance"]
+    pse._save({"episodes": []})
+    await _dispatched(wired)
+    role, text, context = wired["dispatches"][-1]
+    assert role == "assistant" and "finance" in text
+    assert context["plugin_setup_target"] == "finance"
+
+
+@pytest.mark.asyncio
 async def test_specialist_dispatch_binds_no_expected_tool(wired):
     # The assistant is only a delegation COURIER for a specialist target;
     # its own session never carries the tool, so no availability claim can

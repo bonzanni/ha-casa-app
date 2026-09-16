@@ -423,12 +423,17 @@ class ToolContract:
     kind: str                      # "safe" | "capability"
     provides: tuple[str, ...]      # capability slots this tool deposits
     consumes: dict                 # {param: slot} references this tool redeems
+    # #1015: {slot: kind} — the ONE provided slot (at most) Casa itself
+    # delivers to the operator's chat after the result's structural check.
+    delivers: dict = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
 class PluginContract:
-    """One resolved MCP-bearing plugin: adopted or not, and its exempt
-    setup-tool names (expanded to full names across its servers)."""
+    """One resolved MCP-bearing plugin: adopted or not, and its setup-tool
+    names (expanded to full names across its servers). A setup tool is
+    exempt from the broker unless ``tools`` carries a ``capability`` entry
+    for it (#1015)."""
     artifact_id: str
     adopted: bool
     setup_tools: frozenset
@@ -509,12 +514,17 @@ def result_contract_map(resolution) -> ResultContractMap:
             for server in servers:
                 full = (f"mcp__plugin_{plugin_seg}_"
                         f"{sanitize_segment(server)}__{tool_seg}")
-                if full in setup_names:
-                    continue  # the setup tool is exempt, never contracted
+                if full in setup_names and entry["result"] != "capability":
+                    # The exempt setup tool (declared safe) is never
+                    # contracted; a setup tool declared as a CAPABILITY
+                    # (#1015: it delivers its link) is mapped like any other,
+                    # or no setup entry could ever reach either hook.
+                    continue
                 tools[full] = ToolContract(
                     artifact_id=artifact_id, plugin_seg=plugin_seg,
                     kind=entry["result"], provides=tuple(entry["provides"]),
-                    consumes=dict(entry["consumes"]))
+                    consumes=dict(entry["consumes"]),
+                    delivers=dict(entry.get("delivers") or {}))
     return ResultContractMap(tools=tools, plugins=plugins)
 
 

@@ -1112,18 +1112,52 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     ``None``; or ``identity`` is ``None`` and ``reason`` is one of
     ``"engagement_unavailable"`` (engagement path: no active specialist
     record with a topic and an operator origin), ``"unsupported_origin"``
-    (not a DM/button turn executed directly or by delegation, or no
+    (not a DM/button/setup turn executed directly or by delegation, or no
     operator/chat id), ``"role_mismatch"`` (the closure's role is not the
-    turn's execution role). Every branch is the hook's own, in its order;
-    the hook maps the reason to its deny text.
+    turn's execution role); or, for an origin carrying Casa's
+    ``plugin_setup`` marker (#1015), ``"setup_engagement"`` (read from or
+    under an engagement — never an identity), ``"setup_target_mismatch"``
+    (the Casa-stamped ``plugin_setup_target`` is not the executing role) or
+    ``"setup_operator_changed"`` (the origin's ids are not the operator as
+    configured NOW, or no Telegram channel is up to say who that is). Every
+    branch is the hook's own, in its order; the hook maps the reason to its
+    deny text.
     """
     import agent as agent_mod
     from provenance import strict_positive_id, turn_provenance
 
     prov = turn_provenance()
+    origin = agent_mod.origin_var.get(None) or {}
+    rec = None
     if prov.execution == "engagement":
         import tools as tools_mod
         rec = tools_mod.engagement_var.get(None)
+
+    # #1015: the setup-marker gate runs FIRST, before either identity return,
+    # on whichever origin the branch below is about to trust. A setup-marked
+    # origin yields an identity only on a direct or delegated turn whose
+    # executing role is the stamped target and whose ids are the operator's
+    # as configured at this moment; read from an engagement record (or with
+    # an engagement bound), it never does — an engagement outlives the setup
+    # turn that could have created it and carries the copied origin through
+    # tombstone and resume.
+    rec_origin = getattr(rec, "origin", None) if rec is not None else None
+    src = rec_origin if isinstance(rec_origin, dict) else origin
+    if (src.get("synthetic") == "plugin_setup"
+            or (rec is not None and origin.get("synthetic") == "plugin_setup")):
+        if prov.execution == "engagement":
+            return None, "setup_engagement"
+        if prov.transport != "setup":
+            return None, "unsupported_origin"
+        if src.get("plugin_setup_target") != role:
+            return None, "setup_target_mismatch"
+        live = _live_operator_identity()
+        stamped = (strict_positive_id(src.get("chat_id")),
+                   strict_positive_id(src.get("user_id")))
+        if live is None or stamped != live:
+            return None, "setup_operator_changed"
+
+    if prov.execution == "engagement":
         if (rec is None
                 or not getattr(rec, "id", "")
                 or getattr(rec, "kind", None) != "specialist"
@@ -1142,10 +1176,9 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
             engagement_id=str(rec.id),
             target_role=getattr(rec, "role_or_type", None),
         ), None
-    if (prov.transport not in ("dm", "button")
+    if (prov.transport not in ("dm", "button", "setup")
             or prov.execution not in ("direct", "delegated")):
         return None, "unsupported_origin"
-    origin = agent_mod.origin_var.get(None) or {}
     if role != origin.get("execution_role"):
         return None, "role_mismatch"
     operator_id = strict_positive_id(origin.get("user_id"))
@@ -1157,6 +1190,23 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
         enforcement_role=role, artifact_id=artifact_id,
         engagement_id="", target_role=origin.get("role"),
     ), None
+
+
+def _live_operator_identity() -> "tuple[int, int] | None":
+    """The configured operator's ``(chat_id, user_id)`` as of NOW (#1015):
+    read from the initialised channel manager the delegated authz factory
+    reads (``tools._channel_manager``), through the same validation the
+    setup dispatch used to compose the turn (``trigger_consent.
+    operator_identity``). ``None`` when no Telegram channel is up — the
+    setup gate then refuses, fail-closed. Lazy imports: ``tools`` imports
+    this module."""
+    import tools as tools_mod
+    import trigger_consent
+    manager = getattr(tools_mod, "_channel_manager", None)
+    channel = manager.get("telegram") if manager is not None else None
+    if channel is None:
+        return None
+    return trigger_consent.operator_identity(channel)
 
 
 def make_resident_authz_hook(
@@ -1290,6 +1340,9 @@ def make_resident_authz_hook(
                     return _deny(_DENY_ENGAGEMENT_UNAVAILABLE)
                 if why == "role_mismatch":
                     return _deny(_DENY_ROLE_MISMATCH)
+                # unsupported_origin and the #1015 setup reasons
+                # (setup_engagement / setup_target_mismatch /
+                # setup_operator_changed) share the unsupported-origin text.
                 return _deny(_DENY_UNSUPPORTED_ORIGIN)
 
             # 4. Resolve the DM channel + stores lazily. None ⇒ no DM reachable
