@@ -219,6 +219,11 @@ class ReferenceStore:
                 del self._refs[ref]
         for key, call in list(self._inflight.items()):
             if call.opened_at + INFLIGHT_CAP_S <= now:
+                # A swept call's result, if it ever arrives, is withheld
+                # (no call in flight): its deposits go with it, exactly as
+                # `drop_call_deposits` drops them on any withholding.
+                for ref in call.deposits.values():
+                    self._refs.pop(ref, None)
                 del self._inflight[key]
 
     def sweep(self) -> None:
@@ -325,6 +330,20 @@ class ReferenceStore:
             if expected is None or parsed.get(slot) != expected:
                 return False
         return True
+
+    def is_no_link_result(self, call: _InFlight, parsed: dict) -> bool:
+        """#1015 addendum (v0.319.0): True iff ``call`` delivers a slot, no
+        deposit is bound to it, and ``parsed`` carries EVERY slot the call
+        provides as JSON ``null`` — the producer's explicit statement that it
+        created no link this time. A missing member or any other falsy value
+        is not that statement."""
+        if not isinstance(parsed, dict):
+            return False
+        with self._lock:
+            return (bool(call.delivers) and not call.deposits
+                    and bool(call.provides)
+                    and all(slot in parsed and parsed[slot] is None
+                            for slot in call.provides))
 
     def drop_call_deposits(self, call: _InFlight) -> None:
         """A capability result that failed validation was withheld: the
@@ -738,6 +757,12 @@ def make_result_hook(
                 return {}
             text = _response_text((input_data or {}).get("tool_response"))
             parsed = _parse_object(text) if text is not None else None
+            if (call is not None and parsed is not None
+                    and store.is_no_link_result(call, parsed)):
+                # A delivering tool that created no link says so with null
+                # slots and no deposit: its result passes unchanged, with no
+                # receipt and nothing sent (INV-PLUG-028).
+                return {}
             if call is None or parsed is None or not store.validate_result(call, parsed):
                 if call is not None:
                     store.drop_call_deposits(call)

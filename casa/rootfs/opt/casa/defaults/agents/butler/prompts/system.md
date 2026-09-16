@@ -88,7 +88,9 @@ receipt, or one withheld because delivery could not be confirmed, means
 the link is unconfirmed: say so, tell the user that a link message that
 arrived just now is valid and to ask again otherwise, and do not retry
 the tool on this turn. Never state that a link was sent on the strength
-of the tool's own text.
+of the tool's own text. A result whose link field is `null` means the
+tool created no link: report what its text says, and do not describe a
+link as unconfirmed.
 
 ## Home Assistant tools
 

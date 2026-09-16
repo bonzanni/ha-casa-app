@@ -177,6 +177,19 @@ resolution there, never half-loaded — so a plugin release adopting it requires
 release that ships it, and says so in its own changelog. The map keeps a setup tool's
 capability entry; only the safe or absent declaration is skipped as exempt.
 
+**INV-PLUG-028**: A result from a call that delivers a slot, with no deposit bound to it and with every slot the call provides present as JSON `null`, passes to the model unchanged, with no receipt and no message; every other result of such a call that fails the structural check is withheld and its deposits dropped, exactly as for any capability result.
+
+A tool that delivers a link does not always make one. A sign-in tool finds the account
+already connected, or a link still outstanding, and must say so. Without this rule
+that answer could reach the model only as a tool error, and a Casa-dispatched setup run
+whose only result is an error counts as not run, so it is retried and then failed. The
+producer states "no link" explicitly: every provided slot present and `null`, and nothing
+deposited. A missing member, an empty string or any other falsy value is not that
+statement, and neither is `null` after a deposit, so a producer that crashed half-way
+or forgot its reference is still withheld. The passed result is an ordinary non-error
+result, so the setup run counts. It adds no exposure a `safe` declaration does not
+already allow: Casa has never scanned a producer's prose.
+
 ## Failure behavior
 
 **A plugin declares no contract.** Every one of its non-setup tools is refused before it
@@ -191,6 +204,10 @@ is represented as not adopting and refused as above. Never a whole-role failure.
 **A deposit arrives with no matching call in flight, or with two.** It is refused with a
 code and no reference is minted; the producer's result then fails the structural check and
 is withheld. The same happens when a slot is deposited twice in one call.
+
+**A call outlives the in-flight cap.** The next sweep removes the call and every reference
+deposited under it; the result, if it ever arrives, finds no call and is withheld with
+nothing left redeemable.
 
 **A redemption is presented with the wrong client, a spent or expired reference, a bad
 ticket, or after the consumer call has closed.** It is refused with a code; no value ever
@@ -267,6 +284,7 @@ documentation-lookup plugin the plugin-developer relies on.
 - `tests/test_result_contract.py`
 - `tests/test_result_broker_redcase.py`
 - `tests/test_operator_link_delivery.py`
+- `tests/test_operator_link_no_link_outcome.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

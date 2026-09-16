@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.319.0] - 2026-09-16
+
+### Added
+
+- A plugin tool that delivers a link into your chat can now say it made no
+  link this time — for example because the account is already connected —
+  by returning its link field as `null`. The assistant receives that answer
+  unchanged and nothing is posted, and a setup run that ends this way counts
+  as done instead of being retried and reported as failed. Plugins using it
+  require this release or later (#1015).
+
+### Fixed
+
+- A tool call that outlives Casa's in-flight limit no longer leaves the
+  capability it deposited behind until expiry; it is dropped with the call.
+
 ## [0.318.0] - 2026-09-16
 
 ### Added
