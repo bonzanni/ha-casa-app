@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -737,6 +737,76 @@ async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, 
     assert bus.messages == [] and channel.close_topic.await_count == 0
     assert any("plugin_superseded abort after the stop's drains completed" in r.getMessage()
                for r in caplog.records), [r.getMessage() for r in caplog.records]
+
+
+# --- diff round 3 (Terra S1): the replay keeps its configured fallback role ------------
+
+async def test_the_boot_replay_addresses_a_roleless_record_to_the_configured_assistant(tmp_path):
+    import casa_core
+    from engagement_registry import EngagementRegistry
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    rec = await registry.create(kind="executor", role_or_type="configurator", driver="in_casa",
+                                topic_id=7, origin={"channel": "telegram", "cid": "c", "chat_id": "1"},
+                                task="t")
+    assert await registry.try_transition_terminal(
+        rec.id, "error", strict=True, error_kind="x", error_message="m",
+        owes_terminal_notification=True)
+    bus = _RecordingBus(roles=("ellen",))                 # the deployment's assistant is `ellen`
+    await casa_core._replay_one_engagement_outcome(registry, bus, registry.get(rec.id), assistant_role="ellen")
+    assert [m.target for m in bus.messages] == ["ellen"]
+    assert bus.messages[0].content.kind == "error"
+    await bus.deliver_all()
+    assert registry.records_owing_terminal_notification() == []
+
+
+# --- diff round 3 (Astra J2): a drain sees what a queued done callback is about to mint ---
+
+async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_mint(tmp_path, monkeypatch):
+    """The window: an anchored abort has COMPLETED, and the done callback that
+    transfers its telling (the real one, `_spawn_abandoned_inline_telling`) is
+    queued but has not run. A drain that returned on that snapshot let the stop
+    mark with the telling still to be minted.
+
+    The window is built deterministically rather than borrowed from the real
+    abort's remaining steps: a task created here runs on the next loop
+    iteration and completes, scheduling its done callbacks at the END of the
+    ready queue — behind this coroutine's own `sleep(0)` wake-up, which was
+    queued first. (An earlier version relied on the real abort finishing in
+    the same step as its topic close; in CI a failing topic-ledger append
+    added a suspension and the precondition did not hold.)
+    """
+    import tools as tools_mod
+    from engagement_registry import EngagementRegistry
+    from tools import LaunchAbortResult
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    monkeypatch.setattr(tools_mod, "_engagement_registry", registry)
+    bus = _RecordingBus()
+    tools_mod = _with_bus(monkeypatch, bus)
+    rec = await registry.create(kind="executor", role_or_type="configurator", driver="in_casa",
+                                topic_id=42, origin={"role": "assistant", "channel": "telegram",
+                                                     "cid": "c", "chat_id": "1"}, task="t")
+    # the abort WON its transition and armed the obligation, as the inline arm does
+    assert await registry.try_transition_terminal(
+        rec.id, "error", strict=True, error_kind="no_driver", error_message="m",
+        owes_terminal_notification=True)
+
+    async def _abort_already_done():
+        return LaunchAbortResult.ABORTED
+
+    abort = asyncio.ensure_future(_abort_already_done())
+    tools_mod._LAUNCH_DEATH_TASKS.add(abort)
+    abort.add_done_callback(tools_mod._LAUNCH_DEATH_TASKS.discard)
+    # the launcher was cancelled: it handed the telling to the abort's completion
+    abort.add_done_callback(
+        lambda t: tools_mod._spawn_abandoned_inline_telling(
+            t, rec, MagicMock(), kind="no_driver", detail="m",
+            won=lambda r: r is LaunchAbortResult.ABORTED))
+    await asyncio.sleep(0)
+    assert abort.done(), "the window this case models: a completed abort with queued callbacks"
+    assert bus.messages == []                       # the callback has not run yet
+    await tools_mod.drain_launch_death_reports()
+    assert [m.content.kind for m in bus.messages] == ["no_driver"]
+    assert not [x for x in tools_mod._LAUNCH_DEATH_TASKS if not x.done()]
 
 
 # --- diff round 3 (Terra S1): the replay keeps its configured fallback role ------------
