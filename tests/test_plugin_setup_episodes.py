@@ -922,14 +922,45 @@ async def test_dispatched_write_clears_last_error_and_binds_expected_tool(
     assert row["expected_tool"] == _NS
 
 
+_COURIER = "mcp__casa-framework__delegate_to_agent"
+
+
 @pytest.mark.asyncio
 async def test_specialist_dispatch_binds_no_expected_tool(wired):
     # The assistant is only a delegation COURIER for a specialist target;
     # its own session never carries the tool, so no availability claim can
-    # be made about the dispatched session (delivery-only semantics stand).
+    # be made about the SETUP tool in the dispatched session. #1010: what the
+    # courier session DOES carry is the delegation tool, recorded on its own
+    # key so the outcome report can tell "delegated" from "could not".
     wired["entry"]["targets"] = ["specialist:finance"]
     await _dispatched(wired)
-    assert pse.episodes()[0]["expected_tool"] == ""
+    row = pse.episodes()[0]
+    assert row["expected_tool"] == ""
+    assert row["courier_tool"] == _COURIER
+    assert row["courier_target"] == "finance"
+
+
+@pytest.mark.asyncio
+async def test_courier_row_never_enters_the_evidence_watch(wired):
+    # The delegation tool must never become a name an ordinary turn's tool
+    # result can settle a row through (INV-PLUG-023 excludes specialist
+    # targets): the watch is keyed on expected_tool alone.
+    wired["entry"]["targets"] = ["specialist:finance"]
+    await _dispatched(wired)
+    row = pse.episodes()[0]
+    assert row["courier_tool"] == _COURIER          # precondition: recorded
+    assert _COURIER not in pse._watch_from(pse._load())
+    pse.settle_from_tool_evidence(
+        role="assistant", tool=_COURIER, invoked_at=row["released_ts"] + 1,
+        binding={"elevenlabs": "art-1"})
+    assert "settled_by" not in pse.episodes()[0]
+    # Reach control (diff r1, Astra S2): the same name DOES drive the courier
+    # outcome path — an errored delegation flips the row — so a deleted
+    # correlation cannot pass this test by no-op.
+    pse.report_dispatch_outcome(
+        row["id"], tools_used_ok=set(), tools_attempted={_COURIER},
+        available_tools={_COURIER})
+    assert pse.episodes()[0]["status"] == "pending"
 
 
 @pytest.mark.asyncio
@@ -996,14 +1027,227 @@ async def test_report_unknown_availability_unattempted_marks_retryable(wired):
     assert pse.episodes()[0]["status"] == "pending"
 
 
-@pytest.mark.asyncio
-async def test_report_specialist_row_is_noop(wired):
+async def _courier_dispatched(wired):
     wired["entry"]["targets"] = ["specialist:finance"]
+    return await _dispatched(wired)
+
+
+@pytest.mark.asyncio
+async def test_report_courier_delegation_errored_marks_retryable(wired):
+    # #1010, the observed production shape: the courier's delegate_to_agent
+    # call was refused (delegation_not_declared) — attempted, every result an
+    # error. The row used to rest consumed for good; it returns to pending
+    # with its verdict kept, exactly as a resident row does.
+    ep = await _courier_dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted={_COURIER},
+        available_tools={_COURIER, "Read"})
+    row = pse.episodes()[0]
+    assert row["status"] == "pending"
+    assert row["gate"] == "released"
+    assert row["execution_retries"] == 1
+    assert row["attempts"] == 0
+    assert "finance" in row["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_report_courier_delegation_absent_marks_retryable(wired):
+    # The delegation tool missing from the courier session's init list, or
+    # availability unknown (warm reuse): not evidenced, bounded retry.
+    ep = await _courier_dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools={"Read"})
+    assert pse.episodes()[0]["status"] == "pending"
+    await _drain_pending(wired)
+    assert pse.episodes()[0]["status"] == "dispatched"
+    pse.report_dispatch_outcome(
+        pse.episodes()[0]["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools=None)
+    assert pse.episodes()[0]["status"] == "pending"
+    assert pse.episodes()[0]["execution_retries"] == 2
+
+
+@pytest.mark.asyncio
+async def test_report_courier_delegation_ran_keeps_episode_consumed(wired):
+    # A non-error delegation result: the specialist's own reply reports the
+    # setup result (delivery-only semantics, disclosed).
+    ep = await _courier_dispatched(wired)
+    # Negative control first (diff r1, Astra S2): an errored delegation
+    # flips this very row, so the success below is a decision, not a no-op.
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted={_COURIER},
+        available_tools={_COURIER})
+    assert pse.episodes()[0]["status"] == "pending"
+    await _drain_pending(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_COURIER}, tools_attempted={_COURIER},
+        available_tools={_COURIER}, delegated_ok_targets={"finance"})
+    assert pse.episodes()[0]["status"] == "dispatched"
+    assert pse.episodes()[0]["execution_retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_untracked_dispatched_row_is_retired_visibly_not_redispatched(
+        wired):
+    # Diff r4, Terra S1: a row dispatched by a version that recorded no
+    # outcome key (a pre-courier-keys specialist row) can never be settled
+    # or reported on. Leaving it was a silent spend; re-arming it would be an
+    # evidence-free second run against an external service. It is retired:
+    # failed with a reason naming the manual run, in health, told once.
+    ep = await _courier_dispatched(wired)
+    # Strip the keys the older dispatch never wrote — the row exactly as a
+    # v0.316.0 store holds it.
+    data = pse._load()
+    legacy = pse._row_by_id(data, ep["id"])
+    del legacy["courier_tool"], legacy["courier_target"]
+    pse._save(data)
+    assert "courier_tool" not in pse.episodes()[0]
+    before = len(wired["dispatches"])
+    await pse._worker_pass()
+    row = pse.episodes()[0]
+    assert row["status"] == "failed"
+    assert "outcome could be tracked" in row["last_error"]
+    assert len(wired["dispatches"]) == before             # never re-dispatched
+    assert sum("outcome could be tracked" in n for n in wired["notes"]) == 1
+    assert [i["episode"] for i in pse.health_issues()] == [row["id"]]
+    await pse._worker_pass()                               # idempotent
+    assert sum("outcome could be tracked" in n for n in wired["notes"]) == 1
+    # A successful target-matched report can no longer touch it either.
+    pse.report_dispatch_outcome(
+        row["id"], tools_used_ok={_COURIER}, tools_attempted={_COURIER},
+        available_tools={_COURIER}, delegated_ok_targets={"finance"})
+    assert pse.episodes()[0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_tracked_and_settled_dispatched_rows_are_not_retired(wired):
+    # A keyed courier row and a resident row with its expected tool are
+    # tracked; a settled row is authoritative. None is touched by the sweep.
+    ep = await _courier_dispatched(wired)
+    await pse._worker_pass()
+    assert pse.episodes()[0]["status"] == "dispatched"
+    pse._update_episode(ep["id"], courier_tool="", expected_tool="",
+                        settled_by="turn_evidence")
+    await pse._worker_pass()
+    assert pse.episodes()[0]["status"] == "dispatched"
+    assert wired["notes"] == []
+
+
+@pytest.mark.asyncio
+async def test_report_courier_delegation_to_another_agent_marks_retryable(
+        wired):
+    # Diff r3, Astra S1: the intended specialist refused, a later delegation
+    # to some other agent succeeded, the courier replied with silence. A
+    # non-error delegation result by TOOL NAME used to consume the row; only
+    # one to the row's own target may.
+    ep = await _courier_dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_COURIER}, tools_attempted={_COURIER},
+        available_tools={_COURIER}, delegated_ok_targets={"weather"})
+    row = pse.episodes()[0]
+    assert row["status"] == "pending"
+    assert row["execution_retries"] == 1
+    # And with no target evidence at all (a caller that passes none).
+    await _drain_pending(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_COURIER}, tools_attempted={_COURIER},
+        available_tools={_COURIER})
+    assert pse.episodes()[0]["status"] == "pending"
+    assert pse.episodes()[0]["execution_retries"] == 2
+
+
+@pytest.mark.asyncio
+async def test_report_courier_tool_available_unattempted_marks_retryable(wired):
+    # Diff rounds 1 and 2 (Astra S1 twice, same shape): the resident rule
+    # "listed but uncalled ⇒ consumed" leaked a silent spend through a
+    # cancelled turn, then through a silent or undelivered reply. For a
+    # courier the rule is CUT: a delegation tool the assistant did not call
+    # evidences nothing, whether or not the turn completed.
+    ep = await _courier_dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools={_COURIER, "Read"}, turn_completed=True)
+    row = pse.episodes()[0]
+    assert row["status"] == "pending"
+    assert row["execution_retries"] == 1
+    await _drain_pending(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools={_COURIER, "Read"}, turn_completed=False)
+    assert pse.episodes()[0]["status"] == "pending"
+    assert pse.episodes()[0]["execution_retries"] == 2
+    # Positive control: the one thing that consumes a courier row.
+    await _drain_pending(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_COURIER}, tools_attempted={_COURIER},
+        available_tools={_COURIER}, turn_completed=False,
+        delegated_ok_targets={"finance"})
+    assert pse.episodes()[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_report_uncompleted_turn_available_unattempted_marks_retryable(
+        wired):
+    # Diff r1, Astra S1, resident tier: a session whose init listed the setup
+    # tool, cancelled before any call. Availability alone used to consume the
+    # obligation although the cancel prevented the reply the rule relies on.
     ep = await _dispatched(wired)
     pse.report_dispatch_outcome(
         ep["id"], tools_used_ok=set(), tools_attempted=set(),
-        available_tools=set())
+        available_tools={_NS, "Read"}, turn_completed=False)
+    row = pse.episodes()[0]
+    assert row["status"] == "pending"
+    assert row["execution_retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_report_uncompleted_turn_with_a_result_keeps_consumed(wired):
+    # A positive result collected before the cancel still counts (the tool
+    # DID run): completion gates only the availability-alone branch.
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_NS}, tools_attempted={_NS},
+        available_tools={_NS}, turn_completed=False)
     assert pse.episodes()[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_courier_retryable_row_redispatches_and_keeps_counter(wired):
+    ep = await _courier_dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted={_COURIER},
+        available_tools={_COURIER})
+    await _drain_pending(wired)
+    row = pse.episodes()[0]
+    assert row["status"] == "dispatched"
+    assert row["id"] == ep["id"]
+    assert row["execution_retries"] == 1
+    assert row["courier_tool"] == _COURIER
+    assert len(wired["dispatches"]) == 2
+    assert wired["dispatches"][1][0] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_courier_execution_retries_exhaust_to_failed_with_note(wired):
+    import asyncio
+    ep = await _courier_dispatched(wired)
+    for i in range(1, 3):
+        pse.report_dispatch_outcome(
+            ep["id"], tools_used_ok=set(), tools_attempted={_COURIER},
+            available_tools={_COURIER})
+        assert pse.episodes()[0]["execution_retries"] == i
+        await _drain_pending(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted={_COURIER},
+        available_tools={_COURIER})
+    row = pse.episodes()[0]
+    assert row["status"] == "failed"
+    assert row["execution_retries"] == 3
+    await asyncio.sleep(0)
+    # The note names the delegation that could not be made, not a tool the
+    # assistant's session never carried.
+    assert sum("finance" in n and "delegate" in n for n in wired["notes"]) == 1
 
 
 @pytest.mark.asyncio

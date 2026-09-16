@@ -29,7 +29,10 @@
    at the provider. Run `plugin_list()` to see which entries are gone.
 4. `config_git_commit(message="uninstall specialist <slug>")`.
 5. `casa_reload(scope="agents")` — evicts the removed agent from the live
-   registry (canonical commit → reload → emit order, see `completion.md`).
+   registry (canonical commit → reload → emit order, see `completion.md`) — THEN
+   `casa_reload(scope="agent", role="<resident>")` once for each resident whose
+   `delegates.yaml` step 1 edited: the `agents` sweep never re-reads a live resident, so
+   without it the resident keeps advertising the removed delegate until its next reload.
 6. `emit_completion(...)`.
 
 CAS blobs are NOT deleted by uninstall (retained for a possible future re-install at the same
