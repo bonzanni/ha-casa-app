@@ -419,10 +419,15 @@ def test_trigger_consent_ownership_agrees_with_plugin_triggers():
 # reviewer — and it is the opposite failure from the silent one above.
 RELOAD_LAUNCH_CLAIMS = [
     (
-        "launch-turn-hosted-in-the-launchers-tool-call",
+        # v0.314.0 (INV-ENG-021): the clause this marker pinned — that the
+        # whole first turn ran inside the launching resident's own tool call
+        # — described the defect the detach removed; the reviewed claim is
+        # now the opposite, and it is owned by the same document.
+        "launch-turn-runs-in-an-anchored-owner-after-pending",
         "architecture/engagements.md",
-        "`engage_executor` awaits the driver's `start()` inline, so the whole "
-        "first turn runs inside the launching resident's own tool call",
+        "The launch turn runs in an owner Casa anchors, on the engagement's "
+        "own client, after the launching tool call has already answered "
+        "`pending`",
     ),
     (
         "drain-timeout-is-a-caller-overridable-default",

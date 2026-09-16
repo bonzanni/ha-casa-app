@@ -1097,6 +1097,21 @@ class EngagementRegistry:
         """The carried cause for this launch, or ``""`` when it carries none."""
         return self._launch_causes.get(engagement_id, "")
 
+    def launch_shutdown_active(self) -> bool:
+        """Design 2026-09-15 §2.A: has the graceful stop latched? Read
+        SYNCHRONOUSLY by the launch handoff before it mints an owner task — a
+        task minted after the latch is one the stop's drains never see."""
+        return bool(self._launch_shutdown)
+
+    def mark_launch_drains_complete(self) -> None:
+        """§2.A: set by the stop as its last act after every launch drain; a
+        never-started owner whose done callback fires after this mints
+        nothing and logs instead (the interpreter's final sweep is next)."""
+        self._launch_drains_complete = True
+
+    def launch_drains_complete(self) -> bool:
+        return bool(getattr(self, "_launch_drains_complete", False))
+
     def begin_launch_shutdown(self, reason: str = CASA_SHUTDOWN_REASON) -> int:
         """Latch the stop, then cause-then-cancel every enrolled launch.
 

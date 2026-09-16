@@ -289,18 +289,20 @@ class TestInCasaLaunchTerminalArtifact:
         )
 
         envelope = await _launch(engage_executor)
+        # §2.A (INV-ENG-021): the tool call returned `pending` before the
+        # launch turn ran; the turn and its death report are the anchored
+        # owner's. Await the owner, then assert what it left behind.
+        payload = json.loads(envelope["content"][0]["text"])
+        assert payload.get("status") == "pending", payload
+        import tools as tools_mod
+        await tools_mod.drain_launch_turns()
+        await tools_mod.drain_launch_death_reports()
 
         # The stream really was the mid-tool-loop cutoff, not the easy case.
         assert ScriptedCutoffClient.frames_yielded == 2
         assert ScriptedCutoffClient.result_messages_yielded == 0
         assert probe.emit_count == 0
         assert probe.finalize_count == 0
-
-        payload = json.loads(envelope["content"][0]["text"])
-        assert payload.get("status") == "error", payload
-        assert payload.get("kind") == "launch_turn_incomplete", payload
-        assert "without ResultMessage" in payload.get("message", ""), payload
-        assert envelope.get("is_error") is True, envelope
 
         assert len(registry._records) == 1
         created_id = next(iter(registry._records))
@@ -349,10 +351,12 @@ class TestInCasaLaunchTerminalArtifact:
         )
 
         envelope = await _launch(engage_executor)
-
-        assert ScriptedCompleteClient.result_messages_yielded == 1
         payload = json.loads(envelope["content"][0]["text"])
         assert payload.get("status") == "pending", payload
+        import tools as tools_mod
+        await tools_mod.drain_launch_turns()        # §2.A: the turn ran detached
+
+        assert ScriptedCompleteClient.result_messages_yielded == 1
 
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "active"

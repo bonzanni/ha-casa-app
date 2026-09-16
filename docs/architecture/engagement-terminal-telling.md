@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-01
+last_reviewed: 2026-09-16
 ---
 
 # Engagement terminal telling
@@ -30,13 +30,18 @@ merely having tried. Both directions fail toward telling again rather than towar
 
 ## Contracts & invariants
 
-**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work. That obligation is cleared only by the delivery acknowledgement of the notice that carries it, never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record still owing one, addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it.
+**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work. That obligation is cleared only by the delivery acknowledgement of the notice that carries it, never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record still owing one, addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it by default: the two that do — the detached launch owner's death report, which tells the engager over the bus, and the inline named-fault abort, whose returned envelope is the telling and whose return schedules the acknowledgement for a transition it won — opt in explicitly (INV-ENG-021).
 
 The obligation follows the WRITER, not the record. This funnel and the launch-death reporter
-reach the same registry method with the same outcome on the same kind of record, and only the
-first announces over the bus — so no predicate over a record could tell them apart, and the
-one caller that announces opts in explicitly while every other terminal writer is correct by
-default. Arming it inside the transition rather than after it is the whole safety property:
+reach the same registry method with the same outcome on the same kind of record, and whether
+the write announces is the caller's to say — the funnel always does; the reporter does when its
+caller tells on a win, as the detached launch owner and the cancellation owner do, while a
+transition that loses writes nothing and so arms nothing — so no predicate over a record could
+tell them apart, and an armed bit is never read as permission to send, and each caller that announces opts in
+explicitly while every other terminal writer is correct by default. The boot replay, the
+funnel and the launch owner send through one envelope builder
+([`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)); only the routing is
+shared, each caller's payload is its own. Arming it inside the transition rather than after it is the whole safety property:
 one durable write carries both facts, so there is no window in which the outcome is committed
 and nobody owes the telling. The strict rollback restores it with the rest of the snapshot,
 because a transition that did not reach disk announced nothing.

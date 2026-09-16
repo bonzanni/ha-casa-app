@@ -1233,6 +1233,20 @@ class Agent:
                 "I lost track of this delegation during a Casa restart. "
                 "Tell the user and offer to retry.\n"
             )
+        elif complete.kind == "launch_outcome_uncommitted":
+            # Design 2026-09-15 §2.A: NOT a terminal outcome. The launch turn
+            # ended and the strict terminal write did not persist, so the
+            # engagement is live and its topic open; narrating it through the
+            # failure branch below would tell the operator it ended in error.
+            body = (
+                f"[System notification: the launch turn of your engagement with "
+                f"{complete.agent} (id {short_id}) ended, and its outcome could "
+                "not be recorded]\n\n"
+                "The engagement is still open and can be resumed; it did not "
+                "fail. Tell the user that the first turn ended without a "
+                "recorded outcome and that the topic is still there — do NOT "
+                "say the work failed or ended.\n"
+            )
         else:
             body = (
                 f"[System notification: your delegation to {complete.agent} "

@@ -297,7 +297,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         assert reloaded.get(rec.id).terminal_notification_pending is False
         assert reloaded.records_owing_terminal_notification() == []
 
-    async def test_only_the_finalization_funnel_arms_the_obligation(
+    async def test_the_obligation_follows_the_writer_not_the_record(
         self, tmp_path,
     ):
         """The over-arming pin.
@@ -307,7 +307,9 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         ``_report_launch_death``. A predicate over the record (the shape #599's
         ``_owes_quiesce`` would suggest) cannot distinguish them: the funnel and
         the launch-death reporter call the same method, with the same outcome,
-        on the same kind of record, and only the first announces.
+        on the same kind of record, and the reporter arms only when its caller
+        says so (§2.A: the detached launch owner does; a compensating second
+        reporter, as here, does not).
         """
         import tools as tools_mod
         from tools import _finalize_engagement, _report_launch_death

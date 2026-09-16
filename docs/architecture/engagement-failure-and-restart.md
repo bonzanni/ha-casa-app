@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-26
+last_reviewed: 2026-09-16
 ---
 
 # Engagement launch failure and restart
@@ -44,7 +44,7 @@ terminal side effect (INV-ENG-001) — so painting `failed` here contradicts the
 and closes a topic its owner is about to close for its own reason. A ROLLED-BACK persist means
 the record is still live and disk agrees: an open topic over a live record is recoverable, a
 closed one is not, and the boot replay that would resume that record would find its topic
-gone. All thirteen named arms route through one owner that asks the transition exactly one
+gone. All seventeen named arms route through one owner that asks the transition exactly one
 question and lets its three outcomes decide; that owner is anchored and shielded, so a
 cancellation arriving after the durable commit cannot leave a terminal record behind a
 permanently open topic. The caller is told its own named fault on all three outcomes, because
@@ -98,19 +98,21 @@ the caller's cancellation arm and is announced as a cancellation, the failure su
 that exception's context and reaching no operator.
 
 These launch-failure arms — a missing driver, a clearance change during launch, a superseded
-plugin, a missing prompt template, an API-level fault, and a start that raised — deliberately
-do NOT take the launch-death path's bounded topic notice. The reason is not that the death
-path has no caller left; its post-start arm answers one too, with `launch_turn_incomplete`,
-unless another writer won the terminal first, and its cancellation arm answers nobody because
-the cancellation is re-raised. The reason is that these arms carry a *named fault* and the
-death path carries only an *absence*. Each of the six is a fact about why the launch did not
-happen, returned synchronously to the turn that asked for it, in a kind string it can act on
-— one of them carries retry advice only that caller can use. The topic is aborted silently
-because the launch never reached the point where the engagement is handed over as live: the
-tool call still owns it, and is the one answering for it. That is not a claim that nothing
-ran — the API-fault arm is raised after the stream is drained, so text the turn had already
-posted progressively can be standing in the topic and cannot be retracted — it is a claim
-about who answers. A launch death has no such fact to hand back: the turn ran to its end and
+plugin, a missing prompt template, and a client that would not open — deliberately do NOT
+take the launch-death path's bounded topic notice. The reason is not that the death path has
+nobody to answer: its post-launch arms have no live tool call left, because the launch
+answered `pending` before the turn ran (INV-ENG-021), so they tell the engager over the bus
+instead. The reason is that these arms carry a *named fault* and the death path carries only
+an *absence*. Each of the five is a fact about why the launch did not happen, returned
+synchronously to the turn that asked for it, in a kind string it can act on — one of them
+carries retry advice only that caller can use. The topic is aborted silently because the
+launch never reached the point where the engagement is handed over as live: the tool call
+still owns it, and is the one answering for it. An API-level fault raised by the launch turn
+itself used to be the sixth of these; it is not any more, because the turn runs after the
+tool call has returned and there is no caller to hand the kind to — it takes the death path,
+the bounded notice names the fault, and the engager is told the same kind live. Text the turn
+had already posted progressively can be standing in the topic and cannot be retracted; this
+is a claim about who answers, not that nothing ran. A launch death has no such fact to hand back: the turn ran to its end and
 left nothing, or the launch was cancelled, and an operator's topic that says nothing is what
 the notice exists to explain.
 
@@ -219,10 +221,13 @@ entered to run it, or whether it is one of the removals retention withholds.
 than admitting operator messages into an engagement with no consumer.
 
 **A new terminal writer** decides whether it is the one telling the engager. If it announces
-the outcome, it arms the durable obligation in the same transition that commits the terminal;
-if it does not — the launch-failure owner and the launch-death reporter both answer or notify
-by other means — it leaves the default and owes nothing. The obligation follows the writer,
-not the record, so there is no property of a record that can decide it.
+the outcome, it arms the durable obligation in the same transition that commits the terminal
+— the finalization funnel does, and so do the detached launch owner's death report and the
+inline named-fault abort, the latter acknowledged by its launcher's own return when it won, and handed to the abort's own completion when the launcher was cancelled first; if it does not
+— a bare mark — it leaves the default and owes nothing; a reporter that asks to arm but loses its
+transition writes nothing, and so arms nothing. The
+obligation follows the writer, not the record, so there is no property of a record that can
+decide it.
 
 ## Source & test map
 

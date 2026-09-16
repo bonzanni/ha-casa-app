@@ -3687,20 +3687,14 @@ async def _replay_one_engagement_outcome(
         origin=origin,
         elapsed_s=0.0,
     )
-    _channel = origin.get("channel")
-    await bus.notify(BusMessage(
-        type=MessageType.NOTIFICATION,
-        source=rec.role_or_type,
-        target=target_role,
-        content=synthetic,
-        channel=_channel if isinstance(_channel, str) else "",
-        context={
-            "cid": origin.get("cid", "-"),
-            "chat_id": origin.get("chat_id", ""),
-            "engagement_id": rec.id,
-        },
-        on_delivery=_engagement_delivery_ack(registry, rec.id),
-    ))
+    # §2.A: the ONE bus envelope for an engagement outcome (routing only;
+    # this payload — no text, result_available=False, elapsed 0 — is the
+    # replay's own and stays byte-identical).
+    import tools as _tools_mod
+    await _tools_mod.send_engagement_outcome(
+        bus, complete=synthetic, origin=origin,
+        ack=_engagement_delivery_ack(registry, rec.id),
+        source=rec.role_or_type, fallback_role=assistant_role)
 
     logger.warning(
         "Engagement outcome recovered: id=%s status=%s — NOTIFICATION posted",

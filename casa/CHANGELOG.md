@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.314.0] - 2026-09-16
+
+### Fixed
+
+- Asking a resident to engage a specialist no longer holds that resident until
+  the specialist's first turn is over. The engaging tool call now returns as
+  soon as the specialist's session is open, and the first turn runs on its
+  own, owned by Casa; whatever ends the resident's own session no longer
+  reaches it. Every way that first turn can end still has an owner that tells
+  the resident who asked: a turn that died, one cancelled by a stop, and one
+  whose outcome could not be recorded, which is reported as still open rather
+  than as a failure. Before, on the 2026-09-15 install, the assistant was held
+  for three minutes, the reload the configurator ran then cut the launch from
+  under it, and the operator saw the configurator's output relayed by the
+  assistant with no result.
+
 ## [0.313.0] - 2026-09-16
 
 ### Added

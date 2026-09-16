@@ -8,6 +8,10 @@
   kind: meta
   summary: Manifest shard — architecture documents E.
 
+- doc: manifest.d/architecture-e-launch.yaml
+  kind: meta
+  summary: Manifest shard — the engagement launch and telling documents (split from E at the 40 KB index ceiling).
+
 - doc: manifest.d/architecture-f-m.yaml
   kind: meta
   summary: Manifest shard — architecture documents F-M.

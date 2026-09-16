@@ -88,6 +88,15 @@ async def _payload(envelope):
     return json.loads(envelope["content"][0]["text"])
 
 
+async def _drain_owner():
+    """§2.A: the launch turn and its report run in the anchored owner after
+    the tool call returned `pending`; await them before asserting."""
+    import tools as tools_mod
+    await tools_mod.drain_launch_turns()
+    await tools_mod.drain_launch_death_reports()
+    await asyncio.sleep(0)
+
+
 _FOLLOWUP_MISSING_RESULT = "followup_missing_result"
 """The follow-up observation's value, written out here rather than imported
 from ``drivers.in_casa_driver``.
@@ -130,11 +139,11 @@ class TestTheOtherArm:
         )
         envelope = await _launch(engage_executor)
         payload = await _payload(envelope)
+        assert payload["status"] == "pending", payload     # §2.A
+        await _drain_owner()
 
         assert TextlessCompleteClient.result_messages_yielded == 1
         assert probe.finalize_count == 0
-        assert payload["status"] == "error", payload
-        assert payload["kind"] == "launch_turn_incomplete"
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
         assert channel._post_engagement_notice.await_count == 1
@@ -448,9 +457,10 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         channel._post_engagement_notice = AsyncMock(side_effect=_hang)
 
-        envelope = await asyncio.wait_for(_launch(engage_executor), 15)
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "pending"   # §2.A
+        await asyncio.wait_for(_drain_owner(), 15)
 
-        assert (await _payload(envelope))["status"] == "error"
         assert channel._post_engagement_notice.await_count == 1
         assert probe.driver_cancel_calls == 1
         assert channel.close_topic.await_count == 1
@@ -473,9 +483,10 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         channel.update_topic_state = AsyncMock(side_effect=_hang)
 
-        envelope = await asyncio.wait_for(_launch(engage_executor), 15)
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "pending"   # §2.A
+        await asyncio.wait_for(_drain_owner(), 15)
 
-        assert (await _payload(envelope))["status"] == "error"
         assert channel.update_topic_state.await_count == 1
         assert channel.close_topic.await_count == 1
 
@@ -495,9 +506,10 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         channel.close_topic = AsyncMock(side_effect=_hang)
 
-        envelope = await asyncio.wait_for(_launch(engage_executor), 15)
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "pending"   # §2.A
+        await asyncio.wait_for(_drain_owner(), 15)
 
-        assert (await _payload(envelope))["status"] == "error"
         assert channel.close_topic.await_count == 1
         assert not tools_mod._LAUNCH_DEATH_TASKS
 
@@ -518,9 +530,10 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         monkeypatch.setattr(driver, "cancel", _hang)
 
-        envelope = await asyncio.wait_for(_launch(engage_executor), 15)
+        envelope = await _launch(engage_executor)
+        assert (await _payload(envelope))["status"] == "pending"   # §2.A
+        await asyncio.wait_for(_drain_owner(), 15)
 
-        assert (await _payload(envelope))["status"] == "error"
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
         assert channel._post_engagement_notice.await_count == 1
@@ -563,14 +576,18 @@ class TestTheStrictTransitionIsTheAuthority:
 
         envelope = await _launch(engage_executor)
         payload = await _payload(envelope)
+        assert payload["status"] == "pending", payload     # §2.A
+        await _drain_owner()
 
-        assert payload["status"] == "error", payload
-        assert payload["kind"] == "launch_turn_incomplete"
         created_id = next(iter(registry._records))
         rec = registry.get(created_id)
         assert rec.status == "active", rec.status      # rolled fully back
         assert rec.completed_at is None
-        assert channel._post_engagement_notice.await_count == 0
+        # §2.A: the reporter still paints and closes nothing over a live
+        # record; the OWNER now posts one bounded notice saying the outcome
+        # could not be recorded (design red case 5c) — that is the one notice.
+        assert channel._post_engagement_notice.await_count == 1
+        assert "could not be recorded" in probe.notice_texts[0]
         assert channel.update_topic_state.await_count == 0
         assert channel.close_topic.await_count == 0
         assert probe.driver_cancel_calls == 1
@@ -605,6 +622,7 @@ class TestTheStrictTransitionIsTheAuthority:
         payload = await _payload(envelope)
 
         assert payload["status"] == "pending", payload
+        await _drain_owner()
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "completed"
         assert channel._post_engagement_notice.await_count == 0
@@ -640,13 +658,18 @@ class TestCancellationHasAnOwner:
 
         channel._post_engagement_notice = AsyncMock(side_effect=_slow_notice)
 
-        task = asyncio.ensure_future(_launch(engage_executor))
+        # §2.A: the launch turn runs in the anchored OWNER; the tool call has
+        # already returned `pending`. The launcher that must not take the
+        # reporter down with it is now the owner: cancel THAT while the
+        # reporter is inside its notice.
+        await _launch(engage_executor)
         await entered.wait()
-        task.cancel()
+        owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
+        owner.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await owner
 
-        # The launcher is gone; the reporter finished the job anyway. AWAIT
+        # The owner is gone; the reporter finished the job anyway. AWAIT
         # THE REPORTER, do not proxy it (#695): a bare `asyncio.sleep(0)`
         # re-arms `loop._ready` through `call_soon`, so the loop never blocks
         # and a yield count measures no wall time at all — while the reporter
@@ -703,11 +726,13 @@ class TestCancellationHasAnOwner:
 
         channel._post_engagement_notice = AsyncMock(side_effect=_slow_notice)
 
-        async def _hang(engagement, prompt, options, expected_generation=None):
+        async def _hang(engagement, options, expected_generation=None):
             entered.set()
             await wedged.wait()
 
-        monkeypatch.setattr(driver, "start", _hang)
+        # §2.A: the launcher awaits `open()` inline; a launch cancelled while
+        # the driver is starting is cancelled there.
+        monkeypatch.setattr(driver, "open", _hang)
 
         task = asyncio.ensure_future(_launch(engage_executor))
         await entered.wait()
@@ -800,19 +825,19 @@ class TestTheBoundaries:
         engage_executor, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
-        real_start = driver.start
+        real_run = driver.run_launch_turn
 
-        async def start_then_admit(rec, prompt=None, options=None,
-                                   expected_generation=None):
-            await real_start(rec, prompt=prompt, options=options,
-                             expected_generation=expected_generation)
+        async def run_then_admit(rec, prompt):
+            await real_run(rec, prompt)
             # The operator typed while the turn was ending.
             driver.admit_inbound(rec.id, "wait, also remove the old config")
 
-        monkeypatch.setattr(driver, "start", start_then_admit)
+        # §2.A: the launch TURN is the owner's `run_launch_turn`, not `start`.
+        monkeypatch.setattr(driver, "run_launch_turn", run_then_admit)
 
         envelope = await _launch(engage_executor)
-        assert (await _payload(envelope))["status"] == "error"
+        assert (await _payload(envelope))["status"] == "pending"
+        await _drain_owner()
 
         assert len(probe.notice_texts) == 1
         notice = probe.notice_texts[0]
@@ -842,7 +867,8 @@ class TestTheBoundaries:
             raising=False)
 
         envelope = await _launch(engage_executor)
-        assert (await _payload(envelope))["status"] == "error"
+        assert (await _payload(envelope))["status"] == "pending"   # §2.A
+        await _drain_owner()
 
         assert len(probe.notice_texts) == 1
         notice = probe.notice_texts[0]
@@ -898,6 +924,8 @@ class TestTheMissingResultArmOnItsOwn:
         )
         envelope = await _launch(engage_executor)
         payload = await _payload(envelope)
+        assert payload["status"] == "pending", payload     # §2.A
+        await _drain_owner()
 
         # Text really did reach the topic, so `no_visible_output` cannot fire.
         assert TextBearingCutoffClient.frames_yielded == 3
@@ -905,9 +933,6 @@ class TestTheMissingResultArmOnItsOwn:
         assert probe.finalize_count == 1
         assert probe.emit_count >= 1
 
-        assert payload["status"] == "error", payload
-        assert payload["kind"] == "launch_turn_incomplete"
-        assert "without ResultMessage" in payload["message"]
         created_id = next(iter(registry._records))
         rec = registry.get(created_id)
         assert rec.status == "error"
@@ -1914,7 +1939,8 @@ class TestC4LaunchDeathQuotesAReservation:
             lambda eng_id: ["did you also restart the relay?"], raising=False)
 
         envelope = await _launch(engage_executor)
-        assert (await _payload(envelope))["status"] == "error"
+        assert (await _payload(envelope))["status"] == "pending"   # §2.A
+        await _drain_owner()
 
         assert len(probe.notice_texts) == 1
         notice = probe.notice_texts[0]
@@ -1968,7 +1994,8 @@ class TestLaunchDeathReadTimeExclusion:
             tmp_path, monkeypatch, probe, ScriptedCutoffClient)
         self._delegate(monkeypatch, driver, real, eid)
         envelope = await _launch(engage_executor)
-        assert (await _payload(envelope))["status"] == "error"
+        assert (await _payload(envelope))["status"] == "pending"   # §2.A
+        await _drain_owner()
         assert len(probe.notice_texts) == 1
         return probe.notice_texts[0]
 

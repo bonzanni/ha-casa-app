@@ -265,13 +265,25 @@ class InCasaDriver(DriverProtocol):
 
     # -- lifecycle --------------------------------------------------------
 
-    async def start(
+    #: §2.A: the launchers hand the launch turn to an anchored owner only for a
+    #: driver that declares the two-call launch; a fake or a protocol consumer
+    #: without it keeps the inline ``start()`` shape. An explicit marker, not
+    #: ``hasattr``: a MagicMock answers ``hasattr`` for anything.
+    supports_split_launch = True
+
+    async def open(
         self,
         engagement: EngagementRecord,
-        prompt: str,
         options: ClaudeAgentOptions,
         expected_generation: int | None = None,
     ) -> None:
+        """Design 2026-09-15 §2.A: everything ``start()`` did up to and
+        including "client opened" — build the client, bind ``engagement_var``
+        before ``__aenter__`` (the E-E binding the SDK's inner read task
+        snapshots), the stale-launch gate, and the driver registration. The
+        launch TURN is ``run_launch_turn``'s; the caller awaits this inline and
+        hands the turn to an anchored owner, so the engaging resident's turn is
+        not held for the whole first turn."""
         # E-E (v0.29.0): bind engagement_var BEFORE ClaudeSDKClient.__aenter__
         # so the SDK's inner Query._read_task — created via loop.create_task
         # in claude_agent_sdk._internal.query.Query.start — captures the
@@ -298,7 +310,7 @@ class InCasaDriver(DriverProtocol):
             entered = await ctx if asyncio.iscoroutine(ctx) else ctx
             # #369 (Sol design r2 + Terra diff-gate r2): LAST-instant gate,
             # BEFORE this launch registers anything — a clearance clamp that
-            # landed while __aenter__ was suspended means `prompt` was
+            # landed while __aenter__ was suspended means the prompt was
             # rendered from pre-clamp materials, and a clamp→rebuild cycle
             # that COMPLETED in that window has already registered a fresh
             # floor client that this stale launch must not overwrite. The
@@ -341,37 +353,60 @@ class InCasaDriver(DriverProtocol):
                 "Engagement %s driver=in_casa client opened",
                 engagement.id[:8],
             )
-            try:
-                await self._deliver_turn(engagement, prompt)
-            except BaseException:
-                # M14: Bug-13-style rollback (claude_code got this in v0.14.6).
-                # engage_executor marks the record error, but error records are
-                # excluded from active_and_idle() so no sweeper ever tears this
-                # client down, and the topic stops routing — the opened claude
-                # subprocess leaks until Casa restarts. Close + deregister here,
-                # then re-raise so the caller's mark_error path still runs.
-                # cancel() pops _clients/_ctx_stack/_locks and swallows close
-                # errors, so the original exception is never masked.
-                # #344: BaseException, not Exception — a CANCELLED initial
-                # delivery took the same leak path (client registered,
-                # never closed, record still "alive" to later turns). The
-                # rollback runs as its own task under shield so a
-                # re-cancellation interrupts our wait, not the close.
-                logger.warning(
-                    "Engagement %s first turn failed; rolling back client",
-                    engagement.id[:8],
-                )
-                cleanup = asyncio.ensure_future(self.cancel(engagement))
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    pass  # cleanup completes in background; re-raise below
-                raise
         finally:
             # Clear from the parent task. The SDK inner task already
             # captured its own snapshot at __aenter__ time and is
             # unaffected by this reset.
             engagement_var.reset(token)
+
+    async def run_launch_turn(
+        self, engagement: EngagementRecord, prompt: str,
+    ) -> None:
+        """Design 2026-09-15 §2.A: the launch turn, run by its anchored owner
+        after ``open`` returned. ``_deliver_turn`` binds ``engagement_var``
+        itself, so the owner task needs no inherited context. The M14
+        rollback stays here: a turn that raises closes and deregisters the
+        client, so no half-alive engagement is left behind a dead pipe."""
+        try:
+            await self._deliver_turn(engagement, prompt)
+        except BaseException:
+            # M14: Bug-13-style rollback (claude_code got this in v0.14.6).
+            # engage_executor marks the record error, but error records are
+            # excluded from active_and_idle() so no sweeper ever tears this
+            # client down, and the topic stops routing — the opened claude
+            # subprocess leaks until Casa restarts. Close + deregister here,
+            # then re-raise so the caller's mark_error path still runs.
+            # cancel() pops _clients/_ctx_stack/_locks and swallows close
+            # errors, so the original exception is never masked.
+            # #344: BaseException, not Exception — a CANCELLED initial
+            # delivery took the same leak path (client registered,
+            # never closed, record still "alive" to later turns). The
+            # rollback runs as its own task under shield so a
+            # re-cancellation interrupts our wait, not the close.
+            logger.warning(
+                "Engagement %s first turn failed; rolling back client",
+                engagement.id[:8],
+            )
+            cleanup = asyncio.ensure_future(self.cancel(engagement))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                pass  # cleanup completes in background; re-raise below
+            raise
+
+    async def start(
+        self,
+        engagement: EngagementRecord,
+        prompt: str,
+        options: ClaudeAgentOptions,
+        expected_generation: int | None = None,
+    ) -> None:
+        """``open`` then ``run_launch_turn`` inline — the pre-§2.A shape, kept
+        for callers that hold the engager's turn for the whole first turn
+        (tests and any driver-protocol consumer that has not adopted the
+        split). Casa's launchers call the two halves themselves."""
+        await self.open(engagement, options, expected_generation)
+        await self.run_launch_turn(engagement, prompt)
 
     async def send_user_turn(
         self, engagement: EngagementRecord, text: str,

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-14
+last_reviewed: 2026-09-16
 ---
 
 # The tool interface
@@ -180,18 +180,21 @@ effects still complete, detached (INV-ENG-010 in
 The pre-terminal refusals above all precede the teardown and always return their results.
 
 **A launch's first turn ends without leaving an artifact.** The engagement-launch tools
-answer `pending` when the driver's `start` returns, and that answer used to be given even
-when the first turn had been cut off mid-flight — the record then sat active with nothing
-posted. The `in_casa` launch branches now ask the driver what the turn left behind and, when
-it left nothing, hand the death to one owner that records a distinct `launch_turn_incomplete`
-error kind, tells the operator in the topic before closing it, and reports the failure in the
-envelope. "Left nothing" includes text that never arrived: a launch turn whose streamed text
+answer `pending` once the engagement's client is open and its first turn has an anchored
+owner (INV-ENG-021, [`engagement-launch-detach.md`](engagement-launch-detach.md)); before
+v0.314.0 they answered when the driver's `start` returned, and that answer used to be given
+even when the first turn had been cut off mid-flight — the record then sat active with
+nothing posted. The `in_casa` launch owner asks the driver what the turn left behind and,
+when it left nothing, hands the death to one reporter that records a distinct
+`launch_turn_incomplete` error kind, tells the operator in the topic before closing it, and
+tells the engager over the bus — the tool call has already returned, so no envelope carries
+it. "Left nothing" includes text that never arrived: a launch turn whose streamed text
 was wholly refused by Telegram (the stream handle's finalize established `not delivered` —
 INV-TG-006 in [`telegram.md`](telegram.md)) is a topic showing nothing, and takes the same
 owner; an ambiguous delivery records nothing, since the text may be on screen. Only that
-outcome changes: a launch whose turn ran to its end still answers
-`pending`, and so does one that lost the terminal race to its own completion, because the
-engagement really did report itself. The kind is deliberately its own rather than the generic
+outcome changes: a launch whose turn ran to its end is reported nowhere, and neither is one
+that lost the terminal race to its own completion, because the engagement really did report
+itself. The kind is deliberately its own rather than the generic
 driver-start failure — a reader who cannot tell "the driver never got going" from "the turn
 ran and then died" cannot act on either. See INV-ENG-011 in
 [`engagements.md`](engagements.md).
