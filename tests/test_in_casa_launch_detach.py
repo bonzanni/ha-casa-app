@@ -809,61 +809,6 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
     assert not [x for x in tools_mod._LAUNCH_DEATH_TASKS if not x.done()]
 
 
-# --- diff round 3 (Terra S1): the replay keeps its configured fallback role ------------
-
-async def test_the_boot_replay_addresses_a_roleless_record_to_the_configured_assistant(tmp_path):
-    import casa_core
-    from engagement_registry import EngagementRegistry
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await registry.create(kind="executor", role_or_type="configurator", driver="in_casa",
-                                topic_id=7, origin={"channel": "telegram", "cid": "c", "chat_id": "1"},
-                                task="t")
-    assert await registry.try_transition_terminal(
-        rec.id, "error", strict=True, error_kind="x", error_message="m",
-        owes_terminal_notification=True)
-    bus = _RecordingBus(roles=("ellen",))                 # the deployment's assistant is `ellen`
-    await casa_core._replay_one_engagement_outcome(registry, bus, registry.get(rec.id), assistant_role="ellen")
-    assert [m.target for m in bus.messages] == ["ellen"]
-    assert bus.messages[0].content.kind == "error"
-    await bus.deliver_all()
-    assert registry.records_owing_terminal_notification() == []
-
-
-# --- diff round 3 (Astra J2): a drain sees what a queued done callback is about to mint ---
-
-async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_mint(tmp_path, monkeypatch):
-    probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    bus = _RecordingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-    import agent as agent_mod
-    monkeypatch.setattr(agent_mod, "active_engagement_driver", None, raising=False)
-    entered = asyncio.Event(); release = asyncio.Event(); closing = asyncio.Event()
-
-    async def _close(*, thread_id):
-        entered.set()
-        await release.wait()
-        closing.set()           # wakes the test BEFORE this abort task completes its step
-        probe.events.append("topic_close")
-
-    channel.close_topic = AsyncMock(side_effect=_close)
-    task = asyncio.ensure_future(_launch(engage_executor))
-    await asyncio.wait_for(entered.wait(), 5)
-    task.cancel()                                     # the launcher abandons its inline abort
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    release.set()
-    await closing.wait()
-    # Here the abort task is done and its done callbacks (the telling's
-    # transfer among them) are queued but have not run: the drain's snapshot
-    # sees nothing pending. It must still come back with the telling done.
-    abort = [x for x in tools_mod._LAUNCH_DEATH_TASKS if x.done()]
-    assert abort, "the window this case models: a completed abort with queued callbacks"
-    await tools_mod.drain_launch_death_reports()
-    assert [m.content.kind for m in bus.messages] == ["no_driver"]
-    assert not [x for x in tools_mod._LAUNCH_DEATH_TASKS if not x.done()]
-
-
 # --- diff round 4 (Astra): the pre-record topic abort is drained, and fenced after the mark --
 
 async def _cancel_between_topic_and_record(tmp_path, monkeypatch, probe):
