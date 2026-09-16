@@ -980,6 +980,14 @@ declaration for its sign-in link, provided it delivers every slot it
 provides. A plugin declaring `delivers` needs Casa 0.318.0 or later; an
 older Casa refuses its manifest at install.
 
+A tool that delivers a link may find it has no link to make this time — the
+account is already connected, or an earlier link is still outstanding. It
+says so by returning every slot it provides as `null` and depositing
+nothing, for example `{"auth_url": null, "status": "already_connected", …}`.
+Casa passes that result to the assistant unchanged and sends nothing, and a
+setup run that ends this way counts as run. Any other result without its
+reference is still withheld. This needs Casa 0.319.0 or later.
+
 **What changes for an installed plugin.** A plugin that has not adopted the
 contract has every tool except its setup tool refused, from this release on,
 until the plugin is updated; the assistant is told to ask you to update it.
