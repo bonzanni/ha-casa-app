@@ -1,7 +1,9 @@
 # Recipe: upgrade an installed specialist
 
 1. `specialist_install_inspect(repo=..., ref=<new ref>, mode="upgrade", target_slug=<slug>)` against
-   the SAME repo, a newer ref. **Always pass `mode="upgrade"` + `target_slug`** — plain
+   the SAME repo, a newer ref — `ref="latest"` is accepted here too and resolves to the newest
+   published release tag (reported as `resolved_ref`; `no_release_found` when the repo has none —
+   see `recipes/specialist/install.md`). **Always pass `mode="upgrade"` + `target_slug`** — plain
    `specialist_install_inspect(repo=..., ref=...)` with no `mode` will refuse with `kind:
    "slug_collision"` because the slug is already installed (that refusal is correct for a FRESH
    install; upgrade mode is the only sanctioned way past it for the SAME slug). The result carries a
