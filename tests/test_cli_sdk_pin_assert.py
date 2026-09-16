@@ -26,7 +26,7 @@ DOCKERFILE = REPO / "casa" / "Dockerfile"
 TEST_DOCKERFILE = REPO / "test-local" / "Dockerfile.test"
 REQUIREMENTS = REPO / "casa" / "requirements.txt"
 
-SDK_VERSION = "0.2.128"
+SDK_VERSION = "0.2.153"
 
 
 def test_global_claude_cli_is_pinned() -> None:
@@ -107,12 +107,12 @@ def test_effective_cli_probe_accepts_exact_version(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         calls.append((args, kwargs))
         return subprocess.CompletedProcess(
-            args[0], 0, stdout="2.1.220 (Claude Code)\n", stderr="",
+            args[0], 0, stdout="2.1.273 (Claude Code)\n", stderr="",
         )
 
     monkeypatch.setattr(claude_runtime.subprocess, "run", fake_run)
 
-    assert claude_runtime.verify_effective_cli() == "2.1.220 (Claude Code)"
+    assert claude_runtime.verify_effective_cli() == "2.1.273 (Claude Code)"
     assert calls == [(([
         "/usr/local/bin/claude", "--version",
     ],), {
@@ -125,7 +125,7 @@ def test_effective_cli_probe_accepts_exact_version(monkeypatch) -> None:
 
 @pytest.mark.parametrize("rendered", [
     "2.1.219 (Claude Code)\n",
-    "2.1.2200 (Claude Code)\n",
+    "2.1.2730 (Claude Code)\n",
 ])
 def test_effective_cli_probe_rejects_mismatch(monkeypatch, rendered) -> None:
     import claude_runtime
@@ -138,7 +138,7 @@ def test_effective_cli_probe_rejects_mismatch(monkeypatch, rendered) -> None:
         ),
     )
 
-    with pytest.raises(RuntimeError, match="expected 2.1.220"):
+    with pytest.raises(RuntimeError, match="expected 2.1.273"):
         claude_runtime.verify_effective_cli()
 
 

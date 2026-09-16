@@ -1039,6 +1039,12 @@ You will see the setup outcome as **its own message** once the run happens. It
 carries the setup tool's own words: Casa does not translate that into a verdict
 about whether the connection works, because it cannot see the other side.
 
+If an agent runs a plugin's setup tool itself after the run was cleared — for
+instance because Casa's own run landed in a session that had not finished
+loading the plugin, and the agent then ran it on its next turn — Casa counts
+that run and does not ask for it again (v0.315.0). The plugin health report and
+the status tool then say the setup ran, by the assistant's own hand.
+
 One limit worth knowing: a plugin whose setup tool is named only in its README
 or in a developer handoff, with no `casa.setupTool` in the manifest, has no
 automatic path — nothing runs it. Casa will say the plugin declares no setup

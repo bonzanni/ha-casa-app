@@ -6,7 +6,7 @@ import subprocess
 
 
 CLAUDE_CLI_PATH = "/usr/local/bin/claude"
-CLAUDE_CLI_VERSION = "2.1.220"
+CLAUDE_CLI_VERSION = "2.1.273"
 
 
 def verify_effective_cli() -> str:

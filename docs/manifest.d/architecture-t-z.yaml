@@ -64,6 +64,7 @@
     - casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler
     - casa/rootfs/opt/casa/mcp_envelope.py::_tool_schema
   tests:
+    - tests/test_casa_reload_role_forms.py
     - tests/test_internal_handlers.py
     - tests/test_emit_completion_tool.py
   related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md]

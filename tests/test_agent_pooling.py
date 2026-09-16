@@ -722,6 +722,13 @@ def test_claude_agent_options_fields_all_classified():
         "sandbox", "session_id", "session_store", "session_store_flush",
         "settings", "skills", "strict_mcp_config", "task_budget", "thinking",
         "tools", "user",
+        # audited 2026-09-16 against SDK 0.2.153 (v0.315.0, #1002): three
+        # fields appeared since 0.2.128, none turn-variable in Casa's usage —
+        # `resume_session_at` / `resume_drops_turn` (0.2.137) truncate a
+        # resume, which Casa never does (it resumes whole sessions);
+        # `forward_subagent_text` streams subagent text blocks, and Casa
+        # neither sets it nor grants the Agent tool to any pooled role.
+        "resume_session_at", "resume_drops_turn", "forward_subagent_text",
     }
     actual = {f.name for f in dataclasses.fields(ClaudeAgentOptions)}
     assert actual <= KNOWN, (

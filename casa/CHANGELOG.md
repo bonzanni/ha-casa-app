@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.315.0] - 2026-09-16
+
+### Fixed
+
+- A plugin's setup no longer runs into a session that has not finished loading
+  the plugin. On the 2026-09-16 install the assistant was told to run Gmail's
+  setup a second after its tools were granted, her session started before the
+  plugin's server had connected, she answered that the tool was not there, and
+  on her next turn ran it and corrected herself. The bundled Claude Code CLI
+  moves from 2.1.220 to 2.1.273 (Agent SDK 0.2.153), which waits for a plugin's
+  server before a fresh session's first turn.
+- A setup the assistant ran herself is no longer requested again. When Casa's
+  own setup run finds no tool and is put back in the queue, and the assistant
+  then runs the setup tool in an ordinary turn, Casa now counts that run — only
+  when it can prove the run followed the approval and used the installed
+  version — and nothing re-dispatches it: not the next reload, not a restart,
+  not the earlier queued run. Before, the queued run would have asked the
+  operator to authorise Gmail a second time.
+- The configurator can name a role the way the plugin tools do. `casa_reload`
+  and `casa_reload_triggers` accept `resident:assistant` and
+  `specialist:<slug>` and strip the prefix; before, a reload asked for with the
+  form the install tools had just reported failed with an unknown role and the
+  configurator had to retry.
+
 ## [0.314.0] - 2026-09-16
 
 ### Fixed

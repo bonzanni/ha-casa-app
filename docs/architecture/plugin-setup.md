@@ -43,6 +43,8 @@ generation had removed.
 
 **INV-PLUG-012**: A resident-execution setup obligation rests consumed (`dispatched`) only when its dispatched turn positively evidenced the setup tool — the tool produced a non-error result, or the session's init listed it and no attempted call erred without one; a turn with no such evidence (including one that raised or was cancelled) returns the obligation to `pending` with its released verdict intact, boundedly, and past the bound it fails with an operator note rather than being silently spent.
 
+**INV-PLUG-023**: A released resident-execution setup obligation is also consumed when its setup tool produces a non-error result in any turn of the executing resident, provided the invocation is proven to follow the release and to run in a session built on the obligation's exact artifact — a finite `tool_use` timestamp not earlier than the row's finite `released_ts`, and the executing agent instance's own plugin binding carrying that artifact while the registry still resolves to it; a row so settled (`settled_by`) is never re-dispatched, a dispatched turn that finds it settled once it holds the session gate does not run, and a later toolless report from the dispatched turn cannot reopen it — evidence that proves less (an earlier invocation, an unstamped or non-finite stamp, another artifact, another role, another tool, a specialist target) settles nothing.
+
 **A plugin's declared setup tool is run by Casa and by nothing else — released only by a
 positively sealed consent verdict for that exact artifact, and then only once its trigger
 **and callback** routes are live — the gate rejects any outstanding issue of either kind,
@@ -202,7 +204,35 @@ returns the row to `pending` with its released verdict kept, and the next reload
 reconcile kick re-dispatches. Deliberately no immediate retry: the broken session is
 usually a warm one that would fail identically, and the healer in practice is the next
 agent reload. The budget is bounded; exhausting it fails the obligation with a note naming
-the manual run. A specialist-target dispatch stays delivery-only — the assistant is just
+the manual run.
+
+**The assistant runs the setup tool itself before the re-dispatch.** Observed live on
+2026-09-16: the dispatched turn ran toolless (a cold session whose plugin MCP server was
+still connecting), the row went back to `pending`, and on its next ordinary turn the
+assistant ran the setup tool and the operator completed the authorisation — after which
+the next reload would have asked for the setup again. The row is now settled from that
+evidence (INV-PLUG-023): the agent hands every non-error plugin-tool result of an
+ordinary turn to `settle_from_tool_evidence` the moment it observes it, under the
+per-session write gate and the client lock, with the wall-clock instant of the
+`tool_use` block and the agent instance's own resolved binding. That handover is I/O-free
+on the common path: the release captures the composed setup-tool name on the row (the
+dispatch captures the same name; an artifact is immutable, so it cannot drift), an
+in-memory watch holds the names carried by released unsettled rows — recomputed from the
+store on every loop-thread read and every save, never from a reader on another thread,
+whose snapshot may predate a release — and only a result for a watched name reads the
+file; every other result returns without a store read or a resolver call. The store
+settles only
+on positive proof — a finite invocation time not before the row's `released_ts`
+(stamped at release, so a row released before v0.315.0 is never settled this way), the
+binding and the registry both naming the row's artifact, the plugin's execution target
+being this resident, and the tool being the one the dispatch would compose. The worker
+re-reads the row immediately before every send, a dispatched turn re-checks
+`dispatch_still_owed` once it holds the session gate and returns without a client or a
+prompt when the obligation is settled, and the dispatched turn's own report is a no-op on
+a settled row. Turns on different session keys are not serialised against each other, so
+a setup run from another channel while a dispatch is already executing can still be
+followed by that dispatch's run. The status tool reads a settled row as "setup ran (the
+assistant ran the setup tool itself)" whatever status a later removal leaves on it. A specialist-target dispatch stays delivery-only — the assistant is just
 the delegation courier there, and its own session says nothing about the specialist's.
 
 **The plugin is removed after its setup failed, and reinstalled from the same download.**
@@ -243,6 +273,8 @@ verdict; adding an inference there would reintroduce the defect this design remo
 - `casa/rootfs/opt/casa/plugin_registry.py::pinned_resolver`
 
 **Tests**
+- `tests/test_plugin_setup_evidence_settlement.py`
+- `tests/test_agent_setup_evidence_turn.py`
 - `tests/test_plugin_setup_single_runner.py`
 - `tests/test_plugin_setup_episodes.py`
 

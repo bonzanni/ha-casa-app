@@ -1,6 +1,10 @@
 # claude-agent-sdk pin. History: 0.1.72 -> 0.2.87 (v0.38.0, stderr-callback
 # exception isolation); 0.2.87 -> 0.2.114 (v0.59.1, Dependabot #104);
-# 0.2.114 -> 0.2.128 (v0.131.0, supersedes Dependabot #268). Per the upstream
+# 0.2.114 -> 0.2.128 (v0.131.0, supersedes Dependabot #268); 0.2.128 -> 0.2.153
+# (v0.315.0, #1002: bundled/npm CLI 2.1.220 -> 2.1.273 — CLI 2.1.221 and 2.1.260
+# fix plugin MCP servers missing from a cold session's first turn; the only
+# SDK breaking change in the range, 0.2.129's skill-name validation, does not
+# touch Casa, which passes skills="all" or config-listed names). Per the upstream
 # release notes (github.com/anthropics/claude-agent-sdk-python/releases):
 # 0.2.121 passes --resume/--session-id as single =-joined argv tokens
 # (flag-injection hardening); 0.2.127 keeps stdin open while background tasks
@@ -18,7 +22,7 @@
 # G-1 ('NoneType has no attribute items' from hook_0..3 on Edit) is mitigated
 # Casa-side by H-2 (v0.36.1): every hook callback returns {} / _deny(...),
 # never None (hooks.py) — Casa is immune regardless of the upstream guard.
-claude-agent-sdk==0.2.128
+claude-agent-sdk==0.2.153
 python-telegram-bot==22.7
 # Bumped 3.13.5 -> 3.14.1 (v0.59.1): clears 11 security advisories (deserialization,
 # HTTP request-smuggling/pipelining, websocket memory-limit bypass, etc.), all

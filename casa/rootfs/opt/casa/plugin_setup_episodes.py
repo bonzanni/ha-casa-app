@@ -356,6 +356,57 @@ def _valid_reset(record: Any) -> dict | None:
 
 def _read_store() -> StoreRead:
     """The one protected read every reader shares (#747). Never raises."""
+    read = _read_store_bytes()
+    _publish_watch(read.data)
+    return read
+
+
+# #1003: the in-memory watch that keeps `settle_from_tool_evidence` I/O-free
+# and resolver-free on the common path. It is the set of composed setup-tool
+# names carried by released, unsettled rows (`expected_tool`, captured on the
+# row at release and at dispatch — an artifact is immutable, so the name
+# cannot drift for that row). DERIVED from the store: recomputed from the
+# data every LOOP-THREAD read returns and every `_save` persists, never
+# maintained by hand. A read on another thread (the status tool, health
+# regeneration) never publishes: its snapshot may predate a release the loop
+# has since written, and publishing it would read "no candidate" while a
+# released row exists (diff round 2, Astra S1). Keyed by STORE_PATH so a
+# re-pointed store (tests) starts unknown.
+_WATCH: "tuple[Path, frozenset[str]] | None" = None
+
+
+def _watch_from(data: dict) -> frozenset[str]:
+    """Composed setup-tool names of the released, unsettled
+    `pending`/`dispatched` rows — the only rows turn evidence can settle."""
+    return frozenset(
+        r["expected_tool"] for r in data.get("episodes", [])
+        if isinstance(r, dict) and isinstance(r.get("expected_tool"), str)
+        and r["expected_tool"]
+        and r.get("status") in ("pending", "dispatched")
+        and r.get("gate") == "released" and not r.get("settled_by"))
+
+
+def _on_loop_thread() -> bool:
+    """Whether this thread runs the event loop (a `to_thread` worker has no
+    running loop of its own)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _publish_watch(data: dict) -> None:
+    global _WATCH
+    if not _on_loop_thread():
+        return
+    try:
+        _WATCH = (STORE_PATH, _watch_from(data))
+    except Exception:  # noqa: BLE001 — a derived index must never raise
+        _WATCH = None
+
+
+def _read_store_bytes() -> StoreRead:
     try:
         raw = STORE_PATH.read_bytes()
     except FileNotFoundError:
@@ -552,6 +603,7 @@ def _save(data: dict) -> None:
     # mode and to gain the fsync/rename durability this path never had.
     from atomic_io import PRIVATE, atomic_write_json
     atomic_write_json(STORE_PATH, data, indent=1, mode=PRIVATE)
+    _publish_watch(data)
 
 
 def read_episodes(status: str | None = None) -> EpisodesRead:
@@ -1329,8 +1381,20 @@ def _settle_locked(data: dict, plugin: str) -> tuple[bool, list[str]]:
         "gate": "released",
         "approved_identities": sorted(f"{i}#{m.get('gen', '')}"
                                       for i, m in members.items()),
+        # #1003: the release instant, so out-of-band evidence can prove the
+        # tool ran AFTER the callback secret this settlement minted.
+        "released_ts": _now(),
         "updated_ts": _now(),
     })
+    # #1003: the composed setup-tool name this row's evidence must carry,
+    # captured here (the dispatch captures it again, identically) so the
+    # evidence prefilter is a set lookup with no resolver behind it. The
+    # artifact is immutable; a plugin that cannot compose one (no setup
+    # tool, ambiguous grants) leaves the row outside the prefilter, and the
+    # dispatch path owns that case's messaging.
+    composed = _expected_setup_tool(plugin)
+    if composed:
+        row["expected_tool"] = composed
     return True, []
 
 
@@ -1690,6 +1754,18 @@ async def _run_episode(ep: dict) -> bool:
             if reason is not None:
                 _update_episode(ep["id"], last_error=reason)
                 return True  # deferred — caller schedules a delayed self-kick
+        # #1003 (design r2 M5): the worker's `pending` snapshot may predate an
+        # evidence settlement that landed during the awaits above — re-read
+        # the row immediately before sending; a row that is no longer
+        # `pending` (settled by evidence, or otherwise moved on) is not
+        # dispatched. A row that is GONE by this id keeps today's designed
+        # behaviour (`ensure_obligation`'s re-arm): the in-flight dispatch
+        # proceeds and its own write-back becomes a no-op against the
+        # superseded row.
+        current = _row_by_id(_load(), ep["id"])
+        if current is not None and (current.get("status") != "pending"
+                                    or current.get("settled_by")):
+            return
         attempts += 1
         if _dispatch is not None:
             try:
@@ -1782,6 +1858,12 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
                     if e.get("id") == episode_id), None)
         if row is None or row.get("status") != "dispatched":
             return
+        if row.get("settled_by"):
+            # #1003: an ordinary turn already proved the tool ran (after the
+            # release, on this artifact). The dispatched turn's own outcome —
+            # typically the older, toolless one finishing late — can neither
+            # add to that nor reopen it.
+            return
         expected = row.get("expected_tool") or ""
         if not expected:
             return
@@ -1829,6 +1911,145 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
     except Exception:  # noqa: BLE001 — the turn path must never see a raise
         logger.exception("setup-episode outcome report failed (id=%s)",
                          episode_id)
+
+
+def _row_by_id(data: dict, episode_id: str) -> dict | None:
+    return next((e for e in data.get("episodes", [])
+                 if isinstance(e, dict) and e.get("id") == episode_id), None)
+
+
+def settle_from_tool_evidence(*, role: str, tool: str, invoked_at,
+                              binding) -> None:
+    """#1003: consume a RELEASED obligation on evidence that its setup tool ran
+    in an ordinary turn — not the Casa-dispatched one.
+
+    Called by the executing agent the moment a NON-error result for *tool* is
+    observed, under its session gate and client lock (so a Casa-dispatched
+    setup turn queued behind that turn finds the row settled before it can
+    submit its prompt — ``dispatch_still_owed``). Every predicate is positive
+    evidence, none fails open:
+
+    * *invoked_at* — the wall-clock instant the ``tool_use`` block was
+      observed (a lower bound on execution start) — must be a finite number
+      not earlier than the row's ``released_ts``; a row with no finite stamp
+      (released before this mechanism existed, or hand-damaged) is never
+      settled this way;
+    * *binding* — ``{plugin: artifact_id}`` of the AGENT INSTANCE that ran the
+      tool (its own resolution, not the registry's current state) — must
+      carry the row's exact artifact, and the registry must still resolve the
+      plugin to that artifact (not superseded);
+    * the plugin's execution target must be ``("resident", role)``, and the
+      expected tool name is computed live exactly as the dispatch composes
+      it: one granted server namespace, a declared setup tool.
+
+    Only ``pending`` / ``dispatched`` rows with ``gate == "released"`` and no
+    prior settlement are candidates; ``dispatched`` stays the one consumed
+    status and ``settled_by="turn_evidence"`` is the authoritative mark.
+    SYNCHRONOUS, yield-free, never raises."""
+    try:
+        if not isinstance(tool, str) or not tool:
+            return
+        at = _finite(invoked_at)
+        if at is None:
+            return
+        if not isinstance(binding, dict):
+            return
+        # The I/O-free common path (diff rounds 1-2, Astra + Terra S1): this
+        # runs inside on_message for EVERY successful plugin-tool result of
+        # every ordinary turn, on the loop thread, under the session gate.
+        # The watch is a set of composed setup-tool names captured on the
+        # rows themselves; membership is the whole prefilter — no store
+        # read, no resolver. The store is read only when this process has
+        # never read it on the loop (watch unknown) or when the tool IS a
+        # watched name — the rare window between a release and its
+        # settlement. That rare path stays synchronous on the loop: every
+        # other writer of this file is a loop-thread read-modify-write, and
+        # a thread-side write would race them.
+        watch = _WATCH
+        if watch is not None and watch[0] == STORE_PATH \
+                and tool not in watch[1]:
+            return
+        data = _load()
+        changed = False
+        for row in data["episodes"]:
+            if not isinstance(row, dict):
+                continue
+            if row.get("status") not in ("pending", "dispatched"):
+                continue
+            if row.get("gate") != "released" or row.get("settled_by"):
+                continue
+            plugin = row.get("plugin")
+            artifact = row.get("artifact_id")
+            if not isinstance(plugin, str) or not isinstance(artifact, str):
+                continue
+            released_at = _finite(row.get("released_ts"))
+            if released_at is None or at < released_at:
+                continue
+            if binding.get(plugin) != artifact:
+                continue
+            resolved_ok, entry = _resolve_entry(plugin)
+            if not resolved_ok or entry.get("artifact_id") != artifact:
+                continue
+            if plugin_dispatch.execution_target(entry) != ("resident", role):
+                continue
+            setup_tool = entry.get("setup_tool")
+            grants = sorted(entry.get("granted_tools") or [])
+            if not isinstance(setup_tool, str) or not setup_tool \
+                    or len(grants) != 1:
+                continue
+            expected = f"{grants[0]}__{setup_tool}"
+            if tool != expected:
+                continue
+            row.update({
+                "status": "dispatched", "settled_by": "turn_evidence",
+                "settled_ts": _now(), "expected_tool": expected,
+                "last_error": "", "updated_ts": _now(),
+            })
+            changed = True
+            logger.info(
+                "setup episode %s settled by turn evidence (plugin=%s "
+                "role=%s tool=%s): the setup tool ran in an ordinary turn "
+                "after the release; nothing re-dispatches it",
+                row.get("id"), plugin, role, expected)
+        if changed:
+            _save(data)
+    except Exception:  # noqa: BLE001 — the turn path must never see a raise
+        logger.exception("setup-episode evidence settlement failed "
+                         "(role=%s tool=%s)", role, tool)
+
+
+def _expected_setup_tool(plugin: str) -> str | None:
+    """The namespaced setup tool the dispatch would compose for *plugin*
+    (exactly `_compose`'s form), or None. Uses the registry resolver — a
+    loop-thread call the worker already makes; never from on_message's
+    common path."""
+    resolved_ok, entry = _resolve_entry(plugin)
+    if not resolved_ok or not isinstance(entry, dict):
+        return None
+    setup_tool = entry.get("setup_tool")
+    grants = sorted(entry.get("granted_tools") or [])
+    if not isinstance(setup_tool, str) or not setup_tool or len(grants) != 1:
+        return None
+    return f"{grants[0]}__{setup_tool}"
+
+
+def dispatch_still_owed(episode_id: str) -> bool:
+    """#1003: whether a Casa-dispatched setup turn for *episode_id* should
+    still run. ``False`` ONLY for a row that exists and carries a settlement
+    mark — a positively settled obligation. A missing row, a ``pending`` or
+    ``dispatched`` row without the mark, an empty id and an unreadable store
+    all read as owed: the guard suppresses one thing and never races the
+    worker's own ``dispatched`` write. Never raises."""
+    try:
+        if not episode_id:
+            return True
+        row = _row_by_id(_load(), str(episode_id))
+        if row is None:
+            return True
+        return not bool(row.get("settled_by"))
+    except Exception:  # noqa: BLE001
+        logger.exception("setup-episode owed check failed (id=%s)", episode_id)
+        return True
 
 
 async def _note(text: str) -> None:
