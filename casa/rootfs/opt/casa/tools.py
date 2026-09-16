@@ -3921,7 +3921,8 @@ async def _prelaunch(
     driver start, progress emission) can precede a clean return:
 
         ACL (Task 1) -> not-initialized -> input-size bounds (Task 6) ->
-        depth cap -> mode gate -> target resolution ->
+        depth cap -> mode gate (voice; setup turns sync-only, #1015) ->
+        target resolution ->
         resident-interactive-compat -> requires (Task 5) ->
         concurrency (Task 6, spec §4.6) -> progress -> launch
 
@@ -4142,6 +4143,22 @@ async def _prelaunch(
     if (channel == "voice" and mode == "async"
             and not deferred_delivery_available(origin)):
         return None, None, None, None, _background_delivery_unavailable_result(origin)
+    # #1015: a Casa-dispatched plugin-setup turn may delegate only in sync
+    # mode. An interactive launch returns a non-error "pending" result that
+    # the courier's outcome report would count as a delegation that went
+    # through, while the engagement's own turns can never carry the setup
+    # identity (the marker is refused on the engagement branch); an error
+    # result here, BEFORE any record or topic exists, returns the courier
+    # row to pending under its bounded budget instead of consuming it.
+    if mode != "sync" and (origin or {}).get("synthetic") == "plugin_setup":
+        return None, None, None, None, _result({
+            "status": "error",
+            "kind": "mode_unsupported_on_setup_turn",
+            "message": (
+                f"mode={mode!r} is not supported on a plugin-setup turn — "
+                "delegate the setup tool with mode='sync'."
+            ),
+        })
 
     # Resolve target. Look in the merged role map (residents + specialists)
     # first; fall back to the specialist registry for back-compat with any

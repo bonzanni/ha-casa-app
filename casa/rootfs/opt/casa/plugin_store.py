@@ -1287,9 +1287,14 @@ def manifest_setup_provides(manifest: dict) -> list[str]:
 # absent from it is refused before it runs (result_broker). A `capability` tool
 # DEPOSITS each declared slot's value with Casa's broker during the call and
 # returns a reference in its place; a `consumes` parameter accepts such a
-# reference and the tool redeems it from the broker. The exact `casa.setupTool`
-# is exempt from the contract and may not consume. Casa validates the SHAPE of
-# this declaration and never infers or supplements it (#785).
+# reference and the tool redeems it from the broker. A `capability` tool may
+# further declare ONE of its slots as `delivers: {slot: "operator_link"}`
+# (#1015): Casa itself posts that value to the operator's chat after the
+# result's structural check and the slot is consumed by nobody. The exact
+# `casa.setupTool` is exempt from the contract and may not consume — unless it
+# is declared as a capability tool delivering every slot it provides, in which
+# case it is contracted like any other. Casa validates the SHAPE of this
+# declaration and never infers or supplements it (#785).
 _RESULT_CONTRACT_VERSION = 1
 _RC_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _RC_SLOT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -1297,7 +1302,11 @@ _RC_PARAM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _RC_MAX_TOOLS = 64
 _RC_MAX_SLOTS = 16
 _RC_RESULT_KINDS = ("safe", "capability")
-_RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes"})
+_RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes", "delivers"})
+# #1015: the closed vocabulary of delivered-slot kinds. `operator_link` is a
+# URL Casa posts to the operator's chat as one labelled-link message.
+_RC_DELIVERS_KINDS = ("operator_link",)
+_RC_MAX_DELIVERS = 1
 
 
 def _rc_error(msg: str) -> "StoreError":
@@ -1316,15 +1325,20 @@ def manifest_result_contract(manifest: dict) -> dict | None:
 
     Returns the NORMALIZED declaration ``{"version": 1, "tools": {name:
     {"result": "safe"|"capability", "provides": [slot, ...], "consumes":
-    {param: slot, ...}}}}`` with declaration order preserved. Rules: version
-    is exactly 1; tool names are unique AFTER ``text_util.sanitize_segment``
-    (the runtime tool id's sanitization); a ``capability`` tool declares a
-    non-empty ``provides``; a ``safe`` tool declares none; every ``consumes``
-    slot is provided by SOME tool of this plugin; the ``casa.setupTool`` may
-    appear only as ``safe`` with no ``consumes`` (it is exempt from the
-    contract, so a declaration on it would promise what the broker never
-    enforces); bounded counts so a hostile manifest cannot make every session
-    build walk an arbitrarily long declaration."""
+    {param: slot, ...}, "delivers": {slot: kind, ...}}}}`` with declaration
+    order preserved. Rules: version is exactly 1; tool names are unique AFTER
+    ``text_util.sanitize_segment`` (the runtime tool id's sanitization); a
+    ``capability`` tool declares a non-empty ``provides``; a ``safe`` tool
+    declares none; every ``consumes`` slot is provided by SOME tool of this
+    plugin; ``delivers`` (#1015) is allowed only on a ``capability`` tool,
+    names at most one slot, which that same tool provides, with the closed
+    kind ``operator_link``, and a delivered slot is named in no tool's
+    ``consumes`` (delivery IS the consumption); the ``casa.setupTool`` may
+    appear as ``safe`` with no ``consumes`` (exempt from the contract) or as
+    a ``capability`` tool delivering every slot it provides with no
+    ``consumes`` (then contracted like any other tool); bounded counts so a
+    hostile manifest cannot make every session build walk an arbitrarily
+    long declaration."""
     casa = manifest.get("casa")
     if not isinstance(casa, dict) or "resultContract" not in casa:
         return None
@@ -1366,7 +1380,7 @@ def manifest_result_contract(manifest: dict) -> dict | None:
         if unknown:
             raise _rc_error(
                 f"tool {name!r}: unknown member(s) {unknown}; allowed: "
-                "result, provides, consumes")
+                "result, provides, consumes, delivers")
         kind = entry.get("result")
         if kind not in _RC_RESULT_KINDS:
             raise _rc_error(
@@ -1402,19 +1416,58 @@ def manifest_result_contract(manifest: dict) -> dict | None:
                 if not isinstance(slot, str) or not _RC_SLOT_RE.fullmatch(slot):
                     raise _rc_error(f"tool {name!r}: consumes[{param!r}] {slot!r} is not a slot name")
                 consumes[param] = slot
-        if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
-            if kind != "safe" or consumes:
+        delivers: dict[str, str] = {}
+        if "delivers" in entry:
+            # PRESENT is judged, whatever the value: an explicit null is not
+            # an absent member (the base refused the key outright).
+            delivers_raw = entry.get("delivers")
+            if kind != "capability":
                 raise _rc_error(
-                    f"tool {name!r} is the casa.setupTool: it is exempt from the "
-                    "contract and may be listed only as safe with no consumes")
+                    f"tool {name!r}: delivers is allowed only on a capability tool")
+            if not isinstance(delivers_raw, dict):
+                raise _rc_error(
+                    f"tool {name!r}: delivers must be an object mapping slot to kind")
+            if len(delivers_raw) > _RC_MAX_DELIVERS:
+                raise _rc_error(
+                    f"tool {name!r}: at most {_RC_MAX_DELIVERS} delivered slot")
+            for slot, dkind in delivers_raw.items():
+                if not isinstance(slot, str) or slot not in provides:
+                    raise _rc_error(
+                        f"tool {name!r}: delivers names slot {slot!r}, which "
+                        "this tool does not provide")
+                if dkind not in _RC_DELIVERS_KINDS:
+                    raise _rc_error(
+                        f"tool {name!r}: delivers[{slot!r}] must be one of "
+                        f"{list(_RC_DELIVERS_KINDS)}, got {dkind!r}")
+                delivers[slot] = dkind
+        if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
+            # #1015: a setup tool is either exempt (safe, consumes nothing)
+            # or a fully delivered capability (every provided slot delivered,
+            # consumes nothing). Anything in between would promise what the
+            # broker never enforces, or leave a setup capability undelivered.
+            exempt = kind == "safe" and not consumes
+            delivered = (kind == "capability" and not consumes
+                         and set(delivers) == set(provides))
+            if not (exempt or delivered):
+                raise _rc_error(
+                    f"tool {name!r} is the casa.setupTool: it may be listed "
+                    "only as safe with no consumes, or as a capability tool "
+                    "delivering every slot it provides with no consumes")
         provided.update(provides)
-        out[name] = {"result": kind, "provides": provides, "consumes": consumes}
+        out[name] = {"result": kind, "provides": provides,
+                     "consumes": consumes, "delivers": delivers}
+    delivered_slots = {slot for entry in out.values() for slot in entry["delivers"]}
     for name, entry in out.items():
         for param, slot in entry["consumes"].items():
             if slot not in provided:
                 raise _rc_error(
                     f"tool {name!r}: consumes[{param!r}] names slot {slot!r}, "
                     "which no tool of this plugin provides")
+            if slot in delivered_slots:
+                raise _rc_error(
+                    f"tool {name!r}: consumes[{param!r}] names slot {slot!r}, "
+                    "which is delivered to the operator; a delivered slot is "
+                    "consumed by no tool")
     return {"version": _RESULT_CONTRACT_VERSION, "tools": out}
 
 

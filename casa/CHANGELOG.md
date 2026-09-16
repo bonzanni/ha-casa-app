@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.318.0] - 2026-09-16
+
+### Added
+
+- Links you must open — a bank's approval page, a Google sign-in — are now
+  delivered by Casa into your chat with the assistant, never into a
+  specialist's task topic. A plugin declares the capability slot that carries
+  such a link as `delivers: {"<slot>": "operator_link"}`; after the tool's
+  result passes the result contract, Casa posts one message to the chat you
+  asked in — a link whose text names the real destination host, with the
+  plugin's caption beneath — and replaces the tool result with a delivery
+  receipt. If delivery cannot be confirmed the result is withheld and the
+  assistant asks you for a fresh link rather than claiming one arrived. A
+  plugin's setup tool may adopt the same declaration for its sign-in link.
+  A plugin that declares `delivers` requires this release or later (#1015).
+
+### Changed
+
+- A plugin-setup turn Casa dispatches now carries the operator's identity
+  for the role it is addressed to, so a setup tool declared as a capability
+  can deposit its link and have it delivered, and a protected tool it calls
+  can be approved through your keyboard. The turn may delegate only in
+  `sync` mode; an interactive or background delegation is refused before
+  any engagement exists, and the setup obligation is retried (#1015).
+
 ## [0.317.0] - 2026-09-16
 
 ### Fixed

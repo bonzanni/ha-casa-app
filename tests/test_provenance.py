@@ -42,6 +42,9 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # #283: live-operator marker — an external caller who could set it
         # would exempt itself from the agent-spawn cap.
         "_operator_turn",
+        # #1015: the role a plugin-setup dispatch is FOR — an external caller
+        # who could set it would aim a delivered link at another role.
+        "plugin_setup_target",
         # #485: scheduled-delivery marker — an external caller who could set it
         # would aim media at the operator's DM from a webhook payload. The
         # authenticated webhook route dispatches MessageType.SCHEDULED too,
@@ -297,6 +300,20 @@ class TestTransportClassification:
         with _OriginCtx(origin):
             p = turn_provenance()
         assert p.transport == "other"
+
+    async def test_plugin_setup_marker_is_setup_transport(self):
+        # #1015: the marker Casa's setup dispatch stamps classifies as its
+        # own transport — direct, delegated and (still) engagement.
+        with _OriginCtx(_origin(synthetic="plugin_setup")):
+            assert turn_provenance() == Provenance("setup", "direct")
+        with _OriginCtx(_origin(synthetic="plugin_setup",
+                                execution_role="finance")):
+            assert turn_provenance() == Provenance("setup", "delegated")
+        with _OriginCtx(_origin(synthetic="plugin_setup"), engaged=True):
+            assert turn_provenance() == Provenance("setup", "engagement")
+        # the marker on a non-Telegram-shaped origin stays "other"
+        with _OriginCtx(_origin(synthetic="plugin_setup", source="voice")):
+            assert turn_provenance() == Provenance("other", "direct")
 
     async def test_unrecognized_marker_is_other(self):
         """A marker present but not 'button' fails both the dm ('no

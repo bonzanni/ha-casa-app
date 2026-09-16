@@ -1824,10 +1824,17 @@ async def _run_episode(ep: dict) -> bool:
             return
         attempts += 1
         if _dispatch is not None:
+            # #1015: stamp the role this obligation is FOR — the resident
+            # that runs the tool, or the specialist a courier turn delegates
+            # to — beside the marker. `resolve_grant_identity` yields an
+            # identity on a setup-marked origin only to the executing role
+            # that equals it, so a delegation to any other role has none.
+            _tier, _target = plugin_dispatch.execution_target(entry)
             try:
                 ok = await _dispatch(role, instruction, {
                     "synthetic": "plugin_setup",
                     "setup_episode": ep["id"],
+                    "plugin_setup_target": _target or "",
                 })
             except Exception:  # noqa: BLE001
                 logger.exception("episode %s: dispatch raised", ep["id"])

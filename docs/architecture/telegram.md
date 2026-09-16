@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-01
+last_reviewed: 2026-09-16
 ---
 
 # The Telegram channel
@@ -242,6 +242,17 @@ scope, and to the absence of the marker a machine-timed question carries. The sc
 is not decoration: the broker's predicate cancel is namespace-wide, so a selection that
 forgot it would retire another operator's live question. Authorization challenges live in a
 separate scope and are untouched here, as they always were.
+
+**One outbound message is composed by Casa, not by an agent: a plugin's delivered link.**
+When a plugin tool's result carries a slot declared `operator_link`, the result broker
+composes a single labelled-link message — the label and the destination host as the link
+text, one `text_link` entity, the caption beneath — and asks the channel to post it to the
+chat of the call's grant identity. The channel sends it through the same one-retry
+primitive a rendered response uses (an entity the platform refuses is resent as the plain
+text, which spells the URL out), reports it delivered on any normal return, and lets an
+exception propagate: the broker reads anything but a normal return as not proven
+(INV-PLUG-025). Nothing here goes through the markdown renderer or pagination; the
+message is bounded by the broker's own validation of the three parts.
 
 ## Failure behavior
 

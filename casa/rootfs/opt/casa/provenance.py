@@ -77,6 +77,13 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # an authenticated operator sender; synthesized/scheduled/webhook turns
     # never carry it.
     "_operator_turn",
+    # #1015: the role a Casa-dispatched plugin-setup turn is FOR — the
+    # resident that runs the setup tool, or the specialist a courier turn
+    # must delegate it to. Stamped only by the setup dispatch worker, beside
+    # the `plugin_setup` marker; the grant identity a setup-marked origin
+    # yields is bound to it, so a caller who could set it from outside would
+    # aim a delivered link, or a protected-tool challenge, at the wrong role.
+    "plugin_setup_target",
 })
 
 
@@ -152,9 +159,10 @@ class Provenance:
     """The classified shape of the current turn.
 
     ``transport``: "dm" (a direct 1:1 Telegram message), "button" (a
-    synthetic turn replaying an inline-button answer), or "other"
-    (anything else — voice, webhook, group/engagement-topic traffic,
-    malformed/missing ids, ...).
+    synthetic turn replaying an inline-button answer), "setup" (the turn
+    Casa itself dispatches to run a plugin's setup tool, addressed to the
+    configured operator's chat — #1015), or "other" (anything else — voice,
+    webhook, group/engagement-topic traffic, malformed/missing ids, ...).
 
     ``execution``: "direct" (the resident handling its own turn),
     "delegated" (a specialist/executor running on behalf of a different
@@ -191,6 +199,8 @@ def turn_provenance() -> Provenance:
             transport = "dm"
         elif marker == "button":
             transport = "button"
+        elif marker == "plugin_setup":
+            transport = "setup"
         # any other marker value falls through, leaving transport "other"
 
     if tools_mod.engagement_var.get(None) is not None:

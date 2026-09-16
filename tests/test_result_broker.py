@@ -134,6 +134,98 @@ def test_validate_result_requires_every_slot_with_its_own_reference():
     assert store.validate_result(call, ["not", "a", "dict"]) is False
 
 
+# --- #1015: a delivered slot's deposit -----------------------------------------
+
+LINK = "mcp__plugin_probe_api__link"
+URL = "https://Bank.Example.com/approve?session=abc123"
+
+
+def _open_delivering(store, *, call="link-1", identity=None):
+    store.open_call(client_id="c1", artifact_id=ARTIFACT, tool_name=LINK,
+                    tool_use_id=call, identity=identity or _identity(),
+                    provides=("approval_link",),
+                    delivers={"approval_link": "operator_link"})
+
+
+def _dep(store, value=URL, **kw):
+    return store.deposit(client_id="c1", slot="approval_link", value=value, **kw)
+
+
+@pytest.mark.parametrize("value", [
+    "http://bank.example.com/approve",          # not https
+    "https:///approve",                         # hostless
+    "https://bank.example.com/a b",             # whitespace
+    "https://bank.example.com/a\tb",            # control character
+    "https://bank.example.com/" + "x" * 2048,   # above MAX_LINK_BYTES, below MAX_VALUE_BYTES
+    "ftp://bank.example.com/x",
+    "bank.example.com/approve",
+], ids=["http", "hostless", "space", "tab", "long", "ftp", "schemeless"])
+def test_deposit_for_a_delivered_slot_refuses_a_bad_link(value):
+    store, _ = _store()
+    _open_delivering(store)
+    assert len(value.encode()) < rb.MAX_VALUE_BYTES
+    assert _dep(store, value) == (None, "bad_link")
+    assert store._refs == {}
+
+
+def test_deposit_for_a_delivered_slot_validates_caption_and_label():
+    store, _ = _store()
+    _open_delivering(store)
+    assert _dep(store, caption="x" * 201) == (None, "bad_caption")
+    assert _dep(store, caption="see https://evil.example/") == (None, "bad_caption")
+    assert _dep(store, caption="see www.evil.example") == (None, "bad_caption")
+    assert _dep(store, caption="two\nlines") == (None, "bad_caption")
+    assert _dep(store, label="x" * 41) == (None, "bad_label")
+    assert _dep(store, label="evil.example") == (None, "bad_label")
+    assert _dep(store, label="see WWW.evil") == (None, "bad_label")
+    assert _dep(store, label="a://b") == (None, "bad_label")
+    assert store._refs == {}
+    ref, err = _dep(store, caption="Rabobank, NL — one-time link, 30 minutes",
+                    label="Approve at Rabobank v1")
+    assert err is None
+    r = store._refs[ref]
+    assert (r.caption, r.label) == ("Rabobank, NL — one-time link, 30 minutes",
+                                    "Approve at Rabobank v1")
+    assert URL not in repr(r)
+
+
+def test_deposit_for_an_undelivered_slot_ignores_caption_and_label():
+    store, _ = _store()
+    _open(store)      # provides ("link",), delivers nothing
+    ref, err = store.deposit(client_id="c1", slot="link", value="not a url at all",
+                             caption="x" * 500, label="evil.example")
+    assert err is None
+    assert (store._refs[ref].caption, store._refs[ref].label) == ("", "")
+
+
+def test_take_for_delivery_is_once_and_refuses_used_expired_and_armed():
+    store, clock = _store()
+    _open_delivering(store)
+    ref, _ = _dep(store, caption="c", label="Open it")
+    store.close_call("c1", "link-1")
+    taken = store.take_for_delivery(ref)
+    assert taken == (URL, "c", "Open it", _identity())
+    assert store._refs[ref].used is True and store._refs[ref].value == ""
+    assert store.take_for_delivery(ref) is None                    # once
+    assert store.arm(reference=ref, identity=_identity(), slot="approval_link",
+                     client_id="c1", tool_use_id="d") is None       # unredeemable
+    assert store.reference_count() == 0                            # swept as used
+    # expired
+    _open_delivering(store, call="link-2")
+    ref2, _ = _dep(store)
+    clock.t += rb.reference_ttl_s() + 1
+    assert store.take_for_delivery(ref2) is None
+    # armed (unreachable through a valid manifest; the store refuses anyway)
+    _open_delivering(store, call="link-3")
+    ref3, _ = _dep(store)
+    store.close_call("c1", "link-3")
+    _open(store, client="c1", call="d", provides=(), tool=DONE)
+    assert store.arm(reference=ref3, identity=_identity(), slot="approval_link",
+                     client_id="c1", tool_use_id="d")
+    assert store.take_for_delivery(ref3) is None
+    assert store.take_for_delivery("casa-cap-" + "0" * 32) is None
+
+
 def _minted(store, clock=None, **id_over):
     _open(store, identity=_identity(**id_over))
     ref, _ = store.deposit(client_id="c1", slot="link", value=SENTINEL)
@@ -479,6 +571,8 @@ def test_matchers_and_env_shape():
     for event, lst in ms.items():
         assert len(lst) == 1 and isinstance(lst[0], HookMatcher)
         assert lst[0].matcher == "mcp__plugin_.*"
+        # #1015: the matcher timeout is a commitment, not the SDK's default
+        assert lst[0].timeout == 60.0 == rb.HOOK_TIMEOUT_S
         assert re.fullmatch(lst[0].matcher, FETCH) and not re.fullmatch(lst[0].matcher, "Bash")
     assert ms["PreToolUse"][0].hooks[0]._casa_result_broker == "admission"
     assert ms["PreToolUse"][0].hooks[0]._casa_result_broker_client == "abc"
@@ -534,6 +628,44 @@ async def test_deposit_and_redeem_routes():
     assert await _call(red, {"client": "c1", "reference": ref, "ticket": ticket}) == (200, {"error": "wrong_client"})
     assert await _call(red, {"client": "c9", "reference": ref, "ticket": ticket}) == (200, {"value": SENTINEL})
     assert await _call(red, {"client": "c9", "reference": ref, "ticket": ticket}) == (200, {"error": "unknown_or_used"})
+
+
+@pytest.mark.asyncio
+async def test_deposit_route_carries_caption_and_label():
+    store, _ = _store()
+    dep = rb.build_broker_deposit_handler(store)
+    _open_delivering(store)
+    base = {"client": "c1", "slot": "approval_link", "value": URL}
+    assert await _call(dep, {**base, "caption": 7}) == (200, {"error": "bad_caption"})
+    assert await _call(dep, {**base, "label": ["x"]}) == (200, {"error": "bad_label"})
+    assert await _call(dep, {**base, "value": "http://x.example/"}) == (200, {"error": "bad_link"})
+    assert await _call(dep, {**base, "label": "www.x"}) == (200, {"error": "bad_label"})
+    status, body = await _call(dep, {**base, "caption": "one-time", "label": "Approve"})
+    assert status == 200 and rb.is_reference(body["reference"])
+    r = store._refs[body["reference"]]
+    assert (r.caption, r.label) == ("one-time", "Approve")
+
+
+@pytest.mark.asyncio
+async def test_deposit_route_ignores_metadata_for_an_undelivered_slot():
+    """Diff round 1 (Astra S1): the base ignored unknown request members, so
+    a deposit for a slot the call does NOT deliver must mint a reference
+    whatever `caption`/`label` carry — even a non-string. Only a delivered
+    slot judges them, type included."""
+    store, _ = _store()
+    dep = rb.build_broker_deposit_handler(store)
+    _open(store)                       # provides ("link",), delivers nothing
+    status, body = await _call(dep, {"client": "c1", "slot": "link", "value": SENTINEL,
+                                     "caption": 7, "label": False})
+    assert status == 200 and rb.is_reference(body["reference"])
+    assert (store._refs[body["reference"]].caption,
+            store._refs[body["reference"]].label) == ("", "")
+    _open_delivering(store, call="link-1")
+    assert await _call(dep, {"client": "c1", "slot": "approval_link", "value": URL,
+                             "caption": 7}) == (200, {"error": "bad_caption"})
+    assert await _call(dep, {"client": "c1", "slot": "approval_link", "value": URL,
+                             "label": False}) == (200, {"error": "bad_label"})
+    assert store.reference_count() == 1
 
 
 # ---------------------------------------------------------------------------
