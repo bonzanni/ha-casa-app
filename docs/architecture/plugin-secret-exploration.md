@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-15
+last_reviewed: 2026-09-17
 ---
 
 # Plugin secret exploration
@@ -36,7 +36,11 @@ op-generated id and, per field, the field's op-generated id, its type (validated
 `op`'s own enum) and a **role** from a closed set Casa owns — `client_id`, `client_secret`,
 `api_key`, `token`, `refresh_token`, `access_token`, `credential`, `username`, `password`,
 `email`, `hostname`, `url`, `account`, `region`, `other_known`, or none — derived in-process
-from the label, which is never returned. In place of a title, the query term the item matched.
+from the label, which is never returned. In place of a title, the query term the item matched,
+under the key `matched_query` — never `name`: a reader of `name` takes the search word for the
+item's name, and two different items whose titles both contain it then read as two items with
+the same name, which is how an operator was once asked to choose between two items "literally
+named bank" that did not exist.
 Labels, sections, values, references and notes never reach a result by any path; the `op`
 CLI's own output never reaches one either: a failure is a fixed classification, because
 truncating stderr is not redaction. A field with no role is the operator's to name: the
@@ -46,7 +50,7 @@ reference the resolver accepts.
 
 ## Contracts & invariants
 
-**INV-TOOL-009**: When `plugin_add` or `plugin_update` activates a plugin with required environment variables that are unresolved, and a default vault and a 1Password token are configured, the result carries `secret_candidates` — the vault searched, the queries tried, the matching items as the query term each matched and its op id with, per field, the op id, a role from Casa's closed set and a validated type, and the variables still unresolved — and never a title, a label, a section, a field value, a reference, a token or the `op` CLI's own output; a failed lookup is reported as a fixed classification — the exit code for a non-zero exit, `op_timeout` or `op_unreadable` for a call that did not return or returned something other than the expected JSON — and does not fail the mutation and logs no message of the failure's own; no operator-typed vault string is returned — an item is named by the query term it matched and its id, and a field by its id, its type and a role from Casa's closed set, never by its label or section; nothing is wired by it; and the two vault tools accept an omitted `vault`, fall back to the same default, and fail with the same classification.
+**INV-TOOL-009**: When `plugin_add` or `plugin_update` activates a plugin with required environment variables that are unresolved, and a default vault and a 1Password token are configured, the result carries `secret_candidates` — the vault searched, the queries tried, the matching items as the query term each matched and its op id with, per field, the op id, a role from Casa's closed set and a validated type, and the variables still unresolved — and never a title, a label, a section, a field value, a reference, a token or the `op` CLI's own output; a failed lookup is reported as a fixed classification — the exit code for a non-zero exit, `op_timeout` or `op_unreadable` for a call that did not return or returned something other than the expected JSON — and does not fail the mutation and logs no message of the failure's own; no operator-typed vault string is returned — an item is reported by the query term its title matched (the `matched_query` key, never a `name`) and its id, and a field by its id, its type and a role from Casa's closed set, never by its label or section; nothing is wired by it; and the two vault tools accept an omitted `vault`, fall back to the same default, and fail with the same classification.
 
 The exploration runs after the registry write and the reload, so it can neither delay nor
 fail activation. The queries are the plugin name and each vendor stem of the unresolved
@@ -64,11 +68,15 @@ Schema objects: the SDK compiles the dict shorthand to required-all, which is ho
 handler-side fallback shipped without ever being reachable through the validator — the
 call the fallback was written for was refused before the handler ran.
 
-**What the recipe does with the result** (`recipes/plugin/secrets.md`): exactly one item whose
-field roles map one-to-one onto the unresolved variables is wired, one
-`set_plugin_env_reference` per variable, then reloaded and verified, and named in the
-completion; several items, or a variable with no field or two plausible fields, is a question
-asked in the engagement topic naming what was found; nothing found is one more search with a
+**What the recipe does with the result** (`recipes/plugin/secrets.md`): the vault is searched
+only for a variable that holds a credential — a variable the plugin documents as a plain
+setting, a vault name or a host, is set from the plugin's documentation or asked by what it
+means, never mapped to an item. Exactly one item whose field roles map one-to-one onto the
+unresolved variables is wired, one `set_plugin_env_reference` per variable, then reloaded and
+verified, and named in the completion; several items, or a variable with no field or two
+plausible fields, is a question asked in the engagement topic naming what was found — each
+item described by its category and the roles of its fields, which the operator can
+recognise, and never by its `matched_query`; nothing found is one more search with a
 different keyword if one is plausible, then a report naming the vault and the queries. A
 completion that leaves a required variable unwired without saying what was searched is a
 doctrine violation, pinned in prose tests like the liveness prohibition.

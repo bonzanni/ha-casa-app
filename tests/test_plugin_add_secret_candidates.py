@@ -125,7 +125,7 @@ async def test_one_matching_item_is_returned_as_ids_and_roles(monkeypatch, tmp_p
     assert sc["vault"] == "Casa"
     assert sc["queries"] == ["gmail"]
     assert sc["unresolved"] == _REQUIRED
-    assert sc["items"] == [{"name": "gmail", "id": "abc123",
+    assert sc["items"] == [{"matched_query": "gmail", "id": "abc123",
                             "fields": _GMAIL_FIELDS_PROJECTED}]
     serialised = json.dumps(payload)
     for forbidden in (_CANARY, "ops_CANARY_TOKEN", "op://", "Gmail", "client id",
@@ -150,7 +150,7 @@ async def test_vendor_stem_query_is_tried_when_the_name_finds_nothing(monkeypatc
             "targets": ["resident:assistant"]})
     sc = json.loads(r["content"][0]["text"])["secret_candidates"]
     assert sc["queries"] == ["voicemail", "elevenlabs", "openai"]
-    assert sc["items"] == [{"name": "elevenlabs", "id": "e1", "fields": []}]
+    assert sc["items"] == [{"matched_query": "elevenlabs", "id": "e1", "fields": []}]
 
 
 async def test_already_resolved_vars_are_not_listed_as_unresolved(monkeypatch, tmp_path):
@@ -336,7 +336,8 @@ async def test_the_title_is_never_returned(monkeypatch, tmp_path, doc_extra, tit
                                {"abc123": _doc_with(doc_extra)})):
         payload = await _add(tools_mod)
     item = payload["secret_candidates"]["items"][0]
-    assert item["name"] == "gmail"          # the matched query term
+    assert item["matched_query"] == "gmail"   # the matched query term
+    assert "name" not in item            # #1019: never a key a reader takes for the title
     assert item["id"] == "abc123"
     serialised = json.dumps(payload)
     for forbidden in (_CANARY, "ops_CANARY_TOKEN", "sk-live", "key=value", "op://"):

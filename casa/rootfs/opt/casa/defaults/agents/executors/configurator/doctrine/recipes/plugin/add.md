@@ -69,8 +69,10 @@ non-empty, wiring them is a REQUIRED stage of this install, not a suggestion:
 the plugin's MCP server won't start without them, and the result's
 `secret_candidates` already carries what the default vault holds for them —
 follow `secrets.md` (explore, then wire, then ask). A completion that leaves a
-required variable unwired without saying which vault was searched, for what,
-and what was found is a doctrine violation. Then read
+required credential unwired without saying which vault was searched, for what,
+and what was found is a doctrine violation; a required plain setting is set
+from the plugin's documentation, or asked of the operator by what it means,
+and never searched for. Then read
 `verify_plugin_state(plugin_name=name)`: `ready:true`
 means every target agrees. The result carries the same phase fields as
 `plugin_update` (`activation_committed` / `runtime_ready`) — on

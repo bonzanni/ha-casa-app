@@ -19,13 +19,25 @@ asked to rotate a secret on an already-installed plugin.
 - The operator asks to update an existing secret (1P field changed,
   vendor rotated the key, etc.).
 
+## First: is it a credential?
+
+The vault is searched only for a variable that holds a credential — a key, a
+token, a client id or secret, a password, an account email. A required
+variable the plugin documents as a plain setting — a vault name, a host, a
+region, an environment — is never mapped to a vault item: set it from the
+plugin's documentation with a literal `op_ref_or_value`, or ask the operator
+for it by what it means. When you cannot tell which it is, read the plugin's
+README or reference docs for that variable before searching; when they do not
+say, treat the variable as a credential and search for it.
+
 ## Discover the source — explore before asking
 
 `plugin_add` and `plugin_update` already searched the default vault for you:
 when a plugin declares required variables that are unresolved, their result
 carries `secret_candidates` — the vault searched, the queries tried (the
 plugin name, then each vendor stem of the variables), up to five matching
-items (each named by the query term it matched, with its id) and, per field,
+items (each as `matched_query` — the search term its title contained, never
+its title and not its name — with its id) and, per field,
 the field's id, its `role` (`client_id`, `client_secret`, `api_key`, `token`,
 `refresh_token`, `access_token`, `credential`, `username`, `password`, `email`,
 `hostname`, `url`, `account`, `region`, `other_known`, or null) and its type —
@@ -41,10 +53,15 @@ Read it before anything else, and decide from it:
   used in your completion.
 - When several items match, or a variable has no field with a matching role
   or two fields share the role, ask in the engagement topic, naming what you
-  found ("two items match 'gmail' — ids abc123 and def456 — which one?"; "the
+  found. Describe each item by its category and the roles of its fields —
+  what the operator can recognise — and never by its `matched_query`: two
+  items with the same `matched_query` are two different items whose titles
+  both contain that word, never two items with the same name ("two items
+  contain 'gmail': an API credential with a client id, a client secret and
+  an email, and a login with a username and a password — which one?"; "the
   item has two fields I cannot place, ids f7 and f9 — which is
-  ELEVENLABS_API_KEY?"). Never ask the operator for a secret value; ask for
-  the item or field name, or which id is which.
+  ELEVENLABS_API_KEY?"). Never ask the operator for a secret value; ask
+  which item or field it is.
 - When nothing matches (empty `items`), call `list_vault_items(query=...)`
   once more with a different keyword if one is plausible (a product name from
   the plugin's README, say); then report that vault, the queries tried, that
@@ -63,7 +80,7 @@ but you pass it through unchanged and never repeat it), skip to Set the
 entry below. For a manual search:
 
     list_vault_items(query="<vendor-or-plugin-keyword>")
-    # → { items: [ { name, id, category }, ... ] }   # name = the term matched
+    # → { items: [ { matched_query, id, category }, ... ] }   # the search term, never the title
 
 Filter by a keyword — the schema requires one; don't enumerate the whole
 vault.
@@ -162,6 +179,19 @@ per target role at the end of the install.
   prior values.
 - Verifying BEFORE the reload — guaranteed-stale `unresolved` result
   (see "Order matters" above).
+
+## A value the plugin's setup tool reports (`casa.setupProvides`)
+
+A variable the plugin declares in `casa.setupProvides` is created or found
+by the plugin's own setup tool — a key it forges, an application id it
+learns — and `verify_plugin_state` grades it `unprovisioned`, not
+`unresolved`. Never ask the operator for it. Nothing wires it on its own:
+the setup tool REPORTS the reference or value to wire, and wiring it is your
+job. When that report reaches you — in your brief, or in a setup result you
+are shown — run Set the entry, Reload and Verify above with exactly what it
+names. When no setup report has named the value yet, say it is waiting for
+the plugin's setup run; never report it as something no configurator can
+do.
 
 ## Optional keys NOT declared by the plugin (e.g. `context7`)
 

@@ -1527,6 +1527,11 @@ async def test_sequencer_passes_setup_provides_unprovisioned_real_verify(
     assert "setup_env_unprovisioned" in v["reasons"]       # …for exactly this reason
     row = next(s for s in v["secrets"] if s["var"] == "CASA_PLUGIN_MTG_KEY")
     assert row["status"] == "unprovisioned"
+    # #1021: the reason names who wires it — never "the setup tool has not
+    # provisioned it yet", which read as a value that fills itself in.
+    assert row["reason"] == tools_mod._SETUP_PROVIDED_REASON
+    assert "the configurator wires it with set_plugin_env_reference" in row["reason"]
+    assert "has not provisioned" not in row["reason"]
     # …yet the sequencer does NOT compensate: the plugin must load
     # unprovisioned for its setup tool to ever run (#429).
     assert seq["not_ready"] == []

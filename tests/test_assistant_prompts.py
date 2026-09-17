@@ -1084,13 +1084,21 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # over base-vs-new residual text: exactly ONE `insert` of 75 words on each of
 # the three assistant carriers, that paragraph and nothing else; the six
 # butler and concierge carriers byte-identical. No retention claim anywhere.
+#
+# MOVED 2026-09-17 (#1021), the three `assistant:*` carriers ONLY. The Core
+# doctrine gains one sentence: a setup tool's result that names values for the
+# configurator to wire is handed to the configurator, and the setup run does
+# not wire them itself. Measured with `difflib` over base-vs-new compiled text,
+# word by word: exactly ONE `insert` on each of the three assistant carriers,
+# that sentence and nothing else; the six butler and concierge carriers
+# byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "f4d8e0bd8a70b548d2fbe2c9958d531c2b57bd9eda57af0b1bb9b98da4b340b9",
+        "1c0f7ff7e8ba2a5cb64926443d1c783879e7755d522c132bbce75f09033545a7",
     "assistant:text":
-        "fddc3c05b08d784a5e2dbf31e84d1209bddadbc87edd719ae9455c0ceae38cc1",
+        "9c363fdf1a39d88a3689aa5f7104afaff0fcf0ea323c5214d543c9656bf4bf76",
     "assistant:voice":
-        "b836dc2ebcabb24a0755fb74c4f64b325af1d9602442c224562f2ce976278b23",
+        "5689afa3fa7e3a2d40682db27cc7e3fe98739d8217c4f5f98ba4c3f8a324b6bf",
     "butler:restricted_webhook":
         "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
     "butler:text":
@@ -1263,7 +1271,7 @@ def test_the_retention_telling_is_scoped_by_channel_because_invoke_gets_text():
 # forbids putting environment-variable names and "raw fields copied out of a
 # tool result" in front of a household member (doctrine.md:14) and asks for "the
 # thing they have, not the thing you lack" (:16) — and the row to lead from is
-# literally `fx-setup still needs a value from you — CASA_PLUGIN_FX_BIN`.
+# literally `fx-setup is waiting for a setup-provided value to be wired in — CASA_PLUGIN_FX_BIN`.
 #
 # Specified by the red-case reviewer (Astra), 2026-09-10, before any production
 # change. Round 1's strings were RETURNED by this stream and re-specified: they

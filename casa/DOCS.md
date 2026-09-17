@@ -868,11 +868,16 @@ these tools:
 
 ### Secrets
 
-Unchanged from prior releases: a plugin declares required environment variables
-via `${VAR}` references in its `.mcp.json`. When you add a plugin, the
-configurator reports the required variables and asks for a 1Password reference
-(`op://…`) for each, stored in `plugin-env.conf`. Secret values never appear in
-transcripts.
+A plugin declares required environment variables via `${VAR}` references in its
+`.mcp.json`, and the configurator writes them to `plugin-env.conf`. What it does
+with one depends on what the variable holds. A **credential** is searched for in
+your default vault and wired as a 1Password reference (`op://…`); you are asked
+only which item or field it is when the search cannot settle it, never for the
+value itself. A **plain setting** — a vault name, a host, a region — is taken
+from the plugin's documentation, or you are asked for it by what it means, and
+is never mapped to a vault item. A value the plugin's own setup tool creates
+(`casa.setupProvides`) is neither: the setup run reports what to wire and the
+configurator wires it. Secret values never appear in transcripts.
 
 ### Protected plugin tools (v0.76.0)
 
@@ -1022,7 +1027,10 @@ The plugin then loads without them — Casa passes them as empty, never as a
 literal placeholder — so setup can run. `verify_plugin_state` still reports
 it **not ready** with `setup_env_unprovisioned` until the values actually
 land, so a setup run that never happened stays visible rather than passing
-silently. Declared names must use the reserved `CASA_PLUGIN_` prefix:
+silently. A plugin cannot write its own settings: the setup tool reports the
+reference or value to wire, the assistant hands that report to the
+configurator, and the configurator wires it. Make the setup tool's result
+name each value to wire exactly. Declared names must use the reserved `CASA_PLUGIN_` prefix:
 declaring a name binds it for the whole session, so the namespace is fenced.
 
 **A merely optional variable needs no declaration.** Write

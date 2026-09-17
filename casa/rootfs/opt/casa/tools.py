@@ -13888,7 +13888,7 @@ def _explore_vault(vault: str, queries: list[str], unresolved: list[str]) -> dic
                 return got
             doc = got["doc"]
             iid = it.get("id")
-            items.append({"name": _matched_term(it.get("title"), [q]),
+            items.append({"matched_query": _matched_term(it.get("title"), [q]),
                           "id": iid if isinstance(iid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", iid) else None,
                           "fields": _project_item_fields(doc)})
     return {"vault": vault, "queries": queries, "items": items,
@@ -16182,8 +16182,7 @@ def _tool_verify_plugin_state(
     for row in secrets_status:
         if row["status"] == "unresolved" and row["var"] in setup_provided:
             row["status"] = "unprovisioned"
-            row["reason"] = ("declared in casa.setupProvides — the plugin's "
-                             "setup tool has not provisioned it yet")
+            row["reason"] = _SETUP_PROVIDED_REASON
             unprovisioned.append(row["var"])
     # Sol r1: the rows above are built from `.mcp.json` ${VAR} references
     # only, so a setupProvides name the plugin reads from the INHERITED
@@ -16197,8 +16196,7 @@ def _tool_verify_plugin_state(
             continue
         secrets_status.append({
             "var": var, "source": "setup", "status": "unprovisioned",
-            "reason": ("declared in casa.setupProvides — the plugin's setup "
-                       "tool has not provisioned it yet")})
+            "reason": _SETUP_PROVIDED_REASON})
         unprovisioned.append(var)
     if unprovisioned:
         reasons.append("setup_env_unprovisioned")
@@ -16412,6 +16410,17 @@ def _op_item_list(query: str, vault: str) -> dict:
     return {"rows": items}
 
 
+# #1021: nothing writes a setup-provided value on its own. The plugin's setup
+# tool creates or finds it and REPORTS the reference to wire; the configurator
+# wires it. The old text ("the plugin's setup tool has not provisioned it yet")
+# told a configurator the value would fill itself in, so it declared the job
+# not its own while the setup report handed the job to it.
+_SETUP_PROVIDED_REASON = (
+    "declared in casa.setupProvides — not wired yet: the plugin's setup tool "
+    "reports the value to wire, and the configurator wires it with "
+    "set_plugin_env_reference and casa_reload(scope='plugin_env')")
+
+
 def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
     vault = vault or _default_vault()
     got = _op_item_list(query, vault)
@@ -16421,7 +16430,10 @@ def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
     for i in got["rows"]:
         iid = i.get("id")
         cat = i.get("category")
-        rows.append({"name": _matched_term(i.get("title"), [query]),
+        # #1019: the key is `matched_query`, never `name` — the value is the
+        # search term the title contained, and a reader of `name` takes it for
+        # the item's name (two different items read as two items sharing one).
+        rows.append({"matched_query": _matched_term(i.get("title"), [query]),
                      "id": iid if isinstance(iid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", iid) else None,
                      "category": cat if isinstance(cat, str) and re.fullmatch(r"[A-Z_]{1,40}", cat) else None})
     return {"items": rows}
@@ -16617,9 +16629,10 @@ async def remove_plugin_env_reference(args: dict) -> dict:
 
 @tool(
     "list_vault_items",
-    "List 1Password vault items whose title contains the query: each as the "
-    "query term it matched, its op item id and its category (never the "
-    "title). An omitted vault falls back to the configured "
+    "List 1Password vault items whose title contains the query: each as "
+    "matched_query (the search term its title contained — not the item's "
+    "name; the title is never returned), its op item id and its category. "
+    "An omitted vault falls back to the configured "
     "onepassword_default_vault.",
     # An explicit JSON Schema: the shorthand {key: type} form marks EVERY key
     # required, so the omitted-vault call the description promises was rejected

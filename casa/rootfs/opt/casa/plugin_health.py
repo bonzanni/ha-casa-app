@@ -322,7 +322,9 @@ def mark_notified(fps: list[str], path: Path = HEALTH_PATH, *,
 # words get an entry here; everything else is classified by suffix below. A code
 # absent from both is not a bug — it renders the fallback and is logged.
 _REASON_PHRASES = {
-    "setup_env_unprovisioned": "still needs a value from you",
+    # #1021: a casa.setupProvides value comes from the plugin's own setup run
+    # and is wired by the configurator — never something the operator supplies.
+    "setup_env_unprovisioned": "is waiting for a setup-provided value to be wired in",
     "env_unresolved": "is missing a setting it needs",
     "setup_episode_pending": "has a setup step still to finish",
     "setup_episode_failed": "could not finish setting up",
@@ -358,7 +360,7 @@ _REASON_PHRASES = {
 # Ordered — the first matching suffix wins.
 _REASON_SUFFIXES = (
     ("_pending_ack", "is waiting for your approval"),
-    ("_unprovisioned", "still needs a value from you"),
+    ("_unprovisioned", "is waiting for a setup-provided value to be wired in"),
     ("_unresolved", "is missing a setting it needs"),
     ("_invalid", "could not be loaded"),
     ("_missing", "could not be loaded"),
