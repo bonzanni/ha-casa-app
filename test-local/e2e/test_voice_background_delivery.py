@@ -110,6 +110,7 @@ class _SpecialistRunner:
 
     async def __call__(
         self, cfg, task_text, context_text, resolution=None, output_format=None,
+        tool_counts=None,
     ) -> tools.DelegatedOutput:
         self.calls.append({
             "task": task_text,
