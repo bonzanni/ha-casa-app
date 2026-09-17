@@ -357,6 +357,9 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::emit_completion":
         "posts an engagement's completion summary to that engagement's topic; "
         "its caller is the engaged executor or specialist, not a scheduled turn",
+    "tools.py::report_job_progress":
+        "posts a background job's batch progress line to that job's engagement "
+        "topic; its caller is the specialist running the job, not a scheduled turn",
     "tools.py::cancel_engagement":
         "closes an engagement's topic and notifies the engager; that notice is "
         "Casa's, not the calling turn's message",
@@ -459,6 +462,7 @@ NOT_A_DELIVERY = {
     "tools.py::specialist_rollback",
     "tools.py::specialist_uninstall",
     "tools.py::specialist_upgrade",
+    "tools.py::start_job",
     "tools.py::trigger_ack_revoke",
     "tools.py::verify_plugin_secrets",
     "tools.py::verify_plugin_state",

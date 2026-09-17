@@ -11,6 +11,8 @@
   doc: architecture/scheduled-asks.md
 - item: casa/rootfs/opt/casa/authz_grants.py
   doc: architecture/plugins.md
+- item: casa/rootfs/opt/casa/background_jobs.py
+  doc: architecture/background-jobs.md
 - item: casa/rootfs/opt/casa/bus.py
   doc: architecture/concurrency-model.md
 - item: casa/rootfs/opt/casa/callback_acks.py
@@ -363,6 +365,10 @@
   doc: architecture/triggers.md
 - item: tool:continue_voice_job
   doc: architecture/tools-interface.md
+- item: tool:start_job
+  doc: architecture/background-jobs.md
+- item: tool:report_job_progress
+  doc: architecture/background-jobs.md
 - item: tool:delegate_to_agent
   doc: architecture/tools-interface.md
 - item: tool:delete_engagement_workspace

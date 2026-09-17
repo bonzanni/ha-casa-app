@@ -681,6 +681,11 @@ def artifact_verdict(path: Path, *, name: str, repo: str, revision: str,
         manifest_result_contract(manifest)
     except StoreError as _exc:
         return _exc.reason_code
+    try:
+        jobs = manifest_jobs(manifest)
+        _validate_job_skills(Path(path), jobs)
+    except StoreError as _exc:
+        return _exc.reason_code
     return None
 
 
@@ -1085,6 +1090,75 @@ def manifest_callbacks(manifest: dict, plugin_name: str) -> list:
             reason_code="callbacks_invalid",
             detail={"errors": errors})
     return callbacks
+
+
+_JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_JOB_FIELDS = {
+    "name", "skill", "title", "summary", "batches", "turnsPerBatch",
+}
+
+
+def _jobs_invalid(entry: int | None, field: str) -> StoreError:
+    where = (f"entry {entry} field {field}"
+             if entry is not None else f"field {field}")
+    return StoreError(f"casa.jobs invalid: {where}", reason_code="jobs_invalid")
+
+
+def manifest_jobs(manifest: dict) -> list[dict]:
+    """Strict ``casa.jobs`` extraction for declared background jobs."""
+    casa = manifest.get("casa") if isinstance(manifest, dict) else None
+    if not isinstance(casa, dict) or "jobs" not in casa:
+        return []
+    jobs = casa.get("jobs")
+    if not isinstance(jobs, list):
+        raise _jobs_invalid(None, "jobs")
+
+    out: list[dict] = []
+    names: set[str] = set()
+    for index, job in enumerate(jobs, start=1):
+        if not isinstance(job, dict):
+            raise _jobs_invalid(index, "entry")
+        unknown = set(job) - _JOB_FIELDS
+        if unknown:
+            raise _jobs_invalid(index, sorted(unknown)[0])
+        name = job.get("name")
+        if not isinstance(name, str) or not _JOB_NAME_RE.fullmatch(name):
+            raise _jobs_invalid(index, "name")
+        if name in names:
+            raise _jobs_invalid(index, "name")
+        names.add(name)
+
+        skill = job.get("skill")
+        if not isinstance(skill, str) or not skill:
+            raise _jobs_invalid(index, "skill")
+        title = job.get("title")
+        if (not isinstance(title, str) or not 1 <= len(title) <= 60
+                or "\n" in title or "\r" in title):
+            raise _jobs_invalid(index, "title")
+        summary = job.get("summary")
+        if ("summary" in job and (not isinstance(summary, str)
+                                  or not 1 <= len(summary) <= 200
+                                  or "\n" in summary or "\r" in summary)):
+            raise _jobs_invalid(index, "summary")
+        batches = job.get("batches")
+        if batches != "unlimited" and (isinstance(batches, bool)
+                                       or not isinstance(batches, int)
+                                       or batches < 1):
+            raise _jobs_invalid(index, "batches")
+        turns_per_batch = job.get("turnsPerBatch")
+        if ("turnsPerBatch" in job
+                and (isinstance(turns_per_batch, bool)
+                     or not isinstance(turns_per_batch, int)
+                     or turns_per_batch < 1)):
+            raise _jobs_invalid(index, "turnsPerBatch")
+        out.append(dict(job))
+    return out
+
+
+def _validate_job_skills(root: Path, jobs: list[dict]) -> None:
+    for index, job in enumerate(jobs, start=1):
+        if not (Path(root) / "skills" / job["skill"] / "SKILL.md").is_file():
+            raise _jobs_invalid(index, "skill")
 
 
 def manifest_emits(manifest: dict, plugin_name: str) -> list:
@@ -1619,6 +1693,8 @@ def validate_manifest(root: Path, expected_name: str, *,
     # names derive from the RUNTIME name (manifest_name when owned), same as
     # triggers.
     manifest_callbacks(manifest, manifest_name or expected_name)
+    jobs = manifest_jobs(manifest)
+    _validate_job_skills(Path(root), jobs)
     # A PRESENT-but-malformed casa.emits/casa.subscribes refuses the
     # install/update outright (strict; raises emits_invalid/
     # subscribes_invalid) — same posture as callbacks. Effective names

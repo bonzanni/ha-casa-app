@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.321.0] - 2026-09-17
+
+### Added
+
+- Background jobs. A plugin can declare long work as a job in its manifest
+  (`casa.jobs`: the skill it runs, a title, a batch cap or `unlimited`, and an
+  optional per-batch turn limit). When you ask the assistant for that work she
+  starts it and tells you at once; the specialist whose plugins declare it
+  works through it in batches in its own Engagements topic, posting one
+  progress line per batch. Anything you write in the topic is read between
+  batches, `/cancel` stops the job, and after a restart an open job resumes
+  with its next batch. When the job completes the topic closes and the
+  assistant posts the summary; if it fails or is cancelled, both say so with
+  the last progress it reported. A job that makes no progress in three
+  batches in a row, or reaches its batch cap, ends as failed. Plugins using
+  jobs require this release or later (#1023).
+
+### Fixed
+
+- A quick question to a specialist no longer comes back "busy" while that
+  specialist has an engagement open, so a bank authorization or a balance
+  check still goes through during a long task. A specialist still runs at most
+  one engagement at a time; asking for a second names the one already
+  running (#1016).
+- When a delegated task stops partway — it ran out of turns or hit the time
+  limit — the assistant is told which tools the specialist had already
+  called, and no longer reports that nothing changed (#1022).
+
 ## [0.320.0] - 2026-09-17
 
 ### Fixed

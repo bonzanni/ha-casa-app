@@ -152,6 +152,14 @@ publish a briefly partial role map, since the specialist registry is cleared and
 place off-loop while another reload snapshots it; and *tier* lookups still read a boot-time
 registry global no reload refreshes.
 
+Interactive specialist launches, including `start_job`, use a role-wide
+`<role>:engagement` limiter scope. Before acquiring it, admission checks active and
+idle specialist records across all chats. An existing record produces `engagement_busy`
+with its engagement id, topic id and job title (or the first 80 task characters).
+Quick sync/async delegations retain their chat-and-role scope, independently of the
+engagement slot; the global cap still applies. Boot does not restore permits, so the
+record check also covers resumed engagements.
+
 ## Failure behavior
 
 **A delegation names a target the caller does not declare.** Refused before any lookup, so

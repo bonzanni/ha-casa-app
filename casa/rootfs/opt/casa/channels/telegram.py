@@ -2204,7 +2204,7 @@ class TelegramChannel(Channel):
         self._inbound_cleanup_tasks.add(t)
         t.add_done_callback(self._inbound_cleanup_tasks.discard)
 
-    async def _report_incomplete_turn(self, rec, token) -> None:
+    async def _report_incomplete_turn(self, rec, token) -> bool:
         """#692/#678: tell the operator when THEIR turn ended without the
         turn's own terminal artifact — or, #665, finished with its streamed
         text wholly undelivered — and the engagement is still live.
@@ -2255,15 +2255,15 @@ class TelegramChannel(Channel):
         # (see casa_core.read_followup_incomplete). The seam-wired check IS
         # load-bearing — an unwired channel has no seam to call.
         if self._driver_turn_incomplete is None:
-            return
+            return False
         try:
             reason = self._driver_turn_incomplete(rec, token)
         except Exception:  # noqa: BLE001 — an observation read is never fatal
             logger.debug("follow-up observation read failed for %s",
                          rec.id[:8], exc_info=True)
-            return
+            return False
         if not reason:
-            return
+            return False
         status, told = "", False
         if self._engagement_registry is not None:
             try:
@@ -2280,7 +2280,7 @@ class TelegramChannel(Channel):
                 "turn %s ended incompletely on an already-terminal "
                 "engagement (%s) whose terminal path DID tell this topic — it "
                 "owns the telling", rec.id[:8], status)
-            return
+            return True
         terminal_untold = status in ("completed", "cancelled", "error")
         if terminal_untold:
             logger.warning(
@@ -2314,6 +2314,7 @@ class TelegramChannel(Channel):
         except BaseException:  # noqa: BLE001 — one bounded best-effort attempt
             logger.warning("incomplete-turn notice failed for %s",
                            rec.id[:8], exc_info=True)
+        return True
 
     async def _deliver_turn_bg(
         self, rec, text: str, *, tg_message_id: int | None = None,
@@ -2347,6 +2348,9 @@ class TelegramChannel(Channel):
         ``error``) or a raised/cancelled delivery CAS-rolls it back so the
         question stops being treated as answered.
         """
+        import background_jobs
+        background_jobs.turn_owner_started(rec.id)
+
         def _release_inbound():
             # G4 D2: the reservation ends when the enqueue RESOLVED either
             # way — an accepted enqueue transfers "unread" accounting to the
@@ -2387,7 +2391,7 @@ class TelegramChannel(Channel):
             # the turn's own terminal artifact, and tell the operator if it
             # did not. After the discharge above, so the ledger is in its
             # final state either way.
-            await self._report_incomplete_turn(rec, inbound_token)
+            turn_cut_off = await self._report_incomplete_turn(rec, inbound_token)
         except asyncio.CancelledError:
             _release_inbound()
             # Cancelled before a durable enqueue could promote — roll back.
@@ -2445,11 +2449,27 @@ class TelegramChannel(Channel):
                         self._driver_discharge_inbound(rec, inbound_token)
                     except Exception:  # noqa: BLE001
                         logger.debug("inbound discharge failed", exc_info=True)
+            if latest is not None and latest.origin.get("job"):
+                from tools import _finalize_engagement
+                kind = getattr(exc, "kind", None)
+                kind = getattr(kind, "value", kind) or type(exc).__name__
+                await _finalize_engagement(
+                    latest, outcome="error",
+                    text=f"a batch failed: {kind}",
+                    artifacts=[], next_steps=[], driver=self._engagement_driver)
             return
-        # §A3: a durable-enqueue REJECTION (capacity drop / spool-write error)
-        # rolls the reservation back; an accepted enqueue already promoted it.
-        if disposition in ("dropped_full", "error"):
-            await self._rollback_answer(rec, answer_token)
+        else:
+            # §A3: a durable-enqueue REJECTION (capacity drop / spool-write error)
+            # rolls the reservation back; an accepted enqueue already promoted it.
+            if disposition in ("dropped_full", "error"):
+                await self._rollback_answer(rec, answer_token)
+        finally:
+            background_jobs.turn_owner_finished(rec.id)
+        if rec.origin.get("job"):
+            task = asyncio.create_task(background_jobs.job_after_turn(
+                rec, self, turn_cut_off=turn_cut_off))
+            self._turn_tasks.add(task)
+            task.add_done_callback(self._turn_tasks.discard)
 
     async def _resume_and_ready(self, rec) -> bool:
         """Resume-if-suspended + lifecycle gate for one engagement turn, run

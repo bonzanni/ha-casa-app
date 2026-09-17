@@ -500,6 +500,7 @@ class TestConcurrencyWiring:
 
         async def _slow(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             await asyncio.sleep(10)  # cooperatively cancellable
             return tm.DelegatedOutput(text="too late")
@@ -832,7 +833,7 @@ class TestInteractiveEngagementPermitRelease:
             origin,
         )
         second_payload = json.loads(second["content"][0]["text"])
-        assert second_payload["kind"] == "busy"
+        assert second_payload["kind"] == "engagement_busy"
 
         # Cleanup: release directly (bypassing the full finalize funnel —
         # already covered by test_finalize_engagement_releases_permit).

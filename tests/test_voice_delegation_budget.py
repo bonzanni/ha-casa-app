@@ -169,6 +169,7 @@ class TestVoiceModes:
 
         async def _fake_run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             assert output_format is tm.VOICE_JOB_OUTPUT_FORMAT
             return _voice_output(tm, "ok")
@@ -202,6 +203,7 @@ class TestVoiceModes:
 
         async def _fake_run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             return tm.DelegatedOutput(
                 text="It might be Tuesday.",
@@ -245,6 +247,7 @@ class TestVoiceModes:
 
         async def _fake_run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             return tm.DelegatedOutput(
                 text="Short answer.",
@@ -290,6 +293,7 @@ class TestVoiceModes:
 
         async def _fake_run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             return tm.DelegatedOutput(
                 text="Private detail.",
@@ -790,6 +794,7 @@ class TestVoiceDeadline:
 
         async def _run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             nonlocal launched
             launched = True
@@ -831,6 +836,7 @@ class TestVoiceDeadline:
 
         async def _instant(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             return _voice_output(tm, "done instantly")
 
@@ -865,6 +871,7 @@ class TestVoiceDeadline:
 
         async def _run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             nonlocal launched
             launched = True
@@ -900,6 +907,7 @@ class TestVoiceDeadline:
 
         async def _slow(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             nonlocal launched
             launched = True
@@ -960,6 +968,7 @@ class TestVoiceDeadline:
 
         async def _run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             nonlocal launched
             launched = True
@@ -1008,6 +1017,7 @@ class TestVoiceDeadline:
 
         async def _run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             nonlocal launched
             launched = True

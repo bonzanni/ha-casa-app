@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-09-17
 ---
 
 # Engagement finalization
@@ -197,7 +197,8 @@ remedy on the two ledgers. The job ledger can leave a stop-caused settling exact
 because its boot recovery terminalizes the row and makes the loss deliverable. This ledger
 cannot: its boot reconcile rewrites `active` to `idle`, announces nothing, and is not a terminal
 transition at all — a row left behind here is a live-looking engagement nobody is ever told
-about, not a loss the next boot reports. The carried
+about, or, for a background job, one that boot resumes
+([`background-jobs.md`](background-jobs.md)), not a loss the next boot reports. The carried
 cause that means *leave it for boot* on one ledger cannot mean that here, and a contract written
 once for both would have been wrong on one of them.
 

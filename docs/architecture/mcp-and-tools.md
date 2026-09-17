@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-08
+last_reviewed: 2026-09-17
 ---
 
 # The MCP surface and the tool boundary
@@ -74,7 +74,7 @@ containment floor live in [`architecture/hook-resolution.md`](hook-resolution.md
 A third-party specialist bundle may legitimately have granted itself a privileged
 casa-framework tool before the install-time ceiling existed, and that grant is pinned on
 its engagement record — so the central tool wrapper both transports pass through refuses
-any casa tool outside the consumer-safe allowlist whenever the bound record is a
+any casa tool outside the consumer-safe ceiling whenever the bound record is a
 specialist. Executor records are not ceilinged: their definitions are image-owned.
 
 **Some guards are advisory by construction, and one of them is deliberately imperfect.**
@@ -173,7 +173,9 @@ What it does not cover: a caller with shell access reads the file directly — t
 Enforced in the one wrapper every casa tool passes through at registry definition — the
 same choke point as the context-rebuild fence — so it covers the in-process SDK dispatch of
 an in-casa specialist and the internal-socket path alike, by construction. The ceiling is
-the install-time allowlist unioned with the launch-mandatory grants; when the bound
+the install-time allowlist unioned with the launch-mandatory grants and
+`report_job_progress`, which a job engagement's session is granted
+([`background-jobs.md`](background-jobs.md)); when the bound
 engagement record's kind is specialist and the tool is outside it, the call is refused
 before the handler runs. This is the layer that revokes a forbidden grant PINNED on a
 record before the install and load ceilings existed — the bridge grant-gate honors

@@ -126,6 +126,7 @@ class TestDelegationCeiling:
 
         async def _raise_after_cancel(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             started.set()
             try:
@@ -186,6 +187,7 @@ class TestDelegationCeiling:
 
         async def _runaway(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             try:
                 await asyncio.Event().wait()  # never set — hangs forever
@@ -234,6 +236,7 @@ class TestDelegationCeiling:
 
         async def _quick(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             await asyncio.sleep(0.01)
             return tm.DelegatedOutput(text="done quickly")
@@ -268,6 +271,7 @@ class TestDelegationCeiling:
 
         async def _runaway(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             await asyncio.Event().wait()
             return tm.DelegatedOutput(text="unreachable")
@@ -305,6 +309,7 @@ class TestDelegationCeiling:
 
         async def _boom(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             raise RuntimeError("model exploded")
 
@@ -339,6 +344,7 @@ class TestDelegationCeiling:
 
         async def _slow_unwind(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             try:
                 await asyncio.Event().wait()

@@ -1730,6 +1730,12 @@ class EngagementRegistry:
             rec.last_idle_reminder_ts = ts
             await self._write_tombstone_locked()
 
+    async def persist_origin(self, engagement_id: str) -> None:
+        """Persist updates made to a live record's origin."""
+        async with self._lock:
+            if engagement_id in self._records:
+                await self._write_tombstone_locked()
+
     async def set_resume_fail_count(self, engagement_id: str, count: int) -> None:
         """#326 (low): persist the two-strike resume-failure counter into the
         record's origin. Before this, the counter lived only on the in-memory

@@ -500,6 +500,7 @@ class TestPrelaunchRequiresGate:
 
         async def _fake_run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             assert output_format is None
             return tm.DelegatedOutput(text="ok")

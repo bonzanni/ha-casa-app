@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-09-17
 ---
 
 # Engagement launch detach
@@ -75,7 +75,9 @@ twice). The one case where a winner cannot tell — an inline abort whose launch
 cancelled before it returned the envelope — is handed over explicitly by that launcher: its
 cancellation arm attaches the telling to the abort's own completion, and the abort tells
 live only if it won. The owner's own telling runs shielded and anchored, so a cancellation
-landing inside it neither cuts it nor spawns a second one.
+landing inside it neither cuts it nor spawns a second one. When the launch turn of a
+background job ends with nothing to report, the owner hands the engagement to the job's
+batch loop ([`background-jobs.md`](background-jobs.md)).
 
 **Cancellation has an owner at every point.** An owner cancelled mid-turn takes the
 cancellation arm the tool call had: the cancellation owner reports `launch_cancelled` with

@@ -16,7 +16,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -35,6 +35,7 @@ from system_requirements.manifest import (
     add_plugin_entry as add_manifest, remove_plugin_entry as remove_manifest,
     read_manifest as read_sysreq_manifest, retire_stale_bin,
 )
+import background_jobs
 import plugin_registry
 import plugin_store
 from plugin_grants import (
@@ -1724,6 +1725,7 @@ def _build_specialist_options(
     resolution=None,
     extra_casa_tools: tuple[str, ...] = (),
     output_format=None,
+    max_turns: int | None = None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions for a Tier 2 specialist invocation.
 
@@ -1929,7 +1931,7 @@ def _build_specialist_options(
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
         permission_mode=cfg.tools.permission_mode or "acceptEdits",
-        max_turns=cfg.tools.max_turns,
+        max_turns=cfg.tools.max_turns if max_turns is None else max_turns,
         mcp_servers=mcp_servers if mcp_servers else {},
         hooks=resolved_hooks,
         cwd=agent_home,
@@ -2172,17 +2174,22 @@ def build_engagement_resume_options(
             # current assignments. An EMPTY record ([]) is AUTHORITATIVE (started
             # with no plugins → resume with none); only a pre-v0.71.0 record
             # (field absent → None) falls back to a fresh resolve.
+            job = (getattr(engagement, "origin", None) or {}).get("job")
+            grants = SPECIALIST_CASA_GRANTS + (background_jobs.JOB_CASA_GRANTS if job else ())
+            max_turns = (job.get("turns_per_batch") if job else None) or cfg.tools.max_turns
             recorded = getattr(engagement, "plugin_artifacts", None)
             if recorded is not None:
                 opts = _build_specialist_options(
                     cfg,
                     resolution=_resolution_from_recorded(recorded),
-                    extra_casa_tools=SPECIALIST_CASA_GRANTS,
+                    extra_casa_tools=grants,
+                    max_turns=max_turns,
                 )
             else:
                 opts = _build_specialist_options(
                     cfg,
-                    extra_casa_tools=SPECIALIST_CASA_GRANTS,
+                    extra_casa_tools=grants,
+                    max_turns=max_turns,
                 )
     if opts is None:
         raise RuntimeError(
@@ -2408,6 +2415,7 @@ class DelegatedOutput:
     run_api_error_status: int | None = None
     run_terminal_reason: str | None = None
     run_stop_reason: str | None = None
+    tool_calls: dict[str, int] = field(default_factory=dict)
 
     @property
     def run_aborted(self) -> bool:
@@ -2876,7 +2884,7 @@ def _result_contract_block(output_format: Any) -> str:
 
 async def _run_delegated_agent(
     cfg, task_text: str, context_text: str, resolution=None,
-    output_format=None,
+    output_format=None, tool_counts: dict[str, int] | None = None,
 ) -> DelegatedOutput:
     """Run one ephemeral delegated turn and return text plus structured output.
 
@@ -3113,15 +3121,13 @@ async def _run_delegated_agent(
                         for block in getattr(sdk_msg, "content", []):
                             if isinstance(block, TextBlock):
                                 text += block.text
-                            elif (not _first_tool
-                                    and isinstance(block, ToolUseBlock)):
-                                # Tool NAME only (never its input), allow-listed
-                                # like every other model-influenced token.
-                                # Boolean only — a tool NAME is supplied by
-                                # the MCP server and carries no diagnostic
-                                # value the timing doesn't already give.
-                                _first_tool = True
-                                _ph["first_tool"] = time.monotonic()
+                            elif isinstance(block, ToolUseBlock):
+                                if tool_counts is not None:
+                                    name = block.name.rsplit("__", 1)[-1]
+                                    tool_counts[name] = tool_counts.get(name, 0) + 1
+                                if not _first_tool:
+                                    _first_tool = True
+                                    _ph["first_tool"] = time.monotonic()
                     elif isinstance(sdk_msg, ResultMessage):
                         # Task 6 (spec §4.6): previously discarded — captured
                         # below (in `finally`, so it's recorded even when the
@@ -3256,6 +3262,7 @@ async def _run_delegated_agent(
             _terminal_str(getattr(result_msg, "stop_reason", None))
             if result_msg is not None else None
         ),
+        tool_calls=dict(tool_counts or {}),
     )
 
     # Cluster S (#709): a terminal result that carries `is_error=True` or a
@@ -3545,8 +3552,17 @@ def _run_abort_failure(output: DelegatedOutput) -> JobFailure:
     """The explicit typed failure for a CLI-aborted delegated run."""
     return JobFailure(
         kind=_run_abort_kind(output.run_subtype),
-        message="Specialist could not complete the delegated task.",
+        message=_failure_message(
+            "Specialist could not complete the delegated task.", output.tool_calls),
     )
+
+
+def _failure_message(message: str, tool_calls: dict[str, int]) -> str:
+    calls = sorted(tool_calls.items(), key=lambda item: (-item[1], item[0]))[:12]
+    if not calls:
+        return message
+    details = ", ".join(f"{name} ×{count}" for name, count in calls)
+    return f"{message} Before stopping it called: {details}"
 
 
 def _attach_completion_callback(
@@ -3658,8 +3674,8 @@ def _attach_completion_callback(
     task.add_done_callback(_done)
 
 
-def _delegation_scope(origin: dict, agent_name: str) -> str:
-    """Concurrency scope key for the per-scope specialist cap (spec §4.6).
+def _delegation_scope(origin: dict, agent_name: str, mode: str = "sync") -> str:
+    """Role-wide for text engagements; calling-session scope for quick work.
 
     The voice channel's per-turn rate limiter (``channels/voice/channel.py``
     ``_resolve_scope_id`` / ``VoiceRateLimiter``) already keys off a
@@ -3676,6 +3692,8 @@ def _delegation_scope(origin: dict, agent_name: str) -> str:
     empty/missing so an unscoped caller still gets its own bucket instead
     of colliding with every other unscoped caller under one ``"-"`` key.
     """
+    if mode == "interactive" and origin.get("channel") != "voice":
+        return f"{agent_name}:engagement"
     chat_id = str((origin or {}).get("chat_id") or "")
     if not chat_id:
         chat_id = str((origin or {}).get("cid") or "-")
@@ -4258,9 +4276,20 @@ async def _prelaunch(
     # NOT depend on the requires gate having run — see docstring). No
     # limiter wired (`_specialist_limiter is None`) means no cap: `permit`
     # stays None and every downstream release is a guarded no-op.
+    if mode == "interactive" and _engagement_registry is not None:
+        for rec in _engagement_registry.active_and_idle():
+            if rec.kind == "specialist" and rec.role_or_type == agent_name:
+                title = (rec.origin.get("job") or {}).get("title") or rec.task[:80]
+                return None, None, None, None, _result({
+                    "status": "error", "kind": "engagement_busy",
+                    "agent": agent_name, "engagement_id": rec.id,
+                    "topic_id": rec.topic_id,
+                    "message": f"{_display_name_for_role(agent_name)} already has an open "
+                               f"engagement: {title}. Wait for it to finish or /cancel it in its topic.",
+                })
     permit = None
     if _specialist_limiter is not None:
-        scope = _delegation_scope(origin, agent_name)
+        scope = _delegation_scope(origin, agent_name, mode)
         permit = _specialist_limiter.try_acquire(scope)
         if permit is None:
             if _specialist_telemetry is not None:
@@ -4451,6 +4480,10 @@ class DelegationCeilingExceeded(asyncio.TimeoutError):
     ``task.cancel()`` would instead hit the cancelled-branch, which posts
     NO notification."""
 
+    def __init__(self, message: str, tool_calls: dict[str, int]):
+        self.tool_calls = tool_calls
+        super().__init__(_failure_message(message, tool_calls))
+
 
 async def _run_delegated_agent_bounded(
     cfg, task_text: str, context_text: str, resolution=None,
@@ -4471,10 +4504,12 @@ async def _run_delegated_agent_bounded(
 
     Both bounds are read off the module at call time so tests can
     monkeypatch them."""
+    tool_counts: dict[str, int] = {}
     inner = asyncio.create_task(
         _run_delegated_agent(cfg, task_text, context_text,
                              resolution=resolution,
-                             output_format=output_format))
+                             output_format=output_format,
+                             tool_counts=tool_counts))
     ceiling = _DELEGATION_CEILING_S
     if not math.isfinite(ceiling) or ceiling <= 0:
         ceiling = 600.0  # fail closed to the shipped default, never hang
@@ -4512,7 +4547,7 @@ async def _run_delegated_agent_bounded(
             )
         raise DelegationCeilingExceeded(
             f"delegated turn exceeded the {ceiling:.0f}s wall-clock "
-            f"ceiling and was cancelled (S-2 runaway backstop)")
+            f"ceiling and was cancelled (S-2 runaway backstop)", tool_counts)
     return inner.result()
 
 
@@ -5160,6 +5195,462 @@ async def _start_voice_async_job(
     })
 
 
+async def _launch_specialist_engagement(
+    agent_name: str, task_text: str, context_text: str, origin: dict,
+    *, job: background_jobs.JobDecl | None = None,
+) -> dict:
+    """Shared interactive specialist launch, including its admission gates."""
+    import agent as agent_mod
+
+    agent_name, cfg, resolution, permit, error = await _prelaunch(
+        agent_name, origin, "interactive", task_text, context_text)
+    if error is not None:
+        return error
+    owned = permit
+    spawn_owned = None
+    casa_grants = SPECIALIST_CASA_GRANTS
+    turns_per_batch = cfg.tools.max_turns
+    if job is not None:
+        origin["job"] = background_jobs.initial_job_state(job)
+        casa_grants += background_jobs.JOB_CASA_GRANTS
+        turns_per_batch = job.turns_per_batch or cfg.tools.max_turns
+    try:
+        # #283: agent-spawn cap — BEFORE the channel setup/topic Telegram
+        # round-trips below. Operator-exempt only when positively marked
+        # (_operator_turn); absence = agent context, fail closed.
+        if _agent_spawn_limiter is not None and _is_agent_context(origin):
+            spawn_owned = _agent_spawn_limiter.try_acquire()
+            if spawn_owned is None:
+                return _agent_spawn_cap_refusal()
+            origin["_agent_spawned"] = True
+        # #283 (INV-ENG-004 gap 2): interactive children carry a
+        # delegation depth exactly as ephemeral children do — stamped on
+        # the origin the record persists; the depth gate reads it back
+        # through the engagement-record fallback, so an interactively
+        # engaged specialist cannot delegate onward. Unconditional:
+        # operator-initiated children run at depth 1 too (they may still
+        # engage_executor — that path is deliberately depth-exempt and
+        # cap-bounded instead).
+        origin["delegation_depth"] = _effective_delegation_depth(origin) + 1
+        # Task 6 (spec §4.6): the `owned` lexical ownership guard (try/finally
+        # around this whole body) releases `permit` on ANY exit before launch
+        # transfer — including a CancelledError raised at any await below and
+        # every early error return here — so these paths need no inline
+        # release. Ownership transfers to the engagement record only AFTER
+        # driver.start() succeeds (see the `owned = None` there).
+        # Need telegram channel + supergroup configured.
+        if _channel_manager is None:
+            return _result({"status": "error", "kind": "no_channel_manager",
+                            "message": "channel manager missing"})
+        channel = _channel_manager.get(origin.get("channel", "telegram"))
+        # E-F (v0.30.0): if supergroup IS configured but
+        # engagement_permission_ok is still False, the boot-time setup may
+        # have lost a race with a transient network blip. The setup is now
+        # wired into _rebuild's tail (self-healing on every reconnect), but
+        # in the rare window where the user spawns an engagement before any
+        # rebuild has completed, attempt one in-line retry before giving up.
+        # Idempotent; cheap on success.
+        if (channel is not None
+                and getattr(channel, "engagement_supergroup_id", 0)
+                and not getattr(channel, "engagement_permission_ok", False)):
+            try:
+                await channel.setup_engagement_features()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "engage_executor: in-line setup_engagement_features "
+                    "retry failed: %s", exc,
+                )
+        if (channel is None
+                or not getattr(channel, "engagement_supergroup_id", 0)
+                or not getattr(channel, "engagement_permission_ok", False)):
+            return _engagement_unavailable_result(origin)  # R-2 (v0.69.7)
+        # v0.37.1 D-1: U3 title format for specialist engagements too
+        # (was legacy `#[<role>] <task> · <id8>`). Bubble carries the
+        # role icon via icon_id_for_role; title is `<state> <task>`.
+        from channels.state_emoji import (
+            STATE_EMOJI, compose_topic_title, concise_task,
+        )
+        first_line = (job.title if job else task_text or "").splitlines()[0]
+        short_task = concise_task(first_line) or "engagement"
+        topic_name = compose_topic_title(
+            state="active", short_task=short_task,
+        )
+        try:
+            topic_id = await channel.open_engagement_topic(
+                name=topic_name,
+                role=agent_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _result({"status": "error", "kind": "topic_create_failed",
+                            "message": str(exc)})
+        # §3.8 (Sol #4): record the specialist's plugin binding so verify can
+        # disclose this engagement if a later plugin_update supersedes its
+        # artifact (informational — mirrors the executor-engagement case). The
+        # specialist runs on the same tier:role resolution _build_specialist_
+        # options uses below.
+        # Sol round-3 H7b: resolve ONCE and feed the SAME result to both the
+        # engagement record and the options builder, so a concurrent update can't
+        # make the recorded binding disagree with what actually launches.
+        # A5: when the requires gate (Task 5) already resolved this agent's
+        # plugins (non-empty `cfg.requires`), reuse that SAME ResolutionResult
+        # instead of resolving again — the engagement record's binding must
+        # never disagree with what the requires gate actually validated.
+        # `resolution` (from `_prelaunch`) is None whenever `cfg.requires` is
+        # empty, in which case this resolves fresh exactly as before Task 5.
+        if resolution is not None:
+            _spec_res = resolution
+        else:
+            _spec_tier = (_agent_registry.tier_for_role(agent_name)
+                          if _agent_registry is not None else None) or "specialist"
+            _spec_res = plugin_registry.resolve_for(f"{_spec_tier}:{agent_name}")
+        # #424 r3 (Terra r3-1 / Sol r3-2): filter ONCE, before the record
+        # is written — the record must pin what the session actually
+        # launches with, or a later resume (after the secret is wired)
+        # loads a plugin mid-engagement that the engagement never started
+        # with. The filtered result feeds BOTH the record and the options
+        # builder below (H7b), whose own filter then no-ops.
+        from plugin_grants import withhold_env_unresolved
+        _spec_res, _ = withhold_env_unresolved(
+            _spec_res, context=f"specialist {agent_name} engagement")
+        _spec_arts = tuple(
+            {"name": rp.name, "artifact_id": rp.artifact_id, "path": rp.path,
+             # Task 5: recorded so a resumed session reproduces the same
+             # runtime identity via _resolution_from_recorded (above).
+             "manifest_name": rp.manifest_name}
+            for rp in _spec_res.plugins)
+        # Create record. #326: create() persists STRICTLY — a tombstone
+        # write failure raises (no ghost record). Abort the just-created
+        # topic before surfacing the error; the permit is released by the
+        # outer finally (`owned` is still set here).
+        try:
+            rec = await _engagement_registry.create(
+                kind="specialist", role_or_type=agent_name, driver="in_casa",
+                task=task_text, origin=dict(origin), topic_id=topic_id,
+                plugin_artifacts=_spec_arts,
+                # v0.166.0: pin the specialist's OWN casa-framework grant so
+                # the bridge gate admits exactly what _build_specialist_options
+                # launches with — its declared tools (a specialist config may
+                # grant more than query/completion) plus the launch-mandatory
+                # grants. Without this the record is empty and every framework
+                # tool beyond the two mandatory ones is wrongly rejected.
+                tools_allowed=tuple(
+                    t for t in (cfg.tools.allowed or ()) if t != "Skill"
+                ) + casa_grants,
+                # #283: reservation rides the record from here (r4).
+                agent_spawn_permit=spawn_owned,
+            )
+        except asyncio.CancelledError:
+            # create() already compensated the record; close the topic in
+            # the background (a cancelled task cannot await network RTs).
+            _abort_topic_on_cancel(channel, "delegate-abort", topic_id)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            await _abort_engagement_topic(channel, "delegate-abort", topic_id)
+            return _result({
+                "status": "error", "kind": "record_persist_failed",
+                "message": str(exc)})
+        # Task 6 (spec §4.6): stash the permit on the engagement record so
+        # EVERY registry terminal transition (mark_error, mark_cancelled,
+        # mark_completed, try_transition_terminal) releases it — including
+        # the direct mark_error routes (resume/orphan failures in
+        # channels/telegram.py) that bypass `_finalize_engagement`.
+        # `_finalize_engagement` also releases it as an idempotent fallback.
+        # Ownership is NOT yet transferred here: `owned` stays set until
+        # driver.start() succeeds, so a cancellation/error at any await
+        # before that still releases via the outer finally (all releases
+        # are idempotent).
+        rec.permit = permit
+        # #283 (design r4): the spawn reservation transferred at create —
+        # a cancellation between here and driver-live must NOT release a
+        # token whose durable record stays live; terminal transitions own
+        # it now (release-both in _release_permit). The finally sees None.
+        spawn_owned = None
+        # #678 (Terra, seam rounds 3+4): ONE CancelledError handler
+        # covering the WHOLE interval from the committed create() through
+        # the ownership transfer, mirroring engage_executor — which has
+        # exactly this structure. Before it, this branch had no
+        # cancellation compensation at all past create(): a cancellation
+        # at set_initial_state_emoji, at _build_specialist_options or
+        # inside driver.start() escaped every handler, the outer finally
+        # released the permit, and a durably-ACTIVE record was left with
+        # an open topic and no client. Per-await handlers were the wrong
+        # answer — the first round of this finding named driver.start()
+        # alone and the second named two more awaits, so the interval is
+        # covered once rather than a third handler added.
+        # #698: enrol this launch with the graceful stop, before the
+        # interval's first await, exactly as engage_executor does.
+        _launch_handle = _register_launch_safe(rec.id)
+        try:
+            # #369 (Sol diff-gate r3): capture the context generation at
+            # prompt-source time, exactly as engage_executor does — this
+            # interactive prompt is built from the pre-clamp task/context
+            # locals, so a clamp→rebuild cycle completing during the option/
+            # client startup awaits must abort this launch at the driver gate.
+            _ctx_gen0 = rec.context_generation
+            # Persist initial state emoji so update_topic_state knows
+            # whether it needs to edit the title (no-op when state didn't
+            # change). #529: conditional — a delayed launch path must not
+            # overwrite a terminal paint's settled emoji or an in-flight
+            # paint's uncertain sentinel.
+            try:
+                await _engagement_registry.set_initial_state_emoji(
+                    rec.id, STATE_EMOJI["active"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("set_initial_state_emoji(active) failed: %s", exc)
+
+            # Build options + start driver (off-loop: registry resolve is file IO).
+            options = await asyncio.to_thread(
+                _build_specialist_options,
+                cfg,
+                resolution=_spec_res,
+                extra_casa_tools=casa_grants,
+                **({"max_turns": turns_per_batch} if job is not None else {}),
+            )
+
+            prompt = (
+                f"You are engaged with the user in a Telegram forum topic.\n"
+                f"Task: {task_text}\n\n"
+                f"Context from Ellen:\n{context_text or '(none)'}\n\n"
+                f"When the task is complete, call emit_completion(text=..., "
+                f"artifacts=..., next_steps=..., status='ok')."
+            )
+
+            if job is not None:
+                prompt = background_jobs.launch_prompt(
+                    job, task_text, context_text, turns_per_batch)
+
+            driver = getattr(agent_mod, "active_engagement_driver", None)
+            if driver is None:
+                _abort = await _abort_launch_inline(
+                    channel, rec, topic_id,
+                    kind="no_driver",
+                    message="engagement driver not initialized")
+                # A durable win releases the permit inside the registry
+                # transition; the outer finally releases it again
+                # (idempotent). PERSIST_FAILED is the exception:
+                if _abort is LaunchAbortResult.PERSIST_FAILED:
+                    # #757: the transition rolled back, so the record is
+                    # still LIVE — and a live record keeps its permit. The
+                    # outer `finally` would otherwise free this engagement's
+                    # scope slot while its record is still resumable, the
+                    # hazard engagement_registry warns about at the strict
+                    # release. Transfer it exactly as the record_live arm
+                    # above does; whatever takes the record terminal later
+                    # (reap or cancel, both through _finalize_engagement)
+                    # releases it.
+                    owned = None
+                return _result({"status": "error", "kind": "no_driver",
+                                "message": "engagement driver not initialized"})
+            from drivers.driver_protocol import StaleLaunchError
+            if getattr(driver, "supports_split_launch", False) is not True:
+                try:
+                    await driver.start(
+                        rec, prompt=prompt, options=options,
+                        expected_generation=_ctx_gen0)
+                except StaleLaunchError as exc:
+                    # #369: a clearance clamp landed during launch — abort rather
+                    # than deliver the pre-clamp task/context. Terra r5: with
+                    # record_live a rebuild COMPLETED meanwhile — the engagement
+                    # is alive on its floor session, so transfer the permit
+                    # exactly as the success path does and report it pending.
+                    if exc.record_live:
+                        owned = None  # permit transferred to the live record
+                        _record_launch_safe(agent_name)
+                        return _result({
+                            "status": "pending", "engagement_id": rec.id,
+                            "agent": agent_name, "mode": "interactive",
+                            "topic_id": topic_id,
+                        })
+                    _abort = await _abort_launch_inline(
+                        channel, rec, topic_id,
+                        kind="clearance_changed_during_launch",
+                        message=str(exc))
+                    if _abort is LaunchAbortResult.PERSIST_FAILED:
+                        # #757: the transition rolled back, so the record is
+                        # still LIVE — and a live record keeps its permit. The
+                        # outer `finally` would otherwise free this engagement's
+                        # scope slot while its record is still resumable, the
+                        # hazard engagement_registry warns about at the strict
+                        # release. Transfer it exactly as the record_live arm
+                        # above does; whatever takes the record terminal later
+                        # (reap or cancel, both through _finalize_engagement)
+                        # releases it.
+                        owned = None
+                    return _result({
+                        "status": "error", "kind": "clearance_changed_during_launch",
+                        "message": str(exc)})
+                except ApiErrorTurn as exc:
+                    # #595: the launch turn ended in an API-level fault — a safety
+                    # refusal, a rate limit, an overload. The driver carries the
+                    # resolved kind, so the terminal record names it instead of
+                    # flattening every one of them into `driver_start_failed`,
+                    # where a refusal and a crash read identically. The teardown is
+                    # the generic branch's: `InCasaDriver.start`'s M14 rollback has
+                    # already closed the client, and the strict terminal
+                    # transition releases the permit on a durable win.
+                    _kind = exc.kind.value
+                    _abort = await _abort_launch_inline(
+                        channel, rec, topic_id,
+                        kind=_kind, message=str(exc))
+                    if _abort is LaunchAbortResult.PERSIST_FAILED:
+                        # #757: the transition rolled back, so the record is
+                        # still LIVE — and a live record keeps its permit. The
+                        # outer `finally` would otherwise free this engagement's
+                        # scope slot while its record is still resumable, the
+                        # hazard engagement_registry warns about at the strict
+                        # release. Transfer it exactly as the record_live arm
+                        # above does; whatever takes the record terminal later
+                        # (reap or cancel, both through _finalize_engagement)
+                        # releases it.
+                        owned = None
+                    return _result({"status": "error", "kind": _kind,
+                                    "message": _USER_MESSAGES.get(
+                                        exc.kind, str(exc))})
+                except Exception as exc:  # noqa: BLE001
+                    _abort = await _abort_launch_inline(
+                        channel, rec, topic_id,
+                        kind="driver_start_failed", message=str(exc))
+                    if _abort is LaunchAbortResult.PERSIST_FAILED:
+                        # #757: the transition rolled back, so the record is
+                        # still LIVE — and a live record keeps its permit. The
+                        # outer `finally` would otherwise free this engagement's
+                        # scope slot while its record is still resumable, the
+                        # hazard engagement_registry warns about at the strict
+                        # release. Transfer it exactly as the record_live arm
+                        # above does; whatever takes the record terminal later
+                        # (reap or cancel, both through _finalize_engagement)
+                        # releases it.
+                        owned = None
+                    return _result({"status": "error", "kind": "driver_start_failed",
+                                    "message": str(exc)})
+
+                # #678: as in engage_executor — start() returning means the
+                # first turn ran to its end, never that anything was reported.
+                # An interactive specialist that ENDS its launch turn having
+                # posted text is legitimately awaiting the operator and is left
+                # alone; one whose turn was cut off, or which posted nothing at
+                # all, has left an operator-visible surface that says nothing.
+                _incomplete = _launch_incomplete_reason(driver, rec.id)
+                if _incomplete:
+                    _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
+                        _incomplete, _incomplete)
+                    _outcome = await asyncio.shield(_spawn_launch_death_report(
+                        channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
+                        detail=_detail, driver=driver))
+                    if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
+                        # The permit is released by the terminal transition and
+                        # again by the outer finally (both idempotent), so
+                        # `owned` stays set here on purpose.
+                        return _result({
+                            "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
+                            "message": _detail,
+                        })
+
+                # Task 6 (spec §4.6): driver is live — transfer permit ownership to
+                # the engagement record (released by an EngagementRegistry terminal
+                # transition or _finalize_engagement) by clearing `owned` FIRST, so
+                # the following non-raising launch count can never reach the outer
+                # finally to release the now-live engagement's permit.
+
+            else:
+                # §2.A: the same two-call launch as engage_executor.
+                try:
+                    await driver.open(
+                        rec, options=options, expected_generation=_ctx_gen0)
+                except StaleLaunchError as exc:
+                    if exc.record_live:
+                        owned = None
+                        _record_launch_safe(agent_name)
+                        return _result({
+                            "status": "pending", "engagement_id": rec.id,
+                            "agent": agent_name, "mode": "interactive",
+                            "topic_id": topic_id,
+                        })
+                    await _abort_launch_inline(
+                        channel, rec, topic_id,
+                        kind="clearance_changed_during_launch", message=str(exc))
+                    return _result({
+                        "status": "error", "kind": "clearance_changed_during_launch",
+                        "message": str(exc),
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    await _abort_launch_inline(
+                        channel, rec, topic_id,
+                        kind="driver_start_failed", message=str(exc))
+                    return _result({"status": "error", "kind": "driver_start_failed",
+                                    "message": str(exc)})
+                if (_engagement_registry is not None
+                        and _engagement_registry.launch_shutdown_active()):
+                    _detail = "Casa was stopping when this launch was cancelled"
+                    await _report_launch_death_inline(
+                        channel, rec, topic_id, kind="launch_cancelled",
+                        detail=_detail, driver=driver)
+                    return _result({
+                        "status": "error", "kind": "launch_cancelled",
+                        "message": _detail,
+                    })
+                _hand_off_launch_turn(driver, rec, prompt, channel, topic_id,
+                                      _launch_handle)
+                _launch_handle = None
+
+            owned = None  # __TRANSFER_INTERACTIVE__
+            _record_launch_safe(agent_name)
+            return _result({
+                "status": "pending",
+                "engagement_id": rec.id,
+                "agent": agent_name,
+                "mode": "interactive",
+                "topic_id": topic_id,
+            })
+        except asyncio.CancelledError:
+            _abort_launch_on_cancel(channel, rec, topic_id)
+            raise
+        finally:
+            _unregister_launch_safe(_launch_handle)
+
+    finally:
+        if owned is not None:
+            owned.release()
+        if spawn_owned is not None:
+            spawn_owned.release()
+
+
+@tool(
+    "start_job",
+    "Start a background job listed in <jobs>; it runs in batches in its own topic "
+    "and you are notified when it ends.",
+    {"job": str, "task": str, "context": str},
+)
+async def start_job(args: dict) -> dict:
+    origin = _snapshot_origin()
+    if origin.get("channel") == "voice":
+        return _result({"status": "error", "kind": "job_needs_text_channel"})
+    caller = str(origin.get("execution_role") or origin.get("role", ""))
+    cfg = _agent_role_map.get(caller)
+    delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
+    host = background_jobs.find_job_host(args.get("job", ""), delegates)
+    if host is None:
+        names = [decl.qualified_name for _, decl in
+                 background_jobs.startable_jobs(delegates)]
+        return _result({
+            "status": "error", "kind": "job_not_declared",
+            "message": "Startable jobs: " + (", ".join(names) or "none"),
+        })
+    role, job = host
+    result = await _launch_specialist_engagement(
+        role, args.get("task", ""), args.get("context", "") or "", origin,
+        job=job)
+    payload = json.loads(result["content"][0]["text"])
+    if payload.get("status") == "pending":
+        payload.update(
+            job=job.qualified_name, title=job.title, agent=role,
+            message=f"Started {job.title}. Progress appears in "
+                    f"{_display_name_for_role(role)}'s topic.")
+        return _result(payload)
+    return result
+
+
 @tool(
     "delegate_to_agent",
     "Delegate a task to another agent (resident or specialist) and return its result.",
@@ -5263,6 +5754,10 @@ async def delegate_to_agent(args: dict) -> dict:
                 ),
             })
 
+    if mode == "interactive":
+        return await _launch_specialist_engagement(
+            agent_name, task_text, context_text, origin)
+
     # A4: THE unified prelaunch pipeline — one call that runs EVERY
     # pre-launch gate (ACL, not-initialized, input-size bounds, depth, mode,
     # target resolution, resident-compat, requires-seam, concurrency,
@@ -5308,396 +5803,6 @@ async def delegate_to_agent(args: dict) -> dict:
     # before its transfer to the record at create() (design r4).
     spawn_owned = None
     try:
-        if mode == "interactive":
-            # #283: agent-spawn cap — BEFORE the channel setup/topic Telegram
-            # round-trips below. Operator-exempt only when positively marked
-            # (_operator_turn); absence = agent context, fail closed.
-            if _agent_spawn_limiter is not None and _is_agent_context(origin):
-                spawn_owned = _agent_spawn_limiter.try_acquire()
-                if spawn_owned is None:
-                    return _agent_spawn_cap_refusal()
-                origin["_agent_spawned"] = True
-            # #283 (INV-ENG-004 gap 2): interactive children carry a
-            # delegation depth exactly as ephemeral children do — stamped on
-            # the origin the record persists; the depth gate reads it back
-            # through the engagement-record fallback, so an interactively
-            # engaged specialist cannot delegate onward. Unconditional:
-            # operator-initiated children run at depth 1 too (they may still
-            # engage_executor — that path is deliberately depth-exempt and
-            # cap-bounded instead).
-            origin["delegation_depth"] = _effective_delegation_depth(origin) + 1
-            # Task 6 (spec §4.6): the `owned` lexical ownership guard (try/finally
-            # around this whole body) releases `permit` on ANY exit before launch
-            # transfer — including a CancelledError raised at any await below and
-            # every early error return here — so these paths need no inline
-            # release. Ownership transfers to the engagement record only AFTER
-            # driver.start() succeeds (see the `owned = None` there).
-            # Need telegram channel + supergroup configured.
-            if _channel_manager is None:
-                return _result({"status": "error", "kind": "no_channel_manager",
-                                "message": "channel manager missing"})
-            channel = _channel_manager.get(origin.get("channel", "telegram"))
-            # E-F (v0.30.0): if supergroup IS configured but
-            # engagement_permission_ok is still False, the boot-time setup may
-            # have lost a race with a transient network blip. The setup is now
-            # wired into _rebuild's tail (self-healing on every reconnect), but
-            # in the rare window where the user spawns an engagement before any
-            # rebuild has completed, attempt one in-line retry before giving up.
-            # Idempotent; cheap on success.
-            if (channel is not None
-                    and getattr(channel, "engagement_supergroup_id", 0)
-                    and not getattr(channel, "engagement_permission_ok", False)):
-                try:
-                    await channel.setup_engagement_features()  # type: ignore[attr-defined]
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "engage_executor: in-line setup_engagement_features "
-                        "retry failed: %s", exc,
-                    )
-            if (channel is None
-                    or not getattr(channel, "engagement_supergroup_id", 0)
-                    or not getattr(channel, "engagement_permission_ok", False)):
-                return _engagement_unavailable_result(origin)  # R-2 (v0.69.7)
-            # v0.37.1 D-1: U3 title format for specialist engagements too
-            # (was legacy `#[<role>] <task> · <id8>`). Bubble carries the
-            # role icon via icon_id_for_role; title is `<state> <task>`.
-            from channels.state_emoji import (
-                STATE_EMOJI, compose_topic_title, concise_task,
-            )
-            first_line = (task_text or "").splitlines()[0]
-            short_task = concise_task(first_line) or "engagement"
-            topic_name = compose_topic_title(
-                state="active", short_task=short_task,
-            )
-            try:
-                topic_id = await channel.open_engagement_topic(
-                    name=topic_name,
-                    role=agent_name,
-                )
-            except Exception as exc:  # noqa: BLE001
-                return _result({"status": "error", "kind": "topic_create_failed",
-                                "message": str(exc)})
-            # §3.8 (Sol #4): record the specialist's plugin binding so verify can
-            # disclose this engagement if a later plugin_update supersedes its
-            # artifact (informational — mirrors the executor-engagement case). The
-            # specialist runs on the same tier:role resolution _build_specialist_
-            # options uses below.
-            # Sol round-3 H7b: resolve ONCE and feed the SAME result to both the
-            # engagement record and the options builder, so a concurrent update can't
-            # make the recorded binding disagree with what actually launches.
-            # A5: when the requires gate (Task 5) already resolved this agent's
-            # plugins (non-empty `cfg.requires`), reuse that SAME ResolutionResult
-            # instead of resolving again — the engagement record's binding must
-            # never disagree with what the requires gate actually validated.
-            # `resolution` (from `_prelaunch`) is None whenever `cfg.requires` is
-            # empty, in which case this resolves fresh exactly as before Task 5.
-            if resolution is not None:
-                _spec_res = resolution
-            else:
-                _spec_tier = (_agent_registry.tier_for_role(agent_name)
-                              if _agent_registry is not None else None) or "specialist"
-                _spec_res = plugin_registry.resolve_for(f"{_spec_tier}:{agent_name}")
-            # #424 r3 (Terra r3-1 / Sol r3-2): filter ONCE, before the record
-            # is written — the record must pin what the session actually
-            # launches with, or a later resume (after the secret is wired)
-            # loads a plugin mid-engagement that the engagement never started
-            # with. The filtered result feeds BOTH the record and the options
-            # builder below (H7b), whose own filter then no-ops.
-            from plugin_grants import withhold_env_unresolved
-            _spec_res, _ = withhold_env_unresolved(
-                _spec_res, context=f"specialist {agent_name} engagement")
-            _spec_arts = tuple(
-                {"name": rp.name, "artifact_id": rp.artifact_id, "path": rp.path,
-                 # Task 5: recorded so a resumed session reproduces the same
-                 # runtime identity via _resolution_from_recorded (above).
-                 "manifest_name": rp.manifest_name}
-                for rp in _spec_res.plugins)
-            # Create record. #326: create() persists STRICTLY — a tombstone
-            # write failure raises (no ghost record). Abort the just-created
-            # topic before surfacing the error; the permit is released by the
-            # outer finally (`owned` is still set here).
-            try:
-                rec = await _engagement_registry.create(
-                    kind="specialist", role_or_type=agent_name, driver="in_casa",
-                    task=task_text, origin=dict(origin), topic_id=topic_id,
-                    plugin_artifacts=_spec_arts,
-                    # v0.166.0: pin the specialist's OWN casa-framework grant so
-                    # the bridge gate admits exactly what _build_specialist_options
-                    # launches with — its declared tools (a specialist config may
-                    # grant more than query/completion) plus the launch-mandatory
-                    # grants. Without this the record is empty and every framework
-                    # tool beyond the two mandatory ones is wrongly rejected.
-                    tools_allowed=tuple(
-                        t for t in (cfg.tools.allowed or ()) if t != "Skill"
-                    ) + SPECIALIST_CASA_GRANTS,
-                    # #283: reservation rides the record from here (r4).
-                    agent_spawn_permit=spawn_owned,
-                )
-            except asyncio.CancelledError:
-                # create() already compensated the record; close the topic in
-                # the background (a cancelled task cannot await network RTs).
-                _abort_topic_on_cancel(channel, "delegate-abort", topic_id)
-                raise
-            except Exception as exc:  # noqa: BLE001
-                await _abort_engagement_topic(channel, "delegate-abort", topic_id)
-                return _result({
-                    "status": "error", "kind": "record_persist_failed",
-                    "message": str(exc)})
-            # Task 6 (spec §4.6): stash the permit on the engagement record so
-            # EVERY registry terminal transition (mark_error, mark_cancelled,
-            # mark_completed, try_transition_terminal) releases it — including
-            # the direct mark_error routes (resume/orphan failures in
-            # channels/telegram.py) that bypass `_finalize_engagement`.
-            # `_finalize_engagement` also releases it as an idempotent fallback.
-            # Ownership is NOT yet transferred here: `owned` stays set until
-            # driver.start() succeeds, so a cancellation/error at any await
-            # before that still releases via the outer finally (all releases
-            # are idempotent).
-            rec.permit = permit
-            # #283 (design r4): the spawn reservation transferred at create —
-            # a cancellation between here and driver-live must NOT release a
-            # token whose durable record stays live; terminal transitions own
-            # it now (release-both in _release_permit). The finally sees None.
-            spawn_owned = None
-            # #678 (Terra, seam rounds 3+4): ONE CancelledError handler
-            # covering the WHOLE interval from the committed create() through
-            # the ownership transfer, mirroring engage_executor — which has
-            # exactly this structure. Before it, this branch had no
-            # cancellation compensation at all past create(): a cancellation
-            # at set_initial_state_emoji, at _build_specialist_options or
-            # inside driver.start() escaped every handler, the outer finally
-            # released the permit, and a durably-ACTIVE record was left with
-            # an open topic and no client. Per-await handlers were the wrong
-            # answer — the first round of this finding named driver.start()
-            # alone and the second named two more awaits, so the interval is
-            # covered once rather than a third handler added.
-            # #698: enrol this launch with the graceful stop, before the
-            # interval's first await, exactly as engage_executor does.
-            _launch_handle = _register_launch_safe(rec.id)
-            try:
-                # #369 (Sol diff-gate r3): capture the context generation at
-                # prompt-source time, exactly as engage_executor does — this
-                # interactive prompt is built from the pre-clamp task/context
-                # locals, so a clamp→rebuild cycle completing during the option/
-                # client startup awaits must abort this launch at the driver gate.
-                _ctx_gen0 = rec.context_generation
-                # Persist initial state emoji so update_topic_state knows
-                # whether it needs to edit the title (no-op when state didn't
-                # change). #529: conditional — a delayed launch path must not
-                # overwrite a terminal paint's settled emoji or an in-flight
-                # paint's uncertain sentinel.
-                try:
-                    await _engagement_registry.set_initial_state_emoji(
-                        rec.id, STATE_EMOJI["active"],
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("set_initial_state_emoji(active) failed: %s", exc)
-
-                # Build options + start driver (off-loop: registry resolve is file IO).
-                options = await asyncio.to_thread(
-                    _build_specialist_options,
-                    cfg,
-                    resolution=_spec_res,
-                    extra_casa_tools=SPECIALIST_CASA_GRANTS,
-                )
-
-                prompt = (
-                    f"You are engaged with the user in a Telegram forum topic.\n"
-                    f"Task: {task_text}\n\n"
-                    f"Context from Ellen:\n{context_text or '(none)'}\n\n"
-                    f"When the task is complete, call emit_completion(text=..., "
-                    f"artifacts=..., next_steps=..., status='ok')."
-                )
-
-                driver = getattr(agent_mod, "active_engagement_driver", None)
-                if driver is None:
-                    _abort = await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="no_driver",
-                        message="engagement driver not initialized")
-                    # A durable win releases the permit inside the registry
-                    # transition; the outer finally releases it again
-                    # (idempotent). PERSIST_FAILED is the exception:
-                    if _abort is LaunchAbortResult.PERSIST_FAILED:
-                        # #757: the transition rolled back, so the record is
-                        # still LIVE — and a live record keeps its permit. The
-                        # outer `finally` would otherwise free this engagement's
-                        # scope slot while its record is still resumable, the
-                        # hazard engagement_registry warns about at the strict
-                        # release. Transfer it exactly as the record_live arm
-                        # above does; whatever takes the record terminal later
-                        # (reap or cancel, both through _finalize_engagement)
-                        # releases it.
-                        owned = None
-                    return _result({"status": "error", "kind": "no_driver",
-                                    "message": "engagement driver not initialized"})
-                from drivers.driver_protocol import StaleLaunchError
-                if getattr(driver, "supports_split_launch", False) is not True:
-                    try:
-                        await driver.start(
-                            rec, prompt=prompt, options=options,
-                            expected_generation=_ctx_gen0)
-                    except StaleLaunchError as exc:
-                        # #369: a clearance clamp landed during launch — abort rather
-                        # than deliver the pre-clamp task/context. Terra r5: with
-                        # record_live a rebuild COMPLETED meanwhile — the engagement
-                        # is alive on its floor session, so transfer the permit
-                        # exactly as the success path does and report it pending.
-                        if exc.record_live:
-                            owned = None  # permit transferred to the live record
-                            _record_launch_safe(agent_name)
-                            return _result({
-                                "status": "pending", "engagement_id": rec.id,
-                                "agent": agent_name, "mode": "interactive",
-                                "topic_id": topic_id,
-                            })
-                        _abort = await _abort_launch_inline(
-                            channel, rec, topic_id,
-                            kind="clearance_changed_during_launch",
-                            message=str(exc))
-                        if _abort is LaunchAbortResult.PERSIST_FAILED:
-                            # #757: the transition rolled back, so the record is
-                            # still LIVE — and a live record keeps its permit. The
-                            # outer `finally` would otherwise free this engagement's
-                            # scope slot while its record is still resumable, the
-                            # hazard engagement_registry warns about at the strict
-                            # release. Transfer it exactly as the record_live arm
-                            # above does; whatever takes the record terminal later
-                            # (reap or cancel, both through _finalize_engagement)
-                            # releases it.
-                            owned = None
-                        return _result({
-                            "status": "error", "kind": "clearance_changed_during_launch",
-                            "message": str(exc)})
-                    except ApiErrorTurn as exc:
-                        # #595: the launch turn ended in an API-level fault — a safety
-                        # refusal, a rate limit, an overload. The driver carries the
-                        # resolved kind, so the terminal record names it instead of
-                        # flattening every one of them into `driver_start_failed`,
-                        # where a refusal and a crash read identically. The teardown is
-                        # the generic branch's: `InCasaDriver.start`'s M14 rollback has
-                        # already closed the client, and the strict terminal
-                        # transition releases the permit on a durable win.
-                        _kind = exc.kind.value
-                        _abort = await _abort_launch_inline(
-                            channel, rec, topic_id,
-                            kind=_kind, message=str(exc))
-                        if _abort is LaunchAbortResult.PERSIST_FAILED:
-                            # #757: the transition rolled back, so the record is
-                            # still LIVE — and a live record keeps its permit. The
-                            # outer `finally` would otherwise free this engagement's
-                            # scope slot while its record is still resumable, the
-                            # hazard engagement_registry warns about at the strict
-                            # release. Transfer it exactly as the record_live arm
-                            # above does; whatever takes the record terminal later
-                            # (reap or cancel, both through _finalize_engagement)
-                            # releases it.
-                            owned = None
-                        return _result({"status": "error", "kind": _kind,
-                                        "message": _USER_MESSAGES.get(
-                                            exc.kind, str(exc))})
-                    except Exception as exc:  # noqa: BLE001
-                        _abort = await _abort_launch_inline(
-                            channel, rec, topic_id,
-                            kind="driver_start_failed", message=str(exc))
-                        if _abort is LaunchAbortResult.PERSIST_FAILED:
-                            # #757: the transition rolled back, so the record is
-                            # still LIVE — and a live record keeps its permit. The
-                            # outer `finally` would otherwise free this engagement's
-                            # scope slot while its record is still resumable, the
-                            # hazard engagement_registry warns about at the strict
-                            # release. Transfer it exactly as the record_live arm
-                            # above does; whatever takes the record terminal later
-                            # (reap or cancel, both through _finalize_engagement)
-                            # releases it.
-                            owned = None
-                        return _result({"status": "error", "kind": "driver_start_failed",
-                                        "message": str(exc)})
-
-                    # #678: as in engage_executor — start() returning means the
-                    # first turn ran to its end, never that anything was reported.
-                    # An interactive specialist that ENDS its launch turn having
-                    # posted text is legitimately awaiting the operator and is left
-                    # alone; one whose turn was cut off, or which posted nothing at
-                    # all, has left an operator-visible surface that says nothing.
-                    _incomplete = _launch_incomplete_reason(driver, rec.id)
-                    if _incomplete:
-                        _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
-                            _incomplete, _incomplete)
-                        _outcome = await asyncio.shield(_spawn_launch_death_report(
-                            channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
-                            detail=_detail, driver=driver))
-                        if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
-                            # The permit is released by the terminal transition and
-                            # again by the outer finally (both idempotent), so
-                            # `owned` stays set here on purpose.
-                            return _result({
-                                "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
-                                "message": _detail,
-                            })
-
-                    # Task 6 (spec §4.6): driver is live — transfer permit ownership to
-                    # the engagement record (released by an EngagementRegistry terminal
-                    # transition or _finalize_engagement) by clearing `owned` FIRST, so
-                    # the following non-raising launch count can never reach the outer
-                    # finally to release the now-live engagement's permit.
-
-                else:
-                    # §2.A: the same two-call launch as engage_executor.
-                    try:
-                        await driver.open(
-                            rec, options=options, expected_generation=_ctx_gen0)
-                    except StaleLaunchError as exc:
-                        if exc.record_live:
-                            owned = None
-                            _record_launch_safe(agent_name)
-                            return _result({
-                                "status": "pending", "engagement_id": rec.id,
-                                "agent": agent_name, "mode": "interactive",
-                                "topic_id": topic_id,
-                            })
-                        await _abort_launch_inline(
-                            channel, rec, topic_id,
-                            kind="clearance_changed_during_launch", message=str(exc))
-                        return _result({
-                            "status": "error", "kind": "clearance_changed_during_launch",
-                            "message": str(exc),
-                        })
-                    except Exception as exc:  # noqa: BLE001
-                        await _abort_launch_inline(
-                            channel, rec, topic_id,
-                            kind="driver_start_failed", message=str(exc))
-                        return _result({"status": "error", "kind": "driver_start_failed",
-                                        "message": str(exc)})
-                    if (_engagement_registry is not None
-                            and _engagement_registry.launch_shutdown_active()):
-                        _detail = "Casa was stopping when this launch was cancelled"
-                        await _report_launch_death_inline(
-                            channel, rec, topic_id, kind="launch_cancelled",
-                            detail=_detail, driver=driver)
-                        return _result({
-                            "status": "error", "kind": "launch_cancelled",
-                            "message": _detail,
-                        })
-                    _hand_off_launch_turn(driver, rec, prompt, channel, topic_id,
-                                          _launch_handle)
-                    _launch_handle = None
-
-                owned = None  # __TRANSFER_INTERACTIVE__
-                _record_launch_safe(agent_name)
-                return _result({
-                    "status": "pending",
-                    "engagement_id": rec.id,
-                    "agent": agent_name,
-                    "mode": "interactive",
-                    "topic_id": topic_id,
-                })
-            except asyncio.CancelledError:
-                _abort_launch_on_cancel(channel, rec, topic_id)
-                raise
-            finally:
-                _unregister_launch_safe(_launch_handle)
-
         is_voice = str(origin.get("channel", "")) == "voice"
         if is_voice and mode == "async":
             handoff = _PermitHandoff()
@@ -9139,6 +9244,7 @@ async def _own_in_casa_launch(
     to tell a never-started owner from one cancelled mid-turn.
     """
     started.append(True)
+    background_jobs.turn_owner_started(rec.id)
     kind: str | None = None
     detail = ""
     outcome: "LaunchDeathResult | None" = None
@@ -9183,7 +9289,10 @@ async def _own_in_casa_launch(
             _abort_launch_on_cancel(channel, rec, topic_id)
         raise
     finally:
+        background_jobs.turn_owner_finished(rec.id)
         _unregister_launch_safe(handle_box[0] if handle_box else None)
+    if kind is None and rec.origin.get("job"):
+        await background_jobs.job_after_turn(rec, channel)
 
 
 def _launch_turn_done(task: Any, *, rec: "EngagementRecord", channel: Any,
@@ -9619,6 +9728,9 @@ async def _finalize_engagement(
     guard; ``PERSIST_FAILED`` means the tombstone write rolled back and the
     record is STILL LIVE (retryable).
     """
+    last_summary = engagement.origin.get("job", {}).get("last_summary")
+    if outcome in ("cancelled", "error") and last_summary:
+        text += f"\nLast progress: {last_summary}"
     now = time.time()
 
     # 0. Pre-close spool drain (v0.79.0 §3): flush any pending inbound receipts
@@ -10786,6 +10898,43 @@ _COMPLETION_TEXT_MAX = 8000
 # A.2 (v0.74.0): executor types whose ok-completions carry release artifacts
 # that MUST pass the mechanical release-identity gate before finalization.
 _COMPLETION_GUARDED_EXECUTOR_TYPES = frozenset({"plugin-developer"})
+
+
+@tool(
+    "report_job_progress",
+    "Report this background job's batch progress in its topic.",
+    {"type": "object", "properties": {
+        "summary": {"type": "string"},
+        "done": {"type": "integer", "minimum": 0},
+        "remaining": {"type": "integer", "minimum": 0}},
+     "required": ["summary"]},
+)
+async def report_job_progress(args: dict) -> dict:
+    rec = engagement_var.get(None)
+    rec = _engagement_registry.get(rec.id) if rec and _engagement_registry else None
+    if rec is None or rec.status not in ("active", "idle") or not rec.origin.get("job"):
+        return _result({"ok": False, "kind": "not_a_job"})
+    summary = args.get("summary")
+    done, remaining = args.get("done"), args.get("remaining")
+    if not isinstance(summary, str) or any(
+        value is not None and (type(value) is not int or value < 0)
+        for value in (done, remaining)
+    ):
+        return _result({"ok": False, "kind": "invalid_arguments"})
+    summary = (summary.splitlines() or [""])[0][:300]
+    job = rec.origin["job"]
+    text = f'📊 Batch {job["started"]}: {summary}'
+    if done is not None:
+        text += f" · {done} done"
+    if remaining is not None:
+        text += f" · {remaining} left"
+    await _post_engagement_notice(_channel_manager.get("telegram"), rec, text)
+    job["reported"] = True
+    if remaining is not None:
+        job["remaining"] = remaining
+    job["last_summary"] = summary
+    await _engagement_registry.persist_origin(rec.id)
+    return _result({"ok": True})
 
 
 @tool(
@@ -17062,6 +17211,7 @@ CASA_TOOLS: tuple = (
     react,
     ask_user,
     delegate_to_agent,
+    start_job,
     voice_job_status,
     cancel_voice_job,
     continue_voice_job,
@@ -17074,6 +17224,7 @@ CASA_TOOLS: tuple = (
     ack_event,                     # #419 — plugin-events delivery receipt
     engage_executor,
     emit_completion,
+    report_job_progress,
     cancel_engagement,
     query_engager,
     config_git_commit,
@@ -17153,6 +17304,7 @@ from specialist_component import SPECIALIST_CASA_TOOL_ALLOWLIST
 
 _SPECIALIST_DISPATCH_CEILING: frozenset[str] = frozenset(
     SPECIALIST_CASA_TOOL_ALLOWLIST
+    | {"report_job_progress"}
     | {g.rsplit("__", 1)[-1] for g in MANDATORY_BRIDGE_CASA_GRANTS}
 )
 

@@ -66,6 +66,7 @@ class TestPrelaunchOrdering:
 
         async def _fake_run(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             trace.append("task")
             assert output_format is tm.VOICE_JOB_OUTPUT_FORMAT

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-09-17
 ---
 
 # Engagements
@@ -36,7 +36,8 @@ durable record with its own topic, which outlives the call that created it.
 Three launch paths exist and they are not symmetrical. Ordinary specialist delegation runs
 ephemerally. *Interactive* specialist delegation creates an engagement. Engaging an executor
 always creates one. Both engagement-creating paths pass the agent-spawn gate first
-(INV-ENG-008).
+(INV-ENG-008). `start_job` launches through the same interactive specialist path; what Casa
+then does with a job's engagement is [`architecture/background-jobs.md`](background-jobs.md).
 
 **Much less survives a restart than the word "durable" suggests.** The record persists;
 concurrency permits, live drivers, output sequencers, inbound reservations and various

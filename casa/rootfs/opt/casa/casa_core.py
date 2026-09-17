@@ -3565,6 +3565,25 @@ def _engagement_delivery_ack(registry, engagement_id: str):
     return _ack
 
 
+async def _resume_background_jobs(registry, channel) -> None:
+    """Continue open specialist jobs once channels and residents are running."""
+    from background_jobs import start_next_batch
+    from tools import _post_engagement_notice
+
+    if channel is None:
+        return
+    for rec in registry.active_and_idle():
+        if rec.kind == "specialist" and rec.origin.get("job"):
+            try:
+                title = rec.origin["job"]["title"]
+                await _post_engagement_notice(
+                    channel, rec, f'↻ Resuming "{title}" after a restart.')
+                await start_next_batch(rec, channel)
+            except Exception:  # noqa: BLE001 — one job must not stop the boot
+                logger.warning("resuming background job %s failed", rec.id[:8],
+                               exc_info=True)
+
+
 async def _notify_recovered_engagement_outcomes(
     registry,
     bus,
@@ -5442,6 +5461,7 @@ async def main() -> None:
     await _notify_recovered_engagement_outcomes(
         engagement_registry, bus, assistant_role=assistant_role,
     )
+    await _resume_background_jobs(engagement_registry, telegram_channel)
 
     # 13c. Surface any default-sync overwrites to the operator (direct
     # telegram outbound — see notify_config_sync).

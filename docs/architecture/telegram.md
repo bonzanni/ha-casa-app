@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-09-17
 ---
 
 # The Telegram channel
@@ -280,7 +280,8 @@ single best-effort acknowledgement; failures answering are themselves absorbed.
 delivery-failure outcome rather than hanging.
 
 **Delivering a turn into a topic raises.** Logged, with a best-effort failure notice posted
-to the topic. Cancellation is quiet by design.
+to the topic. Cancellation is quiet by design. When the record is a live background job, the
+raise also fails the job ([`background-jobs.md`](background-jobs.md)).
 
 **Delivering a turn into a topic RETURNS without the turn having finished.** A different
 shape from the one above, and it used to be silent because of that. The failure notice
@@ -297,7 +298,9 @@ it ended because it completed the engagement — whose summary may in fact alrea
 operator's screen, since a lost acknowledgement is indistinguishable from a failed send
 from here. That notice is a single attempt and is not ordered against a concurrent
 finalization's topic operations; the contract is INV-ENG-012 in
-[`architecture/engagements.md`](engagements.md).
+[`architecture/engagements.md`](engagements.md). A background job whose record is still live
+fails when one of its turns draws that notice; any other returned turn hands the job to its
+batch loop.
 
 ## Extension points
 
