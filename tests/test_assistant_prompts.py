@@ -1092,13 +1092,22 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # word by word: exactly ONE `insert` on each of the three assistant carriers,
 # that sentence and nothing else; the six butler and concierge carriers
 # byte-identical. No retention claim anywhere.
+# MOVED 2026-09-17 (background jobs), the three `assistant:*` carriers ONLY.
+# (Re-measured against v0.320.0 after the merge; same two inserts.)
+# Core gains one paragraph (33 words): a failed delegation whose message lists
+# the tools the specialist called is never reported as having changed nothing.
+# Text gains one paragraph (81 words): a request matching a listed background
+# job is started with `start_job`. Measured with `difflib` over base-vs-new
+# residual text: exactly those inserts (one on restricted_webhook and voice,
+# two on text) and nothing else; the six butler and concierge carriers
+# byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "1c0f7ff7e8ba2a5cb64926443d1c783879e7755d522c132bbce75f09033545a7",
+        "b4d63752ce1ac9b29386c649cad58887d9e3e6ffdd5452ebbdc401dedb7cb3b4",
     "assistant:text":
-        "9c363fdf1a39d88a3689aa5f7104afaff0fcf0ea323c5214d543c9656bf4bf76",
+        "b133382a8ef18d95147573e4b59f43e5bd9f486456b3d9336462d6d6c8384ca2",
     "assistant:voice":
-        "5689afa3fa7e3a2d40682db27cc7e3fe98739d8217c4f5f98ba4c3f8a324b6bf",
+        "9577fb72caf1932d52b9312a40cbfa91b799357fb308470c26b9b6b4aa9c5b53",
     "butler:restricted_webhook":
         "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
     "butler:text":

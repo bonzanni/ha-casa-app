@@ -24,6 +24,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary | [`architecture/telegram.md`](architecture/telegram.md) |
 | a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a plugin tool result, the result contract, a capability reference or its redemption, or the broker routes | [`architecture/plugin-result-contract.md`](architecture/plugin-result-contract.md) |
+| a plugin-declared background job, start_job or job host resolution, the batch loop or its progress tool, or how a job resumes after a restart | [`architecture/background-jobs.md`](architecture/background-jobs.md) |
 | a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
 | a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule | [`architecture/scheduled-asks.md`](architecture/scheduled-asks.md) |
 | a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |

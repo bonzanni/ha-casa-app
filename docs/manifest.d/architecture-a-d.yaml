@@ -24,6 +24,26 @@
     INV-AGENT-003: [tests/test_agent_loader.py::test_per_specialist_isolation]
     INV-AGENT-004: [tests/test_pin_g1_invariants.py::test_pin_inv_agent_004_registry_performs_no_filesystem_access]
 
+- doc: architecture/background-jobs.md
+  summary: Plugin-declared background jobs — the casa.jobs declaration, the resident jobs block, start_job, the batch loop and its progress tool, and resuming a job after a restart.
+  when_changing: a plugin-declared background job, start_job or job host resolution, the batch loop or its progress tool, or how a job resumes after a restart
+  covers:
+    - casa/rootfs/opt/casa/background_jobs.py
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_jobs
+    - casa/rootfs/opt/casa/agent.py::_render_jobs_block
+    - casa/rootfs/opt/casa/tools.py::start_job
+    - casa/rootfs/opt/casa/tools.py::report_job_progress
+    - casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs
+  tests:
+    - tests/test_background_jobs_declaration.py
+    - tests/test_start_job.py
+    - tests/test_background_jobs_loop.py
+  related: [architecture/engagements.md, architecture/delegation.md, architecture/plugins.md, architecture/engagement-turn-admission.md]
+  defines_invariants: [INV-BGJOB-001, INV-BGJOB-002]
+  invariant_tests:
+    INV-BGJOB-001: [tests/test_background_jobs_loop.py::test_operator_turns_during_slow_final_edit_respect_cap, tests/test_background_jobs_loop.py::test_operator_precedes_single_next_batch, tests/test_background_jobs_loop.py::test_launch_batches_and_completion]
+    INV-BGJOB-002: [tests/test_background_jobs_loop.py::test_stuck_guard, tests/test_background_jobs_loop.py::test_batch_failure_reports_progress, tests/test_background_jobs_loop.py::test_cancel_stops_batches_and_reports_progress]
+
 - doc: architecture/callback-delivery.md
   summary: The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.
   when_changing: the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker

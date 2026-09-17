@@ -307,6 +307,39 @@ def _render_delegates_block(delegates, registry, *, live_names=None) -> str:
     return "\n".join(lines)
 
 
+def _render_jobs_block(delegates, registry, *, live_names=None,
+                       allowed_tools=None) -> str:
+    """Render the background jobs available through visible delegates."""
+    if (not delegates or (allowed_tools is not None and
+                          "mcp__casa-framework__start_job" not in allowed_tools)):
+        return ""
+
+    def _known(role: str) -> bool:
+        if live_names is not None:
+            return role in live_names
+        return registry is None or registry.is_known(role)
+
+    def _display_name(role: str) -> str:
+        if live_names is not None:
+            return live_names.get(role, role)
+        return registry.role_to_name(role) if registry is not None else role
+
+    from background_jobs import startable_jobs
+    visible_roles = [delegate.agent for delegate in delegates
+                     if _known(delegate.agent)]
+    jobs = startable_jobs(visible_roles)
+    if not jobs:
+        return ""
+    lines = ["<jobs>"]
+    for role, job in jobs:
+        lines.append(
+            f"- {job.qualified_name} — {job.title}: "
+            f"{job.summary or job.title} "
+            f"(runs in {_display_name(role)}'s topic)")
+    lines.append("</jobs>")
+    return "\n".join(lines)
+
+
 def _render_executors_block(executors) -> str:
     """Render the <executors> system-prompt block (assistant role only)."""
     if not executors:
@@ -2352,6 +2385,13 @@ class Agent:
         )
         if delegates_block:
             system_parts.append("\n" + delegates_block)
+        jobs_block = _render_jobs_block(
+            self.config.delegates, self._agent_registry,
+            live_names=_live_agent_directory(),
+            allowed_tools=self.config.tools.allowed,
+        )
+        if jobs_block:
+            system_parts.append("\n" + jobs_block)
         # <executors> block — assistant role only (loader enforces this).
         executors_block = _render_executors_block(self.config.executors)
         if executors_block:

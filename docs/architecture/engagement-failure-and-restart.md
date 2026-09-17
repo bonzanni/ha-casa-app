@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-09-17
 ---
 
 # Engagement launch failure and restart
@@ -61,8 +61,8 @@ one deliberately not attempted — is in
 
 ## Failure behavior
 
-**A delegation is refused at one of its gates.** The ACL, alias, spawn-cap and
-plugin-withholding refusals, and what each payload discloses, are described in
+**A delegation is refused at one of its gates.** The ACL, alias, spawn-cap, engagement-slot
+and plugin-withholding refusals, and what each payload discloses, are described in
 [`architecture/delegation.md`](delegation.md).
 
 **A driver fails to start after the record exists.** The engagement is marked errored, topic
@@ -186,7 +186,9 @@ crash-loop under its supervisor). A record still owing a clearance-downgrade con
 rebuild (INV-MEM-011) is never *resumed*: replay drops its session pointer and archive
 cache and re-renders the workspace at the clamped floor first, refusing the same way if
 that fails. Every one of those decisions sits downstream of preconditions this document does
-not own: INV-CONT-004 and INV-CONT-005.
+not own: INV-CONT-004 and INV-CONT-005. An `in_casa` record is not replayed; a live one
+that runs a background job is continued once channels and residents are up, as
+[`architecture/background-jobs.md`](background-jobs.md) describes.
 
 **A restart replays an outcome nobody was told.** A terminal record is not only state to be
 tidied: if the finalization funnel committed it, somebody is still owed the news (INV-ENG-018,

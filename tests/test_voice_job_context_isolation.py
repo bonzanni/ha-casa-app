@@ -66,6 +66,7 @@ async def test_voice_job_completion_never_reenters_gary(
 
     async def _run(
         cfg, task_text, context_text, resolution=None, output_format=None,
+        tool_counts=None,
     ) -> tools.DelegatedOutput:
         await release.wait()
         return tools.DelegatedOutput(

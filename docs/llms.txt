@@ -6,6 +6,7 @@ Code is the source of truth; these files are a map.
 ## Architecture
 
 - [architecture/agent-taxonomy.md](architecture/agent-taxonomy.md): How an agent is declared, validated and looked up — tiers, required artifacts, and the registry.
+- [architecture/background-jobs.md](architecture/background-jobs.md): Plugin-declared background jobs — the casa.jobs declaration, the resident jobs block, start_job, the batch loop and its progress tool, and resuming a job after a restart.
 - [architecture/callback-delivery.md](architecture/callback-delivery.md): The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.
 - [architecture/callbacks.md](architecture/callbacks.md): The public authorization-callback ingress — the unauthenticated GET route, declaration-bound consent, reconciliation, and the validated redirect base URL.
 - [architecture/concurrency-model.md](architecture/concurrency-model.md): What runs concurrently — bus dequeue vs execution, session-key serialization, the lock inventory, and threaded vs loop work.

@@ -313,6 +313,18 @@ yourself with `plugin_add` are operator-owned — a specialist's lifecycle never
 touches them, and plugin management tools refuse to modify a specialist's
 bundled plugins (manage those through the specialist's own upgrade/uninstall).
 
+### Background jobs (v0.321.0)
+
+Some plugins declare long work — classifying a year of transactions, say — as a
+background job. Ask the assistant for it as usual: she starts the job and replies
+straight away. The job runs in the specialist's topic in the Engagements
+supergroup (so `telegram_engagement_supergroup_id` must be set), in batches, with
+one progress line per batch. Write in the topic between batches to steer it, or
+send `/cancel` to stop it. A specialist runs one engagement at a time, but quick
+questions to it still work while a job is open. When the job ends the topic
+closes and the assistant tells you the outcome. After a restart an open job
+posts a short "resuming" line and continues.
+
 ## Voice pipeline
 
 Casa exposes two transports for Home Assistant voice / generic voice clients. The HA-side integration that consumes them ships separately in `ha-casa-integration` (phase 2.4).

@@ -1040,6 +1040,7 @@ class TestVoiceStructuredResult:
 
         async def _raise_after_cancel(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             started.set()
             try:
@@ -1117,6 +1118,7 @@ class TestVoiceStructuredResult:
 
         async def _raise_after_cancel(
             cfg, task_text, context_text, resolution=None, output_format=None,
+            tool_counts=None,
         ):
             started.set()
             try:
@@ -1786,6 +1788,7 @@ class TestMergedRoleMap:
         try:
             async def _fake_run(
                 cfg, task_text, context_text, resolution=None, output_format=None,
+                tool_counts=None,
             ):
                 assert output_format is None
                 return tools.DelegatedOutput(text=f"Tina says ok: {task_text}")

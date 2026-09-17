@@ -276,6 +276,9 @@ success whose text is withheld from the bank, audibly (INV-MEM-016, and see
 refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's
 tool-level face).
 
+The assistant's `start_job` and a job session's `report_job_progress` are described in
+[`background-jobs.md`](background-jobs.md).
+
 ## Extension points
 
 **A new tool** is a decorated handler added to the registry tuple — that alone puts it on

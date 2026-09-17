@@ -287,7 +287,8 @@ message; a routed job becomes ready so the failure itself is delivered. This is 
 every delegation arm, voice and non-voice alike: a CLI-aborted run fails the row with its
 specific abort kind before the success write is reachable, and a run the terminal result
 itself reports as faulted fails the row with the same classified kind its caller was told —
-the envelope carries a kind, never an exception class name.
+the envelope carries a kind, never an exception class name. When an aborted or ceiling-cancelled
+run had called tools, the message ends with their registered names and counts.
 
 **The terminal write fails.** The voice lifecycle falls back to a compatibility failure
 write; if that also fails, registry-owned reconciliation retries in the background and the

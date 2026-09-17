@@ -62,7 +62,7 @@ def _wire(monkeypatch):
     )
 
     async def _fake_run(cfg, task_text, context_text, resolution=None,
-                        output_format=None):
+                        output_format=None, tool_counts=None):
         return tm.DelegatedOutput(text="ok", structured_output=None)
 
     monkeypatch.setattr(tm, "_run_delegated_agent", _fake_run)
