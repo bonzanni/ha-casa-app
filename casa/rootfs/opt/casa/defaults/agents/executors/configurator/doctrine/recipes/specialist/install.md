@@ -104,9 +104,12 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    plugin the inspection listed with a non-empty `env_names` (mirrored as `required_env_vars` in
    the commit result, keyed by the SCOPED registry name `<slug>.<plugin>` — use that exact key as
    the plugin identifier below), run the `recipes/plugin/secrets.md` flow now — explore, then
-   wire, then ask: the default vault is named in your world state, so search it
-   (`list_vault_items`, `get_item_fields`) before asking, and ask the operator only for an item
-   or field name you could not settle — never for a value —
+   wire, then ask — and search only for a credential; a variable the plugin documents as a
+   plain setting (a vault name, a host) is set from its documentation, never mapped to an
+   item, and when its documentation gives no value, ask the operator for it by what it means.
+   For a credential, the default vault is named in your world state, so search it
+   (`list_vault_items`, `get_item_fields`) before asking, and ask the operator only which item
+   or field it is — never for a secret value —
    then `set_plugin_env_reference(plugin="<slug>.<plugin>", ...)` once per
    var, then `casa_reload(scope="plugin_env")`, and confirm via
    `verify_plugin_state(plugin_name="<slug>.<plugin>")` that no `secrets[*].status: unresolved`
@@ -119,8 +122,9 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    names the plugin's `.mcp.json` mentions — a `${VAR:-default}` the CLI satisfies from its own
    default, or a `casa.setupProvides` name the plugin's own setup tool creates. **Never ask the
    operator for one of those** (#994): nothing is withheld on them, `verify_plugin_state` never
-   lists them as unresolved, and a setup-provisioned name is filled in by the plugin's setup
-   episode after this install.
+   lists them as unresolved. A setup-provisioned name is NOT filled in by itself: the plugin's
+   setup run reports what to wire, and wiring it is a configurator's job then — see
+   `recipes/plugin/secrets.md`, "A value the plugin's setup tool reports".
 8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")` — for `latest`, `<ref>` is the `resolved_ref` the inspect returned.
 9. `casa_reload(scope="agents")` (mandatory — see `completion.md`; an `active` install is on disk
    but not in the live registry until reload runs), THEN `casa_reload(scope="agent",
@@ -158,7 +162,11 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
   use hits the requires gate. Do not describe such a var as something the specialist's own setup
   tool will provision: a var in `env_names` is the installer's to wire, in step 7, here.
 - The mirror image (#994): asking the operator for a name from `exempt_env_names`. Those are
-  disclosed so the operator knows what the plugin reads; they are not the installer's to wire.
+  disclosed so the operator knows what the plugin reads. A `${VAR:-default}` among them is never
+  yours to wire. A `casa.setupProvides` name among them is not wired in step 7 either — but once
+  the plugin's setup run reports its value, wiring it IS a configurator's job
+  (`recipes/plugin/secrets.md`, "A value the plugin's setup tool reports"); never refuse it as
+  "not the installer's".
 - Relaying a bundled plugin's OWN consent (a trigger/callback/event
   `*_pending_ack` after commit) through this engagement's ask, or asking the
   assistant to `ask_user` it (#494): those surfaces accept the Approve tap and

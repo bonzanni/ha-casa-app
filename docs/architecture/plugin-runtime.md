@@ -183,6 +183,11 @@ fixed.
 variable passed to the CLI as an explicit empty string rather than a literal placeholder,
 and verification reports not ready with reason `setup_env_unprovisioned` until the value
 lands. A setup run that never happened stays loud rather than passing as configured.
+Nothing lands the value on its own: no path lets a plugin write `plugin-env.conf`. The setup
+tool creates or finds the value and reports the reference to wire; the configurator wires it
+with `set_plugin_env_reference` and a plugin-env reload, and the row's reason says exactly
+that. The assistant hands a setup result that names such values to the configurator, and the
+configurator's recipe makes wiring them its own job — never a value it asks the operator for.
 
 ## Extension points
 

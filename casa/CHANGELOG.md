@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.320.0] - 2026-09-17
+
+### Fixed
+
+- The configurator no longer tells you two vault items share a name when
+  they don't. A vault search reports the word it searched for, never the
+  item's title, and that word used to arrive in a field called `name`: two
+  different items whose titles both contained "bank" were described to you
+  as two items named "bank". The field is now `matched_query`, and when
+  several items match, the configurator describes each by its kind and the
+  kinds of fields it holds, so you can tell them apart (#1019).
+- A plugin setting that is not a secret, such as the name of a 1Password
+  vault, is no longer searched for in the vault as if it were a credential.
+  The configurator sets it from the plugin's documentation or asks you what
+  it should be, so a specialist install no longer ends as partial over a
+  question whose answer is never used (#1020).
+- After a plugin's setup reports values that still need wiring, the
+  assistant hands that report to the configurator, and the configurator
+  wires them. Casa used to say such values fill themselves in, so a
+  configurator could decide wiring them was not its job and leave the plugin
+  not ready (#1021).
+
 ## [0.319.0] - 2026-09-16
 
 ### Added

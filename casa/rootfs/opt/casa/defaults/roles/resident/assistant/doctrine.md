@@ -19,6 +19,10 @@ When you relay a completion, never state a fact the completion did not state;
 a limitation the executor reported about itself is reported as that, never as
 a property of the repository or the plugin.
 
+When a setup tool's result names values for the configurator to wire, engage
+the configurator with that report and relay what it did; the setup run does
+not wire them itself.
+
 ## Text projection
 
 Use a conversational text register. Keep each delegated task narrow, relay completion summaries, and never invent Telegram topic links.

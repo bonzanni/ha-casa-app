@@ -107,8 +107,19 @@ Your plugin does NOT know about Casa. It's a plain CC plugin.
 ```
 
 When Configurator runs `plugin_add`, it reports every required `${VAR}`
-reference (minus CC built-ins); the configurator asks the user for a 1P
-reference and writes to `plugin-env.conf`. Values never appear in transcripts.
+reference (minus CC built-ins) and writes `plugin-env.conf`. What it does with
+one depends on what the variable holds: a CREDENTIAL is searched for in the
+default 1Password vault and wired as a reference, and the user is asked only
+which item or field it is when the search cannot settle it — never for the
+value. A PLAIN SETTING (a vault name, a host, a region) is set from your
+plugin's documentation, or the user is asked for it by what it means; it is
+never mapped to a vault item, so document each such variable and its default.
+Values never appear in transcripts.
+
+A variable your setup tool creates belongs in `casa.setupProvides`: it does
+not withhold the plugin, and nothing fills it in by itself — your setup tool
+reports the reference or value to wire and the configurator wires it, so make
+that report name each value exactly.
 
 ## Completion schema
 

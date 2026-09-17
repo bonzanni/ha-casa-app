@@ -184,6 +184,30 @@ def test_get_item_fields_handler_returns_the_projection(monkeypatch):
     assert out == {"fields": [{"id": "u", "role": "email", "type": "EMAIL"}]}
 
 
+def test_two_items_matching_one_word_carry_matched_query_never_name(monkeypatch):
+    """#1019: rows name the search term under `matched_query`, never under a
+    key a reader takes for the item's name — on the N150 two items whose
+    titles only CONTAIN "bank" were reported as "two items literally named
+    bank". The served description says the same."""
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_CANARY_TOKEN")
+
+    class _Listing:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps([{"id": "a1", "title": "Online Banking", "category": "API_CREDENTIAL"},
+                             {"id": "b2", "title": "Banking Key", "category": "SSH_KEY"}])
+
+    with patch.object(tools.subprocess, "run", lambda *a, **k: _Listing()):
+        out = tools._tool_list_vault_items(query="bank", vault="Casa")
+    assert [sorted(r) for r in out["items"]] == [["category", "id", "matched_query"]] * 2
+    assert [r["id"] for r in out["items"]] == ["a1", "b2"]
+    assert [r["matched_query"] for r in out["items"]] == ["bank", "bank"]
+    assert all("name" not in r for r in out["items"])
+    description = tools.list_vault_items.description
+    assert "matched_query" in description
+    assert "not the item's name" in description
+
+
 def test_list_vault_items_never_returns_the_title(monkeypatch):
     """The manual listing returns the matched query term in place of the
     title, the op id and a validated category, nothing operator-typed."""
@@ -202,9 +226,9 @@ def test_list_vault_items_never_returns_the_title(monkeypatch):
     with patch.object(tools.subprocess, "run", lambda *a, **k: _Listing()):
         out = tools._tool_list_vault_items(query="gmail", vault="Casa")
     assert out == {"items": [
-        {"name": "gmail", "id": "x", "category": "API_CREDENTIAL"},
-        {"name": "gmail", "id": "y", "category": None},
-        {"name": "gmail", "id": "z", "category": None},
+        {"matched_query": "gmail", "id": "x", "category": "API_CREDENTIAL"},
+        {"matched_query": "gmail", "id": "y", "category": None},
+        {"matched_query": "gmail", "id": "z", "category": None},
     ]}
     dumped = json.dumps(out)
     for forbidden in ("ops_CANARY_TOKEN", "sk-live", "Gmail", "Unrelated", "2026-01-01"):

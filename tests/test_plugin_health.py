@@ -229,6 +229,26 @@ def test_unknown_reason_code_falls_back_without_leaking():
     assert line == "plug is not working"
 
 
+@pytest.mark.parametrize("code", ["setup_env_unprovisioned",
+                                  "future_family_unprovisioned"])
+def test_a_setup_provided_value_is_never_put_to_the_operator(code):
+    """#1021 (diff round 1, Terra S1): a casa.setupProvides value is created by
+    the plugin's setup run and wired by the configurator. The operator-facing
+    clause used to say the plugin "still needs a value from you", which sends
+    the operator — and an assistant relaying `plugin_status` — after a value
+    nobody should ask them for. Covers the named code and the open suffix
+    family."""
+    line = plugin_health.describe_issue({
+        "name": "bank-feed", "reason_code": code,
+        "detail": "CASA_PLUGIN_BANKFEED_EB_APP_ID"})
+    assert line == ("bank-feed is waiting for a setup-provided value to be wired in — "
+                    "CASA_PLUGIN_BANKFEED_EB_APP_ID")
+    assert "from you" not in line
+    # diff r2 (Astra S1): phase-neutral — on a fresh install the setup has not
+    # run, so the clause may not claim it already reported anything.
+    assert "reported" not in line
+
+
 def test_describe_issue_carries_the_detail():
     """#554: the detail is the one actionable fact in the row."""
     line = plugin_health.describe_issue({

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-25
+last_reviewed: 2026-09-17
 ---
 
 # Plugin health
@@ -241,7 +241,10 @@ classifies by families of code rather than enumerating them, so a code minted la
 still reads as something actionable and an unrecognized one degrades to a plain
 statement (see the mental model). What a new reason owes is its `detail`: drawn from
 the status that produced it, names only, never values, and never part of the dedup
-fingerprint.
+fingerprint. A family phrase also owes the truth about WHO acts: the not-yet-provisioned
+family reads as a setup-provided value still to be wired in — whether or not the setup has
+run yet — never as a value the operator owes, because a setup-provided value is created by the plugin's own
+setup run and wired by the configurator ([`plugin-runtime.md`](plugin-runtime.md)).
 
 ## Source & test map
 
