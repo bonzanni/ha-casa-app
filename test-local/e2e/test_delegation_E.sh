@@ -156,6 +156,7 @@ print("HARNESS: module-level wiring verified", file=sys.stderr)
 observed_output_formats = []
 async def _fake_run(
     cfg, task_text, context_text, resolution=None, output_format=None,
+    tool_counts=None,
 ):
     observed_output_formats.append(output_format)
     return tools.DelegatedOutput(
