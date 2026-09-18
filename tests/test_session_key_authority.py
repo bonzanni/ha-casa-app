@@ -41,7 +41,12 @@ from channels import ChannelManager
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from mcp_registry import McpServerRegistry
 from session_registry import SessionRegistry, build_scoped_session_key
-from session_reg_helpers import RESIDENT_DIGEST, resident_prov, resident_role_id
+from session_reg_helpers import (
+    RESIDENT_DIGEST,
+    align_prompt_surface,
+    resident_prov,
+    resident_role_id,
+)
 
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
@@ -423,6 +428,10 @@ class TestReloadTwoPools:
         )
         old_agent = _make_agent(registry)
         new_agent = _make_agent(registry)      # what _construct_agent builds
+        # #1029: the seed has to speak for a structural prompt surface too, or
+        # the surface gate retires it and BOTH turns start fresh — which would
+        # quietly un-set-up this test exactly as an empty registry would.
+        align_prompt_surface(registry, old_agent, "telegram", "42")
         try:
             in_flight = asyncio.create_task(old_agent.handle_message(_msg("one")))
             await asyncio.wait_for(started.wait(), timeout=2)

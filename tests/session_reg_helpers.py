@@ -46,3 +46,37 @@ def resident_prov(slot: str) -> SpeakerProvenance:
         display_name=slot.capitalize(),
         binding_digest=RESIDENT_DIGEST,
     )
+
+
+# --- #1029: the structural prompt-surface gate -------------------------------
+def align_prompt_surface(registry, agent, channel: str, scope_id) -> str:
+    """Stamp the seeded entry for ``(channel, agent.role, scope_id)`` with the
+    prompt-surface digest THIS agent renders, and return it.
+
+    ``_resume_decision`` retires a session whose stored structural surface
+    (``<delegates>``/``<jobs>``/``<executors>``) no longer matches what would be
+    rendered now, because the CLI pins a session's system prompt at creation and
+    a resumed session cannot be corrected in place. An entry that never recorded
+    a digest — every entry written before the gate, and every bare
+    ``register(...)`` seed in these tests — is a MISMATCH by design: we cannot
+    certify a prompt we never observed, and recording the current digest for it
+    would assert a match that does not exist.
+
+    So a test whose subject is resume behaviour (fault streaks, stale-resume
+    recovery, two-pool authority) has to seed a surface as well as a session.
+    Tests that assert a FRESH session must NOT call this — their unaligned seed
+    is doing real work."""
+    from agent import _live_agent_directory, _render_prompt_surface
+    from session_registry import build_scoped_session_key
+
+    digest = _render_prompt_surface(
+        agent.config.delegates, agent._agent_registry,
+        live_names=_live_agent_directory(),
+        allowed_tools=agent.config.tools.allowed,
+        executors=agent.config.executors,
+    ).digest
+    key = build_scoped_session_key(channel, agent.config.role, scope_id)
+    entry = registry._data.get(key)
+    if entry is not None:
+        entry["prompt_surface_digest"] = digest
+    return digest

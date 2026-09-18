@@ -73,6 +73,12 @@ The `<jobs>` block is rendered only for a resident whose allowed tools include `
 (the assistant), over its currently available delegates in declared order, one line per
 job: qualified name, title, summary (or title) and the host's display name. A job two
 delegates can host is listed once, under the first; `start_job` resolves it the same way.
+A job declared by a plugin installed mid-conversation does not appear in a conversation
+already open: a session's system prompt is fixed when the session is created. The resume
+gate is what resolves it — the conversation's structural surface no longer matches what it
+was registered with, so the next turn starts a fresh session carrying the new block
+(INV-TURN-012, `architecture/turn-loop.md`).
+
 An unknown job returns `job_not_declared` naming the startable jobs; a voice caller gets
 `job_needs_text_channel`. Everything else — ACL, depth, availability, the spawn cap, the
 engagement slot and channel checks — is the shared interactive launch that

@@ -19,6 +19,7 @@ from mcp_registry import McpServerRegistry
 from semantic_memory import SemanticMemory
 from session_registry import SessionRegistry, build_scoped_session_key
 from session_reg_helpers import (
+    align_prompt_surface,
     RESIDENT_DIGEST,
     STUB_SPEAKER_PROV,
     STUB_USER_PROV,
@@ -1736,6 +1737,7 @@ class TestResumeResilience:
         )
 
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "voice", "probe-scope")
 
         with patch("sdk_client_pool._default_make_client", FakeClient), \
              patch_retry_sleep():
@@ -1772,6 +1774,7 @@ class TestResumeResilience:
         )
 
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "telegram", "202")
 
         with caplog.at_level(logging.INFO, logger="agent"):
             with patch("sdk_client_pool._default_make_client", FakeClient), \
@@ -1819,6 +1822,7 @@ class TestResumeResilience:
         )
 
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "voice", "probe-scope")
 
         with patch("sdk_client_pool._default_make_client", _CapturingFakeClient), \
              patch_retry_sleep():
@@ -1870,6 +1874,7 @@ class TestResumeResilience:
         )
 
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "voice", "probe-scope")
 
         with patch("sdk_client_pool._default_make_client", FakeClient), \
              patch_retry_sleep():
@@ -1908,6 +1913,7 @@ class TestResumeResilience:
         )
 
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "voice", "probe-scope")
 
         with patch.object(
             agent._pool, "turn",
@@ -1955,6 +1961,7 @@ class TestResumeResilience:
         )
 
         agent = _make_agent_with_registry(reg, role="butler")
+        surface_digest = align_prompt_surface(reg, agent, "voice", "probe-scope")
 
         # Deterministic interleaving: a concurrent turn's register() lands
         # after the resume failure but before the recovery's clear runs.
@@ -1964,6 +1971,11 @@ class TestResumeResilience:
             await reg.register(
                 channel_key, resident_role_id("butler"), "sid-NEW",
                 binding_digest=RESIDENT_DIGEST,
+                # #1029: a real concurrent turn on this key renders the SAME
+                # structural surface and registers its digest, so the retry can
+                # resume it. Omitting it here would make the stub — not the
+                # behaviour under test — force a fresh session.
+                prompt_surface_digest=surface_digest,
                 speaker_provenance=resident_prov("butler"),
                 user_provenance=STUB_USER_PROV,
             )
@@ -2003,6 +2015,7 @@ class TestResumeResilience:
         )
 
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "voice", "probe-scope")
 
         caplog.set_level(_logging.WARNING, logger="agent")
         with patch("sdk_client_pool._default_make_client", FakeClient), \
@@ -2656,6 +2669,7 @@ class TestSaveBeforeOverwrite:
 
         fake = FakeSemanticMemory(overlay="should-not-appear", facts="should-not-appear")
         agent = _make_agent_with_registry(reg, role="assistant")
+        align_prompt_surface(reg, agent, "telegram", "789")
         # Replace the NoOp semantic memory with our tracking fake.
         agent._semantic_memory = fake
 
@@ -3085,6 +3099,7 @@ class TestIssue650RedCases:
             user_provenance=STUB_USER_PROV,
         )
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "telegram", "fault-scope")
 
         retain_calls: list[Any] = []
         agent._spawn_cold_retain = (  # type: ignore[method-assign]
@@ -3151,6 +3166,7 @@ class TestIssue650RedCases:
             user_provenance=STUB_USER_PROV,
         )
         agent = _make_agent_with_registry(reg, role="butler")
+        align_prompt_surface(reg, agent, "telegram", "fault-scope")
 
         retain_calls: list[Any] = []
         agent._spawn_cold_retain = (  # type: ignore[method-assign]

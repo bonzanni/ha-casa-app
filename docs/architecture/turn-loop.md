@@ -143,6 +143,35 @@ something the gate would deliver. Nothing records a held cumulative, so a hold c
 suppress its own release. On a held turn the teardown hook is the only thing that stops
 the typing indicator, since the first-token teardown never runs.
 
+**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, and what the registration stores.
+
+The CLI pins a session's system prompt when the session is created. Rebuilding options on a
+cold connect therefore does not reach a conversation that is being resumed: the prompt is
+re-rendered, handed over, and the resumed session keeps the one it already had. So a plugin
+that declares a new background job, or a delegate that gains one, became reachable for every
+*new* conversation and for none of the open ones — silently, because the model simply does
+not name a capability its prompt never listed, and the request falls back to an ordinary
+delegation that looks like a plausible answer. There is no error to see. The pool's own
+freshness machinery cannot close this: dropping a warm client only forces a cold connect,
+and the next connect resumes the same session and restores the same prompt.
+
+Only the *structural* blocks are digested. The memory and channel-context blocks change per
+turn and per sender, and digesting them would retire the conversation on nearly every turn —
+costing both the thread and the cached prompt prefix that makes a long conversation
+affordable. A session that never recorded a digest is treated as a mismatch rather than as
+consent: its prompt was never observed, so it cannot be certified as current, and recording
+the present digest for it would assert a match that does not exist and mask the staleness
+permanently. The one-off cost is that each conversation open across the upgrade restarts
+once; the benefit is that a conversation already stuck on a stale surface recovers by
+itself.
+
+The single render is load-bearing rather than an optimisation. The decision and the prompt
+assembly are separated by an awaited memory load, and a reload landing in that window moves
+the surface: rendering at both points lets a session be created carrying one prompt while a
+digest describing a different one is stored against it, which retires it again on the next
+turn. Rendering once and carrying that result through the decision, the prompt and the
+registration removes the second read rather than trying to order the two.
+
 ## Failure behavior
 
 **The model call fails transiently.** Retried with exponential backoff up to a small attempt
