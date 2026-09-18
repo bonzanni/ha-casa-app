@@ -192,6 +192,7 @@ class SessionRegistry:
         scope_class: str | None = None,
         *,
         binding_digest: str,
+        prompt_surface_digest: str = "",
         speaker_provenance: SpeakerProvenance,
         user_provenance: SpeakerProvenance,
     ) -> None:
@@ -240,6 +241,11 @@ class SessionRegistry:
                 "sdk_session_id": sdk_session_id,
                 "last_active": datetime.now(timezone.utc).isoformat(),
                 "binding_digest": binding_digest,
+                # #1029: the digest of the STRUCTURAL prompt surface this
+                # session was actually created with, so a later turn can tell
+                # that the session's pinned prompt no longer describes what the
+                # agent can do and start a fresh one instead of resuming it.
+                "prompt_surface_digest": prompt_surface_digest,
                 "speaker_provenance": provenance_mapping(speaker_provenance),
                 "user_provenance": provenance_mapping(user_provenance),
             })

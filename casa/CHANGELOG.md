@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.322.0] - 2026-09-18
+
+### Fixed
+
+- A capability added while you were mid-conversation now actually reaches that
+  conversation. Installing a plugin that declares a new background job made the
+  job available to every new chat and to none of the open ones: the assistant
+  simply never offered it, and the request quietly ran as an ordinary
+  delegation instead — no progress updates, no error, nothing to see. The cause
+  is that a conversation's system prompt is fixed when its session is created,
+  so re-rendering it on reconnect changed nothing. A conversation whose set of
+  delegates, background jobs or executors no longer matches what it was started
+  with now begins a fresh session, with the previous one retained. Each
+  conversation open across this upgrade restarts once, and a conversation
+  already stuck on a stale set recovers by itself.
+
 ## [0.321.0] - 2026-09-17
 
 ### Added

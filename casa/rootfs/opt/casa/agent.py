@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
+import hashlib
 import json
 import logging
 import time
@@ -353,6 +355,87 @@ def _render_executors_block(executors) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class PromptSurface:
+    """The STRUCTURAL part of a system prompt, rendered once per turn (#1029).
+
+    The CLI pins a session's system prompt at creation: re-rendering a current
+    prompt and handing it to a resumed session does not change what that session
+    sees. So the blocks that describe what the agent can DO must be digested and
+    gated at the resume decision — a changed surface starts a fresh session
+    instead of silently keeping a stale one.
+
+    Holds only blocks derived from config, the agent registry and resolved
+    plugin state. ``<memory_context>``, ``<channel_context>`` and recall output
+    are deliberately NOT here: they change per turn and per sender, and
+    digesting them would retire the session on nearly every turn, costing both
+    the conversation and the cached prompt prefix.
+
+    The BLOCKS and the DIGEST travel together, and `_build_options` splices
+    these exact strings rather than re-rendering. Design round 1 reproduced the
+    alternative: the surface read at the decision and the surface rendered after
+    the options build's first await can differ (a reload lands between them), so
+    a second render would store a digest describing a prompt the session never
+    had, and retire it again on the next turn."""
+    delegates: str
+    jobs: str
+    executors: str
+    digest: str
+
+
+def _render_prompt_surface(delegates, registry, *, live_names=None,
+                           allowed_tools=None, executors=()) -> PromptSurface:
+    """Render the structural blocks and digest them as one immutable unit."""
+    delegates_block = _render_delegates_block(
+        delegates, registry, live_names=live_names,
+    )
+    jobs_block = _render_jobs_block(
+        delegates, registry, live_names=live_names, allowed_tools=allowed_tools,
+    )
+    executors_block = _render_executors_block(executors)
+    digest = "sha256:" + hashlib.sha256(
+        "\x1f".join((delegates_block, jobs_block, executors_block))
+        .encode("utf-8")
+    ).hexdigest()
+    return PromptSurface(
+        delegates=delegates_block, jobs=jobs_block,
+        executors=executors_block, digest=digest,
+    )
+
+
+# The turn's single rendered surface. Set once in ``_process`` BEFORE the resume
+# decision and read by the decision, the options build and the registration, so
+# all three describe the same prompt. Unset (a direct call from a unit test, or
+# any path that never armed it) means "render now" — internally consistent for
+# that one call, which is all such a caller needs.
+_prompt_surface_var: ContextVar[PromptSurface | None] = ContextVar(
+    "casa_prompt_surface", default=None,
+)
+
+
+def _armed_surface_digest() -> str | None:
+    """This turn's surface digest, or ``None`` when no surface is armed.
+
+    ``None`` makes ``_resume_decision`` skip the surface gate entirely rather
+    than read a missing digest as a mismatch — a path that never armed a
+    carrier has no opinion about the surface and must not retire a session on
+    the strength of not having looked."""
+    surface = _prompt_surface_var.get()
+    return surface.digest if surface is not None else None
+
+
+def _carried_prompt_surface(delegates, registry, *, live_names=None,
+                            allowed_tools=None, executors=()) -> PromptSurface:
+    """This turn's surface: the carried one if armed, else a fresh render."""
+    carried = _prompt_surface_var.get()
+    if carried is not None:
+        return carried
+    return _render_prompt_surface(
+        delegates, registry, live_names=live_names,
+        allowed_tools=allowed_tools, executors=executors,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class SessionEntrySnapshot:
     """An immutable copy of a persisted session entry, decoded once under the
     entry lock so no later mutation of the source dict can bleed into a
@@ -365,6 +448,8 @@ class SessionEntrySnapshot:
     binding_digest: str | None
     speaker_provenance: SpeakerProvenance | None
     user_provenance: SpeakerProvenance | None
+    # #1029: absent (None) on every entry written before the surface gate.
+    prompt_surface_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +472,7 @@ class ResumeDecision:
     old: SessionEntrySnapshot | None
     reason: Literal[
         "missing", "role_mismatch", "binding_mismatch",
+        "prompt_surface_changed",
         "fresh", "expired", "invalid_entry", "retiring",
     ]
     fence_generation: int | None = None
@@ -414,6 +500,7 @@ def snapshot_session_entry(entry: dict | None) -> SessionEntrySnapshot | None:
         binding_digest=entry.get("binding_digest"),
         speaker_provenance=_decode_provenance(entry.get("speaker_provenance")),
         user_provenance=_decode_provenance(entry.get("user_provenance")),
+        prompt_surface_digest=entry.get("prompt_surface_digest"),
     )
 
 
@@ -534,6 +621,7 @@ def _resume_fault_streak(entry: dict | None, sid: str | None) -> int:
 def _resume_decision(
     channel: str, entry: dict | None, now: datetime, *,
     role_id: str, binding_digest: str,
+    prompt_surface_digest: str | None = None,
 ) -> ResumeDecision:
     """Spec §3.3/§4.2 + personality Task 9: resume iff a stored entry exists,
     matches this config's ``{role_id, binding_digest}`` identity, AND is within
@@ -553,6 +641,21 @@ def _resume_decision(
         return ResumeDecision("new", None, True, old, "role_mismatch")
     if (old.binding_digest or "") != (binding_digest or ""):
         return ResumeDecision("new", None, True, old, "binding_mismatch")
+    # #1029: the structural prompt surface gate, sibling to the binding gate
+    # above and checked after it so an identity change keeps reporting itself.
+    # A session's system prompt is pinned by the CLI at creation, so a surface
+    # that no longer matches cannot be corrected in place — the session has to
+    # go, with retain_old so the conversation is saved rather than dropped.
+    # A stored digest of None is a MISMATCH, not consent: every entry written
+    # before this gate may be carrying exactly the stale prompt this closes,
+    # and retiring it once is what lets an already-stuck conversation recover
+    # on deploy. Callers that pass None (paths with no surface to speak for,
+    # and tests of the older gates) opt out.
+    if prompt_surface_digest is not None:
+        if (old.prompt_surface_digest or "") != prompt_surface_digest:
+            return ResumeDecision(
+                "new", None, True, old, "prompt_surface_changed",
+            )
     try:
         last = (
             datetime.fromisoformat(old.last_active)
@@ -871,11 +974,15 @@ class Agent:
             # invokes decide synchronously in its decision block (AR-3), so
             # the capture lands in the same no-await block as the registry
             # read, per the fence's capture-point contract.
+            # #1029: the surface digest comes from the TURN's armed carrier,
+            # read here inside the pool's no-await decision block — the same
+            # object `_build_options` splices and `register` stores.
             decide=lambda ch, entry, now: dataclasses.replace(
                 _resume_decision(
                     ch, entry, now,
                     role_id=self.config.role_id,
                     binding_digest=self.config.binding_digest,
+                    prompt_surface_digest=_armed_surface_digest(),
                 ),
                 fence_generation=_retain_fence().generation(),
             ),
@@ -1582,6 +1689,7 @@ class Agent:
                             "webhook_oneshot" if is_webhook_oneshot else None
                         ),
                         binding_digest=self.config.binding_digest,
+                        prompt_surface_digest=_armed_surface_digest() or "",
                         speaker_provenance=speaker_provenance_for_role(self.config),
                         user_provenance=user_provenance,
                     )
@@ -1641,6 +1749,7 @@ class Agent:
                     msg.channel, existing, datetime.now(timezone.utc),
                     role_id=self.config.role_id,
                     binding_digest=self.config.binding_digest,
+                    prompt_surface_digest=_armed_surface_digest(),
                 )
                 if _retiring:
                     decision = dataclasses.replace(
@@ -1793,7 +1902,8 @@ class Agent:
             # so a turn that waits out a wipe re-reads an emptied registry and
             # starts fresh.
             async with _turn_admission().admitted(), \
-                    session_write_gate(channel_key):
+                    session_write_gate(channel_key), \
+                    self._armed_prompt_surface():
                 # #1003: a Casa-dispatched setup turn re-checks its obligation
                 # HERE — holding the per-session gate, before any client or
                 # prompt — because an ordinary turn ahead of it on the same
@@ -1873,6 +1983,7 @@ class Agent:
                         scope_class=(
                             "webhook_oneshot" if is_webhook_oneshot else None),
                         binding_digest=self.config.binding_digest,
+                        prompt_surface_digest=_armed_surface_digest() or "",
                         speaker_provenance=speaker_provenance_for_role(self.config),
                         user_provenance=user_provenance,
                     )
@@ -2166,6 +2277,33 @@ class Agent:
                 "explanation record skipped cid=%s", cid, exc_info=True,
             )
 
+    @contextlib.asynccontextmanager
+    async def _armed_prompt_surface(self):
+        """Render this turn's structural surface ONCE and arm it for the whole
+        turn (#1029).
+
+        Entered inside the same gate the resume decisions run under, so the
+        decision, the options build and the registration all read one object.
+        Rendering here rather than at each of those three points is the whole
+        point: design round 1 reproduced both drift directions across the
+        await between the decision and the options build.
+
+        Reset on exit. Task-local anyway (a delegated child arms its own), but
+        an un-reset carrier would hand a later turn on this task a surface that
+        was rendered for an earlier one."""
+        token = _prompt_surface_var.set(
+            _render_prompt_surface(
+                self.config.delegates, self._agent_registry,
+                live_names=_live_agent_directory(),
+                allowed_tools=self.config.tools.allowed,
+                executors=self.config.executors,
+            )
+        )
+        try:
+            yield
+        finally:
+            _prompt_surface_var.reset(token)
+
     async def _build_options(
         self, *, channel: str, channel_key: str, is_fresh: bool,
         resume_sid: str | None, user_text: str,
@@ -2379,23 +2517,26 @@ class Agent:
         # construction-time registry, so a per-role reload that renamed a
         # delegate cannot leave this agent advertising a name delegation
         # would refuse.
-        delegates_block = _render_delegates_block(
-            self.config.delegates, self._agent_registry,
-            live_names=_live_agent_directory(),
-        )
-        if delegates_block:
-            system_parts.append("\n" + delegates_block)
-        jobs_block = _render_jobs_block(
+        # #1029: splice THIS TURN's already-rendered structural surface —
+        # never re-render here. The resume decision gated on that surface's
+        # digest, and the registration below stores it; a second render at this
+        # point can disagree with both (a reload landing during the awaited
+        # memory load above is enough, reproduced by both design reviewers), so
+        # the session would be created carrying a prompt whose digest is
+        # recorded as something else and retired again next turn.
+        surface = _carried_prompt_surface(
             self.config.delegates, self._agent_registry,
             live_names=_live_agent_directory(),
             allowed_tools=self.config.tools.allowed,
+            executors=self.config.executors,
         )
-        if jobs_block:
-            system_parts.append("\n" + jobs_block)
+        if surface.delegates:
+            system_parts.append("\n" + surface.delegates)
+        if surface.jobs:
+            system_parts.append("\n" + surface.jobs)
         # <executors> block — assistant role only (loader enforces this).
-        executors_block = _render_executors_block(self.config.executors)
-        if executors_block:
-            system_parts.append("\n" + executors_block)
+        if surface.executors:
+            system_parts.append("\n" + surface.executors)
         # NOTE: <current_time> is intentionally NOT part of the system prompt —
         # a per-second timestamp in the cached prefix would invalidate Anthropic
         # prompt caching for the whole conversation every turn (see M27). It

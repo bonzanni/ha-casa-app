@@ -127,6 +127,14 @@ and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time pur
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.
 
+An entry also records the digest of the structural prompt surface the session was
+created with — the delegates, background jobs and executors the agent could reach at
+that moment. It is what lets the next turn tell that a resumed conversation's pinned
+system prompt no longer describes the agent's capabilities and start a fresh session
+instead (INV-TURN-012, `architecture/turn-loop.md`). An entry written before that field
+existed carries none, and is treated as a mismatch rather than as agreement: a prompt
+that was never observed cannot be certified as current.
+
 A session entry may also carry two advisory resume-fault fields — the fault-streak state
 of the turn loop's INV-TURN-008 (`architecture/turn-loop.md`), persisted with the entry
 and restored on write failure so disk and memory never disagree about the streak. Absent

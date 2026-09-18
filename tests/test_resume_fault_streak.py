@@ -69,6 +69,28 @@ async def _seeded_registry(tmp_path, sid: str = "old-sid") -> SessionRegistry:
     return reg
 
 
+def _align_seeded_surface(reg: SessionRegistry, agent, chat: str = "fault-scope") -> None:
+    """#1029: give the seeded entry the structural prompt-surface digest THIS
+    agent renders.
+
+    The surface gate retires a session whose stored digest does not match, and
+    an entry that never recorded one (this helper's seed, and every entry
+    written before the gate existed) is a mismatch by design. The tests below
+    that seed a session and then expect the very next turn to RESUME it need
+    the seed to speak for the same surface; without it the first turn starts
+    fresh and no resume-fault streak can be observed. Applied ONLY to those —
+    the tests that assert a FRESH turn must keep their unaligned seed."""
+    from agent import _live_agent_directory, _render_prompt_surface
+
+    key = build_scoped_session_key("telegram", "butler", chat)
+    reg._data[key]["prompt_surface_digest"] = _render_prompt_surface(
+        agent.config.delegates, agent._agent_registry,
+        live_names=_live_agent_directory(),
+        allowed_tools=agent.config.tools.allowed,
+        executors=agent.config.executors,
+    ).digest
+
+
 def _trusted_msg(chat: str = "fault-scope") -> BusMessage:
     m = _msg("telegram", chat, "status?")
     m.trusted_user_origin = ingress_identity(
@@ -328,6 +350,7 @@ class TestAgentStrikeShapes:
         agent = _make_agent_with_registry(reg, role="butler")
         channel = _RecordingFinalDeliveryChannel()
         agent._channel_manager.register(channel)
+        _align_seeded_surface(reg, agent)
 
         with patch(
             "sdk_client_pool._default_make_client", _ResumeRecordingClient,
@@ -372,6 +395,7 @@ class TestAgentStrikeShapes:
         agent = _make_agent_with_registry(reg, role="butler")
         channel = _RecordingFinalDeliveryChannel()
         agent._channel_manager.register(channel)
+        _align_seeded_surface(reg, agent)
 
         with patch(
             "sdk_client_pool._default_make_client", _ResumeRecordingClient,
@@ -406,6 +430,7 @@ class TestAgentStrikeShapes:
         agent = _make_agent_with_registry(reg, role="butler")
         channel = _RecordingFinalDeliveryChannel()
         agent._channel_manager.register(channel)
+        _align_seeded_surface(reg, agent)
 
         captured: dict[str, Any] = {}
         orig_process = agent._process
@@ -444,6 +469,7 @@ class TestAgentStrikeShapes:
         reg = await _seeded_registry(tmp_path)
         key = build_scoped_session_key("telegram", "butler", "fault-scope")
         agent = _make_agent_with_registry(reg, role="butler")
+        _align_seeded_surface(reg, agent)
 
         with patch("sdk_client_pool._default_make_client", FakeClient), \
                 patch_retry_sleep():
@@ -641,6 +667,7 @@ class TestGateOrderedNotes:
         agent = _make_agent_with_registry(reg, role="butler")
         channel = _BlockingChannel()
         agent._channel_manager.register(channel)
+        _align_seeded_surface(reg, agent)
 
         async def _wait_blocked(n: int) -> None:
             for _ in range(500):
