@@ -309,11 +309,11 @@ def _render_delegates_block(delegates, registry, *, live_names=None) -> str:
     return "\n".join(lines)
 
 
-def _render_jobs_block(delegates, registry, *, live_names=None,
+def _render_jobs_block(caller_role, delegates, registry, *, live_names=None,
                        allowed_tools=None) -> str:
-    """Render the background jobs available through visible delegates."""
-    if (not delegates or (allowed_tools is not None and
-                          "mcp__casa-framework__start_job" not in allowed_tools)):
+    """Render the background jobs available to this resident."""
+    if (allowed_tools is not None and
+            "mcp__casa-framework__start_job" not in allowed_tools):
         return ""
 
     def _known(role: str) -> bool:
@@ -329,15 +329,20 @@ def _render_jobs_block(delegates, registry, *, live_names=None,
     from background_jobs import startable_jobs
     visible_roles = [delegate.agent for delegate in delegates
                      if _known(delegate.agent)]
-    jobs = startable_jobs(visible_roles)
+    jobs = startable_jobs(caller_role, visible_roles)
     if not jobs:
         return ""
     lines = ["<jobs>"]
-    for role, job in jobs:
+    for host in jobs:
+        job = host.decl
+        if host.kind == "resident":
+            location = f"runs as a plugin job in {_display_name(host.role)}'s topic"
+        else:
+            location = f"runs in {_display_name(host.role)}'s topic"
         lines.append(
             f"- {job.qualified_name} — {job.title}: "
             f"{job.summary or job.title} "
-            f"(runs in {_display_name(role)}'s topic)")
+            f"({location})")
     lines.append("</jobs>")
     return "\n".join(lines)
 
@@ -382,14 +387,15 @@ class PromptSurface:
     digest: str
 
 
-def _render_prompt_surface(delegates, registry, *, live_names=None,
+def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
                            allowed_tools=None, executors=()) -> PromptSurface:
     """Render the structural blocks and digest them as one immutable unit."""
     delegates_block = _render_delegates_block(
         delegates, registry, live_names=live_names,
     )
     jobs_block = _render_jobs_block(
-        delegates, registry, live_names=live_names, allowed_tools=allowed_tools,
+        caller_role, delegates, registry, live_names=live_names,
+        allowed_tools=allowed_tools,
     )
     executors_block = _render_executors_block(executors)
     digest = "sha256:" + hashlib.sha256(
@@ -423,14 +429,14 @@ def _armed_surface_digest() -> str | None:
     return surface.digest if surface is not None else None
 
 
-def _carried_prompt_surface(delegates, registry, *, live_names=None,
+def _carried_prompt_surface(caller_role, delegates, registry, *, live_names=None,
                             allowed_tools=None, executors=()) -> PromptSurface:
     """This turn's surface: the carried one if armed, else a fresh render."""
     carried = _prompt_surface_var.get()
     if carried is not None:
         return carried
     return _render_prompt_surface(
-        delegates, registry, live_names=live_names,
+        caller_role, delegates, registry, live_names=live_names,
         allowed_tools=allowed_tools, executors=executors,
     )
 
@@ -2293,7 +2299,7 @@ class Agent:
         was rendered for an earlier one."""
         token = _prompt_surface_var.set(
             _render_prompt_surface(
-                self.config.delegates, self._agent_registry,
+                self.config.role, self.config.delegates, self._agent_registry,
                 live_names=_live_agent_directory(),
                 allowed_tools=self.config.tools.allowed,
                 executors=self.config.executors,
@@ -2525,7 +2531,7 @@ class Agent:
         # the session would be created carrying a prompt whose digest is
         # recorded as something else and retired again next turn.
         surface = _carried_prompt_surface(
-            self.config.delegates, self._agent_registry,
+            self.config.role, self.config.delegates, self._agent_registry,
             live_names=_live_agent_directory(),
             allowed_tools=self.config.tools.allowed,
             executors=self.config.executors,

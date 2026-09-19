@@ -3566,18 +3566,22 @@ def _engagement_delivery_ack(registry, engagement_id: str):
 
 
 async def _resume_background_jobs(registry, channel) -> None:
-    """Continue open specialist jobs once channels and residents are running."""
+    """Continue open in-casa jobs once channels and residents are running."""
     from background_jobs import start_next_batch
     from tools import _post_engagement_notice
 
     if channel is None:
         return
     for rec in registry.active_and_idle():
-        if rec.kind == "specialist" and rec.origin.get("job"):
+        if rec.driver == "in_casa" and rec.origin.get("job"):
             try:
                 title = rec.origin["job"]["title"]
                 await _post_engagement_notice(
                     channel, rec, f'↻ Resuming "{title}" after a restart.')
+            except Exception:
+                logger.warning("background job resume notice failed for %s", rec.id[:8],
+                               exc_info=True)
+            try:
                 await start_next_batch(rec, channel)
             except Exception:  # noqa: BLE001 — one job must not stop the boot
                 logger.warning("resuming background job %s failed", rec.id[:8],
@@ -5531,6 +5535,19 @@ async def main() -> None:
         coalesce=True,
         max_instances=1,
         misfire_grace_time=3600,
+    )
+    from background_jobs import sweep_jobs
+
+    scheduler.add_job(
+        sweep_jobs,
+        args=(engagement_registry, telegram_channel),
+        trigger="interval",
+        minutes=1,
+        id="background_job_sweep",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=60,
     )
     # Plan 4a.1 §8: workspace sweeper — every 6 hours, removes terminal
     # engagement workspaces past retention. v0.65.0 [AR-8]: the same job

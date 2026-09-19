@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-25
+last_reviewed: 2026-09-19
 ---
 
 # Plugins
@@ -128,9 +128,11 @@ trip would take the engagement terminal while the continuation still had no exis
 The edit still precedes the dispatch — the reservation makes that order harmless rather than
 moving it — and if the dispatch does not hand off, the DM is corrected to say so.
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns the
-reservation's lifetime. A non-authorizable engagement record (not an
-active specialist with a topic and a reachable operator) still denies, fail-closed, before any
-grant lookup.
+reservation's lifetime. A non-authorizable engagement record still denies, fail-closed,
+before any grant lookup: authorizable means an active record with a topic and a reachable
+operator, and of a kind that carries an approval seam — a specialist, or a resident-hosted
+plugin-job worker whose identity is additionally bound to its host role and its pinned
+artifact ([`background-jobs.md`](background-jobs.md)).
 
 Every challenge the coordinator raises — the protected-tool one above and the trigger,
 callback, event, specialist-install and persona-install consents alike — shares the

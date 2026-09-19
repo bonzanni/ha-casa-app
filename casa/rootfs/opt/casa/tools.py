@@ -1711,6 +1711,11 @@ MANDATORY_BRIDGE_CASA_GRANTS: tuple[str, ...] = SPECIALIST_CASA_GRANTS
 def engagement_casa_grant_names(engagement) -> "set[str] | None":
     if engagement is None:
         return set()  # fail closed: no bound engagement grants nothing
+    if getattr(engagement, "kind", None) == "plugin":
+        return {
+            grant.rsplit("__", 1)[-1]
+            for grant in background_jobs.PLUGIN_JOB_CASA_GRANTS
+        }
     allowed = set(getattr(engagement, "tools_allowed", ()) or ())
     allowed |= set(MANDATORY_BRIDGE_CASA_GRANTS)
     if "mcp__casa-framework" in allowed:      # server-level grant → all
@@ -1953,6 +1958,68 @@ def _build_specialist_options(
     )
 
 
+_PLUGIN_JOB_ROOT = Path("/data/engagements")
+_PLUGIN_JOB_PROMPT = (
+    "You are a plugin job worker, not the hosting resident. Casa runs this job "
+    "in bounded batches. Do not ask questions: park items needing an answer "
+    "and report them instead. Report each batch through report_job_progress; "
+    "finish through emit_completion. You have no delegation, messaging, or "
+    "resident memory. Read operator messages between batches and continue "
+    "the work using only the declaring plugin and the job tools."
+)
+
+
+def _build_plugin_job_options(rec, resolution) -> ClaudeAgentOptions:
+    """Build a worker from its pinned plugin and launch settings."""
+    import result_broker
+    from authz_grants import AuthzDeps, CHALLENGES, GRANTS, make_resident_authz_hook
+    from plugin_grants import protected_map
+
+    identity = rec.origin["plugin_job"]
+    if (len(resolution.plugins) != 1
+            or resolution.plugins[0].name != identity["plugin"]):
+        raise RuntimeError("declaring plugin unavailable for plugin job")
+    role = rec.role_or_type
+    protected = protected_map(resolution)
+
+    def deps():
+        channel = _channel_manager.get("telegram") if _channel_manager else None
+        if channel is None:
+            return None
+        return AuthzDeps(channel=channel, grants=GRANTS, challenges=CHALLENGES,
+                        display_name=_display_name_for_role(role))
+
+    authz_hook = make_resident_authz_hook(role, protected, deps) if protected else None
+    client_id = result_broker.new_client_id()
+    hooks = result_broker.broker_matchers(
+        role, resolution, client_id=client_id,
+        authz_hook=authz_hook, protected=protected)
+    allowed = ["Skill", "ToolSearch", *grants_for_resolution(resolution),
+               *background_jobs.PLUGIN_JOB_CASA_GRANTS]
+    # The local artifact supplies its own MCP servers; only Casa's server
+    # comes from the host registry, filtered to the worker's two tools.
+    servers = (_mcp_registry.resolve(
+        ["casa-framework"], role=role,
+        allowed_tools=background_jobs.PLUGIN_JOB_CASA_GRANTS)
+        if _mcp_registry is not None else {})
+    cwd = _PLUGIN_JOB_ROOT / rec.id / "plugin-job"
+    cwd.mkdir(parents=True, exist_ok=True)
+    return ClaudeAgentOptions(
+        model=identity["model"], cli_path=CLAUDE_CLI_PATH,
+        system_prompt=_PLUGIN_JOB_PROMPT,
+        allowed_tools=allowed,
+        disallowed_tools=["Agent", "Task", "AskUserQuestion"],
+        permission_mode="default",
+        max_turns=rec.origin["job"]["turns_per_batch"],
+        mcp_servers=servers, hooks=hooks, cwd=str(cwd), resume=None,
+        setting_sources=[], skills="all",
+        plugins=[{"type": "local", "path": resolution.plugins[0].path}],
+        env={**sanitized_env_for_resolution(resolution),
+             **result_broker.broker_env(client_id)},
+        can_use_tool=make_fail_closed_can_use_tool(role),
+    )
+
+
 def _build_executor_options(
     defn,
     *,
@@ -2142,7 +2209,13 @@ def build_engagement_resume_options(
     kind = getattr(engagement, "kind", "")
     role = getattr(engagement, "role_or_type", "")
     opts: ClaudeAgentOptions | None = None
-    if kind == "executor":
+    if kind == "plugin":
+        from plugin_grants import withhold_env_unresolved
+        resolution = _resolution_from_recorded(engagement.plugin_artifacts)
+        resolution, _ = withhold_env_unresolved(
+            resolution, context=f"plugin job {engagement.id} resume")
+        opts = _build_plugin_job_options(engagement, resolution)
+    elif kind == "executor":
         defn = _executor_registry.get(role) if _executor_registry is not None else None
         if defn is not None:
             recorded = getattr(engagement, "plugin_artifacts", None) or ()
@@ -5199,13 +5272,60 @@ async def _launch_specialist_engagement(
     agent_name: str, task_text: str, context_text: str, origin: dict,
     *, job: background_jobs.JobDecl | None = None,
 ) -> dict:
-    """Shared interactive specialist launch, including its admission gates."""
+    """Specialist-facing entry point; ordinary delegation keeps its gates."""
+    return await _launch_interactive_engagement(
+        agent_name, task_text, context_text, origin, job=job)
+
+
+async def _launch_interactive_engagement(
+    agent_name: str, task_text: str, context_text: str, origin: dict,
+    *, job: background_jobs.JobDecl | None = None,
+    plugin_host: background_jobs.JobHost | None = None,
+) -> dict:
+    """One launch owner for specialists and resident-hosted plugin workers."""
     import agent as agent_mod
 
-    agent_name, cfg, resolution, permit, error = await _prelaunch(
-        agent_name, origin, "interactive", task_text, context_text)
-    if error is not None:
-        return error
+    if plugin_host is None:
+        agent_name, cfg, resolution, permit, error = await _prelaunch(
+            agent_name, origin, "interactive", task_text, context_text)
+        if error is not None:
+            return error
+    else:
+        cfg = _agent_role_map.get(agent_name)
+        if cfg is None:
+            return _result({"status": "error", "kind": "unknown_agent"})
+        for field, value, limit in (
+            ("task", task_text, specialist_limits._MAX_TASK_CHARS),
+            ("context", context_text, specialist_limits._MAX_CONTEXT_CHARS),
+        ):
+            if not isinstance(value, str):
+                return _result({"status": "error", "kind": "invalid_argument",
+                                "field": field, "message": f"{field} must be a string."})
+            if len(value) > limit:
+                return _result({"status": "error", "kind": "input_too_large",
+                                "field": field, "length": len(value), "limit": limit})
+        if _effective_delegation_depth(origin) >= _MAX_DELEGATION_DEPTH:
+            return _result({"status": "error", "kind": "delegation_depth_exceeded"})
+        if origin.get("channel") == "voice":
+            return _result({"status": "error", "kind": "job_needs_text_channel"})
+        if origin.get("synthetic") == "plugin_setup":
+            return _result({"status": "error", "kind": "mode_unsupported_on_setup_turn"})
+        from plugin_grants import withhold_env_unresolved
+        try:
+            resolution = plugin_registry.ResolutionResult(
+                registry_valid=True, plugins=[plugin_host.plugin], issues=[])
+            resolution, _ = withhold_env_unresolved(
+                resolution, context=f"plugin job {agent_name} launch")
+            if not resolution.plugins:
+                return _result({"status": "error", "kind": "plugin_env_unresolved",
+                                "plugin": plugin_host.plugin.name})
+        except Exception as exc:
+            return _result({"status": "error", "kind": "plugin_unavailable",
+                            "message": str(exc)})
+        permit, refusal = background_jobs.acquire_job_permit(
+            plugin_host, _specialist_limiter)
+        if refusal is not None:
+            return _result(refusal)
     owned = permit
     spawn_owned = None
     casa_grants = SPECIALIST_CASA_GRANTS
@@ -5214,6 +5334,10 @@ async def _launch_specialist_engagement(
         origin["job"] = background_jobs.initial_job_state(job)
         casa_grants += background_jobs.JOB_CASA_GRANTS
         turns_per_batch = job.turns_per_batch or cfg.tools.max_turns
+    if plugin_host is not None:
+        casa_grants = background_jobs.PLUGIN_JOB_CASA_GRANTS
+        origin["job"]["turns_per_batch"] = turns_per_batch
+        origin["plugin_job"] = {"plugin": plugin_host.plugin.name, "model": cfg.model}
     try:
         # #283: agent-spawn cap — BEFORE the channel setup/topic Telegram
         # round-trips below. Operator-exempt only when positively marked
@@ -5271,6 +5395,8 @@ async def _launch_specialist_engagement(
             STATE_EMOJI, compose_topic_title, concise_task,
         )
         first_line = (job.title if job else task_text or "").splitlines()[0]
+        if plugin_host is not None:
+            first_line = f"{_display_name_for_role(agent_name)} · {first_line}"
         short_task = concise_task(first_line) or "engagement"
         topic_name = compose_topic_title(
             state="active", short_task=short_task,
@@ -5310,8 +5436,9 @@ async def _launch_specialist_engagement(
         # with. The filtered result feeds BOTH the record and the options
         # builder below (H7b), whose own filter then no-ops.
         from plugin_grants import withhold_env_unresolved
-        _spec_res, _ = withhold_env_unresolved(
-            _spec_res, context=f"specialist {agent_name} engagement")
+        if plugin_host is None:
+            _spec_res, _ = withhold_env_unresolved(
+                _spec_res, context=f"specialist {agent_name} engagement")
         _spec_arts = tuple(
             {"name": rp.name, "artifact_id": rp.artifact_id, "path": rp.path,
              # Task 5: recorded so a resumed session reproduces the same
@@ -5324,8 +5451,10 @@ async def _launch_specialist_engagement(
         # outer finally (`owned` is still set here).
         try:
             rec = await _engagement_registry.create(
-                kind="specialist", role_or_type=agent_name, driver="in_casa",
+                kind="plugin" if plugin_host is not None else "specialist",
+                role_or_type=agent_name, driver="in_casa",
                 task=task_text, origin=dict(origin), topic_id=topic_id,
+                topic_title=short_task if plugin_host is not None else "",
                 plugin_artifacts=_spec_arts,
                 # v0.166.0: pin the specialist's OWN casa-framework grant so
                 # the bridge gate admits exactly what _build_specialist_options
@@ -5333,9 +5462,10 @@ async def _launch_specialist_engagement(
                 # grant more than query/completion) plus the launch-mandatory
                 # grants. Without this the record is empty and every framework
                 # tool beyond the two mandatory ones is wrongly rejected.
-                tools_allowed=tuple(
-                    t for t in (cfg.tools.allowed or ()) if t != "Skill"
-                ) + casa_grants,
+                tools_allowed=(tuple(grants_for_resolution(_spec_res))
+                               if plugin_host is not None else tuple(
+                                   t for t in (cfg.tools.allowed or ()) if t != "Skill"
+                               )) + casa_grants,
                 # #283: reservation rides the record from here (r4).
                 agent_spawn_permit=spawn_owned,
             )
@@ -5400,13 +5530,24 @@ async def _launch_specialist_engagement(
                 logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
             # Build options + start driver (off-loop: registry resolve is file IO).
-            options = await asyncio.to_thread(
-                _build_specialist_options,
-                cfg,
-                resolution=_spec_res,
-                extra_casa_tools=casa_grants,
-                **({"max_turns": turns_per_batch} if job is not None else {}),
-            )
+            try:
+                if plugin_host is not None:
+                    options = await asyncio.to_thread(
+                        _build_plugin_job_options, rec, _spec_res)
+                else:
+                    options = await asyncio.to_thread(
+                        _build_specialist_options, cfg, resolution=_spec_res,
+                        extra_casa_tools=casa_grants,
+                        **({"max_turns": turns_per_batch} if job is not None else {}),
+                    )
+            except Exception as exc:
+                _abort = await _abort_launch_inline(
+                    channel, rec, topic_id,
+                    kind="options_build_failed", message=str(exc))
+                if _abort is LaunchAbortResult.PERSIST_FAILED:
+                    owned = None
+                return _result({"status": "error", "kind": "options_build_failed",
+                                "message": str(exc)})
 
             prompt = (
                 f"You are engaged with the user in a Telegram forum topic.\n"
@@ -5629,19 +5770,28 @@ async def start_job(args: dict) -> dict:
     caller = str(origin.get("execution_role") or origin.get("role", ""))
     cfg = _agent_role_map.get(caller)
     delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
-    host = background_jobs.find_job_host(args.get("job", ""), delegates)
+    host = background_jobs.find_job_host(args.get("job", ""), caller, delegates)
     if host is None:
-        names = [decl.qualified_name for _, decl in
-                 background_jobs.startable_jobs(delegates)]
+        names = [host.decl.qualified_name for host in
+                 background_jobs.startable_jobs(caller, delegates)]
         return _result({
             "status": "error", "kind": "job_not_declared",
             "message": "Startable jobs: " + (", ".join(names) or "none"),
         })
-    role, job = host
-    result = await _launch_specialist_engagement(
-        role, args.get("task", ""), args.get("context", "") or "", origin,
-        job=job)
+    role, job = host.role, host.decl
+    refusal = background_jobs.claim_job_start(host, _engagement_registry)
+    if refusal is not None:
+        return _result(refusal)
+    try:
+        result = await _launch_interactive_engagement(
+            role, args.get("task", ""), args.get("context", "") or "", origin,
+            job=job, plugin_host=host if host.kind == "resident" else None)
+    finally:
+        background_jobs.release_job_start(background_jobs.host_plugin_name(host))
     payload = json.loads(result["content"][0]["text"])
+    if payload.get("kind") == "busy":
+        payload["message"] = "Casa is at its concurrent-work limit. Try again shortly."
+        return _result(payload)
     if payload.get("status") == "pending":
         payload.update(
             job=job.qualified_name, title=job.title, agent=role,
@@ -10933,6 +11083,7 @@ async def report_job_progress(args: dict) -> dict:
     if remaining is not None:
         job["remaining"] = remaining
     job["last_summary"] = summary
+    job["last_advance"] = time.time()
     await _engagement_registry.persist_origin(rec.id)
     return _result({"ok": True})
 

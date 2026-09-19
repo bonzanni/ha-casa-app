@@ -128,10 +128,10 @@ def test_digest_moves_when_a_declared_job_appears(monkeypatch) -> None:
     import background_jobs
 
     monkeypatch.setattr(agent_mod, "_live_agent_directory", lambda: names)
-    monkeypatch.setattr(background_jobs, "startable_jobs", lambda roles: [])
+    monkeypatch.setattr(background_jobs, "startable_jobs", lambda role, roles: [])
 
     before = agent_mod._render_prompt_surface(
-        delegates, None, live_names=names, allowed_tools=allowed,
+        "assistant", delegates, None, live_names=names, allowed_tools=allowed,
     )
 
     class _Decl:
@@ -141,10 +141,11 @@ def test_digest_moves_when_a_declared_job_appears(monkeypatch) -> None:
 
     monkeypatch.setattr(
         background_jobs, "startable_jobs",
-        lambda roles: [("finance", _Decl())],
+        lambda role, roles: [
+            background_jobs.JobHost("specialist", "finance", _Decl(), None)],
     )
     after = agent_mod._render_prompt_surface(
-        delegates, None, live_names=names, allowed_tools=allowed,
+        "assistant", delegates, None, live_names=names, allowed_tools=allowed,
     )
 
     assert before.digest != after.digest, (
@@ -154,7 +155,7 @@ def test_digest_moves_when_a_declared_job_appears(monkeypatch) -> None:
     assert "classify-transactions" not in before.jobs
     # Stable for identical inputs — otherwise every turn retires the session.
     again = agent_mod._render_prompt_surface(
-        delegates, None, live_names=names, allowed_tools=allowed,
+        "assistant", delegates, None, live_names=names, allowed_tools=allowed,
     )
     assert again.digest == after.digest
 
@@ -276,9 +277,9 @@ async def test_carrier_falls_back_to_a_fresh_render_when_unarmed() -> None:
     agent_mod._render_prompt_surface = _counting
     try:
         fresh = agent_mod._carried_prompt_surface(
-            [], None, live_names={}, allowed_tools=[],
+            "assistant", [], None, live_names={}, allowed_tools=[],
         )
     finally:
         agent_mod._render_prompt_surface = original
     assert renders["n"] == 1
-    assert fresh.digest == real([], None, live_names={}, allowed_tools=[]).digest
+    assert fresh.digest == real("assistant", [], None, live_names={}, allowed_tools=[]).digest

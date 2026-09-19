@@ -112,7 +112,8 @@ def test_delegatable_job_renders_and_non_delegate_job_does_not(tmp_path, monkeyp
                                  when="Asked about money.")],
     )
     block = _render_jobs_block(
-        assistant.delegates, _agent_registry(assistant), allowed_tools=[_START_JOB])
+        assistant.role, assistant.delegates, _agent_registry(assistant),
+        allowed_tools=[_START_JOB])
     assert block == (
         "<jobs>\n"
         "- finance:classify — Classify transactions: Classify unreviewed "
@@ -124,9 +125,9 @@ def test_delegatable_job_renders_and_non_delegate_job_does_not(tmp_path, monkeyp
 
 def test_find_job_host_uses_delegate_order(tmp_path, monkeypatch):
     _load_jobs(tmp_path, monkeypatch)
-    host = find_job_host("finance:classify", ["hidden", "finance"])
+    host = find_job_host("finance:classify", "assistant", ["hidden", "finance"])
     assert host is not None
-    assert host[0] == "hidden"
+    assert host.role == "hidden"
 
 
 def test_resident_without_start_job_does_not_get_jobs_block(tmp_path, monkeypatch):
@@ -138,5 +139,5 @@ def test_resident_without_start_job_does_not_get_jobs_block(tmp_path, monkeypatc
         allowed=[],
     )
     assert _render_jobs_block(
-        assistant.delegates, _agent_registry(assistant), allowed_tools=[]
+        assistant.role, assistant.delegates, _agent_registry(assistant), allowed_tools=[]
     ) == ""

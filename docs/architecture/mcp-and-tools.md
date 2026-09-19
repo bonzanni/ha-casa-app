@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-17
+last_reviewed: 2026-09-19
 ---
 
 # The MCP surface and the tool boundary
@@ -105,7 +105,10 @@ check moved to dispatch, where it binds the process, not just the model. The gra
 the engagement record's `tools_allowed` unioned with the kind-mandatory casa-framework grants
 (`query_engager`/`emit_completion`, plus `react` for engaged executors) — the same tools the
 options builder hands the session, so an interactive specialist's empty record still admits
-its own `query_engager`.
+its own `query_engager`. A `plugin` record — a resident-hosted background-job worker — is
+the one kind that is not that union: its casa-framework set is exactly the two tools its
+own session is offered, and `query_engager` is not among them (INV-BGJOB-004,
+[`background-jobs.md`](background-jobs.md)).
 
 The two ways a call can be refused are reported distinctly, because they are different
 facts about the caller. A bound engagement that lacks the grant is told the tool is not

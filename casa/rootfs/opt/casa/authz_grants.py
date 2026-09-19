@@ -1160,7 +1160,7 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     if prov.execution == "engagement":
         if (rec is None
                 or not getattr(rec, "id", "")
-                or getattr(rec, "kind", None) != "specialist"
+                or getattr(rec, "kind", None) not in ("specialist", "plugin")
                 or getattr(rec, "status", None) != "active"
                 or strict_positive_id(
                     getattr(rec, "topic_id", None)) is None):
@@ -1170,6 +1170,15 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
         chat_id = strict_positive_id(eng_origin.get("chat_id"))
         if operator_id is None or chat_id is None:
             return None, "engagement_unavailable"
+        if getattr(rec, "kind", None) == "plugin":
+            if role != getattr(rec, "role_or_type", None):
+                return None, "engagement_unavailable"
+            artifacts = getattr(rec, "plugin_artifacts", None) or ()
+            if (artifact_id and not any(
+                    isinstance(artifact, dict)
+                    and artifact.get("artifact_id") == artifact_id
+                    for artifact in artifacts)):
+                return None, "engagement_unavailable"
         return GrantIdentity(
             operator_id=operator_id, chat_id=chat_id,
             enforcement_role=role, artifact_id=artifact_id,

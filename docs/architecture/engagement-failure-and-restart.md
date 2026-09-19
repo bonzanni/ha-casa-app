@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-17
+last_reviewed: 2026-09-19
 ---
 
 # Engagement launch failure and restart
@@ -207,6 +207,10 @@ does not carry the report. It does not say the report is GONE, which would be a 
 storage this path cannot make: a finished engagement's structured summary may well have been
 retained on the shared bank. It never reconstructs an answer from the task or from a stale
 summary message id.
+
+Background-job continuation uses the periodic recovery and finalize paths described in
+[`background-jobs.md`](background-jobs.md); the interactive two-strike resume rule does
+not terminalize a job. Launch cancellation remains governed by the launch owner.
 
 ## Extension points
 
