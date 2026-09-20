@@ -142,7 +142,7 @@ async def test_refusal_preserves_all_accounting(harness, monkeypatch, previous):
     await suspended(h, monkeypatch, failures=1)
     job = h.rec.origin["job"]
     if previous:
-        job.update(started=1, reported=True, remaining=5, prev_remaining=9, stuck=2)
+        job.update(started=1, advanced=True, stuck=2)
     else:
         job["batches"] = 1
     before = dict(job)

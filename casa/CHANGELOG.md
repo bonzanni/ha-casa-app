@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.323.0] - 2026-09-20
+
+### Added
+
+- A plugin you installed on a resident can now run background jobs of its own.
+  Until now only a specialist's plugins could, so long work belonging to a plugin
+  you had added yourself had nowhere to run. Such a job runs as its own worker in
+  a topic named after the resident, holding only that plugin's tools, which leaves
+  the resident free to talk to you while it works. One job runs per installed
+  plugin, and the assistant lists both kinds when you ask for one.
+
+### Fixed
+
+- A background job that was making real progress could be ended with "no progress
+  in 3 consecutive batches". Whether a batch had progressed was judged from the
+  optional `done`/`remaining` counts, which only fit work that has a countable
+  unit and a known total: a job that had neither reported the same numbers every
+  batch and was ended as stuck while it was working normally. A batch now says for
+  itself whether it moved the job toward completion, and the counts are shown to
+  you without deciding anything. A job that was already running
+  when Casa updates keeps the progress it had earned.
+- An open job is now kept moving by Casa itself. One that stalls — after a failed
+  resume, a failed context rebuild, or a restart whose progress notice could not be
+  posted — is continued automatically, and one that cannot be continued after three
+  attempts is ended and reported instead of sitting open forever.
+
 ## [0.322.0] - 2026-09-18
 
 ### Fixed

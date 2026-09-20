@@ -268,9 +268,11 @@ def initial_job_state(decl: JobDecl) -> dict:
         "started": 0,
         "judged": 0,
         "stuck": 0,
-        "reported": False,
-        "remaining": None,
-        "prev_remaining": None,
+        # Whether the current batch reported moving the job toward completion.
+        # The specialist says so itself (#1031): counts are the worker's own
+        # invented unit — a job can be uncountable, or its total unknown — so
+        # they are shown to the operator and decide nothing.
+        "advanced": False,
         "last_summary": None,
         # C7a: the sweep's inputs. `last_advance` is written whenever a batch is
         # admitted and whenever a progress report lands; `stalls` counts
@@ -290,9 +292,16 @@ def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int) 
         "about to do, then end your turn.\n"
         "Casa then starts batch 1. How the job runs:\n"
         f"- Each batch is one turn of at most {turns_per_batch} turns. Load the skill, "
-        "do one bounded batch, call report_job_progress (a one-line summary; "
-        "done/remaining counts if the skill has them) as your last action, then end "
+        "do one bounded batch, call report_job_progress as your last action, then end "
         "your turn. Casa starts the next batch. Running out of turns only ends the batch.\n"
+        "- report_job_progress takes a one-line summary and `progressed`: whether this "
+        "batch moved the job toward completion, whatever that means for this work. "
+        "Say false when it did not — a batch that found nothing to do, or that could "
+        "not proceed. Three batches in a row without progress end the job.\n"
+        "- The done/remaining counts are optional and only shown to the operator: pass "
+        "them when this job's work has a real unit and a known total, leave them out "
+        "otherwise. Nothing left to do means the job is finished, not a batch with "
+        "0 remaining: complete it instead.\n"
         "- Messages the operator writes in this topic arrive as their own turns: "
         "answer briefly and end your turn; the job then continues.\n"
         "- When nothing is left, call emit_completion with a summary for the operator. "
@@ -419,13 +428,20 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
         return False
     # Stage the judgment: a refused hand-off must cost no batch or progress.
     job = dict(rec.origin["job"])
-    if job["started"] > job["judged"]:
-        progress = job["reported"] and (
-            job["remaining"] is None or job["prev_remaining"] is None
+    if "advanced" not in job:
+        # A job launched before #1031 persisted `reported`/`remaining`/
+        # `prev_remaining` instead. Its one in-flight batch ran under the count
+        # rule and is judged under it, so an upgrade mid-job neither invents a
+        # stuck batch nor throws away one the old rule had credited.
+        job["advanced"] = bool(job.get("reported")) and (
+            job.get("remaining") is None or job.get("prev_remaining") is None
             or job["remaining"] < job["prev_remaining"])
-        job["stuck"] = 0 if progress else job["stuck"] + 1
-        job["prev_remaining"] = job["remaining"]
-        job["reported"] = False
+    if job["started"] > job["judged"]:
+        # A batch made progress when it said so through report_job_progress.
+        # A batch that reported no progress, or ended without reporting at all
+        # (out of turns, an error, or it simply did not call the tool), did not.
+        job["stuck"] = 0 if job.get("advanced") else job["stuck"] + 1
+        job["advanced"] = False
         job["judged"] = job["started"]
     detail = None
     if job["stuck"] >= 3:
@@ -448,7 +464,7 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
         logger.info("job batch handoff refused for %s", rec.id)
         return False
     rec.origin["job"].update(
-        {key: job[key] for key in ("started", "judged", "stuck", "prev_remaining", "reported")})
+        {key: job[key] for key in ("started", "judged", "stuck", "advanced")})
     rec.origin["job"].update(last_advance=time.time(), stalls=0)
     await channel._engagement_registry.persist_origin(rec.id)
     return True

@@ -139,8 +139,9 @@ class Harness:
     def batches(self):
         return [p for p in self.client.prompts if p.startswith("Batch ")]
 
-    async def report(self, summary="Handled rows", **counts):
-        reply = payload(await tools.report_job_progress.handler({"summary": summary, **counts}))
+    async def report(self, summary="Handled rows", progressed=True, **counts):
+        reply = payload(await tools.report_job_progress.handler(
+            {"summary": summary, "progressed": progressed, **counts}))
         assert reply == {"ok": True}
 
     async def complete(self):
@@ -318,27 +319,104 @@ async def test_cancel_stops_batches_and_reports_progress(harness):
     h.assert_terminal("cancelled", "Last progress: Handled rows")
 
 
-@pytest.mark.parametrize("counts", [False, True])
-async def test_stuck_guard(harness, counts):
+# A batch is stuck when it reported no progress, or ended without reporting at
+# all — never because a count failed to move (#1031).
+@pytest.mark.parametrize("silent", [False, True])
+async def test_stuck_guard(harness, silent):
     h = harness
     async def report():
-        await h.report(remaining=8)
-    h.client.scripts = [[text_frame("Working"), *([report] if counts else []), result()]
-                        for _ in range(4 if counts else 3)]
+        await h.report(progressed=False, remaining=8)
+    h.client.scripts = [[text_frame("Working"), *([] if silent else [report]), result()]
+                        for _ in range(3)]
     await h.start()
     await h.drain()
-    assert len(h.batches()) == (4 if counts else 3)
+    # Three either way: a reported no-progress batch counts from the first one,
+    # where the old count rule could not judge batch 1 at all.
+    assert len(h.batches()) == 3
     h.assert_terminal("error", "no progress in 3 consecutive batches")
-    if counts:
+    if not silent:
         assert "Last progress: Handled rows" in h.topic()
 
 
-async def test_decreasing_remaining_resets_stuck(harness):
+async def test_reported_progress_resets_stuck(harness):
     h = harness
-    async def report8(): await h.report(remaining=8)
-    async def report7(): await h.report(remaining=7)
-    h.client.scripts = [[text_frame("Working"), report8, result()] for _ in range(3)] + [
-        [text_frame("Working"), report7, result()], [h.complete, result()]]
+    async def stalled(): await h.report(progressed=False)
+    async def moved(): await h.report(progressed=True)
+    h.client.scripts = [[text_frame("Working"), stalled, result()] for _ in range(2)] + [
+        [text_frame("Working"), moved, result()], [h.complete, result()]]
+    await h.start()
+    await h.drain()
+    assert len(h.batches()) == 4
+    assert h.rec.origin["job"]["stuck"] == 0
+    h.assert_terminal("completed", "All rows handled")
+
+
+# An upgrade mid-job: the record carries the pre-#1031 keys and no `advanced`.
+@pytest.mark.parametrize("old,batch,terminal", [
+    # The old rule had credited the in-flight batch: it keeps that credit and
+    # batch 2 runs.
+    ({"reported": True, "remaining": 7, "prev_remaining": 8, "stuck": 2}, 2, None),
+    # It had not: the batch is stuck, and this is the third one.
+    ({"reported": False, "remaining": 8, "prev_remaining": 8, "stuck": 2}, None,
+     "no progress in 3 consecutive batches"),
+])
+async def test_legacy_job_state_is_judged_under_the_rule_it_ran_under(
+        harness, old, batch, terminal):
+    h = harness
+    job = h.rec.origin["job"]
+    job.pop("advanced")
+    job.update(started=1, judged=0, **old)
+    h.client.scripts = [[text_frame("Working"), h.report, result()], [h.complete, result()]]
+    await h.start()
+    await h.drain()
+    if terminal:
+        assert h.batches() == []
+        h.assert_terminal("error", terminal)
+    else:
+        assert h.batches()[:1] == [jobs.batch_prompt(batch, "Process rows")]
+        assert h.rec.origin["job"]["stuck"] == 0
+
+
+# A launch-time record from the old version has no in-flight batch to judge:
+# the missing key must not crash the batch it is about to start.
+async def test_legacy_job_state_before_any_batch_starts_batch_one(harness):
+    h = harness
+    job = h.rec.origin["job"]
+    job.pop("advanced")
+    job.update(reported=False, remaining=None, prev_remaining=None)
+    h.client.scripts = [[text_frame("Working"), h.report, result()], [h.complete, result()]]
+    await h.start()
+    await h.drain()
+    assert h.batches()[:1] == [jobs.batch_prompt(1, "Process rows")]
+    assert h.rec.origin["job"]["started"] >= 1
+
+
+# Two reports in one batch: the last one decides, and it is the line the
+# operator is left looking at.
+@pytest.mark.parametrize("last,stuck", [(True, 0), (False, 1)])
+async def test_the_last_report_of_a_batch_decides_it(harness, last, stuck):
+    h = harness
+    async def two():
+        await h.report("first", progressed=not last)
+        await h.report("second", progressed=last)
+    h.client.scripts = [[text_frame("Working"), two, result()], [h.complete, result()]]
+    await h.start()
+    await h.drain()
+    assert h.rec.origin["job"]["stuck"] == stuck
+    # The lines carry the summaries only: no posted line claims a verdict that
+    # the batch's later report would contradict.
+    topic = h.topic()
+    assert "no progress" not in topic
+    assert "first" in topic and "second" in topic
+
+
+# The #1031 red case: counts a job cannot measure (here a constant 0 left) must
+# never end a job whose batches report progress.
+async def test_unchanging_counts_do_not_end_a_progressing_job(harness):
+    h = harness
+    async def report(): await h.report(done=0, remaining=0)
+    h.client.scripts = [[text_frame("Working"), report, result()] for _ in range(4)] + [
+        [h.complete, result()]]
     await h.start()
     await h.drain()
     assert len(h.batches()) == 5
@@ -346,17 +424,21 @@ async def test_decreasing_remaining_resets_stuck(harness):
     h.assert_terminal("completed", "All rows handled")
 
 
-@pytest.mark.parametrize("counts", [{"done": True}, {"remaining": -1}, {"done": 1.5}, {"remaining": False}])
-async def test_progress_rejects_invalid_counts(harness, counts):
+@pytest.mark.parametrize("args", [
+    {"progressed": True, "done": True}, {"progressed": True, "remaining": -1},
+    {"progressed": True, "done": 1.5}, {"progressed": True, "remaining": False},
+    # `progressed` carries the whole judgment: absent or fuzzy is never progress.
+    {}, {"progressed": "yes"}, {"progressed": 1}, {"progressed": None}])
+async def test_progress_rejects_invalid_arguments(harness, args):
     h = harness
     token = tools.engagement_var.set(h.rec)
     try:
-        reply = payload(await tools.report_job_progress.handler({"summary": "work", **counts}))
+        reply = payload(await tools.report_job_progress.handler({"summary": "work", **args}))
     finally:
         tools.engagement_var.reset(token)
     assert reply == {"ok": False, "kind": "invalid_arguments"}
     assert h.bot.posts == []
-    assert not h.rec.origin["job"]["reported"]
+    assert not h.rec.origin["job"]["advanced"]
 
 
 async def test_progress_format_persistence_and_grant(harness, tmp_path):
@@ -371,7 +453,7 @@ async def test_progress_format_persistence_and_grant(harness, tmp_path):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
     await reg.load()
     persisted = reg.get(h.rec.id).origin["job"]
-    assert persisted["reported"] and persisted["remaining"] == 9
+    assert persisted["advanced"]
     assert persisted["last_summary"] == "x" * 300
     assert "report_job_progress" not in {t.name for t in tools.select_casa_tools(frozenset(tools.SPECIALIST_CASA_GRANTS))}
     assert "report_job_progress" in {t.name for t in tools.select_casa_tools(frozenset(jobs.JOB_CASA_GRANTS))}

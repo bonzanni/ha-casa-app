@@ -11052,12 +11052,17 @@ _COMPLETION_GUARDED_EXECUTOR_TYPES = frozenset({"plugin-developer"})
 
 @tool(
     "report_job_progress",
-    "Report this background job's batch progress in its topic.",
+    "Report this background job's batch progress in its topic. `progressed` is "
+    "whether this batch moved the job toward completion — say false when it did "
+    "not, and three such batches in a row end the job. `done`/`remaining` are "
+    "optional, shown to the operator, and decide nothing: pass them only when "
+    "this work has a real unit and a known total.",
     {"type": "object", "properties": {
         "summary": {"type": "string"},
+        "progressed": {"type": "boolean"},
         "done": {"type": "integer", "minimum": 0},
         "remaining": {"type": "integer", "minimum": 0}},
-     "required": ["summary"]},
+     "required": ["summary", "progressed"]},
 )
 async def report_job_progress(args: dict) -> dict:
     rec = engagement_var.get(None)
@@ -11065,8 +11070,12 @@ async def report_job_progress(args: dict) -> dict:
     if rec is None or rec.status not in ("active", "idle") or not rec.origin.get("job"):
         return _result({"ok": False, "kind": "not_a_job"})
     summary = args.get("summary")
+    progressed = args.get("progressed")
     done, remaining = args.get("done"), args.get("remaining")
-    if not isinstance(summary, str) or any(
+    # `progressed` is the whole stuck judgment (#1031), so it is required and
+    # must be an actual boolean: a missing or fuzzy value is never read as
+    # progress. `type(...) is not int` keeps booleans out of the counts.
+    if not isinstance(summary, str) or type(progressed) is not bool or any(
         value is not None and (type(value) is not int or value < 0)
         for value in (done, remaining)
     ):
@@ -11079,9 +11088,12 @@ async def report_job_progress(args: dict) -> dict:
     if remaining is not None:
         text += f" · {remaining} left"
     await _post_engagement_notice(_channel_manager.get("telegram"), rec, text)
-    job["reported"] = True
-    if remaining is not None:
-        job["remaining"] = remaining
+    # The batch's last report decides it. The posted line carries the worker's
+    # own summary and counts and makes no claim about the judgment: two reports
+    # of one batch would otherwise leave two verdicts standing in the topic,
+    # and a topic line cannot be taken back (review r1 S2, r2 S2 — the same
+    # shape twice, so the claim is cut rather than sharpened).
+    job["advanced"] = progressed
     job["last_summary"] = summary
     job["last_advance"] = time.time()
     await _engagement_registry.persist_origin(rec.id)

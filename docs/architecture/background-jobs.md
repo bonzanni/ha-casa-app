@@ -45,7 +45,8 @@ still apply. Its working directory is `/data/engagements/<id>/plugin-job`.
 Casa then drives the job itself. Every batch is a system turn (`Batch <n> of "<title>":
 continue the job.`) delivered through the same path as an operator message. A batch ends
 when the specialist ends its turn or runs out of turns — running out is not a failure. The
-specialist reports each batch with `report_job_progress`, which posts one line in the topic.
+specialist reports each batch with `report_job_progress`, which posts one line in the topic
+and says whether the batch moved the job toward completion.
 Messages the operator writes in the topic are delivered as their own turns, between
 batches. The job ends when the specialist calls `emit_completion`, when the operator
 `/cancel`s it, or when Casa fails it (a batch that raised or was cut off, no progress, or
@@ -103,10 +104,17 @@ result contract applies unchanged: a tool whose result declares an operator link
 that link delivered by Casa into the operator's chat. Casa delivers it, as it posts the
 approval challenge — the worker itself holds no tool that reaches outside its topic.
 
-**INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches make no progress, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing.
+**INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches report no progress or end without reporting, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing.
 
-A batch makes progress when it called `report_job_progress` and its `remaining` count went
-down, or when there is no count to compare (none given, or no previous one). Every
+A batch makes progress when its LAST `report_job_progress` of that batch said so: a batch
+that reports twice has changed its mind, and the later word is the one it stands by, which
+is why the posted lines carry only the worker's summary and counts. A batch that reported
+`progressed=False`, or that ended without reporting at all, did not: the counts are the
+worker's own unit — work can be uncountable, or its total unknown — so they are shown to
+the operator and decide nothing (#1031). A job launched before that rule carries the older
+`reported`/`remaining` counters instead, and its one in-flight batch is judged once under
+the count rule it ran under, so an upgrade mid-job neither invents a stuck batch nor
+discards one the old rule had credited. Every
 `cancelled` or `error` ending of a job engagement appends `Last progress: <summary>` to the
 text the topic and the resident receive, so `/cancel` also reports what the job had done.
 
@@ -139,11 +147,14 @@ plus the job, title, host role and a one-line message. Resident-plugin topics pe
 `<resident display name> · <job title>` label, shortened with the existing topic helper,
 so later state paints retain the name; they use the default topic bubble.
 
-`report_job_progress(summary, done=None, remaining=None)` is granted only to a job
-engagement's session. Outside a live job it returns `not_a_job`; a negative or boolean count
-returns `invalid_arguments`. It posts `📊 Batch <n>: <summary> · <done> done · <remaining>
-left` (the summary's first line, at most 300 characters; counts only when given), records
-the report, updates its epoch `last_advance`, and persists `origin["job"]`.
+`report_job_progress(summary, progressed, done=None, remaining=None)` is granted only to a
+job engagement's session. Outside a live job it returns `not_a_job`; a `progressed` that is
+absent or not a boolean, and a negative or boolean count, return `invalid_arguments`. It
+posts `📊 Batch <n>: <summary> · <done> done · <remaining> left` (the summary's first line,
+at most 300 characters; counts only when given — the line carries the worker's summary and
+makes no claim about the judgment, which a later report of the same batch could contradict
+in a line already posted), records that claim as the batch's — a later report of the same
+batch replaces it — updates its epoch `last_advance`, and persists `origin["job"]`.
 
 Resume options rebuild the job's per-batch turn limit and its progress grant from
 `origin["job"]`, so a resumed job session keeps both. Plugin workers additionally rebuild
